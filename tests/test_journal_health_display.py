@@ -1,4 +1,4 @@
-"""The display half of Edvard's #72 -- a dead cycle you can see on screen.
+"""The display half of the owner's #72 -- a dead cycle you can see on screen.
 
 > Mismatch between Nova and agora cycles. Nova is 1 behind agora. Agora
 > failed a cycle Journal and you did not catch it. You do not have good
@@ -6,7 +6,7 @@
 > cycle in the past failed or is missing.
 
 `cycle_health` answers this for Nova (it now runs at heartbeat dispatch,
-Cycle 148). Nothing answered it for Edvard, who found cycles 127 and 128
+Cycle 148). Nothing answered it for the owner, who found cycles 127 and 128
 himself by noticing the feed jump from 126 to 129.
 
 The two halves are tested apart because they fail apart: the holes are
@@ -25,6 +25,7 @@ from agora_runner.cycle_health import (
     nova_cadence_minutes,
     recent_gaps,
 )
+from agora_runner.stall_notice import due
 from agora_runner.nova_journal import JOURNAL_DIR, build_status, parse_journal
 from agora_runner.nova_site import (
     _refresh_cadence,
@@ -68,7 +69,7 @@ def test_a_journal_with_no_holes_reports_none():
 
 
 def test_an_entry_with_no_cycle_number_is_not_a_hole():
-    """Edvard's own notes carry no `Cycle N`, so they cannot be missing.
+    """The owner's own notes carry no `Cycle N`, so they cannot be missing.
 
     They are real entries and they sit in the feed between numbered ones.
     Counting them into the range would invent a gap out of a note.
@@ -128,7 +129,7 @@ def test_the_page_and_the_self_check_cannot_disagree_about_a_hole():
     """One definition of "missing", read by both callers.
 
     The point of `gaps_between` existing: `cycle_health` answers this for
-    Nova and `build_status` answers it for Edvard, and a second
+    Nova and `build_status` answers it for the owner, and a second
     implementation is the hand-synced pair this repo keeps finding
     drifted. If these two ever disagree, one of the two readers is lying
     to somebody.
@@ -317,7 +318,7 @@ def test_a_stall_changes_the_etag_so_an_open_tab_can_be_told():
     the failure. So the base etag is identical across a stall, and a page
     polling with `If-None-Match` is answered 304 for as long as it lasts.
     The warning would appear only in a tab opened after the loop died, and
-    never in the one already open on Edvard's phone, which is the whole
+    never in the one already open on the owner's phone, which is the whole
     case it exists for.
 
     Same payload, same window, only the clock moved across the threshold.
@@ -374,7 +375,7 @@ def test_build_status_never_reads_the_clock():
 #
 # Cycle 180 fixed this for the copy that talks to Nova (#166) by handing
 # `cycle_health` the schedule off the heartbeat being dispatched, and left
-# the copy that talks to Edvard reading `HEARTBEAT_MINUTES`. This process
+# the copy that talks to the owner reading `HEARTBEAT_MINUTES`. This process
 # has no heartbeat in hand -- it is a different pod from the poll loop --
 # so it has to ask Agora, and these pin what it does with the answer.
 
@@ -402,14 +403,36 @@ def _hb(schedule, persona=NOVA_PERSONA_ID, enabled=True,
             "lastResult": last_result}
 
 
-def _with_agora(monkeypatch, fake):
+def _with_agora(monkeypatch, fake, public=None):
+    """Point the snapshot at a fake internal API, and at a fake public one.
+
+    The public fallback defaults to a hard failure so every existing test
+    keeps asserting what the *internal* read does. A test that wants the
+    fallback passes its own `public`.
+    """
     monkeypatch.setattr("agora_runner.http_util.agora_internal", fake)
+    if public is None:
+        public = _FakePublicAgora(status=599)
+    monkeypatch.setattr("agora_runner.http_util.agora_get", public)
+
+
+class _FakePublicAgora:
+    """Stands in for `agora_get` -- the unauthenticated read on :8080."""
+
+    def __init__(self, status=200, heartbeats=()):
+        self.status = status
+        self.heartbeats = list(heartbeats)
+        self.calls = []
+
+    def __call__(self, path):
+        self.calls.append(path)
+        return self.status, {"heartbeats": self.heartbeats}
 
 
 def test_the_silence_is_measured_in_the_live_cadence_not_the_constant():
     """The bug. Ninety minutes of quiet is one interval at the hourly
-    cadence and two at the forty-minute one Edvard ran on 2026-08-13, and
-    the badge Edvard reads was answering with the first regardless.
+    cadence and two at the forty-minute one the owner ran on 2026-08-13, and
+    the badge the owner reads was answering with the first regardless.
 
     Ninety and forty are chosen so the two answers differ: at any offset
     under one interval both cadences say zero and the test pins nothing.
@@ -426,7 +449,7 @@ def test_the_silence_is_measured_in_the_live_cadence_not_the_constant():
 def test_a_faster_cadence_calls_a_dead_cycle_sooner():
     """Not the same assertion as the one above: `silentIntervals` moving
     is only interesting if it drags the badge across the threshold, which
-    is the thing on Edvard's screen. Two hours of quiet is healthy at the
+    is the thing on the owner's screen. Two hours of quiet is healthy at the
     hourly cadence and a stall at forty minutes.
 
     Ninety minutes is the only window where the two disagree given a grace
@@ -638,7 +661,7 @@ def test_the_badge_the_page_draws_moves_with_the_live_cadence(monkeypatch):
 
 # --- the holes worth a badge, which is the recent ones ---------------------
 #
-# Edvard, comments board 2026-08-14, on the header's stall badge: *"Should
+# the owner, comments board 2026-08-14, on the header's stall badge: *"Should
 # be displayed if the return fetch came in with missing journals."* The
 # header only ever spoke about the clock. These pin the evidence half.
 
@@ -702,7 +725,7 @@ def test_recent_gaps_reads_a_generator_without_consuming_it_for_the_other():
 
 
 def test_a_payload_the_site_cannot_refresh_is_not_reported_as_a_stall():
-    """The flash in Edvard's #81, and the first mechanism actually caught.
+    """The flash in the owner's #81, and the first mechanism actually caught.
 
     `_with_silence` subtracts a cached `lastWrittenAt` from a live `now`,
     so every second a rebuild fails to land is counted as a second of the
@@ -754,7 +777,7 @@ def test_going_stale_changes_the_etag_so_an_open_tab_is_told():
     not line up with an interval boundary. Keyed on `silentIntervals`
     alone a polling tab is answered 304 for up to a full hour after the
     site stopped being able to see the journal — and goes on showing the
-    stall this flag exists to retract, which is precisely the phone Edvard
+    stall this flag exists to retract, which is precisely the phone the owner
     is holding.
     """
     from agora_runner.nova_site import journal_descriptor, page_etag
@@ -818,7 +841,7 @@ def _silence(now_offset, last_run_at, last_result, minutes=60):
 
 
 def test_a_cycle_in_flight_is_reported_running():
-    """The window Edvard was reading as a failure. Cycle 130 was claimed
+    """The window the owner was reading as a failure. Cycle 130 was claimed
     twenty minutes ago, 129 wrote the newest entry, and the header can
     only name 129 -- which is correct and now says why."""
     status = _silence(timedelta(minutes=20),
@@ -850,7 +873,7 @@ def test_a_run_older_than_the_newest_entry_is_not_running():
 def test_a_killed_cycle_stuck_on_running_reads_as_stalled_not_running():
     """The one case the badge would be lying about. A cycle that is killed
     never writes its closing PATCH, so `lastResult` stays "running"
-    forever -- the record alone would reassure Edvard indefinitely about a
+    forever -- the record alone would reassure the owner indefinitely about a
     loop that stopped hours ago. Past the grace window the stall wins and
     the claim is dropped."""
     status = _silence(timedelta(hours=4),
@@ -903,7 +926,7 @@ def test_the_running_badge_reaches_a_phone_that_is_already_polling():
     byte-identical across the moment the badge turns on -- a client
     polling with `If-None-Match` would be answered 304 for the whole
     cycle and the badge would render only in a tab opened after it began.
-    Edvard's phone is the tab that is already open."""
+    The owner's phone is the tab that is already open."""
     from agora_runner.nova_site import journal_descriptor, page_etag
 
     payload = {"entries": [dict(e) for e in _entries(129, 128)]}
@@ -1002,3 +1025,164 @@ def test_the_newest_run_still_wins_among_heartbeats_in_the_same_state(monkeypatc
         _with_agora(monkeypatch, _FakeAgora(heartbeats=order))
         assert nova_heartbeat_snapshot()[1:] == (
             "2026-08-12T15:20:00+02:00", "research"), order
+
+
+# The false alarm the owner reported on 2026-08-24, and the two bounds that stop
+# the fix from muting a real one.
+#
+# He sent a screenshot of his own phone: at 17:38, inside the live "Nova —
+# Cycle 373" conversation, between two of that cycle's own tool calls, the
+# platform posted "Nova has stopped writing. The last journal entry is Cycle
+# 372's, written at 2026-08-24 16:54, and that is 2 heartbeat intervals ago
+# with nothing since." His words: *"Seems like there is a big [bug] with the
+# auto agora message. There was nothing wrong with the cycle it seems as it
+# continues to work."*
+#
+# He was right and the arithmetic is the whole story. 17:38 minus 16:54 is 44
+# minutes; at the 20-minute cadence he set that morning it is two intervals,
+# which is `STALL_GRACE_INTERVALS`. Two intervals was a safe margin at the
+# 60-minute cadence this check was written under -- two hours, and no cycle
+# runs that long. At 20 minutes it is 40, which is shorter than a single
+# cycle's own 45-minute turn cap, so an ordinary slow cycle now trips the
+# stall threshold while it is still working.
+
+STALL_MINUTES = 20
+
+
+def test_a_running_cycle_is_not_reported_as_a_stall_at_a_short_cadence():
+    """His screenshot, reproduced. The entry is 44 minutes old and Agora's
+    record says a run claimed 18 minutes ago is still going -- so the
+    silence is a cycle mid-flight, which is the opposite of a stall."""
+    status = _silence(timedelta(minutes=44),
+                      (NOW + timedelta(minutes=26)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert status["silentIntervals"] == 2
+    assert status["stalled"] is False
+    assert status["running"] is True
+
+
+def test_the_notice_stays_silent_for_that_status():
+    """The end of the path, not the middle. `stalled` is the only thing
+    `due` reads, so this is what actually decides whether his phone gets a
+    message -- and it is the assertion that would have failed on 2026-08-24."""
+    status = _silence(timedelta(minutes=44),
+                      (NOW + timedelta(minutes=26)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert due(status, None) is None
+
+
+def test_a_killed_cycle_is_still_reported_once_its_turn_cap_has_passed():
+    """The alarm this module exists for, at the same short cadence. A killed
+    cycle never writes its closing PATCH, so `lastResult` stays "running"
+    forever; `lastRunAt` dates the claim, and past the 45-minute turn cap
+    that run is over whatever the record says."""
+    status = _silence(timedelta(minutes=70),
+                      (NOW + timedelta(minutes=20)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert status["stalled"] is True
+    assert status["running"] is False
+    assert due(status, None) is not None
+
+
+def test_a_scheduler_claiming_runs_into_a_dead_runner_cannot_mute_the_alarm():
+    """The hole a naive "is anything running?" gate would open. If Agora
+    keeps claiming a run every cadence but nothing ever writes, `lastRunAt`
+    stays fresh forever and the in-flight fact alone would suppress the
+    notice for good. One in-flight cycle can only account for a cadence
+    interval plus a turn cap of silence; past that, two cycles in a row
+    have failed to write and it is a stall."""
+    status = _silence(timedelta(minutes=90),
+                      (NOW + timedelta(minutes=80)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert status["stalled"] is True
+    assert due(status, None) is not None
+
+
+def test_the_two_badges_can_never_both_be_true_at_a_short_cadence():
+    """The invariant `_running_now` was written to protect, re-checked at
+    the cadence that broke the number underneath it. Every five minutes
+    across four hours rather than at the offsets I happened to think of."""
+    for offset in range(0, 240, 5):
+        status = _silence(timedelta(minutes=offset),
+                          (NOW + timedelta(minutes=max(0, offset - 10))).isoformat(),
+                          "running", minutes=STALL_MINUTES)
+        assert not (status["running"] and status["stalled"]), offset
+
+
+def test_a_run_older_than_a_cycle_can_last_stops_explaining_the_silence():
+    """The quadrant where the age bound is the only thing deciding, and the
+    one my first pass left uncovered. A reviewer deleted the bound and the
+    whole file stayed green: every "killed cycle" case I had written was
+    over-determined, because the silence had already outrun what one cycle
+    could explain and the silence bound alone forced the verdict.
+
+    Here it has not. The run was claimed 5 minutes after the last entry, so
+    at 56 minutes of silence the silence bound still says "explainable"
+    (56 < 20 + 50) -- and the run itself is 51 minutes old, past anything
+    that can still be executing. Only the age bound separates those, so
+    dropping it flips this assertion."""
+    status = _silence(timedelta(minutes=56),
+                      (NOW + timedelta(minutes=5)).isoformat(), "running",
+                      minutes=STALL_MINUTES)
+    assert status["silentIntervals"] == 2
+    assert status["stalled"] is True
+    assert status["running"] is False
+    assert due(status, None) is not None
+
+
+def test_a_cycle_still_alive_past_the_bridges_turn_cap_is_not_a_stall():
+    """Why the bound is 50 and not the 45 I first wrote. `lastRunAt` is
+    stamped when Agora *claims* the run, before prompt assembly -- and the
+    runner waits 2760s on the bridge (`providers/claude_cli.py`) so that it
+    outlives the bridge's own 2700s kill. So a cycle that is genuinely still
+    working sits past 46 minutes on this clock. At 45 this case read as a
+    stall and pushed the message into the live conversation, which is the
+    exact failure the whole change exists to stop."""
+    for age in (46, 47, 48, 49):
+        status = _silence(timedelta(minutes=age + 5),
+                          (NOW + timedelta(minutes=5)).isoformat(), "running",
+                          minutes=STALL_MINUTES)
+        assert status["stalled"] is False, age
+        assert due(status, None) is None, age
+
+from agora_runner.cycle_health import nova_heartbeat_snapshot
+
+
+# The bridge pod has no AGORA_TOKEN, so the internal API answers 401 there
+# rather than failing to connect -- measured 2026-08-27, Cycle 523, after
+# `quota_runway` had called that "the bridge pod cannot reach Agora" for 264
+# cycles and silently fallen back to a cadence inferred from wake-ups. These
+# pin the fallback and pin that it does not fire when it is not needed.
+
+
+def test_an_unauthenticated_internal_read_falls_back_to_the_public_one(monkeypatch):
+    internal = _FakeAgora(status=401, heartbeats=[])
+    public = _FakePublicAgora(heartbeats=[
+        _hb("every@30m@16:00", last_run_at="2026-08-27T07:00:00+02:00",
+            last_result="running")])
+    _with_agora(monkeypatch, internal, public)
+    assert nova_heartbeat_snapshot() == (
+        30, "2026-08-27T07:00:00+02:00", "running")
+    assert public.calls == ["/heartbeats"]
+
+
+def test_the_public_read_is_not_made_when_the_internal_one_answers(monkeypatch):
+    """The runner pod holds the token; asking twice there would be waste,
+    and worse, would let a stale public read overwrite a good one."""
+    internal = _FakeAgora(heartbeats=[
+        _hb("every@40m@19:00", last_run_at="2026-08-12T23:15:00+02:00",
+            last_result="merged")])
+    public = _FakePublicAgora(heartbeats=[_hb("every@5m")])
+    _with_agora(monkeypatch, internal, public)
+    assert nova_heartbeat_snapshot() == (
+        40, "2026-08-12T23:15:00+02:00", "merged")
+    assert public.calls == [], "the public API is a fallback, not a second source"
+
+
+def test_both_apis_failing_still_carries_no_run_state(monkeypatch):
+    """`None` has to keep meaning 'no honest answer'. If the fallback made
+    the snapshot always succeed, `quota_runway` could never report
+    OBSERVED and would present an inferred cadence as a scheduled one."""
+    _with_agora(monkeypatch, _FakeAgora(status=401),
+                _FakePublicAgora(status=503, heartbeats=[_hb("every@40m")]))
+    assert nova_heartbeat_snapshot() == (None, None, None)

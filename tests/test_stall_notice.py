@@ -1,4 +1,4 @@
-"""The loop telling Edvard it has stopped -- issue #70's open half.
+"""The loop telling the owner it has stopped -- issue #70's open half.
 
 The thing under test is a message that rings a phone, so the tests are
 written against the two failures that matter in opposite directions: it
@@ -114,7 +114,7 @@ def test_no_heartbeats_at_all_is_not_a_crash():
 
 
 def test_a_muted_heartbeat_still_gets_the_message_without_the_buzz():
-    # Edvard's #79, shipped the same day: pushNotifications:false mutes the
+    # The owner's #79, shipped the same day: pushNotifications:false mutes the
     # phone, it does not withhold the message. A stall notice that ignored
     # it would defeat the mute for the one case a mute cannot tell apart
     # from nothing happening.
@@ -204,7 +204,7 @@ def test_no_bound_conversation_posts_nothing_and_stays_armed():
 
 
 def test_a_broken_check_costs_a_check_not_the_site():
-    # This runs inside the loop that keeps Edvard's app served. A vault or
+    # This runs inside the loop that keeps the owner's app served. A vault or
     # Agora hiccup must not take the process down with it.
     rec = _Recorder(_status())
 
@@ -276,7 +276,7 @@ def test_a_record_the_site_cannot_refresh_does_not_push_a_stall_to_his_phone():
     `_with_silence` measures a live `now` against a cached
     `lastWrittenAt`, so a rebuild that keeps failing reads as a loop that
     stopped writing. Here that does not colour a badge -- it posts "Nova
-    has stopped writing" to Edvard's phone, on evidence only that this
+    has stopped writing" to the owner's phone, on evidence only that this
     process lost its own connection to the vault.
 
     Measured 2026-08-15: `nova-site-preview` served

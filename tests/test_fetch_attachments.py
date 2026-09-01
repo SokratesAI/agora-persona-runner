@@ -2,7 +2,7 @@
 
 The failure this guards is not a crash. It is a cycle reading
 `![shot.jpg](/api/upload/89f92e….jpg)` in `comments.md`, seeing a dead
-string, and telling Edvard it is blind — which happened twice in fifteen
+string, and telling the owner it is blind — which happened twice in fifteen
 minutes on 2026-08-21 while the bytes sat in the vault the whole time. So
 the tests that matter here are the ones that pin *reporting*: an
 attachment that cannot be fetched has to be named and counted, because a

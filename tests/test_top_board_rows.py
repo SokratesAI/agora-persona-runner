@@ -201,7 +201,7 @@ def test_a_thread_i_already_answered_is_not_waiting():
 
 
 def test_he_gets_the_last_word_after_my_reply_and_is_waiting_again():
-    """Positional, not a count -- Edvard, Nova, Edvard is two each and waiting."""
+    """Positional, not a count -- the owner, Nova, the owner is two each and waiting."""
     text = board((11, "reopened", BACKLOG, "2026-08-01", LOW)) + details(
         (11, "reopened", "Problem.\n\n**Edvard, 08-13:** one\n\n"
                          "**Nova, 08-13 (Cycle 1):** two\n\n**Edvard, 08-15:** three"))
@@ -249,7 +249,7 @@ def test_two_questions_answered_by_one_reply_is_not_waiting():
     assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
 
 
-# --- Edvard's unboarded captures, which this tool could not see at all ---
+# --- The owner's unboarded captures, which this tool could not see at all ---
 #
 # Cycle 241 ran the tool, took the row it named, and three of his captures
 # were sitting unread above the board. `parse_board` had been returning
@@ -257,7 +257,7 @@ def test_two_questions_answered_by_one_reply_is_not_waiting():
 # as `[top-board-rows-blind-to-captures]`.
 
 def with_captures(text, *bullets):
-    """Edvard's bare bullets above the first heading, plus his empty cursor."""
+    """The owner's bare bullets above the first heading, plus his empty cursor."""
     head = "---\ntype: log\n---\n\n" + "".join(f"- {b}\n" for b in bullets) + "- \n\n"
     return head + text
 
@@ -459,7 +459,7 @@ def test_a_nova_note_moves_the_row_it_was_written_on_down_the_ranking():
     at `Updated 08-16` and topped this tool four hours after Cycle 270
     appended a note to it.
 
-    **The note is Nova's on purpose.** One from Edvard would mark the row
+    **The note is Nova's on purpose.** One from the owner would mark the row
     `waiting`, which outranks every rating and would move it to the top for
     a reason that has nothing to do with the date -- a positive result
     guaranteed in advance, pointing the wrong way.
@@ -490,7 +490,7 @@ def test_a_blocked_row_sinks_below_a_lower_rated_actionable_one():
     """Issue #94's exact shape: 🟠 High, oldest, and nothing a cycle can do.
 
     It topped this list for five days on rating and age while every cycle
-    walked past it, which is the tax `⏸ Blocked on Edvard` exists to stop.
+    walked past it, which is the tax `⏸ Blocked on the owner` exists to stop.
     """
     text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
                  (99, "a low one I can actually take", BACKLOG, "08-20", LOW))
@@ -527,4 +527,836 @@ def test_render_names_the_blocked_rows_rather_than_hiding_them():
                  (99, "actionable", BACKLOG, "08-20", LOW))
     out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
     assert "issue #99" in out.splitlines()[1]
-    assert "blocked on Edvard: issue #94" in out
+    assert "blocked on Edvard" in out
+    # The row itself, in full, on its own line -- not a bare number folded
+    # into the sentence. `#94` alone does not say which board.
+    assert any(line.strip().startswith("issue #94") and "needs his click" in line
+               for line in out.splitlines())
+
+
+def test_the_nothing_to_build_line_cannot_be_read_as_a_verdict_on_the_ranking():
+    """Cycle 400's exact shape, and the sixth time a cycle filed this line.
+
+    Four cycles reported "Nothing for a cycle to build on these" as a false
+    positive over a ranking they had just been told to take from. The verdict
+    was never wrong -- "these" meant the blocked rows -- but the blocked rows
+    are the ones sunk out of the printed ranking, so the sentence was only
+    ever about rows the reader could not see. Cycle 400 hit the worst version:
+    the blocked row was `issue #94` and `idea #94` was ranked directly above
+    it, a different board sharing a number.
+
+    So the assertion is about scope, not wording: the sentence must name what
+    it applies to, and the ranked rows must not be inside it.
+    """
+    text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
+                 (7, "a real build", BACKLOG, "08-20", HIGH))
+    out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
+    assert "on these" not in out, "the dangling pronoun is what misread"
+    # The claim is scoped to the rows printed under it...
+    verdict = next(line for line in out.splitlines()
+                   if "Nothing for a cycle to build" in line)
+    assert verdict.rstrip().endswith(":"), "a scoped claim introduces its rows"
+    # ...and says out loud that it is not about the ranking, because the
+    # ranking is what four cycles read it against.
+    assert "not a verdict on the ranking above" in verdict
+    # The actionable row is the pick above the block, never inside it.
+    lines = out.splitlines()
+    assert lines[1].startswith("  -> issue #7")
+    assert lines.index(verdict) > 1
+    assert "#7" not in verdict
+
+
+# --- A comment on a row already closed, which the read discarded ---
+#
+# `open_rows` computed `waiting` for every row in the file and then
+# dropped every closed one, so a question asked on a ✅ Done row was read
+# and thrown away in the same function. Sokrates filed it on `issues.md`
+# 2026-08-23 after a comment on `ideas #63` sat through nine cycles
+# (328-336) with no reply and no change.
+
+DONE_STATUS = STATUS_LABELS["done"]
+
+
+def test_a_comment_on_a_done_row_is_not_lost_with_the_row():
+    text = board((10, "an open row", BACKLOG, "08-01", HIGH),
+                 (63, "a finished row", DONE_STATUS, "08-22", HIGH)) + details(
+        (63, "a finished row", "Problem.\n\n"
+                               "**Edvard, 08-22:** this Done looks premature?"))
+    # Against a literal, not against another call to `open_rows` -- a
+    # mutation moves both sides of that equally (rubric item 13).
+    assert [r["number"] for r in top_board_rows.open_rows(text, "idea")] == [10]
+    got = top_board_rows.closed_rows_waiting(text, "idea")
+    assert [(r["board"], r["number"]) for r in got] == [("idea", 63)]
+
+
+def test_a_done_row_i_already_answered_is_not_waiting():
+    """The control. Without it the function above could return every closed
+    row and this file would still be green."""
+    text = board((63, "a finished row", DONE_STATUS, "08-22", HIGH)) + details(
+        (63, "a finished row", "Problem.\n\n**Edvard, 08-22:** premature?\n\n"
+                               "**Nova, 08-23 (Cycle 338):** answered."))
+    assert top_board_rows.closed_rows_waiting(text, "idea") == []
+
+
+def test_a_closed_waiting_row_is_named_but_never_ranked_as_a_pick():
+    """It is a reply that is owed, not work. Putting it in the ranking would
+    be the opposite failure -- a Done row named as this cycle's pick."""
+    rows = [{"board": "issue", "number": 7, "title": "real work", "status": BACKLOG,
+             "priority": HIGH, "priorityKey": "high", "updated": "08-01",
+             "waiting": False}]
+    closed = [{"board": "idea", "number": 63, "title": "a finished row",
+               "status": DONE_STATUS, "updated": "08-22"}]
+    out = top_board_rows.render(rows, closed_waiting=closed)
+    assert "issue #7" in out.split("waiting on a reply from you:")[0]
+    assert f"1 row(s) waiting on a reply from you: idea #63 ({DONE_STATUS})" in out
+    assert "-> idea #63" not in out
+    assert "this is not actually done" in out
+
+
+def test_open_and_closed_waiting_rows_share_one_list():
+    """One place to look. A second section is a second thing to remember."""
+    rows = [{"board": "issue", "number": 7, "title": "asked on an open row",
+             "status": BACKLOG, "priority": LOW, "priorityKey": "low",
+             "updated": "08-01", "waiting": True}]
+    closed = [{"board": "idea", "number": 63, "title": "a finished row",
+               "status": DONE_STATUS, "updated": "08-22"}]
+    out = top_board_rows.render(rows, closed_waiting=closed)
+    assert (f"2 row(s) waiting on a reply from you: issue #7, idea #63 "
+            f"({DONE_STATUS})") in out
+
+
+def test_a_closed_waiting_row_survives_both_boards_being_otherwise_empty():
+    """The early return for "no open rows" used to end the whole render."""
+    closed = [{"board": "idea", "number": 63, "title": "a finished row",
+               "status": DONE_STATUS, "updated": "08-22"}]
+    out = top_board_rows.render([], closed_waiting=closed)
+    assert "no open rows on either board" in out
+    assert "idea #63" in out
+
+
+def test_main_surfaces_a_comment_on_a_closed_row(tmp_path, capsys):
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    issues.write_text(board((7, "real work", BACKLOG, "08-01", HIGH)),
+                      encoding="utf-8")
+    ideas.write_text(board((63, "a finished row", DONE_STATUS, "08-22", HIGH))
+                     + details((63, "a finished row",
+                                "Problem.\n\n**Edvard, 08-22:** premature?")),
+                     encoding="utf-8")
+    notes.write_text("## Read\n", encoding="utf-8")
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert f"idea #63 ({DONE_STATUS})" in out
+
+
+# --- The DONE marker, which stopped matching the moment a cycle named a PR ---
+
+def test_a_done_marker_may_name_where_the_work_landed():
+    """Cycle 337 wrote `DONE (Cycle 337, platform-config#516):` and this tool
+    printed the finished capture under "take one of these" at 09:05 on
+    2026-08-23. Measured, not hypothetical."""
+    text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
+                         "DONE (Cycle 337, platform-config#516): the old ask",
+                         "the thing I typed on my phone")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == ["the thing I typed on my phone"]
+
+
+def test_the_cycle_number_is_still_the_only_thing_a_done_marker_yields():
+    """Every caller reads group 1; widening the bracket must not widen that."""
+    from agora_runner.nova_boards import split_capture_done
+    assert split_capture_done("DONE (Cycle 337, platform-config#516): the ask") \
+        == ("Cycle 337", "the ask")
+
+
+def test_a_bracket_with_no_cycle_number_is_still_prose():
+    """The control for the widened bracket: `[^)]*` must not swallow the
+    requirement that a real cycle number is there."""
+    from agora_runner.nova_boards import split_capture_done
+    assert split_capture_done("DONE (nearly, I think): not a marker") \
+        == ("", "DONE (nearly, I think): not a marker")
+
+
+def test_a_row_in_the_done_table_is_waiting_too():
+    """Reviewer finding on #298: every closed-row fixture above leaves the
+    status in `## Board`, and a row moved into the `## Done` table is the
+    other real shape. `parse_board` synthesises the status for those, so the
+    rendered line must still name one rather than print an empty bracket."""
+    text = board(done=[(63, "a finished row", "08-22", "runner#1")]) + details(
+        (63, "a finished row", "Problem.\n\n**Edvard, 08-22:** premature?"))
+    got = top_board_rows.closed_rows_waiting(text, "idea")
+    assert [(r["number"], r["status"]) for r in got] == [(63, DONE_STATUS)]
+    assert f"idea #63 ({DONE_STATUS})" in top_board_rows.render([], closed_waiting=got)
+
+
+# --- Claims: parallel cycles must not both take the same row -------------
+#
+# the owner, `comments.md` 2026-08-23 13:31, on going from a 72-minute heartbeat
+# to an 18-minute one: *"The average cycle is 18min, so we are guaranteed to
+# have some paralell cycles run, and i want that."* Everything above this line
+# assumes one reader at a time.
+
+import json
+from datetime import datetime, timedelta
+
+
+def claims(*rows):
+    """A ledger holding one open claim per (item, cycle) pair, stamped now."""
+    now = datetime.now(top_board_rows.OSLO)
+    return json.dumps({"claims": [
+        {"item": item, "cycle": cycle, "state": "open",
+         "at": (now - timedelta(minutes=age)).isoformat()}
+        for item, cycle, age in rows]})
+
+
+def _rendered(issues_md, ideas_md, ledger, cycle=None, tmp_path=None):
+    """Run `main` end to end on local files and return what it printed."""
+    paths = {}
+    for name, text in (("issues.md", issues_md), ("ideas.md", ideas_md),
+                       ("notes.md", "- \n\n## Read\n"), ("claims.json", ledger)):
+        paths[name] = tmp_path / name
+        paths[name].write_text(text, encoding="utf-8")
+    argv = ["--issues", str(paths["issues.md"]), "--ideas", str(paths["ideas.md"]),
+            "--notes", str(paths["notes.md"]), "--claims", str(paths["claims.json"])]
+    if cycle is not None:
+        argv += ["--cycle", str(cycle)]
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert top_board_rows.main(argv) == 0
+    return buf.getvalue()
+
+
+def test_row_held_by_another_live_cycle_sinks_below_a_lower_rated_free_one(tmp_path):
+    issues = board((10, "held immediate", BACKLOG, "2026-08-01", IMMEDIATE),
+                   (11, "free low", BACKLOG, "2026-08-02", LOW))
+    out = _rendered(issues, board(), claims(("issue-10", 341, 2)), cycle=342,
+                    tmp_path=tmp_path)
+    top = [line for line in out.splitlines() if line.startswith("  -> ")][0]
+    assert "#11" in top and "#10" not in top
+    assert "🔒 HELD by cycle 341" in out
+    assert "issue-10 (cycle 341)" in out
+
+
+def test_my_own_claim_is_not_reported_back_to_me_as_taken(tmp_path):
+    issues = board((10, "mine already", BACKLOG, "2026-08-01", IMMEDIATE),
+                   (11, "free low", BACKLOG, "2026-08-02", LOW))
+    out = _rendered(issues, board(), claims(("issue-10", 342, 2)), cycle=342,
+                    tmp_path=tmp_path)
+    top = [line for line in out.splitlines() if line.startswith("  -> ")][0]
+    assert "#10" in top
+    assert "🔒" not in out
+
+
+def test_a_claim_older_than_the_turn_cap_does_not_fence_the_row_off(tmp_path):
+    # A cycle that was killed mid-turn must not hold a row forever: an
+    # unclaimable row looks exactly like one somebody is handling.
+    issues = board((10, "stale claim", BACKLOG, "2026-08-01", IMMEDIATE),
+                   (11, "free low", BACKLOG, "2026-08-02", LOW))
+    out = _rendered(issues, board(), claims(("issue-10", 300, 90)), cycle=342,
+                    tmp_path=tmp_path)
+    top = [line for line in out.splitlines() if line.startswith("  -> ")][0]
+    assert "#10" in top
+    assert "🔒" not in out
+
+
+def test_the_two_boards_are_numbered_separately_so_the_slug_says_which(tmp_path):
+    issues = board((7, "issue seven", BACKLOG, "2026-08-01", HIGH))
+    ideas = board((7, "idea seven", BACKLOG, "2026-08-02", HIGH))
+    out = _rendered(issues, ideas, claims(("idea-7", 341, 2)), cycle=342,
+                    tmp_path=tmp_path)
+    top = [line for line in out.splitlines() if line.startswith("  -> ")][0]
+    assert "issue #7" in top and "🔒" not in top
+    assert "🔒 HELD by cycle 341" in out
+
+
+def test_a_held_capture_sinks_below_a_free_one_and_keeps_its_slug(tmp_path):
+    from agora_runner.nova_claims import slug_for_capture
+    held_text = "the capture another cycle already took"
+    issues = "- " + held_text + "\n- a capture nobody has taken\n\n" + board()
+    out = _rendered(issues, board(),
+                    claims((slug_for_capture(held_text), 341, 2)), cycle=342,
+                    tmp_path=tmp_path)
+    capture_lines = [line for line in out.splitlines()
+                     if line.startswith("  -> issues.md")]
+    assert "nobody has taken" in capture_lines[0]
+    assert "🔒 HELD by cycle 341" in capture_lines[1]
+    assert f"[claim: {slug_for_capture(held_text)}]" in capture_lines[1]
+
+
+def test_an_unreadable_ledger_says_so_rather_than_printing_a_clean_board(tmp_path):
+    issues = board((10, "a row", BACKLOG, "2026-08-01", HIGH))
+    out = _rendered(issues, board(), "{not json at all", cycle=342,
+                    tmp_path=tmp_path)
+    assert "CLAIMS LEDGER UNREADABLE" in out
+
+
+def test_the_claim_instruction_is_printed_even_when_nothing_is_held(tmp_path):
+    # The mechanism fails open: a cycle that only claims once it sees
+    # somebody else's claim never claims first, and every cycle is
+    # somebody's first.
+    out = _rendered(board((10, "a row", BACKLOG, "2026-08-01", HIGH)), board(),
+                    claims(), cycle=342, tmp_path=tmp_path)
+    assert "Claim before you work" in out
+    assert "[claim: issue-10]" in out
+
+
+def test_an_absent_ledger_is_an_empty_one_and_a_failed_read_is_not(monkeypatch):
+    """The two answers `_fetch` deliberately collapses, kept apart here.
+
+    For a board, "not there" and "the read failed" are the same answer --
+    neither can be ranked. For the ledger they are opposite: absent is the
+    normal state and means nobody holds anything, while a failed read means
+    the 🔒 marks are missing rather than absent, and a cycle that reads a
+    clean board while another cycle holds every row on it is the exact
+    duplication this is here to stop. Reviewer finding, PR #301: the
+    distinction this function exists for had no test.
+    """
+    class Done:
+        returncode = 0
+        stdout = "[not found: projects/.../claims.json]\n"
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
+    assert top_board_rows.fetch_claims() == ("", True)
+
+    Done.returncode = 1
+    assert top_board_rows.fetch_claims() == ("", False)
+
+    def boom(*a, **k):
+        raise OSError("no vault client on this pod")
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", boom)
+    assert top_board_rows.fetch_claims() == ("", False)
+
+
+def test_a_real_ledger_body_reads_as_success(monkeypatch):
+    body = '{"claims": [{"item": "issue-7", "cycle": 341, "state": "open",\n' \
+           ' "at": "2026-08-23T14:00:00+02:00"}]}\n'
+
+    class Done:
+        returncode = 0
+        stdout = body
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
+    assert top_board_rows.fetch_claims() == (body, True)
+
+
+# --- Replying to a comment is its own claim -------------------------------
+#
+# Cycle 343 left this open as the last collision surface but one: two
+# cycles both read `💬 UNANSWERED` before either replies, and both reply.
+# The row claim never covered it, because `prompt.md` tells a cycle to
+# reply "even if you do not take it as this cycle's work".
+
+def _waiting_board(comment="**Edvard, 08-23:** is this really done?"):
+    return board((7, "a row", BACKLOG, "2026-08-01", HIGH)) + details(
+        (7, "a row", "Problem.\n\n" + comment))
+
+
+def test_a_waiting_row_always_carries_a_reply_slug():
+    """The guarantee `_reply_claim`'s fallback relies on.
+
+    It prints nothing when a row has no `replySlug`, which is honest for a
+    row built by hand and would be silent data loss if a real waiting row
+    could reach it. This is where that cannot happen.
+    """
+    row = top_board_rows.open_rows(_waiting_board(), "issue")[0]
+    assert row["waiting"] is True
+    assert row["replySlug"].startswith("reply-issue-7-")
+
+
+def test_an_unwaiting_row_has_no_reply_slug_to_claim():
+    text = board((7, "a row", BACKLOG, "2026-08-01", HIGH)) + details(
+        (7, "a row", "Problem.\n\n**Nova, 08-23 (Cycle 1):** answered"))
+    assert top_board_rows.open_rows(text, "issue")[0]["replySlug"] is None
+
+
+def test_the_reply_slug_is_not_the_row_slug():
+    """Claiming the row must not fence off the reply, or the other way.
+
+    `prompt.md`: reply "even if you do not take it as this cycle's work".
+    One slug for both would make those the same act.
+    """
+    row = top_board_rows.open_rows(_waiting_board(), "issue")[0]
+    assert row["replySlug"] != row["slug"] == "issue-7"
+
+
+def test_a_second_comment_on_the_same_row_is_a_different_claim():
+    """`take` refuses a slug that was ever released as done.
+
+    So a reply slug derived from the row alone would make the second
+    question the owner ever asks on a row permanently unclaimable.
+    """
+    first = top_board_rows.open_rows(_waiting_board(), "issue")[0]["replySlug"]
+    second = top_board_rows.open_rows(
+        _waiting_board("**Edvard, 08-23:** and one more thing"), "issue")[0]["replySlug"]
+    assert first != second
+
+
+def test_a_held_reply_stops_the_row_jumping_the_queue():
+    """The raise exists to get him answered. Once somebody is answering, it
+    is only pointing the next cycle at a duplicate."""
+    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    rows.append({"board": "issue", "number": 3, "title": "immediate", "status": BACKLOG,
+                 "updated": "2026-08-02", "priority": IMMEDIATE,
+                 "priorityKey": "immediate", "statusKey": "backlog", "waiting": False})
+    slug = rows[0]["replySlug"]
+    assert top_board_rows.rank(rows)[0]["number"] == 7
+    top_board_rows.apply_claims(rows, {slug: 99}, my_cycle=1)
+    assert top_board_rows.rank(rows)[0]["number"] == 3
+
+
+def test_my_own_reply_claim_is_not_somebody_elses():
+    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    top_board_rows.apply_claims(rows, {rows[0]["replySlug"]: 344}, my_cycle=344)
+    assert rows[0]["replyHeldBy"] is None
+
+
+def test_render_prints_the_reply_slug_next_to_the_row_slug():
+    rows = top_board_rows.apply_claims(
+        top_board_rows.open_rows(_waiting_board(), "issue"), {})
+    out = top_board_rows.render(rows)
+    assert "💬 UNANSWERED" in out
+    assert f"[claim: issue-7]  [reply-claim: {rows[0]['replySlug']}]" in out
+    assert "claim the reply-claim slug first" in out
+
+
+def test_a_held_reply_is_marked_and_dropped_from_the_go_and_reply_list():
+    """The mark stays on the ranked line; the instruction to go and type a
+    reply does not, because that is the line that produces the second one."""
+    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    top_board_rows.apply_claims(rows, {rows[0]["replySlug"]: 99}, my_cycle=344)
+    out = top_board_rows.render(rows)
+    assert "🔒 REPLY HELD by cycle 99" in out
+    assert "waiting on a reply from you" not in out
+    assert "1 reply(ies) already being written by a live cycle: issue #7 (cycle 99)" in out
+    assert "reply-claim:" not in out
+
+
+def test_a_closed_row_owed_a_reply_is_claimable_too():
+    """`closed_rows_waiting` is the one path `apply_claims` did not cover,
+    and a comment on a Done row is where idea #63 sat for nine cycles."""
+    text = board(done=((63, "premature", "2026-08-22", "runner#1"),)) + details(
+        (63, "premature", "**Edvard, 08-22:** this is not actually done"))
+    closed = top_board_rows.closed_rows_waiting(text, "idea")
+    assert closed[0]["replySlug"].startswith("reply-idea-63-")
+    top_board_rows.apply_claims(closed, {closed[0]["replySlug"]: 99}, my_cycle=344)
+    out = top_board_rows.render([], closed_waiting=closed)
+    assert "idea #63 (cycle 99)" in out
+    assert "waiting on a reply from you" not in out
+    assert "The closed ones still need one" not in out
+
+
+def test_main_applies_claims_to_the_closed_rows_too(tmp_path, capsys):
+    """The one call a unit test on `apply_claims` cannot pin.
+
+    `closed_rows_waiting` never enters the ranking, so it misses both of
+    `main`'s `apply_claims` calls unless it gets its own — and a comment
+    on a Done row is exactly the one idea #63 sat under for nine cycles.
+    Driven through `main` on purpose: the direct test above passes whether
+    or not `main` ever makes the call.
+    """
+    issues = tmp_path / "issues.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board(done=((63, "premature", "2026-08-22", "runner#1"),))
+                     + details((63, "premature",
+                                "**Edvard, 08-22:** this is not actually done")))
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    slug = top_board_rows.closed_rows_waiting(ideas.read_text(), "idea")[0]["replySlug"]
+    claims = tmp_path / "claims.json"
+    claims.write_text('{"claims": [{"item": "%s", "cycle": 99, "state": "open",'
+                      ' "at": "%s"}]}' % (slug, datetime.now(top_board_rows.OSLO).isoformat()))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "344"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "idea #63 (cycle 99)" in out
+    assert "waiting on a reply from you" not in out
+
+
+# --- a claim slug the ledger has already spent -----------------------------
+#
+# Cycle 353, measured on the live board: the top capture and the only 🔴
+# Immediately row both carried `[claim: <slug>]` for a slug `take` refuses
+# forever, because an earlier cycle released each one `done` while the work
+# was still live. Exit 2 reads as "somebody is doing this"; the honest
+# answer was "somebody already did some of this, and here is what".
+
+
+def _spent(item, cycle, outcome):
+    return {"claims": [{"item": item, "cycle": cycle, "state": "done",
+                        "at": "2026-08-23T15:23:26.424577+02:00",
+                        "outcome": outcome}]}
+
+
+def test_a_spent_slug_prints_the_outcome_instead_of_a_take_command():
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "built the last piece"}})
+    line = top_board_rows._line(rows[0])
+    assert "[claim: idea-63]" not in line
+    assert "claim spent by cycle 347" in line
+    assert "built the last piece" in line
+
+
+def test_an_unspent_slug_still_prints_the_take_command():
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {})
+    assert "[claim: idea-63]" in top_board_rows._line(rows[0])
+
+
+def test_a_spent_claim_with_no_outcome_says_so_rather_than_printing_nothing():
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": None}})
+    assert "no outcome recorded" in top_board_rows._line(rows[0])
+
+
+def test_a_spent_claim_does_not_move_the_row_down_the_ranking():
+    """A spent claim is a fact about the ledger, never about the work.
+
+    `heldBy` sinks a row because somebody is on it this minute. Nobody is
+    on this one, and `prompt.md` still ranks a 🔴 above everything -- so
+    hiding it would be the tool making the judgement the reader has to.
+    """
+    rows = (top_board_rows.open_rows(
+                board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+            + top_board_rows.open_rows(
+                board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)), "idea"))
+    top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "part of it"}})
+    assert top_board_rows.rank(rows)[0]["number"] == 63
+
+
+def test_main_marks_a_spent_capture_from_the_ledger_it_reads(tmp_path, capsys):
+    import json
+    issues = tmp_path / "issues.md"
+    issues.write_text("- switch to Claude 20x by 18:00\n\n" + board())
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)))
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    slug = top_board_rows.slug_for_capture("switch to Claude 20x by 18:00")
+    claims = tmp_path / "claims.json"
+    claims.write_text(json.dumps(_spent(slug, 343, "journal seq race closed")))
+
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "353"])
+    out = capsys.readouterr().out
+    assert code == 0
+    # Still printed as a capture, still top of the page -- only the
+    # unrunnable command is gone.
+    assert "switch to Claude 20x by 18:00" in out
+    assert f"[claim: {slug}]" not in out
+    assert "claim spent by cycle 343: journal seq race closed" in out
+    # The board row beside it is untouched.
+    assert "[claim: idea-92]" in out
+
+
+def test_an_unparseable_ledger_leaves_every_claim_command_printed(tmp_path, capsys):
+    """The ranking survives an unreadable ledger and so must this.
+
+    Narrower than it looks, and worth saying so: the parse fails inside
+    `load_claims`, so `finished_claims` is never reached and this cannot
+    show that the new half handles bad rows. What it does pin is the
+    except branch's tuple, which this change widened -- leave `finished`
+    out of it and `apply_finished` raises `NameError` on every run with
+    an unreadable ledger. Mutation-checked that way, not assumed.
+    """
+    issues = tmp_path / "issues.md"
+    issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board())
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    claims = tmp_path / "claims.json"
+    claims.write_text("{ not json")
+
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "[claim: issue-10]" in out
+
+
+def _progressed(item, cycle, outcome):
+    return {"claims": [{"item": item, "cycle": cycle, "state": "progressed",
+                        "at": "2026-08-23T15:23:26.424577+02:00",
+                        "outcome": outcome}]}
+
+
+def test_a_progressed_slug_keeps_its_take_command_and_gains_the_note():
+    """The whole difference from a spent slug: `take` grants this one.
+
+    Printing ⛔ here would be the same bug in reverse -- a row a cycle can
+    take, read as one it cannot.
+    """
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_progress(
+        rows, {"idea-63": {"cycle": 347, "outcome": "three of four pieces built"}})
+    line = top_board_rows._line(rows[0])
+    assert "[claim: idea-63]" in line
+    assert "claim spent" not in line
+    assert "cycle 347 left this open: three of four pieces built" in line
+
+
+def test_a_spent_slug_wins_over_a_progressed_one_on_the_same_row():
+    """Both keys can be stamped; only one of them can be true.
+
+    `finished_claims` and `progressed_claims` read disjoint states out of
+    one ledger, so this cannot arise from a real ledger -- it can arise
+    from a caller that stamps stale data, and printing a take command for
+    a slug `take` refuses is the failure runner#312 already fixed once.
+    """
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "done"}})
+    top_board_rows.apply_progress(rows, {"idea-63": {"cycle": 340, "outcome": "half"}})
+    line = top_board_rows._line(rows[0])
+    assert "claim spent by cycle 347" in line
+    assert "[claim: idea-63]" not in line
+
+
+def test_a_progressed_outcome_cannot_split_the_row_either():
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_progress(
+        rows, {"idea-63": {"cycle": 347, "outcome": "did this\nand\tthat"}})
+    line = top_board_rows._line(rows[0])
+    assert "\n" not in line
+    assert "did this and that" in line
+
+
+def test_main_marks_a_progressed_capture_from_the_ledger_it_reads(tmp_path, capsys):
+    import json
+    issues = tmp_path / "issues.md"
+    issues.write_text("- switch to Claude 20x by 18:00\n\n" + board())
+    ideas = tmp_path / "ideas.md"
+    ideas.write_text(board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)))
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    slug = top_board_rows.slug_for_capture("switch to Claude 20x by 18:00")
+    claims = tmp_path / "claims.json"
+    claims.write_text(json.dumps(_progressed(slug, 343, "two collision surfaces remain")))
+
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "353"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert f"[claim: {slug}]" in out
+    assert "cycle 343 left this open: two collision surfaces remain" in out
+    assert "claim spent" not in out
+
+
+def test_a_multi_line_outcome_cannot_split_the_row_it_is_printed_on():
+    """`release --outcome` is free shell text and this output is one item
+    per line: a newline in there would read as a second board entry."""
+    rows = top_board_rows.open_rows(
+        board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
+    top_board_rows.apply_finished(
+        rows, {"idea-63": {"cycle": 347, "outcome": "built it\nand broke\tthe line"}})
+    line = top_board_rows._line(rows[0])
+    assert "\n" not in line
+    assert "built it and broke the line" in line
+
+
+def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, capsys):
+    """The gap six handoffs filed: his bare bullets rank above every row and
+    nothing could answer one, because the comment API is keyed by a row
+    number a capture has not got. The address is `index` + the bullet, and
+    it is printed filled in rather than as a shape, because a cycle that has
+    to derive the index does what the last six did and answers in a journal
+    entry instead."""
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
+    notes.write_text(NOTES.format("a note he left"))
+
+    issues = tmp_path / "issues.md"
+    issues.write_text("- the first thing he typed\n- the second thing he typed\n- \n\n"
+                      + board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                                "--notes", str(notes)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "/api/capture/comment" in out
+    assert "target issues, index 0  ->  the first thing he typed" in out
+    assert "target issues, index 1  ->  the second thing he typed" in out
+    # A note is a capture too, and the notes page is the one that already
+    # draws the reply properly -- it must carry an address as well.
+    assert "target notes, index 0  ->  a note he left" in out
+
+    # **The whole bullet, rating glyph and all, never the display text.**
+    # `text` is priority-stripped and was truncated at 60 chars; the route
+    # matches the bullet exactly, so anything shortened here comes back 409
+    # and the cycle answers in its journal instead -- which is the failure
+    # this block exists to stop. Reviewer finding on runner#374.
+    rated = tmp_path / "rated.md"
+    long_one = "🔴 Immediately: " + ("a capture he typed out in full on his phone " * 3).strip()
+    rated.write_text("- " + long_one + "\n- \n\n"
+                     + board((11, "another issue", BACKLOG, "08-02", HIGH)))
+    top_board_rows.main(["--issues", str(rated), "--ideas", str(ideas),
+                         "--notes", str(notes)])
+    rated_out = capsys.readouterr().out
+    assert len(long_one) > 60, "the fixture has to be past the old truncation"
+    assert f"target issues, index 0  ->  {long_one}" in rated_out
+
+    # The help belongs to the captures, so it must not print when there are none.
+    notes2 = tmp_path / "notes2.md"
+    notes2.write_text(NOTES.format(""))
+    issues2 = tmp_path / "issues2.md"
+    issues2.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
+    top_board_rows.main(["--issues", str(issues2), "--ideas", str(ideas),
+                         "--notes", str(notes2)])
+    assert "/api/capture/comment" not in capsys.readouterr().out
+
+
+def test_the_capture_block_prints_how_to_board_one():
+    """His 2026-08-27 🔴 Immediately ask: cycles answer a capture and leave it
+    unstaged. Answering was one copied line and boarding was a hand edit."""
+    from tools.top_board_rows import _capture_board_help
+
+    captures = [
+        {"board": "issue", "index": 0, "text": "The first thing", "original": "x"},
+        {"board": "idea", "index": 3, "text": "The fourth thing", "original": "y"},
+    ]
+    lines = _capture_board_help(captures)
+    body = "\n".join(lines)
+    assert "tools.board_capture" in body
+    assert "backlog|in-progress|done|blocked-on-edvard" in body
+    # Highest index first, or the second cut lands on the wrong bullet.
+    positions = [body.index("--index 3  "), body.index("--index 0  ")]
+    assert positions == sorted(positions)
+    assert _capture_board_help([]) == []
+
+
+# A Sokrates relay ranks below a comment the owner typed himself.
+# His ask, relayed on `issues.md` 2026-08-29: *"a Sokrates comment relaying
+# something [the owner] actually said should not automatically inherit the
+# same 'unread comment from [the owner] jumps the queue, act now' treatment
+# a comment genuinely typed by him gets."*
+
+RELAY = ("Sokrates here (Claude, posting on Edvard's behalf, not Edvard "
+         "typing this himself): ")
+
+
+def test_a_relayed_comment_does_not_jump_the_queue():
+    """The whole ask: this raise is what must not fire on a relay."""
+    relayed = board((10, "relayed", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "relayed", f"Problem.\n\n**Edvard, 08-29:** {RELAY}do the thing."))
+    other = board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE))
+    rows = (top_board_rows.open_rows(relayed, "issue")
+            + top_board_rows.open_rows(other, "idea"))
+    top = top_board_rows.rank(rows)[0]
+    assert (top["board"], top["number"]) == ("idea", 64)
+
+
+def test_a_typed_comment_still_outranks_a_relayed_one():
+    """Both waiting, so only the relay flag can separate them."""
+    text = board((10, "relayed", BACKLOG, "2026-08-01", LOW),
+                 (11, "typed", BACKLOG, "2026-08-02", LOW)) + details(
+        (10, "relayed", f"P.\n\n**Edvard, 08-29:** {RELAY}do the thing."),
+        (11, "typed", "P.\n\n**Edvard, 08-29:** what about this?"))
+    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    assert [r["number"] for r in ranked] == [11, 10]
+
+
+def test_a_relayed_comment_is_still_owed_a_reply():
+    """It sinks in the ranking; it does not stop being an unanswered question."""
+    text = board((10, "relayed", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "relayed", f"P.\n\n**Edvard, 08-29:** {RELAY}do the thing."))
+    rows = top_board_rows.open_rows(text, "issue")
+    assert rows[0]["waiting"] is True
+    assert rows[0]["relayed"] is True
+    out = top_board_rows.render(rows)
+    assert "1 row(s) waiting on a reply from you" in out
+    assert "💬 UNANSWERED (relayed)" in out
+
+
+def test_the_newest_note_decides_even_when_an_older_one_was_relayed():
+    """The flag is read off the comment that is waiting, not off the thread.
+
+    Both directions, because only one of them is falsifiable on its own:
+    "older relayed, newest typed -> not relayed" passes just as well when
+    relay detection is switched off entirely, which is exactly the vacuous
+    shape the review rubric's first item is about. The reverse case is what
+    pins the claim in the name.
+    """
+    older_relayed = board((10, "mixed", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "mixed", f"P.\n\n**Edvard, 08-28:** {RELAY}first.\n\n"
+                      "**Nova, 08-28 (Cycle 600):** done.\n\n"
+                      "**Edvard, 08-29:** and now this?"))
+    row = top_board_rows.open_rows(older_relayed, "issue")[0]
+    assert row["waiting"] is True
+    assert row["relayed"] is False
+
+    newest_relayed = board((10, "mixed", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "mixed", "P.\n\n**Edvard, 08-28:** first?\n\n"
+                      "**Nova, 08-28 (Cycle 600):** done.\n\n"
+                      f"**Edvard, 08-29:** {RELAY}and now this."))
+    row = top_board_rows.open_rows(newest_relayed, "issue")[0]
+    assert row["waiting"] is True
+    assert row["relayed"] is True
+
+
+def test_a_relayed_comment_on_a_closed_row_is_marked_in_the_reply_list():
+    """A closed row never reaches `_line`, so this list is its only mark."""
+    text = board((10, "open and quiet", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "open and quiet", "P."),
+        (7, "closed", f"P.\n\n**Edvard, 08-29:** {RELAY}one more thing."))
+    text = text.replace("## Done\n\n| # | Item | Updated | Where |\n|---|---|---|---|",
+                        "## Done\n\n| # | Item | Updated | Where |\n|---|---|---|---|\n"
+                        "| [[#7 — closed\\|7]] | closed | 2026-08-29 | runner#1 |")
+    closed = top_board_rows.closed_rows_waiting(text, "issue")
+    assert [c["number"] for c in closed] == [7]
+    assert closed[0]["relayed"] is True
+    out = top_board_rows.render(top_board_rows.open_rows(text, "issue"),
+                                closed_waiting=closed)
+    assert "issue #7 (✅ Done) (relayed)" in out
+
+
+def test_a_relayed_capture_is_marked_and_sinks_within_the_section():
+    text = with_captures(board(), f"{RELAY}the relayed one", "the one he typed")
+    captures = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["relayed"] for c in captures] == [True, False]
+    out = top_board_rows.render([], captures=captures)
+    assert "UNPROCESSED CAPTURES FROM EDVARD (2, 1 of them relayed by Sokrates)" in out
+    assert "↩ RELAYED, not typed by him" in out
+    # Typed first, relayed second, whatever order they sit in the file.
+    assert out.index("the one he typed") < out.index("↩ RELAYED")
+
+
+def test_a_silent_relay_keeps_his_priority_and_that_is_the_open_hole():
+    """The limit of a self-declared signal, pinned rather than described.
+
+    A relay that omits the disclosure is indistinguishable from him typing,
+    so it keeps the rank-above-every-rating key. That is today's behaviour
+    and closing it needs the authentication half of the ask, not a looser
+    matcher -- anything loose enough to catch a silent relay would catch him.
+    """
+    text = board((10, "silent relay", BACKLOG, "2026-08-01", LOW)) + details(
+        (10, "silent relay", "P.\n\n**Edvard, 08-29:** do the thing."))
+    other = board((64, "on fire", BACKLOG, "2026-08-12", IMMEDIATE))
+    rows = (top_board_rows.open_rows(text, "issue")
+            + top_board_rows.open_rows(other, "idea"))
+    top = top_board_rows.rank(rows)[0]
+    assert (top["board"], top["number"]) == ("issue", 10)
+    assert top["relayed"] is False
+
+
+def test_a_capture_he_typed_himself_carries_no_relay_note():
+    text = with_captures(board(), "just me typing")
+    captures = top_board_rows.unboarded_captures(text, "issue")
+    assert captures[0]["relayed"] is False
+    out = top_board_rows.render([], captures=captures)
+    assert "UNPROCESSED CAPTURES FROM EDVARD (1) —" in out
+    assert "RELAYED" not in out

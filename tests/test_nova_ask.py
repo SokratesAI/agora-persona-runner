@@ -1,13 +1,13 @@
 """nova_ask.py -- the Questions page's server half.
 
-Edvard's capture, ideas.md 2026-08-19: *"Make a questions page in Nova
+The owner's capture, ideas.md 2026-08-19: *"Make a questions page in Nova
 where i can ask questions in a box and a Claude sonnet model answers me."*
 
 What is worth pinning here is not "the HTTP calls happen" -- it is the
 three things that would silently stop an answer ever arriving, each of
 which looks fine from the outside:
 
-- the question is posted as `sender="Edvard"`, because `decide_turn` speaks
+- the question is posted as `sender="Edvard"`, because `decide_turn` speaks  (not-prose: quoting a literal)
   only for a message from him and any other sender posts into silence;
 - the conversation is found by tag and created at most once, because a
   find that misses makes a fresh conversation per question and quietly
@@ -18,6 +18,7 @@ which looks fine from the outside:
 from unittest.mock import patch
 
 import agora_runner.nova_ask as nova_ask
+from agora_runner.audit import NARRATION_TEXT
 
 
 def _fakes(conversations, messages=None, create_id="c-new"):
@@ -113,7 +114,8 @@ def test_empty_and_oversized_questions_are_refused_without_reaching_agora():
 
 def test_a_reader_who_asked_nothing_does_not_manufacture_a_conversation():
     payload, calls = _run(nova_ask.thread, [])
-    assert payload == {"conversationId": None, "messages": [], "waiting": False}
+    assert payload == {"conversationId": None, "messages": [], "waiting": False,
+                       "hasMore": False}
     assert [c for c in calls if c[0] == "POST"] == []
 
 
@@ -129,6 +131,35 @@ def test_the_thread_drops_machinery_messages_and_keeps_the_conversation():
     payload, _ = _run(nova_ask.thread, TAGGED, messages)
     assert [m["id"] for m in payload["messages"]] == ["1", "6"]
     assert payload["messages"][1]["text"] == "Seven."
+
+
+def test_the_ask_page_folds_a_streamed_passage():
+    """The Ask page builds its thread here instead of in Agora's client, so
+    it needs the same fold: the bridge posts a step at every paragraph break,
+    each carrying the whole passage so far, and un-folded they arrive as
+    three separate bubbles that are prefixes of each other."""
+    def step(mid, detail, stream_id, retracted=False):
+        act = {"capability": "assistant_text", "detail": detail,
+               "toolUseId": stream_id}
+        if retracted:
+            act["retracted"] = True
+        return {"id": mid, "sender": "Nova Answers", "createdAt": "t" + mid,
+                "text": "assistant_text: " + detail, "activity": act}
+
+    messages = [
+        {"id": "1", "sender": "Edvard", "text": "how many pods?", "createdAt": "t1"},
+        step("2", "Let me look.", "text-1"),
+        step("3", "Let me look.\n\nChecking the namespace.", "text-1"),
+        step("4", "Seven.", "text-2"),
+        step("5", "", "text-2", retracted=True),
+    ]
+    # The turn is still running -- keep_only_live_passages drops mid-turn
+    # passages once the settled reply lands under them, which is why this
+    # stops before that message rather than after it.
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert [m["id"] for m in payload["messages"]] == ["1", "2"]
+    assert payload["messages"][1]["text"] == "Let me look.\n\nChecking the namespace."
+    assert payload["messages"][1]["partial"] is True
 
 
 def test_waiting_is_true_only_while_an_answer_is_owed():
@@ -190,3 +221,149 @@ def test_a_failed_create_is_reported_rather_than_posting_into_nowhere():
          patch.object(nova_ask, "agora_internal", side_effect=fake_internal):
         ok, message = nova_ask.ask("hello")
     assert not ok and "could not reach" in message
+
+
+# ---------------------------------------------------------------------------
+# `watching()` -- 2026-08-25. His capture: *"now when i use the new chat i get
+# alerted by agora whenever a new message arrives."* The push is Agora's to
+# withhold; all this side does is say the thread is on his screen here.
+# ---------------------------------------------------------------------------
+
+
+def test_presence_is_posted_against_the_existing_questions_thread():
+    (ok, reason), calls = _run(nova_ask.watching, TAGGED)
+    assert ok and reason == "watching"
+    assert ("POST", "/conversations/c-ask/presence", {}) in calls
+
+
+def test_presence_never_creates_a_conversation():
+    """A reader who has asked nothing has no thread to be present in, and a
+    presence ping is the last thing that should manufacture one -- the dock
+    is on every page, so this would fire for someone who never typed."""
+    (ok, reason), calls = _run(nova_ask.watching, [])
+    assert not ok and "no questions thread" in reason
+    assert not [c for c in calls if c[0] == "POST"]
+
+
+def test_a_refused_presence_ping_is_reported_rather_than_claimed():
+    def fake_get(path):
+        return 200, {"conversations": TAGGED}
+
+    def fake_internal(method, path, payload=None):
+        return 503, {}
+
+    with patch.object(nova_ask, "agora_get", side_effect=fake_get), \
+         patch.object(nova_ask, "agora_internal", side_effect=fake_internal):
+        ok, reason = nova_ask.watching()
+    assert not ok and "could not reach" in reason
+
+
+def test_the_thread_keeps_the_passages_the_answer_is_being_written_in():
+    """Issue #129, same change as `nova_conversations._visible`. The Ask
+    page polls every four seconds and drew nothing at all until the whole
+    turn finished; the passages were in the store the whole time."""
+    messages = [
+        {"id": "1", "sender": "Edvard", "text": "how many pods?", "createdAt": "t1"},
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods"},
+         "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "assistant_text: Counting.",
+         "activity": {"capability": "assistant_text", "detail": "Counting."},
+         "createdAt": "t3"},
+    ]
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert [m["id"] for m in payload["messages"]] == ["1", "3"]
+    assert payload["messages"][1]["text"] == "Counting."
+    assert payload["messages"][1]["partial"] is True
+    # And the page must keep polling: the turn is still running.
+    assert payload["waiting"] is True
+
+
+# ---------------------------------------------------------------------------
+# The pending bubble's progress block. His capture, `issues.md` 2026-08-30
+# 12:56: *"I asked Nova for a status report, but it just says thinking for a
+# long time ... What is it doing? Did it even recieve my messages? What tools
+# does it use? We have some of this in Agora, but not in Nova."*
+# ---------------------------------------------------------------------------
+
+def _asked_then(*activity):
+    return [{"id": "1", "sender": "Edvard", "text": "status report?", "createdAt": "t1"}] + list(activity)
+
+
+def test_progress_names_the_newest_tool_and_counts_the_steps():
+    messages = _asked_then(
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods"}, "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "vault_read: journal",
+         "activity": {"capability": "vault_read", "detail": "Read vault file · journal.md"},
+         "createdAt": "t3"},
+    )
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["waiting"] is True
+    assert payload["progress"]["steps"] == 2
+    assert payload["progress"]["latest"]["capability"] == "vault_read"
+    assert payload["progress"]["latest"]["detail"] == "Read vault file · journal.md"
+    # The clock the page counts up from is when *he* asked, not when the
+    # newest tool ran -- "how long has this been going" is his question.
+    assert payload["progress"]["askedAt"] == "t1"
+
+
+def test_a_turn_that_has_run_nothing_yet_still_says_the_question_landed():
+    """His first question of the three: 'Did it even recieve my messages?'
+    An empty `latest` is what the page turns into that sentence, so the
+    block has to be present even before the first tool call."""
+    payload, _ = _run(nova_ask.thread, TAGGED, _asked_then())
+    assert payload["progress"] == {"askedAt": "t1", "steps": 0, "latest": None}
+
+
+def test_there_is_no_progress_block_once_the_answer_has_landed():
+    """A progress block on a settled thread is a clock the page would keep
+    counting up forever."""
+    messages = _asked_then(
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls"}, "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "Seven.", "createdAt": "t3"},
+    )
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["waiting"] is False
+    assert "progress" not in payload
+
+
+def test_a_follow_up_question_does_not_inherit_the_previous_turns_tools():
+    """One long-lived conversation, so every tool the thread has ever run is
+    in the fetch. Counting them all would tell him the new question had made
+    nine tool calls before it started."""
+    messages = [
+        {"id": "1", "sender": "Edvard", "text": "first", "createdAt": "t1"},
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls"}, "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "Seven.", "createdAt": "t3"},
+        {"id": "4", "sender": "Edvard", "text": "why?", "createdAt": "t4"},
+    ]
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["progress"] == {"askedAt": "t4", "steps": 0, "latest": None}
+
+
+def test_a_narration_passage_is_not_counted_as_a_tool_step():
+    """It is already drawn as its own bubble by the issue #129 change. Counting
+    it here would show 'two steps' for one tool call and a paragraph."""
+    messages = _asked_then(
+        {"id": "2", "sender": "Nova Answers", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls"}, "createdAt": "t2"},
+        {"id": "3", "sender": "Nova Answers", "text": "assistant_text: Counting.",
+         "activity": {"capability": NARRATION_TEXT, "detail": "Counting."},
+         "createdAt": "t3"},
+    )
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["progress"]["steps"] == 1
+    assert payload["progress"]["latest"]["capability"] == "Bash"
+
+
+def test_an_activity_message_with_no_capability_dict_is_not_a_step():
+    """Older rows in the store carry `activity: true` rather than the dict.
+    They are still machinery, but there is no tool name to show."""
+    messages = _asked_then(
+        {"id": "2", "sender": "Nova Answers", "text": "running a tool", "activity": True},
+    )
+    payload, _ = _run(nova_ask.thread, TAGGED, messages)
+    assert payload["progress"] == {"askedAt": "t1", "steps": 0, "latest": None}

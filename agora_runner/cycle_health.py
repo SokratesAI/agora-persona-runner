@@ -1,6 +1,6 @@
 """Which cycles woke up and left no journal entry behind.
 
-Edvard, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not already
+The owner, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not already
 have a self check that your previous cycles worked correctly, you should
 make yourself do this and self repair automatically."* He found that hole
 by eye, reading the journal on his phone, which is the whole problem --
@@ -34,7 +34,7 @@ it does not read the vault, does not write to it, and does not decide what
 to do about a gap. That is deliberate -- the repair for a dead cycle is
 picking up whatever it left in `/data/workspace` and finishing it, which
 only a cycle can do, and a module that invented a replacement journal entry
-would be putting a machine's guess into an append-only record that Edvard
+would be putting a machine's guess into an append-only record that the owner
 reads as mine.
 """
 
@@ -46,7 +46,7 @@ from agora_runner.nova_journal import file_cycle
 # The last-resort fallback, not the truth. `nova_cadence_minutes` below is
 # the truth, and this is what a caller measures in when that returns `None`
 # -- Agora unreachable, or a schedule with no single interval. It says
-# `every@60m` because that is what Edvard set on 2026-08-09; he has changed
+# `every@60m` because that is what the owner set on 2026-08-09; he has changed
 # the cadence four times since 2026-08-08, so treat any agreement between
 # this number and reality as luck.
 HEARTBEAT_MINUTES = 60
@@ -60,6 +60,37 @@ HEARTBEAT_MINUTES = 60
 # because the only thing to do about it is go looking for work that isn't
 # there.
 STALL_GRACE_INTERVALS = 2
+
+# The longest a single cycle can possibly still be running, measured from
+# the moment Agora *claims* the run -- which is what `lastRunAt` records,
+# and it is stamped before prompt assembly, before the vault reads, before
+# the turn begins.
+#
+# 45 was wrong here and it was my own number. The bridge kills a turn at
+# `CLI_TIMEOUT_SECONDS` (2700s), so 45 minutes is what a *turn* gets -- but
+# the runner waits `timeout=2760` on that call (`providers/claude_cli.py`)
+# precisely so it outlives the bridge, and the claim predates the request.
+# So a cycle that is genuinely alive sits past 46 minutes on this clock, and
+# a bound of 45 would call it dead and buzz his phone inside its live
+# conversation, which is the whole bug this exists to stop.
+#
+# 50 = the runner's own 46-minute give-up point, rounded up to cover a
+# claim-to-request gap I have not measured. It is deliberately generous:
+# being late to a real stall costs one check, and the silence bound in
+# `nova_site._with_silence` caps total quiet at one cadence interval plus
+# this number regardless, so nothing here can mute an alarm for good.
+#
+# It exists at all because `STALL_GRACE_INTERVALS` stopped covering a
+# running cycle when the cadence dropped. At 60 minutes, two intervals was
+# two hours and no healthy cycle came close; at the 20 minutes the owner set
+# on 2026-08-24 it is 40 minutes, which is *less than one cycle's own
+# runtime* -- so an ordinary slow cycle crossed the stall threshold while it
+# was still working, and at 17:38 the site pushed "Nova has stopped writing"
+# into Cycle 373's own live conversation while that cycle was mid-turn. The
+# grace interval is a count of cadence intervals and therefore shrinks with
+# the cadence; how long a cycle runs does not, so the two need separate
+# numbers.
+MAX_CYCLE_MINUTES = 50
 
 
 def nova_cadence_minutes():
@@ -79,7 +110,7 @@ def nova_cadence_minutes():
 
     Lives here, beside the constant it replaces, because both callers are
     asking the same question for the same reason and #166/#167 answered it
-    twice. `nova_site` asks it for the badge Edvard reads and caches the
+    twice. `nova_site` asks it for the badge the owner reads and caches the
     answer off the request path; `heartbeats.nova_health_note` asks it for
     the line handed to a waking cycle. That second caller has one
     heartbeat's schedule in hand and used only that, which is a different
@@ -97,7 +128,7 @@ def nova_heartbeat_snapshot():
     because it was already making the call and throwing away every field
     but `schedule`.
 
-    `lastRunAt` and `lastResult` are the other half of Edvard's #72. The
+    `lastRunAt` and `lastResult` are the other half of the owner's #72. The
     cadence tells the page how long silence is allowed to last; these two
     tell it whether the silence is a cycle *working*. Agora writes
     `lastResult: "running"` when it claims a run and overwrites it with
@@ -129,14 +160,37 @@ def nova_heartbeat_snapshot():
     and a rule that is wrong only in the case it was written for is not
     much of a rule.
 
-    All three are `None` when Agora is unreachable or no enabled
-    heartbeat targets Nova, which is the same "no honest answer" the
-    cadence returns rather than a fabricated one.
+    **The internal API is asked first and the public one is the fallback,
+    because only one of the two pods holding this code has a token.**
+    `agora_internal` sends `x-agora-token` at `AGORA_INTERNAL_URL` (:8081);
+    the bridge pod has no `AGORA_TOKEN`, so from there the call answers
+    **401**, not a connection error. Measured from the bridge pod
+    2026-08-27: `agora_internal("GET", "/heartbeats")` returns 401 while
+    `agora_get("/heartbeats")` returns 200 with all seven heartbeats and
+    every field this function reads. The public route takes no auth --
+    `app.get("/heartbeats")` in agora's `server.ts` sits with the other
+    unauthenticated read routes -- and it is a read, so nothing is
+    loosened by falling back to it.
+
+    That 401 was recorded as "the bridge pod cannot reach Agora" in
+    `quota_runway.live_cadence_minutes`, and the consequence was not
+    cosmetic: a cycle runs that tool from the bridge pod, so the normal
+    path silently dropped to `OBSERVED` -- the cadence inferred from the
+    loop's own wake-ups over 48h -- and reported the *old* interval for
+    two days after a schedule change. Cycle 523 changed the Nova
+    heartbeat from 20 to 30 minutes and this is the read that tells the
+    tool so.
+
+    All three are `None` when neither API answers or no enabled heartbeat
+    targets Nova, which is the same "no honest answer" the cadence returns
+    rather than a fabricated one.
     """
-    from agora_runner.http_util import agora_internal
+    from agora_runner.http_util import agora_internal, agora_get
     from agora_runner.turns import schedule_minutes
 
     status, body = agora_internal("GET", "/heartbeats")
+    if status != 200:
+        status, body = agora_get("/heartbeats")
     if status != 200:
         return (None, None, None)
     nova = nova_cycle_heartbeats(body.get("heartbeats"))
@@ -214,7 +268,7 @@ RECENT_GAP_WINDOW = 24
 def recent_gaps(numbers, window=RECENT_GAP_WINDOW):
     """`gaps_between`, cut to holes within `window` cycles of the newest.
 
-    Edvard, comments board 2026-08-14, on the header's stall badge:
+    The owner, comments board 2026-08-14, on the header's stall badge:
     *"Should be displayed if the return fetch came in with missing
     journals."* The header's whole job is whether the loop is alive, and
     the only thing it has ever said about that is a clock -- how long
@@ -233,7 +287,7 @@ def recent_gaps(numbers, window=RECENT_GAP_WINDOW):
     worth interrupting him about.
 
     24 is that window and it is a duration in disguise: across every
-    cadence Edvard has actually run -- 40, 60 and 72 minutes -- it spans
+    cadence the owner has actually run -- 40, 60 and 72 minutes -- it spans
     16 to 29 hours, so "a cycle failed within about the last day". It is
     also roughly the first screen of the feed (Cycle 205 measured 20
     cards), which means a hole the header names is one he can scroll to
@@ -350,6 +404,37 @@ def first_written_at(mtimes):
     return out
 
 
+def gap_windows(missing, mtimes):
+    """`[(cycle, after, before)]` -- when each silent cycle can only have run.
+
+    A dead cycle leaves no document and therefore no timestamp of its own,
+    so the only honest statement about *when* it ran is the bracket its
+    neighbours give it: later than the entry below it appeared, earlier
+    than the entry above it did. Both ends come from `first_written_at`,
+    which is already the map `gaps_since` brackets against.
+
+    Either end can be `None` and that is not a defect: `mtimes` is what the
+    vault returned, and a neighbour whose document carried no modification
+    time gives no bound on that side. A caller printing `?` for a missing
+    end is telling the truth; inventing a bound from the next neighbour out
+    would widen the window silently.
+
+    This exists because the count alone cannot be acted on. `describe`
+    names which cycles are missing; a cycle number is only a date if you
+    already hold the whole journal, which is the thing the reader of this
+    check does not have. Idea #125 -- "test whether the silent-session fix
+    explains the cycles that write nothing" -- is a question about dates,
+    and it was unanswerable from this module's own output.
+    """
+    written = first_written_at(mtimes)
+    out = []
+    for number in missing:
+        below = written.get(number - 1)
+        above = written.get(number + 1)
+        out.append((number, below, above))
+    return out
+
+
 def gaps_since(paths, mtimes, since):
     """Interior gaps that became *observable* after `since`, ascending.
 
@@ -427,7 +512,7 @@ def describe(report):
     (`import agora_runner` outside a checkout is a `ModuleNotFoundError`), so
     the only way to run this there is out of a git checkout in the workspace,
     where the names this package wants default to empty. `db_for` then routes
-    the journal to Edvard's database instead of Nova's, that request 401s, the
+    the journal to the owner's database instead of Nova's, that request 401s, the
     listing comes back with zero files, and every finding below is vacuously
     clean. The check printed nothing and exited 0 while the live folder
     visibly skipped 134 -- an all-clear from a blind instrument, which is
@@ -463,9 +548,20 @@ def describe(report):
         parts.append(f"part of the journal could not be read: {note}")
     missing = report.get("missing") or []
     if missing:
-        recent = ", ".join(str(n) for n in missing[-5:])
+        # Every one of them, not the newest five. This line said
+        # `missing[-5:]` for its whole life and never said it was doing
+        # that, so it printed "22 cycle(s) ran and wrote no journal entry"
+        # and then named five -- which reads as the whole list. The owner
+        # asked (idea #125) whether the 2.1.243 CLI fix explained these,
+        # and answering that needs *which* cycles, on both sides of the
+        # bump; Cycle 546 had to re-derive the set by hand from the folder
+        # listing because the instrument that reports the count withholds
+        # the evidence. `personality.md`: a limit needs a danger I have
+        # measured, and the danger here is 22 integers, about 90
+        # characters. There is none.
+        named = ", ".join(str(n) for n in missing)
         parts.append(
-            f"{len(missing)} cycle(s) ran and wrote no journal entry: {recent}"
+            f"{len(missing)} cycle(s) ran and wrote no journal entry: {named}"
             + (" (newest last)" if len(missing) > 1 else "")
         )
     if report.get("stalled"):
@@ -493,6 +589,16 @@ def main():
     line = describe(report)
     if line:
         print(line)
+        # The bracket for each hole, one line each. `describe` returns a
+        # single line on purpose -- it is also the note handed to a waking
+        # cycle and the badge the site reads -- so the dates go here, in
+        # the report a human asked for by running the module.
+        for number, below, above in gap_windows(report.get("missing") or [], mtimes):
+            span = " to ".join(
+                stamp.strftime("%Y-%m-%d %H:%M") if stamp else "?"
+                for stamp in (below, above)
+            )
+            print(f"  cycle {number}: between the entries either side of it, {span} Oslo")
         return 1
     return 0
 

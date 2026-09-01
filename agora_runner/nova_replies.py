@@ -1,6 +1,6 @@
-"""Answering a comment on a journal card, while Edvard is still looking at it.
+"""Answering a comment on a journal card, while the owner is still looking at it.
 
-Edvard, 2026-08-10, commenting on cycle 80's own card -- *"A good idea is
+The owner, 2026-08-10, commenting on cycle 80's own card -- *"A good idea is
 to have the session that created the Journal instantly reply to my
 comments on the Journal! That would be so cool, to have a conversation
 with comments on the Journal entry."*
@@ -14,7 +14,7 @@ that did the work. The alternative would be a reply that implies a memory
 it does not have, which is worse than a slow one.
 
 **It can go and check now, and until 2026-08-10 it could not.** The first
-version had no tools at all, and Edvard said what that was like on the
+version had no tools at all, and the owner said what that was like on the
 cycle 86 card: *"It is atleast a good start to have you read and answer
 questions about the cycle, but I wished you had more read capabilities to
 answer questions. And maybe some tools to add issues or report bugs we
@@ -65,7 +65,7 @@ the old 45-minute wait is back, and a caller that had gone inline on
 that assumption would block the request thread instead. The POST that
 stores the comment still returns immediately. One worker rather than a
 thread per comment because arrival order is worth more here than
-parallelism across two comments Edvard typed seconds apart.
+parallelism across two comments the owner typed seconds apart.
 
 **This spends the subscription, not the metered API** (identity.md rule
 9). It does not call `reply.generate_reply` and so is not covered by that
@@ -88,7 +88,7 @@ from agora_runner.config import (
 )
 from agora_runner.http_util import http_json
 from agora_runner.log import log
-from agora_runner.nova_comments import add_reply, comments_by_cycle
+from agora_runner.nova_comments import add_reply, comments_by_cycle, parse_comments
 from agora_runner.nova_journal import parse_journal
 from agora_runner.nova_sources import (
     comments_markdown,
@@ -137,7 +137,7 @@ Talk like yourself -- first person, plain, honest, the voice the entry is writte
 # report bugs we find."*
 #
 # Everything absent here is absent on purpose. This turn is triggered by an
-# HTTP POST carrying text Edvard typed, so the blast radius of a comment is
+# HTTP POST carrying text the owner typed, so the blast radius of a comment is
 # exactly this list: no terminal, no code execution, no GitHub write, no
 # merge, no vault write outside the two capture files. `restricted` below
 # still blocks the CLI's own built-in roster (Bash/Read/Write/Edit/...),
@@ -238,7 +238,7 @@ def _entry_for(cycle):
     shape -- and this reads the assembled folder, where those entries are
     present and findable by heading.
 
-    One behaviour change worth naming, because it reaches Edvard's screen:
+    One behaviour change worth naming, because it reaches the owner's screen:
     a journal folder the vault could not fully read now raises here
     instead of quietly finding nothing. `_run_once` catches it and records
     the message, so he gets a failed reply carrying the reason rather than
@@ -256,7 +256,7 @@ def _entry_for(cycle):
             return entry
     if unreadable:
         # Found nothing *and* could not see all of it. Returning None here
-        # would tell Edvard "no journal entry for cycle N" about a cycle
+        # would tell the owner "no journal entry for cycle N" about a cycle
         # that may well have written one, which is the wrong answer stated
         # confidently -- the same shape as the empty feed this PR deleted.
         raise RuntimeError(
@@ -288,7 +288,7 @@ def _generate(system, prompt):
         "stateless": True,
         # Skip the bridge's process-wide invocation lock rather than
         # queueing behind a Nova cycle that may hold it for 45 minutes.
-        # This is the whole reason the lane exists: Edvard asked for an
+        # This is the whole reason the lane exists: The owner asked for an
         # answer "immediately. Or within 10 seconds", and a reply that
         # arrives after the cycle finishes is not a conversation. The
         # bridge decides, not us -- it opens the lane only while the
@@ -317,7 +317,7 @@ def _generate(system, prompt):
 def reply_to(cycle, stamp):
     """Generate and store one reply. Returns (ok, message). Blocking.
 
-    Times each phase and logs one line. Edvard asked for a reply "within
+    Times each phase and logs one line. The owner asked for a reply "within
     10 seconds" and the honest answer on 2026-08-11 was 10 to 15, spread
     unmeasured between the vault, the bridge and however many tools the
     model decided to call -- a spread nobody could see, because nothing
@@ -366,7 +366,7 @@ _queue = queue.Queue()
 # sitting behind a cycle's 45-minute hold on the bridge lock.
 _pending = {}
 # (cycle, stamp) -> why the last attempt gave up. Kept after the pending
-# entry is gone, because "the line just vanished" is the failure Edvard
+# entry is gone, because "the line just vanished" is the failure the owner
 # actually saw: the card has to say a reply is not coming.
 _failed = {}
 _pending_lock = threading.Lock()
@@ -471,3 +471,95 @@ def run_once():
 def _run():
     while True:
         run_once()
+
+
+# How many dropped replies one process start picks up, newest first. Each
+# one is a CLI turn against the same subscription a cycle draws on, and
+# `## New` has no ceiling -- a stretch where no cycle acknowledges anything
+# leaves every comment in it unanswered, so a crash-looping pod would fire
+# the whole pile again on every start. Ten is well clear of any real
+# backlog (`## New` held three comments on 2026-08-25, measured) and bounds
+# that case; anything past it is logged rather than dropped in silence, and
+# a cycle still reads it out of `## New` the way it always did.
+RECOVER_LIMIT = 10
+
+# How long a starting process waits before looking, and it is not a
+# courtesy. `nova-site` rolls `RollingUpdate` with `maxSurge: 1` and
+# `maxUnavailable: 0`, so the new pod is started and made ready *while the
+# old one is still alive* -- it only receives SIGTERM once the new one
+# passes its probe, and then has `terminationGracePeriodSeconds: 30` to go
+# (both measured live 2026-08-25). Recovering the instant this process
+# starts therefore re-queues a comment the dying process is still in the
+# middle of answering, and the owner gets the same question answered
+# twice. Waiting past that grace period means the old worker has either
+# written its reply into the vault -- where the scan below sees it and
+# skips it -- or died without one, which is exactly the case worth
+# recovering. 45 rather than 30 so the margin is visible rather than
+# exact. Nothing is lost by waiting: every comment this finds has already
+# been unanswered for minutes.
+RECOVER_DELAY_SECONDS = 45
+
+
+def recover(delay=RECOVER_DELAY_SECONDS):
+    """Re-queue the replies a previous process was still holding. -> count.
+
+    The queue above lives in this process's memory and nowhere else, and
+    the worker is a daemon thread, so a pod that goes down loses every
+    comment it had not answered yet. `_ensure_worker` says that is fine
+    because "the comment is still in `## New` and the next cycle reads
+    it" -- which is true of the *work* and false of the *conversation*.
+    What the owner sees is the "Nova is replying…" line disappear with no
+    reply under it and nothing saying one is not coming: `_pending` and
+    `_failed` are both empty in the new process, so `comments_payload`
+    reports neither `replyPending` nor `replyFailed`, which is exactly the
+    vanishing line `_failed` was added to stop.
+
+    That is not a rare shutdown. `nova-site` runs the same image as the
+    runner and rolls on every merge to it, which at a 20-minute cadence is
+    several times a day -- measured 2026-08-25, two rolls inside twenty
+    minutes. The owner commented on cycle 423's card at 14:43 and again at
+    14:45 ("No answer?"), the pod rolled at 14:48, and both comments were
+    still unanswered twenty minutes later with nothing on the card
+    admitting it.
+
+    A comment counts as dropped when it is in `## New` and carries no
+    reply at all. `## Acknowledged` is deliberately excluded: a cycle has
+    already dealt with those, and the owner is not waiting on the card.
+    Retrying one the worker had genuinely given up on is the right
+    outcome too -- it fails the same way again and lands back in
+    `_failed`, which puts the honest "not coming" on the card instead of
+    the blank.
+    """
+    if not CLAUDE_BRIDGE_URL:
+        return 0
+    # Before the read, not after: the point is to let the outgoing process
+    # finish writing, and a scan taken early and acted on late is the same
+    # duplicate with a longer fuse.
+    if delay:
+        time.sleep(delay)
+    try:
+        comments = parse_comments(comments_markdown())
+    except Exception as e:
+        # Never fatal: this runs at startup and the site is worth serving
+        # without it. Losing the recovery costs what today already costs.
+        log(f"nova-reply recovery could not read the comments: {e}")
+        return 0
+    # `parse_comments` preserves file order and `## New` is written
+    # newest-first, so the head of this list is the comment he is most
+    # likely to still be looking at. A `needs` comment has no cycle and
+    # cannot be keyed here.
+    dropped = [
+        c for c in comments
+        if not c.get("acknowledged")
+        and not c.get("replies")
+        and c.get("cycle") is not None
+        and c.get("stamp")
+    ]
+    queued = sum(1 for c in dropped[:RECOVER_LIMIT] if enqueue(c["cycle"], c["stamp"]))
+    if len(dropped) > RECOVER_LIMIT:
+        log(f"nova-reply recovery capped at {RECOVER_LIMIT}: "
+            f"{len(dropped) - RECOVER_LIMIT} older unanswered comment(s) left "
+            "in ## New for a cycle to answer")
+    log(f"nova-reply recovery queued {queued} of {len(dropped)} "
+        "unanswered comment(s) in ## New")
+    return queued

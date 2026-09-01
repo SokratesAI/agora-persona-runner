@@ -1,6 +1,6 @@
-"""Move Edvard's finished captures off the top of his two board files.
+"""Move the owner's finished captures off the top of his two board files.
 
-Edvard types into a bare bullet list above `## Board` in
+The owner types into a bare bullet list above `## Board` in
 `projects/sokrates/projects/nova/issues.md` and `.../ideas.md`. When a
 cycle closes one of those captures it rewrites the bullet to start with
 `DONE (Cycle N):` and leaves it exactly where it was. Nothing has ever
@@ -16,7 +16,7 @@ checked them against the files this paragraph claims to have measured.)
 `nova_boards.split_capture_done` (Cycle 251) already stops a closed
 capture being *read* as work: the ranking drops it and the page hides
 it. That fixed the consumers and left the file, and the file is the half
-Edvard actually opens -- these two documents live in his own vault
+the owner actually opens -- these two documents live in his own vault
 precisely so his phone can reach them without the Nova app.
 
 So this is `identity.md` rule 8 applied to his boards: *"finished items
@@ -32,7 +32,7 @@ fixes, not a place to put it.
 
 **It takes a path on disk and knows nothing about the vault, so the
 caller owns the compare-and-swap.** A cycle boarding these same files,
-or Edvard's phone syncing through Obsidian, is the concurrent writer
+or the owner's phone syncing through Obsidian, is the concurrent writer
 `nova_capture` defends against with `_rev` and the one most likely to be
 running. Read and write it the way `prompt.md` step 6 does:
 
@@ -54,7 +54,7 @@ the capture list and reports `nothing to move`.
 **The check that matters is the one that asks the reader.** These files
 are parsed by `nova_boards.parse_board` for the app's board pages, and
 the failure mode of moving text inside one is silent: a row or a
-write-up stops rendering and nobody sees it until Edvard does. So the
+write-up stops rendering and nobody sees it until the owner does. So the
 rewrite is verified by parsing both versions and asserting that
 `items` and `details` come back **identical**, and that `captures` lost
 exactly the `DONE` bullets and nothing else. That is
@@ -65,11 +65,16 @@ The `## Processed captures` heading is a level-2 heading on purpose.
 `nova_boards._detail_spans` ends a write-up at the next `#` or `##`, so
 appending it closes the final `### #N` block cleanly instead of being
 swallowed into it; and `_captures` stops at the first heading, so a
-bullet down there can never be read back as something Edvard just typed.
+bullet down there can never be read back as something the owner just typed.
 """
 
 import argparse
 import sys
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import parse_board, split_capture_done
 from agora_runner.nova_capture import _capture_span
@@ -81,7 +86,7 @@ def _has_processed_heading(text):
     """Is the archive heading already a heading in `text`?
 
     A substring search would find the phrase inside any write-up that
-    happened to mention it -- and these files are 190KB of Edvard's and
+    happened to mention it -- and these files are 190KB of the owner's and
     my own prose, so that is a matter of time. The heading would then be
     skipped and the next roll would append bare bullets under whatever
     section ends the file. Reviewer finding on runner#286.
@@ -100,7 +105,7 @@ def plan(markdown):
     non-blank, and not starting `-`, `*` or `|`. Sharing the rule is not
     cosmetic: a line the reader folds into the bullet above must move
     with it, and a line the reader ignores must stay put, or the page and
-    the file disagree about where Edvard's sentence ends. Neither real
+    the file disagree about where the owner's sentence ends. Neither real
     file has such a line today, so this is pinned by test rather than by
     data.
     """
@@ -113,7 +118,18 @@ def plan(markdown):
     for index in range(first, end):
         stripped = lines[index].strip()
         if stripped == "-" or stripped.startswith("- "):
-            blocks.append([lines[index]])
+            if blocks and lines[index][:1].isspace():
+                # An indented bullet is a reply written under the capture
+                # above it, so it travels with that capture. Starting a new
+                # block here is what orphaned a cycle's own closing note at
+                # the top of `issues.md` on 2026-08-25: the owner's bullet
+                # was `DONE` and moved, the reply under it was not and
+                # stayed, and `top_board_rows` then ranked it first as an
+                # unprocessed capture from him. `nova_boards._captures`
+                # folds the same shape, which is what keeps `check` honest.
+                blocks[-1].append(lines[index])
+            else:
+                blocks.append([lines[index]])
         elif blocks and stripped and not stripped.startswith(("-", "*", "|")):
             blocks[-1].append(lines[index])
         else:
@@ -206,12 +222,30 @@ def check(before, after, moved):
         if cycle:
             problems.append(f"a DONE capture stayed: {capture[:60]}")
 
-    # Nothing may be lost, only relocated. Comparing the whole text rather
-    # than the parsed halves catches a bullet dropped between the two
-    # sections, which `parse_board` would report as a clean removal.
-    for capture in gone:
-        if capture.split("\n")[0][:80] not in after:
-            problems.append(f"a moved capture is not in the new file: {capture[:60]}")
+    # Nothing may be lost, only relocated, and this asks it of the raw
+    # lines rather than of `parse_board`'s output -- which catches a bullet
+    # dropped between the two sections, where `parse_board` sees a clean
+    # removal. It used to substring-test the first 80 characters of the
+    # parsed capture, and that cannot work on a capture with a reply folded
+    # into it: the folded string is two lines in the file and exists
+    # nowhere as one, so a correct rewrite reported a lost capture.
+    def _span_lines(text):
+        lines = (text or "").split("\n")
+        _, first, end = _capture_span(lines)
+        return [] if first is None else lines[first:end]
+
+    still_here = set(_span_lines(after))
+    archived = set()
+    if _has_processed_heading(after):
+        archived = set(after.split(PROCESSED_HEADING)[-1].split("\n"))
+    for line in _span_lines(before):
+        # The bare cursor bullet is re-laid as `- ` by `rewrite`, on purpose,
+        # so it is the one line that legitimately does not come back byte for
+        # byte. It carries none of his text.
+        if line.strip() in ("", "-"):
+            continue
+        if line not in still_here and line not in archived:
+            problems.append(f"a capture line is in neither list: {line.strip()[:60]}")
     return problems
 
 

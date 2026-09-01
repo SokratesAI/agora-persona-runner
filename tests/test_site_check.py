@@ -192,9 +192,9 @@ def test_the_digest_keys_are_ones_the_payload_still_carries():
     The sibling above catches a misspelled *path*; nothing caught a stale
     *key*, and `_payload` above cannot -- it builds its fixture out of
     `API_KEYS`, so a healthy site is whatever `API_KEYS` says it is and the
-    assertion compares the check to itself. #236 deleted `needsEdvard` from
+    assertion compares the check to itself. #236 deleted `needsEdvard` from  (not-prose: an identifier)
     `digest_payload` and left it listed here, which would have reported
-    `/api/digest: 200 but missing needsEdvard` on every deploy from then on
+    `/api/digest: 200 but missing needsEdvard` on every deploy from then on  (not-prose: an identifier)
     -- this module's own failure mode, aimed at this module.
 
     So this asserts against the real builder rather than against the list.

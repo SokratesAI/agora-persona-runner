@@ -28,18 +28,95 @@
   <p class="status-line">loading…</p>
 </header>
 
+<!-- The unread-reply badge and the panel it opens. Outside `#status` on
+     purpose: every page view starts by wiping the header and writing its
+     own line into it, so a badge parked in there only ever survived on the
+     journal page. See `paintMail` in app.js. -->
+<div id="mail" class="mail" aria-live="polite" hidden></div>
+
+<!-- "3 cycles since you last looked · 2 PRs merged". Outside `#status` for
+     the same reason `#mail` is: `renderStatus` empties that element on every
+     paint, so a line parked inside it would be wiped by the next render.
+     `paintChanged` in app.js owns it, and it stays hidden whenever there is
+     nothing new to say -- which is most of the time. -->
+<div id="changed" class="changed" aria-live="polite" hidden></div>
+
 <div id="scrim" class="scrim"></div>
 
+<!-- The pages the owner named sit at the top with no heading above them,
+     and every other page sits under one. Their ask, `issues.md` 2026-08-26:
+     "Now that the sidebar for the Nova app has begun to contain a lot of page
+     links, group the by category, but always show the top 3 most used at the
+     top. I mostly use journals, issues and ideas. And also, the ask page can
+     be cut as i now have the chat bubble."
+
+     `/projects` joined the pinned list on 2026-08-31, on their capture that
+     morning: "make the projects link in the Nova sidebar always show above
+     the issues and ideas links as i want to use the projects page more
+     often." It sits second rather than first because the sentence names
+     Issues and Ideas and does not name Journal, so Journal keeps the top
+     row it was given. It is no longer under `Steering` -- a link in two
+     places is two places to keep right, and `tests/test_nav_is_grouped.py`
+     asserts every route appears exactly once.
+
+     The pinned list is a fixed list, not a usage counter. A menu whose
+     order moves under you is a menu you have to read every time, and the
+     owner already told me which three they are -- measuring it would be
+     re-deriving an answer I was handed, and paying for it with a stored
+     tally and a reordering drawer.
+
+     `/ask` is gone -- link, route and page. The owner asked for the page to
+     be cut once the chat dock showed the same thread, and it is the dock's
+     `Ask Nova` row now. The API it used, `/api/ask`, is very much alive: the
+     dock talks to it. `tests/test_nav_is_grouped.py` pins that split, so a
+     later cycle cannot delete the endpoint along with the page.
+
+     Each group is a `<details>`, closed on load. The owner asked for that the
+     morning after the grouping shipped: "i want them to be dropdowns and
+     default closed so i can navigate more easily and we can easily add more
+     pages of necessary without expanding the sidebar length too much." So the
+     drawer is four rows tall at rest -- three links and three folds -- and
+     adding a fourteenth page no longer makes it longer.
+
+     `<details>` rather than a `<div>` and a click handler: the disclosure
+     widget is native, so it is keyboard-operable, it announces expanded and
+     collapsed to a screen reader, and it opens with no JavaScript at all --
+     which matters here because this drawer is the only way to reach ten of
+     the thirteen pages. The `<h2>` the headings used to be is gone with it;
+     `<summary>` is a button, and a heading nested inside one is read as
+     neither. `markNav` in `app.js` opens the fold holding the current page,
+     so the highlighted link is never hidden behind a closed group. -->
 <nav id="nav" class="nav" aria-label="Sections" aria-hidden="true">
   <a class="nav-tab" href="/">Journal</a>
+  <a class="nav-tab" href="/projects">Projects</a>
   <a class="nav-tab" href="/issues">Issues</a>
   <a class="nav-tab" href="/ideas">Ideas</a>
-  <a class="nav-tab" href="/notes">Notes</a>
-  <a class="nav-tab" href="/costs">Costs</a>
-  <a class="nav-tab" href="/retro">Retro</a>
-  <a class="nav-tab" href="/plan">Plan</a>
-  <a class="nav-tab" href="/ask">Ask</a>
-  <a class="nav-tab" href="/diag">Device</a>
+
+  <details class="nav-fold">
+    <summary class="nav-group">Steering</summary>
+    <div class="nav-fold-body">
+      <a class="nav-tab" href="/notes">Notes</a>
+      <a class="nav-tab" href="/pool">Pool</a>
+      <a class="nav-tab" href="/plan">Plan</a>
+    </div>
+  </details>
+
+  <details class="nav-fold">
+    <summary class="nav-group">Talking</summary>
+    <div class="nav-fold-body">
+      <a class="nav-tab" href="/heartbeats">Beats</a>
+    </div>
+  </details>
+
+  <details class="nav-fold">
+    <summary class="nav-group">The loop</summary>
+    <div class="nav-fold-body">
+      <a class="nav-tab" href="/retro">Retro</a>
+      <a class="nav-tab" href="/costs">Costs</a>
+      <a class="nav-tab" href="/catalog">Catalog</a>
+      <a class="nav-tab" href="/diag">Device</a>
+    </div>
+  </details>
 </nav>
 
 <section id="capture" class="capture">
@@ -48,6 +125,12 @@
     <textarea id="capture-text" rows="2" placeholder="One line — issue, idea or note…"
               autocapitalize="sentences" autocomplete="off"></textarea>
     <label class="capture-prio-label visually-hidden" for="capture-prio">Priority</label>
+    <!-- Hidden until the box holds more than one non-blank line, because
+         that is the only moment it means anything. `app.js` toggles it. -->
+    <label id="capture-one" class="capture-one" hidden>
+      <input type="checkbox" id="capture-one-input">
+      <span>Keep this as one item</span>
+    </label>
     <div class="capture-actions">
       <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
       <div class="capture-submit">
@@ -60,6 +143,38 @@
 </section>
 
 <main id="feed" class="feed"></main>
+
+<!-- The chat dock. Outside <main id="feed"> for the same reason `menu-btn`
+     sits outside <header>: every render empties that element and rebuilds
+     it, so a dock inside it would be dropped on the first navigation. It is
+     `position: fixed`, so where it sits in the document costs nothing. -->
+<button id="chat-btn" class="chat-btn" type="button"
+        aria-label="Open chat with Nova" aria-expanded="false" aria-controls="chat-dock">
+  <span class="chat-btn-glyph" aria-hidden="true">&#128172;</span>
+  <span id="chat-dot" class="chat-dot" hidden aria-hidden="true"></span>
+</button>
+
+<section id="chat-dock" class="chat-dock" aria-label="Chat with Nova" aria-hidden="true" hidden>
+  <div class="chat-head">
+    <button id="chat-menu" class="chat-menu" type="button"
+            aria-label="Switch conversation" aria-expanded="false" aria-controls="chat-list">
+      <span aria-hidden="true">&#9776;</span>
+    </button>
+    <p id="chat-title" class="chat-title">Ask Nova</p>
+    <button id="chat-close" class="chat-close" type="button" aria-label="Close chat">&#215;</button>
+  </div>
+  <div id="chat-list" class="chat-list" aria-label="Your conversations" hidden></div>
+  <div id="chat-thread" class="ask-thread chat-thread"></div>
+  <form id="chat-form" class="chat-form">
+    <label class="visually-hidden" for="chat-box">Your question</label>
+    <textarea id="chat-box" class="chat-box" rows="1" placeholder="Ask anything&#8230;"
+              autocapitalize="sentences" autocomplete="off"></textarea>
+    <div class="chat-actions">
+      <p id="chat-status" class="chat-status" role="status" aria-live="polite"></p>
+      <button id="chat-send" class="chat-send" type="submit">Send</button>
+    </div>
+  </form>
+</section>
 
 <script src="/app.js"></script>
 </body>

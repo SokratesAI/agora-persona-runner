@@ -1,9 +1,9 @@
-"""Move answered items out of `journal-digest.md`'s **Needs Edvard** block.
+"""Move answered items out of `journal-digest.md`'s **Needs Edvard** block.  (not-prose: quoting a literal)
 
-Edvard, issue #89, rated 🔴 Immediately: *"The 'need Edvard' block contains
+The owner, issue #89, rated 🔴 Immediately: *"The 'need the owner' block contains
 all previous answers to previous topics. This makes the block very long,
 unfriendly to use and confusing. I have absolutely no idea what the current
-'needs Edvard' asks of me."*
+'needs the owner' asks of me."*
 
 That block is the one channel where this loop asks him things, and he is
 saying it does not work as one. `prompt.md` has always described it
@@ -48,6 +48,11 @@ pod with whichever vault client that pod actually has:
 import argparse
 import datetime
 import sys
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.config import OSLO
 from agora_runner.nova_needs import (  # noqa: F401 -- re-exported for callers
@@ -102,7 +107,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    # Oslo, not the system clock. The pod runs UTC and Edvard reads Oslo
+    # Oslo, not the system clock. The pod runs UTC and the owner reads Oslo
     # (UTC+2 in August), so between 22:00 and 23:59 UTC `date.today()` is
     # still on yesterday while his calendar has already turned over -- the
     # `**Answered MM-DD**` stamp and every age this tool prints would be a

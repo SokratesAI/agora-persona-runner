@@ -3,7 +3,7 @@
 The write half is here; what reaches it over HTTP is in test_nova_site.py,
 the same split `test_nova_capture.py` already uses.
 
-The property most of these tests are really defending is that Edvard's
+The property most of these tests are really defending is that the owner's
 text comes back **byte for byte**. A comment is prose he typed at a
 particular cycle, and the whole value of the channel is that a future
 cycle reads what he actually said rather than a reformatted version of
@@ -207,7 +207,7 @@ def test_a_heading_inside_his_text_does_not_split_the_comment():
 
 
 def test_a_second_nova_block_is_its_own_reply_not_text_inside_the_first():
-    """Edvard's screenshot, 2026-08-21: a cycle appended its own answer under
+    """The owner's screenshot, 2026-08-21: a cycle appended its own answer under
     a comment the reply worker had already answered, and the app painted
     `#### Nova · 2026-08-21 16:23` as literal text in the middle of the blue
     bubble. Only the first block can be written by `add_reply`, so a later
@@ -266,7 +266,7 @@ def test_comments_group_by_cycle():
 
 
 def test_a_card_reads_downwards_oldest_first():
-    """Edvard, 2026-08-10: *"Journal comments must be sorted with the newest
+    """The owner, 2026-08-10: *"Journal comments must be sorted with the newest
     message at the bottom, so that the conversation goes downwards."* The
     file is still written newest-first; the flip is at this boundary."""
     stored = insert_comment(ONE_COMMENT, 63, "second", "2026-08-09 23:10")
@@ -351,6 +351,7 @@ def test_a_comment_is_written_to_the_comments_file():
     assert path == COMMENTS_PATH
     assert parse_comments(content)[0] == {
         "cycle": 63,
+        "project": None,
         "stamp": "2026-08-09 22:40",
         "text": "keep it up",
         "reply": "",
@@ -423,9 +424,9 @@ def test_a_numeric_string_cycle_is_accepted():
     assert parse_comments(write.call_args[0][1])[0]["cycle"] == 63
 
 
-# --- Replies to the Needs Edvard block (2026-08-10) -------------------------
+# --- Replies to the Needs Edvard block (2026-08-10) -------------------------  (not-prose: quoting a literal)
 #
-# Edvard: *"the 'needs Edvard' is still missing a comment block, so its hard
+# the owner: *"the 'needs the owner' is still missing a comment block, so its hard
 # for me to answer it. [...] I want a reply button on it."* These defend the
 # one property that makes such a reply different from a comment on a cycle:
 # it belongs to no cycle, so it must never be filed under one -- the digest
@@ -462,7 +463,7 @@ def test_a_needs_reply_never_lands_on_a_card():
 
 
 def test_needs_replies_and_cycle_comments_share_one_new_section():
-    """Both are things Edvard said that no cycle has answered yet, and
+    """Both are things the owner said that no cycle has answered yet, and
     `prompt.md` step 1a reads `## New` whole -- so a reply that landed in a
     section of its own would be invisible to the step built to collect it."""
     stored = insert_comment(EMPTY, None, "go ahead and do it", "2026-08-10 08:20")
@@ -503,7 +504,7 @@ def test_an_acknowledged_needs_reply_is_marked_read():
 # The property these defend is the mirror of the one above: his text has
 # to survive a reply landing under it, byte for byte, and the reply has to
 # land in the comment it actually answers. The failure that matters is not
-# a crash -- it is a reply attached to the wrong comment, or Edvard's own
+# a crash -- it is a reply attached to the wrong comment, or the owner's own
 # words absorbed into it, both of which parse fine and read as a lie.
 
 THREAD = """---
@@ -649,7 +650,7 @@ def test_an_empty_reply_is_refused_before_any_read():
 
 
 def test_the_write_carries_the_revision_it_read_at():
-    """Edvard typing a comment while a cycle rewrites this same file is the
+    """The owner typing a comment while a cycle rewrites this same file is the
     collision, and his is the write that would have vanished."""
     with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
             patch.object(nova_comments, "vault_write_path", return_value="written") as write:
@@ -738,7 +739,7 @@ def test_a_reply_that_loses_a_real_race_keeps_the_comment_that_landed():
 def test_a_comment_that_loses_a_real_race_keeps_the_one_that_landed():
     """`_store` is the path the chat bubble on a journal card writes through
     -- the highest-traffic write in this module and the one that carries
-    Edvard's own words.
+    the owner's own words.
 
     Reviewer finding on PR #123. The author checked that dropping
     `if_rev=rev` here failed four tests and stopped there. All four assert
@@ -763,7 +764,7 @@ def test_a_comment_that_loses_a_real_race_keeps_the_one_that_landed():
 # --- the write is checked before it leaves ---------------------------------
 #
 # `insert_comment` and `insert_reply` are string surgery on the one file
-# Edvard talks to this loop through, and both run unattended -- one every
+# the owner talks to this loop through, and both run unattended -- one every
 # time he types into the app, one every time the reply worker answers. Until
 # these existed, nothing between them and the vault could tell a good result
 # from a damaged one. `ack_comment` has had that check since Cycle 159; the
@@ -778,7 +779,7 @@ def _broken_writer(name, replacement):
 def test_a_comment_that_lands_inside_the_frontmatter_is_not_written():
     """The 2026-08-13 damage exactly: text spliced into the frontmatter, where
     the app's parser cannot see it and neither can the next cycle."""
-    def splices_into_the_frontmatter(markdown, cycle, text, stamp):
+    def splices_into_the_frontmatter(markdown, cycle, text, stamp, project=None):
         return markdown.replace(
             "type: log", f"type: log\n### Cycle {cycle} · {stamp}\n\n{text}", 1)
 
@@ -792,7 +793,7 @@ def test_a_comment_that_lands_inside_the_frontmatter_is_not_written():
 
 
 def test_a_comment_that_eats_an_existing_one_is_not_written():
-    def drops_a_bystander(markdown, cycle, text, stamp):
+    def drops_a_bystander(markdown, cycle, text, stamp, project=None):
         good = insert_comment(markdown, cycle, text, stamp)
         return good.replace("great research, keep it up!", "")
 
@@ -809,7 +810,7 @@ def test_a_comment_that_eats_an_existing_one_is_not_written():
 def test_a_comment_filed_under_acknowledged_is_not_written():
     """Landing under the wrong heading is silent: it reads as already dealt
     with, so no cycle ever answers it."""
-    def files_it_as_done(markdown, cycle, text, stamp):
+    def files_it_as_done(markdown, cycle, text, stamp, project=None):
         return markdown.replace(
             ACKNOWLEDGED_HEADING,
             f"{ACKNOWLEDGED_HEADING}\n\n### Cycle {cycle} · {stamp}\n\n{text}\n", 1)
@@ -826,7 +827,7 @@ def test_a_comment_filed_under_acknowledged_is_not_written():
 def test_a_comment_stored_with_the_text_altered_is_not_written():
     """His words are the whole point of the file -- `clean_comment_text` is
     the only thing allowed to touch them, and it runs before this."""
-    def rewraps_it(markdown, cycle, text, stamp):
+    def rewraps_it(markdown, cycle, text, stamp, project=None):
         return insert_comment(markdown, cycle, text.replace("\n", " "), stamp)
 
     with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
@@ -856,7 +857,7 @@ def test_an_ordinary_comment_still_goes_through_untouched():
 def test_a_needs_edvard_reply_is_checked_the_same_way():
     """`None` is a real key here, not a missing one -- an exempt set that
     mishandled it would let the whole check pass vacuously."""
-    def splices_into_the_frontmatter(markdown, cycle, text, stamp):
+    def splices_into_the_frontmatter(markdown, cycle, text, stamp, project=None):
         return markdown.replace("type: log", f"type: log\n{text}", 1)
 
     with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
@@ -870,7 +871,7 @@ def test_a_needs_edvard_reply_is_checked_the_same_way():
 def test_a_reply_that_damages_the_comment_it_answers_is_not_written():
     """The reply worker runs on its own thread, minutes after he has closed
     the app -- a bad write here is seen by nobody."""
-    def eats_his_text(markdown, cycle, stamp, reply, reply_stamp):
+    def eats_his_text(markdown, cycle, stamp, reply, reply_stamp, project=None):
         return markdown.replace("great research, keep it up!",
                                 f"#### Nova · {reply_stamp}\n\n{reply}")
 
@@ -886,7 +887,7 @@ def test_a_reply_that_damages_the_comment_it_answers_is_not_written():
 
 
 def test_a_reply_landing_on_the_wrong_comment_is_not_written():
-    def answers_the_wrong_one(markdown, cycle, stamp, reply, reply_stamp):
+    def answers_the_wrong_one(markdown, cycle, stamp, reply, reply_stamp, project=None):
         return insert_reply(markdown, 60, "2026-08-09 18:50", reply, reply_stamp)
 
     with patch.object(nova_comments, "vault_read_path_rev",
@@ -910,3 +911,48 @@ def test_an_ordinary_reply_still_goes_through_untouched():
     stored = [c for c in parse_comments(write.call_args[0][1]) if c["cycle"] == 63][0]
     assert stored["text"] == "great research, keep it up!"
     assert stored["reply"] == "thanks"
+
+
+def test_a_duplicated_document_is_refused():
+    """The 2026-08-26 corruption, as the guard now sees it.
+
+    A complete second copy of the file was spliced into the first copy's
+    frontmatter, at the point where the `contract:` line quotes the
+    literal `## Acknowledged`. Both existing halves of `verify_write` are
+    blind to it: `frontmatter()` reads the first block, which was intact,
+    and `comment_index()` is keyed on `(cycle, project, stamp)`, so a doubled
+    comment comes back under the key it already had.
+    """
+    good = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    doubled = good + "\n" + good
+    with pytest.raises(nova_comments.WriteRefused) as refused:
+        nova_comments.verify_write(good, doubled)
+    assert "duplicated or spliced into itself" in str(refused.value)
+
+
+def test_a_section_that_vanishes_is_refused():
+    """A write that eats `## Acknowledged` is damage, not a small diff."""
+    good = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    assert ACKNOWLEDGED_HEADING in good
+    truncated = good.replace(ACKNOWLEDGED_HEADING, "")
+    with pytest.raises(nova_comments.WriteRefused) as refused:
+        nova_comments.verify_write(good, truncated)
+    assert "went from 1 to 0" in str(refused.value)
+
+
+def test_the_first_comment_ever_may_create_the_sections():
+    """`_store` builds the document when the file does not exist yet.
+
+    Every landmark legitimately goes 0 -> 1 there, which is the one case
+    the count rule has to let through.
+    """
+    built = insert_comment("", 63, "keep it up", "2026-08-09 22:40")
+    nova_comments.verify_write("", built, exempt={(63, None, "2026-08-09 22:40")})
+
+
+def test_an_ordinary_reply_still_passes_the_count_rule():
+    """The guard must not refuse the writes it sits in front of."""
+    good = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
+    replied = insert_reply(good, 63, "2026-08-09 22:40", "thank you",
+                           "2026-08-09 22:45")
+    nova_comments.verify_write(good, replied, exempt={(63, None, "2026-08-09 22:40")})

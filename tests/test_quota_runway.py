@@ -316,7 +316,7 @@ def test_a_clean_hourly_log_measures_sixty():
 
 
 def test_a_manual_start_splits_an_interval_and_the_mode_survives_it():
-    """Edvard talking to Nova opens a session too, which inserts a start
+    """The owner talking to Nova opens a session too, which inserts a start
     partway through an interval. That splits one 60 into 31 + 29 without
     changing their sum, so the low buckets fill up with halves."""
     rows = _starts(0, 60, 120, 151, 180, 240, 244, 300)
@@ -331,7 +331,7 @@ def test_a_manual_start_splits_an_interval_and_the_mode_survives_it():
 
 
 def test_two_starts_in_the_same_minute_are_one_wake_up_not_two():
-    # 0 and 1 are a re-entry inside one session: no cadence Edvard has
+    # 0 and 1 are a re-entry inside one session: no cadence the owner has
     # ever set is under 40 minutes. Dropping them leaves four real gaps.
     rows = _starts(0, 1, 60, 120, 180, 240)
     assert observed_cadence_minutes(rows, now=240 * 60) == (60, 4, 4)
@@ -414,3 +414,83 @@ def test_an_observed_cadence_says_so_and_shows_its_sample(tmp_path, capsys):
     assert "assume" not in out
     # 43h dark at the measured 120 minutes, not the 64 a stale 40 gives.
     assert "21 heartbeats" in out
+
+
+# A cadence change makes the two cadences in this tool disagree, and the
+# disagreement is invisible in the output unless it is said out loud.
+# Measured 2026-08-27, Cycle 523: the heartbeat moved 20 -> 30 minutes, and
+# the moment `nova_heartbeat_snapshot` learned to read it the suggestion
+# jumped 29 -> 43 with no new measurement behind it -- the rate from the old
+# cadence scaled by the new interval.
+
+
+def test_the_suggested_interval_scales_from_the_cadence_that_earned_the_rate():
+    """20%/day over a 20-minute sample needs 29 minutes. Reading the new
+    30-minute schedule must not turn that into 43."""
+    at_twenty = runway(90.0, 155.9, 20.0, 20)[4]
+    after_change = runway(90.0, 155.9, 20.0, 30, spend_cadence_minutes=20)[4]
+    assert "about 29 minutes" in at_twenty[-1]
+    assert "about 29 minutes" in after_change[-1]
+
+
+def test_the_wake_up_count_still_uses_the_schedule_not_the_old_cadence():
+    """The two are separate questions: how many heartbeats will fire from
+    now on is forward-looking and belongs to the new schedule."""
+    _, _, _, lost_20, _ = runway(90.0, 155.9, 20.0, 20)
+    _, _, _, lost_30, _ = runway(90.0, 155.9, 20.0, 30, spend_cadence_minutes=20)
+    assert lost_20 > lost_30, "a slower heartbeat wastes fewer wake-ups"
+    # Worked by hand, not restated from the source: 90% at 20%/day is 108h of
+    # runway against 155.9h to the reset, so 47.9h dark = 2874 minutes.
+    # 2874 // 30 = 95 wake-ups, 2874 // 20 = 143.
+    assert (lost_20, lost_30) == (143, 95)
+
+
+def test_an_unchanged_cadence_needs_no_second_number():
+    """The default has to be the old behaviour exactly, or every existing
+    caller silently changes meaning."""
+    assert runway(90.0, 155.9, 20.0, 30) == runway(
+        90.0, 155.9, 20.0, 30, spend_cadence_minutes=30
+    )
+
+
+def test_a_moved_schedule_says_which_number_the_advice_stands_on(tmp_path, capsys):
+    reset = dt.datetime.fromtimestamp(1000.0 + 58 * 3600, dt.timezone.utc)
+    snap = _snapshot(tmp_path, resets_at=reset.isoformat())
+    hist = tmp_path / "hist.jsonl"
+    rows = [
+        {"at": 1000.0 - 24 * 3600, "seven_day": 69.0},
+        {"at": 1000.0, "seven_day": 88.0},
+    ]
+    rows += [
+        {"at": 1000.0 - h * 3600, "boundary": "start"} for h in (8, 6, 4, 2, 0)
+    ]
+    hist.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    # Agora answers, and says something other than the observed 120.
+    quota_runway.main_argv(
+        ["--snapshot", str(snap), "--history", str(hist), "--cadence-minutes", "180"]
+    )
+    out = capsys.readouterr().out
+    assert "the heartbeat is set to 180 minutes" in out
+    assert "earned at about 120" in out
+    assert "moved slower inside the sample" in out
+
+
+def test_an_unmoved_schedule_stays_quiet(tmp_path, capsys):
+    reset = dt.datetime.fromtimestamp(1000.0 + 58 * 3600, dt.timezone.utc)
+    snap = _snapshot(tmp_path, resets_at=reset.isoformat())
+    hist = tmp_path / "hist.jsonl"
+    rows = [
+        {"at": 1000.0 - 24 * 3600, "seven_day": 69.0},
+        {"at": 1000.0, "seven_day": 88.0},
+    ]
+    rows += [
+        {"at": 1000.0 - h * 3600, "boundary": "start"} for h in (8, 6, 4, 2, 0)
+    ]
+    hist.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    quota_runway.main_argv(
+        ["--snapshot", str(snap), "--history", str(hist), "--cadence-minutes", "120"]
+    )
+    out = capsys.readouterr().out
+    assert "the heartbeat is set to" not in out

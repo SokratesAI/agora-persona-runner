@@ -1,6 +1,6 @@
 """The cost and cadence page (issues.md #57, page 2).
 
-Edvard, 2026-08-08: *"I want you to figure out the optimal method of quota
+The owner, 2026-08-08: *"I want you to figure out the optimal method of quota
 spendage for projects. I do not know the optimal way."* That record exists
 -- every cycle's weighted tokens, turn count, wall-clock and both quota
 windows -- and until this page nobody could see it. `publish_costs` in the
@@ -26,10 +26,13 @@ COST_LEDGER_PATH = "projects/sokrates/projects/agora/nova/resources/cost-ledger.
 # The columns each compact row carries, in order. Sent alongside the rows
 # as documentation of the wire format -- the client indexes by position,
 # not by these names, so reordering either tuple silently swaps what the
-# charts plot. `test_a_cycle_row_is_the_five_columns_in_the_declared_order`
+# charts plot. `test_a_cycle_row_is_the_seven_columns_in_the_declared_order`
 # is what actually holds the two sides together; this is what tells a
 # reader of the payload what they are looking at.
-CYCLE_COLUMNS = ("at", "minutes", "turns", "toolCalls", "weighted")
+CYCLE_COLUMNS = (
+    "at", "minutes", "turns", "toolCalls", "weighted",
+    "subagentTurns", "subagentWeighted",
+)
 QUOTA_COLUMNS = ("at", "fiveHour", "fiveHourPace", "sevenDay", "sevenDayPace")
 
 _SUMMARY_KEYS = (
@@ -49,6 +52,51 @@ _SUMMARY_KEYS = (
 # They are five raw token counts each, the page plots none of them, and
 # `cost_share` is the same information already divided through -- which is
 # the form the question "where does the money go" is actually asked in.
+#
+# `summary.subagent_weighted` and `subagent_sessions` are left off for a
+# different reason: they disagree with the rows. Both are computed from the
+# transcripts on disk *now*, the way `other_sessions` is, while the cycle
+# rows are carried forward forever -- and the summary also counts orphans, a
+# subagent whose parent transcript has been pruned, which by construction is
+# attributed to no row. Live ledger, 2026-08-28: the summary says 48,656,353
+# and the rows add to 48,401,932. A tile fed by the first would not match the
+# chart under it, so the page adds up the column instead.
+
+
+def _subagent(cycle):
+    """A cycle row's two delegation numbers, or two holes if nobody counted.
+
+    `weightedTokens` on a parent deliberately does not absorb its
+    children's -- `analytics.attribute_subagents` says so in as many words,
+    because that column is what `calibration.py` joins against quota
+    readings and double-counting a charge would skew the constant. The
+    consequence is that the `weighted` column understates every delegating
+    cycle, and until these two columns existed the page had no way to say
+    by how much.
+
+    The hole is the part worth reading twice, and it is the same call
+    `test_a_reading_from_before_pace_existed_is_a_hole_not_a_zero` makes
+    one field over. Subagent *cost* attribution landed 2026-08-19, and
+    every one of the 265 rows older than that carries `subagentTurns: 0`
+    with no `subagentWeightedTokens` key at all -- a default that was
+    written once and then carried forward by every republish. Delegation
+    was routine well before that date, so those zeros are not measurements
+    of nothing, they are the absence of an instrument. Plotted as zeros
+    they draw a flat floor until 19 August and a step up, which reads as
+    "this is when Nova started delegating" and is false. `None` is what
+    makes a client break the line instead.
+
+    The key that decides it is `subagentWeightedTokens`, not
+    `subagentTurns`: the turn count is present on all 588 rows and is 0 on
+    every pre-attribution one, so it cannot tell the two eras apart on its
+    own.
+    """
+    if "subagentWeightedTokens" not in cycle:
+        return None, None
+    return (
+        cycle.get("subagentTurns") or 0,
+        round(cycle.get("subagentWeightedTokens") or 0),
+    )
 
 
 def _ms(iso):
@@ -108,6 +156,7 @@ def costs_payload(document):
                 cycle.get("turns") or 0,
                 cycle.get("toolCalls") or 0,
                 round(cycle.get("weightedTokens") or 0),
+                *_subagent(cycle),
             ]
         )
     quota = []

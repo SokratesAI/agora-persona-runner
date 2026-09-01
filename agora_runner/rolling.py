@@ -62,6 +62,15 @@ class RollSpec:
     around; `check_archive` and `check_render` are extra guards the
     caller wants run before any write. All three default to nothing,
     because the generic checks below are the ones that matter.
+
+    `check_live` is the odd one out: it is handed the *whole* live
+    document rather than anything this engine parsed out of it, and it
+    runs before the marker is even located. Every other check here asks
+    whether the roll is faithful; that question is blind by construction
+    to a live file that was already wrong before the roll touched it,
+    because a faithful roll of a damaged document is a damaged document.
+    A caller that knows what its own file is supposed to look like says
+    so here.
     """
 
     def __init__(
@@ -78,7 +87,9 @@ class RollSpec:
         check_entries=None,
         check_archive=None,
         check_render=None,
+        check_live=None,
     ):
+        self.check_live = check_live
         self.check_entries = check_entries
         self.noun = noun
         self.marker = marker
@@ -127,7 +138,7 @@ def split_bullets(text):
     writes exactly one between each, so a file with tight and loose runs
     mixed comes back uniformly loose. That is a real reformat and it is
     only acceptable because of who reads these: the capture files live in
-    `nova/resources/`, which Edvard has said he does not open, and no
+    `nova/resources/`, which the owner has said he does not open, and no
     parser anywhere reads them. Do not reuse this splitter on a file
     either of those is untrue of.
     """
@@ -204,7 +215,7 @@ def _split_title(archive, spec):
     the rolling cycle line inserted above the frontmatter's closing `---`
     where no reader can see it; and the frontmatter itself written back
     severed mid-sentence with that `---` gone. The site concatenates this
-    archive onto the digest Edvard opens, so the fragment renders on his
+    archive onto the digest the owner opens, so the fragment renders on his
     page as a cycle line.
 
     **`verify` passed all of that**, which is the part worth keeping in
@@ -287,7 +298,7 @@ def plan(live, archive, spec, keep=None, select=None):
     callers roll by age -- a digest line ten cycles back is old because ten
     cycles happened -- and for them the tail *is* the answer.
     `roll_needs_edvard` is the one where it is not: an item there is old
-    when Edvard has answered it, which no position in the file can show, so
+    when the owner has answered it, which no position in the file can show, so
     it passes the items it was told are answered. Default is the tail, byte
     for byte what this function did before the parameter existed.
 
@@ -305,6 +316,11 @@ def plan(live, archive, spec, keep=None, select=None):
     selection is right here rather than only caught downstream.
     """
     keep = spec.keep if keep is None else keep
+    # Before anything is parsed: `_body` splits on the marker and every
+    # check after it reasons about the section it found, so damage
+    # anywhere else in the document is invisible to all of them.
+    if spec.check_live:
+        spec.check_live(live)
     head, body, tail = _body(live, spec)
     entries = spec.split_entries(body)
     if spec.check_entry:
@@ -323,7 +339,7 @@ def plan(live, archive, spec, keep=None, select=None):
         # which is exactly `roll_digest`'s own wrapper -- would then archive
         # the whole live section and `verify` would pass it, because moving
         # everything is still a multiset-preserving roll. The reviewer
-        # reproduced that against Edvard's real digest: both live asks gone,
+        # reproduced that against the owner's real digest: both live asks gone,
         # exit 0, no placeholder. Refusing is the only sane reading of
         # "keep none of it, by age".
         raise RollError(

@@ -318,7 +318,202 @@ async function probeReplayHeader(browser) {
   return { probe: 'replay-header', ok: detail.status === 200 && detail.replayed === '1', detail, errors };
 }
 
+/* Every link in the menu drawer is reachable, on the phone that reported it.
+ *
+ * The owner, `issues.md` 2026-08-26: *"The sliding sidebar menu in Nova is
+ * now so full with pages links that it starts to move out the bottom of
+ * my screen."* The drawer is a `position: fixed` flex column pinned
+ * `top: 0; bottom: 0`, so its box is exactly one viewport tall; the
+ * links inside it are not. Without an `overflow-y` the surplus
+ * simply hangs below the bottom edge, unreachable -- `body.nav-open`
+ * stops the page behind from scrolling, and the drawer itself never
+ * scrolled.
+ *
+ * The viewport is the owner's, not the file's default: 360x697 CSS px, off the
+ * device report pasted into `notes.md`. That matters because the
+ * probe's failure has to be *possible* -- at the 844px this file uses
+ * elsewhere the links very nearly fit, and a probe that is green before
+ * the fix measures nothing.
+ *
+ * **Three things this probe got wrong for as long as the menu has had
+ * folds, and each of them is a way to measure something that is not the
+ * user's sentence.** Cycle 461 grouped the menu into `<details>` folds;
+ * this probe went on reading the last `.nav-tab` in the drawer, and from
+ * that day the link it read was inside a *shut* fold.
+ *
+ * 1. **A rect inside a shut `<details>` is a phantom.** Chromium skips
+ *    the subtree's rendering without zeroing its box, so
+ *    `getBoundingClientRect()` hands back a full layout for links that
+ *    are not painted and cannot be tapped. `style.css` says this in the
+ *    `.nav-fold` comment and this probe read past it. Measured
+ *    2026-08-31 on the live site: with every fold shut, `Device` reports
+ *    `bottom: 728` in a 697 viewport and `checkVisibility()` is `false`.
+ *    That is the FAIL this probe had been printing -- a phantom box,
+ *    below a fold nobody had opened, and it says nothing either way
+ *    about a link the owner can actually reach. So every tab is filtered through
+ *    `checkVisibility()` first, which is the one call that cannot be
+ *    fooled this way.
+ * 2. **A link inside a fold is only reachable after the fold is open,
+ *    so the probe has to open it.** With the folds shut there is
+ *    genuinely nothing to scroll -- four visible links in a
+ *    one-viewport box -- and asserting reachability against that state
+ *    asks a question the layout does not have. Opening every fold is
+ *    what the owner does before he can tap anything in one, and it is
+ *    the state where the drawer actually overflows: 1038px of content
+ *    in 697.
+ * 3. **`nav.scrollTop = ...` is not the gesture.** It is script, and
+ *    script scrolls a box the user cannot -- the same trap
+ *    `probeChatScrollLock` below is built around, in the other
+ *    direction. `mouse.wheel` is a real input event. Measured both ways:
+ *    the wheel moves the drawer 341px and lands `Device` at 681; with
+ *    `overflow-y: hidden` injected the same wheel moves it 0 and leaves
+ *    `Device` at 1022. So the assertion below is one a broken drawer
+ *    fails, which the `scrollTop` version was not.
+ *
+ * The context is deliberately not `PHONE`: a wheel is not dispatched
+ * into a touch-only context, and the thing under test is the CSS, which
+ * does not know which input moved the box.
+ *
+ * `neededScroll` is reported beside the verdict rather than asserted, so
+ * a future layout where every link fits outright still passes. The count
+ * is deliberately not written down here -- it was "thirteen" until Cycle
+ * 461 grouped the menu, and a probe whose comment names a number the
+ * page can change is a comment that goes stale on its own.
+ */
+async function probeNavReachable(browser, path) {
+  const ctx = await browser.newContext({ viewport: { width: 360, height: 697 } });
+  const page = await ctx.newPage();
+  const errors = watch(page);
+  await page.goto(base + path, { waitUntil: 'networkidle', timeout: 30000 });
+
+  await page.locator('.menu-btn').click();
+  await page.waitForTimeout(400); // the slide is 220ms
+
+  // A link inside a shut fold is not reachable and is not meant to be.
+  // Open every fold, which is what he does before tapping one, and only
+  // then ask whether the last link he could tap is on the screen.
+  await page.evaluate(() => document.querySelectorAll('.nav details').forEach((d) => { d.open = true; }));
+  await page.waitForTimeout(200);
+
+  const before = await page.evaluate(() => {
+    const nav = document.querySelector('.nav');
+    const tabs = nav ? [...nav.querySelectorAll('.nav-tab')].filter((t) => t.checkVisibility()) : [];
+    const last = tabs.length ? tabs[tabs.length - 1] : null;
+    if (!nav || !last) return { open: false, tabs: tabs.length };
+    return {
+      open: nav.classList.contains('open'),
+      tabs: tabs.length,
+      // Every link in the drawer, visible or not. The verdict below
+      // requires the two to match, so a fold that failed to open turns
+      // into a failure rather than into a quiet pass over the four
+      // links that were never behind one.
+      tabsInDrawer: nav.querySelectorAll('.nav-tab').length,
+      viewport: window.innerHeight,
+      scrollable: nav.scrollHeight > nav.clientHeight,
+      lastBottomBeforeScroll: Math.round(last.getBoundingClientRect().bottom),
+      lastText: last.textContent.trim(),
+    };
+  });
+
+  let detail = before;
+  if (before.open) {
+    const box = await page.locator('.nav').boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, 2000);
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(() => {
+      const nav = document.querySelector('.nav');
+      const tabs = [...nav.querySelectorAll('.nav-tab')].filter((t) => t.checkVisibility());
+      const last = tabs[tabs.length - 1];
+      return {
+        scrolledBy: Math.round(nav.scrollTop),
+        lastBottomAfterScroll: Math.round(last.getBoundingClientRect().bottom),
+      };
+    });
+    detail = { ...before, ...after, neededScroll: before.lastBottomBeforeScroll > before.viewport };
+  }
+  await ctx.close();
+
+  const ok =
+    !!detail.open &&
+    detail.tabs > 0 &&
+    detail.tabs === detail.tabsInDrawer &&
+    detail.lastBottomAfterScroll <= detail.viewport;
+  return { probe: 'nav-reachable' + path, ok, detail, errors };
+}
+
+/* The page behind the chat sheet does not scroll while the sheet is up.
+ *
+ * The owner, `issues.md` 2026-08-31: *"When i have the chat modal open, i
+ * should not be able to scroll the page its hovering over. Currently i can
+ * and its wierd."* The dock is `position: fixed`, so the document under it
+ * is a perfectly ordinary scroller and every gesture that misses the
+ * thread -- the head, the composer, a flick past the last message --
+ * scrolls the journal behind. Closing the sheet then lands him somewhere
+ * he never navigated to.
+ *
+ * **The gesture has to be a wheel, and `window.scrollTo` is the trap.**
+ * `overflow: hidden` stops the *user* scrolling a box; it deliberately
+ * goes on allowing script to scroll it, which is what makes
+ * `scrollTo`-into-a-clipped-container work at all. So a probe built on
+ * `scrollTo` reports the page moving whether or not the lock is there --
+ * measured both ways on 2026-08-31 before this was written, and it read
+ * FAIL against the fix as loudly as against the bug. `mouse.wheel` is a
+ * real input event and is refused by the lock: 500px unlocked, 0px locked,
+ * same page, same run.
+ *
+ * Both halves are asserted, because only the pair is evidence. With the
+ * sheet shut the page **must** move, or the "it did not move" below is a
+ * negative guaranteed in advance by a short page rather than by the fix.
+ *
+ * The viewport is the owner's own 360x697 from `notes.md`, which is also
+ * the width that puts the dock in its full-screen `max-width: 30rem` form
+ * -- the one he is describing. The context is deliberately *not* `PHONE`:
+ * a wheel event is not dispatched into a touch-only context, and the thing
+ * under test is the CSS, which does not know which input moved the page.
+ */
+async function wheelScroll(page, distance) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.mouse.move(180, 300);
+  await page.mouse.wheel(0, distance);
+  await page.waitForTimeout(300);
+  return page.evaluate(() => Math.round(window.scrollY));
+}
+
+async function probeChatScrollLock(browser, path) {
+  const ctx = await browser.newContext({ viewport: { width: 360, height: 697 } });
+  const page = await ctx.newPage();
+  const errors = watch(page);
+  await page.goto(base + path, { waitUntil: 'networkidle', timeout: 30000 });
+
+  // Closed: the page has to be scrollable, or nothing below means anything.
+  const closed = await wheelScroll(page, 500);
+  const height = await page.evaluate(() => Math.round(document.documentElement.scrollHeight));
+
+  await page.locator('#chat-btn').click();
+  await page.waitForTimeout(400);
+  const open = await wheelScroll(page, 500);
+  const marks = await page.evaluate(() => ({
+    marked: document.body.classList.contains('chat-open'),
+    dockOpen: !document.getElementById('chat-dock').hasAttribute('hidden'),
+  }));
+  await ctx.close();
+
+  const detail = {
+    pageScrollsWhenClosed: closed > 0,
+    scrolledWhenClosed: closed,
+    documentHeight: height,
+    chatOpen: marks.dockOpen,
+    bodyMarked: marks.marked,
+    scrolledWhenOpen: open,
+  };
+  const ok = detail.pageScrollsWhenClosed && detail.chatOpen && detail.scrolledWhenOpen === 0;
+  return { probe: 'chat-scroll-lock' + path, ok, detail, errors };
+}
+
 const PROBES = {
+  'nav-reachable': (b) => probeNavReachable(b, '/'),
+  'chat-scroll-lock': (b) => probeChatScrollLock(b, '/'),
   'search-focus': (b) => probeSearchFocus(b, '/issues'),
   'search-focus-ideas': (b) => probeSearchFocus(b, '/ideas'),
   'replay-header': (b) => probeReplayHeader(b),

@@ -3,8 +3,8 @@
 The digest reached 100,991 bytes -- 96,740 of it 54 accumulated cycle
 lines -- and grows ~1.8KB every hour forever. `prompt.md` step 1a
 forbids a cycle from delegating that read, so every cycle pays for all
-of it to reach the 3.6KB of **Needs Edvard** / **Next cycle** at the
-top. Same shape as `journal.md` at 291KB, which Edvard called urgent.
+of it to reach the 3.6KB of **Needs Edvard** / **Next cycle** at the  (not-prose: quoting a literal)
+top. Same shape as `journal.md` at 291KB, which the owner called urgent.
 
 This is a script rather than a paragraph in `prompt.md` for the reason
 `split_journal.py` is one: a rule that lives only in prose is a rule
@@ -41,20 +41,43 @@ client that pod actually has:
 import re
 import sys
 
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from agora_runner.md_sections import split_at_heading
 from agora_runner.nova_journal import parse_digest, split_digest_entries
 from tools import rolling
+from tools.doc_integrity import duplicate_headings
 from tools.rolling import RollError, RollSpec, dedup, join_paragraphs
 
 # Half a day at the current one-cycle-an-hour cadence. The number is not
-# arbitrary: Edvard sleeps 22:00-07:00, so nine cycles run while he is
+# arbitrary: The owner sleeps 22:00-07:00, so nine cycles run while he is
 # away, and anything below ~10 means he wakes to a digest that has
 # already dropped part of the night.
 KEEP = 12
 
 MARKER = "\n## Digest\n"
 ARCHIVE_TITLE = "# Journal — Digest Archive"
-_LINE_RE = re.compile(r"^\*\*Cycle ")
+# A digest line opens with a bolded name, and for everything a weekly
+# heartbeat writes that name is not "Cycle N" -- `**Ideas & research**
+# (2026-08-25 13:29) — ...` is a real line in his file, written by the
+# Tue/Thu/Sat run, which has its own conversation and therefore no cycle
+# number at all. The old matcher took only `**Cycle `, so one weekly line
+# in the section refused every roll after it: the digest sat at 15 lines
+# for eight handoffs, growing, while the tool that trims it reported
+# itself working correctly by refusing.
+#
+# The guard still means what it meant -- a paragraph nothing can date
+# makes the split point guesswork -- so the second alternative requires
+# the stamp rather than accepting any bold opening. `**Cycle ` stays as
+# its own alternative because the addendum shape `**Cycle 94
+# (addendum)**` puts the number inside the bold and does not always
+# carry a stamp after it.
+_LINE_RE = re.compile(
+    r"^\*\*Cycle |^\*\*[^*\n]+\*\*[ \t]+\(\d{4}-\d{2}-\d{2} \d{2}:\d{2}\)"
+)
 
 ARCHIVE_FRONTMATTER = (
     "---\n"
@@ -69,6 +92,49 @@ ARCHIVE_FRONTMATTER = (
     "(agora_runner/nova_sources.py, digest_markdown).\n"
     "---\n\n"
 )
+
+
+def _check_live(live):
+    """Refuse a live digest that is structurally wrong, before any roll.
+
+    The failure is not one the roll itself can cause, which is exactly
+    why nothing here could see it. `plan` splits on `## Digest` and every
+    other check in this file reasons about the section below it, so a
+    faithful roll of a spliced document is a spliced document, and this
+    script has read one and said nothing.
+
+    On 2026-08-26 the digest went live carrying
+    two `## Needs input` sections and two `## Next cycle` sections -- the
+    previous cycle's block and the current one's, one under the other,
+    because a cycle rewriting a section it did not write added its copy
+    without removing the old. `md_sections._sections` keys by heading and
+    keeps the *last* of each, so the site rendered the newer block and
+    looked correct; Obsidian, which the owner reads, showed both. It was
+    found by `tools.doc_integrity` twenty minutes later, at the start of
+    the next cycle -- which is the right instrument at the wrong moment,
+    because by then the damage is a cycle old and the next write lands on
+    top of it. This script is the only code that reads the live digest
+    out of the vault every cycle, seconds after it is written, so the same
+    invariant costs nothing here and closes that window.
+
+    Refusing rather than warning, deliberately, and it is not a free
+    choice -- `_check_entry`'s own history is that a refusal on the live
+    document stopped the trim for eight handoffs while the file grew. The
+    difference is what the message can ask for: that one needed the
+    matcher changed and named a paragraph instead, this one names the
+    duplicated heading and the fix is deleting the stale copy. Nothing is
+    lost by refusing either way; the digest was written before this runs
+    and the roll is idempotent.
+    """
+    duplicates = duplicate_headings(live)
+    if duplicates:
+        found = ", ".join(f"{name!r} x{n}" for name, n in sorted(duplicates.items()))
+        raise RollError(
+            "refusing to roll: the live digest holds a duplicated heading -- "
+            f"{found}. A second copy of a section is in this file; the site "
+            "renders the last of each and hides it, Obsidian shows both. "
+            "Delete the stale copy before rolling."
+        )
 
 
 def _check_entry(entry):
@@ -95,7 +161,7 @@ def _check_archive(new_archive):
     Worth stating precisely, because the obvious guess is wrong and a
     reviewer had to correct it: `_sections` keys sections by heading text
     and keeps the last of each, so a `## Digest` landing in the archive
-    does *not* touch **Needs Edvard** or **Next cycle** -- those come from
+    does *not* touch **Needs Edvard** or **Next cycle** -- those come from  (not-prose: quoting a literal)
     different keys, populated from the live file. What it silently
     discards is the live file's own digest lines, the newest ones, in
     favour of the archive's older ones. That is precisely the data this
@@ -138,6 +204,7 @@ SPEC = RollSpec(
     join_entries=join_paragraphs,
     keep=KEEP,
     noun="digest lines",
+    check_live=_check_live,
     check_entry=_check_entry,
     check_archive=_check_archive,
     check_render=_check_render,

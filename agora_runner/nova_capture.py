@@ -1,13 +1,13 @@
-"""The capture box: one field on Nova's site, one bullet in Edvard's backlog.
+"""The capture box: one field on Nova's site, one bullet in the owner's backlog.
 
 Idea #34 item 6, and the first thing on this site that *writes* to the
 vault. It replaces opening Obsidian on a phone to type one line.
 
 **Where a capture lands, and why exactly there.** Both target files
-declare their own contract in frontmatter -- *"Edvard writes in the bare
+declare their own contract in frontmatter -- *"the owner writes in the bare
 bullet list at the top ... Nova numbers it, boards it, and always leaves
 exactly one empty bullet there so he can start typing immediately"*. A
-capture is Edvard writing, so it goes in that list and nowhere else, with
+capture is the owner writing, so it goes in that list and nowhere else, with
 no timestamp, no "via web" marker and no provenance tag. It has to be
 indistinguishable from the same line typed in Obsidian, because it *is*
 the same line by the same author, and prompt.md treats a bare bullet at
@@ -51,20 +51,29 @@ from agora_runner.config import OSLO
 from agora_runner.log import log
 from agora_runner.nova_boards import (
     BOARD_PATHS,
+    add_row,
     CAPTURE_PRIORITY_SEP,
     PRIORITY_LABELS,
+    PROJECT_META_PATH,
+    parse_project_meta,
+    set_project_priority as _set_project_priority_md,
     canonical_priority,
     append_detail_note,
+    capture_entries,
     delete_row,
+    _frontmatter_end,
     extract_row,
     set_row_priority,
+    set_row_project,
     set_row_title,
+    split_capture_done,
+    split_capture_priority,
 )
 from agora_runner.nova_uploads import is_attachment_line
 from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 # These three moved out of `projects/sokrates/projects/agora/` on
-# 2026-08-12. Edvard had asked whether they should follow Nova into its
+# 2026-08-12. The owner had asked whether they should follow Nova into its
 # own database; the answer was no, and the reason is worth keeping:
 # *"It is actually a good point to leave them in my Vault just in case
 # the Nova app malfunctions or something else goes wrong. Then I have
@@ -82,7 +91,7 @@ from agora_runner.vault import vault_read_path_rev, vault_write_path
 CAPTURE_TARGETS = {
     "issues": "projects/sokrates/projects/nova/issues.md",
     "ideas": "projects/sokrates/projects/nova/ideas.md",
-    # Edvard, issues.md 2026-08-12: *"I should be able to just leave you
+    # The owner, issues.md 2026-08-12: *"I should be able to just leave you
     # notes instead of just issues and ideas. I have said this 2-3 times
     # before. Add a button next to issues/ideas in the Nova app that lets
     # me just send you notes."* A note is neither a bug nor a proposal --
@@ -106,7 +115,13 @@ MAX_BODY_BYTES = 64 * 1024
 
 WRITE_ATTEMPTS = 3
 
-# Where a row Edvard deletes from the app goes so a cycle can still see it
+# `amend`'s "nothing happened, the address moved" answer. Named because
+# `convert_capture` and `_post_convert` both have to tell it apart from a
+# failed write, and a substring match on prose typed twice is the drift
+# this repo keeps filing against itself.
+STALE_CAPTURE = "no longer in the list"
+
+# Where a row the owner deletes from the app goes so a cycle can still see it
 # (his capture, 2026-08-22). `resources/` because it is my bookkeeping --
 # he asked to be able to remove a row from his board, not to be given a
 # second page of removed rows to read.
@@ -120,16 +135,6 @@ contract: Written by agora_runner/nova_capture.py when Edvard deletes a boarded 
 
 # Deleted board rows
 """
-
-
-def _frontmatter_end(lines):
-    """Index of the first line *after* the closing `---`, or 0."""
-    if not lines or lines[0].strip() != "---":
-        return 0
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            return i + 1
-    return 0
 
 
 def _capture_span(lines):
@@ -161,43 +166,9 @@ def _capture_span(lines):
     return start, first, end
 
 
-def capture_entries(markdown):
-    """`[(start_line, end_line, text)]` for the capture list, in file order.
-
-    **`text` is exactly what `nova_boards._captures` puts on the page**,
-    joining rule included: a continuation line is folded into the bullet
-    above it, because the same files are edited in Obsidian on a phone and
-    a capture that wrapped would otherwise show Edvard half a sentence.
-    That joining is why this returns a *span* rather than a line number --
-    one capture can be two lines in the file, and replacing only the first
-    would leave its second half orphaned as a stray paragraph.
-
-    The two functions must agree about what a capture is, and the first
-    version of this file got that exactly backwards: it deliberately did
-    *not* join, reasoning that a joined address would match no single line
-    and so fail safely. It does fail -- but the page is what supplies the
-    address, and the page joins, so Edit and Delete were permanently dead
-    on any wrapped capture and said "no longer in the list", which is
-    false. Found by review, reproduced against the live parser.
-    """
-    lines = (markdown or "").split("\n")
-    start = _frontmatter_end(lines)
-    entries = []
-    for i in range(start, len(lines)):
-        stripped = lines[i].strip()
-        if stripped.startswith("#"):
-            break
-        if stripped.startswith("- ") and stripped[2:].strip():
-            entries.append((i, i + 1, stripped[2:].strip()))
-        elif stripped and entries and not stripped.startswith(("-", "*", "|")):
-            begin, _, text = entries[-1]
-            entries[-1] = (begin, i + 1, text + " " + stripped)
-    return entries
-
-
 def list_captures(markdown):
-    """The capture list's texts, exactly as the board page shows them."""
-    return [text for _, _, text in capture_entries(markdown)]
+    """The capture list's texts -- his words alone, without any reply."""
+    return [text for _, _, text, _ in capture_entries(markdown)]
 
 
 def replace_capture(markdown, index, original, bullets):
@@ -216,7 +187,7 @@ def replace_capture(markdown, index, original, bullets):
 
     So: the index says which one, the text says it has not moved, and a
     disagreement is refused rather than resolved. `None` means "not there
-    any more", which is a different answer to Edvard than a failed write
+    any more", which is a different answer to the owner than a failed write
     and only one of them is an error.
 
     Passing no bullets deletes it. The empty cursor bullet is not a
@@ -226,11 +197,37 @@ def replace_capture(markdown, index, original, bullets):
     wanted = (original or "").strip()
     if not wanted or not isinstance(index, int) or not 0 <= index < len(entries):
         return None
-    begin, end, text = entries[index]
-    if text != wanted:
+    begin, end, text, replies = entries[index]
+    # **His sentence alone, never the board page's folded spelling** --
+    # and the reviewer is the reason this is one form rather than two.
+    # Accepting the joined string looked like the fix for a dead Edit
+    # button, and it is worse than the dead button: `app.js` builds the
+    # *replacement* text out of the same folded string, so one tap on the
+    # priority chip writes `- Rated: his line my answer` with the reply
+    # still underneath it, and the next tap folds that in and doubles it
+    # again. Convert does the same thing across two files. A refusal
+    # leaves the board page exactly where it was before this change --
+    # a button that does nothing on an answered capture, which is a
+    # separate fix and belongs in the payload, not here.
+    if wanted != text:
         return None
     lines = (markdown or "").split("\n")
-    return "\n".join(lines[:begin] + [f"- {b}" for b in bullets] + lines[end:])
+    # A delete takes the replies with it -- an answer to a bullet that is
+    # gone is orphaned text in his file, which is exactly what Cycle 415
+    # spent itself cleaning up. An *edit* keeps them: he is rewording his
+    # own sentence, and a cycle's answer underneath is not his to lose.
+    kept = []
+    if bullets:
+        # From the first indented *bullet* to the end of the span -- a
+        # reply and everything under it. Not "every indented line": the
+        # capture's own wrapped second line is indented too, and keeping
+        # that would put half his old sentence back under his new one.
+        for i in range(begin, end):
+            body = lines[i].strip()
+            if lines[i][:1].isspace() and body.startswith("- ") and body[2:].strip():
+                kept = lines[i:end]
+                break
+    return "\n".join(lines[:begin] + [f"- {b}" for b in bullets] + kept + lines[end:])
 
 
 def amend(target, index, original, text):
@@ -264,7 +261,7 @@ def amend(target, index, original, text):
             # Not a write failure: the bullet is not there to amend. Most
             # likely a cycle boarded it while this page was open, which is
             # the ordinary outcome rather than a fault.
-            return False, "that capture is no longer in the list"
+            return False, f"that capture is {STALE_CAPTURE}"
         result = vault_write_path(path, amended, if_rev=rev)
         if result == "written":
             what = "edited" if bullets else "deleted"
@@ -276,7 +273,255 @@ def amend(target, index, original, text):
     return False, f"could not write to {target}: {result}"
 
 
-def clean_capture_text(text):
+def reply_under_capture(markdown, index, original, text):
+    """Write `text` as a cycle's reply under capture `index`. `None` if it moved.
+
+    Same two-part address as `replace_capture` and for the same reasons:
+    the index says which bullet, the text says it has not moved, and a
+    disagreement is refused rather than resolved.
+
+    The reply is an indented bullet, which is not a format invented here
+    -- it is what all three parsers of these files already assume an
+    indented bullet means, and what the notes page has been drawing as a
+    purple bubble since Cycle 369. What was missing was any way to *write*
+    one other than by hand.
+
+    A second reply goes under the first, in file order, because `end` is
+    the end of the whole span rather than of his own line.
+    """
+    entries = capture_entries(markdown)
+    wanted = (original or "").strip()
+    body = (text or "").strip()
+    if not wanted or not body or not isinstance(index, int) or not 0 <= index < len(entries):
+        return None
+    begin, end, capture_text, replies = entries[index]
+    if wanted not in (capture_text, " ".join([capture_text] + replies)):
+        return None
+    lines = (markdown or "").split("\n")
+    return "\n".join(lines[:end] + [f"  - {body}"] + lines[end:])
+
+
+def comment_on_capture(target, index, original, text):
+    """Answer one unboarded capture in place. Returns (ok, message).
+
+    **The one class of item `tools.top_board_rows` ranks above everything
+    else was the one class a cycle could not answer.** His bare bullets
+    outrank every boarded row, `/api/board/comment` is keyed by a row
+    number, and a capture has no number -- so six handoffs in a row filed
+    "no way to reply on a capture" and each one wrote its answer into a
+    journal entry instead, where it is not next to the thing it answers.
+
+    There is deliberately no `author` argument. On these three files a
+    bare bullet is his and an indented one is a cycle's; that is the
+    contract every parser here already reads, so an author field would be
+    a second way of saying the same thing and a way for the two to
+    disagree.
+
+    Same read-modify-write and same 409 retry as `amend`, because the
+    concurrent writer is the same one: a cycle boarding these files while
+    the reply is being written.
+    """
+    path = CAPTURE_TARGETS.get(target)
+    if path is None:
+        return False, f"unknown target: {target!r}"
+    if not (original or "").strip():
+        return False, "nothing to answer"
+    body = (text or "").strip()
+    if not body:
+        return False, "nothing to say"
+    if "\n" in body or "\r" in body:
+        return False, "a reply cannot contain a line break"
+
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(path)
+        if current is None:
+            return False, f"{path} not found"
+        amended = reply_under_capture(current, index, original, body)
+        if amended is None:
+            return False, f"that capture is {STALE_CAPTURE}"
+        result = vault_write_path(path, amended, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture replied under a capture in {target}")
+            return True, f"replied in {target}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed replying in {target}: {result}")
+    return False, f"could not write to {target}: {result}"
+
+
+def convert_capture(source, index, original, dest):
+    """Move one unboarded capture to a different capture file. Returns (ok, message).
+
+    The owner, capture 2026-08-24: *"The note i sent regarding the
+    rebuilding the notes page was sent as a note, but its actually an
+    idea, but i have no way of changing it or editing it. So we need
+    crude operations for notes, but also the possibility to change
+    issues/ideas/notes into one of the other."* He picks which of the
+    three buttons to press at the moment he types, before he has finished
+    thinking, and until now that choice was permanent -- the only way out
+    was to delete the line and retype it into the other box.
+
+    **This converts a bare bullet, not a boarded row, and that boundary is
+    deliberate rather than a first slice.** A capture is one line of his
+    text in a list, so moving it really is a move. A boarded row is a
+    numbered row with a priority cell, a `# Details` write-up and a
+    comment thread, and its number is what every journal entry, claim slug
+    and board comment points at; carrying that across to another file
+    means deciding what happens to the number and the thread, which is a
+    different piece of work with a real design question in it. A row he
+    wants moved after it is boarded is still one he can say so about.
+
+    **Write to the destination first, then remove from the source.** The
+    two files are separate documents with separate revisions, so there is
+    no transaction to be had here and one of the two orders has to be
+    chosen for what its half-done state costs him. Delete-then-write loses
+    his sentence if the second call fails. Write-then-delete leaves the
+    line in both files, which he can see and delete in one tap -- and the
+    message below says so rather than reporting success. A duplicate is
+    recoverable; his text is not.
+
+    The rating rides across with the bullet for the two boards, because it
+    is his and it is still true after the move. It is stripped going into
+    `notes.md`, whose contract is *"never numbered, never boarded"* -- a
+    priority label in a file with no board is vocabulary from a page that
+    does not exist.
+    """
+    if source not in CAPTURE_TARGETS:
+        return False, f"unknown target: {source!r}"
+    if dest not in CAPTURE_TARGETS:
+        return False, f"unknown target: {dest!r}"
+    if source == dest:
+        return False, f"already in {dest}"
+    if not (original or "").strip():
+        return False, "nothing to convert"
+
+    text = original
+    if dest == "notes":
+        _, text = split_capture_priority(original)
+        if not text.strip():
+            return False, "nothing to convert"
+
+    ok, message = capture(dest, text)
+    if not ok:
+        return False, message
+    ok, removal = amend(source, index, original, "")
+    if not ok:
+        log(f"nova-capture converted {source}->{dest} but left the original: {removal}")
+        # **Two failures, and telling him the wrong one costs him a
+        # duplicate he cannot find.** A write that failed really does leave
+        # the line in both files. A *stale address* does not: the bullet
+        # was boarded, edited, or already removed by a second tap of the
+        # same button, so the source may be clean and the copy in `dest`
+        # may be the second one. Found by review, which walked a
+        # double-tap through both calls.
+        if STALE_CAPTURE in removal:
+            return False, (
+                f"copied to {dest}, but {source} moved under me — "
+                f"check {dest} for a duplicate"
+            )
+        return False, (
+            f"copied to {dest}, but could not remove it from {source} "
+            f"({removal}) — it is in both, delete the {source} one"
+        )
+    log(f"nova-capture converted a capture from {source} to {dest}")
+    return True, f"moved to {dest}"
+
+
+# Where his first sentence ends. `. ` / `? ` / `! ` followed by a capital
+# or the end of the line -- not a bare full stop, which would cut
+# `sonarr.` or `08-26.` in half. A capture with no sentence break at all
+# has no match and becomes its own title, whole.
+_FIRST_SENTENCE_RE = re.compile(r"^(.*?[.!?])(?:\s+(?=[A-Z0-9])|\s*$)", re.DOTALL)
+
+
+def capture_title(text):
+    """One capture bullet -> the one-line title its board row should carry."""
+    body = " ".join((text or "").split())
+    match = _FIRST_SENTENCE_RE.match(body)
+    return (match.group(1) if match else body).strip()
+
+
+def promote_capture(target, index, original, priority=None):
+    """Turn one unboarded capture into a numbered row. Returns (ok, message).
+
+    The owner, capture 2026-08-26: *"Whats with the not boarded
+    ideas/issues? I really like the comments on them so that i can see
+    whats happening, but they do no seem to just stay forever in the 'not
+    boarded yet' box as unrated. Thats not what the box is for. This a re
+    ideas you have not seen before and you pick it up, prioritised them
+    and make them as their own nice item like the rest."*
+
+    **One write, not two, and that is the whole reason this is not shaped
+    like `convert_capture`.** A capture and the board it is promoted onto
+    live in the *same file* -- `issues.md` holds the bullet list at the
+    top, `## Board` in the middle and `# Details` at the bottom -- so
+    adding the row and removing the bullet are one read-modify-write
+    against one revision, and there is no half-done state to choose a
+    lesser evil between. `convert_capture` has to write two files and
+    says so; this one does not and must not, because a row written by a
+    first call and a bullet removed by a second would show him his own
+    text twice for as long as the second call took to fail.
+
+    The rating rides across if he set one and `priority` overrides it --
+    the point of the ask is that a cycle *rates* the thing on the way
+    past, and his own rating is the better default when he gave one.
+
+    A cycle's earlier answers under the bullet ride across as dated notes
+    on the write-up, so the thread he says he likes survives the move.
+    `None` from `replace_capture` means the address is stale, which is
+    the one failure worth telling apart: nothing has been written, and
+    the page needs re-reading rather than the write retrying.
+    """
+    paths = BOARD_PATHS.get(target)
+    path = paths.get("edvard") if paths else None
+    if path is None or target not in CAPTURE_TARGETS:
+        return False, f"unknown target: {target!r}"
+    wanted = (original or "").strip()
+    if not wanted:
+        return False, "nothing to promote"
+
+    dated = datetime.now(OSLO).strftime("%m-%d")
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(path)
+        if current is None:
+            return False, f"{path} not found"
+        entries = capture_entries(current)
+        if not isinstance(index, int) or not 0 <= index < len(entries):
+            return False, f"that capture is {STALE_CAPTURE}"
+        _, _, text, replies = entries[index]
+        if text != wanted:
+            return False, f"that capture is {STALE_CAPTURE}"
+        rating, body = split_capture_priority(text)
+        _, body = split_capture_done(body)
+        chosen = canonical_priority(rating if priority is None else priority)
+        if chosen is None:
+            return False, f"unknown priority: {priority!r}"
+        title = capture_title(body)
+        if not title:
+            return False, "nothing to promote"
+        # A pipe would close the table cell it is written into and a
+        # newline would end the row; `add_row` refuses both. Folding them
+        # is not this function's call to make, so the refusal is passed on.
+        boarded, number = add_row(
+            current, title, dated, chosen, write_up=body, notes=replies)
+        if boarded is None:
+            return False, f"could not board {title!r}"
+        updated = replace_capture(boarded, index, wanted, [])
+        if updated is None:
+            return False, f"that capture is {STALE_CAPTURE}"
+        result = vault_write_path(path, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture promoted a {target} capture to #{number}")
+            return True, f"boarded as #{number}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed to promote a {target} capture: {result}")
+    return False, f"could not write to {target}: {result}"
+
+
+def clean_capture_text(text, one_item=False):
     """Text as typed -> the bullets to add.
 
     Each non-blank line becomes its own bullet. A multi-line paste into a
@@ -286,7 +531,7 @@ def clean_capture_text(text):
     break the list it lives in.
 
     **With one exception, and it is not a guess about intent either: a
-    line the attach button wrote.** Edvard, capture 2026-08-21: *"I see
+    line the attach button wrote.** The owner, capture 2026-08-21: *"I see
     that my image upload test was split into two idea entries. The image
     for its own separate entry and the text got the other."* That is
     exactly what the rule above does to him -- `buildAttach`'s `onInsert`
@@ -317,6 +562,24 @@ def clean_capture_text(text):
 
     A leading `- ` is stripped so typing the bullet character yields one
     bullet rather than `- - like this`.
+
+    **`one_item` is the owner saying the whole paste is one thought**, and
+    it exists because the structural argument above has an edge the owner
+    hits with a keyboard rather than a phone. Sokrates pasted a
+    thirteen-paragraph write-up of the NAS into the box on 2026-08-27 --
+    one request, with a rationale, an inventory and a scope note -- and it
+    filed as thirteen separate unboarded captures, because every line
+    became its own bullet. His words: *"a long paste into the capture box
+    has no way to signal 'this is one issue' short of avoiding blank lines
+    entirely."* Cycle 545 put those thirteen back together by hand into
+    issue #122; this is so the next one does not need to.
+
+    It joins every line into a single bullet with a space, which is the
+    same joining `capture_entries` does when it reads a wrapped bullet
+    back, so nothing he typed is lost and the list it lands in stays
+    parseable. It is off unless the caller asks for it: the default is
+    still one bullet per line, and that is still the right guess for the
+    phone the box was built for.
     """
     bullets = []
     # Attachment lines seen before any text line -- he attached first.
@@ -340,13 +603,16 @@ def clean_capture_text(text):
         else:
             bullets.append(line)
     # Nothing ever came to attach them to.
-    return bullets + pending
+    bullets = bullets + pending
+    if one_item and len(bullets) > 1:
+        return [" ".join(bullets)]
+    return bullets
 
 
 def insert_captures(markdown, bullets):
     """Add `bullets` to the capture list, keeping exactly one empty bullet last.
 
-    The empty bullet is the cursor Edvard types into, so it stays at the
+    The empty bullet is the cursor the owner types into, so it stays at the
     bottom of the list and captures accumulate above it in the order they
     were written. If the file has lost its empty bullet, this restores it
     -- that is the file's own documented contract, not invented structure.
@@ -374,7 +640,7 @@ def insert_captures(markdown, bullets):
     return "\n".join(lines[:start] + block + lines[end:])
 
 
-def capture(target, text, priority=""):
+def capture(target, text, priority="", one_item=False):
     """Append a capture to `issues.md` or `ideas.md`. Returns (ok, message).
 
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
@@ -383,7 +649,7 @@ def capture(target, text, priority=""):
     `priority` rides at the front of the bullet as its full label and a
     colon (`🟠 High: ...`, `CAPTURE_PRIORITY_SEP`), and only on the
     first bullet: a
-    paste that splits into four lines is one thought Edvard rated once,
+    paste that splits into four lines is one thought the owner rated once,
     not four items each rated separately. It is the same rating vocabulary
     the board column uses, checked against `PRIORITY_LABELS` here as well
     as at the endpoint, because this is the function that decides what
@@ -391,7 +657,7 @@ def capture(target, text, priority=""):
 
     It was a bare coloured glyph until Cycle 268 -- this is the one place
     colour was the *only* signal, because a bare bullet has no column to
-    spell the word out in, and Edvard cannot tell the four balls apart
+    spell the word out in, and the owner cannot tell the four balls apart
     (comments board 2026-08-19). Cycle 268 then dropped the glyph
     entirely, which he corrected the next morning (*"if you use the
     symbol and text, thats completely fine!"*), so what gets written now
@@ -407,7 +673,7 @@ def capture(target, text, priority=""):
         submitted, priority = priority, canonical_priority(priority)
         if priority is None:
             return False, f"unknown priority: {submitted!r}"
-    bullets = clean_capture_text(text or "")
+    bullets = clean_capture_text(text or "", one_item=one_item)
     if not bullets:
         return False, "nothing to capture"
     if priority:
@@ -433,7 +699,7 @@ def capture(target, text, priority=""):
 
 
 def _amend_board(target, number, mutate, what):
-    """Read-modify-write one of Edvard's board files. Returns (ok, message).
+    """Read-modify-write one of the owner's board files. Returns (ok, message).
 
     The fourth and fifth write paths on this site share one loop rather
     than copying `set_priority`'s a fourth and fifth time. The 409 retry
@@ -482,7 +748,7 @@ def _amend_board(target, number, mutate, what):
 def edit_row(target, number, title):
     """Retitle one boarded row. Returns (ok, message).
 
-    Edvard, issue #84: *"I need to be able to edit and especially delete
+    The owner, issue #84: *"I need to be able to edit and especially delete
     boarded ideas and issues from the agora app. If i hold the card for
     more than 1 second i get into edit mode and also have the option of
     deleting, save or cancel the edit."*
@@ -498,6 +764,91 @@ def edit_row(target, number, title):
     """
     return _amend_board(
         target, number, lambda md: set_row_title(md, number, title), "edited")
+
+
+def set_project_priority(project, priority, dated=None):
+    """Rate a project. Returns (ok, message).
+
+    The sixth write path on this site and the first that does not write to
+    one of his two boards -- a project-level rating has no row to live on,
+    so it goes to `PROJECT_META_PATH`. Same read-modify-write and same 409
+    retry as the other five, and for the same reason: a cycle boarding his
+    files is the concurrent writer.
+
+    A file that does not exist yet is not an error here. `vault_read_path_rev`
+    answers `None` for a missing document, and `set_project_priority` in
+    `nova_boards` writes the template whole in that case -- so the first
+    rating creates the file rather than failing on it. The `if_rev` is
+    passed through unchanged, so two cycles rating two projects in the same
+    second still cannot both create it.
+
+    `None` back from the markdown layer is a refusal, not a write failure,
+    and is not retried: the name or the rating is out of bounds and
+    re-reading gives the same answer, the same distinction `set_priority`
+    draws.
+    """
+    if dated is None:
+        # Oslo, not UTC, and stamped here rather than by the caller so the
+        # one write path owns the one clock. Rule 7: anything he reads.
+        dated = datetime.now(OSLO).strftime("%m-%d")
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(PROJECT_META_PATH)
+        updated = _set_project_priority_md(current or "", project, priority, dated=dated)
+        if updated is None:
+            return False, f"cannot rate {project!r} as {priority!r}"
+        result = vault_write_path(PROJECT_META_PATH, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture rated project {project!r} as {priority or '(unrated)'}")
+            return True, f"{project} is now {priority or 'unrated'}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed rating project {project!r}: {result}")
+    return False, f"could not write project ratings: {result}"
+
+
+def project_priorities():
+    """Every project rating, read fresh. `{lowercased name: {...}}`.
+
+    Uncached on purpose, the same call `/api/comments` makes: this file is
+    small, it is read once per project page, and a stale rating is a
+    reordered page that disagrees with the picker he is looking at.
+
+    **A read that fails answers "nothing is rated", not an error.** This is
+    a second vault fetch on the critical path of a page that worked without
+    it for a week, and the ranking is the least important thing on that
+    page -- so a CouchDB blip must cost him the ordering, never the rows.
+    The failure is logged rather than swallowed, because a page that has
+    quietly stopped ranking looks exactly like a board nobody has rated.
+    """
+    try:
+        current, _rev = vault_read_path_rev(PROJECT_META_PATH)
+    except Exception as e:
+        log(f"nova-capture could not read project ratings: {e}")
+        return {}
+    return parse_project_meta(current or "")
+
+
+def set_project(target, number, project):
+    """Move one boarded row to a project. Returns (ok, message).
+
+    His capture, 2026-09-01: *"I/you should easily be able to assign
+    issues and ideas to projects, and change project if assigned wrongly
+    or for some other reason needs to change project. I/you should easily
+    be able to create new projects."* `set_row_project` has existed since
+    the project column was added and only ever had CLI callers, so until
+    now the only way he could correct a project cell was Obsidian --
+    which is exactly what `edit_row` was written to end for the title.
+
+    **Creating a project is this call with a name no row carries yet**,
+    and that is why nothing here checks the name against a list.
+    `board_projects` reads the set of projects back off the rows, so a
+    new name in one cell is a new project and there is no second
+    document to keep in step. The only bound is `set_row_project`'s own,
+    which refuses the characters that would break out of the table cell.
+    """
+    return _amend_board(
+        target, number, lambda md: set_row_project(md, number, project), "moved")
 
 
 def remove_row(target, number):
@@ -612,7 +963,7 @@ def set_priority(target, number, priority):
     """Change one boarded row's rating. Returns (ok, message).
 
     The third write path on this site, and the first that edits something
-    *I* wrote rather than something Edvard wrote. Same read-modify-write
+    *I* wrote rather than something the owner wrote. Same read-modify-write
     and same 409 retry as `capture` and `amend`, for the same reason: a
     cycle boarding these very files is the concurrent writer, and it is
     the one most likely to be running, since boarding is what step 6 of

@@ -1,0 +1,75 @@
+# schedule-health: unmonitored: The owner closed this topic on 2026-08-28 -- "Stop spending cycles on the nova-deadman alarm investigation, it's not a priority, dead is fine to know as pure info, no autostart backup system needed for this hobby project." The alarm still runs and still alarms; nobody is to spend a cycle on the fact that GitHub does not schedule it.
+#
+# The alarm that survives the box it watches — idea #113, slice 1.
+#
+# Everything that watches this cluster runs on this cluster: one node, no
+# Alertmanager, no Prometheus alerting rules, and a Web Push path whose
+# three hops are all on `server1`. So the 2026-08-24 outage was silent.
+#
+# This job is off-box on purpose. It never asks the cluster anything —
+# it could not, the ingresses are tailnet-only — it reads a ref the
+# cluster force-pushes every five minutes and alarms when that stops.
+#
+# It lives in this repo because this repo is PUBLIC, so scheduled Actions
+# here are free. That is not an incidental fact: `SokratesAI/sokrates-docs`
+# had a run refused on 2026-08-21 with "recent account payments have failed
+# or your spending limit needs to be increased", and a watchdog that cannot
+# start is worse than no watchdog, because it looks like coverage.
+name: nova-deadman
+
+# ONE cron, deliberately, and its twin lives in `nova-deadman-fast.yaml`
+# rather than in a second `- cron:` line below. That split is the fix for
+# a zero-run count, and the reasoning is the whole point of this comment.
+#
+# What is measured:
+#   * This workflow declared three cadences at once — `7,37 * * * *`,
+#     `23 */6 * * *`, `53 4 * * *` — and GitHub started it **zero** times
+#     in the 866 minutes they were live (Cycle 555). The workflow is
+#     `active`, Actions `enabled` / `allowed_actions: all`, repo public,
+#     not a fork, not archived, default branch `main`.
+#   * This account's scheduler runs badly late. Across all 25 scheduled
+#     runs this org has ever had, the fastest started **36 minutes** after
+#     the minute it asked for, the median **92**, and the worst **574** —
+#     `sokrates-docs/agentics-maintenance.yml` was owed 00:37 UTC on
+#     2026-08-27 and started at 10:11 UTC (Cycle 555, runner#471).
+#
+# GitHub drops a scheduled occurrence that a newer occurrence of the *same
+# workflow* overtakes before the queue reaches it. Under a 92-minute median
+# the `7,37` rung produces a fresh occurrence every 30 minutes, so it did
+# not merely fail to run — **it stood in front of the other two rungs and
+# superseded them, in this same file, on every pass.** Cycle 554 ruled the
+# cadence out on the grounds that a 6-hourly cron "cannot be overtaken by a
+# 90-minute delay": 90 was GitHub's documented figure and this account's
+# real worst is 574 minutes, which is longer than six hours, so the 6-hourly
+# rung was never safe either. Only the daily rung is, at 1440 minutes.
+#
+# So this file keeps the one cadence that cannot be overtaken by anything
+# this account has ever done, and the fast rung moves to its own workflow
+# where it has its own occurrence queue and can starve nothing but itself.
+#
+# This is a hypothesis with a measurement under it, not a proven cause, and
+# the split is the experiment that settles it: the daily rung's next chance
+# is 04:53 UTC. One scheduled run here and the mechanism is confirmed; still
+# zero after that and supersession is not what is wrong with this repo.
+on:
+  schedule:
+    - cron: "53 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nova-deadman
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Is the cluster still pinging?
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 -m tools.deadman_check

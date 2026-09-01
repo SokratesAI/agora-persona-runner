@@ -1,53 +1,23 @@
 """Pure turn-taking/scheduling logic and system-prompt construction -- no I/O of its own."""
 
-import re
 from datetime import datetime, timedelta, timezone
 
-from agora_runner.config import AI_TURN_CAP, MAX_HISTORY, OSLO
-
-
-def parse_mentions(text, names):
-    """Ordered, de-duplicated persona names @mentioned in text.
-    Case-insensitive; longest names matched first so '@Marcus-2' can't be
-    swallowed by a persona named 'Marcus'."""
-    found = []
-    lowered = text.lower()
-    for name in sorted(names, key=len, reverse=True):
-        pattern = re.compile(r"@" + re.escape(name.lower()) + r"(?![\w-])")
-        for match in pattern.finditer(lowered):
-            found.append((match.start(), name))
-    found.sort()
-    ordered = []
-    for _pos, name in found:
-        if name not in ordered:
-            ordered.append(name)
-    return ordered
-
-
-def consecutive_ai_turns(thread):
-    """Counts TURNS, not messages -- a run of consecutive same-sender
-    messages is one turn. 2026-07-24: a single logical turn now lands as
-    several messages (one per streamed text block), so counting raw
-    messages would trip AI_TURN_CAP many times faster than intended and
-    auto-pause a chain that's really only had 1-2 real handoffs."""
-    count = 0
-    last_sender = None
-    for message in reversed(thread):
-        sender = message.get("sender")
-        if sender == "Edvard":
-            break
-        if sender != last_sender:
-            count += 1
-            last_sender = sender
-    return count
-
-
-PAUSE_SENTINEL = "__PAUSE__"
+from agora_runner.config import MAX_HISTORY, OSLO
+from agora_runner.nova_demos import DURABLE_ROOT, PUBLIC_BASE
 
 
 def decide_turn(thread, personas):
-    """Architecture §3. Returns ordered speaker names, [] for nothing, or
-    [PAUSE_SENTINEL] when a chain hit the cap and must auto-pause.
+    """Who speaks next. Returns [name] or [] for nothing.
+
+    A conversation holds exactly one persona as of agora#67 (Agora
+    refuses a second one), so the only question left is whether it is
+    that persona's turn, and it is whenever the owner spoke last. The
+    @mention speaker selection this used to run -- `parse_mentions`, the
+    persona-to-persona chain rule, `consecutive_ai_turns`/`AI_TURN_CAP`
+    and `PAUSE_SENTINEL` -- was all reachable only with two or more
+    personas in one thread and went with them. Measured 2026-08-25 before
+    deleting it: 405 conversations, every one holding exactly one
+    persona, every one of those a curator.
 
     `activity` messages (2026-07-24 inline Activity chips) are excluded
     from `visible` same as `forgotten` -- they're not conversation
@@ -68,25 +38,17 @@ def decide_turn(thread, personas):
     visible = [m for m in thread if not m.get("forgotten") and not m.get("activity") and not m.get("thinking")]
     if not visible:
         return []
-    names = [p["name"] for p in personas]
-    curator = next((p["name"] for p in personas if p.get("role") == "curator"), None)
-    last = visible[-1]
-
-    if last.get("sender") == "Edvard":
-        mentioned = parse_mentions(last.get("text", ""), names)
-        if mentioned:
-            return mentioned
-        return [curator] if curator else []
-
-    # Last message from a persona — chains continue only via @mention.
-    mentioned = [
-        n for n in parse_mentions(last.get("text", ""), names) if n != last.get("sender")
-    ]
-    if not mentioned:
+    if visible[-1].get("sender") != "Edvard":
         return []
-    if consecutive_ai_turns(visible) >= AI_TURN_CAP:
-        return [PAUSE_SENTINEL]
-    return mentioned[:1]
+    if not personas:
+        return []
+    # The curator preference is kept because that is what all 405 live
+    # conversations carry. The fallback to the first participant is not
+    # cosmetic: the old code answered a lone non-curator persona only when
+    # the owner @mentioned it by name, so dropping the @mention path without
+    # this would have made such a conversation silently never reply.
+    curator = next((p["name"] for p in personas if p.get("role") == "curator"), None)
+    return [curator or personas[0]["name"]]
 
 
 def parse_iso(value):
@@ -236,7 +198,7 @@ def schedule_minutes(schedule):
     number for an unrelated reason. `cycle_health` measures a silent loop
     in heartbeat intervals and had been reading a module constant to do it
     -- a constant that has been wrong twice, because the cadence is
-    Edvard's to change and he has changed it four times since 2026-08-08.
+    the owner's to change and he has changed it four times since 2026-08-08.
     One definition, two callers, same reason as `cycle_health.gaps_between`.
 
     Zero and negative are `None` rather than themselves. `every@0m` is not
@@ -300,7 +262,7 @@ def schedule_due(schedule, last_run_iso, created_iso, now_utc):
 
 
 def merge_history(thread, self_name, multi):
-    """Provider-ready history: Edvard → user; personas → assistant, other
+    """Provider-ready history: The owner → user; personas → assistant, other
     personas' lines prefixed "[Name]:" in multi-persona threads so models
     can tell speakers apart; consecutive same-role turns merged; leading
     assistant turns dropped (both providers want a user turn first);
@@ -354,7 +316,7 @@ def merge_history(thread, self_name, multi):
 
 def pending_user_turn(history):
     """The trailing user content of a merged history, or None if the
-    thread doesn't end on one — i.e. "Edvard spoke last and nobody has
+    thread doesn't end on one — i.e. "the owner spoke last and nobody has
     answered him yet". Used by run_heartbeat to decide whether the
     synthetic trigger should carry his real words along with it."""
     if history and history[-1]["role"] == "user":
@@ -362,7 +324,54 @@ def pending_user_turn(history):
     return None
 
 
-def build_system(persona, conversation=None, participants=None, heartbeat_extra=None):
+def runs_on_the_bridge(persona):
+    """Whether this persona's turn executes inside a Claude Code CLI session
+    on the bridge pod, with that pod's own shell.
+
+    Only the `claude-cli:` provider does: the other two are stateless HTTP
+    calls made from this process, and their persona reaches the world through
+    Agora's capability tools alone. `claudeCliRestricted` asks the bridge for
+    its full known-tool denylist, which takes the shell away again.
+
+    This is a *provider* question and not a capability checkbox, which is why
+    it cannot be folded into the `caps` sections below. The same rule as
+    `test_system_prompt_matches_tools` enforces still applies to whatever it
+    gates: do not describe something the persona cannot reach.
+    """
+    model = persona.get("model") or ""
+    if persona.get("claudeCliRestricted"):
+        return False
+    return model.startswith("claude-cli:")
+
+
+#: What a chat turn is told about live demos. Idea #137: the channel for
+#: "build me something I can look at" already exists -- the chat dock on
+#: every Nova page is a live conversation with a session that has the
+#: bridge pod's shell -- and `tools.demo` has been able to serve one since
+#: idea #135. Nothing joined the two, so a turn asked for a demo had no way
+#: to find out it could make one. Same failure as being handed an image in
+#: a comment and reporting blindness while the bytes sat in the vault: a
+#: capability a session does not know it has is one it does not have.
+DEMO_SECTION = (
+    "## Live demos\n"
+    "You can build a throwaway app and hand Edvard a link he can open on his "
+    "phone, in this same thread. Scaffold it under "
+    f"`{DURABLE_ROOT}/<slug>` -- never in this turn's own workspace "
+    "directory, which is deleted the moment the turn ends while the dev "
+    "server keeps running and serving the hole it left. Then, from the "
+    "runner checkout at `${NOVA_WORKSPACE:-/data/workspace}/agora-persona-runner`: "
+    "`python3 -m tools.demo start <slug> " + DURABLE_ROOT + "/<slug>`, which "
+    "allocates a port and prints the URL, plus `list` and `stop`. "
+    f"He opens it at `{PUBLIC_BASE}/<slug>/` -- reply with that link, "
+    "because a demo nobody was handed is not a demo. "
+    "His next message is the edit: change the files in place and the dev "
+    "server reloads, so the URL does not change and the tab he already has "
+    "open on his phone just updates. A demo he has never opened is stopped "
+    "after eighteen hours, and two hours after he last looked at one."
+)
+
+
+def build_system(persona, conversation=None, heartbeat_extra=None):
     parts = [persona.get("personality") or "You are a helpful assistant."]
     shared = (persona.get("sharedMemory") or "").strip()
     if shared:
@@ -371,17 +380,11 @@ def build_system(persona, conversation=None, participants=None, heartbeat_extra=
         memory = (conversation.get("memory") or "").strip()
         if memory:
             parts.append(f"## Conversation notes\n{memory}")
-    if participants and len(participants) > 1:
-        roster = ", ".join(
-            f"{p['name']} (curator)" if p.get("role") == "curator" else p["name"]
-            for p in participants
-        )
-        parts.append(
-            f"## Participants\nEdvard plus personas: {roster}. You are {persona.get('name')}. "
-            "Address another persona by writing @TheirName — only personas that are "
-            "@mentioned may reply. Do not @mention anyone unless you genuinely want "
-            "them to answer next."
-        )
+    # A "## Participants" roster naming the other personas and teaching the
+    # @mention convention used to be built here when `participants` held
+    # more than one name. Agora refuses a second persona (agora#67), so it
+    # never fired again -- and if it somehow did, it would be telling a
+    # persona to @mention names that can no longer be in the thread.
     caps = persona.get("capabilities") or {}
     if caps.get("vaultRead") or caps.get("vaultWrite"):
         vault = [
@@ -436,7 +439,11 @@ def build_system(persona, conversation=None, participants=None, heartbeat_extra=
             "'<provider>:<model id>' string (e.g. 'anthropic:claude-sonnet-5') — call "
             "list_models first rather than guessing the format. To create a heartbeat "
             "for an existing persona other than yourself, call list_personas first to "
-            "get its id — there is no other way to look one up."
+            "get its id — there is no other way to look one up. "
+            "To read a conversation OTHER than this one — anything the owner refers "
+            "to as \"that other conversation\" — call list_conversations (pass `query` "
+            "to filter by name; there are several hundred) and then read_conversation, "
+            "which takes an id or an exact name and returns the newest messages."
         )
     if caps.get("githubWrite") or caps.get("githubMerge"):
         gh_parts = ["## GitHub write access"]
@@ -450,8 +457,13 @@ def build_system(persona, conversation=None, participants=None, heartbeat_extra=
             )
         if caps.get("githubMerge"):
             gh_parts.append(
-                "You have merge_pr — merges an open PR, but only once every check-run "
-                "on it is green. It refuses otherwise; there is no override."
+                "You have merge_pr — merges an open PR, but only once GitHub itself "
+                "says it may merge: it asks GitHub for the PR's own merge status rather than "
+                "judging every check-run, so a red check the repo does not require no "
+                "longer blocks you, while a conflict, a required check or a review "
+                "GitHub is waiting on still does. It also refuses while a check is "
+                "still running, and refuses when no check has run at all on a repo "
+                "that has active workflows. There is no override."
             )
         parts.append(" ".join(gh_parts))
     if caps.get("terminalExec"):
@@ -464,6 +476,8 @@ def build_system(persona, conversation=None, participants=None, heartbeat_extra=
             "a pod restart. This is your highest-blast-radius tool — prefer a "
             "narrower tool when one already does the job."
         )
+    if runs_on_the_bridge(persona):
+        parts.append(DEMO_SECTION)
     if heartbeat_extra:
         parts.append(heartbeat_extra)
     return "\n\n".join(parts)

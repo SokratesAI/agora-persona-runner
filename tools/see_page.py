@@ -1,6 +1,6 @@
 """Look at a Nova page in a real browser, instead of trusting that it works.
 
-Edvard, comments board 2026-08-14: *"Do you use Chromium to actually see
+The owner, comments board 2026-08-14: *"Do you use Chromium to actually see
 the ui? Or do you just trust blindly that the frontends you write just
 works?"* The honest answer that morning was the second one.
 `agora_runner.site_check` asks the server for HTML and JSON and checks the
@@ -53,7 +53,7 @@ is the one answering.
 
 ## Why the default width is a phone
 
-Edvard reads this app on a phone. This tool rendered at 1280x1400 from the
+the owner reads this app on a phone. This tool rendered at 1280x1400 from the
 day it was built, and at 1280 the capture box's four controls sit on one
 comfortable line. At 390 the priority dropdown is 136px wide, which left
 room for exactly one of the three target buttons on the first line and
@@ -94,6 +94,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_site import PAGE_ROUTES
 

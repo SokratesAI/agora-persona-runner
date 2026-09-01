@@ -1,6 +1,6 @@
 """One authoritative cycle number, shared by Agora and the journal.
 
-Edvard, capture 2026-08-20, rated Immediately: *"There is a mossmaych
+The owner, capture 2026-08-20, rated Immediately: *"There is a mossmaych
 between the cycles displayed in Nova and the cycle name than ran in
 agora. It is very confusing. They need to be the same number. The big is
 that some cycles did not write their journals in the past."*
@@ -20,7 +20,7 @@ nothing ever pulls them back together, so the gap is permanent and grows.
 Measured 2026-08-20 07:53 Oslo: 277 tagged conversations exist, the newest
 named `Nova — Cycle 277`, while the newest journal entry is Cycle 274 --
 three runs that wrote nothing, three numbers of drift, and every journal
-card on Edvard's page mislabelled by three.
+card on the owner's page mislabelled by three.
 
 The fix is to stop deriving the number twice. The run count is the honest
 one: it is a fact about what actually happened, it cannot go backwards,
@@ -86,6 +86,56 @@ def numbers_in(conversations, tag):
         if match:
             found.append(int(match.group(1)))
     return sorted(found)
+
+
+def starts_in(conversations, tag):
+    """`{cycle number: createdAt}` for every tagged conversation that names one.
+
+    The heartbeat creates a cycle's conversation just before the session
+    opens, so `createdAt` is when that cycle *woke* -- the one measured
+    start time this system has. `nova_journal.with_start_times` puts it on
+    the journal card, because the write time it used to show is the end of
+    the run and the owner asked for the other end.
+
+    **Earliest wins on a duplicate.** Two conversations can carry one
+    number -- three did on 2026-08-24, before `current_number` learned to
+    ask which one it was running in -- and the earliest is the honest
+    answer to "when did work under this number begin". Picking by
+    iteration order instead would make the card's time depend on how the
+    API happened to sort, which is the kind of thing that looks stable for
+    weeks and then is not.
+    """
+    out = {}
+    for conversation in conversations or []:
+        if tag not in (conversation.get("tags") or []):
+            continue
+        match = _NAME_RE.search(conversation.get("name") or "")
+        created = conversation.get("createdAt")
+        if not match or not created:
+            continue
+        number = int(match.group(1))
+        if number not in out or created < out[number]:
+            out[number] = created
+    return out
+
+
+def cycle_starts(heartbeat_id):
+    """`starts_in` against a live Agora, or `{}` if it cannot be reached.
+
+    `{}` rather than an exception, and rather than `None`: the only caller
+    is the journal page, and a page that will not render because one
+    timestamp source was unreachable is a worse answer than a page showing
+    the write times it showed for its whole life until now.
+    """
+    try:
+        status, listing = agora_get("/conversations")
+    except Exception as e:
+        log(f"cycle_starts: /conversations failed: {e}")
+        return {}
+    if status != 200:
+        log(f"cycle_starts: /conversations returned {status}")
+        return {}
+    return starts_in(listing.get("conversations", []), cycle_tag(heartbeat_id))
 
 
 def next_number(conversations, tag):
@@ -161,7 +211,7 @@ def claim_next_number(heartbeat_id, conversations, tag):
         # is most likely to hand back a number somebody else already holds
         # -- CLAIM_ATTEMPTS conflicts in a row means real contention, not a
         # sick CouchDB. A duplicate cycle number is exactly the symptom
-        # Edvard reported as Immediately on 2026-08-20, so the one case
+        # the owner reported as Immediately on 2026-08-20, so the one case
         # that can still produce one should not be the one that leaves no
         # trace to find it by.
         log(f"claim_next_number({heartbeat_id}): {CLAIM_ATTEMPTS} conflicts "
@@ -169,16 +219,47 @@ def claim_next_number(heartbeat_id, conversations, tag):
     return floor + 1
 
 
-def current_number(heartbeat_id):
+def number_of(conversations, conversation_id):
+    """The cycle number named by one specific conversation, or `None`.
+
+    `None` covers both "no conversation has that id" and "it has one and the
+    name does not parse", because the caller does the same thing with either:
+    say so, and fall back. Splitting them would buy a message nobody reads.
+    """
+    for conversation in conversations or []:
+        if conversation.get("id") != conversation_id:
+            continue
+        match = _NAME_RE.search(conversation.get("name") or "")
+        return int(match.group(1)) if match else None
+    return None
+
+
+def current_number(heartbeat_id, conversation_id=None):
     """The number of the cycle running *now*, or `None` if it can't be read.
 
-    This is what a live cycle calls to find out what to call itself. The
-    conversation it is running in was created by `rotate_cycle_conversation`
-    before it woke, so the highest number that exists is its own.
+    This is what a live cycle calls to find out what to call itself.
 
-    `None` rather than a guess: a cycle that cannot reach Agora must be told
-    so, not handed a plausible number that quietly reintroduces the drift
-    this module exists to remove.
+    **`conversation_id` is which conversation the caller is actually running
+    in, and without it this function cannot answer the question it is asked.**
+    It used to take the highest number that existed, on the reasoning that
+    `rotate_cycle_conversation` creates a cycle's conversation just before the
+    cycle wakes -- true, and sufficient, for exactly as long as one cycle ran
+    at a time. Cycles overlap now. On 2026-08-24 three of them were alive
+    together, each asked for "the highest", each got the newest cycle's
+    number, and all three wrote a journal entry headed `Cycle 380`. The owner
+    found it from the outside: comments are keyed by cycle number
+    (`nova_comments`), so his reply to one card was answered from another, and
+    number 379 is missing from the journal for good. The bridge exports the id
+    as `AGORA_CONVERSATION_ID` (agora-claude-bridge#72).
+
+    Called without one, the old highest-wins answer is what you get, because
+    that is still right whenever only one cycle is running and it is the only
+    answer available to a caller that has no id. `main` says out loud which of
+    the two it used, so a duplicate number is never silent again.
+
+    `None` rather than a guess when Agora cannot be reached: a cycle that
+    cannot read its number must be told so, not handed a plausible one that
+    quietly reintroduces the drift this module exists to remove.
     """
     try:
         status, listing = agora_get("/conversations")
@@ -186,27 +267,47 @@ def current_number(heartbeat_id):
         return None
     if status != 200:
         return None
-    numbers = numbers_in(listing.get("conversations", []), cycle_tag(heartbeat_id))
+    conversations = listing.get("conversations", [])
+    if conversation_id:
+        mine = number_of(conversations, conversation_id)
+        if mine is not None:
+            return mine
+    numbers = numbers_in(conversations, cycle_tag(heartbeat_id))
     return numbers[-1] if numbers else None
 
 
 def main():
-    """`cd /app && python3 -m agora_runner.cycle_number <heartbeat-id>`.
+    """`cd /app && python3 -m agora_runner.cycle_number <heartbeat-id> [conversation-id]`.
 
     In `agora_runner/` and not `tools/` on purpose: `tools/` is not copied
     into the container image, and the shell a cycle has inside the runner
     pod (`terminal_exec`) only has `/app`. The bridge pod, which is where
     `Bash` runs, has the checkout but no route to Agora.
+
+    The conversation id is a second argument rather than an environment
+    variable because the two shells a cycle has are two different pods: the
+    bridge exports `AGORA_CONVERSATION_ID` into the *CLI's* environment, and
+    this runs in the runner pod, which never sees it. So the cycle reads it in
+    one shell and passes it to the other. `prompt.md` step 7 has the block.
+
+    Only `stdout` carries the number; everything about *how* it was derived
+    goes to `stderr`, so `$(...)` around this stays exactly one integer.
     """
     import sys
 
-    if len(sys.argv) != 2:
-        print("usage: python3 -m agora_runner.cycle_number <heartbeat-id>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print("usage: python3 -m agora_runner.cycle_number <heartbeat-id> [conversation-id]",
+              file=sys.stderr)
         return 2
-    number = current_number(sys.argv[1])
+    conversation_id = sys.argv[2] if len(sys.argv) == 3 else ""
+    number = current_number(sys.argv[1], conversation_id or None)
     if number is None:
         print("could not read the cycle number from Agora", file=sys.stderr)
         return 1
+    if not conversation_id:
+        print("warning: no conversation id given, so this is the highest number that "
+              "exists, not necessarily yours -- concurrent cycles will collide on it",
+              file=sys.stderr)
     print(number)
     return 0
 

@@ -1,4 +1,4 @@
-"""The `/plan` page — `roadmap.md` and `goals.md` on Edvard's phone.
+"""The `/plan` page — `roadmap.md` and `goals.md` on the owner's phone.
 
 Issue #7 and `goals.md`'s own G2 measure: the two documents written so he
 could argue with Nova's prioritisation are the two he has to leave the app
@@ -90,7 +90,7 @@ def test_frontmatter_never_reaches_the_page():
     `_skippable` says a heading cannot live in frontmatter; it does not
     say the frontmatter is not prose. Rendered without the cut, the
     roadmap opens on its own `contract:` line — a sentence addressed to
-    Nova, on the page written for Edvard.
+    Nova, on the page written for the owner.
     """
     payload = plan_payload({"roadmap": ROADMAP})
     rendered = " ".join(_text(s) for s in _doc(payload, "roadmap")["sections"])
@@ -114,7 +114,7 @@ def test_the_standfirst_survives_with_no_heading():
     """`goals.md`'s opening paragraph says the slate is a proposal.
 
     It sits above the first `##`, so a parser that only kept named
-    sections would drop the one sentence that stops Edvard reading five
+    sections would drop the one sentence that stops the owner reading five
     proposed goals as five settled ones.
     """
     payload = plan_payload({"goals": GOALS})
@@ -133,7 +133,7 @@ def test_a_missing_document_is_a_card_and_not_an_error():
 def test_bullets_and_quotes_keep_their_block_type():
     """`render_blocks` already does this; the assertion is that the page
     passes it real bodies rather than pre-flattened text. Both documents
-    carry Edvard's own words as blockquotes."""
+    carry the owner's own words as blockquotes."""
     payload = plan_payload({"roadmap": ROADMAP})
     kinds = {
         block["type"]
@@ -345,14 +345,45 @@ status: done
 claim: It was garbage collection, not a write bug.
 board: idea #61
 ```
+**4. Build the weekly goal review.** More prose.
+
+```next
+rank: 4
+title: Build the weekly goal review
+status: in progress
+claim: A document is not a habit.
+board: idea #38
+```
+
+**5. ~~The two board-editing gaps~~ — done.**
+
+```next
+rank: 5
+title: The two board-editing gaps, together
+status: done
+claim: One page, two controls.
+board: issues #89, #91
+```
 """
+
+
+def _all_ranked(doc):
+    """Both halves of the strip, in document order.
+
+    The parsing tests below are about the fence and want every card the
+    document produced; which of the two lists a card lands in is
+    `test_a_finished_item_leaves_the_list_that_says_it_is_next`'s job.
+    """
+    return list(doc["ranked"]) + list(doc["rankedDone"])
 
 
 def test_ranked_cards_come_off_the_fenced_blocks():
     roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
-    assert [r["title"] for r in roadmap["ranked"]] == [
+    assert [r["title"] for r in _all_ranked(roadmap)] == [
         "Get CI back",
+        "Build the weekly goal review",
         "Fix my vault write path",
+        "The two board-editing gaps, together",
     ]
     assert roadmap["ranked"][0]["claim"] == "Not my work — yours, and it is two minutes."
     assert roadmap["ranked"][0]["board"] == "idea #73"
@@ -362,22 +393,24 @@ def test_a_status_always_carries_its_word_and_an_unknown_one_carries_neither():
     roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
     assert roadmap["ranked"][0]["statusLabel"] == "In progress"
     assert roadmap["ranked"][0]["statusSymbol"] == "\U0001f7e1"
-    assert roadmap["ranked"][1]["statusLabel"] == "Done"
-    assert roadmap["ranked"][1]["statusSymbol"] == "\u2705"
+    assert roadmap["rankedDone"][0]["statusLabel"] == "Done"
+    assert roadmap["rankedDone"][0]["statusSymbol"] == "\u2705"
 
     # A word this page has never seen gets no chip rather than a guessed one:
     # rendering `Backlog` for something a cycle called `blocked` would be the
     # page stating a fact the file does not.
     blocked = RANKED.replace("status: in progress", "status: blocked", 1)
     row = _doc(plan_payload({"roadmap": blocked}), "roadmap")["ranked"][0]
+    assert row["title"] == "Get CI back"
     assert row["statusLabel"] == "" and row["statusSymbol"] == ""
 
 
 def test_the_rank_is_the_files_number_and_not_the_cards_position():
     # The file strikes item 3 through without renumbering 4 and 5, so the
     # second card really is rank 3. Counting positions would print "2".
-    ranks = [r["rank"] for r in _doc(plan_payload({"roadmap": RANKED}), "roadmap")["ranked"]]
-    assert ranks == ["1", "3"]
+    doc = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
+    assert [r["rank"] for r in doc["ranked"]] == ["1", "4"]
+    assert [r["rank"] for r in doc["rankedDone"]] == ["3", "5"]
 
 
 def test_a_next_block_does_not_also_render_as_a_code_block():
@@ -389,13 +422,13 @@ def test_a_next_block_does_not_also_render_as_a_code_block():
 
 def test_a_titleless_next_block_is_not_a_card():
     untitled = RANKED.replace("title: Get CI back\n", "", 1)
-    assert len(_doc(plan_payload({"roadmap": untitled}), "roadmap")["ranked"]) == 1
+    assert len(_all_ranked(_doc(plan_payload({"roadmap": untitled}), "roadmap"))) == 3
 
 
 def test_goal_and_next_blocks_do_not_eat_each_other():
     both = RANKED + SCORED.split("---", 2)[-1]
     doc = _doc(plan_payload({"roadmap": both}), "roadmap")
-    assert len(doc["ranked"]) == 2
+    assert len(_all_ranked(doc)) == 4
     assert len(doc["scoreboard"]) == 2
     body = " ".join(_text(s) for s in doc["sections"])
     assert "Some prose about G1 that must survive." in body
@@ -426,7 +459,7 @@ Trailing prose that must survive.
 
 def test_a_forgotten_closing_fence_does_not_swallow_the_next_block():
     doc = _doc(plan_payload({"roadmap": EATEN}), "roadmap")
-    assert [r["title"] for r in doc["ranked"]] == ["Get CI back"]
+    assert [r["title"] for r in _all_ranked(doc)] == ["Get CI back"]
     assert doc["scoreboard"] == [], "a half-written goal block is not a row"
     body = " ".join(_text(s) for s in doc["sections"])
     assert "Trailing prose that must survive." in body
@@ -437,7 +470,7 @@ def test_a_forgotten_closing_fence_survives_in_the_other_direction_too():
     swapped = swapped.replace("```next\nrank: 1", "```goal\nname: G1")
     doc = _doc(plan_payload({"roadmap": swapped}), "roadmap")
     assert [r["name"] for r in doc["scoreboard"]] == ["G1"]
-    assert doc["ranked"] == []
+    assert _all_ranked(doc) == []
     # The well-formed block on the other side of the mistake still parses,
     # and no text is lost -- which is what `abandon` promises and all it
     # promises. It does *not* promise the prose stays prose: the fence line
@@ -549,7 +582,7 @@ def test_a_parent_with_its_own_prose_still_folds_above_the_open_newest():
     finding on #269: every fixture here had that heading empty, and an
     empty headed section takes the other branch in `planSection` entirely
     -- it renders plain rather than as a `<details>`. So the composition
-    that is actually on Edvard's screen was the one composition untested.
+    that is actually on the owner's screen was the one composition untested.
     """
     real_shape = """# Goals
 
@@ -571,3 +604,249 @@ Body.
         ("2026-08-17 — the newest", True, True),
         ("2026-08-16 — the older", False, True),
     ]
+
+
+# The split (issue #96, 2026-08-25). The strip is headed "What I would do
+# next, in order" and on that morning three of its five cards were finished
+# — the page told the owner that work closed nine days earlier was what
+# happened next. A chip on a card does not retract the heading above it.
+def test_a_finished_item_leaves_the_list_that_says_it_is_next():
+    doc = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
+    # The fixture is the real shape of `roadmap.md` on the morning this was
+    # written: five items, ranks 1-5, three of them finished. A one-and-one
+    # fixture cannot see an implementation that grouped by status or
+    # reversed a bucket, because with one item per list every order is the
+    # same order.
+    assert [r["rank"] for r in doc["ranked"]] == ["1", "4"]
+    assert [r["rank"] for r in doc["rankedDone"]] == ["3", "5"]
+    assert [r["title"] for r in doc["ranked"]] == [
+        "Get CI back",
+        "Build the weekly goal review",
+    ]
+    assert [r["title"] for r in doc["rankedDone"]] == [
+        "Fix my vault write path",
+        "The two board-editing gaps, together",
+    ]
+
+
+def test_the_split_keeps_document_order_rather_than_sorting_by_rank():
+    # Rank is a string off the file and the file is free to be out of order.
+    # Sorting on it would look identical against a well-ordered document and
+    # would silently reorder the owner's own argument the first time it was
+    # not.
+    shuffled = RANKED.replace("rank: 4", "rank: 0")
+    doc = _doc(plan_payload({"roadmap": shuffled}), "roadmap")
+    assert [r["rank"] for r in doc["ranked"]] == ["1", "0"]
+
+
+def test_the_finished_flag_is_on_the_wire_and_is_the_field_the_split_reads():
+    # The renderer does not read this; which list a card is in already says
+    # it. It is left on the payload deliberately rather than stripped, so
+    # the one fact the split turns on is visible to anything reading
+    # `/api/plan` -- including a future page that wants to render a done
+    # card differently without re-deriving the rule from the chip.
+    doc = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
+    assert [r["finished"] for r in doc["ranked"]] == [False, False]
+    assert [r["finished"] for r in doc["rankedDone"]] == [True, True]
+
+
+def test_outdated_counts_as_finished_and_an_unknown_status_does_not():
+    outdated = RANKED.replace("status: done", "status: outdated", 1)
+    doc = _doc(plan_payload({"roadmap": outdated}), "roadmap")
+    assert [r["title"] for r in doc["rankedDone"]] == [
+        "Fix my vault write path",
+        "The two board-editing gaps, together",
+    ]
+
+    # A status this module has never seen stays in the open list. The card
+    # already declines to guess at a chip for it; putting it in the finished
+    # half would be the same guess with worse consequences, because a
+    # finished card is one the owner stops reading.
+    unknown = RANKED.replace("status: done", "status: shipped-ish", 1)
+    doc = _doc(plan_payload({"roadmap": unknown}), "roadmap")
+    assert [r["title"] for r in doc["ranked"]] == [
+        "Get CI back",
+        "Fix my vault write path",
+        "Build the weekly goal review",
+    ]
+    assert [r["title"] for r in doc["rankedDone"]] == [
+        "The two board-editing gaps, together",
+    ]
+
+
+def test_a_document_whose_every_item_is_finished_has_an_empty_open_list():
+    # This is what a `roadmap.md` nobody has rewritten looks like from the
+    # outside, and it is the case the old page could not show at all: five
+    # ✅ cards under a heading promising five next steps.
+    everything = RANKED.replace("status: in progress", "status: done")
+    doc = _doc(plan_payload({"roadmap": everything}), "roadmap")
+    assert doc["ranked"] == []
+    assert len(doc["rankedDone"]) == 4
+
+
+def test_a_missing_document_carries_both_ranked_lists():
+    # Same call the rest of this payload makes: every key the renderer reads
+    # is present whether or not the fetch found anything, so the page has one
+    # branch instead of two.
+    doc = _doc(plan_payload({}), "roadmap")
+    assert doc["missing"] is True
+    assert doc["ranked"] == [] and doc["rankedDone"] == []
+
+
+# --- The owner ticking a goal (idea #38's remaining half) ---------------
+
+
+GOALS_WITH_BLOCKS = """---
+type: note
+---
+
+# Goals
+
+## The slate
+
+**G1 — one.**
+
+```goal
+name: G1 — one
+measure: things per week
+now: 3
+target: 1
+direction: down
+```
+
+Prose under G1 that nothing parses.
+
+**G2 — two.**
+
+```goal
+name: G2 — two
+now: 5
+status: declined
+```
+
+Prose under G2.
+"""
+
+
+def test_a_goal_with_no_status_line_reads_as_proposed():
+    """The compatibility case, and it is every block in the live file.
+
+    `goals.md` was written on 2026-08-16 with no `status:` anywhere, so a
+    default of anything but "proposed" would misreport five real goals as
+    settled the moment this ships.
+    """
+    payload = plan_payload({"goals": GOALS_WITH_BLOCKS})
+    goals = [d for d in payload["documents"] if d["key"] == "goals"][0]
+    rows = {row["name"]: row for row in goals["scoreboard"]}
+    assert rows["G1 — one"]["status"] == "proposed"
+    assert rows["G2 — two"]["status"] == "declined"
+
+
+def test_an_unreadable_status_reads_as_proposed_not_as_a_fourth_state():
+    """The row is a control he taps. A value nothing understands has to
+    render as the one state whose next tap writes a value that is."""
+    payload = plan_payload({"goals": GOALS_WITH_BLOCKS.replace("status: declined", "status: maybe")})
+    goals = [d for d in payload["documents"] if d["key"] == "goals"][0]
+    rows = {row["name"]: row for row in goals["scoreboard"]}
+    assert rows["G2 — two"]["status"] == "proposed"
+
+
+def test_setting_a_status_inserts_the_line_and_touches_nothing_else():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    out = set_status_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "approved")
+    assert "status: approved" in out
+    # Every other line of his document survives, in order.
+    before = [line for line in GOALS_WITH_BLOCKS.split("\n")]
+    after = [line for line in out.split("\n")]
+    assert [line for line in after if line != "status: approved"] == before
+    assert after.index("status: approved") < after.index("```", after.index("direction: down"))
+
+
+def test_setting_a_status_replaces_an_existing_one_in_place():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    out = set_status_in_goals(GOALS_WITH_BLOCKS, "G2 — two", "approved")
+    assert "status: declined" not in out
+    assert out.count("status: approved") == 1
+    assert len(out.split("\n")) == len(GOALS_WITH_BLOCKS.split("\n"))
+
+
+def test_a_goal_that_is_not_there_is_a_moved_address_not_a_write():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    assert set_status_in_goals(GOALS_WITH_BLOCKS, "G9 — renamed", "approved") is None
+    assert set_status_in_goals(GOALS_WITH_BLOCKS, "", "approved") is None
+    assert set_status_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "settled") is None
+
+
+def test_an_unterminated_fence_is_never_edited():
+    """`_fenced` deliberately puts an unterminated block's lines back as
+    prose, because it is a half-written edit. Writing inside one would move
+    the owner's own text into a block he is still typing."""
+    from agora_runner.nova_plan import set_status_in_goals
+
+    broken = "```goal\nname: G1 — one\nnow: 3\n\n**G2**\n"
+    assert set_status_in_goals(broken, "G1 — one", "approved") is None
+
+
+def test_the_status_line_matches_the_indent_of_the_block_it_joins():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    indented = "  ```goal\n  name: G1\n  now: 3\n  ```\n"
+    out = set_status_in_goals(indented, "G1", "approved")
+    assert "  status: approved" in out
+
+
+def test_two_goals_with_the_same_name_are_refused_rather_than_guessed_at():
+    """My reviewer's finding on runner#418, and it is a real divergence:
+    two blocks sharing a `name:` render as two rows he can tap separately,
+    nothing on the wire tells them apart, and editing the first would
+    return 200 on the goal he did not touch."""
+    from agora_runner.nova_plan import set_status_in_goals
+
+    twice = "```goal\nname: Foo\nnow: 1\n```\n\n```goal\nname: Foo\nnow: 2\n```\n"
+    assert set_status_in_goals(twice, "Foo", "approved") is None
+
+
+def test_a_block_carrying_two_status_lines_ends_up_with_one_the_page_agrees_with():
+    """`_goal` assigns over every line, so the *last* `status:` is what the
+    page renders. Rewriting only the first returns 200 and changes nothing
+    he can see."""
+    from agora_runner.nova_plan import _fenced, _goal, set_status_in_goals
+
+    doubled = "```goal\nname: Foo\nstatus: proposed\nnow: 1\nstatus: declined\n```\n"
+    out = set_status_in_goals(doubled, "Foo", "approved")
+    assert out.count("status:") == 1
+    rows, _ = _fenced(out, {"goal": _goal})
+    assert rows["goal"][0]["status"] == "approved"
+
+
+def test_setting_an_arbitrary_field_replaces_it_in_place():
+    """`now:` is edited by the same surgery as `status:` since Cycle 563 —
+    the number the scoreboard shows is written by the instrument, not typed."""
+    from agora_runner.nova_plan import set_field_in_goals
+
+    out = set_field_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "now", 8.2)
+    assert "now: 8.2" in out
+    assert "now: 3" not in out
+    # The rest of the block, and his prose, are untouched.
+    assert "measure: things per week" in out
+    assert "Prose under G1 that nothing parses." in out
+    assert out.count("now:") == GOALS_WITH_BLOCKS.count("now:")
+
+
+def test_a_field_name_or_value_the_fence_could_not_parse_back_is_refused():
+    """A newline in the value would write a second field the caller never
+    asked for and still return a string, which reads as success."""
+    from agora_runner.nova_plan import set_field_in_goals
+
+    assert set_field_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "now", "3\nmeasure: x") is None
+    assert set_field_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "no w", "3") is None
+    assert set_field_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "", "3") is None
+
+
+def test_a_status_that_is_not_a_status_is_still_refused_through_the_wrapper():
+    from agora_runner.nova_plan import set_status_in_goals
+
+    assert set_status_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "settled") is None

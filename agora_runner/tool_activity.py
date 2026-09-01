@@ -1,7 +1,7 @@
 """Live tool-use chips for claude-cli personas, without handing the bridge
 Agora's internal token.
 
-Edvard asked for this twice in his own notes ("I can't see the tool usage
+The owner asked for this twice in his own notes ("I can't see the tool usage
 of Claude cli agents in Agora. I want that"), and when asked whether he
 wanted every call or only the ones that change something, answered
 2026-08-03: "All. I want to know whats going on. It takes away my feeling
@@ -74,7 +74,8 @@ def revoke(token):
             _grants.pop(token, None)
 
 
-def report(token, capability, detail, tool_use_id="", output=None, is_error=False):
+def report(token, capability, detail, tool_use_id="", output=None, is_error=False,
+           retracted=False):
     """Post one chip. Returns False if the token is unknown or expired,
     which is the whole of this endpoint's authentication.
 
@@ -84,7 +85,7 @@ def report(token, capability, detail, tool_use_id="", output=None, is_error=Fals
     A call is narrated twice: once when it starts (detail, no output) and
     once when it returns (output, no detail), both under the same
     tool_use_id. Two posts rather than one amended post, because the first
-    is already on Edvard's screen by the time the tool finishes -- a
+    is already on the owner's screen by the time the tool finishes -- a
     `pytest` run takes minutes and he asked to see it start, not to see it
     appear already-complete afterwards. Agora's client pairs them by
     tool_use_id and renders one chip (public/app.js). If one half is lost,
@@ -98,7 +99,7 @@ def report(token, capability, detail, tool_use_id="", output=None, is_error=Fals
         conversation_id = entry.conversation_id
 
     # There is deliberately no ceiling here. There was one -- 400 chips per
-    # call, after which this went silent -- and Edvard struck it down on
+    # call, after which this went silent -- and the owner struck it down on
     # 2026-08-04: "limiting the tool calls (which limits your ability) just
     # because you think it will improve the ui is against everything we stand
     # for... If a cap is needed because of a buffer overflow or something
@@ -124,5 +125,6 @@ def report(token, capability, detail, tool_use_id="", output=None, is_error=Fals
     # Nothing is lost -- Agora also appends every chip to the conversation
     # itself, which is durable and is where these are actually read.
     audit(persona_name, conversation_id, capability, detail, ephemeral=True,
-          tool_use_id=tool_use_id, output=output, is_error=is_error)
+          tool_use_id=tool_use_id, output=output, is_error=is_error,
+          retracted=retracted)
     return True

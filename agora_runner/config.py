@@ -23,7 +23,7 @@ DEBUG_LOGGING = os.environ.get("DEBUG_LOGGING", "").strip().lower() in ("1", "tr
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 # Escape hatch for the metered-provider guard in reply.py. Off by default:
 # an unattended turn (heartbeat, workflow step) may not spend the prepaid
-# Anthropic balance. See reply.py's METERED_PROVIDERS comment for Edvard's
+# Anthropic balance. See reply.py's METERED_PROVIDERS comment for the owner's
 # rule and why attended turns are deliberately still allowed.
 ALLOW_METERED_UNATTENDED = os.environ.get(
     "ALLOW_METERED_UNATTENDED", "").strip().lower() in ("1", "true", "yes")
@@ -37,6 +37,45 @@ CLAUDE_BRIDGE_URL = os.environ.get(
     "CLAUDE_BRIDGE_URL", "http://agora-claude-bridge.agents.svc.cluster.local:8090"
 )
 CLAUDE_BRIDGE_TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
+# Let a claude-cli turn run alongside one already in flight, instead of
+# blocking on the bridge's process-wide invocation lock. Off by default:
+# with it off, a heartbeat that arrives while another is running waits its
+# turn, which is exactly what happens today and is safe. With it on, both
+# run, and each gets its own git worktree (bridge `_provision_workspace`).
+# This is the switch for the owner's 18-minute cadence -- at 18 minutes an
+# average 18-minute cycle overlaps the next one by design, and he asked
+# for that overlap rather than a queue. One env var so the flip is a
+# config change and the rollback is the same change back.
+CLAUDE_CLI_CONCURRENT = os.environ.get("CLAUDE_CLI_CONCURRENT", "").lower() in ("1", "true", "yes")
+
+
+def _max_concurrent_runs():
+    """How many runs of ONE heartbeat may be in flight at the same time.
+
+    The switch above only opens the bridge's lock. One layer above it,
+    `run_due_heartbeats` refuses to spawn a second run of a heartbeat
+    whose previous run is still going -- so with the bridge lock open and
+    this at 1, an 18-minute schedule against a 45-minute cycle drops two
+    ticks out of every three and Nova still runs about hourly. Both have
+    to move for cycles to actually overlap.
+
+    3 is the ceiling of 45/18: the turn cap is 45 minutes and the cadence
+    the owner is switching to is 18, so at most three cycles can genuinely
+    be in flight at once. It is a bound on a runaway (a hung run's thread
+    never dies, and every later tick would stack another on top of it),
+    not a throttle -- at the intended cadence it is never reached.
+    Explicit `HEARTBEAT_MAX_CONCURRENT` wins over both defaults.
+    """
+    raw = os.environ.get("HEARTBEAT_MAX_CONCURRENT", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass  # a typo must not silently disable the heartbeat loop
+    return 3 if CLAUDE_CLI_CONCURRENT else 1
+
+
+HEARTBEAT_MAX_CONCURRENT = _max_concurrent_runs()
 RUNNER_PORT = int(os.environ.get("RUNNER_PORT", "8082"))
 # Nova's read-only site (nova_site.py). Deliberately a different port from
 # RUNNER_PORT rather than another path on it: this one is reachable from
@@ -60,6 +99,18 @@ NOVA_REPLY_MODEL = os.environ.get("NOVA_REPLY_MODEL", "claude-sonnet-5")
 # cycles shipped a capability that nothing called.
 NOVA_PERSONA_ID = os.environ.get(
     "NOVA_PERSONA_ID", "08ffac94-7c4a-4506-897f-968c592358cb"
+)
+# The *hourly* cycle heartbeat, specifically -- not "a heartbeat pointed at
+# Nova", of which there are four as of 2026-08-24. The retrospective, the
+# ideas run and the Monday goal review / reprioritise all
+# target this persona and also name their conversations `... Cycle N`, off
+# their own counters starting at 1, so their `Cycle 3` and the hourly loop's
+# `Cycle 3` are different runs three weeks apart. Anything joining journal
+# entries to conversations by number has to narrow to this one id first;
+# `cycle_number.cycle_starts` is the caller that does. Defaulted rather than
+# required for the same reason as the persona above.
+NOVA_CYCLE_HEARTBEAT_ID = os.environ.get(
+    "NOVA_CYCLE_HEARTBEAT_ID", "ca31c116-6125-49f6-9eff-5af181fec485"
 )
 # Where the bridge sends live tool-use reports back to -- this process's
 # own in-cluster address (tool_activity.py explains why the reports come
@@ -125,11 +176,7 @@ ANTHROPIC_NO_THINKING_TOGGLE = {"claude-haiku-4-5-20251001", "claude-fable-5"}
 
 MAX_HISTORY = 20          # messages included in a generation context
 FETCH_LIMIT = 40          # ?limit for detail fetches (critique #5)
-AI_TURN_CAP = 6           # consecutive automated turns before a persona-to-
-                          # persona @mention chain stops (it no longer pauses
-                          # the conversation -- see conversations.py)
-
-# Nothing auto-pauses a conversation any more. Edvard, 2026-08-05: *"Please
+# Nothing auto-pauses a conversation any more. The owner, 2026-08-05: *"Please
 # turn off the auto pause of conversations as they are just blocking now.
 # They belong to the previous architecture, outdated."* A pause needs a manual
 # resume from the conversation menu, so a transient provider outage locked him
@@ -153,7 +200,7 @@ FAILURE_BACKOFF_MAX_SECONDS = 3600 # ceiling on the doubling
 TOOL_ROUNDS_MAX = 100     # client-side tool loop bound (Issues.md: bumped 50->100)
 VAULT_CONTEXT_CAP = 24000  # chars of injected vault content per heartbeat (critique #8)
 # 2026-07-25: a monitoring-style heartbeat (K3s Sentinel) should only post to
-# the chat when it actually finds something worth Edvard's attention -- a
+# the chat when it actually finds something worth the owner's attention -- a
 # clean/healthy check silently posting "all good" every run is just noise.
 # A heartbeat's own prompt opts into this by instructing the model to reply
 # with EXACTLY this sentinel (and nothing else) when there's nothing to
@@ -275,7 +322,7 @@ NO_CAPS = {
     "githubWrite": False,
     "githubMerge": False,
     "terminalExec": False,
-    # Write one bullet into Edvard's issues.md/ideas.md capture list, and
+    # Write one bullet into the owner's issues.md/ideas.md capture list, and
     # nothing else -- the narrow write half of the journal-card reply turn
     # (nova_replies.py). Deliberately not folded into vaultWrite: that cap
     # advertises vault_write/vault_append, which can address any document

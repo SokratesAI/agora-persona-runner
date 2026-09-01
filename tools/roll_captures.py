@@ -26,7 +26,7 @@ complete.
 **The `put` of the live half needs `--allow-shrink`, and this is the one
 write in the loop that does.** Cycle 212 taught the vault client to refuse
 a write that replaces a document with under a quarter of its size, after a
-blind read wrote an empty body over Edvard's 123KB board. Rolling is the
+blind read wrote an empty body over the owner's 123KB board. Rolling is the
 legitimate operation that looks exactly like that failure: Cycle 114 took
 these two from 265KB to 58KB, and `issues.md` alone went from 158,635
 bytes to roughly 29,000 — about 18%. So the live write is:
@@ -63,7 +63,7 @@ that is still load-bearing:
    `check_newest_first` below is what stops the split re-opening, and it
    will fire again the first time a cycle appends without the marker.
 2. **The site renders these files.** `agora_runner/nova_boards.py`
-   serves both as board pages in the Nova app -- Edvard's own ask,
+   serves both as board pages in the Nova app -- the owner's own ask,
    `issues.md` #57. It reads the archive alongside the live half now
    (#98), the way `nova_journal.digest_markdown` always has. That fix
    was necessary and not sufficient: #100 then had to add the
@@ -76,6 +76,11 @@ that is still load-bearing:
 
 import re
 import sys
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.md_sections import find_title, split_at_heading
 from agora_runner.nova_boards import parse_notes
@@ -238,7 +243,7 @@ def spec_for(live):
         marker=MARKER,
         archive_title=archive_title(live),
         # **The archive is the site's data, not just cold storage, and
-        # leaving this off cost Edvard two thirds of a page he opens.**
+        # leaving this off cost the owner two thirds of a page he opens.**
         # `nova_boards.parse_notes` returns notes only from a section
         # titled `entries` and `[]` from anything else, so an archive of
         # frontmatter-then-bullets renders as an empty half of the board.

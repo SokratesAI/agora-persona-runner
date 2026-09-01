@@ -1,7 +1,7 @@
-"""Rewrite every priority rating already in Edvard's files to `PRIORITY_LABELS`.
+"""Rewrite every priority rating already in the owner's files to `PRIORITY_LABELS`.
 
 This was `retire_priority_glyphs.py` and it only knew how to go one way:
-coloured ball -> plain word, on Edvard's *"Please do not use these
+coloured ball -> plain word, on the owner's *"Please do not use these
 symbols '🟠' as i can't really see the difference as they are colors"*
 (comments board 2026-08-19). He reversed that the next morning --
 *"There has been a missinderstanding here. I do like the symbols ... if
@@ -17,7 +17,7 @@ decision a third time is a four-line edit to that dict followed by one
 run of this, in whichever direction it now points.
 
 The code change alone reaches only rows something touches again, which
-is why this exists at all: the boards Edvard opens in Obsidian would
+is why this exists at all: the boards the owner opens in Obsidian would
 otherwise keep whatever spelling was current when each row was last
 written.
 
@@ -37,6 +37,11 @@ table row, and only rewrites a bullet that sits above the first heading.
 import argparse
 import re
 import sys
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
     CAPTURE_PRIORITY_SEP,

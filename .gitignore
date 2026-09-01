@@ -4,6 +4,11 @@ __pycache__/
 .env
 *.log
 node_modules/
+# `node_modules/` with the slash matches directories only, and what
+# `tools.browser_tests` leaves in a concurrent cycle's worktree is a
+# *symlink* to the shared checkout's copy -- so git listed it as untracked
+# and `tidy_workspace` read a clean worktree as dirty (Cycle 351).
+tests/browser/node_modules
 # Worktrees the review subagent runs in (isolation: "worktree"). Ignored
 # in the bridge since Cycle 108 and not here, which left them one
 # `git add -A` away from being committed by the cycle under review.
@@ -11,7 +16,7 @@ node_modules/
 
 # Scratch from the digest roll in `prompt.md` step 7, which tells a cycle
 # to `cd` into this repo and write `live.md`/`archive.md` here before
-# calling `tools.roll_digest`. They are fragments of Edvard's
+# calling `tools.roll_digest`. They are fragments of the owner's
 # `journal-digest.md`, not source, and they have been swept into a commit
 # by `git add -A` twice: Cycle 125 caught it before merging, Cycle 132
 # did not, and #111 shipped both files to `main`. Ignoring them is the

@@ -1,0 +1,43 @@
+# schedule-health: unmonitored: The owner closed this topic on 2026-08-28 -- "Stop spending cycles on the nova-deadman alarm investigation, it's not a priority, dead is fine to know as pure info, no autostart backup system needed for this hobby project." The alarm still runs and still alarms; nobody is to spend a cycle on the fact that GitHub does not schedule it.
+#
+# The 30-minute rung of the nova-deadman alarm — see `nova-deadman.yaml`
+# for what the alarm is and why it lives off-box.
+#
+# It is a separate workflow rather than a second `- cron:` line in that
+# file, and that is the entire reason this file exists. GitHub drops a
+# scheduled occurrence that a newer occurrence of the same workflow
+# overtakes; this account's scheduler runs 36 to 574 minutes late (median
+# 92), so a 30-minute cron generates a fresh occurrence faster than the
+# queue drains and supersedes every slower rung sharing its workflow. That
+# is the measured shape of a run count of zero across three cadences.
+#
+# Separated, the two rungs cannot starve each other: this one costs nothing
+# while GitHub is behind, and if the queue recovers the alarm's latency
+# drops from a day to half an hour on its own, with no change here.
+#
+# `tools.deadman_check` comments on the open alarm issue rather than opening
+# a second one, so both rungs firing on the same outage is one alarm.
+name: nova-deadman (fast rung)
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nova-deadman
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Is the cluster still pinging?
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 -m tools.deadman_check

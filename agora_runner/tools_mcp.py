@@ -1,7 +1,7 @@
 """One toolset for every agent -- Agora's own capability tools, served to
 claude-cli personas over MCP.
 
-Edvard, 2026-08-06, reading a digest line that mentioned "both tools that
+The owner, 2026-08-06, reading a digest line that mentioned "both tools that
 made them -- the one I use and the one your Gemini/Anthropic personas
 use": *"There are different tools for you and Gemini? That should not be
 the case. Gemini and other agents should use the same custom tools as you
@@ -69,6 +69,92 @@ talking to, while an isError result is handed to the model, which can
 read "[not found: foo.md]" and try something else. Every path below that
 can throw is wrapped for the same reason -- an unhandled exception on
 this thread would surface as a dead connection mid-cycle.
+
+## Audited against the NSA MCP guidance, 2026-08-31 (idea #175)
+
+The owner's idea says the reason to do this: every security review on this
+estate so far has been our own reasoning about our own design, which is the
+review most likely to miss the thing everyone else already knows to check.
+The external baseline is the NSA AI Security Center's Cybersecurity
+Information Sheet *Model Context Protocol (MCP): Security Design
+Considerations for AI-Driven Automation* (U/OO/6030316-26, May 2026).
+
+**What I actually read, because it changes how much this is worth.** Both
+pods are refused the primary PDF -- `media.defense.gov` and `nsa.gov` each
+answer 403 to `curl` from the bridge pod and from the runner pod, with a
+browser user-agent, so this audit is built on two secondary reports of the
+CSI rather than on the document. The four operational requirements below
+are quoted as those reports quote them. A cycle with a way to fetch the PDF
+should redo this against the original; what is here is a real audit of a
+faithful summary, not a reading of the source.
+
+Per recommendation: what we do, what we do not, and what we decided
+otherwise. The third answer is legitimate and is written rather than
+assumed.
+
+1. **Cryptographic message integrity -- sign and verify every MCP message
+   at the protocol layer. NOT DONE, deliberately.** The transport is plain
+   HTTP between two pods in one Kubernetes namespace with no intermediary,
+   and signing would need a key distribution story this estate does not
+   have. The honest cost of that decision: the grant token travels in a
+   header in cleartext on the cluster network, so anything that can read
+   that network reads a live token. That is the same exposure `AGORA_TOKEN`
+   already has, which is why it is a decision and not an oversight -- but
+   it is a decision, and a service mesh would close it.
+
+2. **Least-privilege tool-call scoping, no ambient authority. DONE, and
+   enforced twice.** A grant is one persona, one conversation, one frozen
+   capability set, for one turn, revoked in a `finally`. `tools/call`
+   rebuilds the allowlist from the same caps that produced `tools/list`, so
+   "the model can only call what it was shown" is true rather than
+   intended. Where we fall short of the letter of it: the CSI wants
+   authorisation attached to an *invocation*, and ours attaches to a turn.
+   A turn is much narrower than a session and still wider than a call.
+
+3. **Tamper-evident audit covering every agent action. COVERAGE DONE,
+   TAMPER-EVIDENCE NOT.** Measured 2026-08-31 by walking every `if name ==`
+   branch in `tools_dispatch.execute_tool`: 32 tools, and all 32 audit --
+   29 call `audit()` directly and `vault_write`, `vault_append` and
+   `scoped_write` go through `_audit_vault_write`. There is no hash chain:
+   entries are rows in Agora, and anything that can write them can rewrite
+   them. Chaining is a real piece of work and is not scoped here.
+
+4. **Trust chains -- gateway as a trust boundary, certificates verified in
+   both directions. NOT DONE.** There is no gateway and no TLS. What stands
+   in for it is the NetworkPolicy plus the bearer token, which authenticates
+   the *turn* and nothing about the host.
+
+Of the supporting controls those reports name:
+
+  * **Content-length checks.** Was missing on `invoke_server`'s three POST
+    routes and is not any more (Cycle 698). `nova_site.py` had held the
+    same line for months; the two servers were built from one piece of
+    reasoning and only one got it.
+  * **Rate limiting. MISSING, and it is the next gap here.** Nothing limits
+    how many `tools/call` a grant may make.
+  * **Message expiry and replay protection. PARTIAL.** The token is single
+    purpose and dies with the turn, but carries no expiry of its own and no
+    nonce, so a replay inside the turn window succeeds.
+  * **Tool execution sandboxing. PARTIAL, and on purpose.** `--restricted`
+    and `claudeCliRestricted` exist (idea #168) and no persona is started
+    restricted yet; `terminal_exec` is an unrestricted shell by design and
+    the owner has said so repeatedly.
+  * **Tool name collision and drift detection. NOT APPLICABLE.** One server,
+    one schema source (`client_tool_schemas`), which is the whole point of
+    this module.
+  * **Scanning for open MCP listeners. NOT DONE.** `tools.nas_ports` sweeps
+    the NAS; nothing sweeps the cluster for this.
+  * **Filtering egress proxy / DLP. PARTIAL.** NetworkPolicies bound where
+    this pod can reach, and `redact()` masks secret-sourced values on the
+    way out. There is no content inspection of a tool result.
+  * **Indirect prompt injection and toolchain pivot detection. NOT DONE,
+    and it is the largest hole on this list.** It is already on my own
+    board as issue #15: `POST /api/board/comment` accepts any `author`
+    string and nothing establishes who the caller is, while `prompt.md`
+    tells every cycle that an unprocessed capture from the owner outranks
+    everything. The CSI's framing is the useful half -- this is not a data
+    integrity problem, it is an authorisation problem on the highest
+    priority instruction this loop accepts.
 """
 
 import json

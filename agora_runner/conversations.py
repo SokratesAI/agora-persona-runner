@@ -10,7 +10,7 @@ from agora_runner.config import (
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.agora_api import fetch_persona
-from agora_runner.turns import build_system, decide_turn, merge_history, PAUSE_SENTINEL
+from agora_runner.turns import build_system, decide_turn, merge_history
 from agora_runner.reply import generate_reply
 
 
@@ -21,7 +21,7 @@ _conversation_failures = {}
 
 # conversation id -> monotonic time before which we don't retry it. Set
 # from _conversation_failures once a conversation crosses FAILURE_BACKOFF_CAP.
-# This replaced auto-pause on 2026-08-05 at Edvard's ask -- see config.py.
+# This replaced auto-pause on 2026-08-05 at the owner's ask -- see config.py.
 _conversation_backoff = {}
 
 # conversation id -> (last_message_id, rev, messages). The poll loop re-read
@@ -90,7 +90,7 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
         }
     caps = persona.get("capabilities") or dict(NO_CAPS)
     multi = len(participants) > 1
-    system = build_system(persona, detail, participants)
+    system = build_system(persona, detail)
     history = merge_history(thread, persona["name"], multi)
     sticky = bool(detail.get("stickyFallback", False))
 
@@ -113,7 +113,7 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
     # without that, a leftover "Now let's..." chunk would become the
     # thread's last message and decide_turn would think a persona had
     # already replied, silently breaking retry (last-sender-must-be-
-    # Edvard is the only signal decide_turn has).
+    # the owner is the only signal decide_turn has).
     posted_ids = []
 
     def on_text(chunk, is_final):
@@ -130,8 +130,11 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
             posted_ids.append(message_id)
 
     try:
+        # `unattended=False` is stated rather than inherited: this is the one
+        # production path with a person on the other end of it, so it is the
+        # one allowed to reach a metered provider. reply.py defaults closed.
         reply = generate_reply(persona, caps, system, history, conversation["id"], model_override, sticky,
-                                on_text=on_text, on_thinking=on_thinking)
+                                on_text=on_text, on_thinking=on_thinking, unattended=False)
     except Exception:
         for message_id in posted_ids:
             try:
@@ -146,7 +149,7 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
 
 def back_off(conversation_id, conversation_name, failures, reason, last_message_id=None):
     """Stop retrying a persistently failing conversation for a while, without
-    touching its status. Replaced auto_pause() on 2026-08-05 -- Edvard:
+    touching its status. Replaced auto_pause() on 2026-08-05 -- the owner:
     *"Please turn off the auto pause of conversations as they are just
     blocking now."* A paused conversation needs a manual resume from the
     menu, so a transient outage left him locked out of a thread until he
@@ -218,15 +221,7 @@ def poll_conversation(summary):
     ]
     speakers = decide_turn(thread, personas)
     if not speakers:
-        debug_log(f"[{name}] no turn needed (last sender not Edvard, or no @mention match)")
-        return
-    if speakers == [PAUSE_SENTINEL]:
-        # The chain stops here; the conversation stays active. Pausing it
-        # was the old multi-persona architecture's backstop, and Edvard
-        # asked for it gone (2026-08-05) -- the cap's actual job is to stop
-        # personas @mentioning each other forever, and returning does that
-        # on its own. His next message starts a fresh chain, no menu.
-        debug_log(f"[{name}] AI turn cap reached: chain stopped, conversation left active")
+        debug_log(f"[{name}] no turn needed (last sender not Edvard)")
         return
     debug_log(f"[{name}] turn decided: speakers={speakers}")
 
@@ -236,7 +231,7 @@ def poll_conversation(summary):
         override = visible[-1].get("modelOverride")
 
     # Backoff is checked here rather than at the top of the function on
-    # purpose: a message Edvard just sent clears it immediately, and we
+    # purpose: a message the owner just sent clears it immediately, and we
     # can't know who sent last without the fetch above. The fetch is one
     # cheap GET -- the cost this guards is generate_reply() cascading the
     # whole fallback chain, which is below this point.
@@ -245,7 +240,7 @@ def poll_conversation(summary):
         until, seen_last_id = state
         last_id = visible[-1].get("id") if visible else None
         # A *new* message from him clears it immediately -- but it has to be
-        # new. The common retry storm is "Edvard asked something and every
+        # new. The common retry storm is "the owner asked something and every
         # reply attempt fails", where his message stays the last one in the
         # thread forever, so testing sender alone would clear the backoff on
         # every single tick and change nothing at all.
@@ -276,7 +271,7 @@ def poll_conversation(summary):
         if count >= FAILURE_BACKOFF_CAP:
             # The old label ("rate limit or outage") was a guess -- the real
             # exception only ever reached stdout via poll.py's own
-            # try/except, never the conversation Edvard actually reads.
+            # try/except, never the conversation the owner actually reads.
             # Thread the real error into the visible message instead.
             detail_text = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             back_off(summary["id"], detail.get("name"), count, detail_text,

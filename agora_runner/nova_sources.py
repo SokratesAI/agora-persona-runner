@@ -14,6 +14,8 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_capture import CAPTURE_TARGETS
+from agora_runner.nova_catalog import CATALOG_PATH
+from agora_runner.nova_claims import CLAIMS_PATH
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_costs import COST_LEDGER_PATH
 from agora_runner.nova_plan import PLAN_DOCUMENTS
@@ -112,7 +114,7 @@ def journal_entry_markdown(cycle):
     journal page renders the whole folder. The reply worker wants one
     entry and was calling the same function to get it: 437KB and 103
     documents assembled and parsed to answer "what did cycle 95 say",
-    on every comment Edvard leaves, growing by one entry an hour.
+    on every comment the owner leaves, growing by one entry an hour.
 
     Measured against the live vault 2026-08-11, which is why this exists:
     the folder fetch is **1.496s**, the id listing plus one document is
@@ -139,7 +141,7 @@ def journal_entry_markdown(cycle):
     # document that wrote its heading at the wrong depth parses to zero
     # entries here, and the caller's fallback is the full journal, where
     # that entry is absorbed into its neighbour and so is not found
-    # either. Without this, Edvard commenting on one of those three cards
+    # either. Without this, the owner commenting on one of those three cards
     # gets a reply written with no memory of the entry he is replying to.
     #
     # A missing read stays missing rather than becoming `""`: None is this
@@ -161,7 +163,7 @@ def digest_markdown():
     the next `##` one -- and the archive deliberately has no `##`
     heading, so its lines land inside the live file's digest section
     rather than starting a rival one -- which would not hide **Needs
-    Edvard** or **Next cycle**, as this comment used to claim, but would
+    the owner** or **Next cycle**, as this comment used to claim, but would
     silently replace the live file's own newest digest lines with the
     archive's older ones, `_sections` keeping the last heading of each
     name. Order is preserved: both files are
@@ -214,6 +216,22 @@ def retro_ledger_json():
     return vault_read_path(RETRO_LEDGER_PATH) or ""
 
 
+def claims_ledger_json():
+    """The claims ledger, raw -- who is holding which item right now.
+
+    Third JSON fetch here, and the only one written mid-cycle rather than
+    at the end of one: `tools/claim.py` takes a row before the work
+    starts and releases it after, so this is the only document on the
+    server that says what is happening *now* instead of what happened.
+    Shaping is `nova_next.next_payload`, which does no I/O.
+
+    `""` when the document does not exist, which the shaping reports as
+    an unreadable ledger rather than an empty one -- the two look
+    identical and mean opposite things.
+    """
+    return vault_read_path(CLAIMS_PATH) or ""
+
+
 def board_markdown(name):
     """`(edvard, nova, nova_archive)` markdown for one board.
 
@@ -247,7 +265,7 @@ def board_markdown(name):
 
 
 def notes_markdown():
-    """`notes.md`, raw -- Edvard's third capture file.
+    """`notes.md`, raw -- the owner's third capture file.
 
     The path comes out of `nova_capture.CAPTURE_TARGETS` rather than
     being written here a second time. That map is what the Note button
@@ -272,7 +290,7 @@ def goal_history_json():
 
     `""` before the first snapshot, which the shaping turns into a
     scoreboard with no lines under it rather than a 502. That is the
-    right failure: the numbers Edvard actually reads are in `goals.md`
+    right failure: the numbers the owner actually reads are in `goals.md`
     and do not come from this file at all.
     """
     return vault_read_path(GOAL_HISTORY_PATH) or ""
@@ -295,3 +313,14 @@ def plan_markdown():
     these two genuinely not existing is a state a fresh vault is in.
     """
     return {key: vault_read_path(path) or "" for key, _label, path in PLAN_DOCUMENTS}
+
+
+def catalog_markdown():
+    """`nova/catalog.md`, raw -- the service catalog `tools.catalog` writes.
+
+    `""` if it is missing, for `plan_markdown`'s reason: a vault with no
+    catalog in it yet is a state this system is legitimately in, and the
+    page says so rather than erroring. The path comes from
+    `nova_catalog` rather than being written here a second time.
+    """
+    return vault_read_path(CATALOG_PATH) or ""

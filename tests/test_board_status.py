@@ -109,7 +109,7 @@ def test_refuses_a_done_table_row_whose_third_column_is_a_date():
     # is `# | Item | Landed | Where`, so the write would have replaced the
     # landed date with `⚪ Backlog` and `parse_board`, which derives that
     # row's status from the table it sits in, would have gone on reporting
-    # `✅ Done`. A silent corruption on Edvard's own file.
+    # `✅ Done`. A silent corruption on the owner's own file.
     assert set_row_status(BOARD, 51, "⚪ Backlog") is None
     assert "| [[#51 — One way\\|51]] | One way | 08-10 | inbox.md |" in BOARD
 
@@ -124,7 +124,7 @@ def test_refuses_a_missing_row_and_a_status_i_did_not_offer():
 def test_refuses_an_updated_stamp_carrying_a_table_delimiter():
     # `status` comes off a whitelist so it cannot carry one; `updated` is
     # free text. A `|` gives the row an extra column and a newline splits
-    # it into two, and both land in Edvard's file looking deliberate.
+    # it into two, and both land in the owner's file looking deliberate.
     assert set_row_status(BOARD, 57, "✅ Done", updated="08-15 | 🟠 High") is None
     assert set_row_status(BOARD, 57, "✅ Done", updated="08-15\n| oops |") is None
     assert set_row_status(BOARD, 57, "✅ Done", updated="08-15") is not None

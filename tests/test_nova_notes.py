@@ -2,7 +2,7 @@
 
 `LIVE_SHAPE` is shaped off the live file as it stood on 2026-08-21 --
 nine answered notes, one of them carrying two cycle replies, and the
-empty bullet `nova_capture` leaves at the top as Edvard's cursor.
+empty bullet `nova_capture` leaves at the top as the owner's cursor.
 
 **The two wrapping cases are not in that file and the fixture does not
 pretend they are.** Every note there is a single line, because the file
@@ -49,7 +49,7 @@ def test_the_bare_bullets_above_the_first_heading_are_the_waiting_notes():
 def test_his_cursor_is_not_a_note():
     """`nova_capture` keeps an empty bullet at the top to type into.
 
-    It is punctuation in a file, not something Edvard wrote, and a card
+    It is punctuation in a file, not something the owner wrote, and a card
     drawn for it would be a permanent blank note at the top of the page.
     """
     parsed = parse_notes_page(LIVE_SHAPE)
@@ -102,8 +102,10 @@ def test_a_note_hard_wrapped_at_column_zero_keeps_its_tail():
 def test_a_reply_carries_the_cycle_it_links_to():
     payload = _payload(LIVE_SHAPE)
     read = [note for note in payload["notes"] if not note["waiting"]]
-    assert [r["cycle"] for r in read[0]["responses"]] == [258]
-    assert [r["cycle"] for r in read[1]["responses"]] == [241, 244]
+    # Oldest first, so the ci-builder note -- lower in `## Read` and
+    # therefore older -- comes before the platform-config one.
+    assert [r["cycle"] for r in read[0]["responses"]] == [241, 244]
+    assert [r["cycle"] for r in read[1]["responses"]] == [258]
 
 
 def test_a_waiting_note_carries_no_reply_and_says_it_is_waiting():
@@ -114,15 +116,31 @@ def test_a_waiting_note_carries_no_reply_and_says_it_is_waiting():
     assert waiting[0]["answered"] is False
 
 
-def test_waiting_notes_come_first():
-    """The page's whole question is "did anyone pick my note up".
+def test_the_page_reads_oldest_first_with_the_unanswered_notes_last():
+    """The owner: *"ordered with the latest note at the bottom."*
 
-    A waiting note buried under nine answered ones answers it last.
+    This used to assert the opposite -- waiting notes first, so the
+    page's first card answered "did anyone pick my note up". The page is
+    a conversation now and it opens scrolled to the bottom, so the
+    newest message is the one he lands on either way; what changed is
+    that everything above it now reads downwards in time like a chat
+    log instead of upwards like a feed.
+
+    `notes.md` is newest-first in both halves, so ascending time is the
+    `## Read` list reversed with the unanswered bullets after it. Both
+    halves matter: reversing only one of them would put the newest note
+    in the middle.
     """
     payload = _payload(LIVE_SHAPE)
-    assert [note["waiting"] for note in payload["notes"]][:1] == [True]
+    assert [note["text"] for note in payload["notes"]] == [
+        "Follow-up on the ci-builder idea: please research it before anything gets built.",
+        "Platform-config dispatch billing block is fine to leave as-is.",
+        "A note nobody has picked up yet.",
+    ]
+    assert [note["waiting"] for note in payload["notes"]] == [False, False, True]
     assert payload["waitingTotal"] == 1
     assert payload["readTotal"] == 2
+    assert payload["notesTotal"] == 3
 
 
 def test_a_note_moved_to_read_with_no_reply_is_not_reported_as_answered():
@@ -143,7 +161,12 @@ def test_a_file_with_no_read_section_still_shows_the_waiting_notes():
 
 def test_a_missing_notes_file_is_an_empty_page_not_a_crash():
     payload = _payload("")
-    assert payload == {"notes": [], "waitingTotal": 0, "readTotal": 0}
+    assert payload == {
+        "notes": [],
+        "notesTotal": 0,
+        "waitingTotal": 0,
+        "readTotal": 0,
+    }
 
 
 def test_the_page_reads_the_path_the_note_button_writes():
@@ -164,3 +187,93 @@ def test_the_page_reads_the_path_the_note_button_writes():
 def _payload(markdown):
     with patch.object(nova_notes, "notes_markdown", return_value=markdown):
         return notes_payload()
+
+
+# --- the address the page needs to edit, delete or convert a note ---------
+#
+# The owner, 2026-08-24: *"i have no way of changing it or editing it"*. The
+# two boards have had Edit and Delete since issues #66; this page was built
+# without them, and what it was missing was the address.
+
+
+def test_a_waiting_note_carries_its_capture_index():
+    payload = _payload(LIVE_SHAPE)
+    waiting = [n for n in payload["notes"] if n["waiting"]]
+    assert waiting, "the fixture must have a waiting note for this to mean anything"
+    assert [n["index"] for n in waiting] == list(range(len(waiting)))
+
+
+def test_a_note_already_read_has_no_index():
+    """The edit, delete and convert endpoints can only address the bare
+    bullets above the first heading. A note under `## Read` has a cycle's reply written under it, and
+    rewriting it would leave that reply answering text that is gone."""
+    payload = _payload(LIVE_SHAPE)
+    assert [n["index"] for n in payload["notes"] if not n["waiting"]] \
+        == [None] * payload["readTotal"]
+
+
+def test_a_waiting_note_a_cycle_has_answered_keeps_its_controls():
+    """The indented bullet is a reply, and both parsers now say so.
+
+    This test used to assert the opposite, and the opposite was the bug.
+    `_bullets` read an indented bullet as a cycle's reply while
+    `capture_entries` stripped the line, saw `- `, and counted it as its
+    own capture -- so answering a waiting note shifted every capture index
+    after it, and the guard below dropped the edit/delete controls on the
+    answered note and on everything under it. That was a safe failure and
+    still a failure: the reply is the whole point of the notes page, and
+    writing one took his buttons away.
+
+    `capture_entries` folds the reply out of the text and into the span
+    now, so the two agree and the controls stay. The guard is still
+    exercised by the test underneath this one.
+    """
+    from agora_runner.nova_capture import list_captures
+
+    markdown = LIVE_SHAPE.replace(
+        "- A note nobody has picked up yet.",
+        "- A note nobody has picked up yet.\n  - Read Cycle 430. Answered it.\n- and a later one",
+    )
+    parsed = parse_notes_page(markdown)
+    assert len(list_captures(markdown)) == len(parsed["waiting"]), \
+        "the two parsers have drifted apart again"
+
+    payload = _payload(markdown)
+    waiting = [n for n in payload["notes"] if n["waiting"]]
+    assert [n["text"] for n in waiting] == [
+        "A note nobody has picked up yet.", "and a later one"]
+    assert [n["index"] for n in waiting] == [0, 1], \
+        "an answered note keeps its controls, and so does the one after it"
+    answered = [n for n in waiting if n["index"] == 0][0]
+    assert [r["cycle"] for r in answered["responses"]] == [430]
+
+
+def test_the_guard_still_fires_when_the_two_parsers_really_do_disagree():
+    """Not mocked, and the divergence is a real one that survives the fix.
+
+    A `*` bullet at column zero is a continuation to `_bullets` and a line
+    `capture_entries` ignores outright, so the two disagree about the
+    note's *text* while agreeing about the count. The page must draw no
+    controls rather than hand `/api/capture/delete` an address for a line
+    that reads something else.
+    """
+    from agora_runner.nova_capture import list_captures
+
+    markdown = LIVE_SHAPE.replace(
+        "- A note nobody has picked up yet.",
+        "- A note nobody has picked up yet.\n* a star bullet he pasted in",
+    )
+    parsed = parse_notes_page(markdown)
+    assert list_captures(markdown)[0] != parsed["waiting"][0]["text"], \
+        "the parsers agree on this fixture, so the guard is never reached"
+
+    payload = _payload(markdown)
+    assert [n["index"] for n in payload["notes"] if n["waiting"]] == [None]
+
+
+def test_a_note_the_capture_parser_disagrees_about_gets_no_controls():
+    """If the two ever drift, the page must draw nothing rather than hand
+    `/api/capture/delete` an index pointing at a different line of his file."""
+    with patch.object(nova_notes, "list_captures", return_value=["something else"]):
+        payload = _payload(LIVE_SHAPE)
+    assert [n["index"] for n in payload["notes"] if n["waiting"]] == [None]

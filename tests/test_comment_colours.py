@@ -1,6 +1,6 @@
 """The rule down the left of a comment says *who is talking*, and nothing else.
 
-Edvard, comments board 2026-08-21, with a screenshot of his own thread:
+The owner, comments board 2026-08-21, with a screenshot of his own thread:
 *"my previous comments in this chat gets a grey backline, i want to have it
 green all the time so i clearly see it's my comments."* The grey was
 `.comment.is-acknowledged`, which fired once a cycle had read the comment --

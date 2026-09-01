@@ -50,6 +50,8 @@ LEDGER = {
             "startedAt": "2026-08-11T12:00:17.908Z",
             "durationSeconds": 1162.2,
             "turns": 103,
+            "subagentTurns": 23,
+            "subagentWeightedTokens": 135384.0,
             "toolCalls": 118,
             "weightedTokens": 1911429.8,
         },
@@ -89,15 +91,66 @@ def payload():
     return costs_payload(json.dumps(LEDGER))
 
 
-def test_a_cycle_row_is_the_five_columns_in_the_declared_order(payload):
+def test_a_cycle_row_is_the_seven_columns_in_the_declared_order(payload):
     """The client indexes these by position, so the order is the contract.
 
-    Written as one literal row rather than five separate assertions: the
+    Written as one literal row rather than seven separate assertions: the
     failure this catches is a column being inserted in the middle, which
-    each field checked on its own would report as five unrelated breaks.
+    each field checked on its own would report as seven unrelated breaks.
     """
-    assert payload["cycleColumns"] == ["at", "minutes", "turns", "toolCalls", "weighted"]
-    assert payload["cycles"][0] == [1785756806980, 11.6, 64, 72, 849976]
+    assert payload["cycleColumns"] == [
+        "at", "minutes", "turns", "toolCalls", "weighted",
+        "subagentTurns", "subagentWeighted",
+    ]
+    assert payload["cycles"][-1] == [1786449617908, 19.4, 103, 118, 1911430, 23, 135384]
+
+
+def test_a_cycle_from_before_subagents_were_attributed_is_a_hole_not_a_zero(payload):
+    """The same call `..._before_pace_existed_is_a_hole_not_a_zero` makes.
+
+    Cost attribution for subagents landed 2026-08-19, and all 265 live rows
+    older than that carry `subagentTurns: 0` with no
+    `subagentWeightedTokens` key -- a default written once and carried
+    forward by every republish. Delegation was routine long before that
+    date, so plotting those as zeros draws a flat floor and a step up on 19
+    August, which reads as "this is when Nova started delegating" and is
+    false.
+
+    Note which key decides it. The fixture's first cycle carries
+    `subagentTurns: 0` exactly like a real pre-attribution row, so a check
+    written against the turn count would call this row measured.
+    """
+    assert payload["cycles"][0] == [1785756806980, 11.6, 64, 72, 849976, None, None]
+
+
+def test_a_measured_cycle_that_delegated_nothing_is_a_zero_not_a_hole(payload):
+    """The other half, and the reason the two are not the same test: 42 of
+    the live rows that do carry attribution recorded no delegation at all.
+    That is a measurement of nothing and has to stay distinguishable from
+    nobody having measured."""
+    ledger = json.loads(json.dumps(LEDGER))
+    ledger["cycles"] = [{
+        "session": "quiet",
+        "startedAt": "2026-08-28T05:00:00.000Z",
+        "durationSeconds": 600,
+        "turns": 40,
+        "subagentTurns": 0,
+        "subagentWeightedTokens": 0.0,
+        "toolCalls": 30,
+        "weightedTokens": 500000,
+    }]
+    row = costs_payload(json.dumps(ledger))["cycles"][0]
+    assert row[5] == 0 and row[6] == 0
+
+
+def test_the_summary_does_not_carry_a_subagent_total_that_contradicts_the_rows(payload):
+    """`summary.subagent_weighted` is built from the transcripts on disk now
+    and counts orphans, while the rows are carried forward forever -- live
+    ledger 2026-08-28, the summary says 48,656,353 and the rows add to
+    48,401,932. A tile fed by the summary would not match the chart under
+    it, so the page adds the column up instead."""
+    assert "subagent_weighted" not in payload["summary"]
+    assert "subagent_sessions" not in payload["summary"]
 
 
 def test_a_quota_row_carries_both_windows_and_both_paces(payload):

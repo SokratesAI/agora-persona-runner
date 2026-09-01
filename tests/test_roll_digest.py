@@ -2,7 +2,7 @@
 
 The property under test is never "the output looks right". It is that a
 line which went in comes out exactly once, on one side or the other, and
-that the two sections Edvard actually reads survive the move.
+that the two sections the owner actually reads survive the move.
 """
 
 import pytest
@@ -106,7 +106,7 @@ def test_two_cards_written_without_a_blank_line_between_them_still_roll():
     # it -- it has since Cycle 65 lost its card to exactly that -- and this
     # script used to end one only at a blank line. So a digest whose cards
     # are merged reads as fewer entries than the site shows, drops under the
-    # keep, and rolls nothing: no error, no output, the file Edvard reads
+    # keep, and rolls nothing: no error, no output, the file the owner reads
     # growing forever.
     merged = LIVE.replace(
         "— Fourth.\n\n**Cycle 3**",
@@ -184,7 +184,7 @@ def test_a_first_roll_with_no_archive_yet_builds_one_the_site_can_read():
 # The two vault writes are not atomic and the archive goes first, so a
 # cycle killed between them leaves the same lines in both files. Reviewer
 # finding on runner#93: nothing detected that, and the next run rolled
-# them again, so a cycle rendered twice on Edvard's phone forever.
+# them again, so a cycle rendered twice on the owner's phone forever.
 
 
 def _crashed_between_the_two_writes(keep=2):
@@ -240,3 +240,37 @@ def test_a_single_rolled_line_is_not_announced_as_plural():
         with contextlib.redirect_stdout(out):
             main(["--live", live, "--archive", archive, "--keep", "4", "--dry-run"])
         assert "1 digest line roll off" in out.getvalue(), out.getvalue()
+
+
+def test_a_weekly_run_s_line_rolls_like_any_other():
+    """The weekly heartbeats write a line with no cycle number in it.
+
+    `**Ideas & research** (2026-08-25 13:29) — ...` is the real shape: the
+    Tue/Thu/Sat run is its own Agora conversation with its own counter, so
+    there is no `Cycle N` to write. One of these in the section used to
+    refuse every roll after it, and his digest grew for eight handoffs
+    while the tool reported itself working.
+    """
+    weekly = LIVE.replace(
+        "**Cycle 3** (2026-08-11 15:00) — Third.",
+        "**Ideas & research** (2026-08-11 15:00) — Ten ideas boarded.",
+    )
+    live, archive = plan(weekly, ARCHIVE, keep=2)
+    verify(weekly, ARCHIVE, live, archive)
+    assert "**Ideas & research** (2026-08-11 15:00) — Ten ideas boarded." in archive
+    assert "**Ideas & research**" not in live.split("\n## Digest\n", 1)[1]
+
+
+def test_a_bold_paragraph_with_no_stamp_still_stops_the_roll():
+    """The relaxed matcher must not become "anything in bold".
+
+    A standing warning written into the Digest section by hand has a bold
+    opening and no date, and it is exactly the paragraph that makes the
+    split point guesswork -- which is what the guard is for.
+    """
+    strayed = LIVE.replace(
+        "## Digest\n\n**Cycle 5**",
+        "## Digest\n\n**A standing warning somebody left here.** Do not merge on red.\n\n**Cycle 5**",
+    )
+    with pytest.raises(SystemExit, match="not a cycle line"):
+        plan(strayed, ARCHIVE, keep=2)

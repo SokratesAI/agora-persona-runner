@@ -21,12 +21,18 @@ import pytest
 
 from agora_runner.nova_claims import (
     CLAIM_TTL_MINUTES,
+    PROGRESSED,
     ClaimError,
     dumps,
+    finished_claims,
+    held_by,
     is_stale,
     load,
+    progressed_claims,
     prune,
     release,
+    SLUG_MAX,
+    slug_for_comment,
     summarise,
     take,
 )
@@ -161,7 +167,7 @@ def test_two_different_items_do_not_collide():
 
 @pytest.mark.parametrize(
     "bad",
-    ["", "ab", "Confirm-Deploy", "confirm deploy", "confirm_deploy", "-leading", "x" * 49],
+    ["", "ab", "Confirm-Deploy", "confirm deploy", "confirm_deploy", "-leading"],
 )
 def test_a_slug_that_would_alias_another_slug_is_refused(bad):
     # The whole mechanism is string equality, so `Confirm-Deploy` and
@@ -169,6 +175,31 @@ def test_a_slug_that_would_alias_another_slug_is_refused(bad):
     # would be told they had it.
     with pytest.raises(ClaimError):
         take(empty(), bad, 189, T0)
+
+
+# The length ceiling used to live in the list above as `"x" * 49`, which is
+# why nobody ever looked at it: a runaway key is not an aliasing failure and
+# it was being tested as one. These two are the real contract.
+
+
+def test_the_handoff_slugs_the_digest_actually_writes_are_claimable():
+    # Measured Cycle 591 against the live `journal-digest.md`: nine of the
+    # fourteen **Next cycle** slugs were 49-72 characters, and every one was
+    # refused by the 48-char ceiling. This is the longest of them, verbatim.
+    # A cycle refused here works the item unclaimed, which at three
+    # overlapping cycles is exactly the duplicate work the ledger prevents.
+    real = "step-1b-delegation-now-takes-eleven-minutes-and-that-is-two-measurements"
+    assert len(real) == 72
+    assert take(empty(), real, 591, T0)[0] is True
+
+
+def test_a_runaway_slug_is_still_refused():
+    # The cap was raised, not removed. The slug is a key in one document
+    # every claim in this loop reads and rewrites, so an unbounded one
+    # costs every cycle.
+    assert take(empty(), "x" * SLUG_MAX, 591, T0)[0] is True
+    with pytest.raises(ClaimError):
+        take(empty(), "x" * (SLUG_MAX + 1), 591, T0)
 
 
 def test_a_cycle_number_must_be_a_positive_integer():
@@ -219,6 +250,176 @@ def test_releasing_twice_is_a_no_op_rather_than_an_error():
     assert ledger["claims"][0]["at"] == at(30).isoformat()
 
 
+# --- stopping without finishing --------------------------------------------
+#
+# The state that did not exist for eleven days. Every test here is about one
+# distinction: `done` means `take` refuses forever, `progressed` means `take`
+# grants. A bug in either direction is invisible from inside the cycle that
+# hits it -- a wrongly-spent slug reads as "somebody else is on it", and a
+# wrongly-granted one is the duplicate work this module exists to stop.
+
+
+def test_a_progressed_claim_can_be_taken_by_the_next_cycle():
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(30), outcome="three of four pieces built",
+            state=PROGRESSED)
+    ok, message = take(ledger, "idea-63", 353, at(90))
+    assert ok is True
+    assert "resumed from cycle 347" in message
+    assert "three of four pieces built" in message
+
+
+def test_a_resumed_claim_carries_the_previous_outcome_forward():
+    # The breadcrumb has to survive the moment somebody picks the item up,
+    # or the only record of what was already done is gone precisely when
+    # it is being acted on.
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(30), outcome="worktree per cycle", state=PROGRESSED)
+    take(ledger, "idea-63", 353, at(90))
+    row = ledger["claims"][0]
+    assert row["cycle"] == 353
+    assert row["state"] == "open"
+    assert row["resumed_from"] == 347
+    assert row["resumed_after"] == "worktree per cycle"
+    assert len(ledger["claims"]) == 1
+
+
+def test_a_done_claim_is_still_refused_forever():
+    # The mutation guard on the branch above: if `take` had been loosened
+    # to grant any released claim rather than progressed ones only, this
+    # is the test that fails.
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(30), outcome="built", state="done")
+    ok, message = take(ledger, "idea-63", 353, at(90))
+    assert ok is False
+    assert "was finished by cycle 347" in message
+
+
+def test_a_progressed_claim_is_not_held_by_anyone():
+    # It is not a lock. A cycle reading the board must not see 🔒 on a row
+    # nobody is working on -- that is the "somebody is on it" answer, and
+    # it sinks the row in the ranking.
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(30), outcome="half", state=PROGRESSED)
+    assert held_by(ledger, at(31)) == {}
+    assert finished_claims(ledger) == {}
+    assert set(progressed_claims(ledger)) == {"idea-63"}
+
+
+def test_a_progressed_claim_can_later_be_finished_by_the_same_cycle():
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(10), outcome="half", state=PROGRESSED)
+    ok, _ = release(ledger, "idea-63", 347, at(20), outcome="all of it", state="done")
+    assert ok is True
+    assert ledger["claims"][0]["state"] == "done"
+    assert ledger["claims"][0]["outcome"] == "all of it"
+
+
+def test_a_finished_claim_cannot_be_downgraded_back_to_progressed():
+    # The dangerous direction. Reopening a slug whose work really was
+    # finished re-grants it, which is the duplicate the ledger exists to
+    # stop -- so a late `--progress` on a spent slug is a no-op, not an
+    # edit.
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(10), outcome="built", state="done")
+    ok, message = release(ledger, "idea-63", 347, at(20), outcome="more", state=PROGRESSED)
+    assert ok is True
+    assert "already released" in message
+    assert ledger["claims"][0]["state"] == "done"
+
+
+def test_releasing_with_a_state_the_ledger_does_not_know_is_an_error():
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    with pytest.raises(ClaimError):
+        release(ledger, "idea-63", 347, at(10), state="paused")
+
+
+def test_a_progressed_claim_is_pruned_on_the_same_clock_as_a_done_one():
+    # It is a breadcrumb, not a lock, so it does not need to outlive the
+    # window in which a cycle could still be racing it -- and leaving it
+    # would grow the one file every claim in this loop rewrites.
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(5), outcome="half", state=PROGRESSED)
+    prune(ledger, at(23 * 60))
+    assert len(ledger["claims"]) == 1
+    prune(ledger, at(25 * 60))
+    assert ledger["claims"] == []
+
+
+def test_summarise_says_prog_rather_than_done():
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(5), outcome="half", state=PROGRESSED)
+    line = summarise(ledger, at(10))
+    assert line.startswith("prog ")
+    assert "half" in line
+
+
+def test_progress_without_an_outcome_is_an_error_not_an_empty_note():
+    # The outcome is the entire content of a progressed row. Without it
+    # the board says "left this open: no outcome recorded", which implies
+    # a note exists and carries none -- worse than an unmarked row.
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    with pytest.raises(ClaimError):
+        release(ledger, "idea-63", 347, at(10), state=PROGRESSED)
+    with pytest.raises(ClaimError):
+        release(ledger, "idea-63", 347, at(10), outcome="   ", state=PROGRESSED)
+    assert ledger["claims"][0]["state"] == "open"
+
+
+def test_a_resumed_breadcrumb_survives_the_resuming_cycle_being_killed():
+    """The case the state was invented for, and the one that dropped it.
+
+    A cycle takes a progressed item, is killed at the 45-minute cap
+    without releasing, and a later cycle takes the stale claim over. That
+    later cycle is the one that most needs to know what was already done.
+    """
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(10), outcome="three of four built", state=PROGRESSED)
+    take(ledger, "idea-63", 353, at(20))            # resumes it
+    take(ledger, "idea-63", 360, at(20 + CLAIM_TTL_MINUTES + 1))   # 353 died
+    row = ledger["claims"][0]
+    assert row["cycle"] == 360
+    assert row["took_over_from"] == 353
+    assert row["resumed_after"] == "three of four built"
+    assert "three of four built" in summarise(ledger, at(70))
+
+
+def test_a_progressed_row_is_not_reported_as_held_when_releasing():
+    # The one sentence the whole change exists to deny. `held_by` returns
+    # nothing for this row and the board prints no lock on it, so the
+    # refusal must not say "held".
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(10), outcome="half", state=PROGRESSED)
+    ok, message = release(ledger, "idea-63", 353, at(20), outcome="rest", state="done")
+    assert ok is False
+    assert "is held by" not in message
+    assert "was left open by cycle 347" in message
+    assert "take it before releasing it" in message
+
+
+def test_summarise_keeps_the_note_as_well_as_the_outcome():
+    # It used to print `outcome or note`, which silently dropped the note
+    # from every released row -- a behaviour change nothing asked for.
+    ledger = empty()
+    take(ledger, "confirm-deploy-171", 189, T0, note="handoff item 1")
+    release(ledger, "confirm-deploy-171", 189, at(5), outcome="merged #172")
+    line = summarise(ledger, at(10))
+    assert "handoff item 1" in line
+    assert "merged #172" in line
+
+
 # --- keeping the file small ------------------------------------------------
 
 
@@ -238,13 +439,124 @@ def test_finished_claims_older_than_a_day_are_dropped():
     assert ledger["claims"] == []
 
 
-def test_pruning_never_drops_an_open_claim_however_stale():
-    # A stale open claim is evidence a cycle died. Dropping it silently
-    # would delete the only record that anyone was ever working on it.
+def test_an_open_claim_survives_long_enough_to_be_taken_over():
+    # The 45-minute expiry is what lets a later cycle *take over* a dead
+    # claim and have the handover recorded, so pruning must not close that
+    # window. A day out it is still there and `take` still records it.
     ledger = empty()
     take(ledger, "confirm-deploy-171", 189, T0)
-    prune(ledger, at(90 * 24 * 60))
+    prune(ledger, at(23 * 60))
     assert len(ledger["claims"]) == 1
+    granted, message = take(ledger, "confirm-deploy-171", 190, at(23 * 60))
+    assert granted is True
+    assert "taken over from cycle 189" in message
+
+
+def test_an_open_claim_older_than_a_day_is_dropped_like_a_released_one():
+    # This reverses the old rule, which was "never drop an open claim
+    # however stale" on the grounds that it was the only record a cycle had
+    # been working on the item. `take` deletes that same row the moment
+    # anybody claims the slug again, so the record only ever survived in the
+    # case where nothing wanted the slug. Measured Cycle 355: four such rows
+    # from three separate days, permanent, in the file every claim rewrites.
+    ledger = empty()
+    take(ledger, "board-sweep-rest", 203, T0)
+    prune(ledger, at(25 * 60))
+    assert ledger["claims"] == []
+
+
+def test_a_dropped_open_claim_leaves_the_slug_freshly_claimable():
+    # Pruning is not a release: nothing about it says the work was finished,
+    # so the next cycle to want the slug gets it clean rather than refused.
+    ledger = empty()
+    take(ledger, "board-sweep-rest", 203, T0)
+    prune(ledger, at(25 * 60))
+    granted, message = take(ledger, "board-sweep-rest", 355, at(25 * 60))
+    assert granted is True
+    assert "taken over" not in message
+
+
+def test_pruning_leaves_an_open_claim_a_live_cycle_could_still_hold():
+    # The dangerous direction: a row dropped while its cycle is still
+    # running would let a second cycle claim the same item. The old row has
+    # to be in the same ledger, because the failure this guards is
+    # *collateral* -- a prune that reacts to one expired row by clearing
+    # everything passes every single-row test in this file. Reviewer finding
+    # on runner#314, demonstrated with `ledger["claims"] = []`, which was
+    # green across all 3,050.
+    ledger = {"claims": [
+        {"item": "board-sweep-rest", "cycle": 203, "state": "open",
+         "at": at(-9 * 24 * 60).isoformat()},
+    ]}
+    take(ledger, "confirm-deploy-171", 189, T0)
+    prune(ledger, at(30))
+    assert held_by(ledger, at(30)) == {"confirm-deploy-171": 189}
+    assert [row["item"] for row in ledger["claims"]] == ["confirm-deploy-171"]
+
+
+def test_pruning_is_selective_across_every_state_at_once():
+    # One ledger, one call, four rows that must each be judged on their own
+    # age and state. A prune that keys on "does this ledger contain anything
+    # expired" rather than on the row in front of it fails here.
+    ledger = {"claims": [
+        {"item": "old-open", "cycle": 203, "state": "open",
+         "at": at(-9 * 24 * 60).isoformat()},
+        {"item": "old-done", "cycle": 334, "state": "done",
+         "at": at(-30 * 60).isoformat(), "outcome": "merged"},
+        {"item": "young-done", "cycle": 354, "state": "done",
+         "at": at(-60).isoformat(), "outcome": "merged"},
+        {"item": "live-open", "cycle": 355, "state": "open", "at": T0.isoformat()},
+    ]}
+    prune(ledger, at(1))
+    assert [row["item"] for row in ledger["claims"]] == ["young-done", "live-open"]
+
+
+def test_a_killed_cycles_inherited_breadcrumb_outlives_the_prune_clock():
+    # The account of what is left is the entire content of `progressed`, and
+    # runner#313's reviewer already found it dying once at this seam. A cycle
+    # resumes it, is killed at the turn cap, and nobody touches the slug for
+    # days -- ageing the row out would hand the next taker a clean row and
+    # let it rebuild work that was already done. Reviewer finding on
+    # runner#314.
+    ledger = empty()
+    take(ledger, "idea-63", 347, T0)
+    release(ledger, "idea-63", 347, at(5), outcome="three of four built", state=PROGRESSED)
+    take(ledger, "idea-63", 353, at(10))
+    assert ledger["claims"][0]["resumed_after"] == "three of four built"
+
+    prune(ledger, at(9 * 24 * 60))
+    assert [row["item"] for row in ledger["claims"]] == ["idea-63"]
+
+    granted, message = take(ledger, "idea-63", 420, at(9 * 24 * 60))
+    assert granted is True
+    assert ledger["claims"][0]["resumed_after"] == "three of four built"
+    assert "taken over from cycle 353" in message
+
+
+def test_a_row_with_an_unreadable_at_is_kept_and_does_not_break_other_claims():
+    # `prune` runs inside every take and release, on every item, so raising
+    # on one hand-edited row would fail every claim in the loop -- including
+    # `put_entry`'s journal reservation, roughly eighty a day at an 18-minute
+    # heartbeat. Reviewer finding on runner#314.
+    for bad_at in ({}, {"at": None}, {"at": "2026-08-15T11:12:00"}):
+        row = {"item": "ghost-row", "cycle": 100, "state": "open"}
+        row.update(bad_at)
+        ledger = {"claims": [row]}
+        granted, _ = take(ledger, "some-other-item", 200, T0)
+        assert granted is True, bad_at
+        assert "ghost-row" in [r["item"] for r in ledger["claims"]], bad_at
+
+
+def test_a_naive_timestamp_is_a_claim_error_not_a_typeerror():
+    # `fromisoformat` accepts a naive string and hands back a datetime that
+    # only blows up at the subtraction, outside the guard -- so `claim.py`
+    # printed a traceback where its exit codes promise one line.
+    ledger = {"claims": [
+        {"item": "naive-row", "cycle": 100, "state": "open",
+         "at": "2026-08-15T11:12:00"},
+    ]}
+    with pytest.raises(ClaimError):
+        held_by(ledger, T0)
 
 
 # --- the summary a cycle actually reads ------------------------------------
@@ -281,6 +593,88 @@ def test_cli_take_writes_the_ledger_and_exits_zero(tmp_path):
     path = write(tmp_path, "")
     assert claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"]) == 0
     assert load(open(path, encoding="utf-8").read())["claims"][0]["cycle"] == 189
+
+
+def test_cli_release_without_done_or_progress_is_refused(tmp_path):
+    # The cause fix. For eleven days `release` had one meaning and it was
+    # "finished forever", so a cycle stopping halfway had no word for what
+    # it was doing and spent the slug. Exit 1, not 2: a 2 means "somebody
+    # else has this" and every cycle is told to accept a 2 without
+    # arguing, so a 2 here would leave the claim open and read as handled.
+    path = write(tmp_path, "")
+    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
+    before = open(path, encoding="utf-8").read()
+    code = claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--outcome", "half of it"])
+    assert code == 1
+    assert open(path, encoding="utf-8").read() == before
+
+
+def test_cli_release_guard_names_the_flag_rather_than_the_states(tmp_path, capsys):
+    """The cause fix, pinned by its own words.
+
+    Reviewer finding on runner#313: without this, deleting the guard
+    entirely still passes, because `release(state=None)` raises inside the
+    library and `main` maps that to the same exit 1 with the same
+    untouched file. The only thing the guard adds is the sentence that
+    tells a cycle which flag it wants, so that sentence is what the test
+    has to assert.
+    """
+    path = write(tmp_path, "")
+    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
+    capsys.readouterr()
+    assert claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--outcome", "half"]) == 1
+    err = capsys.readouterr().err
+    assert "--done or --progress" in err
+    assert "If the work is not finished, it is --progress." in err
+
+
+def test_cli_rejects_the_release_flags_on_take_and_list(tmp_path):
+    # `take --progress`, meaning "record that I made progress", used to
+    # open a fresh claim and say nothing at all.
+    path = write(tmp_path, "")
+    assert claim_cli.main(["take", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--progress"]) == 1
+    assert claim_cli.main(["list", "--ledger", path, "--done"]) == 1
+    assert open(path, encoding="utf-8").read() == ""
+
+
+def test_cli_progress_without_an_outcome_is_refused(tmp_path):
+    path = write(tmp_path, "")
+    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
+    before = open(path, encoding="utf-8").read()
+    assert claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--progress"]) == 1
+    assert open(path, encoding="utf-8").read() == before
+
+
+def test_cli_release_progress_leaves_the_item_claimable(tmp_path):
+    path = write(tmp_path, "")
+    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
+    assert claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--progress",
+                           "--outcome", "half of it"]) == 0
+    assert claim_cli.main(["take", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "190"]) == 0
+
+
+def test_cli_release_done_still_spends_the_slug(tmp_path):
+    path = write(tmp_path, "")
+    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
+    assert claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "189", "--done", "--outcome", "merged"]) == 0
+    assert claim_cli.main(["take", "--ledger", path, "--item", "a-real-item",
+                           "--cycle", "190"]) == 2
+
+
+def test_cli_release_cannot_be_both_done_and_progress(tmp_path):
+    path = write(tmp_path, "")
+    claim_cli.main(["take", "--ledger", path, "--item", "a-real-item", "--cycle", "189"])
+    with pytest.raises(SystemExit) as exit_info:
+        claim_cli.main(["release", "--ledger", path, "--item", "a-real-item",
+                        "--cycle", "189", "--done", "--progress"])
+    assert exit_info.value.code == 1
 
 
 def test_cli_refusal_exits_two_and_leaves_the_file_byte_identical(tmp_path):
@@ -348,3 +742,104 @@ def test_a_usage_error_exits_one_not_two(tmp_path, capsys):
         with pytest.raises(SystemExit) as exit_info:
             claim_cli.main(argv)
         assert exit_info.value.code == 1, argv
+
+
+# --- Slugs and liveness, for the claim-aware board read -------------------
+#
+# `top_board_rows` exercises these through `main()`, which cannot see a bug
+# *inside* the slug functions: it hashes the capture with the same function
+# the code under test uses, so both sides move together. Reviewer finding,
+# PR #301. These assert against literals instead.
+
+from datetime import timezone
+
+from agora_runner.nova_claims import (
+    CLAIMS_PATH, SLUG_RE, held_by, slug_for_capture, slug_for_row,
+)
+
+
+def test_a_row_slug_names_its_board_because_the_two_are_numbered_separately():
+    assert slug_for_row("issue", 7) == "issue-7"
+    assert slug_for_row("idea", 7) == "idea-7"
+    # Live on both boards right now: issue #94 and idea #94 are both open.
+    assert slug_for_row("issue", 94) != slug_for_row("idea", 94)
+
+
+def test_a_row_slug_is_a_legal_claim_slug_at_one_digit_and_at_four():
+    for board in ("issue", "idea"):
+        for number in (1, 7, 92, 100, 9999):
+            assert SLUG_RE.match(slug_for_row(board, number)), (board, number)
+
+
+def test_a_capture_slug_ignores_how_the_bullet_was_wrapped():
+    """The same bullet read twice can come back wrapped differently.
+
+    That is the claim `slug_for_capture`'s docstring makes, and until this
+    test nothing checked it -- two cycles reading one capture through two
+    different line widths would have computed two slugs and both claimed it.
+    """
+    one_line = "Considering scaling to Claude 20x: parallel cycles will run."
+    wrapped = "Considering scaling to Claude 20x:\n  parallel cycles will run."
+    padded = "   Considering scaling to Claude   20x: parallel cycles will run.  "
+    assert slug_for_capture(one_line) == slug_for_capture(wrapped)
+    assert slug_for_capture(one_line) == slug_for_capture(padded)
+
+
+def test_two_different_captures_do_not_share_a_slug():
+    assert slug_for_capture("reopen idea 63") != slug_for_capture("reopen idea 64")
+
+
+def test_a_capture_slug_is_a_legal_claim_slug_for_an_empty_bullet_too():
+    # `unboarded_captures` filters the trailing empty bullet out, but the
+    # function must not be the thing that decides that -- an unclaimable
+    # slug would raise inside `take` rather than refuse.
+    for text in ("", "   ", "a", "\u00e5 \u00f8 \u00e6 emoji \U0001f534", "x" * 4000):
+        assert SLUG_RE.match(slug_for_capture(text)), repr(text[:20])
+
+
+def test_held_by_reports_the_holder_and_forgets_the_stale_and_the_finished():
+    now = datetime(2026, 8, 23, 14, 0, tzinfo=timezone.utc)
+    ledger = {"claims": [
+        {"item": "issue-7", "cycle": 341, "state": "open",
+         "at": (now - timedelta(minutes=2)).isoformat()},
+        {"item": "idea-92", "cycle": 300, "state": "open",
+         "at": (now - timedelta(minutes=90)).isoformat()},
+        {"item": "issue-96", "cycle": 200, "state": "done",
+         "at": (now - timedelta(minutes=2)).isoformat()},
+    ]}
+    assert held_by(ledger, now) == {"issue-7": 341}
+
+
+def test_the_ledger_path_is_the_one_the_cli_docstring_tells_a_cycle_to_use():
+    # The path was hand-typed in `tools/claim.py`'s docstring and nowhere
+    # else until a second reader appeared. If the two ever disagree, one of
+    # them is reading an empty ledger and neither says so.
+    import pathlib
+    cli = (pathlib.Path(__file__).resolve().parents[1] / "tools" / "claim.py")
+    assert CLAIMS_PATH in cli.read_text(encoding="utf-8")
+
+
+def test_a_comment_slug_is_named_for_the_row_and_the_text():
+    slug = slug_for_comment("issue", 7, "is this really done?")
+    assert slug.startswith("reply-issue-7-")
+    assert len(slug.split("-")[-1]) == 8
+
+
+def test_two_comments_on_one_row_are_two_claims():
+    """A row slug is claimed once and finished forever, so a reply slug
+    derived from the row alone would lock every later question out."""
+    a = slug_for_comment("issue", 7, "first question")
+    b = slug_for_comment("issue", 7, "second question")
+    assert a != b
+
+
+def test_the_same_comment_read_twice_is_one_claim():
+    """Two cycles have to agree on the name, and the same block can come
+    back wrapped differently -- same reason `slug_for_capture` normalises."""
+    assert slug_for_comment("issue", 7, "one   two\nthree") == \
+        slug_for_comment("issue", 7, "one two three")
+
+
+def test_the_two_boards_do_not_share_a_comment_claim():
+    assert slug_for_comment("issue", 7, "q") != \
+        slug_for_comment("idea", 7, "q")

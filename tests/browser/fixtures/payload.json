@@ -7,6 +7,8 @@
         "time": "15:22",
         "title": "verification",
         "kind": "cycle",
+        "writtenDate": "2026-08-09",
+        "writtenTime": "15:22",
         "ask": "",
         "askSpans": [],
         "briefSpans": [
@@ -46,6 +48,8 @@
         "time": "15:05",
         "title": "",
         "kind": "cycle",
+        "writtenDate": "2026-08-09",
+        "writtenTime": "15:05",
         "ask": "",
         "askSpans": [],
         "briefSpans": [
@@ -85,6 +89,8 @@
         "time": "12:33",
         "title": "",
         "kind": "cycle",
+        "writtenDate": "2026-08-09",
+        "writtenTime": "12:33",
         "ask": "",
         "askSpans": [],
         "briefSpans": [
@@ -142,6 +148,8 @@
         "time": "",
         "title": "Edvard's first message (not a cycle)",
         "kind": "cycle",
+        "writtenDate": "2026-08-02",
+        "writtenTime": "",
         "ask": "",
         "askSpans": [],
         "briefSpans": [
@@ -246,38 +254,37 @@
       "57": [
         {
           "cycle": 57,
+          "project": null,
           "stamp": "2026-08-09 15:40",
           "text": "an older note on the same cycle, already acted on",
-          "reply": "",
-          "replyStamp": "",
           "replies": [],
           "acknowledged": true,
           "replyPending": false,
           "replyWaiting": false,
           "replyWaitingSeconds": 0,
-          "replyFailed": false
+          "replyFailed": false,
+          "relayed": false
         },
         {
           "cycle": 57,
+          "project": null,
           "stamp": "2026-08-09 16:02",
           "text": "great research, keep it up! Do more research to make yourself more token efficient",
-          "reply": "",
-          "replyStamp": "",
           "replies": [],
           "acknowledged": false,
           "replyPending": false,
           "replyWaiting": false,
           "replyWaitingSeconds": 0,
-          "replyFailed": false
+          "replyFailed": false,
+          "relayed": false
         }
       ],
       "55": [
         {
           "cycle": 55,
+          "project": null,
           "stamp": "2026-08-09 13:10",
           "text": "this one has two paragraphs, because a comment is prose rather than a capture.\n\nThe second paragraph is what proves the blank line survives the round trip.",
-          "reply": "It does, and this reply is here to prove the same thing about mine.",
-          "replyStamp": "2026-08-09 13:12",
           "replies": [
             {
               "author": "commentator",
@@ -289,7 +296,8 @@
           "replyPending": false,
           "replyWaiting": false,
           "replyWaitingSeconds": 0,
-          "replyFailed": false
+          "replyFailed": false,
+          "relayed": false
         }
       ]
     },
@@ -314,6 +322,19 @@
               }
             ]
           }
+        ],
+        "replies": [
+          [
+            {
+              "type": "p",
+              "spans": [
+                {
+                  "kind": "text",
+                  "text": "Cycle 401, 09:12 — Done, the timestamp says the time and nothing else now."
+                }
+              ]
+            }
+          ]
         ]
       }
     ],
@@ -327,6 +348,7 @@
         "where": "",
         "priority": "",
         "priorityKey": "",
+        "project": "Nova",
         "done": false
       },
       {
@@ -338,6 +360,7 @@
         "where": "",
         "priority": "",
         "priorityKey": "",
+        "project": "Nova",
         "done": false
       },
       {
@@ -349,6 +372,7 @@
         "where": "",
         "priority": "",
         "priorityKey": "",
+        "project": "Nova",
         "done": false
       },
       {
@@ -360,10 +384,12 @@
         "where": "inbox.md, identity.md, prompt.md",
         "priority": "",
         "priorityKey": "",
+        "project": "Nova",
         "done": true
       }
     ],
     "details": {},
+    "detailComments": {},
     "notes": [
       {
         "date": "2026-08-09",
@@ -404,6 +430,9 @@
         ]
       }
     ],
+    "novaItems": [],
+    "novaDetails": {},
+    "novaDetailComments": {},
     "notesTotal": 4
   },
   "boardItem": {
@@ -417,6 +446,7 @@
       "where": "",
       "priority": "",
       "priorityKey": "",
+      "project": "Nova",
       "done": false,
       "blocks": [
         {
@@ -459,6 +489,38 @@
             }
           ]
         }
+      ],
+      "comments": [
+        {
+          "author": "Edvard",
+          "stamp": "08-12",
+          "blocks": [
+            {
+              "type": "p",
+              "spans": [
+                {
+                  "kind": "text",
+                  "text": "any of these built yet?"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "author": "Nova",
+          "stamp": "08-12 (Cycle 120)",
+          "blocks": [
+            {
+              "type": "p",
+              "spans": [
+                {
+                  "kind": "text",
+                  "text": "two of the five, and the analytics page is next."
+                }
+              ]
+            }
+          ]
+        }
       ]
     },
     "found": true
@@ -470,7 +532,9 @@
       "minutes",
       "turns",
       "toolCalls",
-      "weighted"
+      "weighted",
+      "subagentTurns",
+      "subagentWeighted"
     ],
     "quotaColumns": [
       "at",
@@ -485,21 +549,27 @@
         20.9,
         69,
         80,
-        1204348
+        1204348,
+        null,
+        null
       ],
       [
         1786438814000,
         16.1,
         54,
         61,
-        866112
+        866112,
+        null,
+        null
       ],
       [
         1786449617908,
         19.4,
         103,
         118,
-        1911430
+        1911430,
+        null,
+        null
       ]
     ],
     "quota": [

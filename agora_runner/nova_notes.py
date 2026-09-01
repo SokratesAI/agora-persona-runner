@@ -1,4 +1,4 @@
-"""Edvard's notes page.
+"""The owner's notes page.
 
 His capture, `issues.md` 2026-08-21: *"I do not have a notes page that
 shows any overview of the notes made."*
@@ -26,6 +26,7 @@ in one place, next to the parser that produced it.
 
 import re
 
+from agora_runner.nova_capture import list_captures
 from agora_runner.nova_journal import render_blocks
 from agora_runner.nova_sources import notes_markdown
 
@@ -40,7 +41,7 @@ READ_HEADING = "read"
 # hand and by `nova_capture`, so the indent is not guaranteed to be
 # exactly two -- anything indented counts as a response.
 # `\s*` rather than `\s+` after the dash, so a bare `-` still reads as a
-# bullet. That is Edvard's cursor, and it has to be *recognised* and then
+# bullet. That is the owner's cursor, and it has to be *recognised* and then
 # dropped for being empty -- matched as prose instead, it gets joined
 # onto the note above it as a stray dash.
 _NOTE_RE = re.compile(r"^-\s*(.*)$")
@@ -148,13 +149,19 @@ def parse_notes_page(markdown):
     return {"waiting": waiting, "read": read}
 
 
-def _shape(note, waiting):
+def _shape(note, waiting, index=None):
     responses = [
         {"blocks": render_blocks(line), "cycle": _response_cycle(line)}
         for line in note["responses"]
     ]
     return {
         "text": note["text"],
+        # The capture-list position, for `/api/capture/edit|delete|convert`
+        # -- `None` on anything those cannot address, which the page reads
+        # as "draw no controls". A note under `## Read` is one of those: a
+        # cycle has already acted on it, and `replace_capture` only ever
+        # sees the bare bullets above the first heading.
+        "index": index,
         "blocks": render_blocks(note["text"]),
         "responses": responses,
         # A note under `## Read` that nobody wrote a line under is a real
@@ -167,18 +174,52 @@ def _shape(note, waiting):
 
 
 def notes_payload():
-    """Everything the `/notes` page draws.
+    """Everything the `/notes` page draws, oldest note first.
 
-    Not windowed. The whole file is 11KB against `issues.md`'s 68KB, and
+    Not windowed. The whole file is 17KB against `issues.md`'s 68KB, and
     it grows by a note every few days rather than by one an hour -- so a
     limit here would be the cap with no measurement behind it that
-    `personality.md` spends a section on.
+    `personality.md` spends a section on. The page still opens on the
+    newest handful and reveals older ones as the owner scrolls up; that is a
+    scroll position, decided in `app.js`, not a payload this file has to
+    cut.
+
+    **The order is the whole change here.** The owner, `notes.md`
+    2026-08-24: *"I want the notes page to be more like a conversation
+    ... ordered with the latest note at the bottom."* So this reads as a
+    transcript now: oldest at the top, newest at the bottom, each note
+    followed by whatever a cycle wrote back.
+
+    `notes.md` itself is newest-first in both of its halves -- the bare
+    bullets above `## Read` are the notes no cycle has answered yet, and
+    they are newer than everything under it. Ascending time is therefore
+    the `## Read` list reversed, then the waiting ones. That is the only
+    ordering fact this file knows; there are no timestamps in `notes.md`
+    to sort by, so file position is the clock.
     """
-    parsed = parse_notes_page(notes_markdown())
-    waiting = [_shape(note, True) for note in parsed["waiting"]]
+    markdown = notes_markdown()
+    parsed = parse_notes_page(markdown)
+    # **Take the address from the function that will resolve it.** A
+    # waiting note is a bare bullet above the first heading, which is
+    # exactly `capture_entries`' span, and `_bullets` above skips the
+    # empty cursor bullet and joins continuations the same way -- so
+    # position `i` in one list is position `i` in the other, today. That
+    # is an agreement between two parsers with nothing holding it, and if
+    # it ever drifts the page would hand `/api/capture/delete` an index
+    # pointing at the wrong line of his file. So the texts are compared
+    # rather than assumed, and a disagreement drops the controls instead
+    # of guessing -- the same "refuse rather than resolve" that
+    # `replace_capture` is built on.
+    addresses = list_captures(markdown)
+    waiting = [
+        _shape(note, True, i if i < len(addresses) and addresses[i] == note["text"] else None)
+        for i, note in enumerate(parsed["waiting"])
+    ]
     read = [_shape(note, False) for note in parsed["read"]]
+    notes = list(reversed(read)) + waiting
     return {
-        "notes": waiting + read,
+        "notes": notes,
+        "notesTotal": len(notes),
         "waitingTotal": len(waiting),
         "readTotal": len(read),
     }

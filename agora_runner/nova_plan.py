@@ -1,6 +1,6 @@
 """The `/plan` page: what Nova would do next, and what any of it is for.
 
-Edvard, `issues.md` #7: *"Need evolve to think like a product manager.
+The owner, `issues.md` #7: *"Need evolve to think like a product manager.
 Both so it becomes better, but also so i learn and get experience from it
 since my dream is to become the worlds best platform product manager."*
 Cycle 226 answered the first half by writing `roadmap.md` -- the
@@ -33,13 +33,17 @@ The page can be wrong about the styling of a section it has never seen;
 it cannot silently drop one.
 
 **The one exception, and it is built to keep that rule rather than bend
-it.** Edvard, 2026-08-20: *"It is just a huge wall of text. I hate that
+it.** The owner, 2026-08-20: *"It is just a huge wall of text. I hate that
 ... i understand visuals much faster."* `/plan` is 4,961 words on one
 route with no number pulled out anywhere, so `goals.md` may now carry an
 optional fenced ```goal block per goal and `roadmap.md` a ```next block per
 item of its ranked five, and this module draws a scoreboard and a ranked
 strip from them. The blocks are data a cycle writes for this page; every
 other word in both documents is still prose nothing parses. See `_fenced`.
+
+The ranked strip leaves here as two lists, not one -- what is still ahead
+and what has closed. `_split_ranked` has the reason and the day it was
+wrong.
 """
 
 import re
@@ -82,7 +86,24 @@ _DIRECTIONS = ("up", "down")
 # the payload rather than passed through: the page can only render what it
 # has a row for, and a silently-ignored `targt:` typo is a goal that shows
 # no target for a week before anybody notices.
-_FIELDS = ("name", "measure", "now", "target", "unit", "direction")
+_FIELDS = ("name", "measure", "now", "target", "unit", "direction", "status")
+
+# What the owner has said about a goal. `goals.md`'s own contract calls the
+# slate a set of proposed goals awaiting his approval -- "he ticks, edits or
+# deletes; nothing here is settled until he does" -- and until now ticking
+# one meant opening Obsidian and editing markdown on a phone. He has not
+# done it once since Cycle 229 wrote the slate on 2026-08-16, which is why
+# idea #38 has sat at "In progress" with its remaining half described as
+# "yours" for ten days.
+#
+# **A missing `status:` means proposed, and that is the whole compatibility
+# story.** Every block in `goals.md` today has no such line, so the default
+# has to be the state they are actually in rather than a neutral "unknown" —
+# and a goal he declines keeps its block and its prose instead of being
+# deleted, because a struck goal is a decision worth being able to read
+# later and worth being able to reverse in one tap.
+GOAL_STATUSES = ("proposed", "approved", "declined")
+DEFAULT_GOAL_STATUS = "proposed"
 
 _NUMBER_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$")
 
@@ -107,7 +128,7 @@ def _goal(lines):
     """The body lines of one ```goal fence -> one scoreboard row, or `None`.
 
     A block with no `name` is dropped: the name is the only field the row
-    cannot be rendered without, and a nameless meter on Edvard's page is
+    cannot be rendered without, and a nameless meter on the owner's page is
     a number he cannot attribute to anything.
     """
     row = {}
@@ -123,6 +144,14 @@ def _goal(lines):
     direction = row.get("direction", "").strip().lower()
     if direction not in _DIRECTIONS:
         direction = ""
+
+    # An unreadable `status:` reads as proposed rather than as its own
+    # fourth state. The row is a control he taps, so the only safe way to
+    # render a value nothing understands is the one where his next tap
+    # writes a value that is understood.
+    status = row.get("status", "").strip().lower()
+    if status not in GOAL_STATUSES:
+        status = DEFAULT_GOAL_STATUS
 
     on_target = None
     if direction and now_value is not None and target_value is not None:
@@ -140,6 +169,7 @@ def _goal(lines):
         "nowValue": now_value,
         "targetValue": target_value,
         "onTarget": on_target,
+        "status": status,
     }
 
 
@@ -155,7 +185,7 @@ def _fenced(text, builders):
     contract; this is the exception that keeps the rule, because the block
     is **optional and additive**. A goal with no block still renders as
     prose, a document with no blocks renders exactly as it did before, and
-    nothing here reads a word Edvard or a cycle wrote for a human.
+    nothing here reads a word the owner or a cycle wrote for a human.
 
     The blocks are removed from the text on the way through, so the fence
     does not also render as a code block underneath the row it drew.
@@ -188,7 +218,7 @@ def _fenced(text, builders):
     def abandon():
         # An unterminated fence is a half-written edit, not a row. Put the
         # lines back rather than swallowing them -- the document is what
-        # Edvard is reading, and text disappearing is worse than a stray
+        # the owner is reading, and text disappearing is worse than a stray
         # fence appearing. Measured as a real case: deleting a block's last
         # two lines by hand makes the *next* block's opening fence look like
         # this one's body, so without this every paragraph in between
@@ -222,7 +252,7 @@ def _fenced(text, builders):
 # vocabulary is the boards' own -- `issues.md` and `ideas.md` use these exact
 # three -- so a row does not mean one thing on `/plan` and another on `/board`.
 #
-# **The word travels with the symbol, and that is not decoration.** Edvard,
+# **The word travels with the symbol, and that is not decoration.** The owner,
 # 2026-08-20: *"always pair priority symbols (e.g. 🟠) with the word (e.g.
 # 'High') -- don't use the symbol alone, it was hard to read"*, after saying he
 # cannot tell the coloured circles apart by colour. So the payload carries both
@@ -239,6 +269,11 @@ _STATUSES = {
     "outdated": ("⚫", "Outdated"),
 }
 
+# The statuses that mean an item is no longer something anybody would do
+# next. `_split_ranked` uses this to keep the strip's headline true; see
+# there for why that is worth a set of its own.
+_FINISHED_STATUSES = frozenset({"done", "outdated"})
+
 # Every field a ```next block understands, same rule as `_FIELDS`: a key
 # outside this set is dropped rather than passed through.
 _NEXT_FIELDS = ("rank", "title", "status", "claim", "board")
@@ -254,7 +289,7 @@ def _next(lines):
     the strip. The file numbers these items in its own prose and strikes one
     through when it is done without renumbering the rest -- item 3 is
     finished and still called 3 -- so position and rank genuinely disagree,
-    and the number Edvard reads in the paragraph is the one that has to be
+    and the number the owner reads in the paragraph is the one that has to be
     on the card.
     """
     row = {}
@@ -265,7 +300,8 @@ def _next(lines):
     if not row.get("title"):
         return None
 
-    symbol, label = _STATUSES.get(row.get("status", "").strip().lower(), ("", ""))
+    status = row.get("status", "").strip().lower()
+    symbol, label = _STATUSES.get(status, ("", ""))
     return {
         "rank": row.get("rank", ""),
         "title": row["title"],
@@ -273,7 +309,42 @@ def _next(lines):
         "board": row.get("board", ""),
         "statusSymbol": symbol,
         "statusLabel": label,
+        "finished": status in _FINISHED_STATUSES,
     }
+
+
+def _split_ranked(items):
+    """`(open_items, finished_items)`, document order preserved in both.
+
+    **The strip's headline was false for three of its five cards.** It is
+    titled *"What I would do next, in order"*, and on 2026-08-25 it read:
+    `1 Get CI back` (in progress), `2 Fix the Enter key` (done), `3 Fix my
+    vault write path` (done), `4 Build the weekly goal review` (in
+    progress), `5 The two board-editing gaps` (done). Three finished items
+    sitting under a heading that says they are what happens next, at the
+    top of the page the owner filed issue #96 about.
+
+    `_next`'s docstring already explains why the rank number survives an
+    item being finished -- the file strikes an item through without
+    renumbering the rest, so item 3 stays 3 -- and that is right. The
+    mistake was reading "keep the number" as "keep it in the same list".
+    A ✅ chip is a label on a card; the heading above the card is a claim
+    about every card under it, and a label does not retract a claim.
+
+    So the split is here rather than in the renderer: what a card *means*
+    is this module's job, and a payload that carries the two lists
+    separately can be checked by a test that does not need a browser.
+
+    Outdated counts as finished. It is not done, but nobody is going to do
+    it either, and this list answers one question -- is this still ahead of
+    us. An item whose status this module has never seen is treated as open:
+    the page declining to guess is the same call `_next` makes about the
+    chip, and guessing wrong in this direction shows the owner one card too
+    many rather than hiding one.
+    """
+    open_items = [item for item in items if not item["finished"]]
+    finished = [item for item in items if item["finished"]]
+    return open_items, finished
 
 
 def _updated(text):
@@ -307,7 +378,7 @@ def _mark_open(sections):
     """Give every section an `open` flag: is it expanded when the page paints?
 
     `/plan` is 4,961 words on one route -- a 25-minute read on a phone,
-    with no entry point but the top, which is the complaint Edvard filed
+    with no entry point but the top, which is the complaint the owner filed
     as issue #96 (*"It is just a huge wall of text. I hate that."*). So
     every headed section arrives collapsed and the page opens at two
     screens of scoreboard and ranked strip instead of at paragraph one.
@@ -328,7 +399,7 @@ def _mark_open(sections):
     That second rule is deliberately structural rather than named. This
     module's contract is that sections are *discovered, never named* --
     matching on the literal text "Weekly review" would put a heading
-    Edvard is free to retitle into the parser, and the page would go
+    the owner is free to retitle into the parser, and the page would go
     quietly back to a wall the day he did. A date prefix is a shape.
 
     A lone dated section is not a stack and stays collapsed: with nothing
@@ -401,6 +472,7 @@ def _document(key, label, text, history=None):
             "missing": True,
             "scoreboard": [],
             "ranked": [],
+            "rankedDone": [],
             "sections": [],
         }
 
@@ -408,7 +480,8 @@ def _document(key, label, text, history=None):
     # be found twice, and after the emptiness check, so a missing document
     # is still one branch.
     blocks, text = _fenced(text, {"goal": _goal, "next": _next})
-    scoreboard, ranked = _attach_history(blocks["goal"], history), blocks["next"]
+    scoreboard = _attach_history(blocks["goal"], history)
+    ranked, ranked_done = _split_ranked(blocks["next"])
 
     title = label
     sections = []
@@ -434,6 +507,7 @@ def _document(key, label, text, history=None):
         "missing": False,
         "scoreboard": scoreboard,
         "ranked": ranked,
+        "rankedDone": ranked_done,
         "sections": sections,
     }
 
@@ -466,3 +540,154 @@ def plan_payload(documents, history=None):
             for key, label, _path in PLAN_DOCUMENTS
         ]
     }
+
+
+# Bounding the 409 retry, same as `nova_capture.WRITE_ATTEMPTS` and for the
+# same reason: the concurrent writer here is a cycle rewriting `goals.md`'s
+# weekly review, so a conflict is a real event to re-read past, not a spin.
+WRITE_ATTEMPTS = 3
+
+
+def set_status_in_goals(markdown, name, status):
+    """Set one goal's `status:` inside its own ```goal fence. `None` if it moved.
+
+    A thin wrapper over `set_field_in_goals` since Cycle 563, which needed the
+    same surgery for `now:` and had no business copying five careful rules
+    about duplicate blocks and unterminated fences to get it.
+    """
+    if status not in GOAL_STATUSES:
+        return None
+    return set_field_in_goals(markdown, name, "status", status)
+
+
+def set_field_in_goals(markdown, name, field, value):
+    """Set one field inside one goal's ```goal fence. `None` if it moved.
+
+    **The edit is inside the fence and touches nothing else in the file.**
+    `goals.md` is 23KB of the owner's prose and my weekly reviews, and the
+    fenced block is the one part of it anything parses -- so a status tap,
+    or a measured `now:`, rewrites six words of machine-readable data and
+    leaves every sentence alone. That is also why these live in the block
+    rather than in a heading: a heading is prose a cycle rewrites, and this
+    has to survive that.
+
+    The goal is addressed by `name`, which is the block's own required
+    field and the string the row on the page is drawn from. A block whose
+    name has been rewritten since the page loaded returns `None` -- nothing
+    failed, the address moved -- which is `reply_under_capture`'s contract
+    and gets `reply_under_capture`'s 409.
+
+    An existing line for the field is replaced in place so the block keeps
+    its field order; a block with none gets one appended as its last line,
+    which is where a reader looking for "what did he say about this"
+    expects it and where it cannot be mistaken for part of `measure`.
+    """
+    field = (field or "").strip()
+    value = str("" if value is None else value).strip()
+    # A field name that is not a bare word, or a value carrying a newline,
+    # would write something `_goal` cannot parse back -- and the caller would
+    # be told it succeeded. Refusing is the same `None` as a name that moved.
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field) or "\n" in value:
+        return None
+    wanted = (name or "").strip()
+    if not wanted:
+        return None
+
+    lines = (markdown or "").split("\n")
+    opener = _fence_open_re("goal")
+    name_re = re.compile(r"^(?P<indent>[ \t]*)name:[ \t]*(?P<value>.*?)[ \t]*$")
+    field_re = re.compile(r"^(?P<indent>[ \t]*)" + re.escape(field) + r":[ \t]*.*$")
+
+    # Every block that claims this name, not the first. Two goals sharing a
+    # `name:` render as two identical rows he can tap separately, and
+    # editing whichever comes first would report success on the one he did
+    # not touch. There is no way to tell them apart from the wire, so the
+    # honest answer is to refuse -- same `None` as a name that moved, which
+    # the page already shows him as "no longer where the page thought it
+    # was". Found by my own reviewer on this diff, not by a test.
+    hits = []
+    start = None
+    for index, line in enumerate(lines):
+        if start is None:
+            if opener.match(line):
+                start = index
+            continue
+        if _FENCE_CLOSE_RE.match(line) or opener.match(line):
+            body = range(start + 1, index)
+            match = None
+            for i in body:
+                found = name_re.match(lines[i])
+                if found and found.group("value") == wanted:
+                    match = i
+                    break
+            if match is not None:
+                # An unterminated fence is a half-written edit (see
+                # `_fenced.abandon`), so only a block that really closed is
+                # writable -- editing inside one would move his own text.
+                if not _FENCE_CLOSE_RE.match(line):
+                    return None
+                hits.append((match, index, body))
+            start = index if opener.match(line) else None
+    if len(hits) != 1:
+        return None
+
+    match, close, body = hits[0]
+    indent = name_re.match(lines[match]).group("indent")
+    # Every line for this field in the block, not the first. `_goal` builds its
+    # row with a plain dict assignment over all the lines, so on a block
+    # that already carries two the *last* one is what the page renders --
+    # rewriting only the first would return 200 and change nothing he can
+    # see. Collapsing them also leaves the block with one answer in it,
+    # which is the only shape either side can agree on.
+    written = [i for i in body if field_re.match(lines[i])]
+    if written:
+        for i in written:
+            lines[i] = f"{indent}{field}: {value}"
+        for i in reversed(written[1:]):
+            del lines[i]
+        return "\n".join(lines)
+    lines.insert(close, f"{indent}{field}: {value}")
+    return "\n".join(lines)
+
+
+def set_goal_status(name, status):
+    """Record what the owner said about one goal. Returns `(ok, message)`.
+
+    Idea #38's remaining half, and it is the half he was left holding:
+    *"the five goals in `goals.md` are still a slate awaiting your tick,
+    and nothing in it is settled until you edit it"* -- written on
+    2026-08-19 and still true today, because editing it meant opening
+    Obsidian on a phone to hand-edit markdown. It is also one of the four
+    things goal **G2** counts as still needing an app other than Nova, and
+    it is the only one of the four that blocks another board row.
+
+    Same read-modify-write, same `if_rev`, same bounded 409 retry as
+    `nova_capture.comment_on_capture`, because the losing writer is the
+    same class: a cycle appending this week's review while he taps.
+    """
+    from agora_runner.log import log
+    from agora_runner.vault import vault_read_path_rev, vault_write_path
+
+    if status not in GOAL_STATUSES:
+        return False, f"status must be one of {list(GOAL_STATUSES)}"
+    if not (name or "").strip():
+        return False, "no goal named"
+
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(GOALS_PATH)
+        if current is None:
+            return False, "goals.md not found"
+        amended = set_status_in_goals(current, name, status)
+        if amended is None:
+            return False, "that goal is no longer where the page thought it was"
+        if amended == current:
+            return True, f"already {status}"
+        result = vault_write_path(GOALS_PATH, amended, if_rev=rev)
+        if result == "written":
+            log(f"nova-plan goal {name!r} marked {status}")
+            return True, status
+        if "409" not in result:
+            break
+    log(f"nova-plan failed marking goal {name!r} {status}: {result}")
+    return False, f"could not write to goals.md: {result}"

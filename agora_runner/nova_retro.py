@@ -1,6 +1,6 @@
 """The Friday retrospective ledger, and the page that plots it.
 
-Edvard, `issues.md` 2026-08-13: *"Every Friday, spend a full cycle to do a
+The owner, `issues.md` 2026-08-13: *"Every Friday, spend a full cycle to do a
 full retrospective on yourself. ... Rate yourself on a scale from 1 to 10
 on how you feel its going, how effective do you think you are, whats
 good, whats bad, whats the overall feeling (which is the most important
@@ -47,6 +47,25 @@ SCORE_KEYS = (
 # named it the most important metric, so a row without it has dropped the
 # one column that mattered while still looking complete.
 PROSE_KEYS = ("overall", "good", "bad")
+
+# The one-screen summary (ideas.md #120), in the order he wrote the four
+# parts, with the label the card shows. He asked for *"one screen -- what
+# shipped, what broke, what is still stuck, and the one thing you would
+# want to change"*, because a chat-style report read better to him twice
+# than the journal did.
+#
+# It is a separate block rather than four more `PROSE_KEYS` because it is
+# written to a different reader. `good`/`bad`/`overall` are the retro
+# talking to itself about how the loop is going; these four are the week
+# reported to a person holding a phone, and the page draws them first and
+# on their own. Mixing them would make the card decide which sentences
+# are for him, every week, from a flat bag of prose.
+WEEK_KEYS = (
+    ("shipped", "What shipped"),
+    ("broke", "What broke"),
+    ("stuck", "What is still stuck"),
+    ("change", "The one thing I would change"),
+)
 
 SCORE_MIN = 1
 SCORE_MAX = 10
@@ -120,6 +139,24 @@ def validate_row(row):
         if not isinstance(text, str) or not text.strip():
             raise RetroError(f"{key} must be a non-empty string")
 
+    week = row.get("week")
+    if not isinstance(week, dict):
+        raise RetroError(
+            "week must be an object with " + ", ".join(k for k, _ in WEEK_KEYS)
+            + " (ideas.md #120 -- the one screen he reads on his phone)"
+        )
+    wanted_week = {key for key, _ in WEEK_KEYS}
+    missing_week = sorted(wanted_week - set(week))
+    if missing_week:
+        raise RetroError(f"week is missing {', '.join(missing_week)}")
+    extra_week = sorted(set(week) - wanted_week)
+    if extra_week:
+        raise RetroError(f"week has unknown key(s) {', '.join(extra_week)}")
+    for key in sorted(wanted_week):
+        text = week[key]
+        if not isinstance(text, str) or not text.strip():
+            raise RetroError(f"week.{key} must be a non-empty string")
+
     changes = row.get("changes")
     if not isinstance(changes, list):
         raise RetroError("changes must be a list of strings (use [] if you chose none)")
@@ -127,7 +164,7 @@ def validate_row(row):
         if not isinstance(change, str) or not change.strip():
             raise RetroError("every entry in changes must be a non-empty string")
 
-    known = {"date", "cycle", "scores", "changes", *PROSE_KEYS}
+    known = {"date", "cycle", "scores", "changes", "week", *PROSE_KEYS}
     unknown = sorted(set(row) - known)
     if unknown:
         raise RetroError(f"unknown field(s) {', '.join(unknown)}")
@@ -188,6 +225,27 @@ def append(document, row):
     return dump([*retros, row])
 
 
+def _week(block):
+    """The one-screen summary as the page reads it, or `None`.
+
+    `None` and a partial block are deliberately the same answer here, and
+    that is not leniency: `validate_row` refuses anything but all four
+    parts, so a row missing one cannot have been written by this loop --
+    it is one of the three retros that predate #120. A card drawn from
+    half a summary would read as this week's report with two sections
+    silently missing, which is worse than the page saying nothing yet.
+    """
+    if not isinstance(block, dict):
+        return None
+    out = {}
+    for key, _label in WEEK_KEYS:
+        text = block.get(key)
+        if not isinstance(text, str) or not text.strip():
+            return None
+        out[key] = text.strip()
+    return out
+
+
 def retros_payload(document):
     """The ledger, as the page reads it.
 
@@ -217,11 +275,13 @@ def retros_payload(document):
                 "good": row.get("good") or "",
                 "bad": row.get("bad") or "",
                 "changes": [c for c in (row.get("changes") or []) if isinstance(c, str)],
+                "week": _week(row.get("week")),
             }
         )
     retros.sort(key=lambda entry: entry["at"])
     return {
         "scoreKeys": [{"key": key, "label": label} for key, label in SCORE_KEYS],
+        "weekKeys": [{"key": key, "label": label} for key, label in WEEK_KEYS],
         "range": [SCORE_MIN, SCORE_MAX],
         "retros": retros,
     }

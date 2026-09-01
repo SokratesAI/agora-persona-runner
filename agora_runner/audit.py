@@ -16,7 +16,8 @@ NARRATION_TEXT = "assistant_text"
 
 
 def audit(persona_name, conversation_id, capability, detail, before=None, after=None,
-          ephemeral=False, tool_use_id="", output=None, is_error=False):
+          ephemeral=False, tool_use_id="", output=None, is_error=False,
+          retracted=False):
     try:
         # Every field below is text a human reads, assembled from whatever a
         # tool was handed or returned, and this is the one point all of it
@@ -52,6 +53,15 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
         # AuditStore.CONTENT_CHARS_MAX (20_000), same as before/after.
         if tool_use_id:
             payload["toolUseId"] = tool_use_id
+        # Withdraws every narration step posted under this toolUseId. The
+        # bridge streams a passage as it is written and only learns at the
+        # end of the turn which passage was the reply; that one is retracted
+        # so the owner does not read it twice, once growing in the drawer and
+        # once in the bubble (agora/public/app.js mergeTextStreams). Sent only
+        # when true: an ordinary chip must leave the field undefined, because
+        # Agora treats any present value as the retracting half.
+        if retracted:
+            payload["retracted"] = True
         if output is not None:
             payload["output"] = redact(output)
             if is_error:
@@ -59,3 +69,96 @@ def audit(persona_name, conversation_id, capability, detail, before=None, after=
         agora_internal("POST", "/audit", payload)
     except Exception as e:  # audit must never break a turn
         log(f"audit post failed: {e}")
+
+
+def fold_text_streams(messages):
+    """Collapse a passage streamed in steps back into one message.
+
+    The bridge streams the persona's prose as it is written: every step of
+    one passage shares a `toolUseId` and carries the whole passage so far,
+    and the passage that turned out to be the reply is withdrawn by a step
+    setting `retracted` (agora-claude-bridge bridge/cli.py). Rendered
+    un-folded, one three-paragraph passage arrives as three messages, each a
+    longer prefix of the next -- which is the duplication this whole feature
+    exists to remove, on a different page.
+
+    This is Agora's own `mergeTextStreams` (agora/public/app.js) in Python,
+    for the two Nova surfaces that build their thread here instead of in that
+    client. It has to stay in step with it: same three rules, same order.
+
+    Every later step folds into the first one's slot, so a page redrawing
+    mid-turn keeps its scroll position and its expanded state while the
+    passage grows underneath. A message with no stream id is a passage the
+    bridge sent whole -- which is every passage written before streaming
+    existed, and every one from an older bridge -- and is untouched.
+    """
+    streams = {}
+    for message in messages:
+        stream_id = _stream_id(message)
+        if not stream_id:
+            continue
+        stream = streams.setdefault(
+            stream_id, {"anchor": None, "latest": None, "retracted": False})
+        if message.get("activity", {}).get("retracted"):
+            stream["retracted"] = True
+        else:
+            if stream["anchor"] is None:
+                stream["anchor"] = message
+            stream["latest"] = message
+
+    folded = []
+    for message in messages:
+        stream_id = _stream_id(message)
+        if not stream_id:
+            folded.append(message)
+            continue
+        stream = streams[stream_id]
+        # The reply bubble is carrying this text, so the thread must not.
+        if stream["retracted"]:
+            continue
+        if message is not stream["anchor"]:
+            continue
+        if stream["latest"] is stream["anchor"]:
+            folded.append(message)
+            continue
+        activity = dict(message["activity"],
+                        detail=stream["latest"]["activity"].get("detail"))
+        folded.append(dict(message, activity=activity))
+    return folded
+
+
+def _stream_id(message):
+    """The id every step of one streamed passage shares, or "" for anything
+    else -- a tool chip, an ordinary message, a passage sent whole."""
+    activity = message.get("activity")
+    if not isinstance(activity, dict):
+        return ""
+    if activity.get("capability") != NARRATION_TEXT:
+        return ""
+    return str(activity.get("toolUseId") or "")
+
+
+def narration_passage(message):
+    """The passage a persona wrote on its way to the answer, or None.
+
+    Every capability call the bridge narrates is appended to the conversation
+    as an `activity` message (agora/src/server.ts:1552), and one of those
+    "capabilities" is not a tool call at all: NARRATION_TEXT is a paragraph
+    the persona wrote between two tools, pushed live while the turn is still
+    running (agora-claude-bridge bridge/activity.py report_text). The reply
+    the owner finally sees is only the *last* such passage -- cli.py picks
+    `pending[-1]` whenever narration is enabled -- so the earlier ones are
+    not a duplicate of the answer, they are the earlier parts of it.
+
+    Both Nova chat surfaces used to drop them along with the tool chips,
+    which is why a turn looked like four minutes of nothing followed by one
+    block of text. Returns the passage itself rather than the message's
+    `text`, because Agora prefixes that with the capability name
+    ("assistant_text: ...") for its own search.
+    """
+    activity = message.get("activity")
+    if not isinstance(activity, dict):
+        return None
+    if activity.get("capability") != NARRATION_TEXT:
+        return None
+    return (activity.get("detail") or "").strip() or None

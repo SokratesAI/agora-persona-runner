@@ -1,6 +1,6 @@
 """The board pages: the parser, and the route that serves them.
 
-Edvard, issues.md #57: *"Create more pages to contain more, such as
+The owner, issues.md #57: *"Create more pages to contain more, such as
 issue list, idea list (separate pages)"*.
 
 The fixtures are real, for the reason `test_nova_site.py` gives at
@@ -273,7 +273,7 @@ def test_the_rolled_off_captures_still_reach_the_page(board_md, notes_md):
     """The blocker Cycle 112 refused to roll around.
 
     `roll_captures.py` moves everything past the newest 60 into an
-    archive beside the live file. This page is what Edvard opens, so if
+    archive beside the live file. This page is what the owner opens, so if
     it reads only the live path, the first roll silently deletes two
     thirds of it. Live notes first, archived ones after, because both
     files are newest-first and the archive holds only what is older.
@@ -335,7 +335,7 @@ def test_the_board_reads_the_same_file_the_capture_button_writes():
 
 
 def test_priority_is_read_from_the_fifth_column():
-    """Edvard's rating, appended rather than inserted.
+    """The owner's rating, appended rather than inserted.
 
     Appended so that every cell above it keeps its index: a board he has
     not rated yet has four columns and must still parse, and it does --
@@ -403,7 +403,7 @@ def test_done_rows_never_take_a_priority():
 
 
 def test_immediately_and_immediate_are_one_bucket():
-    """"immediately" is the word Edvard used in the capture; "immediate"
+    """"immediately" is the word the owner used in the capture; "immediate"
     is the word a hand-edit reaches for. A rating that fell into its own
     bucket would sort last, which is the opposite of what it says."""
     assert priority_key("Immediately") == "immediate"
@@ -504,7 +504,7 @@ def test_unanswered_comments_clears_once_nova_replies():
 
 
 def test_unanswered_comments_is_positional_not_a_count():
-    """Edvard, Nova, Edvard is one note each way and still waiting on me."""
+    """The owner, Nova, the owner is one note each way and still waiting on me."""
     assert _uc("**Edvard, 08-13:** one\n\n**Nova, 08-13 (Cycle 1):** two\n\n"
                "**Edvard, 08-15:** three") == [4]
 
@@ -547,7 +547,7 @@ def test_unanswered_comments_is_positional_where_a_count_would_disagree():
     that makes the flag worth ignoring.
 
     Written after mutating the rule to a count and watching all 63 tests
-    pass: `Edvard, Nova, Edvard` is 2-vs-1 and both rules call it waiting,
+    pass: `the owner, Nova, the owner` is 2-vs-1 and both rules call it waiting,
     so the test that claimed to pin this pinned nothing.
     """
     assert _uc("**Edvard, 08-13:** one\n\n**Edvard, 08-13:** and another\n\n"
@@ -555,7 +555,7 @@ def test_unanswered_comments_is_positional_where_a_count_would_disagree():
 
 
 def test_unanswered_comments_ignores_bold_prose_that_looks_like_a_note():
-    """`**Edvard, in his own words:**` is prose and must not flag the row.
+    """`**Edvard, in his own words:**` is prose and must not flag the row.  (not-prose: quoting a literal)
 
     A false positive here never clears: no reply of mine can answer a note
     that was never a note, so the row claims to be waiting forever. The
@@ -564,3 +564,162 @@ def test_unanswered_comments_ignores_bold_prose_that_looks_like_a_note():
     """
     assert _uc("**Edvard, in his own words:** this is the problem.") == []
     assert _uc("**Nova, on reflection:** still prose.") == []
+
+
+# --- unanswered_comment_bodies: the text a reply claim is named after -------
+
+def _ucb(body):
+    from agora_runner.nova_boards import unanswered_comment_bodies
+    return unanswered_comment_bodies(_UC_BOARD.format(body=body))
+
+
+def test_the_body_starts_at_his_marker_and_not_at_the_write_up():
+    """The write-up is his statement of the problem and never changes.
+    Naming a claim after it would give every comment on the row one name."""
+    got = _ucb("Problem, stated at length.\n\n**Edvard, 08-15:** what about this?")
+    assert got == {4: "**Edvard, 08-15:** what about this?"}
+
+
+def test_the_body_runs_past_the_first_line_of_his_comment():
+    """Two comments on one row on one day are told apart by their text, and
+    a long comment's opening clause is exactly where they look alike."""
+    got = _ucb("**Edvard, 08-15:** I have been thinking about this,\nand the "
+               "second half is where they differ.")
+    assert got[4].endswith("where they differ.")
+
+
+def test_only_the_last_note_is_the_one_owed_a_reply():
+    got = _ucb("**Edvard, 08-15:** first\n\n**Nova, 08-15 (Cycle 1):** answered\n\n"
+               "**Edvard, 08-16:** and now this")
+    assert got == {4: "**Edvard, 08-16:** and now this"}
+
+
+def test_an_answered_row_has_no_body_and_no_claim():
+    assert _ucb("**Edvard, 08-15:** q\n\n**Nova, 08-15 (Cycle 1):** a") == {}
+
+
+def test_unanswered_comments_is_the_numbers_of_the_same_answer():
+    from agora_runner.nova_boards import unanswered_comments
+    body = "**Edvard, 08-15:** q"
+    assert unanswered_comments(_UC_BOARD.format(body=body)) == \
+        sorted(_ucb(body), reverse=True)
+
+
+def test_a_reply_indented_under_a_capture_is_not_a_capture_of_its_own():
+    """A cycle's reply is written as an indented bullet under the capture.
+
+    Read as its own bullet it becomes a capture from him that he never
+    typed, and `top_board_rows` ranks it above every board row for as
+    long as it sits there. That happened on his `issues.md` on
+    2026-08-25: `roll_done_captures` moved the owner's `DONE` bullet and
+    left the reply alone at the top of the file.
+    """
+    board = parse_board(
+        "---\ntype: board\n---\n\n"
+        "- the notes text is grey and hard to read\n"
+        "  - Fixed in runner#360 — say the word and the byline goes white too.\n"
+        "- \n\n"
+        "## Board\n"
+    )
+    assert board["captures"] == ["the notes text is grey and hard to read"]
+    # And it is not welded onto his sentence either. It used to be, and
+    # that is what made every write on an answered capture fail: the page
+    # sent the folded string back as the address and no capture reads
+    # that way (his `issues.md` capture, 2026-08-25).
+    assert board["captureReplies"] == [
+        ["Fixed in runner#360 — say the word and the byline goes white too."]
+    ]
+
+
+# The owner, issues.md 2026-08-27: *"The Nova app has become extremely slow.
+# Opening, navigating, loading comments, anything."* Navigating is a sidebar
+# press into a board. `warm_cache` deliberately left the boards out on a
+# 2026-08-12 measurement of 0.53s and 0.39s cold; measured against the live
+# pod 2026-08-28, six minutes into a process that had served nothing since
+# it started, `/api/board?name=ideas&limit=30` answered in 5.05s and
+# `/api/board?name=issues` in 3.15s, against 0.03-0.09s warm.
+
+
+def test_the_first_press_on_a_board_after_a_deploy_reads_no_vault(board_md, notes_md):
+    """Both boards, because they are separate cache keys and warming one
+    leaves the other exactly as slow as it was.
+
+    Asserted as "the vault was not read again" rather than as a duration,
+    the same way the journal's warm test is: the five seconds is a bulk
+    fetch plus a parse, and a wall clock over a fixture measures neither.
+    """
+    nova_site.reset_cache()
+
+    def read(path):
+        return notes_md if "/nova/resources/" in path else board_md
+
+    with patch.object(nova_sources, "vault_read_path", side_effect=read) as reader:
+        nova_site.warm_cache()
+        warmed = reader.call_count
+        assert warmed, "the warm built nothing at all"
+        for board in ("issues", "ideas"):
+            status, _, body = _get(f"/api/board?name={board}&limit=1")
+            assert status == 200, board
+            assert json.loads(body)["items"], f"{board} warmed to an empty board"
+            assert reader.call_count == warmed, (
+                f"the first visitor to {board} paid the cold build anyway"
+            )
+
+
+def test_the_projects_page_shares_one_cache_key_with_the_board_route(board_md, notes_md):
+    """Two spellings of one key is two builds and one of them uneditable.
+
+    `/projects` read `cached_payload("issues", ...)` while `/api/board`
+    read `cached_payload("board:issues", ...)`, over the identical
+    `board_payload("issues")`. So the warm reached one and not the other,
+    and all five `invalidate("board:" + target)` call sites missed the
+    `/projects` copy -- a row edited from the app stayed stale there.
+
+    Asserted on the cache keys rather than on a read count, because a
+    read count cannot tell one key warmed twice from two keys warmed
+    once, and the second is the bug.
+    """
+    nova_site.reset_cache()
+
+    def read(path):
+        return notes_md if "/nova/resources/" in path else board_md
+
+    with patch.object(nova_sources, "vault_read_path", side_effect=read), \
+            patch.object(nova_site, "project_priorities", dict):
+        # The ratings are a separate uncached read and are stubbed rather
+        # than left to fall back, so this test still measures cache keys
+        # instead of accidentally measuring the fallback path.
+        nova_site.warm_cache()
+        warmed = set(nova_site._cache)
+        status, _, _ = _get("/api/project")
+    assert status == 200
+    assert set(nova_site._cache) - warmed == set(), (
+        f"/api/project built {sorted(set(nova_site._cache) - warmed)}, "
+        "which the warm did not reach"
+    )
+    assert {"board:issues", "board:ideas"} <= warmed
+
+
+# `is_relayed` — a comment that says of itself that Sokrates typed it.
+
+def test_the_live_disclosure_sentence_is_recognised():
+    from agora_runner.nova_boards import is_relayed
+    assert is_relayed("**Edvard, 08-29:** Sokrates here (Claude, posting on "
+                      "Edvard's behalf, not Edvard typing this himself): "
+                      "decision on the auth proposal.")
+
+
+def test_an_ordinary_comment_is_not_a_relay():
+    from agora_runner.nova_boards import is_relayed
+    assert not is_relayed("**Edvard, 08-29:** what about this?")
+    assert not is_relayed("")
+    assert not is_relayed(None)
+
+
+def test_a_comment_that_merely_discusses_relaying_is_not_one():
+    """The window is what separates these two, and this is why it exists."""
+    from agora_runner.nova_boards import RELAY_WINDOW, is_relayed
+    prose = "x" * RELAY_WINDOW
+    assert not is_relayed(prose + " a comment posted on Edvard's behalf "
+                                  "should rank below one he typed.")
+

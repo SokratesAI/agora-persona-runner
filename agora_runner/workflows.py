@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from agora_runner.config import AI_TURN_CAP, FETCH_LIMIT, HEARTBEAT_NO_REPORT_SENTINEL
+from agora_runner.config import FETCH_LIMIT, HEARTBEAT_NO_REPORT_SENTINEL
 from agora_runner.log import log
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
@@ -16,8 +16,8 @@ from agora_runner.conversation_rotation import rotate_cycle_conversation
 
 WORKFLOW_MAX_DEPTH = 5  # defense in depth — Agora already rejects a
                          # cyclic workflowRef at save time (Decisions/0009);
-                         # this is the runtime backstop, same "deterministic
-                         # rule + hard cap" shape as AI_TURN_CAP.
+                         # this is the runtime backstop: a deterministic
+                         # rule with a hard cap behind it.
 
 
 def run_workflow_steps(steps, conversation_id, detail, participants,
@@ -35,7 +35,7 @@ def run_workflow_steps(steps, conversation_id, detail, participants,
     Re-fetches the conversation's messages fresh at the top of every
     round (2026-07-30) rather than working from a static snapshot taken
     once at the start of the run — a heartbeat is bound to a real
-    conversation specifically so Edvard can steer a run that's going off
+    conversation specifically so the owner can steer a run that's going off
     the rails by just typing into it; a snapshot silently defeated that
     for any round after the first. Best-effort only: a run never waits
     for input, it just picks up whatever's there by the time the next
@@ -98,7 +98,7 @@ def run_workflow_steps(steps, conversation_id, detail, participants,
                 log(f"workflow: persona {link.get('personaId')!r} not found, skipping this round")
                 continue
             caps = capabilities_for_step(persona, step)
-            system = build_system(persona, detail, participants, extra)
+            system = build_system(persona, detail, extra)
             status, msgs_body = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
             thread = msgs_body.get("messages", []) if status == 200 else []
             # Explicit synthetic trigger, same pattern as run_heartbeat —

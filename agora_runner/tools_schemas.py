@@ -387,12 +387,58 @@ def client_tool_schemas(caps, active_step=None):
                     # `["issues", "ideas"]` and went stale the hour a third
                     # target shipped: the site's button worked and this
                     # path -- the one a journal-comment reply uses -- could
-                    # still only offer Edvard's two old files, which is the
+                    # still only offer the owner's two old files, which is the
                     # exact confusion he asked three times to be rid of.
                     "target": {"type": "string", "enum": sorted(CAPTURE_TARGETS)},
                     "text": {"type": "string"},
                 },
                 "required": ["target", "text"],
+            },
+        })
+    # Reading another conversation is read-only, and until now the only way
+    # to grant it was `manageAgora`, which also hands out create_persona,
+    # create_heartbeat and create_workflow. So the owner's "read that other
+    # conversation" -- issue #125, which he called the most basic thing a
+    # persona should do -- cost a platform-admin grant, and the six chat
+    # personas that should have it (Haiku, Plain assistant, Study buddy,
+    # Devil's advocate, Marcus, Trainer) have none of it. `conversationRead`
+    # is that grant on its own. `manageAgora` still implies it, so no persona
+    # holding it today loses a tool.
+    if caps.get("conversationRead") or caps.get("manageAgora"):
+        tools.append({
+            "name": "list_conversations",
+            "description": (
+                "List Agora's conversations -- id, name, and when each was last spoken in, "
+                "newest first. This is how you reach a conversation OTHER than the one you "
+                "are in: without it, a request like 'read that other conversation about X' "
+                "has no answer. Pass `query` to keep only the conversations whose name "
+                "contains it (case-insensitive); there are several hundred, so filter when "
+                "you can name the one you want. Then call read_conversation."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": [],
+            },
+        })
+        tools.append({
+            "name": "read_conversation",
+            "description": (
+                "Read the messages of another Agora conversation. `conversation` takes "
+                "either its id or its exact name (case-insensitive) -- a name that matches "
+                "more than one conversation is refused with the candidates listed, so use "
+                "list_conversations first when you are unsure. Returns the NEWEST `limit` "
+                "messages (default 50) and always says how many there are in total and "
+                "which slice you got; raise `limit` or set `offset` to walk further back."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "conversation": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                },
+                "required": ["conversation"],
             },
         })
     if caps.get("manageAgora"):
@@ -460,7 +506,14 @@ def client_tool_schemas(caps, active_step=None):
                 "'cron@0 8 * * 1-5' is 08:00 on weekdays, 'cron@0 8,20 * * *' is twice a day, "
                 "'cron@0 8-22/2 * * *' is every two hours from 08:00 to 22:00. "
                 "Give conversationId for an existing channel, or "
-                "newConversationName to create a fresh empty one just for this heartbeat."
+                "newConversationName to create a fresh empty one just for this heartbeat. "
+                "workflowId binds a workflow (see create_workflow) to this heartbeat: a "
+                "heartbeat WITHOUT one runs `task` as a single turn, and a heartbeat WITH "
+                "one runs that workflow's steps instead -- binding is the only way a "
+                "workflow ever executes, so a workflow you never bind never runs. "
+                "Set enabled false to create it dormant; you can then trigger one run by "
+                "hand with forceRun (PATCH /heartbeats/:id) instead of waiting for the "
+                "schedule, which is how to try a new workflow without putting it on a timer."
             ),
             "input_schema": {
                 "type": "object",
@@ -471,6 +524,14 @@ def client_tool_schemas(caps, active_step=None):
                     "newConversationName": {"type": "string"},
                     "schedule": {"type": "string"},
                     "task": {"type": "string"},
+                    "workflowId": {
+                        "type": "string",
+                        "description": "Workflow.id -- its steps run instead of `task`.",
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Defaults to true. False creates it dormant.",
+                    },
                 },
                 "required": ["name", "personaId", "schedule"],
             },
@@ -479,9 +540,19 @@ def client_tool_schemas(caps, active_step=None):
             "name": "create_workflow",
             "description": (
                 "Create a new workflow (a named sequence of steps for Heartbeat-triggered "
-                "multi-persona execution, Decisions/0009). steps is a list of "
-                "{prompt, loopCount} objects -- pass an empty list for a workflow you'll fill "
-                "in later from the Studio."
+                "multi-persona execution, Decisions/0009). A workflow only ever runs when a "
+                "heartbeat is bound to it by workflowId -- see create_heartbeat. steps is a "
+                "list of step objects; pass an empty list for a workflow you'll fill in later "
+                "from the Studio. Each step is `prompt` (additive, layered onto each "
+                "participant's own personality for that step only) and `loopCount` (rounds of "
+                "round-robin turn-taking, a positive integer), plus four optional fields the "
+                "engine has always accepted: `personaIds` to give this step its own "
+                "participants instead of the conversation's full list (each must already be "
+                "one of the conversation's personas), `toolWhitelist` to hard-limit which "
+                "tools the step may call (empty means unrestricted), `filepath` to scope "
+                "writes -- required when scoped_write is in toolWhitelist, trailing / means a "
+                "folder -- and `workflowRef` to run another workflow's steps in place of this "
+                "one (cycles are refused at save time)."
             ),
             "input_schema": {
                 "type": "object",
@@ -495,7 +566,18 @@ def client_tool_schemas(caps, active_step=None):
                             "properties": {
                                 "prompt": {"type": "string"},
                                 "loopCount": {"type": "integer"},
+                                "personaIds": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "toolWhitelist": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "filepath": {"type": "string"},
+                                "workflowRef": {"type": "string"},
                             },
+                            "required": ["prompt", "loopCount"],
                         },
                     },
                 },
@@ -573,6 +655,9 @@ TOOL_TO_CAPABILITY = {
     "kubectl_read": "kubectlRead",
     "github_read": "githubRead",
     "terminal_exec": "terminalExec",
+    # A tuple means "any one of these grants it" -- see capabilities_for_step.
+    "list_conversations": ("conversationRead", "manageAgora"),
+    "read_conversation": ("conversationRead", "manageAgora"),
     "list_personas": "manageAgora",
     "list_models": "manageAgora",
     "create_persona": "manageAgora",
@@ -584,6 +669,17 @@ TOOL_TO_CAPABILITY = {
     "merge_pr": "githubMerge",
     "nova_capture": "novaCapture",
 }
+
+
+def _cap_keys(entry):
+    """A TOOL_TO_CAPABILITY value is one capability key, or a tuple of keys
+    any one of which grants the tool. Only the two conversation-read tools
+    take a tuple today: `conversationRead` is the narrow grant and
+    `manageAgora` keeps implying it, so nothing that works now stops."""
+    return (entry,) if isinstance(entry, str) else tuple(entry)
+
+
+_ALL_CAP_KEYS = {k for entry in TOOL_TO_CAPABILITY.values() for k in _cap_keys(entry)}
 
 
 def capabilities_for_step(persona, step):
@@ -602,9 +698,12 @@ def capabilities_for_step(persona, step):
     whitelist = step.get("toolWhitelist") or []
     if whitelist:
         cap_keys_present = {
-            cap_key for tool, cap_key in TOOL_TO_CAPABILITY.items() if tool in whitelist
+            cap_key
+            for tool, entry in TOOL_TO_CAPABILITY.items()
+            if tool in whitelist
+            for cap_key in _cap_keys(entry)
         }
-        for cap_key in set(TOOL_TO_CAPABILITY.values()):
+        for cap_key in _ALL_CAP_KEYS:
             if cap_key not in cap_keys_present:
                 caps[cap_key] = False
     return caps

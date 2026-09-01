@@ -24,10 +24,14 @@ from agora_runner.nova_capture import (
     amend,
     capture,
     clean_capture_text,
+    STALE_CAPTURE,
     capture_entries,
+    comment_on_capture,
+    convert_capture,
     insert_captures,
     list_captures,
     replace_capture,
+    reply_under_capture,
 )
 from agora_runner import vault
 from tests.couch_fake import FakeCouch
@@ -51,7 +55,7 @@ def ideas_md():
 
 
 def _capture_list(markdown):
-    """The bullets above the first heading -- the list Edvard writes in."""
+    """The bullets above the first heading -- the list the owner writes in."""
     out = []
     for line in markdown.split("\n"):
         if line.strip().startswith("#"):
@@ -91,9 +95,48 @@ def test_nothing_typed_is_no_bullets(empty):
     assert clean_capture_text(empty) == []
 
 
+# --- "keep this as one item" ---------------------------------------------
+
+
+def test_one_item_joins_a_paste_into_a_single_bullet():
+    """issues.md #123: thirteen paragraphs of one request, filed as thirteen."""
+    typed = "Stand up k3s on the NAS.\n\nWHY: the NAS is LAN-exposed.\n\nScope: bootstrap only."
+    assert clean_capture_text(typed, one_item=True) == [
+        "Stand up k3s on the NAS. WHY: the NAS is LAN-exposed. Scope: bootstrap only."
+    ]
+
+
+def test_one_item_loses_none_of_his_words():
+    typed = "first line\n\nsecond line\nthird line"
+    joined = clean_capture_text(typed, one_item=True)[0]
+    for word in typed.split():
+        assert word in joined
+    assert joined.split() == typed.split()
+
+
+def test_one_item_writes_a_bullet_with_no_newline_in_it():
+    """A bullet holding a raw newline would break the list it lands in."""
+    bullets = clean_capture_text("a\nb\nc", one_item=True)
+    assert len(bullets) == 1
+    assert "\n" not in bullets[0]
+
+
+def test_one_item_on_a_single_line_changes_nothing():
+    assert clean_capture_text("just the one", one_item=True) == ["just the one"]
+
+
+def test_one_item_on_nothing_typed_is_still_no_bullets():
+    assert clean_capture_text("\n\n  \n", one_item=True) == []
+
+
+def test_the_default_is_still_one_bullet_per_line():
+    """The phone case the box was built for must not change under it."""
+    assert clean_capture_text("first thing\nsecond thing") == ["first thing", "second thing"]
+
+
 # --- an attached image belongs to the text it was attached to -------------
 #
-# Edvard, capture 2026-08-21: "I see that my image upload test was split
+# the owner, capture 2026-08-21: "I see that my image upload test was split
 # into two idea entries. The image for its own separate entry and the text
 # got the other." `buildAttach` inserts the link as its own paragraph, so
 # the line rule above filed his sentence and his screenshot separately.
@@ -374,7 +417,7 @@ def test_a_missing_target_file_is_reported_not_created():
     write.assert_not_called()
 
 
-# --- notes: the third target (Edvard, issues.md 2026-08-12) ---------------
+# --- notes: the third target (the owner, issues.md 2026-08-12) ---------------
 #
 # *"I should be able to just leave you notes instead of just issues and
 # ideas. I have said this 2-3 times before. Add a button next to
@@ -395,7 +438,7 @@ def test_notes_is_a_capture_target_pointing_at_edvards_own_folder():
     """The folder changed on 2026-08-12; the database must not have.
 
     This used to assert `"/nova/" not in path`, which was a proxy for
-    "routes to Edvard's database" and stopped being one the moment his
+    "routes to the owner's database" and stopped being one the moment his
     files moved into `projects/sokrates/projects/nova/`. The real rule is
     `vault.db_for`, so `test_vault_database_routing` asks it directly for
     every target; this one just pins the path.
@@ -480,7 +523,7 @@ def test_a_bullet_below_the_first_heading_is_not_editable():
 def test_the_writer_and_the_page_agree_on_a_capture_that_wrapped():
     """The bug review found, and the reason `capture_entries` joins.
 
-    The board joins a continuation into the bullet above it so Edvard is
+    The board joins a continuation into the bullet above it so the owner is
     never shown half a sentence -- and the page is what supplies the
     address an edit comes back with. A writer that did not join would find
     no single line matching that address, so Edit and Delete were dead on
@@ -489,7 +532,7 @@ def test_the_writer_and_the_page_agree_on_a_capture_that_wrapped():
     markdown = ("---\nx: 1\n---\n\n- the first half of what he typed\n"
                 "  and the second half, wrapped.\n- \n\n## Board\n")
     joined = "the first half of what he typed and the second half, wrapped."
-    assert _captures(markdown) == [joined], "the page's own parser moved"
+    assert _captures(markdown)[0] == [joined], "the page's own parser moved"
     assert list_captures(markdown) == [joined]
 
     edited = replace_capture(markdown, 0, joined, ["one line now"])
@@ -611,7 +654,7 @@ def test_an_amend_conflict_is_retried_against_freshly_read_content(issues_md):
 def test_an_amend_conflict_that_loses_to_a_boarding_does_not_resurrect_it(issues_md):
     """The retry re-reads, and the re-read no longer has the bullet: a
     cycle boarded it between the attempts. Rebuilding on top would put it
-    back in the list Edvard just watched it leave."""
+    back in the list the owner just watched it leave."""
     start = insert_captures(issues_md, ["mine"])
     with patch.object(nova_capture, "vault_read_path_rev",
                        side_effect=[(c, "1-x") for c in [start, issues_md]]), \
@@ -691,3 +734,272 @@ def test_an_amend_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
     assert _capture_list(final) == ["- mine, edited", "- "]
     assert "| 70 | boarded meanwhile | Open | 2026-08-12 |" in final, \
         "the board row the other writer added must survive the amend"
+
+
+# --- moving a capture between the three files -----------------------------
+#
+# The owner, 2026-08-24: *"The note i sent regarding the rebuilding the
+# notes page was sent as a note, but its actually an idea, but i have no
+# way of changing it or editing it. So we need crude operations for notes,
+# but also the possibility to change issues/ideas/notes into one of the
+# other."*
+
+
+def _two_file_vault(paths):
+    """A FakeCouch seeded with several capture files at once."""
+    couch = FakeCouch()
+    for target, markdown in paths.items():
+        couch.seed(CAPTURE_TARGETS[target], markdown)
+    return couch
+
+
+def test_convert_moves_the_bullet_out_of_one_file_and_into_the_other(notes_md, ideas_md):
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["rebuild the notes page"]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("notes", 0, "rebuild the notes page", "ideas")
+    assert ok, message
+    assert "rebuild the notes page" not in couch.text(CAPTURE_TARGETS["notes"])
+    assert "- rebuild the notes page" in couch.text(CAPTURE_TARGETS["ideas"])
+
+
+def test_convert_leaves_the_source_alone_when_the_destination_write_fails(notes_md):
+    """Write-then-delete, and this is the half it buys.
+
+    The destination is not seeded, so `vault_read_path_rev` returns None
+    and `capture` refuses before anything is removed. His sentence has to
+    still be in `notes.md` afterwards -- that is the whole reason the two
+    calls are in this order.
+    """
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"])})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+    assert not ok
+    assert "actually an idea" in couch.text(CAPTURE_TARGETS["notes"]), \
+        "a failed destination write must never cost him the line"
+
+
+def test_convert_says_so_when_the_copy_landed_but_the_removal_did_not(notes_md, ideas_md):
+    """The one half-done state this ordering can produce, reported not hidden."""
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req), \
+            patch.object(nova_capture, "amend", return_value=(False, "boom")):
+        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+    assert not ok
+    assert "it is in both" in message, message
+    assert "- actually an idea" in couch.text(CAPTURE_TARGETS["ideas"])
+
+
+def test_convert_carries_the_rating_between_the_two_boards(issues_md, ideas_md):
+    rated = "🟠 High: the runner drops replies"
+    couch = _two_file_vault({"issues": insert_captures(issues_md, [rated]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("issues", 0, rated, "ideas")
+    assert ok, message
+    assert "- " + rated in couch.text(CAPTURE_TARGETS["ideas"])
+
+
+def test_convert_strips_the_rating_going_into_notes(issues_md, notes_md):
+    """`notes.md` is *"never numbered, never boarded"* -- a priority label
+    in a file with no board is vocabulary from a page that does not exist."""
+    rated = "🟠 High: the runner drops replies"
+    couch = _two_file_vault({"issues": insert_captures(issues_md, [rated]),
+                             "notes": notes_md})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("issues", 0, rated, "notes")
+    assert ok, message
+    notes = couch.text(CAPTURE_TARGETS["notes"])
+    assert "- the runner drops replies" in notes
+    assert "🟠" not in notes
+
+
+def test_convert_refuses_a_stale_address_without_moving_anything(notes_md, ideas_md):
+    """The bullet the page addressed is not the bullet in the file.
+
+    `replace_capture` refuses rather than resolving, and the destination
+    copy is what the message tells him to delete.
+    """
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["one"]), "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        ok, message = convert_capture("notes", 0, "something else entirely", "ideas")
+    assert not ok
+    assert "- one" in couch.text(CAPTURE_TARGETS["notes"])
+
+
+def test_convert_refuses_unknown_and_identical_targets():
+    with patch.object(nova_capture, "vault_read_path_rev") as read:
+        assert convert_capture("notes", 0, "x", "notes")[0] is False
+        assert convert_capture("notes", 0, "x", "kanban")[0] is False
+        assert convert_capture("kanban", 0, "x", "ideas")[0] is False
+        assert convert_capture("notes", 0, "   ", "ideas")[0] is False
+    assert read.call_count == 0, "a refused conversion must not touch the vault"
+
+
+def test_a_second_convert_of_the_same_line_does_not_claim_it_is_in_both(notes_md, ideas_md):
+    """The double-tap, which is what the page's disabled buttons now prevent
+    and what the message has to be honest about if it happens anyway.
+
+    The first call moved the line. The second finds the destination write
+    succeeds again -- it is unconditional -- and the removal refuses because
+    the address is stale. The source is *clean* at that point, so "it is in
+    both, delete the notes one" would send him to the wrong file for a copy
+    that is not there. Found by review.
+    """
+    couch = _two_file_vault({"notes": insert_captures(notes_md, ["actually an idea"]),
+                             "ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req):
+        assert convert_capture("notes", 0, "actually an idea", "ideas")[0] is True
+        ok, message = convert_capture("notes", 0, "actually an idea", "ideas")
+    assert not ok
+    assert "it is in both" not in message, message
+    assert "duplicate" in message, message
+    assert "actually an idea" not in couch.text(CAPTURE_TARGETS["notes"]), \
+        "the source really is clean, so the message must not point him at it"
+    assert couch.text(CAPTURE_TARGETS["ideas"]).count("- actually an idea") == 2, \
+        "the fixture must actually have produced the duplicate this is about"
+
+
+# --- answering a capture in place -----------------------------------------
+
+
+def test_a_reply_lands_as_an_indented_bullet_under_his_capture(issues_md):
+    """The write half of the top of the ranking.
+
+    `top_board_rows` puts his bare bullets above every boarded row, and
+    until this there was no route that could answer one -- the comment API
+    is keyed by a row number and a capture has none. Six handoffs in a row
+    filed it.
+    """
+    markdown = insert_captures(issues_md, ["the thing he typed"])
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(markdown, "1-x")), \
+            patch.object(nova_capture, "vault_write_path", return_value="written") as write:
+        ok, message = comment_on_capture("issues", 0, "the thing he typed", "Answered, cycle 430.")
+    assert ok, message
+    path, content = write.call_args[0]
+    assert path == CAPTURE_TARGETS["issues"]
+    assert "- the thing he typed\n  - Answered, cycle 430." in content
+    # And the reply is not a second capture: his list still reads the same.
+    assert list_captures(content) == list_captures(markdown)
+
+
+def test_a_second_reply_goes_under_the_first(issues_md):
+    markdown = insert_captures(issues_md, ["his line"])
+    once = reply_under_capture(markdown, 0, "his line", "first answer")
+    twice = reply_under_capture(once, 0, "his line", "second answer")
+    assert "- his line\n  - first answer\n  - second answer" in twice
+
+
+def test_the_board_page_address_answers_the_same_capture(issues_md):
+    """Two pages, two spellings of the same bullet, and both must resolve.
+
+    Both pages now send his sentence alone -- the board page stopped
+    folding a reply into the capture text on 2026-08-25. The folded
+    spelling is still accepted here because a reply written by hand, or by
+    a tool that built the address off an older payload, is a comment
+    nobody loses anything by accepting: unlike an edit it adds a bullet
+    rather than rewriting his line.
+    """
+    markdown = insert_captures(issues_md, ["his line"])
+    once = reply_under_capture(markdown, 0, "his line", "first answer")
+    assert _captures(once)[0] == ["his line"], "the board page's parser moved"
+    assert _captures(once)[1] == [["first answer"]]
+    assert reply_under_capture(once, 0, "his line", "second answer") is not None
+    assert reply_under_capture(once, 0, "his line first answer", "third") is not None
+
+
+def test_a_reply_to_a_capture_that_moved_is_refused(issues_md):
+    """A cycle boarded it while the reply was being written: no write."""
+    markdown = insert_captures(issues_md, ["his line"])
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(markdown, "1-x")), \
+            patch.object(nova_capture, "vault_write_path") as write:
+        ok, message = comment_on_capture("issues", 0, "something he never typed", "hi")
+    assert not ok
+    assert STALE_CAPTURE in message
+    write.assert_not_called()
+
+
+def test_a_reply_with_a_line_break_never_reaches_the_vault(issues_md):
+    """One indented bullet. A break in it splits into a bullet and a stray
+    paragraph, which the next parser reads as a continuation of something
+    else -- the same rule `comment_on_row` has for the same reason."""
+    with patch.object(nova_capture, "vault_write_path") as write:
+        ok, message = comment_on_capture("issues", 0, "his line", "one\ntwo")
+    assert not ok
+    assert "line break" in message
+    write.assert_not_called()
+
+
+def test_an_unknown_target_never_reaches_the_vault_on_a_reply():
+    with patch.object(nova_capture, "vault_write_path") as write:
+        ok, message = comment_on_capture("../../etc/passwd", 0, "x", "y")
+    assert not ok
+    assert "unknown target" in message
+    write.assert_not_called()
+
+
+def test_editing_a_capture_keeps_the_reply_and_deleting_it_does_not(issues_md):
+    """His edit is a rewording of his own sentence; a cycle's answer under
+    it is not his to lose. A delete is the other way round -- an answer to
+    a bullet that is gone is orphaned text in his file."""
+    markdown = insert_captures(issues_md, ["his line"])
+    answered = reply_under_capture(markdown, 0, "his line", "my answer")
+    edited = replace_capture(answered, 0, "his line", ["his line, reworded"])
+    assert "- his line, reworded\n  - my answer" in edited
+    deleted = replace_capture(answered, 0, "his line", [])
+    assert "my answer" not in deleted
+
+
+def test_the_board_pages_folded_address_never_rewrites_a_capture(issues_md):
+    """The regression the reviewer caught, pinned in both directions.
+
+    The board payload's capture text is `_captures`' folded string -- his
+    bullet with a cycle's reply welded on -- and `app.js` builds the
+    *replacement* out of that same string. So an edit addressed by the
+    folded form would write `- Rated: his line my answer` with the reply
+    still underneath, and the next tap would fold that in and double it.
+    Convert does it across two files and deletes the source.
+
+    Refusing is what `main` did and what this keeps doing. It is a dead
+    button on an answered capture, which is a real gap and a much smaller
+    one than rewriting his sentence.
+    """
+    markdown = insert_captures(issues_md, ["his line"])
+    answered = reply_under_capture(markdown, 0, "his line", "my answer")
+    # The page no longer builds this string -- see
+    # `test_the_payloads_capture_address_still_resolves_when_answered` --
+    # but the refusal is what makes that safe, so it stays pinned.
+    folded = "his line my answer"
+    assert replace_capture(answered, 0, folded, ["Rated: his line my answer"]) is None
+    assert replace_capture(answered, 0, folded, []) is None
+    # And the address the page actually resolves still works.
+    assert replace_capture(answered, 0, "his line", ["reworded"]) is not None
+
+
+def test_convert_never_deletes_the_source_when_addressed_by_the_folded_form(issues_md):
+    """A move that carried the answer into the other file and deleted both
+    lines from this one. Same cause as the test above, one layer up.
+
+    What is left is `convert_capture`'s own pre-existing ordering -- it
+    copies into `dest` before it has established that the source address
+    resolves -- so the honest outcome is a copy in `ideas`, nothing removed
+    from `issues`, and the error message review already wrote for exactly
+    this case telling him where to find the duplicate. That ordering is
+    older than this change and is filed rather than fixed here.
+    """
+    markdown = insert_captures(issues_md, ["his line"])
+    answered = reply_under_capture(markdown, 0, "his line", "my answer")
+    folded = "his line my answer"
+    writes = []
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(answered, "1-x")), \
+            patch.object(nova_capture, "vault_write_path",
+                         side_effect=lambda path, content, if_rev=None: (
+                             writes.append((path, content)) or "written")):
+        ok, message = convert_capture("issues", 0, folded, "ideas")
+    assert not ok
+    assert "check ideas for a duplicate" in message
+    # The source was never rewritten, so his line and the answer under it
+    # are both still there -- the thing the reviewer found was that they
+    # were not.
+    assert [path for path, _ in writes] == [CAPTURE_TARGETS["ideas"]]

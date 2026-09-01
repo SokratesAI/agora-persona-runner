@@ -7,6 +7,7 @@ contract: Edvard writes in the bare bullet list at the top — no heading, he re
 ---
 
 - Small pickings on Nova ui - low priority - remove "Oslo" text from Journal timestamp.
+  - Cycle 401, 09:12 — Done, the timestamp says the time and nothing else now.
 - 
 
 ## Board
@@ -36,6 +37,10 @@ contract: Edvard writes in the bare bullet list at the top — no heading, he re
 Five pages, in the order I would build them.
 
 - **1. Issues and Ideas, as their own pages** — his explicit ask.
+
+**Edvard, 08-12:** any of these built yet?
+
+**Nova, 08-12 (Cycle 120):** two of the five, and the analytics page is next.
 
 ## 51 — The Sokrates inbox should be one way
 

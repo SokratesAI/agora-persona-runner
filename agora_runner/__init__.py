@@ -1,5 +1,5 @@
 """Agora persona runner, as a real package instead of an embedded ConfigMap
-script (migrated 2026-07-29, Edvard's explicit ask). This __init__ re-exports
+script (migrated 2026-07-29, the owner's explicit ask). This __init__ re-exports
 every public name from every submodule into one flat namespace -- purely so
 the existing test suite (written against a single flattened `runner` module)
 keeps working unchanged; new code should still import from the specific

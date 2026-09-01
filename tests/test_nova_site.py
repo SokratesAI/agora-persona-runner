@@ -38,7 +38,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_capture, nova_journal, nova_replies, nova_site, nova_sources, vault
+from agora_runner import nova_capture, nova_comments, nova_journal, nova_replies, nova_site, nova_sources, vault
 from agora_runner.config import OSLO
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.vault import VaultFiles
@@ -392,7 +392,7 @@ def test_asterisks_inside_backticks_stay_literal():
 
 
 def test_an_attachment_becomes_a_span_with_its_url_split_out():
-    """Edvard's uploaded picture, in a board write-up rather than a comment.
+    """The owner's uploaded picture, in a board write-up rather than a comment.
 
     A board comment is appended to the row's own write-up, which reaches
     the page as server-parsed spans -- so until this existed, the file he
@@ -714,6 +714,17 @@ def test_a_cycle_deep_link_resolves_on_a_cold_load(path):
     assert "text/html" in head
 
 
+@pytest.mark.parametrize("path", ["/conversation/c-2", "/conversation/c-2/"])
+def test_a_conversation_deep_link_resolves_on_a_cold_load(path):
+    """The URL a push notification opens. A tap is always a cold load --
+    the worker navigates a tab or opens a window at this path, so the
+    server has to answer it with the shell or the notification lands on a
+    404 instead of on the message it was announcing."""
+    status, head, _ = _get(path)
+    assert status == 200
+    assert "text/html" in head
+
+
 def test_static_assets_are_served_with_their_own_types():
     for path, expected in [
         ("/app.js", "javascript"),
@@ -814,6 +825,47 @@ def test_post_to_anything_but_capture_is_404():
         assert status == 404, path
 
 
+def test_the_watching_ping_reaches_agora_through_the_real_request_path():
+    """2026-08-25. His capture: *"now when i use the new chat i get alerted by
+    agora whenever a new message arrives."* The dock pings this every poll
+    tick so Agora withholds the buzz for a reply already on his screen."""
+    with patch.object(nova_site, "ask_watching", return_value=(True, "watching")) as ping:
+        status, _, body = _post("/api/ask/watching", {})
+    assert status == 200
+    assert json.loads(body)["watching"] is True
+    ping.assert_called_once_with()
+
+
+def test_a_dead_agora_never_makes_the_watching_ping_an_error_on_his_screen():
+    """The page fires this on a timer and paints nothing from it. The worst
+    case of a failure is a notification he was going to get anyway, so a 502
+    here would be a page-load error every four seconds for no gain."""
+    with patch.object(nova_site, "ask_watching", side_effect=RuntimeError("agora is down")):
+        status, _, body = _post("/api/ask/watching", {})
+    assert status == 200
+    assert json.loads(body)["watching"] is False
+
+
+def test_the_dock_can_vouch_for_a_conversation_that_is_not_the_ask_thread():
+    """The switcher half of the same capture. `ask_watching` names no
+    conversation -- the server resolves the tagged one -- so a thread he
+    switched to had no way to say it was on his screen."""
+    with patch.object(nova_site, "conversation_watching",
+                      return_value=(True, "watching")) as ping:
+        status, _, body = _post("/api/conversations/watching", {"id": "c-1"})
+    assert status == 200
+    assert json.loads(body)["watching"] is True
+    ping.assert_called_once_with("c-1")
+
+
+def test_a_dead_agora_never_makes_the_conversation_vouch_an_error_either():
+    with patch.object(nova_site, "conversation_watching",
+                      side_effect=RuntimeError("agora is down")):
+        status, _, body = _post("/api/conversations/watching", {"id": "c-1"})
+    assert status == 200
+    assert json.loads(body)["watching"] is False
+
+
 def test_a_capture_reaches_the_vault_through_the_real_request_path():
     with patch.object(nova_site, "capture", return_value=(True, "captured to issues")) as cap:
         status, _, body = _post("/api/capture", {"target": "issues", "text": "the app needs a restart"})
@@ -822,7 +874,27 @@ def test_a_capture_reaches_the_vault_through_the_real_request_path():
     # The unrated default reaches `capture` explicitly rather than by
     # omission, so this pins that an unrated capture still writes his words
     # and nothing else -- tests/test_board_priority.py covers a rated one.
-    cap.assert_called_once_with("issues", "the app needs a restart", "")
+    cap.assert_called_once_with("issues", "the app needs a restart", "", one_item=False)
+
+
+@pytest.mark.parametrize("sent,expected", [
+    (True, True),
+    (False, False),
+    # Not truthiness. A client that sends the string or the number must not
+    # silently glue a whole paste into one item -- the default is one bullet
+    # per line and only an explicit `true` may change it.
+    ("true", False),
+    (1, False),
+    (None, False),
+])
+def test_only_an_explicit_true_keeps_a_paste_as_one_item(sent, expected):
+    payload = {"target": "issues", "text": "one\ntwo"}
+    if sent is not None:
+        payload["oneItem"] = sent
+    with patch.object(nova_site, "capture", return_value=(True, "captured to issues")) as cap:
+        status, _, _ = _post("/api/capture", payload)
+    assert status == 200
+    cap.assert_called_once_with("issues", "one\ntwo", "", one_item=expected)
 
 
 def test_editing_a_capture_reaches_the_vault_through_the_real_request_path():
@@ -917,6 +989,113 @@ def test_a_successful_amend_invalidates_the_board_it_changed(path):
     )
 
 
+def test_converting_a_capture_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "convert_capture", return_value=(True, "moved to ideas")) as conv:
+        status, _, body = _post(
+            "/api/capture/convert",
+            {"from": "notes", "to": "ideas", "index": 1, "original": "actually an idea"},
+        )
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    conv.assert_called_once_with("notes", 1, "actually an idea", "ideas")
+
+
+@pytest.mark.parametrize("payload", [
+    {"from": "../../etc/passwd", "to": "ideas", "index": 0, "original": "x"},
+    {"from": "notes", "to": "projects/sokrates/projects/nova/ideas.md", "index": 0, "original": "x"},
+    {"to": "ideas", "index": 0, "original": "x"},
+    {"from": "notes", "index": 0, "original": "x"},
+    # Converting a line into the file it is already in is a no-op the page
+    # should never send and the server should never carry out -- it would
+    # write the copy and then delete the address it had just shifted.
+    {"from": "notes", "to": "notes", "index": 0, "original": "x"},
+    {"from": "notes", "to": "ideas", "index": 0, "original": ""},
+    {"from": "notes", "to": "ideas", "index": 0, "original": 42},
+    {"from": "notes", "to": "ideas", "original": "x"},
+    {"from": "notes", "to": "ideas", "index": True, "original": "x"},
+    {"from": "notes", "to": "ideas", "index": -1, "original": "x"},
+    {"from": "notes", "to": "ideas", "index": "0", "original": "x"},
+])
+def test_a_convert_that_could_address_the_wrong_document_is_rejected(payload):
+    with patch.object(nova_site, "convert_capture") as conv:
+        status, _, _ = _post("/api/capture/convert", payload)
+    assert status == 400
+    conv.assert_not_called()
+
+
+def test_a_convert_whose_address_went_stale_is_a_conflict_rather_than_a_failure():
+    with patch.object(nova_site, "convert_capture",
+                      return_value=(False, "that capture is no longer in the list")):
+        status, _, _ = _post(
+            "/api/capture/convert",
+            {"from": "notes", "to": "ideas", "index": 0, "original": "gone"},
+        )
+    assert status == 409
+
+
+def test_a_half_done_convert_is_502_even_though_its_message_says_no_longer():
+    """`_post_amend`'s 409 means "nothing happened, re-read". Here the same
+    substring can appear *after* the destination write landed, and answering
+    409 would tell the page nothing changed while a copy sits in `dest`.
+    Reviewer finding on this change."""
+    with patch.object(nova_site, "convert_capture", return_value=(
+            False, "copied to ideas, but could not remove it from notes "
+                   "(that capture is no longer in the list) — it is in both, "
+                   "delete the notes one")):
+        status, _, _ = _post(
+            "/api/capture/convert",
+            {"from": "notes", "to": "ideas", "index": 0, "original": "x"},
+        )
+    assert status == 502, "a landed destination write must not read as nothing happened"
+
+
+def test_an_exception_after_the_destination_write_still_drops_both_pages():
+    """The write may already have happened when the exception is raised, and a
+    cached page would hide the copy that really is there."""
+    nova_site.reset_cache()
+    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
+    nova_site._cache["board:ideas"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
+    with patch.object(nova_site, "convert_capture", side_effect=RuntimeError("boom")):
+        status, _, _ = _post(
+            "/api/capture/convert",
+            {"from": "notes", "to": "ideas", "index": 0, "original": "x"},
+        )
+    assert status == 502
+    assert "notes" not in nova_site._cache
+    assert "board:ideas" not in nova_site._cache
+
+
+def test_a_convert_drops_both_pages_it_touched_even_when_it_half_failed():
+    """The half-done state -- copied, not removed -- has to leave both pages
+    cold. A cached destination would keep the copy invisible while the
+    message says it is in both files."""
+    nova_site.reset_cache()
+    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
+    nova_site._cache["board:ideas"] = ({"captures": ["stale"]}, "{}", 'W/"x"', 0.0)
+    with patch.object(nova_site, "convert_capture",
+                      return_value=(False, "copied to ideas, but ... it is in both")):
+        _post("/api/capture/convert",
+              {"from": "notes", "to": "ideas", "index": 0, "original": "x"})
+    assert "notes" not in nova_site._cache
+    assert "board:ideas" not in nova_site._cache
+
+
+@pytest.mark.parametrize("path", ["/api/capture", "/api/capture/edit", "/api/capture/delete"])
+def test_writing_a_note_drops_the_notes_page_not_a_board_that_never_existed(path):
+    """`board:notes` has never existed -- notes are not a board -- and for
+    every write but the first this endpoint only ever popped that key. A
+    note edited or deleted from the app left `/notes` serving the copy from
+    before the write."""
+    nova_site.reset_cache()
+    nova_site._cache["notes"] = ({"notes": ["stale"]}, "{}", 'W/"x"', 0.0)
+    with patch.object(nova_site, "capture", return_value=(True, "ok")), \
+            patch.object(nova_site, "amend", return_value=(True, "ok")):
+        _post(path, {"target": "notes", "index": 0, "original": "x", "text": "y"})
+    assert "notes" not in nova_site._cache, (
+        "the notes page would reload to the copy from before the write"
+    )
+
+
 # Parametrized over the dict rather than a literal list: this test was
 # `["issues", "ideas"]` and its name said "both", so adding `notes` as a
 # third target left a test that still passed, still read as complete, and
@@ -964,7 +1143,7 @@ def test_an_oversized_body_is_refused_without_being_read():
 
 
 def test_a_body_at_the_limit_is_still_accepted():
-    """The cap is a memory bound, not an opinion about how much Edvard may
+    """The cap is a memory bound, not an opinion about how much the owner may
     type, so the boundary itself has to pass."""
     text = "x" * (nova_capture.MAX_BODY_BYTES - 200)
     with patch.object(nova_site, "capture", return_value=(True, "ok")) as cap:
@@ -1032,7 +1211,8 @@ def test_start_nova_site_binds_and_serves_the_real_handler():
     in the bridge all called `_run()` directly and left `start()` covered by
     nothing; this is the same seam, so it gets the real function."""
     with patch.object(nova_site, "NOVA_PORT", 0), \
-            patch.object(nova_site, "warm_cache"):
+            patch.object(nova_site, "warm_cache"), \
+            patch.object(nova_site, "recover_replies"):
         server = nova_site.start_nova_site()
     try:
         assert server.RequestHandlerClass is nova_site.NovaSiteHandler
@@ -1078,7 +1258,8 @@ def test_site_main_serves_until_sigterm_then_releases_the_port(site_main):
 
     def capture_server():
         with patch.object(nova_site, "NOVA_PORT", 0), \
-                patch.object(nova_site, "warm_cache"):
+                patch.object(nova_site, "warm_cache"), \
+                patch.object(nova_site, "recover_replies"):
             server = nova_site.start_nova_site()
         served.append(server)
         return server
@@ -1106,7 +1287,8 @@ def test_site_main_closes_the_port_even_if_the_loop_raises(site_main):
 
     def capture_server():
         with patch.object(nova_site, "NOVA_PORT", 0), \
-                patch.object(nova_site, "warm_cache"):
+                patch.object(nova_site, "warm_cache"), \
+                patch.object(nova_site, "recover_replies"):
             server = nova_site.start_nova_site()
         served.append(server)
         return server
@@ -1163,7 +1345,7 @@ def test_the_site_entrypoint_script_reaches_site_main():
     assert entrypoint.main is site_main_module.main
 
 
-# --- Cycle 56: the emoji Edvard asked for, and the collapsed card ---
+# --- Cycle 56: the emoji the owner asked for, and the collapsed card ---
 
 
 def _entry(body, title=""):
@@ -1232,15 +1414,91 @@ def test_the_payload_carries_the_emoji_the_client_reads():
     assert all(entry.get("emoji") for entry in payload["entries"])
 
 
+# The marker that lets one line out of the ban below.
+NOT_PROSE = "not-prose"
+
+
+def truncations_in(source):
+    """Lines of JavaScript that cut a string and did not say why.
+
+    The rule this serves is that a journal card's prose is hidden by CSS
+    and never cut client-side -- a server-side or client-side truncation
+    puts the text out of reach of find-in-page, and cutting it mid-sentence
+    is what the owner reported on 2026-08-09.
+
+    It stays a blunt, whole-file ban on `slice(0,` and `substring(` on
+    purpose. Cycle 323 first tried narrowing it to receivers that *read*
+    like entry text, and the reviewer took it apart in four lines: a
+    truncation survives that check by being written as
+    `entry.body.trim().slice(0, 500)`, or behind a ternary, or assigned to
+    a local called `lead` first, or wrapped in a two-line `clamp(s)`
+    helper. Every one of those cuts the prose and none of them is a bare
+    keyword-named receiver. A guard that catches only the laziest spelling
+    of a bug is worse than none, because it reads as cover.
+
+    So completeness is kept and the false positive gets an explicit,
+    visible escape hatch instead: a line may carry the token if it also
+    carries a `not-prose` comment. That is a sentence somebody has to
+    write on purpose and a reviewer sees in the diff, which is what makes
+    it different from widening the pattern until the red goes away. The
+    one use today is `buildPrioPicker`'s glyph split, which turned `main`
+    red on 2026-08-22 over `label.slice(0, sp)` -- a priority chip cutting
+    `🟠 High` down to `🟠`, no reader's sentence involved.
+    """
+    # Comments become blank lines rather than vanishing, so a line index
+    # here is the same line index in the file the caller is reading, and
+    # the marker itself is never mistaken for code.
+    stripped = re.sub(
+        r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), source, flags=re.DOTALL
+    )
+    found = []
+    for number, (code_line, raw) in enumerate(
+        zip(stripped.split("\n"), source.split("\n")), start=1
+    ):
+        if "slice(0," not in code_line.replace(" ", "") and "substring(" not in code_line:
+            continue
+        if NOT_PROSE in raw:
+            continue
+        found.append(f"{number}: {raw.strip()}")
+    return found
+
+
+def test_the_truncation_guard_can_actually_fail():
+    """The guard above is a regex over a file that happens to contain no
+    matches, so nothing in `test_a_collapsed_card_hides_the_body_without_
+    dropping_it` would notice if the pattern itself were wrong -- it would
+    pass green forever. The reviewer raised that on runner#293 and it is
+    the same shape as the `lint_entry | tail` failure: a guard reporting
+    itself working while guarding nothing.
+
+    Each of these is a real way to cut a card's prose, and four of the
+    five defeated the narrower version this replaced.
+    """
+    assert truncations_in("var x = entry.body.slice(0, 200);")
+    assert truncations_in("var x = entry.body.trim().slice(0, 500);")
+    assert truncations_in("var x = (d ? d.text : firstParagraph(e.blocks)).slice(0, 200);")
+    assert truncations_in("var lead = firstParagraph(entry.blocks); var y = lead.slice(0, 240);")
+    assert truncations_in("function clamp(s) { return s.length > n ? s.slice(0, n) : s; }")
+    assert truncations_in("var x = brief.substring(0, 80);")
+    # Not a truncation, and not a hole in the pattern: the exemption is a
+    # comment on the line, which a reviewer reads.
+    assert truncations_in("return label.slice(0, sp); // not-prose: a priority glyph") == []
+    assert truncations_in("var x = list.map(f);") == []
+    # A commented-out truncation is not a truncation, and a marker inside a
+    # block comment does not license the line after it.
+    assert truncations_in("/* entry.body.slice(0, 5) */") == []
+    assert truncations_in("/* not-prose */\nvar x = entry.body.slice(0, 5);")
+
+
 def test_a_collapsed_card_hides_the_body_without_dropping_it():
-    """Edvard asked for cards that collapse to 2-3 lines, then for a drawer
+    """The owner asked for cards that collapse to 2-3 lines, then for a drawer
     within a drawer. Every level is hidden by a class and none of them is cut
     -- all the text stays in the DOM. A server-side truncation would have been
     the easy version and would have put the prose out of reach of find-in-page.
 
     The line clamp this used to assert is deliberately gone. The brief now
     arrives already cut on a sentence boundary, so a clamp could only break it
-    again in the middle, which is the thing Edvard reported on 2026-08-09."""
+    again in the middle, which is the thing the owner reported on 2026-08-09."""
     css = open(
         os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "style.css"),
         encoding="utf-8",
@@ -1260,11 +1518,13 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
         os.path.join(os.path.dirname(nova_site.PUBLIC_DIR), "nova_public", "app.js"),
         encoding="utf-8",
     ).read()
-    code = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
-    assert "substring(" not in code and "slice(0," not in code
+    assert truncations_in(source) == [], (
+        "app.js truncates a string; if it is not entry prose, say so with "
+        f"a `{NOT_PROSE}` comment on the line: {truncations_in(source)}"
+    )
 
 
-# --- The `Needs Edvard` box, and the emphasis that kept it on screen -------
+# --- The `Needs Edvard` box, and the emphasis that kept it on screen -------  (not-prose: quoting a literal)
 
 
 @pytest.mark.parametrize(
@@ -1272,7 +1532,7 @@ def test_a_collapsed_card_hides_the_body_without_dropping_it():
     ["**Nothing.**", "*Nothing*", "__none__", "`nothing`", "**None**", "Nothing.", "  ", ""],
 )
 def test_a_bolded_nothing_is_still_nothing(text):
-    """Edvard, issues.md 2026-08-09: "The 'needs Edvard' box should not show
+    """The owner, issues.md 2026-08-09: "The 'needs the owner' box should not show
     when nothing is expected."
 
     The section was compared literally, so `Nothing.` was empty and
@@ -1316,6 +1576,15 @@ def test_a_real_ask_is_not_mistaken_for_an_empty_one(text):
         # A parenthetical naming the repo instead of a prefix.
         ("#38 (runner)", [("#38 (runner)", "agora-persona-runner/pull/38")]),
         ("#40 (SokratesAI/agora)", [("#40 (SokratesAI/agora)", "agora/pull/40")]),
+        # The four prefixes that rendered as plain text before the org
+        # list existed -- measured over the 673 entries the site served
+        # on 2026-08-29: sokrates-docs 6, vault-bridge 2, whatsapp-bridge
+        # 1, operator 1. The PR numbers are the ones those references
+        # actually carry in the journal.
+        ("sokrates-docs#12", [("sokrates-docs#12", "sokrates-docs/pull/12")]),
+        ("vault-bridge#4", [("vault-bridge#4", "vault-bridge/pull/4")]),
+        ("whatsapp-bridge#4", [("whatsapp-bridge#4", "whatsapp-bridge/pull/4")]),
+        ("operator#2", [("operator#2", "operator/pull/2")]),
     ],
 )
 def test_a_reference_resolves_to_the_repo_it_names(field, expected):
@@ -1352,6 +1621,26 @@ def test_a_parenthetical_that_names_no_repo_is_left_alone(field):
     assert "".join(s["text"] for s in spans) == field
 
 
+def test_every_name_in_the_list_resolves_to_itself():
+    """`_ORG_REPOS` is built into `_REPO_ALIASES` by a comprehension, so this
+    pins that construction and nothing about GitHub. It cannot see a name in
+    the list that the org does not have -- the list is a snapshot and there is
+    no offline instrument for its accuracy, which is filed rather than
+    pretended away here."""
+    for name in nova_journal._ORG_REPOS:
+        assert nova_journal._repo_url(name) == "SokratesAI/" + name
+
+
+def test_every_nickname_points_at_a_name_in_the_list():
+    """The shorthand is mine and cannot be derived, so the one thing worth
+    pinning about it is that it does not point somewhere the list has never
+    heard of -- a nickname resolving to a dead name is a confidently wrong
+    link, which is exactly what the unrecognised-prefix rule below refuses to
+    produce. Like the test above, this compares two things in this file."""
+    for nickname, target in nova_journal._REPO_NICKNAMES.items():
+        assert target in nova_journal._ORG_REPOS, nickname
+
+
 def test_an_unrecognised_prefix_becomes_no_link_at_all():
     """A confidently wrong link is worse than plain text: it looks
     authoritative and goes to another project's PR of the same number."""
@@ -1362,7 +1651,7 @@ def test_an_unrecognised_prefix_becomes_no_link_at_all():
 
 def test_no_pr_field_in_the_live_journal_loses_a_character(journal_md):
     """The spans must reassemble the field exactly. This is the invariant
-    that makes "leave it as is" (Edvard's words) checkable rather than
+    that makes "leave it as is" (the owner's words) checkable rather than
     asserted -- linkifying is allowed to add structure and never to edit."""
     fields = {e["pr"] for e in parse_journal_file(journal_md) if e["pr"]}
     assert fields
@@ -1377,7 +1666,7 @@ def test_the_payload_carries_the_pr_spans_the_client_reads():
     assert all("prSpans" in entry for entry in payload["entries"])
 
 
-# --- The `Board:` field becomes links into Edvard's own boards -------------
+# --- The `Board:` field becomes links into the owner's own boards -------------
 
 
 @pytest.mark.parametrize(
@@ -1400,7 +1689,7 @@ def test_a_board_reference_resolves_to_the_page_that_holds_it(field, expected):
 def test_a_board_field_with_no_word_and_number_makes_no_link(field):
     """A bare `#68` is the one shape that must stay plain text. In the `PR:`
     field a bare number has exactly one meaning; here it could be either
-    board, and the two are different pages -- so guessing sends Edvard to a
+    board, and the two are different pages -- so guessing sends the owner to a
     real write-up that is not the one the cycle worked on."""
     spans = parse_board_refs(field)
     assert not [s for s in spans if s["kind"] == "link"]
@@ -1506,7 +1795,7 @@ def _css_rule(selector):
 
 
 def test_the_digest_summary_is_the_same_colour_as_the_prose_it_summarises():
-    """Edvard, issues.md 2026-08-09: "the Digest is hard to read with grey
+    """The owner, issues.md 2026-08-09: "the Digest is hard to read with grey
     against the blue background. White is better like the actual journal."
 
     Worth a test rather than a look, because this is the one change of the
@@ -1523,7 +1812,7 @@ def test_the_digest_summary_is_the_same_colour_as_the_prose_it_summarises():
 def test_a_digest_line_carries_its_bold_as_spans_not_asterisks():
     """Nearly every digest line opens with a bolded sentence. The card
     rendered `text` verbatim, so it was the only text on the page showing
-    its own markup -- and it is the same line Edvard called hard to read.
+    its own markup -- and it is the same line the owner called hard to read.
     Found by rendering the live files rather than the fixtures, which do
     not happen to contain a bold digest line.
 
@@ -1549,7 +1838,7 @@ def test_a_digest_line_carries_its_bold_as_spans_not_asterisks():
 
 
 def test_two_digest_lines_with_no_blank_line_between_them_are_two_cards():
-    """A missing blank line cost Edvard a whole card without anything going
+    """A missing blank line cost the owner a whole card without anything going
     red. The live file had Cycle 66 and Cycle 65 separated by a single
     newline, so the digest parsed 21 cards from 22 lines: Cycle 65 vanished
     and Cycle 66's card ended on Cycle 65's closing sentence. The card
@@ -1599,7 +1888,7 @@ def test_a_cycle_line_glued_under_prose_still_gets_its_own_card():
 
 # --- The brief, and the drawer within a drawer ----------------------------
 #
-# Edvard, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
+# the owner, issues.md 2026-08-09: "I need a 2-3 line short precise Digest for
 # each cycle as a title for each journey card ... As short as possible, max 3
 # sentences ... Then, when a journey card is opened, the Digest is revealed.
 # Below that, a 'read the full journal' button to expand the full journal ...
@@ -1641,7 +1930,7 @@ def test_brief_and_rest_reconstruct_the_whole_summary():
 
 def test_a_bold_opening_sentence_is_the_whole_brief():
     """The house style for a digest line is a bolded opening sentence saying
-    what changed for Edvard -- all 9 live lines have one. That sentence was
+    what changed for the owner -- all 9 live lines have one. That sentence was
     written to be the headline, so pulling a second sentence in after it
     whenever the headline was short is the opposite of "as short as possible"."""
     text = "**Short headline.** A second sentence that the budget would otherwise have room for."
@@ -1651,7 +1940,7 @@ def test_a_bold_opening_sentence_is_the_whole_brief():
 
 
 def test_a_bold_label_is_not_the_report_cards_whole_title():
-    """Edvard, issues #86: "the 8cycle reports have just the word tl;dr as
+    """The owner, issues #86: "the 8cycle reports have just the word tl;dr as
     title". Report 242's first paragraph really is shaped like this, and
     `split_brief` alone returns `**TL;DR.**` and nothing else."""
     text = (
@@ -1803,7 +2092,7 @@ def test_a_comment_is_audited_with_what_was_typed():
 )
 def test_a_malformed_comment_is_400_and_never_touches_the_vault(payload):
     """400 rather than 502: these are the client asking for something
-    wrong, not the vault failing, and the difference is what tells Edvard
+    wrong, not the vault failing, and the difference is what tells the owner
     whether retrying is worth anything."""
     with patch.object(nova_site, "add_comment") as add:
         status, _, _ = _post("/api/comment", payload)
@@ -1854,7 +2143,7 @@ def test_an_oversized_comment_is_refused_before_it_is_read():
 
 # --- one document per entry (issues.md: "stop writing to a huge file") ----
 #
-# Edvard asked for the journal to stop being one 291KB vault document, so
+# the owner asked for the journal to stop being one 291KB vault document, so
 # entries now live one-per-document under `JOURNAL_DIR`. The invariant the
 # whole migration rests on is that the split is *lossless*: joining the
 # per-entry documents back together must parse to exactly what the
@@ -2075,6 +2364,45 @@ def test_a_good_cost_ledger_puts_a_runtime_on_the_card_it_belongs_to():
         payload = nova_site.journal_payload()
     got = {e["cycle"]: e.get("runtimeSeconds") for e in payload["entries"]}
     assert got == {2: 940, 1: 600}
+
+
+def test_a_runtime_badge_survives_the_card_showing_the_wake_time():
+    """The combination the whole test suite could not reach.
+
+    `conftest` blocks the network, so `cycle_starts` returns `{}` in every
+    test that does not patch it and the wake-time overlay is inert -- which
+    means the positive control above passes whether or not this feature
+    exists. `cycle_runtimes` joins an entry to the nearest ledger session
+    *preceding* its stamp, and that is only correct while the stamp falls
+    inside the run. A wake time falls a few seconds *before* it, so without
+    the written-stamp split each card takes the previous cycle's duration
+    and the oldest takes none. Found by review, not by me.
+    """
+    files = {
+        JOURNAL_DIR + "002-cycle-2.md": "### 2026-08-15 02:14 (Oslo) — Cycle 2\n\nNewest.",
+        JOURNAL_DIR + "001-cycle-1.md": "### 2026-08-15 01:10 (Oslo) — Cycle 1\n\nOldest.",
+    }
+    mtimes = {
+        JOURNAL_DIR + "002-cycle-2.md": 1786752840000,   # 2026-08-15 02:14 Oslo
+        JOURNAL_DIR + "001-cycle-1.md": 1786749000000,   # 2026-08-15 01:10 Oslo
+    }
+    ledger = json.dumps({"cycles": [
+        {"startedAt": "2026-08-14T23:00:00Z", "durationSeconds": 600.0},   # 01:00 Oslo
+        {"startedAt": "2026-08-15T00:00:00Z", "durationSeconds": 940.0},   # 02:00 Oslo
+    ]})
+    # Each conversation is created seconds before its own session starts.
+    starts = {1: "2026-08-14T22:59:30Z", 2: "2026-08-14T23:59:30Z"}
+    nova_site.reset_cache()
+    with patch.object(nova_sources, "vault_bulk_fetch",
+                      return_value=(VaultFiles(files), mtimes)), \
+            patch.object(nova_site, "cost_ledger_json", return_value=ledger), \
+            patch.object(nova_site, "cycle_starts", return_value=starts):
+        payload = nova_site.journal_payload()
+    by_cycle = {e["cycle"]: e for e in payload["entries"]}
+    assert by_cycle[2]["time"] == "01:59", "the card shows the wake time"
+    assert by_cycle[1]["time"] == "00:59"
+    assert {c: e.get("runtimeSeconds") for c, e in by_cycle.items()} == {2: 940, 1: 600}
+    nova_site.reset_cache()
 
 
 def test_the_journal_never_reads_the_emptied_archive_again():
@@ -2349,7 +2677,7 @@ def test_the_single_entry_fetch_normalises_the_same_way_the_folder_does(monkeypa
     # The reply worker's fast path. Without this it parses to zero
     # entries and falls back to the full journal, where -- before this
     # change -- the entry was absorbed into its neighbour and so was not
-    # found there either, leaving Edvard's reply written with no memory
+    # found there either, leaving the owner's reply written with no memory
     # of the entry he was replying to.
     from agora_runner import nova_sources
 
@@ -2490,14 +2818,22 @@ def test_gzip_with_q_nought_means_no_gzip(journal_md):
 
 
 def test_a_body_too_small_to_be_worth_it_is_left_alone():
-    """`/api/comments` is 15 bytes on the live pod and gzips to 35.
-    Compression is not free below the threshold, it is negative."""
+    """Compression is not free below the threshold, it is negative.
+
+    The docstring used to say `/api/comments` is 15 bytes on the live pod.
+    It is 195,114 (57,466 gzipped, measured 2026-08-28 21:37 Oslo) -- the
+    endpoint is stubbed empty here precisely so the threshold, not the
+    endpoint, is what this test is about.
+    """
     with patch.object(nova_site, "comments_payload", return_value={}):
         status, head, body = _get("/api/comments", BROWSER_ACCEPT_ENCODING)
     assert status == 200
     assert "Content-Encoding" not in head
     assert len(body) < MIN_COMPRESS_BYTES
-    assert json.loads(body) == {}
+    # `version` is the etag, added by the handler so the client can echo it.
+    served = json.loads(body)
+    served.pop("version")
+    assert served == {}
 
 
 def test_vary_is_sent_even_when_the_response_came_back_plain(journal_md):
@@ -2576,7 +2912,7 @@ def test_accept_encoding_is_parsed_not_pattern_matched(header, expected):
     assert nova_site.accepts_gzip(header) is expected
 
 
-# --- Replying to Needs Edvard over HTTP (2026-08-10) ------------------------
+# --- Replying to Needs Edvard over HTTP (2026-08-10) ------------------------  (not-prose: quoting a literal)
 #
 # `{"target": "needs"}` instead of a `cycle`. The boundary is the same one
 # the rest of this endpoint holds: `target` is checked against a one-value
@@ -2727,14 +3063,56 @@ def test_the_comments_endpoint_says_which_replies_are_still_coming():
     assert status == 200
     payload = json.loads(body)
     assert payload["byCycle"]["57"][0]["replyPending"] is True
-    assert payload["byCycle"]["57"][0]["reply"] == ""
+    # "no reply yet" and "the reply, once" are both read off `replies` now;
+    # the legacy `reply` mirror of `replies[0]` does not go on the wire.
+    assert payload["byCycle"]["57"][0]["replies"] == []
     answered = payload["byCycle"]["55"][0]
     assert answered["replyPending"] is False
-    assert answered["reply"] == "here you go"
+    assert [r["text"] for r in answered["replies"]] == ["here you go"]
+
+
+def test_the_comments_payload_does_not_send_the_first_reply_twice():
+    """`reply`/`replyStamp` are `replies[0]` again, and the page reads `replies`.
+
+    Measured on the live pod 2026-08-28: 155 of 159 comments carried a
+    `reply` byte-identical to a text already in their own `replies`, a
+    quarter of the payload. The route is uncached and the page fetches it
+    on every navigation, so the copy was paid on every page the owner
+    opened. `parse_comments` still derives both fields -- `_verify_replied`
+    and `nova_replies` read them server-side -- so this pins the wire, not
+    the parser.
+    """
+    stored = (
+        "## New\n\n"
+        "### Needs Edvard \u00b7 2026-08-09 08:20\n\ngo ahead\n\n"
+        "#### Nova \u00b7 2026-08-09 08:22\n\non it\n\n"
+        "### Cycle 55 \u00b7 2026-08-09 13:10\n\nalready answered\n\n"
+        "#### Nova \u00b7 2026-08-09 13:12\n\nhere you go\n"
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={}), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    comment = json.loads(body)["byCycle"]["55"][0]
+    assert "reply" not in comment and "replyStamp" not in comment
+    # The reply itself is still there, once, where the page reads it.
+    assert [r["text"] for r in comment["replies"]] == ["here you go"]
+    # The parser this endpoint is built on still answers both, so the
+    # server-side readers of `reply` are untouched by the wire change.
+    parsed = nova_comments.parse_comments(stored)
+    assert any(c["reply"] == "here you go" for c in parsed)
+    # `needs` is the other list on this payload and carries the same
+    # comments, so it takes the same treatment -- mutation-checked, because
+    # stripping only `byCycle` passed the whole suite.
+    needs = json.loads(body)["needs"]
+    assert [n["text"] for n in needs] == ["go ahead"]
+    assert "reply" not in needs[0] and "replyStamp" not in needs[0]
+    assert [r["text"] for r in needs[0]["replies"]] == ["on it"]
 
 
 def test_a_long_wait_is_flagged_rather_than_called_a_reply_being_written():
-    """Edvard, on cycle 81: "Nova is replying..." should only be visible if
+    """The owner, on cycle 81: "Nova is replying..." should only be visible if
     its actually working on replying". Past the threshold something is
     holding it up. Which thing is deliberately not asserted here -- see
     comments_payload and issue #80."""
@@ -2815,7 +3193,7 @@ def test_a_reply_that_failed_says_so_instead_of_vanishing():
 
 # --- the card's time, measured instead of typed --------------------------
 #
-# Edvard, issues.md 2026-08-10: "I actually see in Agora that the cycle 86
+# the owner, issues.md 2026-08-10: "I actually see in Agora that the cycle 86
 # did start precisely at 19:00 at only ran for 7 minutes. But the Journal
 # said 19:30. Thats wierd."
 #
@@ -2842,7 +3220,7 @@ def test_the_entry_time_comes_from_the_documents_mtime_not_the_typed_heading():
 
 
 def test_a_heading_with_no_cycle_number_keeps_its_typed_stamp():
-    # Edvard's own messages and the odd addendum carry no cycle number, so
+    # The owner's own messages and the odd addendum carry no cycle number, so
     # there is no file to join them to. Borrowing another entry's time
     # would be worse than the guess it replaced.
     times = {86: [("2026-08-10", "19:06")]}
@@ -2886,7 +3264,165 @@ def test_a_document_with_no_mtime_is_skipped_rather_than_crashing():
     assert entry_times({JOURNAL_DIR + "093-cycle-86.md": None}) == {}
 
 
-# Edvard, issues.md 2026-08-10: "Nova takes a long time to load when i
+# The owner, capture 2026-08-24: "I want the time slot on the journals to be
+# when they started, as it seems to show when they ended."
+#
+# He is reading it right, and it is the mtime rule above working as designed:
+# a cycle writes its entry in its last few minutes, so the measured stamp is
+# measured at the wrong end. The Agora conversation a cycle runs inside is
+# created before the session opens, which is the other end and is measured too.
+
+
+def test_the_card_shows_when_the_cycle_woke_not_when_it_filed():
+    from agora_runner.nova_journal import entry_times, with_start_times
+
+    # Cycle 381 woke at 20:40 Oslo and filed at 20:54.
+    times = entry_times({JOURNAL_DIR + "437-cycle-381.md": 1787597640000})
+    assert times == {381: [("2026-08-24", "20:54")]}
+
+    stamps = with_start_times(times, {381: "2026-08-24T18:40:09.019Z"})
+    entry = parse_journal(
+        "### 2026-08-24 20:54 (Oslo) — Cycle 381 — A number of its own\n\nProse.",
+        stamps,
+    )[0]
+    assert (entry["date"], entry["time"]) == ("2026-08-24", "20:40")
+
+
+def test_a_cycle_with_no_conversation_keeps_the_write_time():
+    # Conversations are the owner's to delete, and the archive reaches back
+    # further than Agora's list does. Losing a start time must cost the card
+    # its precision, never its stamp.
+    from agora_runner.nova_journal import with_start_times
+
+    times = {86: [("2026-08-10", "19:06")]}
+    assert with_start_times(times, {381: "2026-08-24T18:40:09.019Z"}) == times
+    assert with_start_times(times, {}) == times
+
+
+def test_an_unparseable_created_at_keeps_the_write_time():
+    from agora_runner.nova_journal import with_start_times
+
+    times = {86: [("2026-08-10", "19:06")]}
+    assert with_start_times(times, {86: "not a timestamp"}) == times
+    assert with_start_times(times, {86: None}) == times
+
+
+def test_a_naive_created_at_is_read_as_utc_and_shown_in_oslo():
+    # Agora stamps UTC with a `Z`; every other reader of these fields in the
+    # package assumes UTC when the offset is missing, and disagreeing here
+    # would move a card by two hours rather than by the fourteen minutes
+    # this change is about.
+    from agora_runner.nova_journal import with_start_times
+
+    assert with_start_times(
+        {381: [("2026-08-24", "20:54")]}, {381: "2026-08-24T18:40:09"}
+    ) == {381: [("2026-08-24", "20:40")]}
+
+
+def test_both_entries_of_a_cycle_that_wrote_twice_take_the_one_wake():
+    # Two documents, two write times, one run -- and the run woke once. The
+    # list keeps its length so `parse_journal`'s nth-entry indexing is
+    # untouched.
+    from agora_runner.nova_journal import with_start_times
+
+    times = {81: [("2026-08-10", "14:48"), ("2026-08-10", "14:46")]}
+    assert with_start_times(times, {81: "2026-08-10T12:10:00Z"}) == {
+        81: [("2026-08-10", "14:10"), ("2026-08-10", "14:10")],
+    }
+
+
+def test_a_conversation_for_a_cycle_that_wrote_nothing_adds_no_entry():
+    # `journal_payload` reads `times.keys()` as the answer to "which cycles
+    # wrote an entry" and builds the missing-cycle list from it. A run that
+    # wrote nothing has a conversation and must not gain a card.
+    from agora_runner.nova_journal import with_start_times
+
+    stamps = with_start_times(
+        {381: [("2026-08-24", "20:54")]},
+        {379: "2026-08-24T17:40:07.030Z", 381: "2026-08-24T18:40:09.019Z"},
+    )
+    assert set(stamps) == {381}
+
+
+def test_the_stall_alarm_still_keys_on_the_write_time_not_the_wake_time():
+    """The card moved; `lastWrittenAt` must not.
+
+    `stall_notice.due` keys the "Nova has stopped writing" push on this
+    field, and `_running_now` measures silence against it. A wake time here
+    reads as up to 45 more minutes of silence than actually happened --
+    which is the false stall Cycle 376 spent a whole run removing, at a
+    cadence where two intervals is already shorter than one cycle.
+    """
+    from agora_runner.nova_journal import build_status, parse_journal
+
+    markdown = "### 2026-08-24 20:54 (Oslo) — Cycle 381 — A number of its own\n\nProse."
+    written = {381: [("2026-08-24", "20:54")]}
+    woke = {381: [("2026-08-24", "20:40")]}
+
+    entries = parse_journal(markdown, woke, written_by_cycle=written)
+    assert (entries[0]["date"], entries[0]["time"]) == ("2026-08-24", "20:40")
+    assert build_status(entries)["lastWrittenAt"].startswith("2026-08-24T20:54")
+
+
+def test_an_entry_with_only_one_stamp_map_reports_that_stamp_as_written():
+    """Every caller but `journal_payload` passes one map and means both
+    things by it -- `lint_entry`, the comment lookup, `parse_journal_file`.
+    Mirroring is what keeps this change confined to the page it is for."""
+    from agora_runner.nova_journal import build_status, parse_journal
+
+    entries = parse_journal(
+        "### 2026-08-24 20:54 (Oslo) — Cycle 381 — A number of its own\n\nProse.",
+        {381: [("2026-08-24", "20:40")]},
+    )
+    assert build_status(entries)["lastWrittenAt"].startswith("2026-08-24T20:40")
+
+
+def test_api_journal_serves_the_start_time_end_to_end():
+    """The one test that pins the wiring rather than the arithmetic.
+
+    Everything above tests `with_start_times` directly. `journal_payload` is
+    where it is actually called, and the tests around it hand the shim an
+    empty mtime map -- so with the seam deleted they all still pass, which is
+    the whole failure shape this repo keeps re-finding. This one supplies
+    real mtimes, so the write time is what the page shows unless the start
+    time reaches it."""
+    markdown = (
+        "### 2026-08-24 20:54 (Oslo) — Cycle 381 — A number of its own\n\n"
+        "Prose.\n\n---\nPR: #335 | Outcome: merged\n"
+    )
+    path = JOURNAL_DIR + "437-cycle-381.md"
+
+    def _bulk(prefix, with_mtimes=False):
+        files = VaultFiles({path: markdown} if prefix == JOURNAL_DIR else {})
+        # 2026-08-24 20:54 Oslo -- when this cycle filed.
+        return (files, {path: 1787597640000}) if with_mtimes else files
+
+    def _read(_path):
+        return None
+
+    def _time_on_the_card():
+        nova_site.reset_cache()
+        with patch.object(nova_sources, "vault_bulk_fetch", side_effect=_bulk), \
+                patch.object(nova_sources, "vault_read_path", side_effect=_read):
+            status, _, body = _get("/api/journal")
+        assert status == 200
+        entries = json.loads(body)["entries"]
+        assert len(entries) == 1
+        return entries[0]["time"]
+
+    with patch.object(nova_site, "cycle_starts", return_value={}):
+        assert _time_on_the_card() == "20:54", "no start time: the write time stands"
+
+    # 18:40:09Z -- when the heartbeat opened this cycle's conversation.
+    with patch.object(
+        nova_site, "cycle_starts", return_value={381: "2026-08-24T18:40:09.019Z"}
+    ):
+        assert _time_on_the_card() == "20:40"
+
+    nova_site.reset_cache()
+
+
+# The owner, issues.md 2026-08-10: "Nova takes a long time to load when i
 # refresh it." /api/journal cost 3.0-3.5s on the live pod and was rebuilt,
 # identically, on every request. It is served from cache now -- and none of
 # that was pinned by a test when it shipped.
@@ -2923,7 +3459,7 @@ def test_a_stale_payload_is_refreshed_behind_the_request_that_got_it(journal_md)
     assert read.call_count > served, "a stale payload was served and never refreshed"
 
 
-# Edvard, issues.md #71: "I takes 6-7 seconds to load the Nova app, even
+# The owner, issues.md #71: "I takes 6-7 seconds to load the Nova app, even
 # though only 20 journals are shown." The cache above fixed the *second*
 # load and left the first one alone -- and this process is new most hours,
 # because a cycle merging into the runner rolls the nova-site pod. Measured
@@ -2968,11 +3504,46 @@ def test_the_warm_does_not_hold_up_the_server_it_runs_behind(journal_md):
         finished.set()
 
     with patch.object(nova_site, "warm_cache", side_effect=blocking_warm), \
+            patch.object(nova_site, "recover_replies"), \
             patch.object(nova_site, "NOVA_PORT", 0):
         server = nova_site.start_nova_site()
     try:
         assert entered.wait(10), "start_nova_site never warmed the cache"
         assert not finished.is_set(), "the warm ran on the startup path"
+        assert server.server_address[1] != 0, "and the socket was bound before it"
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_site_picks_up_the_replies_the_last_process_was_holding():
+    """The reply queue is one process's memory, so a roll loses whatever it
+    held -- and `nova-site` rolls on every merge to this repo. Off the
+    startup path for the same reason as the warm: it reads the vault, and a
+    pod that is listening to nobody fails its readiness probe.
+
+    Blocking inside the recovery is what makes this capable of failing.
+    Asserting the call happened would pass just as well if it ran inline,
+    which is the shape of check that lets a six-second vault read into the
+    startup path.
+    """
+    entered = threading.Event()
+    finished = threading.Event()
+    release = threading.Event()
+
+    def blocking_recover():
+        entered.set()
+        release.wait(10)
+        finished.set()
+
+    with patch.object(nova_site, "recover_replies", side_effect=blocking_recover), \
+            patch.object(nova_site, "warm_cache"), \
+            patch.object(nova_site, "NOVA_PORT", 0):
+        server = nova_site.start_nova_site()
+    try:
+        assert entered.wait(10), "start_nova_site never recovered the dropped replies"
+        assert not finished.is_set(), "the recovery ran on the startup path"
         assert server.server_address[1] != 0, "and the socket was bound before it"
     finally:
         release.set()
@@ -2998,7 +3569,8 @@ def test_a_warm_that_cannot_reach_the_vault_costs_only_the_warm():
     # list is the code under test, and a test that reads it back agrees
     # with whatever it says. A third payload added here should fail this
     # and be looked at.
-    assert attempted == ["journal", "digest"], "the payload behind the failing one was skipped"
+    assert attempted == ["journal", "digest", "board:issues", "board:ideas"], \
+        "the payload behind the failing one was skipped"
     assert "journal" not in nova_site._cache, "a failed build must not be cached"
 
 
@@ -3014,6 +3586,7 @@ def test_nothing_is_warmed_that_the_request_path_will_not_read_back():
     to check -- an assertion restating the list would move with it.
     """
     served = set()
+    prefixes = set()
     for node in ast.walk(ast.parse(inspect.getsource(nova_site))):
         if not isinstance(node, ast.Call):
             continue
@@ -3023,14 +3596,32 @@ def test_nothing_is_warmed_that_the_request_path_will_not_read_back():
         first = node.args[0] if node.args else None
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             served.add(first.value)
+        # `_send_board` builds its key as `"board:" + name`, so the literal
+        # the handler reads back is a prefix rather than a whole name. A
+        # scanner that only understood whole names would report every
+        # warmed board as unread and the fix would be to stop warming them.
+        elif (
+            isinstance(first, ast.BinOp)
+            and isinstance(first.op, ast.Add)
+            and isinstance(first.left, ast.Constant)
+            and isinstance(first.left.value, str)
+        ):
+            prefixes.add(first.left.value)
     # A scanner that finds nothing agrees with any list at all, which is
     # the shape of vacuous guard this suite already bans elsewhere.
     assert "journal" in served and "digest" in served, (
         f"the handler scan found {sorted(served)} -- it is no longer reading the request path"
     )
+    assert "board:" in prefixes, (
+        f"the handler scan found prefixes {sorted(prefixes)} -- it is no longer reading /api/board"
+    )
     warmed = {name for name, _ in nova_site.WARM_PAYLOADS}
-    assert warmed <= served, (
-        f"{sorted(warmed - served)} is built at startup and no handler reads it back"
+    unread = {
+        n for n in warmed
+        if n not in served and not any(n.startswith(p) for p in prefixes)
+    }
+    assert not unread, (
+        f"{sorted(unread)} is built at startup and no handler reads it back"
     )
 
 
@@ -3085,12 +3676,89 @@ def test_an_offset_walks_further_back_without_repeating_a_page(journal_md):
     assert seen == [49, 29, 19, 6]
 
 
-def test_asking_for_no_limit_still_serves_the_whole_journal(journal_md):
-    """An app.js served out of a service worker's cache from before this
-    shipped sends no `limit`, and must not silently lose the feed."""
-    with patch.object(nova_sources, "vault_read_path", return_value=journal_md):
+def _wide_journal(count):
+    """A journal with more entries than `JOURNAL_DEFAULT_LIMIT`, one cycle each.
+
+    The checked-in fixture holds five, which is under the default window, so
+    every assertion about the window is vacuous against it -- it answers the
+    same whether the bound exists or not. One cycle per entry matters too:
+    the slice deliberately runs past its end rather than splitting a cycle in
+    half, so a fixture that repeated a cycle number would make the count
+    depend on where the pairs fell.
+    """
+    entries = "\n\n".join(
+        f"### 2026-08-27 {n % 24:02d}:00 (Oslo) \u2014 Cycle {900 + n}\n\n"
+        f"Body of entry {n}.\n\n---\nPR: none | Outcome: no-op"
+        for n in range(count, 0, -1)
+    )
+    return "---\ntype: log\n---\n\n# Journal\n\n## Entries\n\n" + entries + "\n"
+
+
+def test_asking_for_no_limit_serves_the_default_window_not_the_whole_archive():
+    """The bound this endpoint had none of until 2026-08-27.
+
+    `/api/journal` answered 4,031,475 bytes over 600 entries to any caller
+    that named no window, and `nova-site` was OOMKilled on it the day
+    before. The old test here asserted the opposite -- that no limit meant
+    the whole feed -- and it passed on a five-entry fixture whatever the
+    server did, which is why it is replaced rather than kept beside this.
+    """
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
         _, _, body = _get("/api/journal")
-    assert len(json.loads(body)["entries"]) == 5
+    payload = json.loads(body)
+    assert len(payload["entries"]) == nova_site.JOURNAL_DEFAULT_LIMIT
+    # The window is a window, not a truncation: the reader is still told how
+    # many entries exist behind it, which is what the pager counts against.
+    assert payload["total"] == 30
+
+
+def test_the_whole_archive_is_still_reachable_by_asking_for_it():
+    """A default is not a cap. `?limit=all` is the escape hatch, and it has
+    to keep working or this change removed a capability instead of bounding
+    one."""
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?limit=all")
+    assert len(json.loads(body)["entries"]) == 30
+
+
+def test_a_limit_that_is_not_a_number_falls_back_to_the_window():
+    """`all` is checked as a literal before the parse, so everything else
+    that fails to parse must land on the default rather than on it."""
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?limit=lots")
+    assert len(json.loads(body)["entries"]) == nova_site.JOURNAL_DEFAULT_LIMIT
+
+
+def test_a_search_with_no_limit_is_capped_but_still_counts_every_match():
+    """The default reaches the search branch too, and a reviewer found it
+    uncovered on runner#452.
+
+    Twenty matches come back instead of thirty, which is safe only because
+    `total` stays the true match count -- that is what lets the page say
+    "N entries mention X" while holding a window of them. If `total` ever
+    started counting the window instead, the search box would start lying
+    and nothing else here would notice.
+    """
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?q=Body")
+    payload = json.loads(body)
+    assert len(payload["entries"]) == nova_site.JOURNAL_DEFAULT_LIMIT
+    assert payload["total"] == 30
+
+
+def test_a_search_that_asks_for_everything_gets_every_match():
+    """`?limit=all` is the escape hatch on the search branch as well."""
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?q=Body&limit=all")
+    assert len(json.loads(body)["entries"]) == 30
+
+
+def test_a_deep_link_is_not_cut_by_the_default_window():
+    """`?cycle=N` names one entry and never carries a limit; the default
+    must not turn a deep link into the front page."""
+    with patch.object(nova_sources, "vault_read_path", return_value=_wide_journal(30)):
+        _, _, body = _get("/api/journal?cycle=901")
+    assert [e["cycle"] for e in json.loads(body)["entries"]] == [901]
 
 
 def test_a_deep_linked_cycle_is_served_without_paging_back_to_it(journal_md):
@@ -3306,7 +3974,7 @@ def test_a_digest_asked_for_the_old_way_is_still_the_whole_digest(journal_md, di
 def test_the_handoff_section_survives_every_window(journal_md, digest_md):
     """`nextCycle` is the header, not the feed -- it is not part of what
     gets sliced, and it renders on every window the same way the status
-    header does. `needsEdvard` used to be asserted here too; the block was
+    header does. `needsEdvard` used to be asserted here too; the block was  (not-prose: an identifier)
     deleted from the page in #229 and its server half in #236."""
     with _both(journal_md, digest_md):
         _, _, windowed = _get("/api/digest?limit=1")
@@ -3520,7 +4188,7 @@ def test_health_routes_pin_every_branch_of_the_routing_rule():
         _, _, body = _get("/api/health")
     routes = {r["path"]: r["database"] for r in json.loads(body)["routes"]}
     assert routes["projects/sokrates/projects/agora/journal-digest.md"] == "nova"
-    # A `.bak` beside the digest is Edvard's file and must not follow it.
+    # A `.bak` beside the digest is the owner's file and must not follow it.
     assert routes["projects/sokrates/projects/agora/journal-digest.md.bak"] == "obsidian"
     # The Nova folder he asked to keep in his own vault.
     assert routes["projects/sokrates/projects/nova/nova.md"] == "obsidian"
@@ -3581,7 +4249,7 @@ def test_health_probes_use_a_short_timeout_not_the_60s_default():
 
 # --- a capture is visible on the very next request -----------------------
 #
-# Edvard, `issues.md` 2026-08-12: *"When i create a new issues, the 'not
+# the owner, `issues.md` 2026-08-12: *"When i create a new issues, the 'not
 # boarded yet' block for issues is not refreshed automatically. This is
 # probably a problem for ideas aswell."*
 #
@@ -3617,14 +4285,14 @@ def _board_captures(name="issues"):
 
 
 def test_a_capture_is_in_the_board_on_the_very_next_request():
-    """The bug, stated as the behaviour Edvard expects."""
+    """The bug, stated as the behaviour the owner expects."""
     nova_site.reset_cache()
     live = {"text": "---\n---\n\n- an older capture\n- \n\n## Board\n"}
     with patch.object(nova_site, "board_markdown",
                       side_effect=lambda name: (live["text"], "", "")):
         assert _board_captures() == ["an older capture"]
 
-        def _write(target, text, priority=""):
+        def _write(target, text, priority="", one_item=False):
             live["text"] = live["text"].replace(
                 "- \n", f"- {text}\n- \n", 1
             )
@@ -3716,7 +4384,7 @@ def test_only_the_window_the_reader_asked_for_is_ever_rendered():
             assert render.call_count == len(page["entries"])
 
 
-# --- The eight-cycle report card (Edvard, comments board at cycle 156) ---
+# --- The eight-cycle report card (the owner, comments board at cycle 156) ---
 
 
 REPORT_ENTRY = (
@@ -3841,7 +4509,7 @@ def test_nova_site_main_is_runnable_as_a_module():
     assert source.rstrip().endswith("main()")
 
 
-# --- POST /api/board/edit and /api/board/delete: Edvard's issue #84 ---
+# --- POST /api/board/edit and /api/board/delete: The owner's issue #84 ---
 # *"I need to be able to edit and especially delete boarded ideas and
 # issues from the agora app."* The same two boundaries as every other
 # write path here: `target` is a key into a dict of literal paths, never a
@@ -4024,12 +4692,12 @@ def test_commenting_on_a_boarded_row_reaches_the_vault_through_the_real_request_
     with patch.object(nova_site, "comment_on_row",
                       return_value=(True, "#64 commented on ideas")) as cm:
         status, _, body = _post(
-            "/api/board/comment", {"target": "ideas", "number": 64, "text": "  Still broken. "})
+            "/api/board/comment",
+            {"target": "ideas", "number": 64, "text": "  Still broken. ", "author": "Edvard"})
     assert status == 200
     assert json.loads(body)["ok"] is True
     target, number, text, dated, author = cm.call_args[0]
     assert (target, number, text) == ("ideas", 64, "Still broken.")
-    # The page is his, so an unstated author is him.
     assert author == "Edvard"
     # `MM-DD`, and Oslo's -- a module that reaches for a clock reaches for
     # it in UTC, and this lands in a file he reads.
@@ -4038,7 +4706,7 @@ def test_commenting_on_a_boarded_row_reaches_the_vault_through_the_real_request_
 
 
 def test_a_cycles_reply_is_attributed_to_nova_and_not_to_him():
-    """`comment_on_row` hardcoded `author="Edvard"` while its own docstring
+    """`comment_on_row` hardcoded `author="Edvard"` while its own docstring  (not-prose: quoting a literal)
     told a cycle to reply with `author="Nova"`, so every reply this loop
     made through this route was written into his board as words he had
     said. Worse than cosmetic: `unanswered_comments` calls a row waiting
@@ -4058,8 +4726,6 @@ def test_a_cycles_reply_is_attributed_to_nova_and_not_to_him():
 def test_an_author_neither_of_us_uses_is_refused_before_any_write(author):
     """His board is not a place to write under an arbitrary name.
 
-    `" "` is in here deliberately: it is truthy, so it survives the
-    `or "Edvard"` fallback and would be written as the author verbatim.
     The casing pair is here because `append_detail_note` renders the
     string as given -- `**nova, 08-17:**` is not a name either of us uses.
     """
@@ -4071,13 +4737,24 @@ def test_an_author_neither_of_us_uses_is_refused_before_any_write(author):
 
 
 @pytest.mark.parametrize("payload_extra", [{}, {"author": ""}, {"author": None}])
-def test_an_unstated_author_is_him_because_the_page_is_his(payload_extra):
-    with patch.object(nova_site, "comment_on_row",
-                      return_value=(True, "ok")) as cm:
-        status, _, _ = _post("/api/board/comment", dict(
+def test_a_caller_that_does_not_name_itself_is_refused_rather_than_written_as_him(payload_extra):
+    """This used to answer 200 and write the note down as the owner.
+
+    The reasoning was that the page is his, so an unstated author is him.
+    The page is his; it is not the only caller. Cycle 479 posted two notes
+    on idea #38 from a shell without the field and both landed in his live
+    `ideas.md` under his name -- and `unanswered_comment_bodies` reads the
+    last note on a row being his as him waiting for an answer, which
+    outranks every rating in `tools.top_board_rows`. So my own comment
+    pinned idea #38 to the top of his board as a question he never asked,
+    and no reply I could write would have cleared it.
+    """
+    with patch.object(nova_site, "comment_on_row") as cm:
+        status, _, body = _post("/api/board/comment", dict(
             {"target": "issues", "number": 94, "text": "hi"}, **payload_extra))
-    assert status == 200
-    assert cm.call_args[0][4] == "Edvard"
+    assert status == 400
+    assert "author" in json.loads(body)["error"]
+    cm.assert_not_called()
 
 
 def test_a_comment_cannot_smuggle_a_line_break_into_his_write_up():
@@ -4087,7 +4764,8 @@ def test_a_comment_cannot_smuggle_a_line_break_into_his_write_up():
     for text in ["two\nlines", "sneaky\rreturn"]:
         with patch.object(nova_site, "comment_on_row") as cm:
             status, _, _ = _post(
-                "/api/board/comment", {"target": "ideas", "number": 64, "text": text})
+                "/api/board/comment",
+                {"target": "ideas", "number": 64, "text": text, "author": "Edvard"})
         assert status == 400, text
         cm.assert_not_called()
 
@@ -4096,7 +4774,8 @@ def test_an_empty_comment_is_rejected_rather_than_written_as_a_blank_line():
     for text in ["", "   ", None, 7]:
         with patch.object(nova_site, "comment_on_row") as cm:
             status, _, _ = _post(
-                "/api/board/comment", {"target": "ideas", "number": 64, "text": text})
+                "/api/board/comment",
+                {"target": "ideas", "number": 64, "text": text, "author": "Edvard"})
         assert status == 400, text
         cm.assert_not_called()
 
@@ -4128,7 +4807,8 @@ def test_a_row_with_no_write_up_is_a_409_and_not_a_502():
     with patch.object(nova_site, "comment_on_row",
                       return_value=(False, "#63 is not a row on ideas")):
         status, _, body = _post(
-            "/api/board/comment", {"target": "ideas", "number": 63, "text": "x"})
+            "/api/board/comment",
+            {"target": "ideas", "number": 63, "text": "x", "author": "Edvard"})
     assert status == 409
     assert json.loads(body)["ok"] is False
 
@@ -4142,7 +4822,8 @@ def test_an_exhausted_write_is_a_502_and_not_a_409():
     with patch.object(nova_site, "comment_on_row",
                       return_value=(False, "could not write to ideas: 409 conflict")):
         status, _, body = _post(
-            "/api/board/comment", {"target": "ideas", "number": 64, "text": "x"})
+            "/api/board/comment",
+            {"target": "ideas", "number": 64, "text": "x", "author": "Edvard"})
     assert status == 502
     assert json.loads(body)["ok"] is False
 
@@ -4152,11 +4833,12 @@ def test_a_successful_comment_invalidates_the_board_he_is_looking_at():
     comment; the next read must come from the file."""
     with patch.object(nova_site, "comment_on_row", return_value=(True, "ok")), \
             patch.object(nova_site, "invalidate") as inv:
-        _post("/api/board/comment", {"target": "ideas", "number": 64, "text": "x"})
+        _post("/api/board/comment",
+              {"target": "ideas", "number": 64, "text": "x", "author": "Edvard"})
     inv.assert_called_once_with("board:ideas")
 
 
-# --- Clearing a Needs Edvard item from the page (issue #93) ---------------
+# --- Clearing a Needs Edvard item from the page (issue #93) ---------------  (not-prose: quoting a literal)
 
 
 
@@ -4168,7 +4850,7 @@ def test_the_plan_page_and_its_endpoint_both_answer():
     tests stub `fetch`, so nothing else here would notice `/plan` or
     `/api/plan` disappearing and the nav tab 404ing on his phone. That
     is not hypothetical on this page: the two documents it serves live
-    in Edvard's own database, which this process reaches with a
+    in the owner's own database, which this process reaches with a
     different credential from the one the boards use.
 
     The second half asserts what a *missing* document does, because it
@@ -4206,7 +4888,7 @@ def test_the_notes_page_and_its_endpoint_both_answer():
     tests stub `fetch`, so nothing else here would notice `/notes` or
     `/api/notes` disappearing and the nav tab 404ing on his phone.
 
-    Edvard's capture, 2026-08-21: *"I do not have a notes page that shows
+    The owner's capture, 2026-08-21: *"I do not have a notes page that shows
     any overview of the notes made."* `notes.md` is in his own database,
     which this process reaches with a different credential from the one
     the boards use -- so the empty half matters here as much as it does
@@ -4224,8 +4906,10 @@ def test_the_notes_page_and_its_endpoint_both_answer():
     assert status == 200
     payload = json.loads(body)
     assert payload["waitingTotal"] == 1 and payload["readTotal"] == 1
-    assert payload["notes"][0]["text"] == "Waiting on someone."
-    assert payload["notes"][1]["responses"][0]["cycle"] == 258
+    # Oldest first, unanswered last -- the page is a conversation and it
+    # opens scrolled to the bottom (`nova_notes.notes_payload`).
+    assert payload["notes"][0]["responses"][0]["cycle"] == 258
+    assert payload["notes"][1]["text"] == "Waiting on someone."
     assert shell_status == 200 and b"<!doctype html>" in shell.lower()
 
     with patch.object(nova_sources, "vault_read_path", return_value=None):
@@ -4272,3 +4956,543 @@ def test_service_worker_precaches_the_chart_library():
     served, _, library = _get("/vendor/echarts.min.js")
     assert served == 200
     assert len(library) > 500_000
+
+
+# --- Searching the journal (his capture, issues.md 2026-08-25) ------------
+#
+# "I want to be able to search through journals. Give me a button or a
+# input field somewhere."
+
+
+def _searchable():
+    """Four entries whose distinguishing words are only in the prose.
+
+    Deliberately not the sample fixture: the point of every test below is
+    which entries come back for a given word, and a fixture that exists to
+    exercise the parser would make that an assertion about somebody else's
+    prose. `title` and `body` are the only two fields the search reads.
+    """
+    return {
+        "entries": [
+            {"cycle": 4, "title": "Cycle 4 — the pod came back", "body": "Restarted it."},
+            {"cycle": 3, "title": "Cycle 3 — a quiet one", "body": "Read about Tailscale."},
+            {"cycle": 2, "title": "Cycle 2 — TAILSCALE, at last", "body": "Nothing else."},
+            {"cycle": 1, "title": "Cycle 1 — the first", "body": "Wrote the runner."},
+        ],
+        "status": {"silentIntervals": 0},
+    }
+
+
+def test_a_search_matches_prose_the_feed_never_sends():
+    """The reason this is on the server and not in app.js.
+
+    A cold load holds twenty entries and `_rendered` drops `body` from
+    every one of them, so "Tailscale" written in the prose of entry 3 is a
+    word no client-side filter could ever see. If this ever passes only on
+    the title, the feature has quietly become a filter over what is
+    already on screen.
+    """
+    page = nova_site.journal_page(_searchable(), search="tailscale")
+    cycles = [entry["cycle"] for entry in page["entries"]]
+    assert cycles == [3, 2], "cycle 3 matches in the body, cycle 2 in the title"
+    assert page["query"] == "tailscale"
+    assert page["total"] == 2
+
+
+def test_a_search_is_case_and_whitespace_insensitive():
+    """He types on a phone with autocapitalise on, and a search box that
+    misses `TAILSCALE` because he typed `tailscale` reads as no results
+    rather than as a bug."""
+    page = nova_site.journal_page(_searchable(), search="  TailScale  ")
+    assert [entry["cycle"] for entry in page["entries"]] == [3, 2]
+    # Normalised in the answer too: the page compares this against what it
+    # has in the box to decide whether the count on screen is stale, and a
+    # comparison against the raw string would never match.
+    assert page["query"] == "tailscale"
+
+
+def test_a_search_ignores_the_window_and_reads_the_whole_journal():
+    """A window is the newest N entries; a search is not. Asked with the
+    limit the feed always sends, the match three entries down still comes
+    back -- otherwise searching would only ever look at the page he can
+    already see, which is the one place he does not need it."""
+    page = nova_site.journal_page(_searchable(), limit=1, offset=0, search="runner")
+    assert [entry["cycle"] for entry in page["entries"]] == [1]
+
+
+def test_the_limit_caps_the_matches_and_total_counts_them_all():
+    """`total` drives the pager, so it has to be the number of matches and
+    not the number returned -- equal to `len(entries)` and the button never
+    appears, so the second page of a search would be unreachable."""
+    page = nova_site.journal_page(_searchable(), limit=1, search="cycle")
+    assert len(page["entries"]) == 1
+    assert page["total"] == 4
+
+
+def test_an_empty_search_is_not_a_search():
+    """A cleared box sends no `q` at all, but a box holding only spaces
+    sends one. Treated as a search it would match every entry and quietly
+    replace the feed's window with the whole journal."""
+    for empty in (None, "", "   "):
+        page = nova_site.journal_page(_searchable(), limit=2, search=empty)
+        assert [entry["cycle"] for entry in page["entries"]] == [4, 3], empty
+        assert "query" not in page, empty
+        assert page["total"] == 4, empty
+
+
+def test_a_search_still_carries_the_status_header():
+    """The header renders on every page and is computed over the whole
+    corpus, not the window -- a search that dropped it would blank the
+    stall warning and the running badge for as long as he was typing."""
+    page = nova_site.journal_page(_searchable(), search="tailscale")
+    assert "status" in page
+
+
+def test_two_queries_against_one_journal_get_different_etags():
+    """The base etag is the journal build, which is identical for both, so
+    without the query in the descriptor the second search is answered 304
+    and the page keeps showing the first one's rows -- a wrong answer that
+    looks like a right one."""
+    payload = _searchable()
+    first = nova_site.journal_page(payload, limit=20, search="tailscale")
+    second = nova_site.journal_page(payload, limit=20, search="runner")
+    assert nova_site.journal_descriptor(first, 20, 0, None, "tailscale") \
+        != nova_site.journal_descriptor(second, 20, 0, None, "runner")
+    # And a search is not the same request as the plain window it shares a
+    # limit with, which is the other half of the same 304.
+    plain = nova_site.journal_page(payload, limit=20)
+    assert nova_site.journal_descriptor(plain, 20, 0, None, None) \
+        != nova_site.journal_descriptor(first, 20, 0, None, "tailscale")
+
+
+def test_the_endpoint_actually_reads_q_off_the_query_string():
+    """Everything above tests `journal_page` directly, and every one of
+    those tests would still pass if `_send_journal` never passed `q` down
+    -- the handler would just answer the plain window and look fine. So
+    ask over the socket, which is the only place the wiring exists.
+    """
+    nova_site.reset_cache()
+    payload = {
+        "entries": [
+            {"cycle": 2, "title": "Cycle 2", "body": "Nothing here."},
+            {"cycle": 1, "title": "Cycle 1", "body": "Fixed the ingress."},
+        ],
+        "status": {},
+    }
+    with patch.object(nova_site, "journal_payload", lambda: payload):
+        status, _, body = _get("/api/journal?limit=20&q=ingress")
+        assert status == 200
+        page = json.loads(body)
+        assert page["query"] == "ingress"
+        assert [entry["cycle"] for entry in page["entries"]] == [1]
+
+        # And the etag really does move with the query, over the wire --
+        # the descriptor test above proves the two strings differ, not
+        # that the handler puts either of them in the header.
+        _, _, plain = _get("/api/journal?limit=20")
+        assert json.loads(plain)["version"] != page["version"]
+
+
+def _with_asks():
+    """A journal where two cards asked him something and two did not.
+
+    Deliberately not the sample fixture, for the reason `_searchable` is
+    not: every assertion below is about *which* entries come back, and a
+    fixture built to exercise the parser would make that an assertion
+    about somebody else's prose.
+
+    Cycle 1 carries an ask and no cycle number is impossible, so the
+    unnumbered entry is the owner's own note -- the shape `open_asks`
+    skips, because a note has no card of its own for him to reply on.
+    """
+    return {
+        "entries": [
+            {"cycle": 4, "title": "Cycle 4", "body": "No ask.", "ask": ""},
+            {"cycle": 3, "title": "Cycle 3", "body": "Asked.",
+             "ask": "Yes or no, keep the pill?"},
+            {"cycle": None, "title": "A note", "body": "His own.",
+             "ask": "Which of these?"},
+            {"cycle": 1, "title": "Cycle 1", "body": "Asked.",
+             "ask": "How many nodes?"},
+        ],
+        "status": {"silentIntervals": 0},
+    }
+
+
+def test_the_asks_filter_returns_only_the_cards_that_asked_something():
+    page = nova_site.journal_page(_with_asks(), asks=True)
+    assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+    assert page["total"] == 2, "total is the number of asks, not of entries"
+    assert page["asks"] is True
+
+
+def test_an_ask_on_an_entry_with_no_cycle_number_is_not_offered():
+    """Same call `open_asks` makes one layer down: a note has no card of
+    its own, so an ask written into one has nowhere to be answered and
+    listing it would point him at nothing."""
+    page = nova_site.journal_page(_with_asks(), asks=True)
+    assert all(entry["cycle"] is not None for entry in page["entries"])
+
+
+def test_the_asks_filter_ignores_the_window():
+    """The point of the page is to see all of them at once, and there are
+    eight of these, not eight hundred. A `limit` that cut the list would
+    hide exactly the oldest ask -- the one that has waited longest, which
+    is the one the whole feature exists for."""
+    page = nova_site.journal_page(_with_asks(), asks=True, limit=1, offset=3)
+    assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+
+
+def test_the_asks_filter_does_not_decide_which_are_still_open():
+    """It sends every card carrying an ask, answered or not.
+
+    An ask is answered when he has commented on that card, comments live
+    in a different document with its own cache, and folding them in here
+    would keep the filter insisting he had not replied until the *journal*
+    cache next rebuilt -- minutes after he did. The client holds both
+    payloads and intersects them, which is the same split `open_asks`
+    documents.
+    """
+    payload = _with_asks()
+    page = nova_site.journal_page(payload, asks=True)
+    assert len(page["entries"]) == 2, (
+        "the server must not have an opinion about which are answered"
+    )
+
+
+def test_the_asks_window_gets_its_own_etag():
+    """The base etag is the journal build, identical for both, so without
+    its own window key the ask filter and an unwindowed read are answered
+    304 with each other's rows still on screen."""
+    payload = _with_asks()
+    filtered = nova_site.journal_page(payload, asks=True)
+    plain = nova_site.journal_page(payload, limit=20)
+    assert nova_site.journal_descriptor(filtered, None, 0, None, None, True) \
+        != nova_site.journal_descriptor(plain, 20, 0, None, None, False)
+
+
+def test_the_endpoint_actually_reads_asks_off_the_query_string():
+    """Every test above would pass if `_send_journal` never passed `asks`
+    down -- the handler would answer the plain window and look fine. So
+    ask over the socket, which is the only place the wiring exists."""
+    nova_site.reset_cache()
+    payload = _with_asks()
+    with patch.object(nova_site, "journal_payload", lambda: payload):
+        status, _, body = _get("/api/journal?asks=1")
+        assert status == 200
+        page = json.loads(body)
+        assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+
+        # And the etag really does move with it over the wire -- the
+        # descriptor test above proves the strings differ, not that the
+        # handler puts either of them in the header.
+        _, _, plain = _get("/api/journal?limit=20")
+        assert json.loads(plain)["version"] != page["version"]
+
+
+def test_the_asks_page_is_served_the_shell_on_a_cold_load():
+    """`/asks` has to survive a bookmark and a reload, not only a tap on
+    the header -- the header is on the front page and he opens this from a
+    push notification's tab as often as from there."""
+    assert "/asks" in nova_site.PAGE_ROUTES
+
+
+def test_replying_to_a_capture_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "comment_on_capture",
+                      return_value=(True, "replied in issues")) as rep:
+        status, _, body = _post(
+            "/api/capture/comment",
+            {"target": "issues", "index": 2, "original": "his line", "text": "Answered."},
+        )
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    rep.assert_called_once_with("issues", 2, "his line", "Answered.")
+
+
+def test_a_reply_to_a_capture_that_moved_is_a_409_not_a_502():
+    """Nothing failed -- a cycle boarded the bullet while the reply was
+    being written. The page should re-read, not retry."""
+    with patch.object(nova_site, "comment_on_capture",
+                      return_value=(False, f"that capture is {nova_site.STALE_CAPTURE}")):
+        status, _, body = _post(
+            "/api/capture/comment",
+            {"target": "issues", "index": 0, "original": "gone", "text": "Answered."},
+        )
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+@pytest.mark.parametrize("payload", [
+    {"target": "../../etc/passwd", "index": 0, "original": "x", "text": "y"},
+    {"target": "projects/sokrates/projects/nova/issues.md", "index": 0, "original": "x", "text": "y"},
+    {"index": 0, "original": "x", "text": "y"},
+    {"target": "issues", "index": 0, "text": "y"},
+    {"target": "issues", "index": 0, "original": "  ", "text": "y"},
+    {"target": "issues", "index": 0, "original": "x"},
+    {"target": "issues", "index": 0, "original": "x", "text": "   "},
+    {"target": "issues", "index": 0, "original": "x", "text": 42},
+    # One indented bullet: a break in it splits into a bullet and a stray
+    # paragraph the next parser reads as a continuation of something else.
+    {"target": "issues", "index": 0, "original": "x", "text": "one\ntwo"},
+    {"target": "issues", "index": 0, "original": "x", "text": "one\rtwo"},
+    # `True` is an int in Python and would silently address capture 1.
+    {"target": "issues", "index": True, "original": "x", "text": "y"},
+    {"target": "issues", "index": -1, "original": "x", "text": "y"},
+    {"target": "issues", "index": "0", "original": "x", "text": "y"},
+    {"target": "issues", "original": "x", "text": "y"},
+])
+def test_a_capture_reply_that_could_address_the_wrong_line_is_rejected(payload):
+    with patch.object(nova_site, "comment_on_capture") as rep:
+        status, _, _ = _post("/api/capture/comment", payload)
+    assert status == 400
+    rep.assert_not_called()
+
+
+# --- an answered capture is still addressable (his capture, 2026-08-25) ---
+
+
+def test_the_payloads_capture_address_still_resolves_when_answered():
+    """His `issues.md` capture, 🟠 High, with a screenshot of the failure:
+
+    *"When i edit not boarded yet ideas, i can't save and it gives me a
+    message that its not there anymore."*
+
+    The board payload's `text` is the address every write on that card
+    sends back -- Edit, Delete and the priority chip all post it to
+    `/api/capture/edit`. It used to be `_captures`' folded string, his
+    sentence with a cycle's reply welded onto the end, and
+    `replace_capture` matches his sentence alone, so the moment a cycle
+    answered a capture every one of those buttons started answering "that
+    capture is no longer in the list" -- with the edit he had just typed
+    still in the box.
+
+    So this asserts the round trip rather than either half of it: whatever
+    the payload calls the address, the writer has to accept it.
+    """
+    markdown = (
+        "---\ntype: board\n---\n\n"
+        "- when i edit not boarded yet ideas, i can't save\n"
+        "  - Cycle 430, 17:38 — I did not take this one.\n"
+        "- \n\n"
+        "## Board\n\n| # | Issue | Status | Updated | Priority |\n"
+        "|---|---|---|---|---|\n"
+    )
+    with patch.object(nova_site, "board_markdown", return_value=(markdown, "", "")):
+        payload = nova_site.board_payload("issues")
+    capture = payload["captures"][0]
+    assert capture["text"] == "when i edit not boarded yet ideas, i can't save"
+    assert nova_capture.replace_capture(
+        markdown, 0, capture["text"], ["reworded"]
+    ) is not None, "the page's own address is one the writer refuses"
+    # The answer is still on the card, just not inside his sentence.
+    assert len(capture["replies"]) == 1
+    assert "Cycle 430" in json.dumps(capture["replies"][0])
+    assert "Cycle 430" not in capture["body"]
+
+
+def test_a_capture_survives_a_board_dict_with_no_replies_list():
+    """`captureReplies` is newer than `captures`, and the page losing his
+    own bullets would be far worse than losing the answers under them."""
+    board = {"captures": ["his line"], "items": [], "details": {}}
+    assert nova_site._capture_replies(board, 0) == []
+    assert nova_site._capture_replies({"captures": [], "items": [], "details": {},
+                                       "captureReplies": [["a"]]}, 3) == []
+
+
+# --- the owner ticking a goal (idea #38's remaining half) ---------------
+
+
+def test_approving_a_goal_reaches_the_vault_through_the_real_request_path():
+    with patch.object(nova_site, "set_goal_status", return_value=(True, "approved")) as put:
+        status, _, body = _post("/api/goal/status", {"name": "G1 — one", "status": "approved"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    put.assert_called_once_with("G1 — one", "approved")
+
+
+def test_a_goal_that_was_renamed_under_the_page_is_a_409_not_a_502():
+    """Nothing failed -- a cycle rewrote the block's `name:` while the page
+    was open. The address moved, so the page should re-read."""
+    with patch.object(nova_site, "set_goal_status",
+                      return_value=(False, "that goal is no longer where the page thought it was")):
+        status, _, body = _post("/api/goal/status", {"name": "G9", "status": "approved"})
+    assert status == 409
+    assert json.loads(body)["ok"] is False
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": "approved"},
+    {"name": "  ", "status": "approved"},
+    {"name": 42, "status": "approved"},
+    {"name": "G1"},
+    {"name": "G1", "status": "settled"},
+    {"name": "G1", "status": ""},
+    {"name": "G1", "status": None},
+    # A status the parser would read as "proposed" must not be writable as
+    # a literal, or the file grows a value the page cannot render.
+    {"name": "G1", "status": "Approved"},
+])
+def test_a_goal_status_that_could_write_a_word_nothing_reads_is_rejected(payload):
+    with patch.object(nova_site, "set_goal_status") as put:
+        status, _, _ = _post("/api/goal/status", payload)
+    assert status == 400
+    put.assert_not_called()
+
+
+def test_an_entry_that_opens_on_its_clock_line_briefs_on_the_sentence_under_it():
+    """The owner, `issues.md` 2026-08-27, rated Immediately: *"Cycles has no
+    text title anymore."* Cycles 521 and 522 both opened on a bare clock line,
+    so their card's one label was a date -- `app.js` suppresses the heading
+    title whenever a brief exists, and a stamp counted as one. Five of the 598
+    live entries were in this state, all five with real prose underneath."""
+    document = (
+        "### Cycle 521 — Node 20 has been unsupported since April\n\n"
+        "2026-08-27, 06:22–06:45 Oslo\n\n"
+        "Node 20 stopped getting security patches on 30 April.\n\n"
+        "PR: #70 | Outcome: merged\n"
+    )
+    entry = nova_journal.parse_journal(document)[0]
+    brief = "".join(span["text"] for span in entry["briefSpans"])
+    assert brief.startswith("Node 20 stopped getting security patches")
+    # The clock line is skipped for the card, never dropped from the entry.
+    assert "06:22–06:45 Oslo" in entry["body"]
+
+
+def test_a_mistyped_minute_in_a_clock_line_is_still_not_prose():
+    """Cycle 522's line read `06:42–06:5x Oslo, 2026-08-27.` -- one stranded
+    letter. `parse_heading`'s `_is_metadata_only` refuses any alphanumeric
+    left over and would call that a title, which is why the brief asks for a
+    two-letter word instead of asking for no letters at all."""
+    document = (
+        "### Cycle 522 — The six repo settings now have values\n\n"
+        "06:42–06:5x Oslo, 2026-08-27.\n\n"
+        "Two of this org's repos have their GitHub settings written down.\n\n"
+        "PR: #550 | Outcome: merged\n"
+    )
+    entry = nova_journal.parse_journal(document)[0]
+    brief = "".join(span["text"] for span in entry["briefSpans"])
+    assert brief.startswith("Two of this org's repos")
+
+
+def test_a_clock_line_is_skipped_and_a_sentence_that_merely_starts_with_one_is_not():
+    """The skip is scoped to a paragraph that is *only* a stamp. An entry
+    whose first sentence opens with the time still briefs from it -- otherwise
+    this fix would silently delete the lede it was written to restore."""
+    document = (
+        "### Cycle 900 — A title\n\n"
+        "At 06:22 Oslo on 2026-08-27 I found the pod restarting.\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    entry = nova_journal.parse_journal(document)[0]
+    brief = "".join(span["text"] for span in entry["briefSpans"])
+    assert brief.startswith("At 06:22 Oslo on 2026-08-27 I found")
+
+
+def test_push_key_route_serves_agoras_vapid_key():
+    with patch.object(nova_site, "vapid_key", return_value={"publicKey": "BFakeKey"}):
+        status, _, body = _get("/api/push/key")
+    assert status == 200
+    assert json.loads(body) == {"publicKey": "BFakeKey"}
+
+
+def test_push_subscribe_route_hands_the_body_to_agora():
+    seen = {}
+
+    def fake(payload):
+        seen["payload"] = payload
+        return True, {"ok": True}
+
+    sub = {"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {"p256dh": "x"}}
+    with patch.object(nova_site, "store_subscription", side_effect=fake):
+        status, _, body = _post("/api/push/subscribe", sub)
+    assert status == 200
+    assert json.loads(body) == {"ok": True}
+    assert seen["payload"] == sub
+
+
+def test_push_subscribe_route_answers_502_when_agora_refuses():
+    # Not a 200 with an error body: the page retries nothing and a silent
+    # success here is how a phone ends up believing it is subscribed.
+    with patch.object(nova_site, "store_subscription", return_value=(False, {"error": "agora /subscribe answered 500"})):
+        status, _, body = _post("/api/push/subscribe", {"endpoint": "https://example.invalid/x"})
+    assert status == 502
+    assert "500" in json.loads(body)["error"]
+
+
+def test_the_comments_endpoint_revalidates_to_a_304():
+    """`/api/comments` was the only response on the site with no ETag.
+
+    It is one of `fetchAll`'s three boot requests and it is the largest
+    uncacheable payload the phone pulls -- 195,114 bytes, 57,466 gzipped,
+    measured against the live pod on 2026-08-28. Every other endpoint,
+    including 167KB of `app.js`, already answers a conditional request
+    with a 0-byte 304; this one re-sent the whole thread every time.
+
+    The freshness contract is deliberately unchanged and the second half
+    of this test is what pins that: the body is still rebuilt per request,
+    so a thread that *has* changed comes back 200 with the new bytes
+    rather than a stale 304.
+    """
+    stored = "## New\n\n### Cycle 63 · 2026-08-09 22:40\n\nkeep it up\n\n## Acknowledged\n"
+    with patch.object(nova_sources, "vault_read_path", return_value=stored):
+        status, head, body = _get("/api/comments")
+    assert status == 200
+    etag = next(
+        line.split(": ", 1)[1] for line in head.splitlines() if line.startswith("ETag: ")
+    )
+    # Without this the browser is left to heuristic freshness, and with no
+    # `Last-Modified` to guess from it may never store the response -- so it
+    # would never send `If-None-Match` and the 304 below would never fire on
+    # his phone while passing here.
+    assert "Cache-Control: no-cache" in head
+    # The client reads the etag off the *payload* (`fetchVersioned` in
+    # app.js) rather than off the header, because it does not trust the
+    # browser's cache to revalidate a poll. A header-only ETag would be a
+    # 304 nothing ever asks for.
+    assert json.loads(body)["version"] == etag
+
+    with patch.object(nova_sources, "vault_read_path", return_value=stored):
+        status, head, body = _get("/api/comments", f"If-None-Match: {etag}\r\n")
+    assert status == 304, "an unchanged thread must not re-send the whole file"
+    assert body == b""
+
+    changed = stored.replace("keep it up", "keep it up, and one more thing")
+    with patch.object(nova_sources, "vault_read_path", return_value=changed):
+        status, _, body = _get("/api/comments", f"If-None-Match: {etag}\r\n")
+    assert status == 200, "a changed thread must not be answered 304"
+    assert "one more thing" in json.loads(body)["byCycle"]["63"][0]["text"]
+
+
+def test_a_relayed_comment_is_marked_on_the_wire():
+    """A comment Sokrates posted on his behalf is not one he typed.
+
+    `top_board_rows` has read this since Cycle 626 to stop a relayed board
+    comment jumping the queue. The drawer is where he actually reads these
+    and it rendered the two identically, which is the half of his ask that
+    needs no authentication -- see `nova_boards.is_relayed` for why a
+    self-declared marker is safe here.
+
+    Both lists on the payload are asserted: stripping `reply` from
+    `byCycle` alone passed the whole suite once already.
+    """
+    relay = (
+        "Sokrates here (Claude, posting on Edvard's behalf, not Edvard "
+        "typing this himself): he says ship it.\n"
+    )
+    stored = (
+        "## New\n\n"
+        "### Needs Edvard · 2026-08-09 08:20\n\n" + relay + "\n"
+        "### Cycle 55 · 2026-08-09 13:10\n\nI typed this one myself\n\n"
+        "### Cycle 56 · 2026-08-09 13:20\n\n" + relay
+    )
+    with patch.object(nova_sources, "vault_read_path", return_value=stored), \
+            patch.object(nova_site, "pending_since", return_value={}), \
+            patch.object(nova_site, "failed_replies", return_value={}):
+        status, _, body = _get("/api/comments")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["byCycle"]["56"][0]["relayed"] is True
+    # The negative is the half that makes the marker mean anything: a
+    # comment he typed must not carry it.
+    assert payload["byCycle"]["55"][0]["relayed"] is False
+    assert payload["needs"][0]["relayed"] is True

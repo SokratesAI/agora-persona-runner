@@ -1,4 +1,4 @@
-"""One counter for Agora and the journal -- Edvard's Immediately capture,
+"""One counter for Agora and the journal -- the owner's Immediately capture,
 2026-08-20: "They need to be the same number."
 """
 import json
@@ -242,3 +242,181 @@ def test_claim_next_number_logs_when_it_gives_up_after_repeated_conflicts(caplog
     assert claimed == 10
     assert len(logged) == 1, f"expected exactly one give-up log, got {logged}"
     assert "conflicts" in logged[0] and "10" in logged[0]
+
+
+def test_a_cycle_that_knows_its_conversation_gets_its_own_number_not_the_newest(monkeypatch):
+    """The bug the owner reported on 2026-08-24. Three cycles were alive at
+    once; each asked for "the highest" and all three answered 380."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 378", id="conv-378"),
+            conv("Nova — Cycle 379", id="conv-379"),
+            conv("Nova — Cycle 380", id="conv-380"),
+        ]}
+    ))
+    assert cycle_number.current_number("hb-1", "conv-378") == 378
+    assert cycle_number.current_number("hb-1", "conv-379") == 379
+    assert cycle_number.current_number("hb-1", "conv-380") == 380
+    # And the old answer, which every one of those three used to get.
+    assert cycle_number.current_number("hb-1") == 380
+
+
+def test_an_id_that_names_no_conversation_falls_back_to_the_highest(monkeypatch):
+    """Falling back is right -- the alternative is handing a cycle no number
+    at all -- and `main` is what says out loud that it happened."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [conv("Nova — Cycle 9", id="conv-9")]}
+    ))
+    assert cycle_number.current_number("hb-1", "conv-gone") == 9
+
+
+def test_a_conversation_whose_name_does_not_parse_falls_back_too(monkeypatch):
+    """Renamed by hand. `numbers_in` already skips it rather than guessing;
+    this keeps the same rule when the id resolves and the name does not."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 9", id="conv-9"),
+            conv("Nova — renamed by hand", id="conv-mine"),
+        ]}
+    ))
+    assert cycle_number.number_of(
+        [conv("Nova — renamed by hand", id="conv-mine")], "conv-mine") is None
+    assert cycle_number.current_number("hb-1", "conv-mine") == 9
+
+
+def test_an_id_wins_even_when_the_conversation_carries_another_heartbeats_tag(monkeypatch):
+    """The id names one conversation exactly; the tag is a filter that only
+    matters when there is no id to go on."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 9", id="conv-9"),
+            conv("Nova — Cycle 4", tag=cycle_tag("hb-other"), id="conv-mine"),
+        ]}
+    ))
+    assert cycle_number.current_number("hb-1", "conv-mine") == 4
+
+
+def test_an_unreachable_agora_still_returns_none_with_an_id(monkeypatch):
+    """An id does not make a guess acceptable."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (503, {}))
+    assert cycle_number.current_number("hb-1", "conv-1") is None
+
+
+def test_main_prints_only_the_number_on_stdout(monkeypatch, capsys):
+    """`$(...)` around this has to be exactly one integer, so every word about
+    how the number was derived goes to stderr."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 378", id="conv-378"),
+            conv("Nova — Cycle 380", id="conv-380"),
+        ]}
+    ))
+    monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1", "conv-378"])
+    assert cycle_number.main() == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "378"
+    assert out.err.strip() == ""
+
+
+def test_main_without_a_conversation_id_warns_that_the_number_may_not_be_yours(monkeypatch, capsys):
+    """The failure this fixes looked exactly like success, so the one call
+    that can still produce a duplicate says so."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [conv("Nova — Cycle 380", id="conv-380")]}
+    ))
+    monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1"])
+    assert cycle_number.main() == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "380"
+    assert "concurrent cycles will collide" in out.err
+
+
+def test_main_rejects_too_many_arguments(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1", "conv-1", "extra"])
+    assert cycle_number.main() == 2
+
+
+# --- start times, for the journal card ------------------------------------
+#
+# The owner, capture 2026-08-24: *"I want the time slot on the journals to
+# be when they started, as it seems to show when they ended."* The
+# conversation's `createdAt` is the only measured wake time this system
+# keeps -- see `nova_journal.with_start_times`.
+
+
+def test_starts_come_off_created_at_keyed_by_cycle_number():
+    conversations = [
+        conv("Nova — Cycle 380", createdAt="2026-08-24T18:00:04.296Z"),
+        conv("Nova — Cycle 381", createdAt="2026-08-24T18:40:09.019Z"),
+    ]
+    assert cycle_number.starts_in(conversations, TAG) == {
+        380: "2026-08-24T18:00:04.296Z",
+        381: "2026-08-24T18:40:09.019Z",
+    }
+
+
+def test_another_heartbeats_conversations_are_not_start_times_for_these_cycles():
+    """The retrospective and the ideas run also target Nova and also count
+    from 1, so their `Cycle 3` is a different run three weeks from the
+    hourly loop's. Without the tag filter their `createdAt` lands on an
+    unrelated journal card."""
+    conversations = [
+        conv("Nova — Cycle 3", createdAt="2026-08-02T09:00:00Z"),
+        # The retro counter is on its own run 1, three weeks later. Both
+        # numbers have to be wrong for this to catch anything: an unfiltered
+        # sweep gains a `1` that belongs to Cycle 1 in early August, and
+        # would move that card by three weeks.
+        conv("Nova — retrospective — Cycle 1", tag="evolve-cycle:hb-retro",
+             createdAt="2026-08-24T04:00:00Z"),
+    ]
+    assert cycle_number.starts_in(conversations, TAG) == {
+        3: "2026-08-02T09:00:00Z",
+    }
+
+
+def test_the_earliest_of_two_conversations_sharing_a_number_wins():
+    """Three cycles were all numbered 380 on 2026-08-24. When work under one
+    number began is the earliest of them, and it must not depend on how the
+    API happened to sort the list."""
+    late = conv("Nova — Cycle 380", createdAt="2026-08-24T18:20:00Z")
+    early = conv("Nova — Cycle 380", createdAt="2026-08-24T18:00:00Z")
+    assert cycle_number.starts_in([late, early], TAG) == {
+        380: "2026-08-24T18:00:00Z",
+    }
+    assert cycle_number.starts_in([early, late], TAG) == {
+        380: "2026-08-24T18:00:00Z",
+    }
+
+
+def test_a_conversation_with_no_created_at_is_skipped_not_guessed():
+    conversations = [
+        conv("Nova — Cycle 12"),
+        conv("Nova — Cycle 13", createdAt="2026-08-24T18:00:00Z"),
+        conv("Agora Evolve", createdAt="2026-08-01T10:00:00Z"),
+    ]
+    assert cycle_number.starts_in(conversations, TAG) == {
+        13: "2026-08-24T18:00:00Z",
+    }
+
+
+def test_cycle_starts_answers_empty_rather_than_raising_when_agora_is_down():
+    """The only caller is the journal page. A page that will not render
+    because one timestamp source was unreachable is worse than a page
+    showing the write times it showed for its whole life until now."""
+    def boom(path):
+        raise OSError("no route to host")
+
+    monkeypatched = cycle_number.agora_get
+    try:
+        cycle_number.agora_get = boom
+        assert cycle_number.cycle_starts("hb-1") == {}
+        cycle_number.agora_get = lambda path: (503, {})
+        assert cycle_number.cycle_starts("hb-1") == {}
+        cycle_number.agora_get = lambda path: (200, {"conversations": [
+            conv("Nova — Cycle 9", createdAt="2026-08-24T18:00:00Z"),
+        ]})
+        assert cycle_number.cycle_starts("hb-1") == {
+            9: "2026-08-24T18:00:00Z",
+        }
+    finally:
+        cycle_number.agora_get = monkeypatched

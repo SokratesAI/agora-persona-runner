@@ -16,7 +16,7 @@ interface-compatibility with the other two providers and then ignored, so
 a claude-cli persona had the CLI's own built-in tools (Bash, Read, Write,
 ...) and none of Agora's -- no vault_read, no kubectl_read, no create_pr,
 no merge_pr -- while turns.py:build_system described every one of them to
-it in prose regardless. Edvard spotted the split from the outside:
+it in prose regardless. The owner spotted the split from the outside:
 *"There are different tools for you and Gemini? That should not be the
 case. Gemini and other agents should use the same custom tools as you
 do."* They do now -- caps is handed to tools_mcp, which serves the very
@@ -25,7 +25,7 @@ in-process, over MCP, back into this process.
 
 What has NOT changed: Agora's capability checkboxes still don't bound
 this provider the way they bound the other two. The CLI's own built-in
-tools stay unrestricted by default (Edvard's explicit 2026-08-01 call,
+tools stay unrestricted by default (the owner's explicit 2026-08-01 call,
 below), so caps widen what this persona can reach rather than limiting
 it. The calls also still happen in another pod and are invisible to this
 process while they run, which is why it hands the bridge a scoped
@@ -38,7 +38,7 @@ own audit(), which is the half carrying the before/after diff.
 v1 plan): unrestricted by default, same as an interactive Claude Code
 session -- the earlier always-on tool denylist was live-tested and found
 incomplete (the model found and used an unlisted tool to run real shell
-commands anyway), and Edvard's call was that restriction should be an
+commands anyway), and the owner's call was that restriction should be an
 explicit choice, not an incomplete default. `persona["claudeCliRestricted"]`
 (off unless a persona sets it) requests the bridge's full known-tool
 denylist for that persona's calls -- see agora-claude-bridge's
@@ -58,7 +58,7 @@ dropped them -- anthropic_generate and gemini_generate have built real
 image content blocks since 2026-07-24, and this one sent the text and
 nothing else, so an image reached the model as if it had never been
 attached. Harmless while claude-cli was Nova's own text-only lane; a live
-regression the moment Cycle 78 moved six of Edvard's chat personas onto
+regression the moment Cycle 78 moved six of the owner's chat personas onto
 it to get them off the metered API. The bridge now takes an `attachments`
 list and hands the CLI a real user message over --input-format stream-json
 (agora-claude-bridge's cli.write_stream_json_input) instead of a text-only
@@ -67,7 +67,9 @@ list and hands the CLI a real user message over --input-format stream-json
 import base64
 import json
 
-from agora_runner.config import CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN, RUNNER_SELF_URL
+from agora_runner.config import (CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN,
+                                 CLAUDE_CLI_CONCURRENT, NOVA_PERSONA_ID,
+                                 RUNNER_SELF_URL)
 from agora_runner.log import log
 from agora_runner.http_util import http_json, fetch_attachment_bytes
 from agora_runner.tool_activity import grant as grant_tool_activity, revoke as revoke_tool_activity
@@ -85,7 +87,7 @@ def _bridge_attachments(message):
     built real image blocks from 2026-07-24 and this provider built
     nothing, so a claude-cli persona saw an image as if it had never
     been sent. Harmless while claude-cli was Nova's own text-only lane;
-    a live regression the moment Cycle 78 moved six of Edvard's chat
+    a live regression the moment Cycle 78 moved six of the owner's chat
     personas onto it to get them off the metered API.
 
     Only the newest message, because unlike the stateless APIs this
@@ -105,6 +107,28 @@ def _bridge_attachments(message):
             entry["data"] = base64.b64encode(data).decode()
         out.append(entry)
     return out
+
+
+def _bridge_persona_id(persona):
+    """Which persona to tell the bridge about, for the memory pin only.
+
+    Every persona but one is itself. Nova is the exception, and it is not a
+    special case for its own sake: the bridge decides Nova's memory
+    directory from the *message*, not from an id -- `is_cycle_opening`
+    matches the heartbeat text, and a cycle gets `nova-memory`. But Nova is
+    also an ordinary Agora persona with an ordinary id, and a turn addressed
+    to it that is not a heartbeat -- the owner replying in a live Nova
+    conversation -- does not match that text. Sending the id on that turn
+    would pin `persona-memory/<nova id>`: a second, working memory that no
+    cycle ever reads and that never sees a cycle's notes, so Nova's memory
+    would silently split in two on the phrasing of the triggering message.
+    Sending nothing keeps that turn exactly as inert as it was before the
+    field existed, which is the honest state until one directory can serve
+    both -- the bridge would have to be told which id is Nova's, and that is
+    configuration this change does not need.
+    """
+    persona_id = (persona or {}).get("id") or ""
+    return "" if persona_id == NOVA_PERSONA_ID else persona_id
 
 
 def claude_cli_generate(model_id, thinking, system, history, caps, persona, conversation_id,
@@ -137,12 +161,28 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         "model": model_id,
         "restricted": bool(persona.get("claudeCliRestricted")),
         "stateless": bool(persona.get("claudeCliStateless")),
+        # Off unless CLAUDE_CLI_CONCURRENT is set on this deployment. See
+        # config.py: this is the 18-minute-cadence switch, and until it is
+        # on, a second heartbeat blocks on the bridge's lock rather than
+        # overlapping the first.
+        "allow_concurrent": CLAUDE_CLI_CONCURRENT,
+        # Which persona is speaking. The bridge uses it for one thing --
+        # pinning this persona's own auto-memory directory, so a chat
+        # persona remembers across conversations the way a Nova cycle
+        # remembers across cycles (idea #165). Until this field existed the
+        # bridge had no idea who it was running, so it pinned a memory
+        # directory only for a Nova cycle and every other turn fell back to
+        # the CLI's per-working-directory default -- which on a concurrent
+        # slot is a fresh, empty directory every single turn. That is why
+        # all three of Agora's memory stores measured empty: not a missing
+        # feature, a missing identity on this request.
+        "persona_id": _bridge_persona_id(persona),
     }
     if attachments:
         body["attachments"] = attachments
     # Live tool-use chips (2026-08-03): this call is about to block for up
     # to 45 minutes while the CLI does real work in another pod, and
-    # nothing about that work is visible to Edvard until it returns. The
+    # nothing about that work is visible to the owner until it returns. The
     # grant token lets the bridge narrate it as it happens, scoped to this
     # conversation and revoked the moment the call ends -- tool_activity.py
     # explains why it is a callback here rather than the bridge posting to

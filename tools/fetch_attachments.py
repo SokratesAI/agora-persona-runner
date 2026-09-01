@@ -1,6 +1,6 @@
 """Pull the images out of a capture file and onto local disk, so a cycle can look at them.
 
-Edvard, comments board 2026-08-21 15:51 and again at 16:06, sent a
+The owner, comments board 2026-08-21 15:51 and again at 16:06, sent a
 screenshot through the attach button Cycle 302 had just built for him. Both
 times the answer that appeared under his comment was *"Still nothing came
 through on my end — I can't see images in this chat, so whatever's in that
@@ -55,6 +55,11 @@ import re
 import subprocess
 import sys
 
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
 from agora_runner.nova_uploads import UPLOAD_PREFIX, decode_envelope, is_upload_name
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -66,12 +71,12 @@ VAULT_TOOL = "/app/bridge/vault_tool.py"
 #: one is invisible to it. That is a considered trade rather than an
 #: oversight: the names are content hashes, so re-fetching the same image
 #: overwrites rather than accumulates, and the total is bounded by the number
-#: of distinct images Edvard has ever sent, not by the number of cycles that
+#: of distinct images the owner has ever sent, not by the number of cycles that
 #: looked at them. If that stops being a small number, the fix is a rule in
 #: `tidy_workspace` that knows about this directory, not a cap here.
 DEFAULT_DIR = "/data/workspace/attachments"
 
-#: The shape `store_upload` puts into Edvard's files: `/api/upload/<32 hex>.<ext>`.
+#: The shape `store_upload` puts into the owner's files: `/api/upload/<32 hex>.<ext>`.
 #: Matched loosely and validated with `is_upload_name`, so a near-miss is
 #: reported rather than silently skipped.
 LINK = re.compile(r"/api/upload/([A-Za-z0-9._-]+)")

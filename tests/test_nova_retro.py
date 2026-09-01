@@ -21,6 +21,7 @@ from tools import append_retro
 from agora_runner.nova_retro import (
     RetroError,
     SCORE_KEYS,
+    WEEK_KEYS,
     append,
     load,
     retros_payload,
@@ -37,6 +38,12 @@ def row(**overrides):
         "good": "The loop ships something most cycles.",
         "bad": "It re-derives the same facts every time it wakes.",
         "changes": ["Write the pace number into the entry when it changed the pick."],
+        "week": {
+            "shipped": "The board can be filtered by project, and the app says what you missed.",
+            "broke": "The journal endpoint handed out four megabytes and the pod was killed for it.",
+            "stuck": "The outage alarm still waits on a GitHub notification nobody has confirmed.",
+            "change": "Ask whether an instrument has ever returned a value before believing it.",
+        },
     }
     base.update(overrides)
     return base
@@ -52,7 +59,7 @@ def test_the_three_scores_are_the_three_things_he_asked_to_be_rated():
     """Pinned as a literal, and this is the assertion the whole file is
     built around.
 
-    Edvard named three ratings -- how it is going, how effective, the
+    The owner named three ratings -- how it is going, how effective, the
     overall feeling -- and the last is the one he called the most
     important metric. A cycle renaming or dropping one would produce a
     ledger whose old rows and new rows plot different things on the same
@@ -94,6 +101,16 @@ def test_a_complete_row_is_accepted():
         (row(changes="one change"), "changes must be a list"),
         (row(changes=["", "real"]), "non-empty string"),
         (row(mood="fine"), r"unknown field\(s\) mood"),
+        (row(week="shipped a lot"), "week must be an object"),
+        (row(week={"shipped": "a", "broke": "b", "stuck": "c"}), "week is missing change"),
+        (
+            row(week={"shipped": "a", "broke": "b", "stuck": "c", "change": "d", "mood": "e"}),
+            r"week has unknown key\(s\) mood",
+        ),
+        (
+            row(week={"shipped": "a", "broke": "  ", "stuck": "c", "change": "d"}),
+            "week.broke must be a non-empty string",
+        ),
     ],
 )
 def test_a_row_that_would_corrupt_the_series_is_refused(bad, expected):
@@ -325,6 +342,103 @@ def _row_file(tmp_path):
     path = tmp_path / "row.json"
     path.write_text(json.dumps(row()), encoding="utf-8")
     return str(path)
+
+
+# --- the one screen (ideas.md #120) ------------------------------------
+
+
+def test_the_one_screen_is_the_four_parts_he_asked_for():
+    """Pinned as a literal, for `SCORE_KEYS`' reason and one more.
+
+    He wrote the four parts out himself -- *"what shipped, what broke,
+    what is still stuck, and the one thing you would want to change"* --
+    and the card draws them in this order because that is the order he
+    would read them in. A cycle renaming one would leave the old rows
+    carrying a key nothing draws, and the card would look complete with a
+    section silently missing."""
+    assert WEEK_KEYS == (
+        ("shipped", "What shipped"),
+        ("broke", "What broke"),
+        ("stuck", "What is still stuck"),
+        ("change", "The one thing I would change"),
+    )
+
+
+def test_every_part_of_the_one_screen_is_required_by_name():
+    """Each of the four, dropped in turn, refused by name.
+
+    Written as a loop for `test_no_score_is_the_only_optional_one`'s
+    reason: there is no favoured part, and a week where nothing broke is
+    a sentence saying so, not an absent field. The whole block missing is
+    covered separately -- that is a retro that forgot the screen, and it
+    is the failure this validator exists to make impossible."""
+    for key, _ in WEEK_KEYS:
+        week = {k: "something real" for k, _ in WEEK_KEYS}
+        del week[key]
+        with pytest.raises(RetroError, match=f"week is missing {key}"):
+            validate_row(row(week=week))
+    missing = row()
+    del missing["week"]
+    with pytest.raises(RetroError, match="week must be an object"):
+        validate_row(missing)
+
+
+def test_the_payload_carries_the_one_screen_the_card_draws():
+    payload = retros_payload(json.dumps(LEDGER))
+    assert payload["weekKeys"] == [
+        {"key": "shipped", "label": "What shipped"},
+        {"key": "broke", "label": "What broke"},
+        {"key": "stuck", "label": "What is still stuck"},
+        {"key": "change", "label": "The one thing I would change"},
+    ]
+    newest = payload["retros"][-1]["week"]
+    assert newest["change"] == (
+        "Ask whether an instrument has ever returned a value before believing it."
+    )
+    assert set(newest) == {key for key, _ in WEEK_KEYS}
+
+
+def test_a_retro_written_before_the_one_screen_existed_carries_none():
+    """The three retros already in the vault have no `week` block, and the
+    page has to be able to tell that from a summary it failed to read.
+
+    `None` rather than four empty strings, because the card decides
+    whether to draw at all on this value -- four empty strings would
+    render as this week's report with every section blank, which is worse
+    than the page saying nothing yet."""
+    old = row()
+    del old["week"]
+    payload = retros_payload(json.dumps({"retros": [old]}))
+    assert payload["retros"][0]["week"] is None
+
+
+def test_half_a_summary_is_no_summary_rather_than_half_a_card():
+    """A block missing a part cannot come from this loop -- the validator
+    refuses it -- so it is hand-edited or damaged, and the honest reading
+    is that there is nothing to draw."""
+    partial = row(week={"shipped": "a", "broke": "b", "stuck": "c"})
+    payload = retros_payload(json.dumps({"retros": [partial]}))
+    assert payload["retros"][0]["week"] is None
+
+
+def test_the_page_draws_exactly_the_parts_the_server_defines():
+    """`WEEK_KEYS` is the single source of truth and the browser cannot
+    import it, so the wire is the payload: `app.js` iterates
+    `payload.weekKeys` rather than naming the four parts itself.
+
+    Asserted as an absence, which is the only form this can take -- the
+    failure being guarded is a later cycle hard-coding the labels into the
+    card, at which point renaming a part on this side changes the ledger
+    and not the screen, silently."""
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "agora_runner" / "nova_public" / "app.js"
+    text = source.read_text(encoding="utf-8")
+    start = text.index("function renderWeekCard(")
+    body = text[start:text.index("\n  }", start)]
+    assert "payload.weekKeys" in body, "the card no longer reads its labels from the server"
+    for _key, label in WEEK_KEYS:
+        assert label not in body, f"the card hard-codes {label!r} instead of reading weekKeys"
 
 
 # --- the two sides of one key list, in two languages -------------------

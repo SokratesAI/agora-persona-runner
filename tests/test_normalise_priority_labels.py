@@ -1,4 +1,4 @@
-"""The tool that rewrites the ratings already sitting in Edvard's files.
+"""The tool that rewrites the ratings already sitting in the owner's files.
 
 The code change alone only fixes rows something touches again; this
 rewrites the ones already written. The whole risk is that the same four
@@ -6,7 +6,7 @@ glyphs appear throughout the `# Details` prose -- in his own sentences
 and in my write-ups explaining a rating -- so the tool has to be
 structural, and these tests are aimed at that rather than at the rename.
 
-It used to go one way only (glyph -> word, Cycle 268). Edvard reversed
+It used to go one way only (glyph -> word, Cycle 268). The owner reversed
 that the next morning, so the tests now fix the property that matters
 instead: **whatever `PRIORITY_LABELS` says is what ends up in the file,
 from any spelling that has ever been in it.** `test_it_follows_the_labels
@@ -77,7 +77,7 @@ def test_his_prose_is_not_touched():
 
 
 def test_a_bare_glyph_capture_gains_the_word_and_the_colon():
-    """The spelling that was never readable on its own -- Edvard's whole
+    """The spelling that was never readable on its own -- the owner's whole
     complaint -- and the one this has to leave carrying both halves."""
     out, changes = normalise(DOC)
     assert "- 🟠 High: the thing I typed on my phone" in out
@@ -130,7 +130,7 @@ def test_running_it_twice_changes_nothing_the_second_time():
 def test_it_follows_the_labels_rather_than_a_direction():
     """The property the first version of this tool did not have.
 
-    It matched on the glyph and wrote the word, so when Edvard reversed
+    It matched on the glyph and wrote the word, so when the owner reversed
     the decision it could not run: the cells it had already rewritten no
     longer carried anything it recognised. Keying on `priority_key`
     instead means a third reversal is an edit to `PRIORITY_LABELS` and

@@ -141,7 +141,7 @@ def test_the_capture_box_sends_the_revision_it_read():
 
 
 def test_a_capture_that_loses_a_race_is_not_lost():
-    """Edvard typing on his phone while a cycle boards the same file. Both
+    """The owner typing on his phone while a cycle boards the same file. Both
     lines have to survive; before this the cycle's write silently won."""
     path = nova_capture.CAPTURE_TARGETS["issues"]
     couch = FakeCouch()

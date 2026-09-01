@@ -14,7 +14,7 @@
  * against a payload generated from the real server functions
  * (tests/browser/regen.py), and click on things.
  */
-import { test, before, describe, after } from "node:test";
+import { test, before, beforeEach, afterEach, describe, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,26 @@ const payload = JSON.parse(readFileSync(join(here, "fixtures", "payload.json"), 
  * `openWindow` as the single door: a raw `new JSDOM` in this file is a leak,
  * and the last test in this file is what says so. */
 const openWindows = [];
+
+/* The registry used to hold every window until the file was done, and 562 live
+ * jsdom windows do not fit in a default V8 heap: the run died of SIGABRT after
+ * roughly 545 tests, at a different one each time, so every journal entry that
+ * said "551 browser tests green" was reading a run that never reached the end.
+ *
+ * `mark` is what makes the sweep safe. It is where the current test's own
+ * windows start, so a window opened inside a test body is closed the moment
+ * that test ends, and a window opened in a `before` hook -- which the suites
+ * below share across their tests -- sits under the mark and survives to the
+ * `after` at the bottom. A plain `afterEach` closes both and cost 45 failures
+ * when cycle 92 tried it; that is the distinction this counter is for, and it
+ * is why the answer here is not `--max-old-space-size`. */
+let mark = 0;
+beforeEach(() => {
+  mark = openWindows.length;
+});
+afterEach(() => {
+  for (const window of openWindows.splice(mark)) window.close();
+});
 after(() => {
   for (const window of openWindows.splice(0)) window.close();
 });
@@ -118,7 +138,7 @@ function notModified() {
  * endpoint costs the bubbles, not the feed" test reaches the catch that
  * app.js's Promise.all relies on.
  *
- * `digest` and `comments` override those two responses. The Needs Edvard
+ * `digest` and `comments` override those two responses. The Needs the owner
  * tests need both: the live fixture's digest asks for nothing (so the
  * section is hidden), and its comments carry no reply to it.
  *
@@ -129,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -166,6 +186,29 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // than a body no live server has ever sent.
       return res(retro || { scoreKeys: [], range: [1, 10], retros: [] }, retroStatus);
     }
+    if (url.includes("/api/next")) {
+      // Defaults to the empty shape rather than to nothing, because the
+      // live card is drawn on every visit to `/plan` and a page test that
+      // never saw it would be testing a page the owner does not have.
+      return res(next || { captures: [], next: [], waiting: [], active: [],
+                           projects: [], claimsReadable: true }, nextStatus);
+    }
+    /* The history panel first: it hangs off the same prefix, and a
+     * `/api/pool` branch that matched it would answer the History tap with
+     * the deck -- a panel that renders empty rather than failing. */
+    if (url.includes("/api/pool/history")) {
+      return res(poolHistory || { approved: [], rejected: [], missing: false }, poolStatus);
+    }
+    if (url.includes("/api/pool")) {
+      // A function, because a decision or a comment re-fetches the deck and
+      // the whole point is that the second answer differs from the first --
+      // a fixed body could never show his own words arriving back on the
+      // card. No default beyond the empty shape: an undecided pool that has
+      // never been refilled really is empty.
+      const body = typeof pool === "function" ? pool(url) : pool;
+      return res(body || { candidates: [], generateRequested: false, missing: false },
+                 poolStatus);
+    }
     if (url.includes("/api/plan")) {
       // No fixture default, for the reason `/api/retro` has none: both
       // documents are written by a cycle and a fresh vault has neither,
@@ -175,10 +218,66 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
     }
     if (url.includes("/api/notes")) {
       // No fixture default, for the reason `/api/retro` and `/api/plan`
-      // have none: a vault where Edvard has never left a note really is
+      // have none: a vault where the owner has never left a note really is
       // empty, and "nothing supplied" must mean that rather than a body
       // no live server has ever sent.
       return res(notes || { notes: [], waitingTotal: 0, readTotal: 0 }, notesStatus);
+    }
+    /* Three routes off one prefix, told apart most-specific first. A
+     * `/api/conversations` branch that matched before its own two children
+     * would answer the thread fetch with the listing, and the page would
+     * render an empty conversation rather than fail -- the kind of wrong
+     * that looks like "he has not said anything yet". */
+    if (url.includes("/api/conversations/thread")) {
+      const body = typeof convThread === "function" ? convThread(url) : convThread;
+      if (body && typeof body.then === "function") return body;
+      return res(body || { conversationId: null, messages: [], waiting: false }, convStatus);
+    }
+    /* The route is gone from the server (#119, the app is Nova-only), so
+     * the honest stub is the 404 a live site would send -- and it records
+     * the ask, because the branch below would answer this URL with the
+     * conversation *list* and the page would look like it worked. */
+    if (url.includes("/api/conversations/personas")) {
+      window.askedForPersonas = true;
+      return res({ error: "not found" }, 404);
+    }
+    if (url.includes("/api/conversations")) {
+      // Its own status, defaulting to `convStatus`. The listing and the
+      // thread fail independently in real life, and the deep-link path
+      // reads both -- one knob cannot express "the name lookup failed
+      // and the messages arrived", which is the case worth pinning.
+      //
+      // A function, for `convThread`'s reason and one of its own: the
+      // switcher now fetches this route more than once per window (it
+      // repaints from its last answer and refreshes behind it), so a test
+      // about the *second* open cannot express itself with one fixture.
+      // A function may return a promise, which is how a test holds the
+      // refresh in flight and looks at what is on screen meanwhile.
+      const body = typeof convList === "function" ? convList(url) : convList;
+      if (body && typeof body.then === "function") return body;
+      return res(body || { conversations: [] }, convListStatus || convStatus);
+    }
+    /* Only the listing needs a branch: the two writes are POSTs, and
+     * `window.fetch` answers every POST from `window.postReply` before
+     * `serve` is ever reached. */
+    if (url.includes("/api/heartbeats")) {
+      return res(hbList || { heartbeats: [] }, hbStatus);
+    }
+    if (url.includes("/api/project")) {
+      // A function, because the index and one project are the same view
+      // over two URLs and a test has to be able to answer the two
+      // differently. No default fixture beyond the empty shape: a board
+      // with no `Project` cell filled in is a real state.
+      const body = typeof project === "function" ? project(url) : project;
+      // A promise body, for `convList`'s reason: it is how a test holds the
+      // index in flight and looks at what the page does meanwhile.
+      if (body && typeof body.then === "function") return body;
+      return res(body || { projects: [], name: null, asked: "", boards: {} }, projectStatus);
+    }
+    if (url.includes("/api/catalog")) {
+      // No default fixture beyond the empty shape, for retro and plan's
+      // reason: a vault with no catalog written yet is a real state.
+      return res(catalog || { services: [], doors: [], missing: true }, catalogStatus);
     }
     if (url.includes("/api/ask")) {
       // A function, because the point of most of these tests is that the
@@ -355,7 +454,7 @@ describe("cards expand and collapse", () => {
   test("a click anywhere on the card expands it, not just the header", () => {
     // `.entry-body` used to be in this list -- it was the furthest thing from
     // the header that is still the card. It is deliberately not any more:
-    // Edvard asked for the full journal to close when its own text is
+    // The owner asked for the full journal to close when its own text is
     // clicked, so inside the body a click means "shut this drawer" rather
     // than "collapse the card". That is pinned below instead.
     for (const selector of [".entry-brief", ".entry-meta", ".entry-toggle"]) {
@@ -419,7 +518,7 @@ describe("cards expand and collapse", () => {
   });
 });
 
-/* Edvard, on the comments board at cycle 81: "i do not like the double entry
+/* the owner, on the comments board at cycle 81: "i do not like the double entry
  * Journal cards. If a double entry is necessary like for cycle 81, have it be
  * combined into one card that has tabs or something similar. Its confusing
  * that its two separate cards."
@@ -430,7 +529,7 @@ describe("cards expand and collapse", () => {
  * card, an addendum summarising itself so the two would not look identical,
  * an anchor id and a comment bubble owned by whichever card came first. All
  * of that machinery existed only because there were two cards. */
-/* Edvard, issues #86, on the feed rather than on `/cycle/N`. The two
+/* the owner, issues #86, on the feed rather than on `/cycle/N`. The two
  * surfaces draw a card from the same rules and #199 made that deliberate,
  * so the rule is asserted on both -- it lives in two functions. */
 describe("a feed card carries one title, not two", () => {
@@ -470,16 +569,67 @@ describe("a feed card carries one title, not two", () => {
       lineBrief(payload.digest.lines.find((l) => l.cycle === solo.cycle)));
   });
 
-  test("a cycle with no digest line keeps it, since nothing else labels the card", async () => {
+  /* the owner, comments board 2026-08-22: "Sometimes there are two titles and
+   * they repeat eachoter with different words ... I like the one with the
+   * colored backline", then "The one line summary can be cut." The card he
+   * photographed had no digest line, so #86's rule did not cover it and the
+   * heading title sat above the entry's own brief, saying the same thing. */
+  test("a cycle briefed from its own prose drops its heading title too", async () => {
     const solo = soloCycle();
     const journal = JSON.parse(JSON.stringify(payload.journal));
-    const title = "The only sentence on this card that was written as a title";
-    journal.entries.find((e) => e.cycle === solo.cycle).title = title;
+    const entry = journal.entries.find((e) => e.cycle === solo.cycle);
+    entry.title = "A heading repeating the entry's own opening sentence";
+    entry.briefSpans = [{ kind: "text", text: "The brief the entry wrote for itself." }];
     const window = await loadSite("/", {
       journal: () => journal,
       digest: withoutDigestLine(solo.cycle),
     });
-    assert.equal(cardFor(window, solo.cycle).querySelector(".entry-title").textContent, title);
+    const card = cardFor(window, solo.cycle);
+    assert.equal(card.querySelector(".entry-title"), null);
+    // Not vacuous: the label that replaced it is still drawn.
+    assert.equal(card.querySelector(".entry-brief").textContent,
+      "The brief the entry wrote for itself.");
+  });
+
+  /* Nothing to label the card with: no digest line, no brief of its own,
+   * and no prose for the `is-unsplit` fallback to brief from either. That
+   * fallback fills the same slot, so it counts as a label -- a card that
+   * falls back to it and *also* draws the title is the bug again. */
+  test("a card with no brief at all keeps its title, since nothing else labels it", async () => {
+    const solo = soloCycle();
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const title = "The only sentence on this card that was written as a title";
+    const entry = journal.entries.find((e) => e.cycle === solo.cycle);
+    entry.title = title;
+    entry.briefSpans = [];
+    entry.blocks = [];
+    const window = await loadSite("/", {
+      journal: () => journal,
+      digest: withoutDigestLine(solo.cycle),
+    });
+    const card = cardFor(window, solo.cycle);
+    assert.equal(card.querySelector(".entry-title").textContent, title);
+    assert.equal(card.querySelector(".entry-brief"), null);
+  });
+
+  /* The stale-payload path: sw.js can pair this app.js with a payload that
+   * has no `briefSpans` at all, and the card then briefs from the digest
+   * line's raw text. That is still a label, so the title stays out. */
+  test("a card briefed by the is-unsplit fallback drops its title too", async () => {
+    const solo = soloCycle();
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const entry = journal.entries.find((e) => e.cycle === solo.cycle);
+    entry.title = "A heading beside a fallback brief saying the same thing";
+    entry.briefSpans = [];
+    const digest = JSON.parse(JSON.stringify(payload.digest));
+    const line = digest.lines.find((l) => l.cycle === solo.cycle);
+    delete line.briefSpans;
+    line.text = "The whole digest line, unsplit, because the payload is old.";
+    const window = await loadSite("/", { journal: () => journal, digest });
+    const card = cardFor(window, solo.cycle);
+    assert.equal(card.querySelector(".entry-title"), null);
+    assert.equal(card.querySelector(".entry-brief.is-unsplit").textContent,
+      "The whole digest line, unsplit, because the payload is old.");
   });
 });
 
@@ -546,7 +696,7 @@ describe("two entries for one cycle are one card", () => {
 
   test("the digest summary renders its bold instead of showing asterisks", () => {
     // The digest line was the only text on the page rendering its own
-    // markup, and it is the line Edvard called hard to read.
+    // markup, and it is the line the owner called hard to read.
     const summary = cards(window)[0].querySelector(".entry-brief");
     assert.equal(summary.querySelectorAll("strong").length, 1);
     assert.equal(
@@ -578,7 +728,7 @@ describe("two entries for one cycle are one card", () => {
    * that may not agree. The fixture's only two-entry cycle carries identical
    * fields on both entries, so a mutation from `settled` back to the earliest
    * part passes every other test in this file. */
-  test("the card takes its outcome from the last part that has one", async () => {
+  test("the card takes its PR from the last part that has one", async () => {
     // Cycle 102 on the live pod: the base entry carries no PR and no outcome,
     // the addendum carries `#86 / merged`. Reading the earliest part shows a
     // cycle that merged a PR as having done nothing.
@@ -592,13 +742,16 @@ describe("two entries for one cycle are one card", () => {
     parts[0].outcome = "merged";
     const w = await loadSite("/", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta");
+    // The PR, not the outcome: the card stopped drawing the outcome pill
+    // (see "the feed card carries no outcome pill" below), so the PR badge
+    // is what pins `settledPart` here now. It is the same field read off the
+    // same part, so a mutation back to the earliest part still fails.
     assert.match(meta.textContent, /#86/);
-    assert.match(meta.textContent, /merged/);
     // The stamp still belongs to the earliest part: that is when it began.
     assert.match(meta.textContent, new RegExp(parts[1].time));
   });
 
-  /* Edvard's issues.md #59, the three small pickings on the journal card.
+  /* the owner's issues.md #59, the three small pickings on the journal card.
    * Each of these asserts an absence, so each one also proves the selector
    * matches something when the thing is present -- Cycle 202 shipped a
    * `.prio-picker` assertion against markup that never rendered that class
@@ -661,12 +814,17 @@ describe("two entries for one cycle are one card", () => {
     const w = await loadSite("/", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(meta.textContent, /#89/);
-    assert.match(meta.textContent, /merged/);
-    assert.ok(!/no-op/.test(meta.textContent), meta.textContent);
-    // The page reads off the same function, so it must agree.
+    // The addendum's `none` is the thing that must not win. The card no
+    // longer prints the outcome word, so this is the assertion carrying the
+    // claim -- reading the earliest part would print `none` here.
+    assert.ok(!/none/.test(meta.textContent), meta.textContent);
+    // The page reads off the same function, so it must agree -- and it does
+    // still print the outcome, which is where `merged` is checked.
     const page = await loadSite("/cycle/57", { journal: () => journal });
     const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(pageMeta.textContent, /#89/);
+    assert.match(pageMeta.textContent, /merged/);
+    assert.ok(!/no-op/.test(pageMeta.textContent), pageMeta.textContent);
   });
 
   test("a qualified `none` is still a none", async () => {
@@ -683,7 +841,7 @@ describe("two entries for one cycle are one card", () => {
     const w = await loadSite("/", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(meta.textContent, /#32/);
-    assert.match(meta.textContent, /shipped/);
+    assert.ok(!/status note/.test(meta.textContent), meta.textContent);
   });
 
   test("a part of the card that reached a different answer keeps its own row", async () => {
@@ -693,12 +851,172 @@ describe("two entries for one cycle are one card", () => {
     parts[1].pr = "none (status note)";
     parts[1].prSpans = [{ kind: "text", text: "none (status note)" }];
     parts[0].outcome = "merged";
+    parts[0].pr = "#91";
+    parts[0].prSpans = [{ kind: "text", text: "#91" }];
     const w = await loadSite("/", { journal: () => journal });
     const card = cards(w)[0];
-    assert.match(card.querySelector(".entry-meta").textContent, /merged/);
+    assert.match(card.querySelector(".entry-meta").textContent, /#91/);
     const own = card.querySelector(".entry-meta-part");
     assert.ok(own, "the disagreeing part must keep a row of its own");
+    // Inside the drawer the outcome survives, which is the whole reason the
+    // row exists -- the part's answer differs and nothing else says so.
     assert.match(own.textContent, /no-op/);
+  });
+
+  /* the owner, comments board 2026-08-23, on cycle 340's card: "What is this new
+   * grey title? ... This is ugly and seems like information i do not need or
+   * want", then "Sure. Cut it" to dropping the pill from the card. His card
+   * had a free-text Outcome 84 characters long, uppercased by the stylesheet,
+   * sitting where a one-word badge goes.
+   *
+   * Each half is a control for the other: the same fixture, the same
+   * selector, present on `/cycle/<n>` and absent on the feed. Without the
+   * page half this passes for a misspelled selector, which is how Cycle 202
+   * shipped an assertion against markup that never rendered. */
+  test("a free-text outcome draws no pill on the feed card, and /cycle/<n> still does", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const parts = journal.entries.filter((e) => e.cycle === 57);
+    parts.forEach((e) => {
+      e.outcome = "prompt.md wired to tools.backlog_brief; capture inbox cleared";
+      e.outcomeDetail = "";
+    });
+
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.ok(!/backlog_brief/.test(meta.textContent), meta.textContent);
+    assert.equal(meta.querySelector(".badge"), null);
+
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(pageMeta.textContent, /backlog_brief/);
+    assert.ok(pageMeta.querySelector(".badge"), "the page keeps the pill");
+  });
+
+  /* The other half of the rule, and the one the owner asked for back on
+   * 2026-08-24: "i miss the status fields. Please bring them back." A word
+   * from the closed vocabulary is a badge, so it goes back on the card; the
+   * clause above is what stays cut. Of 411 outcomes in the live journal, 404
+   * are one of these seven words, so this is the case that decides whether
+   * he sees a status at all when he scrolls the feed.
+   *
+   * The free-text test above is this one's control: same selector, same
+   * fixture shape, opposite verdict, so neither can pass by accident. */
+  test("a one-word outcome is back on the feed card", async () => {
+    for (const [word, cls] of [["merged", "badge-good"], ["stuck", "badge-warn"], ["report", null]]) {
+      const journal = JSON.parse(JSON.stringify(payload.journal));
+      journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+        e.outcome = word;
+        e.outcomeDetail = "";
+      });
+      const w = await loadSite("/", { journal: () => journal });
+      const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+      const badge = meta.querySelector(".badge");
+      assert.ok(badge, `no pill for ${word}: ${meta.textContent}`);
+      assert.equal(badge.textContent, word);
+      if (cls) assert.ok(badge.classList.contains(cls), `${word} should be ${cls}`);
+    }
+  });
+
+  /* `Outcome: none` draws nothing, on the card or in the header. The
+   * vocabulary held `none` for one cycle on the theory that it was a word
+   * the footer offers; the archive has zero of them in 414 entries, and
+   * `isRealPr` exists precisely to keep the word "none" off the header --
+   * so admitting it as a badge would have restored #300's complaint through
+   * the other field. The header half of this is in the status-fields suite
+   * below, where `withStatus` is in scope. This is the test the narrowing
+   * rests on: it fails the
+   * moment `shortOutcome` gets permissive again, which the two "free text
+   * draws nothing" tests beside it cannot see, because free text was
+   * refused before this change as well. */
+  test("an outcome of none is not a status word on the card", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.outcome = "none";
+      e.outcomeDetail = "";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta.querySelector(".badge"), null, meta.textContent);
+    // The control: the same fixture with a real status word does draw one,
+    // so this is not asserting against a selector that never matches.
+    const journal2 = JSON.parse(JSON.stringify(payload.journal));
+    journal2.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.outcome = "research";
+      e.outcomeDetail = "";
+    });
+    const w2 = await loadSite("/", { journal: () => journal2 });
+    const meta2 = cards(w2)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta2.querySelector(".badge").textContent, "research");
+  });
+
+  /* The qualifier stays off the card even when the word beside it is back --
+   * it is the prose half, and prose in a badge row is what #300 cut. */
+  test("a one-word outcome brings back the word, not its qualifier", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.outcome = "stuck";
+      e.outcomeDetail = "CI outage, merged nothing";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.ok(meta.querySelector(".badge"), "the word is drawn");
+    assert.equal(meta.querySelector(".outcome-detail"), null);
+  });
+
+  /* Cycle 340's own card is `PR: none | Outcome: <a whole clause>`. Cutting
+   * the pill and keeping the `none` leaves the card saying one dim word that
+   * answers a question nothing else on it asks. On the page, where the pill
+   * survives, `none` is still the object of a sentence -- so this is the
+   * feed's rule, not a rule about the string. */
+  test("a card whose cycle shipped no PR says nothing, but the page still says none", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "none";
+      e.prSpans = [{ kind: "text", text: "none" }];
+      e.outcome = "no-op";
+      e.outcomeDetail = "";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta.querySelector(".pr"), null);
+
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(pageMeta.textContent, /none/);
+    assert.ok(pageMeta.querySelector(".pr"), "the page keeps the badge");
+  });
+
+  /* The control for the rule above: a real reference is still drawn on the
+   * card. Without this, deleting the PR badge from the feed entirely would
+   * satisfy the test above. */
+  test("a card whose cycle shipped a real PR still names it", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "runner#300";
+      e.prSpans = [{ kind: "text", text: "runner#300" }];
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.match(meta.textContent, /runner#300/);
+  });
+
+  /* The qualifier is not a separate opinion, it is the tail of the pill's
+   * sentence -- five entries read "stuck — CI outage, merged nothing". Cutting
+   * the pill and leaving that behind puts a bare subordinate clause on the
+   * card, which is the same complaint with fewer words. */
+  test("the qualifier goes with the pill it qualifies", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.outcome = "stuck";
+      e.outcomeDetail = "CI outage, merged nothing";
+    });
+    const w = await loadSite("/", { journal: () => journal });
+    const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.equal(meta.querySelector(".outcome-detail"), null);
+
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pageMeta = page.document.querySelector(".entry-meta:not(.entry-meta-part)");
+    assert.ok(pageMeta.querySelector(".outcome-detail"), "the page keeps it");
   });
 });
 
@@ -733,9 +1051,22 @@ describe("PR references are links", () => {
     );
   });
 
-  test("a footer with no reference in it makes no link", () => {
-    const card = cards(window).find((c) => c.querySelector(".pr").textContent === "none");
-    assert.equal(card.querySelectorAll(".pr a").length, 0);
+  /* This used to read off a feed card. The feed no longer draws the badge
+   * for a `none` at all -- see "a card whose cycle shipped no PR says
+   * nothing" -- so the claim moves to `/cycle/<n>`, which still draws it.
+   * The claim itself is unchanged: a footer that names no reference must
+   * not linkify the word standing in for one. */
+  test("a footer with no reference in it makes no link", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    journal.entries.filter((e) => e.cycle === 57).forEach((e) => {
+      e.pr = "none";
+      e.prSpans = [{ kind: "text", text: "none" }];
+    });
+    const page = await loadSite("/cycle/57", { journal: () => journal });
+    const pr = page.document.querySelector(".entry-meta .pr");
+    assert.ok(pr, "the page draws the badge, so there is something to check");
+    assert.equal(pr.textContent, "none");
+    assert.equal(pr.querySelectorAll("a").length, 0);
   });
 
   test("links open away from the PWA without handing it the opener", () => {
@@ -761,7 +1092,7 @@ describe("PR references are links", () => {
 });
 
 describe("a journal card names the board item it worked on", () => {
-  /* Edvard, ideas.md #68: "Journal cards in Nova should mark the issue or
+  /* the owner, ideas.md #68: "Journal cards in Nova should mark the issue or
    * idea number they worked on like they do with the prs. With links."
    *
    * No live entry carries the field yet -- it starts from the next one
@@ -809,7 +1140,7 @@ describe("a journal card names the board item it worked on", () => {
 });
 
 describe("an outdated row leaves Open without claiming it shipped", () => {
-  /* Edvard, issues.md #85: "Some of them are implemented and some of them
+  /* the owner, issues.md #85: "Some of them are implemented and some of them
    * are outdated. We need to clean it up. Maybe we need a new status called
    * 'outdated', so i can go through them and delete them myself." A cycle
    * writes the status; he deletes the row. So the two things that have to
@@ -872,7 +1203,7 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
      * picker drawn here would be a control whose only outcome is a
      * rejection — the same reason a done row has never had one. The
      * picker lives in the row's header now, not a body only an open row
-     * renders (Edvard, 2026-08-14: "the priority button should be the
+     * renders (the owner, 2026-08-14: "the priority button should be the
      * priority tag instead"), so there is no need to open the row to
      * check for it -- and payload.board.items[1] is unrated in the
      * fixture, so a non-editable row shows no chip at all rather than a
@@ -891,6 +1222,78 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
     const trigger = openRow.querySelector(".item-meta-row > .chip.prio");
     assert.ok(trigger, "the selector matches nothing at all, so the assertion above is vacuous");
     assert.equal(trigger.tagName, "BUTTON", "an editable row's chip should be a clickable trigger");
+  });
+});
+
+/* The `Project` chip row -- idea #92's phase 2. The chip is the whole
+ * feature from where he stands: the column exists to be filtered on, and
+ * a column nothing filters on is a column he has to read cell by cell.
+ *
+ * The hidden-while-uniform case is the one worth pinning rather than the
+ * obvious one. Both live boards ship with every row on the same project,
+ * so the state this page spends its first hour in is the state where the
+ * control must not appear -- and a chip row that rendered anyway would
+ * look perfectly correct in a screenshot. */
+describe("the project chips filter the board and hide themselves when they cannot", () => {
+  const projectBoard = (names) => {
+    const board = JSON.parse(JSON.stringify(payload.board));
+    board.items.forEach((item, index) => { item.project = names[index % names.length]; });
+    return (url) => (url.includes("item=") ? null : board);
+  };
+  const rows = (window) =>
+    [...window.document.querySelectorAll(".item")].map((r) => r.id);
+  const projectChips = (window) =>
+    [...window.document.querySelectorAll(".filter-project")].map((c) => c.textContent);
+
+  test("one project on every row means no chips at all", async () => {
+    const window = await loadSite("/issues", { board: projectBoard(["Nova"]) });
+    click(window, window.document.querySelector(".board-filter-btn"));
+    assert.deepEqual(projectChips(window), [],
+      "a chip row appeared for a board with one project on it");
+  });
+
+  test("a second project makes the row appear, and tapping one cuts the board to it", async () => {
+    const board = projectBoard(["Nova", "Agora"]);
+    const window = await loadSite("/issues", { board });
+    click(window, window.document.querySelector(".board-filter-btn"));
+    const chips = projectChips(window);
+    assert.ok(chips.some((c) => c.startsWith("Agora")),
+      "no Agora chip on a board that has Agora rows: " + chips.join(","));
+    const before = rows(window);
+    const agora = [...window.document.querySelectorAll(".filter-project")]
+      .filter((c) => c.textContent.startsWith("Agora"))[0];
+    click(window, agora);
+    const after = rows(window);
+    assert.ok(after.length > 0 && after.length < before.length,
+      "picking a project changed nothing: " + before.length + " -> " + after.length);
+    // Every row still shown must actually be that project -- the count in
+    // the chip label agreeing is not the same assertion.
+    const shown = board("").items.filter((i) => after.includes("item-" + i.number));
+    assert.ok(shown.length && shown.every((i) => i.project === "Agora"),
+      "a row from another project survived the project filter");
+  });
+
+  test("tapping the chip that is already on clears it", async () => {
+    const window = await loadSite("/issues", { board: projectBoard(["Nova", "Agora"]) });
+    click(window, window.document.querySelector(".board-filter-btn"));
+    const pick = () => [...window.document.querySelectorAll(".filter-project")]
+      .filter((c) => c.textContent.startsWith("Agora"))[0];
+    const all = rows(window).length;
+    click(window, pick());
+    assert.ok(rows(window).length < all, "the filter did not apply, so clearing it pins nothing");
+    click(window, pick());
+    assert.equal(rows(window).length, all);
+  });
+
+  test("a project pick lights the dot on the closed filter button", async () => {
+    const window = await loadSite("/issues", { board: projectBoard(["Nova", "Agora"]) });
+    const btn = () => window.document.querySelector(".board-filter-btn");
+    assert.ok(!btn().classList.contains("on"), "the dot was lit before anything was picked");
+    click(window, btn());
+    click(window, [...window.document.querySelectorAll(".filter-project")]
+      .filter((c) => c.textContent.startsWith("Agora"))[0]);
+    assert.ok(btn().classList.contains("on"),
+      "the one filter that can empty the board left no sign it was on");
   });
 });
 
@@ -955,8 +1358,8 @@ describe("a board link opens the row it names", () => {
 });
 
 describe("an ask lives on the card that raised it", () => {
-  /* Edvard, comments board 2026-08-16: "the solution i want is to remove the
-   * 'needs Edvard' block entirely. If you need something from me, it should
+  /* the owner, comments board 2026-08-16: "the solution i want is to remove the
+   * 'needs the owner' block entirely. If you need something from me, it should
    * be added in the Journal card somehow and i'll answer in the comment of a
    * journal card. [...] add a new yellow block below the title or somehow
    * higlight your issue so that i see it." */
@@ -1004,6 +1407,53 @@ describe("an ask lives on the card that raised it", () => {
     assert.ok(card.classList.contains("is-commenting"));
   });
 
+  /* the owner, unboarded capture 2026-08-25: *"Small bug. Journal comments seem
+   * to expand themselves when i refresh the page even though i just closed
+   * them."*
+   *
+   * The auto-open above is the only drawer on this page that opens itself,
+   * and its "once" was kept in memory, so a refresh handed it back. jsdom
+   * gives each window its own store, so a second `loadSite` really is a
+   * fresh device and the mark has to be seeded to express "he has seen it".
+   */
+  const askMarks = (window) => JSON.parse(window.localStorage.getItem("nova.askOpened.v1") || "null");
+
+  test("the first load records that it opened the ask drawer", async () => {
+    const journal = asking("Decide about the node.");
+    const window = await loadSite("/", { journal: () => journal });
+    const cycle = journal.entries[0].cycle;
+    assert.ok(
+      window.document.querySelector(".entry-ask").closest(".entry").classList.contains("is-commenting"),
+      "the drawer should still open on a device that has not seen this ask",
+    );
+    assert.deepEqual(askMarks(window), { [String(cycle)]: true }, "the auto-open was not recorded");
+  });
+
+  test("a reload leaves the ask drawer shut once it has opened once", async () => {
+    const journal = asking("Decide about the node.");
+    const cycle = journal.entries[0].cycle;
+    const window = await loadSite("/", {
+      journal: () => journal,
+      install: (w) => w.localStorage.setItem("nova.askOpened.v1", JSON.stringify({ [String(cycle)]: true })),
+    });
+    const card = window.document.querySelector(".entry-ask").closest(".entry");
+    assert.ok(card.querySelector(".entry-ask"), "the ask itself must still be on the card");
+    assert.equal(
+      card.classList.contains("is-commenting"),
+      false,
+      "the drawer reopened itself on a reload -- this is the bug he reported",
+    );
+  });
+
+  test("a card with no ask spends nothing, so its own ask still opens later", async () => {
+    /* The mark is written where the drawer opens, not where a card renders.
+     * Marking every card would spend the one auto-open each ask is owed
+     * before the ask was ever written, and no test above would notice. */
+    const window = await loadSite("/");
+    assert.equal(window.document.querySelector(".entry-ask"), null, "the plain fixture should carry no ask");
+    assert.deepEqual(askMarks(window), null, "a feed with no ask in it wrote a mark");
+  });
+
   test("a two-part cycle shows both of its asks, not just the first", async () => {
     /* Reviewer finding, Cycle 247. The server cuts each part's ask out of
      * that part's own prose, so an ask the card declines to render is gone
@@ -1024,9 +1474,9 @@ describe("an ask lives on the card that raised it", () => {
     assert.equal(ask.querySelectorAll(".entry-ask-label").length, 1);
   });
 
-  /* Edvard, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
-   * 'needs Edvard' block on an entry, minimize it instead of leaving it
-   * full-size -- and let Edvard minimize it himself too. Don't delete it,
+  /* the owner, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
+   * 'needs the owner' block on an entry, minimize it instead of leaving it
+   * full-size -- and let the owner minimize it himself too. Don't delete it,
    * just collapse it." */
 
   /** The cycle the fixture's newest entry belongs to. */
@@ -1083,7 +1533,7 @@ describe("an ask lives on the card that raised it", () => {
      * like every card with nothing to answer.
      *
      * Reviewer finding, Cycle 249. This test used to assert `ask.hidden ===
-     * false` and that the label read "Needs Edvard", which nothing in the
+     * false` and that the label read "Needs the owner", which nothing in the
      * feature can move: `setAskOpen` never touches `ask.hidden`, and the
      * label was rendered unconditionally before the change too. It passed
      * with the whole feature reverted. What it has to assert is the
@@ -1192,7 +1642,7 @@ describe("an ask lives on the card that raised it", () => {
   });
 });
 
-/* Edvard, in issue #59: "its not the link thats the problem, its the single
+/* the owner, in issue #59: "its not the link thats the problem, its the single
  * view that is bad ui... does not make sense, is hard to understand and
  * wasteful", and on the comments board: "If a double entry is necessary like
  * for cycle 81, have it be combined into one card".
@@ -1404,7 +1854,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
     assert.ok(headings[1].startsWith("Addendum · "), headings[1]);
   });
 
-  /* Tabs, which is what Edvard asked for three times (issues.md #59, and
+  /* Tabs, which is what the owner asked for three times (issues.md #59, and
    * the comments board at cycle 81) and did not get twice. The tests below
    * pin the behaviour that makes a tab acceptable rather than the fact that
    * one exists: exactly one part visible, all of them still in the DOM, the
@@ -1532,24 +1982,63 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
   /* 26 single-entry cycles carry a real title. The first version of this
    * page rendered titles only as part subheadings, and a single part gets
    * none, so all 26 lost theirs -- invisible in the fixture, which is why
-   * this asserts on a literal rather than on "a title element exists". */
-  test("a one-part cycle's title is shown, since it has no subheading to live in", async () => {
+   * this asserts on a literal rather than on "a title element exists".
+   *
+   * This is now the only case that draws one: no digest line *and* no
+   * brief of the entry's own, so the title is the card's only label. */
+  test("a one-part cycle's title is shown when the card has no brief at all", async () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
-    // No digest line for this cycle: that is the case where the title is the
-    // only label the card has. The digest-line case is the test below, and
-    // this one asserted whichever solo cycle came first until #86 split them.
     const solo = journal.entries.find(
       (e) => e.cycle !== null
         && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
     );
     solo.title = "The heartbeat was never late; the clock on the card was invented";
+    solo.briefSpans = [];
     const digest = JSON.parse(JSON.stringify(payload.digest));
     digest.lines = digest.lines.filter((l) => l.cycle !== solo.cycle);
     const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal, digest });
     assert.equal(cards(window)[0].querySelector(".entry-title").textContent, solo.title);
   });
 
-  /* Edvard, issues #86: "Journal cards like cycle 209 seems to have two
+  /* the owner, comments board 2026-08-22, on a screenshot of cycle 329's card:
+   * "Sometimes there are two titles and they repeat eachoter with different
+   * words. See image. I like the one with the colored backline", then "The
+   * one line summary can be cut."
+   *
+   * The card he photographed had no digest line, so #86's rule did not
+   * apply and the heading title was drawn above the entry's own brief --
+   * which opens by restating the heading. The coloured backline is
+   * `.entry-brief`, so that is the one that stays. */
+  test("a cycle briefed from its own prose shows that and not its heading title", async () => {
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const solo = journal.entries.find(
+      (e) => e.cycle !== null
+        && journal.entries.filter((o) => o.cycle === e.cycle).length === 1
+        && (e.briefSpans || []).length
+    );
+    assert.ok(solo, "the fixture must contain a solo cycle briefed from its own prose");
+    solo.title = "A heading saying the same thing the entry's first sentence says";
+    // Written in, not read back out of the fixture: an assertion computed
+    // from `solo.briefSpans` compares the render to its own input, so a
+    // mutation moves both sides together. Two spans of different kinds
+    // because every brief in the fixture is a single plain-text span, and
+    // real ones carry `strong` and `code`.
+    solo.briefSpans = [
+      { kind: "text", text: "The brief the entry wrote for itself, in " },
+      { kind: "code", text: "app.js" },
+    ];
+    const digest = JSON.parse(JSON.stringify(payload.digest));
+    digest.lines = digest.lines.filter((l) => l.cycle !== solo.cycle);
+    const window = await loadSite("/cycle/" + solo.cycle, { journal: () => journal, digest });
+    const card = cards(window)[0];
+    assert.equal(card.querySelector(".entry-title"), null);
+    // Not vacuous: the brief the title was competing with is still drawn,
+    // so this cannot pass by the card having lost both labels.
+    assert.equal(card.querySelector(".entry-brief").textContent.trim(),
+      "The brief the entry wrote for itself, in app.js");
+  });
+
+  /* the owner, issues #86: "Journal cards like cycle 209 seems to have two
    * titles. Only one is enough." The digest line is the one he reads. */
   test("a cycle with a digest line shows that and not its heading title too", async () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
@@ -1625,7 +2114,7 @@ describe("the vault cannot inject markup", () => {
   });
 });
 
-/* Edvard, issues.md 2026-08-09: "when a journey card is opened, the Digest is
+/* the owner, issues.md 2026-08-09: "when a journey card is opened, the Digest is
  * revealed. Below that, a 'read the full journal' button to expand the full
  * journal. If the full journal text is clicked or the button, the full journal
  * is closed again. So its a drawer within a drawer."
@@ -1789,7 +2278,7 @@ describe("commenting on a cycle", () => {
   });
 
   test("the bubble sits in the card's foot, below the drawer's opener, not in the head", () => {
-    /* Edvard, ideas.md 2026-08-10: "Move the Journal chat bubble icon to the
+    /* the owner, ideas.md 2026-08-10: "Move the Journal chat bubble icon to the
      * bottom right of the Journal cards." Two separate things have to hold,
      * because each breaks on its own:
      *   - it is out of `.entry-head` and inside `.entry-foot` (the move), and
@@ -1883,7 +2372,7 @@ describe("commenting on a cycle", () => {
 
   test("existing comments are shown in the server's order, with the read ones marked", () => {
     // Oldest at the top, newest just above the box he types in: "the
-    // conversation goes downwards" (Edvard, 2026-08-10). The order is the
+    // conversation goes downwards" (the owner, 2026-08-10). The order is the
     // server's -- `comments_by_cycle` sorts by stamp across both sections --
     // and this file renders it as given rather than sorting again.
     const card = cardFor(window, 57);
@@ -1896,6 +2385,37 @@ describe("commenting on a cycle", () => {
     // is above "unread" here -- which is the case reversing would get wrong.
     assert.ok(shown[0].classList.contains("is-acknowledged"));
     assert.ok(!shown[1].classList.contains("is-acknowledged"));
+  });
+
+  /* A comment Sokrates posted on his behalf is not one he typed, and the
+   * drawer is where he actually reads them. `top_board_rows` has demoted a
+   * relayed board comment since Cycle 626; this is the same fact in the
+   * place it is read. The server sets `relayed` off the disclosure sentence
+   * (`nova_boards.is_relayed`). */
+  test("a relayed comment is marked as relayed and one he typed is not", async () => {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["55"][0].relayed = true;
+    const w = await loadSite("/", { comments: copy });
+    const relayed = cardFor(w, 55).querySelector(".comment:not(.comment-reply)");
+    const mark = relayed.querySelector(".comment-relay");
+    assert.ok(mark, "a relayed comment carries no mark");
+    // Symbol and word together: a reader who does not know the arrow still
+    // reads the sentence.
+    assert.ok(/relayed by Sokrates/.test(mark.textContent), mark.textContent);
+    // The negative is what makes the mark mean anything. Cycle 57's fixture
+    // comments are his own, and they must stay unmarked.
+    assert.equal(cardFor(w, 57).querySelectorAll(".comment-relay").length, 0);
+  });
+
+  /* An app.js cached from before this shipped talks to the new server and
+   * back; neither direction may paint the mark on a comment that has no
+   * claim to it. Here it is the new page against an old payload -- the
+   * field simply absent, not false. */
+  test("a payload with no relayed field marks nothing", async () => {
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    Object.values(copy.byCycle).forEach((items) => items.forEach((c) => { delete c.relayed; }));
+    const w = await loadSite("/", { comments: copy });
+    assert.equal(w.document.querySelectorAll(".comment-relay").length, 0);
   });
 
   test("a comment's paragraph breaks survive to the page", () => {
@@ -1919,7 +2439,7 @@ describe("commenting on a cycle", () => {
     const card = cardFor(window, 55);
     const reply = card.querySelector(".comment-reply");
     assert.ok(reply, "the reply is rendered");
-    /* Edvard, issues.md 2026-08-10: "they should be below each other on the
+    /* the owner, issues.md 2026-08-10: "they should be below each other on the
      * same indentation. So the comments alternates between blue and green
      * downwards." So the reply is the comment's next sibling in the list,
      * not a child of it, and it carries `.comment` for the same box. */
@@ -1929,13 +2449,13 @@ describe("commenting on a cycle", () => {
     assert.equal(reply.parentElement, answered.parentElement);
     assert.equal(
       reply.querySelector(".comment-body").textContent,
-      payload.comments.byCycle["55"][0].reply,
+      payload.comments.byCycle["55"][0].replies[0].text,
     );
     assert.equal(reply.querySelector(".comment-stamp").textContent, "2026-08-09 13:12");
   });
 
   test("a cycle's answer is its own purple bubble, not text inside the blue one", async () => {
-    /* Edvard, ideas board 2026-08-21: *"Give Nova cycle comments a purple
+    /* the owner, ideas board 2026-08-21: *"Give Nova cycle comments a purple
      * background/border in the app (mine is green, commentator is blue,
      * Nova should be purple)"*. Two different things answer him under one
      * name -- the instant reply worker, and an hourly cycle -- and until
@@ -1946,7 +2466,7 @@ describe("commenting on a cycle", () => {
     const copy = JSON.parse(JSON.stringify(payload.comments));
     const comment = copy.byCycle["55"][0];
     comment.replies = [
-      { author: "commentator", stamp: "2026-08-09 13:12", text: comment.reply },
+      { author: "commentator", stamp: "2026-08-09 13:12", text: comment.replies[0].text },
       { author: "cycle", stamp: "2026-08-09 14:20", text: "Cycle 56: boarded it." },
     ];
     const w = await loadSite("/", { comments: copy });
@@ -1965,11 +2485,108 @@ describe("commenting on a cycle", () => {
     assert.equal(replies[0].nextElementSibling, replies[1]);
   });
 
+  test("a reply written after his next comment is painted after it, not beside its question", async () => {
+    /* the owner, issues.md 2026-08-23: *"Comment thread ordering bug: a Nova
+     * cycle reply posted at 14:01 rendered between two of my comments
+     * timestamped 13:31 and 13:40 instead of after both — thread isn't
+     * sorting strictly by time."*
+     *
+     * This is his case exactly. The reply is stored inside the comment it
+     * answers, so painting in storage order put 14:01 at 13:31's position. */
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["55"] = [
+      {
+        cycle: 55, stamp: "2026-08-23 13:31", text: "First question.",
+        reply: "", replyStamp: "",
+        replies: [{ author: "cycle", stamp: "2026-08-23 14:01", text: "Answered an hour later." }],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+      {
+        cycle: 55, stamp: "2026-08-23 13:40", text: "Second question, nine minutes later.",
+        reply: "", replyStamp: "", replies: [],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+    ];
+    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    assert.deepEqual(
+      [...card.querySelectorAll(".comment .comment-stamp")].map((s) => s.textContent),
+      ["2026-08-23 13:31", "2026-08-23 13:40", "2026-08-23 14:01"],
+    );
+  });
+
+  test("a reply carrying no stamp stays under its question rather than jumping to the top", async () => {
+    /* `replyStamp` comes off a `#### Nova · <stamp>` heading and the payload
+     * can carry it empty. Sorting that on `""` would put the answer above
+     * every comment in the thread, which is the same bug pointing the other
+     * way, so a stampless reply inherits the stamp of what it answers. */
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["55"] = [
+      {
+        cycle: 55, stamp: "2026-08-23 13:31", text: "Earlier question.",
+        reply: "", replyStamp: "", replies: [],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+      {
+        cycle: 55, stamp: "2026-08-23 13:40", text: "Later question.",
+        reply: "", replyStamp: "",
+        replies: [{ author: "cycle", stamp: "", text: "An answer with no time on it." }],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+    ];
+    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    assert.deepEqual(
+      [...card.querySelectorAll(".comment .comment-body")].map((b) => b.textContent),
+      ["Earlier question.", "Later question.", "An answer with no time on it."],
+    );
+  });
+
+  test("a status line stays under the comment it is about, wherever that sits", async () => {
+    /* The waiting lines carry no time of their own, so they take their
+     * comment's stamp. Without that they would sort to `""` and land at the
+     * top of the thread, attached to nothing -- which is worse than the bug
+     * above, because the line only says *which* comment by sitting under it. */
+    const copy = JSON.parse(JSON.stringify(payload.comments));
+    copy.byCycle["55"] = [
+      {
+        cycle: 55, stamp: "2026-08-23 13:31", text: "Old, already answered.",
+        reply: "", replyStamp: "",
+        replies: [{ author: "cycle", stamp: "2026-08-23 13:35", text: "Done." }],
+        acknowledged: false, replyPending: false, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+      {
+        cycle: 55, stamp: "2026-08-23 13:40", text: "Newer, still waiting.",
+        reply: "", replyStamp: "", replies: [],
+        acknowledged: false, replyPending: true, replyWaiting: false,
+        replyWaitingSeconds: 0, replyFailed: false,
+      },
+    ];
+    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    const waiting = card.querySelector(".comment-waiting");
+    assert.ok(waiting, "the pending line is rendered");
+    assert.equal(
+      waiting.previousElementSibling.querySelector(".comment-body").textContent,
+      "Newer, still waiting.",
+    );
+  });
+
   test("an old cached app.js payload with only `reply` still paints one bubble", async () => {
     // `replies` is new. A browser holding yesterday's app.js against today's
     // server is not a case worth breaking, and the fallback is two lines.
+    // The old shape is built here rather than derived from the fixture: the
+    // server stopped sending `reply` at all (it was `replies[0]` again, a
+    // quarter of an uncached payload fetched on every navigation), so
+    // deleting `replies` from today's fixture leaves nothing to fall back
+    // *to* and the test would pass while pinning nothing.
     const copy = JSON.parse(JSON.stringify(payload.comments));
-    delete copy.byCycle["55"][0].replies;
+    const old = copy.byCycle["55"][0];
+    old.reply = old.replies[0].text;
+    old.replyStamp = old.replies[0].stamp;
+    delete old.replies;
     const card = cardFor(await loadSite("/", { comments: copy }), 55);
     assert.equal(card.querySelectorAll(".comment-reply").length, 1);
     assert.equal(card.querySelector(".comment-waiting"), null);
@@ -2295,7 +2912,7 @@ describe("commenting on a cycle", () => {
   });
 });
 
-/* Replying to Needs Edvard (2026-08-10). Edvard: "the 'needs Edvard' is
+/* Replying to Needs the owner (2026-08-10). The owner: "the 'needs the owner' is
  * still missing a comment block, so its hard for me to answer it. [...]
  * Where did you intend me to answer it? [...] I want a reply button on it."
  *
@@ -2376,7 +2993,7 @@ describe("the page notices new entries on its own", () => {
     assert.ok(window.document.contains(card), "an absent version read as a change");
   });
 
-  /* Edvard, issues.md 2026-08-11: "The Nova site closes all drawers on what
+  /* the owner, issues.md 2026-08-11: "The Nova site closes all drawers on what
    * seems like every 30 sec or so. Is this a refresh bug?"
    *
    * The two tests above cover the half where the page rebuilt for nothing.
@@ -2468,6 +3085,146 @@ describe("the page notices new entries on its own", () => {
     box.value = "";
     await timers.firePagePoll();
     assert.ok(!window.document.contains(card), "the deferred update never arrived");
+  });
+
+  /* the owner, issues.md 2026-08-24, with a screenshot of the header reading
+   * "Cycle 374 · last woke 17:50" at 19:25, two entries behind: "Nova app
+   * does not auto refresh/sync when i open it up. Look at the time in the
+   * top left at compare it to the latest run cycle."
+   *
+   * Two things could hold a poll off forever, and these pin both. */
+  /** Let the fetches a dispatched event started settle. `firePagePoll` does
+   *  this internally; an event-driven poll has no timer to fire. Node's own
+   *  `setTimeout`, not the window's -- `captureTimers` has taken that one. */
+  const settle = async () => {
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  test("opening the app catches up even with a half-typed comment left in a drawer", async () => {
+    /* Every card carries a comment drawer, so `typing()` sees a textarea per
+     * entry on the page. One unsent reply -- in a drawer that is closed and
+     * scrolled away -- deferred every poll for the life of the tab, and the
+     * store behind it is in memory, so a reload cleared it and nothing on
+     * the page ever said why. Opening the app is not typing. */
+    const { window, timers } = await pollable();
+    const card = cards(window)[0];
+    const box = window.document.querySelector("textarea");
+    box.value = "half a sentence";
+    box.dispatchEvent(new window.Event("input"));
+    serve(window, grown('W/"reopened"'));
+
+    await timers.firePagePoll();
+    assert.ok(window.document.contains(card), "the background timer should still hold off while he types");
+
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    await settle();
+    assert.ok(!window.document.contains(card), "opening the app left the feed on the old entries");
+    assert.equal(
+      window.document.querySelector("textarea").value,
+      "half a sentence",
+      "the rebuild lost what he had typed",
+    );
+  });
+
+  test("a page restored from the back/forward cache catches up too", async () => {
+    /* A restore fires `pageshow` with `persisted` and need never have gone
+     * hidden, so the visibility handler alone does not see it. */
+    const { window } = await pollable();
+    const before = cards(window).length;
+    serve(window, grown('W/"restored"'));
+
+    const event = new window.Event("pageshow");
+    Object.defineProperty(event, "persisted", { value: true });
+    window.dispatchEvent(event);
+    await settle();
+    assert.equal(cards(window).length, before + 1, "a restored page kept showing what it had");
+  });
+
+  /** Count journal requests while serving a newer feed. */
+  function counting(window) {
+    const count = { n: 0 };
+    window.fetch = (url) => {
+      if (String(url).includes("/api/journal")) count.n += 1;
+      return res(
+        String(url).includes("/api/digest") ? payload.digest
+          : String(url).includes("/api/comments") ? payload.comments
+            : grown('W/"counted"'),
+      );
+    };
+    return count;
+  }
+
+  test("a window regaining focus asks, on its own", async () => {
+    /* Asserted alone rather than alongside `visibilitychange`: with both
+     * dispatched, the pre-existing visibility handler answers for one fetch
+     * and the assertion holds with the focus listener absent entirely. The
+     * reviewer caught that -- my first version of this test passed against a
+     * full revert. */
+    const { window } = await pollable();
+    const count = counting(window);
+    window.dispatchEvent(new window.Event("focus"));
+    await settle();
+    assert.equal(count.n, 1, "focus alone did not ask the server anything");
+  });
+
+  test("two ways of coming back at once still make one request", async () => {
+    /* Opening the app fires more than one of these, in separate tasks. Two
+     * polls in flight render in completion order, so the older answer can
+     * land last and put the stale header back. */
+    const { window } = await pollable();
+    const count = counting(window);
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    window.dispatchEvent(new window.Event("focus"));
+    await settle();
+    assert.equal(count.n, 1, "both events fetched, so they can race each other");
+  });
+
+  test("a window regaining focus does not rebuild the box he is typing in", async () => {
+    /* `focus` fires on an ordinary window switch and `online` on a wifi
+     * blip, neither of which says he was ever away from the keyboard. Only
+     * the two events that mean the tab was gone skip the typing deferral. */
+    const { window } = await pollable();
+    const card = cards(window)[0];
+    const box = window.document.querySelector("textarea");
+    box.value = "mid sentence";
+    box.dispatchEvent(new window.Event("input"));
+    serve(window, grown('W/"focused"'));
+
+    window.dispatchEvent(new window.Event("focus"));
+    await settle();
+    assert.ok(window.document.contains(card), "focus rebuilt the feed while he was typing");
+
+    window.dispatchEvent(new window.Event("online"));
+    await settle();
+    assert.ok(window.document.contains(card), "online rebuilt the feed while he was typing");
+
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    await settle();
+    assert.ok(!window.document.contains(card), "coming back to a hidden tab should still catch up");
+  });
+
+  test("a resumed poll cancels the timer that was already armed", async () => {
+    /* Otherwise the background timer fires during a slow resumed fetch and
+     * starts a second one -- the race the in-flight guard exists to stop,
+     * on the one path it did not cover. */
+    const { window, timers } = await pollable();
+    assert.equal(timers.queuedPagePolls.length, 1, "one poll armed at load");
+    let resolveJournal;
+    window.fetch = (url) => {
+      if (String(url).includes("/api/digest")) return res(payload.digest);
+      if (String(url).includes("/api/comments")) return res(payload.comments);
+      return new Promise((r) => { resolveJournal = () => r(res(grown('W/"slow"'))); });
+    };
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    await settle();
+    assert.equal(
+      timers.queuedPagePolls.length,
+      0,
+      "the armed timer survived the resume, so it can fire into the fetch still in flight",
+    );
+    resolveJournal();
+    await settle();
+    assert.equal(timers.queuedPagePolls.length, 1, "the round did not re-arm the timer");
   });
 });
 
@@ -2595,7 +3352,7 @@ describe("a poll asks whether anything changed, not for the whole journal", () =
    * the comment that arrived alongside the unchanged journal never renders.
    *
    * That is the live case, not a contrived one. The journal changes once an
-   * hour and comments change whenever Edvard types, so almost every poll
+   * hour and comments change whenever the owner types, so almost every poll
    * that has anything to show is exactly this one. */
   test("a new comment renders on a poll where the journal did not change", async () => {
     const { window, timers } = await pollable();
@@ -2658,10 +3415,18 @@ describe("no window escapes the registry", () => {
     );
   });
 
-  test("the registry is emptied after the file, not after each test", () => {
-    /* Five suites below open one window in `before` and share it. An
-     * `afterEach` closed it after the first test in each and cost 45
-     * failures; this is the line that would have to change again. */
+  test("the registry is swept from the mark, not from zero, after each test", () => {
+    /* Five suites below open one window in `before` and share it across their
+     * tests. A bare `afterEach` closed it after the first of them and cost 45
+     * failures (cycle 92); sweeping from `mark` leaves it alone. If this
+     * assertion is what is failing, the sweep was widened back to zero. */
+    assert.match(source, /\nafterEach\(\(\) => \{\n\s+for \(const window of openWindows\.splice\(mark\)\)/);
+  });
+
+  test("whatever the per-test sweep leaves is still closed after the file", () => {
+    /* The windows opened in a `before` hook are under every mark, so nothing
+     * per-test ever reaches them. This is the hook that does, and without it
+     * `node --test` hangs after the last test passes rather than failing. */
     assert.match(source, /\nafter\(\(\) => \{\n\s+for \(const window of openWindows\.splice\(0\)\)/);
   });
 });
@@ -2804,7 +3569,7 @@ describe("the feed loads a window rather than the whole journal", () => {
 
 /* Scrolling to the end of the feed loads the next window on its own.
  *
- * Edvard, issues.md #71: "Make it more lazy load when i scroll down instead
+ * the owner, issues.md #71: "Make it more lazy load when i scroll down instead
  * of a button i press."
  *
  * jsdom has no IntersectionObserver at all, which is why every test above
@@ -3087,7 +3852,7 @@ describe("an unsent comment survives a re-render", () => {
 
 /* The board pages -- Issues and Ideas (issues.md #57).
  *
- * Edvard: "I need more visualisations in the Nova app. Create more pages
+ * the owner: "I need more visualisations in the Nova app. Create more pages
  * to contain more, such as issue list, idea list (separate pages)".
  *
  * These drive the real router, so what is being checked is what a cold
@@ -3188,7 +3953,7 @@ describe("the issues page", () => {
   });
 
   test("each not-boarded capture is separated from the next", async () => {
-    /* Edvard, issues.md #66: "should have a separator line or something
+    /* the owner, issues.md #66: "should have a separator line or something
      * that shows a clear separation of the not boarded issues." The block
      * already had a border; what ran together was one bullet against the
      * next. Pinned on the rule rather than on a class name being present,
@@ -3201,6 +3966,35 @@ describe("the issues page", () => {
     assert.match(sheet, /\.capture-item:first-of-type\s*{[^}]*border-top:\s*0/);
   });
 
+
+  /* Every control on a capture now lives behind a press-and-hold. The
+   * owner, 2026-08-24: *"The new buttons for the messages to edit or make
+   * idea or make issue should not be visible. Lets change it to when i
+   * press and hold it it opens a modal with al the edit options."*
+   *
+   * So a test that wants Delete has to make the gesture first, and it is
+   * driven as real events rather than by calling the handler -- the click
+   * a browser sends after the release is the one thing that could close
+   * the sheet the same instant it opened, and only the event sequence has
+   * that in it. Save and Cancel are deliberately *not* found here: they
+   * belong to the open editor on the card, not to the sheet. */
+  const CAPTURE_HOLD_MS = 1030;
+  const holdCapture = async (window, item) => {
+    const body = item.querySelector(".capture-body");
+    const fire = (type) => body.dispatchEvent(
+      new window.MouseEvent(type, { bubbles: true, cancelable: true }));
+    fire("mousedown");
+    await new Promise((resolve) => setTimeout(resolve, CAPTURE_HOLD_MS));
+    fire("mouseup");
+    click(window, body);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sheet = window.document.querySelector(".action-sheet");
+    assert.ok(sheet, "a one-second hold opened no action sheet");
+    return sheet;
+  };
+  const sheetAct = (sheet, label) =>
+    [...sheet.querySelectorAll(".capture-act")].filter((b) => b.textContent === label)[0];
+
   test("Delete sends the capture's own text, not its position", async () => {
     /* The whole point of the design: a cycle boarding a bullet above this
      * one shifts every index, and an index-addressed delete would then
@@ -3208,8 +4002,7 @@ describe("the issues page", () => {
     const window = await loadSite("/issues");
     window.confirm = () => true;
     const item = window.document.querySelector(".capture-item");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.equal(window.posted.length, 1);
@@ -3232,8 +4025,7 @@ describe("the issues page", () => {
     window.confirm = () => true;
     const items = [...window.document.querySelectorAll(".capture-item")];
     assert.equal(items.length, 2);
-    click(window, [...items[1].querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, items[1]), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.equal(window.posted[0].body.index, 1,
@@ -3243,7 +4035,7 @@ describe("the issues page", () => {
 
   test("a capture a cycle closed is not shown, and the ones left keep their addresses", async () => {
     /* Cycle 251 gave closed captures their own "Done, not yet cleared"
-     * section; Edvard asked for that section to go, capture 2026-08-20:
+     * section; The owner asked for that section to go, capture 2026-08-20:
      * *"I do not like or see the point of the 'Done, not yet cleared' list
      * in issues and ideas. I do not use it and to me its just noise."*
      *
@@ -3278,8 +4070,7 @@ describe("the issues page", () => {
     assert.equal(window.document.querySelector(".capture-done-chip"), null);
 
     // The open one is second in the file and must still say so.
-    click(window, [...open.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, open.querySelector(".capture-item")), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(window.posted[0].body.index, 1,
       "filtering renumbered the rows and the page sent the wrong address");
@@ -3290,8 +4081,7 @@ describe("the issues page", () => {
     const window = await loadSite("/issues");
     window.confirm = () => false;
     const item = window.document.querySelector(".capture-item");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(window.posted.length, 0, "a declined confirm still deleted");
   });
@@ -3303,7 +4093,7 @@ describe("the issues page", () => {
      * every capture in the live payload -- so a test written against one
      * of those passes whether the code is right or wrong. Here the two
      * genuinely differ: the field must hold the backticks and asterisks,
-     * because what Edvard edits is what the vault stores. */
+     * because what the owner edits is what the vault stores. */
     const raw = "the `/api/board` page is **slow**";
     const board = {
       ...payload.board,
@@ -3327,8 +4117,7 @@ describe("the issues page", () => {
     // what `renderBlocks` produced, which is the thing this line is about.
     assert.equal(item.querySelector(".capture-body p").textContent,
       "the /api/board page is slow", "the fixture does not render differently from its source");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Edit")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Edit"));
 
     const box = item.querySelector(".capture-input");
     assert.ok(box, "Edit did not open a field");
@@ -3349,14 +4138,88 @@ describe("the issues page", () => {
     });
   });
 
+  test("an edit box shows its attachments as pictures, and ✕ takes one out", async () => {
+    /* The owner, 2026-08-24: *"uploaded images just show like a url text,
+     * it should show like the miniature images like when i upload them."*
+     *
+     * The textarea keeps the raw markdown -- that is what the vault
+     * stores -- so the picture is a chip under the box, and removing it
+     * has to cut that construct out of the text, which is the thing he
+     * cannot do with a thumb on a 90-character URL. */
+    const raw = "look at this ![shot.jpg](/api/upload/abc123.jpg) and this [notes.pdf](/api/upload/def.pdf)";
+    const board = {
+      ...payload.board,
+      captures: [{ text: raw, blocks: [{ type: "p", spans: [{ kind: "text", text: raw }] }] }],
+    };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    const item = window.document.querySelector(".capture-item");
+    click(window, sheetAct(await holdCapture(window, item), "Edit"));
+
+    const chips = [...item.querySelectorAll(".edit-tray .attach-chip")];
+    assert.equal(chips.length, 2, "the two attachments did not become chips");
+    const thumb = chips[0].querySelector("img.attach-thumb");
+    assert.ok(thumb, "the image attachment drew no thumbnail");
+    assert.equal(thumb.getAttribute("src"), "/api/upload/abc123.jpg");
+    assert.equal(thumb.getAttribute("alt"), "shot.jpg",
+      "the alt text has to be his filename -- it is what tells two screenshots apart");
+    // The non-image one is a name, not a broken picture.
+    assert.equal(chips[1].querySelector("img"), null);
+    assert.match(chips[1].textContent, /notes\.pdf/);
+
+    click(window, chips[0].querySelector(".attach-chip-remove"));
+    const box = item.querySelector(".capture-input");
+    assert.equal(
+      box.value,
+      "look at this  and this [notes.pdf](/api/upload/def.pdf)",
+      "✕ cut the wrong span out of his text",
+    );
+    assert.equal(item.querySelectorAll(".edit-tray .attach-chip").length, 1,
+      "the strip did not redraw after a removal");
+  });
+
+  test("the second of two links to the same upload is the one ✕ removes", async () => {
+    /* `indexOf` would have taken the first, which is a different sentence
+     * of his. The chips are indistinguishable on screen, so nothing but
+     * this test can tell the two implementations apart. */
+    const raw = "first ![a.jpg](/api/upload/a.jpg) then ![a.jpg](/api/upload/a.jpg) end";
+    const board = {
+      ...payload.board,
+      captures: [{ text: raw, blocks: [{ type: "p", spans: [{ kind: "text", text: raw }] }] }],
+    };
+    const window = await loadSite("/issues", {
+      board: (url) => (url.includes("item=") ? payload.boardItem : board),
+    });
+    const item = window.document.querySelector(".capture-item");
+    click(window, sheetAct(await holdCapture(window, item), "Edit"));
+    const chips = [...item.querySelectorAll(".edit-tray .attach-chip")];
+    assert.equal(chips.length, 2);
+    click(window, chips[1].querySelector(".attach-chip-remove"));
+    assert.equal(
+      item.querySelector(".capture-input").value,
+      "first ![a.jpg](/api/upload/a.jpg) then  end",
+    );
+  });
+
+  test("Escape closes the action sheet without acting on the capture", async () => {
+    const window = await loadSite("/issues");
+    const item = window.document.querySelector(".capture-item");
+    assert.ok(await holdCapture(window, item));
+    window.document.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(window.document.querySelector(".action-sheet"), null,
+      "Escape left the sheet open");
+    assert.equal(window.posted.length, 0, "closing the sheet wrote to the server");
+  });
+
   test("saving an emptied field is not a delete", async () => {
     /* Deleting has a button and that button asks. Clearing the box has to
      * do nothing at all, or the confirm is one backspace away from being
      * bypassed. */
     const window = await loadSite("/issues");
     const item = window.document.querySelector(".capture-item");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Edit")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Edit"));
     item.querySelector(".capture-input").value = "   ";
     click(window, [...item.querySelectorAll(".capture-act")].filter(
       (b) => b.textContent === "Save")[0]);
@@ -3369,8 +4232,7 @@ describe("the issues page", () => {
     window.confirm = () => true;
     window.postReply = { ok: false, message: "that capture is no longer in the list" };
     const item = window.document.querySelector(".capture-item");
-    click(window, [...item.querySelectorAll(".capture-act")].filter(
-      (b) => b.textContent === "Delete")[0]);
+    click(window, sheetAct(await holdCapture(window, item), "Delete"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.match(item.querySelector(".capture-item-status").textContent, /no longer/);
@@ -3441,7 +4303,7 @@ describe("the issues page", () => {
   });
 });
 
-/* The sidebar. Edvard, issues.md 2026-08-11: "Move the Journal, issues &
+/* The sidebar. The owner, issues.md 2026-08-11: "Move the Journal, issues &
  * ideas tabs buttons to a sidebar that opens from a hamburger button that
  * is placed at the top right of the Nova page on the same horizontal line
  * as the Nova header. Add slide animations."
@@ -3550,11 +4412,62 @@ describe("the sidebar", () => {
   test("every section lives in the drawer, and is exposed only with it", async () => {
     const window = await loadSite("/");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
-    assert.deepEqual(hrefs, ["/", "/issues", "/ideas", "/notes", "/costs", "/retro", "/plan", "/ask", "/diag"]);
+    // Grouped by category on 2026-08-26, on the owner's ask: the ones they
+    // named first with no heading, then Steering / Talking / The loop. `/ask`
+    // left this list and kept its route -- the chat dock is the same thread.
+    // `/projects` joined the pinned rows on 2026-08-31 and left Steering with
+    // it, on their capture that morning: "make the projects link in the Nova
+    // sidebar always show above the issues and ideas links". It is second
+    // rather than first because that sentence names Issues and Ideas and does
+    // not name Journal.
+    // The order and the grouping are pinned in tests/test_nav_is_grouped.py,
+    // which can see the `<summary>` headings this query steps over. The
+    // groups became collapsible folds later the same day and this list is
+    // unchanged by that -- `querySelectorAll` reads the DOM, not the layout,
+    // so a link inside a closed `<details>` is still found here.
+    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
     assert.equal(drawer(window).getAttribute("aria-hidden"), "false");
+  });
+
+  /* "dropdowns and default closed", the owner's follow-up the morning after
+   * the grouping shipped. Two halves and they pull against each other: the
+   * drawer has to be short at rest, and the highlight saying which page you
+   * are on must not be hidden inside a shut group. So every fold is closed
+   * except the one holding the current page, and on a pinned page -- which
+   * is in no fold at all -- every single one is closed. */
+  test("the group folds are closed, except the one holding the page you are on", async () => {
+    const journal = await loadSite("/");
+    const folds = (w) => [...drawer(w).querySelectorAll(".nav-fold")];
+    assert.equal(folds(journal).length, 3, "three groups: Steering, Talking, The loop");
+    assert.deepEqual(folds(journal).map((f) => f.open), [false, false, false],
+      "on a pinned page no group holds the current link, so none should be open");
+
+    const plan = await loadSite("/plan");
+    // Plan is the third link under Steering, the first fold.
+    assert.deepEqual(folds(plan).map((f) => f.open), [true, false, false]);
+    assert.ok(plan.document.querySelector(".nav-tab[href='/plan']").classList.contains("on"));
+
+    const catalog = await loadSite("/catalog");
+    assert.deepEqual(folds(catalog).map((f) => f.open), [false, false, true]);
+  });
+
+  /* A `<details>` the owner opens themselves has to stay open while they read
+   * it. `markNav` runs on every in-page navigation, and the guard that keeps
+   * this true is that it only ever sets `open = true` -- it never closes one.
+   * Worth its own test because the obvious implementation is a toggle, and a
+   * toggle passes the test above while shutting a group under the owner's
+   * thumb the moment anything re-marks the nav. */
+  test("a group the owner opens is never closed again by the nav marker", async () => {
+    const window = await loadSite("/");
+    const steering = drawer(window).querySelectorAll(".nav-fold")[0];
+    steering.open = true;
+    // Navigating to a pinned page: no fold is current, so a toggle would shut it.
+    click(window, window.document.querySelector(".nav-tab[href='/issues']"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(steering.open, "the group the owner opened was closed under them");
   });
 
   /* jsdom applies no stylesheet, so nothing above this can see the slide.
@@ -3614,7 +4527,7 @@ describe("navigating away mid-fetch", () => {
   });
 });
 
-/* Edvard, issues.md #83: "Make the header for issues and ideas bold". The
+/* the owner, issues.md #83: "Make the header for issues and ideas bold". The
  * whole line was one dim string, so the page you were on read as part of
  * the tally after it. Two assertions, because either alone passes on its
  * own: the name has to be in the bold element, and the counts have to have
@@ -3716,6 +4629,49 @@ describe("the costs page", () => {
       "connectNulls must stay off or the gap is drawn through");
   });
 
+  test("the delegated tile adds up the rows, and ignores the era nobody measured", async () => {
+    /* `weighted` on a cycle row is what that session was charged and
+     * excludes the subagents it spawned, so this page understated every
+     * delegating cycle until these two columns existed.
+     *
+     * The denominator is the point of the test. Rows older than
+     * 2026-08-19 carry no attribution and arrive as null -- 265 of the 588
+     * live ones. Counting their `weighted` in the divisor would report a
+     * share of a period nobody was counting delegation in, which is a
+     * smaller number and a false one. Here: 200k delegated against 800k of
+     * measured parent spend is 20.0%, and the 1,000,000 on the unmeasured
+     * row must not move it. */
+    const withSubagents = {
+      ...payload.costs,
+      cycles: [
+        [1786227966684, 20.9, 69, 80, 1000000, null, null],
+        [1786438814000, 16.1, 54, 61, 300000, 12, 100000],
+        [1786449617908, 19.4, 103, 118, 500000, 23, 100000],
+      ],
+    };
+    const window = await loadSite("/costs", { costs: withSubagents });
+    const tiles = [...window.document.querySelectorAll(".tile")].map((t) => ({
+      label: t.querySelector(".tile-label").textContent,
+      value: t.querySelector(".tile-value").textContent,
+      note: t.querySelector(".tile-note") ? t.querySelector(".tile-note").textContent : null,
+    }));
+    const tile = tiles.find((t) => t.label === "Delegated");
+    assert.ok(tile, "the costs page has no tile for delegated spend");
+    assert.equal(tile.value, "200k");
+    assert.match(tile.note, /^20\.0% of spend since /);
+  });
+
+  test("no delegated tile at all when no row was ever measured", async () => {
+    /* A zero here would be a claim -- "these cycles delegated nothing" --
+     * about 265 rows written before anything counted. Absent is the honest
+     * rendering, and it is what the fixture (all three rows unmeasured)
+     * gets. */
+    const window = await loadSite("/costs");
+    const labels = [...window.document.querySelectorAll(".tile-label")]
+      .map((n) => n.textContent);
+    assert.ok(!labels.includes("Delegated"), labels.join(", "));
+  });
+
   test("two series get a legend, so identity is never colour alone", async () => {
     const window = await loadSite("/costs");
     const labels = [...window.document.querySelectorAll(".legend-label")].map((n) => n.textContent);
@@ -3751,7 +4707,7 @@ describe("the costs page", () => {
 
 /* ---- Zoom, pan, selection and full screen on a chart ---------------------
  *
- * Edvard, 2026-08-20, on the version this replaces: "The zoom works, but
+ * the owner, 2026-08-20, on the version this replaces: "The zoom works, but
  * it does not give me any more granulation in the graph, it just makes the
  * graph bars larger. I want actual graph zoom as in expanding the values
  * on the x/y axis and showing more granularity. Also the hover effect when
@@ -3912,7 +4868,7 @@ describe("a chart can be zoomed, panned, selected and opened full screen", () =>
 });
 
 /* A cycle that ran and wrote nothing, marked where it happened -- the
- * display half of Edvard's #72. He found cycles 127 and 128 himself by
+ * display half of the owner's #72. He found cycles 127 and 128 himself by
  * noticing the feed jump from 126 to 129, so the gap goes back exactly
  * where he was already looking. The committed fixture carries a real one:
  * cycles 57 and 55, with 56 missing, and an unnumbered entry of his own
@@ -3945,7 +4901,7 @@ describe("a hole in the record is visible in the feed", () => {
   });
 
   /* The client does its own arithmetic between two adjacent cards, so it
-   * has to be told which numbers count. Edvard's own notes carry no cycle
+   * has to be told which numbers count. The owner's own notes carry no cycle
    * number and sit in the feed between numbered entries -- filling in
    * every number between two cards would invent a gap out of a note, and
    * the server is the only one that knows the difference. */
@@ -4046,6 +5002,375 @@ describe("a hole in the record is visible in the feed", () => {
  * test above it still green. So the worker is run for real -- its source
  * evaluated against stubs for the worker globals -- and asked what the
  * page would actually receive. */
+/* ---- Where a notification tap lands -------------------------------------
+ *
+ * His report, 2026-08-30: *"I just got a notification from Nova about
+ * something. This was the first notification from Nova with actual text. I
+ * quickly red it, clicked it and it opened Nova but to the issues page. I
+ * therefore lost the context of the message."*
+ *
+ * The worker focused the first open window and navigated nowhere, so the
+ * destination was whatever page he happened to have left open. These run
+ * the real `sw.js` against stubbed worker globals and ask where the tap
+ * actually goes -- reading the handler cannot tell a `navigate` that runs
+ * from one the fallback swallows.
+ */
+describe("a notification tap opens the thread it names", () => {
+  function runClick({ data, clients }) {
+    const listeners = {};
+    const opened = [];
+    const workerSelf = {
+      addEventListener: (name, fn) => { listeners[name] = fn; },
+      location: { origin: "https://nova.example" },
+      skipWaiting: () => {},
+      registration: { showNotification: () => Promise.resolve() },
+      clients: {
+        claim: () => {},
+        matchAll: () => Promise.resolve(clients),
+        openWindow: (url) => { opened.push(url); return Promise.resolve({ url }); },
+      },
+    };
+    const cacheStub = {
+      open: () => Promise.resolve({ addAll: () => Promise.resolve(), put: () => Promise.resolve() }),
+      keys: () => Promise.resolve([]),
+      match: () => Promise.resolve(undefined),
+    };
+    const source = readFileSync(join(publicDir, "sw.js"), "utf8");
+    new Function("self", "caches", "fetch", "Headers", "Response", "URL", source)(
+      workerSelf, cacheStub, () => Promise.reject(new Error("offline")), Headers, Response, URL);
+
+    let settled;
+    listeners.notificationclick({
+      notification: { data, close: () => {} },
+      waitUntil: (p) => { settled = p; },
+    });
+    return settled.then(() => opened);
+  }
+
+  /** An open Nova tab the worker controls: it can be sent somewhere. */
+  function controlled() {
+    const client = { navigated: [], focused: 0 };
+    client.navigate = (url) => { client.navigated.push(url); return Promise.resolve(client); };
+    client.focus = () => { client.focused += 1; return Promise.resolve(client); };
+    return client;
+  }
+
+  test("an open tab is sent to the conversation, not merely focused", async () => {
+    const tab = controlled();
+    await runClick({ data: { conversationId: "c-2" }, clients: [tab] });
+    // The whole bug: `focused` was 1 and `navigated` was empty, so the tab
+    // came forward still showing the board page he had left open.
+    assert.deepEqual(tab.navigated, ["/conversation/c-2"]);
+    assert.equal(tab.focused, 1);
+  });
+
+  test("with no tab open, the window opens on the conversation", async () => {
+    assert.deepEqual(await runClick({ data: { conversationId: "c-2" }, clients: [] }),
+      ["/conversation/c-2"]);
+  });
+
+  test("an id that needs escaping is escaped", async () => {
+    const tab = controlled();
+    await runClick({ data: { conversationId: "a b" }, clients: [tab] });
+    assert.deepEqual(tab.navigated, ["/conversation/a%20b"]);
+  });
+
+  /* A push with no id is Agora's `/notify` shape and the front page is the
+   * honest answer -- but it must not be the answer for a push that *did*
+   * carry one, which is what the first test above is for. */
+  test("a notification with no conversation still opens the app", async () => {
+    const tab = controlled();
+    await runClick({ data: {}, clients: [tab] });
+    assert.deepEqual(tab.navigated, ["/"]);
+  });
+
+  test("a notification carrying no data at all does not throw", async () => {
+    assert.deepEqual(await runClick({ data: undefined, clients: [] }), ["/"]);
+  });
+
+  /* `navigate` is only defined on a client this worker controls, and
+   * `includeUncontrolled` is on, so a window that cannot be navigated is a
+   * real case rather than a defensive one. Focusing it is still better
+   * than ignoring it. */
+  test("a window that cannot be navigated is focused rather than dropped", async () => {
+    const tab = { focused: 0, focus() { tab.focused += 1; return Promise.resolve(tab); } };
+    const opened = await runClick({ data: { conversationId: "c-2" }, clients: [tab] });
+    assert.equal(tab.focused, 1);
+    assert.deepEqual(opened, [], "it opened a second window on top of the one it focused");
+  });
+
+  test("a navigate that is refused still brings the tab forward", async () => {
+    const tab = controlled();
+    tab.navigate = () => Promise.reject(new Error("not allowed"));
+    await runClick({ data: { conversationId: "c-2" }, clients: [tab] });
+    assert.equal(tab.focused, 1);
+  });
+});
+
+/* The other half of the same tap: the URL the worker opens has to be a URL
+ * the app understands. `/conversation/<id>` did not exist before this, and
+ * a route the server serves but app.js does not read renders the journal --
+ * which would look like the same bug he reported. */
+describe("the /conversation/<id> URL opens one thread", () => {
+  const TWO_CONVS = {
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude", tags: [],
+        updatedAt: "2026-08-25T20:00:00.000Z", cycleThread: false },
+      { id: "c-2", name: "Nova — Cycle 656", personaName: "Nova", tags: [],
+        updatedAt: "2026-08-25T19:00:00.000Z", cycleThread: true },
+    ],
+  };
+  const THREAD = { conversationId: "c-2", waiting: false, messages: [
+    { id: "m", sender: "Nova", text: "the entry is written" },
+  ] };
+
+  test("the thread is on screen, with no row tapped first", async () => {
+    const asked = [];
+    const window = await loadSite("/conversation/c-2", {
+      convList: TWO_CONVS,
+      convThread: (url) => { asked.push(url); return THREAD; },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector(".ask-text").textContent,
+      /the entry is written/);
+    assert.equal(asked.length, 1);
+    assert.match(asked[0], /id=c-2/);
+    // Not the listing: landing on the list is the failure he reported,
+    // one page over.
+    assert.equal(window.document.querySelectorAll(".conv-row").length, 0);
+  });
+
+  test("the thread is headed by its own name, read off the listing", async () => {
+    const window = await loadSite("/conversation/c-2", {
+      convList: TWO_CONVS, convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.querySelector("#status .status-line").textContent,
+      "Nova — Cycle 656");
+  });
+
+  /* The one thing his 2026-09-01 capture is about: the messages must not
+   * wait on the name.
+   *
+   * `openConversationById` used to call `openConversation` from inside the
+   * listing's `.then`, so the thread fetch could not even start until the
+   * listing came back. Measured the same day against the live site from
+   * inside the cluster, so with no tailnet leg in it: `/api/conversations`
+   * answered in 0.62s, 0.84s and 1.19s over three reads while the shell and
+   * `app.js` answered in 3-5ms -- a whole serial round trip, spent on one
+   * string, in front of the message a push notification had just told him
+   * about.
+   *
+   * Holding the listing open forever is what makes the difference visible.
+   * On the old code nothing is on screen at all; there is no arrangement of
+   * fixture bodies that separates the two, because both orders end with the
+   * same page once both requests land. */
+  test("the messages render while the name lookup is still in flight", async () => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const window = await loadSite("/conversation/c-2", {
+      convList: () => held.then(() => res(TWO_CONVS)),
+      convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector(".ask-text").textContent,
+      /the entry is written/);
+    // Empty rather than absent: the heading is drawn straight away and the
+    // name drops into it, so nothing on the page moves when it arrives.
+    assert.equal(window.document.querySelector("#status .status-line").textContent, "");
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.querySelector("#status .status-line").textContent,
+      "Nova — Cycle 656");
+  });
+
+  /* He can back out and open another thread while the first listing is still
+   * in flight, and now that the answer arrives after the page is painted, a
+   * late one could relabel a thread it is not about. */
+  test("a late name lookup does not relabel the thread he moved to", async () => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    // Both opens hit the same URL, so the only thing that can tell them
+    // apart is the order they arrive in: c-2 asks first and is held, c-1
+    // asks second and answers straight away.
+    let asks = 0;
+    const window = await loadSite("/conversation/c-2", {
+      convList: () => (asks++ === 0 ? held.then(() => res(TWO_CONVS)) : res(TWO_CONVS)),
+      convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Land on a different thread, which names itself, and only then let
+    // c-2's listing answer.
+    window.history.pushState(null, "", "/conversation/c-1");
+    window.dispatchEvent(new window.Event("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(asks, 2, "the second open has to have asked, or the guard is never reached");
+    assert.equal(window.document.querySelector("#status .status-line").textContent,
+      "Roofing", "the second open names itself before the first one answers");
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.querySelector("#status .status-line").textContent,
+      "Roofing");
+  });
+
+  /* The name is a label and the messages are the thing he tapped for, so a
+   * listing that fails must not cost him the thread. */
+  test("a listing that fails still opens the thread", async () => {
+    const window = await loadSite("/conversation/c-2", {
+      convListStatus: 500, convList: TWO_CONVS, convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector(".ask-text").textContent,
+      /the entry is written/);
+  });
+
+  test("an id the listing does not carry still opens the thread", async () => {
+    const window = await loadSite("/conversation/c-9", {
+      convList: TWO_CONVS,
+      convThread: () => ({ conversationId: "c-9", waiting: false, messages: [
+        { id: "m", sender: "Nova", text: "still here" },
+      ] }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector(".ask-text").textContent, /still here/);
+  });
+
+  /* The Chats listing this used to back out to is deleted. Beats is the
+   * only page left that lists threads, and it is a real destination on a
+   * cold load from a notification, which `history.back()` is not. */
+  test("backing out lands on Beats and leaves the deep link behind", async () => {
+    const window = await loadSite("/conversation/c-2", {
+      convList: TWO_CONVS, convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    click(window, window.document.querySelector(".conv-back"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Without this a reload from here drops him straight back into the
+    // thread he just backed out of.
+    assert.equal(window.location.pathname, "/heartbeats");
+    assert.equal(window.document.querySelectorAll(".conv-back").length, 0,
+      "the thread is still on screen under a Beats URL");
+  });
+
+  /* His `issues.md` #140: *"Chat auto-scrolls to the bottom every time a new
+   * message arrives even if I've scrolled up to reread something -- annoying,
+   * should only stick to bottom if I was already near it."* Cycle 568 fixed
+   * that in the chat dock and left this page alone, where the same repaint
+   * does something worse: `.ask-thread` carries no `overflow` in `style.css`,
+   * so here the *document* is the scroll container, emptying the container
+   * collapses it, and the browser clamps him to the top of the page.
+   *
+   * These need faked layout and would be worthless without it. jsdom runs no
+   * layout, so `documentElement.scrollHeight` is 0, `pageAtBottom` answers
+   * true at every offset, and a test written against the real numbers passes
+   * identically on the old code that restored nothing. This hands the
+   * document what a browser would have measured -- 2000px of page in the
+   * 768px viewport jsdom reports, so the bottom is offset 1232 -- and makes
+   * `window.scrollTo` move the offset the way a browser would. */
+  function scrollablePage(window, scrollHeight) {
+    const doc = window.document.documentElement;
+    Object.defineProperty(doc, "scrollHeight",
+      { configurable: true, get: () => scrollHeight });
+    const scrolls = [];
+    window.scrollTo = (x, y) => { scrolls.push(y); doc.scrollTop = y; };
+    return { doc, scrolls };
+  }
+
+  /** A thread one message longer on every poll, and never done, so a repaint
+   *  is guaranteed to have happened between two `fire()` calls. */
+  function growingConvThread() {
+    let turn = 0;
+    return () => {
+      turn += 1;
+      const messages = [{ id: "q", sender: "Edvard", text: "q" }];
+      for (let i = 0; i < turn; i += 1) {
+        messages.push({ id: "a" + i, sender: "Nova", text: "answer " + i });
+      }
+      return { conversationId: "c-2", waiting: true, messages };
+    };
+  }
+
+  const painted = (window) => window.document.querySelectorAll(".ask-text").length;
+
+  test("an answer arriving while he has scrolled up leaves him where he was", async () => {
+    let timers;
+    const window = await loadSite("/conversation/c-2", {
+      install: (win) => { timers = captureTimers(win); },
+      convList: TWO_CONVS, convThread: growingConvThread(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { doc, scrolls } = scrollablePage(window, 2000);
+    const before = painted(window);
+    doc.scrollTop = 450;
+    await timers.fire();
+    assert.ok(painted(window) > before,
+      "no new message was painted, so this test could not have failed");
+    /* The *call* is the assertion, not the resting offset. jsdom stores
+     * `scrollTop` as a plain number and never clamps it when the document
+     * shrinks, so emptying the container leaves 450 sitting there either way
+     * and a state-only check passes on code that restores nothing. A real
+     * browser does clamp, which is the whole bug. */
+    assert.deepEqual(scrolls, [450],
+      "the repaint did not put him back on the message he was rereading");
+    assert.equal(doc.scrollTop, 450);
+  });
+
+  test("an answer arriving while he is at the bottom still follows it down", async () => {
+    let timers;
+    const window = await loadSite("/conversation/c-2", {
+      install: (win) => { timers = captureTimers(win); },
+      convList: TWO_CONVS, convThread: growingConvThread(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { doc, scrolls } = scrollablePage(window, 2000);
+    const before = painted(window);
+    doc.scrollTop = 1232;
+    await timers.fire();
+    assert.ok(painted(window) > before,
+      "no new message was painted, so this test could not have failed");
+    assert.deepEqual(scrolls, [2000],
+      "the answer he was waiting for arrived off screen");
+    assert.equal(doc.scrollTop, 2000);
+  });
+
+  /* The direction that makes this page's bug worse than the dock's, and the
+   * one a fix that merely dropped the jump would have shipped. */
+  test("a poll does not throw him to the top of the page either", async () => {
+    let timers;
+    const window = await loadSite("/conversation/c-2", {
+      install: (win) => { timers = captureTimers(win); },
+      convList: TWO_CONVS, convThread: growingConvThread(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { doc, scrolls } = scrollablePage(window, 2000);
+    doc.scrollTop = 450;
+    await timers.fire();
+    assert.ok(scrolls.length, "the repaint scrolled him nowhere, so the browser's own clamp to the top of the collapsed page is what he is left with");
+    assert.notEqual(scrolls[scrolls.length - 1], 0, "the repaint put him at the top of the page");
+    assert.notEqual(doc.scrollTop, 0);
+  });
+
+  /* Half the ways in here are a tap on a push notification about the newest
+   * message, and the composer sits above the thread, so that message is at
+   * the very bottom of the document. This is also what makes the `follow`
+   * branch above reachable at all: open at the top and every later answer is
+   * correctly held there, forever. */
+  test("opening the thread lands on the newest message, not the oldest", async () => {
+    const scrolls = [];
+    const window = await loadSite("/conversation/c-2", {
+      install: (win) => { win.scrollTo = (x, y) => scrolls.push(y); },
+      convList: TWO_CONVS, convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(scrolls.length, "nothing scrolled the page at all");
+    // jsdom lays nothing out, so the value cannot be asserted -- what is
+    // checkable is that it asked for the bottom of the document rather than
+    // a fixed offset.
+    assert.equal(scrolls[scrolls.length - 1],
+      window.document.documentElement.scrollHeight);
+  });
+});
+
 describe("the service worker says so when it answers from its cache", () => {
   function runFetchHandler({ networkFails, cached }) {
     const listeners = {};
@@ -4103,7 +5428,7 @@ describe("the service worker says so when it answers from its cache", () => {
 describe("a cycle that is running says so in the header", () => {
   /* The other half of #72. The header names the newest cycle that has
    * *written*, so for the first 20-45 minutes of every hour it names one
-   * behind the cycle actually running -- which is what Edvard reported as
+   * behind the cycle actually running -- which is what the owner reported as
    * a failure. The server decides; these assert the page renders that
    * decision and, more importantly, that it never renders it beside the
    * badge that contradicts it. */
@@ -4127,7 +5452,7 @@ describe("a cycle that is running says so in the header", () => {
     assert.deepEqual(live(window), ["cycle running"]);
   });
 
-  /* The state Edvard is looking at almost every time he opens the app: a
+  /* The state the owner is looking at almost every time he opens the app: a
    * cycle finished, the next has not woken. The badge must be absent, not
    * merely worded differently -- a badge that is always up is a badge
    * nobody reads, which is the objection this whole header is built
@@ -4186,12 +5511,12 @@ describe("an ask nobody answered is named in the header", () => {
   /* An ask lives on the journal card that raised it, and the card scrolls
    * off the feed while the question stays open. #94's waited a day on card
    * 247 -- by then fourteen cards down -- while the board row it blocks sat
-   * at the top of Edvard's board and three cycles in a row skipped it. The
+   * at the top of the owner's board and three cycles in a row skipped it. The
    * card was the right home for the ask; nothing was the home for "this one
    * is still waiting". */
   const pill = (window) => window.document.querySelector("#status .badge-ask");
   /* The href moved off the badge and onto the field around it when the
-   * status fields became one horizontal, clickable list (Edvard's capture,
+   * status fields became one horizontal, clickable list (the owner's capture,
    * 2026-08-22): the whole field is the link now, so the badge inside it
    * had to stop being one -- an `<a>` inside an `<a>` is unnested by the
    * parser. Same destination, bigger tap target. */
@@ -4267,6 +5592,206 @@ describe("an ask nobody answered is named in the header", () => {
       comments: { byCycle: {}, needs: [] },
     });
     assert.equal(pill(window), null);
+  });
+
+  /* the owner, ideas board #182: *"I'm not able to read all the 'waiting on
+   * you' and all the answers for the journals."* The header named the oldest
+   * open ask and silently dropped every other one, and an ask leaves the
+   * twenty-entry feed inside a day, so a second open question was not
+   * reachable from this page at all once its card scrolled off.
+   *
+   * The count is the entry point and the panel is the answer, so both are
+   * asserted -- a count with nothing behind it is the same defect wearing a
+   * number. */
+  const counter = (window) =>
+    window.document.querySelector("#status .status-asks-open");
+
+  test("a second open ask is counted, not dropped", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const found = counter(window);
+    assert.ok(found, "expected a count of every open ask");
+    assert.equal(found.textContent, "2 waiting on you");
+    assert.equal(askLink(window).getAttribute("href"), "/cycle/247",
+      "the pill must still name the oldest one");
+  });
+
+  /* The control: one open ask must NOT draw the counter. A list of one is
+   * the field beside it said twice, and a button that always appears is a
+   * button whose count nobody reads. */
+  test("a single open ask draws no counter", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.ok(pill(window), "the fixture must still raise the pill");
+    assert.equal(counter(window), null);
+  });
+
+  /* The owner, capture 2026-09-01: *"Drop the current 'needs me'
+   * functionality (the yellow 'N WAITING ON YOU' button/list) ... and
+   * replace it with a simple filter that just lists the journal entries
+   * that need his input. No fancy list/carousel behavior, just a plain
+   * filtered view."*
+   *
+   * Both halves are asserted, because only asserting the link would pass
+   * against a page that still had the panel wired up beside it. */
+  test("the count is a link to the filtered view and expands nothing", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 271, date: "2026-08-18", time: "09:00" },
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.equal(counter(window).tagName, "A");
+    assert.equal(counter(window).getAttribute("href"), "/asks");
+    /* Not clicked: it is a real link now, and jsdom follows one. That is
+     * itself the assertion -- the control that used to be here was a
+     * `<button type="button">` whose only job was to toggle state. */
+    assert.equal(window.document.querySelector("#status button.status-asks-open"), null,
+      "the toggle is a link now, not a button");
+    assert.equal(window.document.querySelector("#status .asks-panel"), null,
+      "the expanding panel is deleted, not restyled");
+    assert.equal(counter(window).getAttribute("aria-expanded"), null,
+      "nothing expands, so nothing claims to");
+  });
+
+  /* An answered card leaves the list the same way it leaves the pill, and
+   * the counter has to fall with it -- otherwise the header keeps insisting
+   * on a question he replied to, which is the complaint the `#mail` badge
+   * already collected once (`issues.md` 2026-08-26). */
+  test("a card he replied to is not counted", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 271, date: "2026-08-18", time: "09:00" },
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ]),
+      comments: {
+        byCycle: { 247: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.equal(counter(window).textContent, "2 waiting on you");
+  });
+
+  /* The filtered view itself. `/asks` is `view: "journal"` with one
+   * predicate, so these assert what actually lands on the feed rather than
+   * what the header says about it -- the count and the page are two
+   * different claims and the whole complaint was that the count had
+   * nothing readable behind it. */
+  const askPayload = (cycles, asks) => {
+    const copy = JSON.parse(JSON.stringify(payload.journal));
+    const one = copy.entries[0];
+    copy.entries = cycles.map((cycle) => Object.assign({}, one, {
+      cycle,
+      title: "cycle " + cycle,
+      ask: "Yes or no, cycle " + cycle + "?",
+      askSpans: [{ kind: "text", text: "Yes or no, cycle " + cycle + "?" }],
+    }));
+    copy.total = cycles.length;
+    Object.assign(copy.status, { recentMissingCycles: [], asks: asks || cycles.map(
+      (cycle) => ({ cycle, date: "2026-08-17", time: "10:00" })) });
+    return copy;
+  };
+  const feedCycles = (window) => Array.from(
+    window.document.querySelectorAll("#feed article.entry"),
+    (card) => card.id);
+
+  test("the filtered view asks the server for the asks, not for a window", async () => {
+    const asked = [];
+    await loadSite("/asks", {
+      journal: (url) => { asked.push(String(url)); return askPayload([260, 247]); },
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.ok(asked.length, "the page fetched no journal at all");
+    assert.ok(asked.every((url) => url.includes("asks=1")),
+      "expected /api/journal?asks=1, got " + asked.join(", "));
+  });
+
+  test("the filtered view shows a card per unanswered ask", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.deepEqual(feedCycles(window), ["cycle-271", "cycle-260", "cycle-247"]);
+    assert.match(window.document.getElementById("feed").textContent,
+      /3 entries are waiting on you/);
+  });
+
+  /* The half the server deliberately does not decide. An ask is answered
+   * when he has commented on that card, and the comments payload is the
+   * only thing that knows -- so a card he replied to has to leave this
+   * page without the journal cache being rebuilt. */
+  test("a card he replied to leaves the filtered view", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: {
+        byCycle: { 260: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.deepEqual(feedCycles(window), ["cycle-271", "cycle-247"]);
+  });
+
+  test("the filtered view says so when nothing is waiting", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([247]),
+      comments: {
+        byCycle: { 247: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.deepEqual(feedCycles(window), []);
+    assert.match(window.document.getElementById("feed").textContent,
+      /Nothing is waiting on you/);
+  });
+
+  /* `total` is the number of asks the server found and the feed shows the
+   * ones he has not answered, so the two differ by exactly the answered
+   * ones -- and the pager reads that difference as "there is more to
+   * fetch". There is not: `/asks` sends no window. */
+  test("the filtered view draws no pager", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: {
+        byCycle: { 260: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.equal(window.document.querySelector("#feed button.more"), null);
+  });
+
+  /* The search box is a second filter over the same feed and the server
+   * treats `q` and `asks` as separate windows, so a search typed here
+   * would silently answer with matches from the whole archive. */
+  test("the filtered view has no search box", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([260, 247]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const box = window.document.querySelector(".journal-search");
+    assert.ok(!box || box.hidden, "the search box must be hidden on /asks");
+  });
+
+  /* Same guard the pill carries: a payload served out of the service
+   * worker's cache cannot support "he has not replied to these". */
+  test("a saved copy counts nothing", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ], { replayed: true }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.equal(counter(window), null);
   });
 
   /* `/api/comments` is tolerated when it fails -- it resolves to null and
@@ -4437,7 +5962,7 @@ describe("a loop that has gone quiet says so in the header", () => {
    * set it, but only `fetchVersioned` read it -- so the journal marked itself
    * and the board, the costs page and the retro page went on rendering a
    * saved copy as fully current. The board is the one that actually costs
-   * something: it is the page Edvard rates rows on, so an unmarked stale
+   * something: it is the page the owner rates rows on, so an unmarked stale
    * board invites a tap on a row that has already moved.
    *
    * Each of these loads only its own route replayed and leaves the journal
@@ -4486,7 +6011,7 @@ describe("a loop that has gone quiet says so in the header", () => {
       /showing a saved copy/);
   });
 
-  /* Edvard asked for both journal-health badges to go, capture 2026-08-20:
+  /* the owner asked for both journal-health badges to go, capture 2026-08-20:
    * *"I do not like he statuses on the top of Nova. The message 'cycle 265
    * wrote no entry' just stands there forever. Please remove all those
    * statuses as i do not want them."*
@@ -4544,7 +6069,7 @@ describe("a loop that has gone quiet says so in the header", () => {
   });
 
   /* Five tests stood here asserting the stall badge and the gap badge
-   * render, the newest citing Edvard's own 2026-08-14 ask for the second
+   * render, the newest citing the owner's own 2026-08-14 ask for the second
    * one. He reversed that on 2026-08-20 and they are replaced by the
    * single invariant above rather than rewritten one by one -- there is
    * only one behaviour left to pin, and five tests asserting the absence
@@ -4560,7 +6085,7 @@ describe("a loop that has gone quiet says so in the header", () => {
  * to parse -- and the page rendered it. Four written "Could not load ..."
  * messages sat in this file's `.catch` blocks, unreachable, for as long as
  * they have existed. Cycles 163 and 164 fixed the server side of this twice;
- * this is the browser side, and it is the half Edvard actually sees. */
+ * this is the browser side, and it is the half the owner actually sees. */
 describe("a server error is shown, not rendered as emptiness", () => {
   const feedText = (window) => window.document.getElementById("feed").textContent;
 
@@ -4624,7 +6149,7 @@ describe("a server error is shown, not rendered as emptiness", () => {
   });
 });
 
-/* The retrospective page (Edvard, issues.md 2026-08-13).
+/* The retrospective page (the owner, issues.md 2026-08-13).
  *
  * The chart is SVG built with createElementNS, so jsdom can be asked what
  * was actually drawn -- which is the half of this page that no Python test
@@ -4664,6 +6189,67 @@ describe("the retrospective page", () => {
     assert.match(feedText(window), /The first retrospective runs on a Friday morning/);
     assert.equal(window.document.querySelectorAll(".retro-card").length, 0);
     assert.doesNotMatch(feedText(window), /Could not load/);
+  });
+
+  /* The one screen (his idea #120): "what shipped, what broke, what is
+   * still stuck, and the one thing you would want to change", as its own
+   * card. The three retros already in the vault predate it and carry no
+   * `week`, so "nothing to draw" is a state this page ships in, not an
+   * edge case. */
+  const weekOf = (parts) => ({
+    shipped: "The board can be filtered by project.",
+    broke: "The journal endpoint handed out four megabytes.",
+    stuck: "The outage alarm waits on a notification nobody has confirmed.",
+    change: "Ask whether an instrument has ever returned a value.",
+    ...parts,
+  });
+  const weekKeys = [
+    { key: "shipped", label: "What shipped" },
+    { key: "broke", label: "What broke" },
+    { key: "stuck", label: "What is still stuck" },
+    { key: "change", label: "The one thing I would change" },
+  ];
+
+  test("no retro has written the one screen yet, so no card is drawn", async () => {
+    const window = await loadSite("/retro", { retro: { ...twoRetros, weekKeys } });
+    assert.equal(window.document.querySelectorAll(".week-card").length, 0);
+    // And the rest of the page is untouched -- an absent summary must not
+    // take the chart and the cards down with it.
+    assert.equal(window.document.querySelectorAll(".retro-card").length, 2);
+  });
+
+  test("the one screen is the four parts he asked for, in his order, above everything else", async () => {
+    const retros = twoRetros.retros.map((r, i) => (i === 1 ? { ...r, week: weekOf() } : r));
+    const window = await loadSite("/retro", { retro: { ...twoRetros, weekKeys, retros } });
+    const card = window.document.querySelector(".week-card");
+    assert.ok(card, "the one screen did not render");
+    assert.deepEqual(
+      [...card.querySelectorAll(".week-sub")].map((n) => n.textContent),
+      ["What shipped", "What broke", "What is still stuck", "The one thing I would change"],
+    );
+    assert.match(card.textContent, /2026-08-14/);
+    assert.match(card.textContent, /Ask whether an instrument has ever returned a value/);
+    // First in the feed, because it is the thing he is meant to read if
+    // he reads nothing else. Drawn after the chart it would be the
+    // journal-length report the idea exists to replace.
+    const feed = window.document.getElementById("feed");
+    assert.equal(feed.firstElementChild, card, "the one screen is not the first thing on the page");
+    // No scores on it: they are the loop rating itself and are the other
+    // question this page answers, one card down.
+    assert.equal(card.querySelectorAll(".retro-pill").length, 0);
+  });
+
+  test("the newest summary is drawn even when the newest retro has none", async () => {
+    /* The retro that writes a summary and the newest retro are not the
+     * same row while the three pre-#120 rows are still the tail of some
+     * window, and skipping to the last real one is the difference between
+     * a card and no card. */
+    const retros = twoRetros.retros.map((r, i) => (i === 0 ? { ...r, week: weekOf({ change: "Read the ledger first." }) } : r));
+    const window = await loadSite("/retro", { retro: { ...twoRetros, weekKeys, retros } });
+    const card = window.document.querySelector(".week-card");
+    assert.ok(card, "an older summary was skipped because a newer retro had none");
+    assert.match(card.textContent, /2026-08-07/);
+    assert.match(card.textContent, /Read the ledger first/);
   });
 
   test("one line per score, with a dot at every real retro", async () => {
@@ -4771,13 +6357,13 @@ describe("the retrospective page", () => {
   });
 });
 
-/* The capture row's layout. Edvard, issues.md 2026-08-14: *"Ui is ugly for
+/* The capture row's layout. The owner, issues.md 2026-08-14: *"Ui is ugly for
  * the priority rating. The issue, idea, note and priority dropdown are now
  * just scrambled after the addition of the priority dropdown."* That was
  * fixed the same day by giving the picker its own row above the buttons,
  * while it still showed a rating's word and grew to 136px wide.
  *
- * Edvard, 2026-08-14, later: once the picker shrank to a fixed 44px glyph
+ * the owner, 2026-08-14, later: once the picker shrank to a fixed 44px glyph
  * he asked for it back on the button row, at the far right. jsdom lays
  * nothing out, so none of these can see a wrap on a real phone -- that is
  * measured in Chromium at 390px, and the fix is CSS. What is real code,
@@ -4788,7 +6374,7 @@ describe("the retrospective page", () => {
  * expect. */
 /* The attach button, in a DOM rather than in a substring.
 
- * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"*
+ * The owner, comments board 2026-08-21: *"How do i send a screenshot?"*
  *
  * The Python side of this feature is pinned by tests that `open(app.js)`
  * and count substrings, and those cannot see placement. That is not a
@@ -4814,7 +6400,7 @@ describe("the attach button is on the page, not just in the source", () => {
     const input = window.document.querySelector("#capture-form .attach-input");
     assert.ok(input, "no file input reachable from the capture form");
     assert.equal(input.type, "file");
-    // Was `image/*` until Cycle 309. Edvard, 2026-08-21: "It seems i only
+    // Was `image/*` until Cycle 309. The owner, 2026-08-21: "It seems i only
     // can upload images. Or atleas the ui forces only my Google photos to
     // open and i have no option to upload files." On Android that
     // attribute is not a filter over a file browser -- it is what opens
@@ -4828,34 +6414,195 @@ describe("the attach button is on the page, not just in the source", () => {
   /* The insert side, which is what decides whether a `!` is written at all.
    * Cycle 309: the render tests above pin what happens to a line that
    * already exists, and would all stay green if `buildAttach` wrote `![...]`
-   * for a PDF -- which is the bug they look like they cover. */
-  async function pickFile(window, { name, type, isImage }) {
-    const input = window.document.querySelector("#capture-form .attach-input");
-    const box = window.document.querySelector("#capture-form textarea");
-    box.value = "";
+   * for a PDF -- which is the bug they look like they cover.
+   *
+   * Cycle 377 moved *where* it is written. The markdown no longer lands in
+   * the textarea; it lands in a tray as a chip and is composed at send
+   * time. So these read the send payload rather than `box.value` -- which
+   * is the stronger assertion of the two anyway, since the payload is what
+   * the owner's board actually receives. */
+  const CAPTURE_INPUT = "#capture-form .attach-input";
+  const CAPTURE_TRAY = "#capture-form .attach-tray";
+
+  /** Pick `files` (each `{name, type, isImage}`) on a composer's input, and
+   *  wait for every one of them to land in the tray. */
+  async function pick(window, inputSelector, traySelector, files) {
+    const input = window.document.querySelector(inputSelector);
+    const tray = window.document.querySelector(traySelector);
+    const before = tray.querySelectorAll(".attach-chip").length;
     Object.defineProperty(input, "files", {
       configurable: true,
-      value: [new window.File([new Uint8Array([1, 2, 3])], name, { type })],
+      value: files.map((f) => new window.File([new Uint8Array([1, 2, 3])], f.name, { type: f.type })),
     });
-    window.fetch = () => res({ ok: true, name: "x", url: "/api/upload/x." + name.split(".").pop(), bytes: 3, isImage });
+    // One response per file, in the order they are uploaded, so a batch can
+    // be told apart chip by chip rather than all sharing one URL.
+    let served = 0;
+    window.fetch = () => {
+      const file = files[Math.min(served, files.length - 1)];
+      served += 1;
+      return res({
+        ok: true,
+        name: "x" + served,
+        url: "/api/upload/x" + served + "." + file.name.split(".").pop(),
+        bytes: 3,
+        isImage: file.isImage,
+      });
+    };
     input.dispatchEvent(new window.Event("change"));
-    // `FileReader` resolves on a task, and the POST on a microtask after it.
-    for (let i = 0; i < 20 && !box.value; i++) await new Promise((r) => setTimeout(r, 5));
-    return box.value;
+    // `FileReader` resolves on a task and the POST on a microtask after it,
+    // and the batch runs them one after another -- so allow per file.
+    for (let i = 0; i < 40 * files.length; i++) {
+      if (tray.querySelectorAll(".attach-chip").length >= before + files.length) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return tray;
   }
 
-  test("picking a picture writes an image link", async () => {
+  /** What `send` would POST, by clicking a capture button with `fetch` stubbed. */
+  async function captureBody(window) {
+    let sent = null;
+    window.fetch = (url, options) => {
+      sent = JSON.parse(options.body);
+      return res({ ok: true });
+    };
+    const status = window.document.querySelector(".capture-status");
+    status.textContent = "";
+    window.document.querySelector('#capture-form [data-target="issues"]').click();
+    // Waiting on the *status line*, not on the tray, because one of the
+    // tests below asserts what happened to the tray -- and a wait that
+    // watches the thing it is about to assert can only ever pass.
+    for (let i = 0; i < 40 && !/^saved to /.test(status.textContent); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return sent;
+  }
+
+  test("picking a picture puts a thumbnail in the tray, not text in the box", async () => {
     const window = await loadSite("/");
-    assert.match(await pickFile(window, { name: "shot.jpg", type: "image/jpeg", isImage: true }),
-      /^!\[shot\.jpg\]\(\/api\/upload\/x\.jpg\)$/);
+    const box = window.document.querySelector("#capture-form textarea");
+    box.value = "look at this";
+    const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
+      [{ name: "shot.jpg", type: "image/jpeg", isImage: true }]);
+
+    // The ask itself: "preview a miniatyr version of the uploaded images
+    // ... instead of the text that shows up in the input box."
+    const thumb = tray.querySelector("img.attach-thumb");
+    assert.ok(thumb, "no thumbnail in the tray");
+    assert.equal(thumb.getAttribute("src"), "/api/upload/x1.jpg");
+    assert.equal(thumb.getAttribute("alt"), "shot.jpg",
+      "four screenshots in a tray are told apart by their alt text alone");
+    assert.equal(box.value, "look at this", "the markdown was written into the box after all");
+    assert.equal(tray.hidden, false, "a tray with a chip in it is hidden");
+
+    assert.equal((await captureBody(window)).text,
+      "look at this\n\n![shot.jpg](/api/upload/x1.jpg)");
   });
 
-  test("picking a file writes a plain link, with no bang", async () => {
+  test("picking a file gets a named chip and a plain link, with no bang", async () => {
     const window = await loadSite("/");
-    const written = await pickFile(window, { name: "runner.log", type: "", isImage: false });
-    assert.match(written, /^\[runner\.log\]\(\/api\/upload\/x\.log\)$/);
-    assert.equal(written.startsWith("!"), false,
+    window.document.querySelector("#capture-form textarea").value = "";
+    const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
+      [{ name: "runner.log", type: "", isImage: false }]);
+    assert.equal(tray.querySelector("img.attach-thumb"), null,
+      "a log file has nothing to show and must not paint a broken image");
+    assert.match(tray.querySelector(".attach-chip-name").textContent, /runner\.log/);
+
+    // A screenshot with no sentence under it is still worth filing, which
+    // is why this sends at all with an empty box.
+    const body = await captureBody(window);
+    assert.equal(body.text, "[runner.log](/api/upload/x1.log)");
+    assert.equal(body.text.startsWith("!"), false,
       "a `!` here paints a broken-image icon for a file that has nothing to show");
+  });
+
+  test("several files can be picked at once, and each gets its own chip", async () => {
+    const window = await loadSite("/");
+    window.document.querySelector("#capture-form textarea").value = "";
+    const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY, [
+      { name: "one.jpg", type: "image/jpeg", isImage: true },
+      { name: "two.jpg", type: "image/jpeg", isImage: true },
+      { name: "three.png", type: "image/png", isImage: true },
+    ]);
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 3,
+      "picking three files did not produce three chips");
+    assert.equal(
+      window.document.querySelector(CAPTURE_INPUT).multiple, true,
+      "the picker only lets him choose one file at a time",
+    );
+    assert.equal((await captureBody(window)).text,
+      "![one.jpg](/api/upload/x1.jpg)\n\n![two.jpg](/api/upload/x2.jpg)\n\n![three.png](/api/upload/x3.png)");
+  });
+
+  test("crossing one out drops it from what gets sent, and keeps the rest", async () => {
+    const window = await loadSite("/");
+    window.document.querySelector("#capture-form textarea").value = "";
+    const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY, [
+      { name: "keep.jpg", type: "image/jpeg", isImage: true },
+      { name: "drop.jpg", type: "image/jpeg", isImage: true },
+    ]);
+    const remove = tray.querySelectorAll(".attach-chip")[1].querySelector(".attach-chip-remove");
+    assert.ok(remove, "no way to cross an attachment out");
+    assert.equal(remove.getAttribute("aria-label"), "Remove drop.jpg",
+      "the ✕ is a glyph, so it needs a label that names what it destroys");
+    remove.click();
+
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 1);
+    assert.equal((await captureBody(window)).text, "![keep.jpg](/api/upload/x1.jpg)");
+  });
+
+  test("an empty tray is hidden, and sending clears it", async () => {
+    const window = await loadSite("/");
+    const tray = window.document.querySelector(CAPTURE_TRAY);
+    assert.ok(tray, "no tray on the capture form");
+    assert.equal(tray.hidden, true, "an empty tray takes up room under the box");
+
+    window.document.querySelector("#capture-form textarea").value = "";
+    await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
+      [{ name: "shot.jpg", type: "image/jpeg", isImage: true }]);
+    await captureBody(window);
+    // Cleared only on a confirmed write, the same rule the box follows: a
+    // tray that emptied itself on a failure would lose the upload it exists
+    // to hold on to.
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 0,
+      "the picture stayed in the tray after it was sent, so the next capture carries it too");
+    assert.equal(tray.hidden, true);
+  });
+
+  /* Reviewer finding, Cycle 377. The journal drawer is rebuilt whole on a
+   * render and the upload chain is not cancelled with it, so a file that
+   * finishes uploading into an orphaned composer used to push a chip, call
+   * `onChange`, and write itself back into the draft store the *live*
+   * drawer had already read -- including after a successful send had
+   * deleted it, which resurrects an attachment he has already sent.
+   *
+   * Detaching the tray is the whole condition, so that is what this drives
+   * directly rather than trying to reproduce a poll landing mid-batch. */
+  test("an upload that lands after its composer is gone does not attach", async () => {
+    const window = await loadSite("/");
+    const tray = window.document.querySelector(CAPTURE_TRAY);
+    window.document.querySelector("#capture-form textarea").value = "";
+    await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
+      [{ name: "before.jpg", type: "image/jpeg", isImage: true }]);
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 1);
+
+    tray.remove();
+    const input = window.document.querySelector(CAPTURE_INPUT);
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new window.File([new Uint8Array([1])], "after.jpg", { type: "image/jpeg" })],
+    });
+    window.fetch = () => res({ ok: true, name: "y", url: "/api/upload/y.jpg", bytes: 1, isImage: true });
+    input.dispatchEvent(new window.Event("change"));
+    // Long enough for the FileReader task and the POST microtask to land.
+    for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 5));
+
+    assert.equal(tray.querySelectorAll(".attach-chip").length, 1,
+      "an orphaned composer attached a picture nobody can see");
+    assert.match(
+      window.document.querySelector(".capture-status").textContent,
+      /after the page moved on/,
+      "the dropped upload was swallowed rather than reported",
+    );
   });
 
   test("the comment drawer has one too", async () => {
@@ -4870,10 +6617,21 @@ describe("the attach button is on the page, not just in the source", () => {
       kids.indexOf(attach) < kids.findIndex((el) => el.className.includes("comment-send")),
       "the attach button is after the send button",
     );
+    // And its tray (Cycle 377), between the box and this row. The drawer is
+    // the one composer that gets rebuilt on every poll, so "the node is on
+    // the page" is worth asserting here even though the upload behaviour is
+    // covered on the capture form.
+    const drawer = actions.parentNode;
+    const order = [...drawer.children].map((n) => n.className.split(" ")[0]);
+    assert.ok(
+      order.indexOf("attach-tray") > order.indexOf("comment-text")
+        && order.indexOf("attach-tray") < order.indexOf("comment-actions"),
+      `the tray should sit under the box and above the buttons, got ${order.join(",")}`,
+    );
   });
 });
 
-/* Cycle 309. Edvard, comments board 2026-08-21 21:09: "How about a file?
+/* Cycle 309. The owner, comments board 2026-08-21 21:09: "How about a file?
  * It seems i only can upload images. Or atleas the ui forces only my
  * Google photos to open and i have no option to upload files."
  *
@@ -4997,7 +6755,7 @@ describe("the capture row does not scramble", () => {
 
   /* Cycle 191's finding was that the two pickers sharing one CSS rule
    * could drift apart silently; that rule is gone now that the board
-   * row's picker went back to `.chip.prio` (Edvard, 2026-08-14) and has
+   * row's picker went back to `.chip.prio` (the owner, 2026-08-14) and has
    * nothing left in common with the capture box's circle to protect. This
    * pins the replacement invariant instead: `.capture-prio` is still held
    * to the 44px iOS touch minimum this stylesheet holds every button to,
@@ -5017,7 +6775,7 @@ describe("the capture row does not scramble", () => {
   });
 });
 
-/* Edvard, issues.md #90: "When i press enter on my keyboard, it
+/* the owner, issues.md #90: "When i press enter on my keyboard, it
  * automatically submits my input text as an issue in the Nova text input
  * field. Pressing enter should create a new line, not submit."
  *
@@ -5084,7 +6842,7 @@ describe("Enter in the capture box is a newline", () => {
   });
 });
 
-/* Edvard, issues.md #91: "All unboarded issues and ideas should have the
+/* the owner, issues.md #91: "All unboarded issues and ideas should have the
  * priority status icon shown (as they do when its chosen) in the left top
  * corner, but pressing it should open the modal like it does sin the issue
  * cards." */
@@ -5126,6 +6884,39 @@ describe("rating a capture that is not boarded yet", () => {
     assert.equal(posted.body.original, payload.board.captures[0].text,
       "the edit did not carry the capture's own text as its address");
     assert.equal(posted.body.text, "🔴 Immediately: " + payload.board.captures[0].body);
+  });
+
+  test("a cycle's answer is its own bubble, and the write still addresses his line", async () => {
+    /* His `issues.md` capture, 2026-08-25, 🟠 High, with a screenshot:
+     * *"When i edit not boarded yet ideas, i can't save and it gives me a
+     * message that its not there anymore."*
+     *
+     * The board payload used to fold the reply into the capture text, so
+     * the card read as one paragraph that started in his voice and ended
+     * in mine -- and the string every write on the card sends as its
+     * address was that same glued one, which `replace_capture` matches
+     * against his sentence alone and refuses. The fixture's capture now
+     * carries a reply, so this asserts both halves at once: the answer is
+     * drawn separately, and the address is still his line. */
+    const window = await loadSite("/issues");
+    const item = window.document.querySelector(".capture-item");
+    const reply = item.querySelector(".capture-reply");
+    assert.ok(reply, "a cycle's answer is not drawn under the capture");
+    assert.equal(reply.querySelector(".note-msg-name").textContent, "Nova");
+    assert.match(reply.textContent, /the timestamp says the time/);
+    assert.ok(!item.querySelector(".capture-body").textContent.includes("Cycle 401"),
+      "the answer is welded into his own sentence again");
+
+    click(window, item.querySelector(".chip.prio"));
+    click(window, [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "🔴 Immediately"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.ok(posted, "no write reached /api/capture/edit");
+    assert.ok(!posted.body.original.includes("Cycle 401"),
+      "the write addressed the capture by his line plus my answer, which matches nothing");
+    assert.ok(!posted.body.text.includes("Cycle 401"),
+      "the replacement text carried my answer into his bullet");
   });
 
   test("re-rating an already-rated capture swaps the rating rather than stacking a second one", async () => {
@@ -5221,7 +7012,7 @@ describe("rating a capture that is not boarded yet", () => {
  * structural test above kept passing throughout -- none of them opened
  * the thing and looked at what was left on screen after a pick. */
 describe("the priority picker (buildPrioPicker)", () => {
-  test("the composer's picker opens with glyph and word, and closes to the picked label", async () => {
+  test("the composer's picker opens with glyph and word, and closes to the glyph alone", async () => {
     const window = await loadSite("/issues");
     const trigger = window.document.getElementById("capture-prio");
     assert.equal(trigger.textContent, "–", "the closed trigger should start on the dash");
@@ -5236,7 +7027,13 @@ describe("the priority picker (buildPrioPicker)", () => {
     );
     const high = [...menu.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
     click(window, high);
-    assert.equal(trigger.textContent, "🟠 High", "the closed trigger should be back to the picked label");
+    // Glyph only, no word. The owner, 2026-08-22: the word made the closed
+    // button wide enough to shove the row's other buttons out of place, and
+    // "the button should just show the color". The word is not lost -- the
+    // menu two assertions up spells out all five, and a board row's chip
+    // still carries `🟠 High` in full. This assertion was left on the old
+    // behaviour when that shipped, which is half of why `main` went red.
+    assert.equal(trigger.textContent, "🟠", "the closed trigger should be the picked glyph alone");
     assert.equal(menu.hidden, true, "the menu did not close after a pick");
   });
 
@@ -5254,6 +7051,59 @@ describe("the priority picker (buildPrioPicker)", () => {
       window.document.getElementById("capture-prio").textContent, "–",
       "the picker did not reset after a send",
     );
+  });
+
+  test("the one-item toggle appears only once the box holds more than one line", async () => {
+    const window = await loadSite("/issues");
+    const box = window.document.getElementById("capture-text");
+    const row = window.document.getElementById("capture-one");
+    assert.equal(row.hidden, true, "the toggle should be hidden on an empty box");
+    box.value = "one line";
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(row.hidden, true, "a one-line capture cannot be split, so the toggle means nothing");
+    box.value = "first paragraph\n\nsecond paragraph";
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(row.hidden, false, "the toggle should appear once the paste would split");
+  });
+
+  test("a value the browser restored across a refresh shows the toggle on load", async () => {
+    // `install` runs before `app.js` is evaluated, which is the only way to
+    // put a value in the box the way a browser's own form restoration does.
+    const window = await loadSite("/issues", {
+      install: (w) => {
+        w.document.getElementById("capture-text").value = "first paragraph\n\nsecond";
+      },
+    });
+    assert.equal(
+      window.document.getElementById("capture-one").hidden, false,
+      "the toggle only appears on an input event, so a restored paste never gets one",
+    );
+  });
+
+  test("a checked one-item toggle rides along with the capture, then resets", async () => {
+    const window = await loadSite("/issues");
+    const box = window.document.getElementById("capture-text");
+    box.value = "Stand up k3s on the NAS.\n\nWHY: the NAS is LAN-exposed.";
+    box.dispatchEvent(new window.Event("input"));
+    click(window, window.document.getElementById("capture-one-input"));
+    assert.equal(window.document.getElementById("capture-one-input").checked, true);
+    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].body.oneItem, true);
+    assert.equal(
+      window.document.getElementById("capture-one-input").checked, false,
+      "the toggle did not reset after a send, so the next one-line capture would carry it",
+    );
+    assert.equal(window.document.getElementById("capture-one").hidden, true);
+  });
+
+  test("an untouched capture posts oneItem false rather than nothing", async () => {
+    const window = await loadSite("/issues");
+    window.document.getElementById("capture-text").value = "the app needs a restart";
+    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted[0].body.oneItem, false);
   });
 
   test("picking a rating on a boarded row posts it and updates the chip", async () => {
@@ -5289,7 +7139,7 @@ describe("the priority picker (buildPrioPicker)", () => {
   });
 
   test("a board row's priority trigger is in the head, so a closed row still shows it", async () => {
-    // Edvard, 2026-08-14: "on issues and ideas the priority button should
+    // the owner, 2026-08-14: "on issues and ideas the priority button should
     // be the priority tag instead, not a separate button" -- the old
     // picker lived in `.item-body`, which only exists once a row opens.
     const window = await loadSite("/issues");
@@ -5301,7 +7151,7 @@ describe("the priority picker (buildPrioPicker)", () => {
   });
 
   test("a rated board row's trigger keeps the original cycle-171 chip look", async () => {
-    // Edvard, 2026-08-14: "i liked the old issue priority status better...
+    // the owner, 2026-08-14: "i liked the old issue priority status better...
     // make it into a button that opens the modal, but the visual design is
     // not changed from the old design" -- same class, same full text, on
     // a <button> instead of a <span>.
@@ -5368,7 +7218,7 @@ describe("the priority picker (buildPrioPicker)", () => {
   });
 });
 
-/* Edvard, ideas.md #71: "Ability to search through issues or ideas. Also
+/* the owner, ideas.md #71: "Ability to search through issues or ideas. Also
  * filter the list based on different parameters like date, this week,
  * priority etc." and #70: "Lets me sort issues and ideas ... make sure
  * its both upwards and downwards option ... a button with a
@@ -5377,7 +7227,7 @@ describe("searching, filtering and sorting a board", () => {
   const rows = (window) =>
     [...window.document.querySelectorAll(".item-number")].map((n) => n.textContent);
   /* The filter and toggle buttons this suite reaches for all moved into
-   * the filter modal (Edvard, 2026-08-14: "make the filters into a
+   * the filter modal (the owner, 2026-08-14: "make the filters into a
    * modal... remove all the filter buttons"). `chip` opens it first if
    * it is not already, so every existing call site in this file keeps
    * working unchanged rather than needing its own "open the modal" step
@@ -5442,7 +7292,7 @@ describe("searching, filtering and sorting a board", () => {
     assert.deepEqual(rows(window), ["#57", "#58"]);
   });
 
-  /* Edvard, issues.md 2026-08-15: "When i use the search bar in Nova, my
+  /* the owner, issues.md 2026-08-15: "When i use the search bar in Nova, my
    * keyboard is closed on every letter input so i have to open the
    * keyboard each letter. This is very frustrating."
    *
@@ -5678,7 +7528,7 @@ describe("searching, filtering and sorting a board", () => {
   });
 });
 
-/* Edvard, comments board 2026-08-14, on the stall badge: "Or a display
+/* the owner, comments board 2026-08-14, on the stall badge: "Or a display
  * error if the fetch failed, also".
  *
  * The header is the part of the page that answers "is the loop alive", and
@@ -5746,7 +7596,7 @@ describe("the header says so when it cannot reach the server", () => {
   });
 });
 
-/* Holding a boarded card -- Edvard's issue #84.
+/* Holding a boarded card -- the owner's issue #84.
  *
  * *"I need to be able to edit and especially delete boarded ideas and
  * issues from the agora app. If i hold the card for more than 1 second i
@@ -5760,7 +7610,7 @@ describe("holding a board row opens edit mode", () => {
   const HOLD = 1000;
   const press = (window, node, type) =>
     node.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true }));
-  /** A whole press: down, the second Edvard asked for, then up and the
+  /** A whole press: down, the second the owner asked for, then up and the
    *  click a browser sends after it. */
   const hold = async (window, node, ms = HOLD + 30) => {
     press(window, node, "mousedown");
@@ -5828,6 +7678,180 @@ describe("holding a board row opens edit mode", () => {
     await new Promise((resolve) => setTimeout(resolve, HOLD + 100));
     assert.equal(window.document.querySelector(".item-edit"), null,
       "a short press opened edit mode later");
+  });
+
+  /* The project control inside that same editor -- his capture, 2026-09-01,
+   * rated 🔴 Immediately: *"I/you should easily be able to assign issues and
+   * ideas to projects, and change project if assigned wrongly ... I/you
+   * should easily be able to create new projects."*
+   *
+   * Every one of these drives the real `change`/`blur` events rather than
+   * calling the save function, because the whole control is the difference
+   * between picking a name that exists and typing one that does not, and
+   * only the event sequence has that in it. */
+  const picker = (row) => row.querySelector(".item-edit-project-select");
+  const newBox = (row) => row.querySelector(".item-edit-project-new");
+  const change = async (window, node) => {
+    node.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  test("the picker opens on the project the row is already in", async () => {
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova", "Marcus", "NAS"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    assert.ok(picker(row), "no project picker in the editor");
+    assert.equal(picker(row).value, "Nova");
+    const names = [...picker(row).options].map((o) => o.textContent);
+    assert.deepEqual(names, ["Nova", "Marcus", "NAS", "New project…"]);
+    // Nothing was written by opening it.
+    assert.equal(window.posted.length, 0);
+  });
+
+  test("picking another project posts the move and nothing else", async () => {
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova", "Marcus"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    picker(row).value = "Marcus";
+    await change(window, picker(row));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/board/project");
+    assert.deepEqual(window.posted[0].body,
+      { target: "issues", number: 57, project: "Marcus" });
+  });
+
+  test("re-picking the project it is already in posts nothing", async () => {
+    /* Opening the editor, scrolling past the picker and closing it is the
+     * common case, and it must not rewrite a cell that already says that. */
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova", "Marcus"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    picker(row).value = "Nova";
+    await change(window, picker(row));
+    assert.equal(window.posted.length, 0);
+  });
+
+  test("New project… reveals a box, and typing a name creates the project", async () => {
+    /* The create half of the capture. There is no create endpoint and there
+     * is not meant to be one: the server reads the project list back off
+     * the cells, so a name no row carries is a new project. */
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    assert.equal(newBox(row).hidden, true, "the new-project box is showing before it was asked for");
+    picker(row).value = "|new";
+    await change(window, picker(row));
+    assert.equal(newBox(row).hidden, false, "New project… did not reveal the box");
+    assert.equal(window.posted.length, 0, "revealing the box posted something");
+    newBox(row).value = "  Maintenance  ";
+    newBox(row).dispatchEvent(new window.Event("blur", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 1);
+    assert.deepEqual(window.posted[0].body,
+      { target: "issues", number: 57, project: "Maintenance" });
+  });
+
+  test("an empty new-project box is a cancelled create, not a blanked cell", async () => {
+    /* `set_row_project` refuses an empty name, so posting one is a
+     * guaranteed 502 with an error on his screen for doing nothing. */
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    picker(row).value = "|new";
+    await change(window, picker(row));
+    newBox(row).value = "   ";
+    newBox(row).dispatchEvent(new window.Event("blur", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0);
+    assert.equal(newBox(row).hidden, true, "the box stayed open after a cancelled create");
+  });
+
+  test("a refused write says so and snaps back to the project on the server", async () => {
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova", "Marcus"], name: null, asked: "", boards: {} },
+    });
+    window.postReply = { ok: false, message: "could not write to issues" };
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    picker(row).value = "Marcus";
+    await change(window, picker(row));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const note = row.querySelector(".item-edit-project .item-edit-status");
+    assert.match(note.textContent, /Could not save/);
+    assert.ok(note.classList.contains("is-error"));
+    // The cell on his board still says Nova, so the control must too.
+    assert.equal(picker(row).value, "Nova");
+    assert.equal(picker(row).disabled, false, "the picker stayed disabled after a failure");
+  });
+
+  test("the project index is fetched once however many rows are opened", async () => {
+    /* Three rows held is three editors, and a request per editor for a
+     * list that cannot have changed is the cost this memo exists for. */
+    let asked = 0;
+    const window = await loadSite("/issues", {
+      project: () => {
+        asked += 1;
+        return { projects: ["Nova"], name: null, asked: "", boards: {} };
+      },
+    });
+    assert.equal(asked, 0, "the board page fetched the project index on load");
+    await hold(window, head(window, 57));
+    await hold(window, head(window, 58));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(asked, 1, "the project index was fetched once per editor, not once per page");
+  });
+
+  test("a project index that lands after the editor is gone paints nothing", async () => {
+    /* The index arrives a round trip after the editor is drawn, and by
+     * then he may have cancelled it -- or the page may be gone entirely,
+     * which is when `el()` reaches for a `document` that no longer exists
+     * and throws with nobody near it. Two tests in this file reported
+     * exactly that as asynchronous activity after they had ended.
+     *
+     * The observable half, and what this pins: a picker that is no longer
+     * in the document is not repainted. */
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const window = await loadSite("/issues", { project: () => held });
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    const select = picker(row);
+    assert.deepEqual([...select.options].map((o) => o.textContent),
+      ["Nova", "New project…"], "the picker was already filled from the index");
+    click(window, act(row, "Cancel"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(select.isConnected, false, "Cancel left the editor in the page");
+    release(res({ projects: ["Nova", "Marcus", "NAS"], name: null, asked: "", boards: {} }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual([...select.options].map((o) => o.textContent),
+      ["Nova", "New project…"], "a detached picker was repainted by a late index");
+  });
+
+  test("a failed project index still leaves a usable picker", async () => {
+    /* Degrading to "you can still type a name" rather than to an error he
+     * cannot act on: the row's own project is always an option. */
+    const window = await loadSite("/issues", { projectStatus: 500 });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    const names = [...picker(row).options].map((o) => o.textContent);
+    assert.deepEqual(names, ["Nova", "New project…"]);
   });
 
   test("Save sends the row's number and the new title", async () => {
@@ -5911,20 +7935,98 @@ describe("holding a board row opens edit mode", () => {
 
 /* ---- Commenting on a boarded row (idea #64) -----------------------------
  *
- * Edvard: *"Lets me have the same comment conversation on ideas, notes and
+ * the owner: *"Lets me have the same comment conversation on ideas, notes and
  * issues like the Journal. Add a comment button and let me leave comments
  * that discuss each idea."* Rated 🔴 Immediately and open since 08-12 --
  * skipped by every cycle since, which is what he filed.
  *
- * There is no thread widget to test, and that is the design: the comment
- * is appended to the row's own write-up, which the open row already
- * fetches and renders. So what is worth pinning is the composer, what it
- * posts, and the one thing a "saved" message can lie about -- whether the
- * body he is looking at afterwards actually contains his sentence.
+ * The comment is appended to the row's own write-up, which the open row
+ * already fetches -- so for a long time there was no thread widget and
+ * that was called the design. He overruled it on 2026-08-26: *"boarded
+ * issues does not have those nice colored comments like there are now in
+ * the 'not boarded yet' box, so take the best from both worlds here."* So
+ * there is a thread now, drawn from the same body, and what is worth
+ * pinning is that the split holds on the page -- his words above the first
+ * note stay write-up, the notes below it become bubbles with the right
+ * speaker -- plus the composer, what it posts, and the one thing a "saved"
+ * message can lie about: whether the body he is looking at afterwards
+ * actually contains his sentence.
  */
 describe("commenting on a boarded row", () => {
   const composer = (window) =>
     window.document.getElementById("item-57").querySelector(".item-comment");
+
+  test("the exchange under the write-up is drawn as green and purple bubbles", async () => {
+    const window = await loadSite("/issues#57");
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    const messages = [...body.querySelectorAll(".note-msg")];
+    assert.equal(messages.length, 2, "the row's two notes did not become bubbles");
+    assert.deepEqual(
+      messages.map((m) => m.querySelector(".note-msg-name").textContent),
+      ["Edvard", "Nova"],
+    );
+    // His green, mine purple -- the same two classes the notes page and the
+    // capture box use, which is the whole of what he asked for.
+    assert.ok(messages[0].className.includes("note-msg-mine"));
+    assert.ok(messages[1].className.includes("note-msg-nova"));
+    assert.match(messages[0].querySelector(".note-msg-body").textContent, /any of these built yet/);
+    // The stamp as the author wrote it, cycle marker and all.
+    assert.equal(messages[1].querySelector(".note-msg-when").textContent, "08-12 (Cycle 120)");
+  });
+
+  test("a row whose whole body is a conversation still shows it", async () => {
+    /* The write-up is `[]` here because everything under the heading was a
+     * dated note. That branch used to `return` before the composer, so a
+     * row he had commented on and nothing else would have shown "No
+     * write-up yet" with his own words and the reply box hidden behind it. */
+    const window = await loadSite("/issues#57", {
+      board: (url) =>
+        url.includes("item=")
+          ? {
+              name: "issues",
+              item: {
+                number: 57,
+                title: "Talked about, never written up",
+                status: "🟡 In progress",
+                statusKey: "in-progress",
+                updated: "08-26",
+                where: "",
+                priority: "",
+                priorityKey: "",
+                done: false,
+                blocks: [],
+                comments: [
+                  {
+                    author: "Edvard",
+                    stamp: "08-26",
+                    blocks: [{ type: "p", spans: [{ kind: "text", text: "is this one live?" }] }],
+                  },
+                ],
+              },
+              found: true,
+            }
+          : null,
+    });
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    assert.equal(body.querySelectorAll(".note-msg").length, 1, "the only content was dropped");
+    assert.match(body.querySelector(".note-msg-body").textContent, /is this one live/);
+    assert.ok(body.querySelector(".item-comment"), "no way to answer him on this row");
+  });
+
+  test("the write-up above the first note stays write-up", async () => {
+    /* The failure this guards is the split running too far: the notes are
+     * appended into the same body, so a looser rule pulls his statement of
+     * the problem into a bubble attributed to whoever spoke first. */
+    const window = await loadSite("/issues#57");
+    const body = window.document.getElementById("item-57").querySelector(".item-body");
+    const prose = [...body.children]
+      .filter((node) => !node.classList.contains("note-msg"))
+      .map((node) => node.textContent)
+      .join(" ");
+    assert.match(prose, /I need more visualisations/);
+    assert.match(prose, /Five pages, in the order I would build them/);
+    assert.doesNotMatch(prose, /any of these built yet/);
+  });
 
   test("an open row offers a comment box under its write-up", async () => {
     const window = await loadSite("/issues#57");
@@ -5946,10 +8048,17 @@ describe("commenting on a boarded row", () => {
     await new Promise((r) => window.setTimeout(r, 0));
     const posted = window.posted.find((p) => p.url === "/api/board/comment");
     assert.ok(posted, "no write reached /api/board/comment");
+    // `author` is stated rather than left out. The server used to default a
+    // missing author to the owner and now refuses the write, because that
+    // default was right for this box and silently wrong for a cycle posting
+    // from a shell -- which is how two of my own notes ended up signed with
+    // his name on idea #38, and how they then pinned that row to the top of
+    // his board as a question he had never asked.
     assert.deepEqual(posted.body, {
       target: "issues",
       number: 57,
       text: "Still wrong on my phone.",
+      author: "Edvard",
     });
   });
 
@@ -5992,6 +8101,20 @@ describe("commenting on a boarded row", () => {
     assert.ok(
       order.indexOf("attach-btn") < order.indexOf("item-comment-send"),
       `attach should sit before Comment, got ${order.join(",")}`,
+    );
+    /* And the tray it fills (Cycle 377), between the box and that row. The
+     * upload tests live on the capture form because that is where the
+     * fixture lets a file be picked -- so this composer's only exposure to
+     * the feature is whether the tray is on the page at all, which is the
+     * "built, tested, and dead on his screen" failure this suite exists
+     * for. */
+    const wrap = composer(window);
+    const kids = [...wrap.children].map((n) => n.className.split(" ")[0]);
+    assert.ok(kids.includes("attach-tray"), `no tray in the board composer, got ${kids.join(",")}`);
+    assert.ok(
+      kids.indexOf("attach-tray") > kids.indexOf("item-comment-box")
+        && kids.indexOf("attach-tray") < kids.indexOf("item-comment-foot"),
+      `the tray should sit under the box and above the buttons, got ${kids.join(",")}`,
     );
   });
 
@@ -6070,60 +8193,125 @@ describe("commenting on a boarded row", () => {
 });
 
 /* The `/plan` page (issues.md #7). `roadmap.md` and `goals.md` are the two
- * documents written so Edvard could argue with Nova's prioritisation, and
+ * documents written so the owner could argue with Nova's prioritisation, and
  * until now the only way to read either was to open Obsidian.
  *
  * The server tests already pin the payload. What only a rendered DOM can
  * answer is whether he sees any of it: this repo has shipped a feature
  * that was built, tested, merged and completely dead on his screen. */
 describe("the notes page", () => {
-  /* Edvard, issues.md 2026-08-21: "I do not have a notes page that shows
+  /* the owner, issues.md 2026-08-21: "I do not have a notes page that shows
    * any overview of the notes made."
    *
-   * The question this page answers is "did anyone pick my note up", so
-   * every test below is some form of that: which state a card is in, and
-   * whether the answer is on it. */
+   * And `notes.md` 2026-08-24, which turned it into a conversation:
+   * "alternating posts are green (mine) and purple (Nova cycle
+   * response) ... the conversation above the input box ... ordered with
+   * the latest note at the bottom ... it should not start at the top and
+   * i have to scroll all the way down ... lazy loaded so when i scroll up
+   * they load".
+   *
+   * Five asks, and each has a test below. The fixture is in the order the
+   * server now sends -- oldest first, unanswered last -- because a page
+   * that re-sorted what it was given would pass a test written the other
+   * way round and still be wrong on the live payload. */
   const feedText = (window) => window.document.getElementById("feed").textContent;
+  const settle = () => new Promise((r) => setTimeout(r, 260));
+  /* A local copy of the journal suite's observer stub, which is scoped
+   * inside its own `describe`. Deliberately the smaller half of it: this
+   * block only needs to know *which node* got watched, not to replay an
+   * initial observation, so `install` records and never fires. */
+  const observerSpy = () => {
+    const watching = [];
+    return {
+      watching,
+      install(window) {
+        window.IntersectionObserver = class {
+          constructor(callback, options) { this.callback = callback; this.options = options; }
+          observe(node) { watching.push({ node, observer: this }); }
+          disconnect() {
+            for (let i = watching.length - 1; i >= 0; i -= 1) {
+              if (watching[i].observer === this) watching.splice(i, 1);
+            }
+          }
+        };
+      },
+    };
+  };
+  const note = (text, opts = {}) => ({
+    text,
+    blocks: [{ kind: "p", spans: [{ text }] }],
+    responses: (opts.responses || []).map((r) => ({
+      cycle: r.cycle === undefined ? null : r.cycle,
+      blocks: [{ kind: "p", spans: [{ text: r.text }] }],
+    })),
+    answered: !!(opts.responses || []).length,
+    waiting: !!opts.waiting,
+    // The capture-list position, or null on anything the edit, delete and
+    // convert endpoints cannot address -- every note under `## Read`. It is
+    // what the server sends and what decides whether controls are drawn.
+    index: opts.index === undefined ? null : opts.index,
+  });
   const twoNotes = {
     waitingTotal: 1,
     readTotal: 1,
+    notesTotal: 2,
     notes: [
-      {
-        text: "Nobody has read this one.",
-        blocks: [{ kind: "p", spans: [{ text: "Nobody has read this one." }] }],
-        responses: [],
-        answered: false,
-        waiting: true,
-      },
-      {
-        text: "Platform-config billing block is fine as-is.",
-        blocks: [{ kind: "p", spans: [{ text: "Platform-config billing block is fine as-is." }] }],
-        responses: [
-          {
-            cycle: 258,
-            blocks: [{ kind: "p", spans: [{ text: "Read Cycle 258. Recorded it." }] }],
-          },
-        ],
-        answered: true,
-        waiting: false,
-      },
+      note("Platform-config billing block is fine as-is.", {
+        responses: [{ cycle: 258, text: "Read Cycle 258. Recorded it." }],
+      }),
+      note("Nobody has read this one.", { waiting: true, index: 0 }),
     ],
+  };
+  const manyNotes = (count) => {
+    const notes = [];
+    for (let i = 1; i <= count; i += 1) notes.push(note("Note number " + i));
+    return { waitingTotal: 0, readTotal: count, notesTotal: count, notes };
   };
 
   test("a vault with no notes is a page that says so, not an error", async () => {
     const window = await loadSite("/notes");
     assert.match(feedText(window), /No notes yet/);
-    assert.equal(window.document.querySelectorAll(".note-card").length, 0);
+    assert.equal(window.document.querySelectorAll(".note-msg").length, 0);
     assert.doesNotMatch(feedText(window), /Could not load/);
+  });
+
+  test("his messages are green and a cycle's are purple, both named in words", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const messages = [...window.document.querySelectorAll(".note-msg")];
+    // Three messages from two notes: his, the cycle's answer, then his
+    // unanswered one.
+    assert.deepEqual(
+      messages.map((m) => m.className.includes("note-msg-nova")),
+      [false, true, false],
+    );
+    assert.deepEqual(
+      messages.map((m) => m.querySelector(".note-msg-name").textContent),
+      ["Edvard", "Nova", "Edvard"],
+    );
+    assert.match(messages[1].querySelector(".note-msg-body").textContent, /Recorded it/);
+    assert.equal(messages[1].querySelector(".note-msg-cycle").getAttribute("href"), "/cycle/258");
+  });
+
+  test("the transcript is drawn in the order the server sent, not re-sorted", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const bodies = [...window.document.querySelectorAll(".note-msg-body")]
+      .map((b) => b.textContent);
+    assert.deepEqual(bodies, [
+      "Platform-config billing block is fine as-is.",
+      "Read Cycle 258. Recorded it.",
+      "Nobody has read this one.",
+    ]);
   });
 
   test("a waiting note says Waiting in words, not only in colour", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
-    const cards = [...window.document.querySelectorAll(".note-card")];
-    assert.equal(cards.length, 2);
-    assert.match(cards[0].querySelector(".badge").textContent, /Waiting/);
-    assert.ok(cards[0].classList.contains("note-waiting"));
-    assert.match(cards[1].querySelector(".badge").textContent, /Read/);
+    const messages = [...window.document.querySelectorAll(".note-msg")];
+    const waiting = messages[messages.length - 1];
+    assert.match(waiting.querySelector(".badge").textContent, /Waiting/);
+    assert.ok(waiting.classList.contains("note-msg-waiting"));
+    // And the answered one carries no badge at all -- the purple reply
+    // under it is what says a cycle got there.
+    assert.equal(messages[0].querySelector(".badge"), null);
   });
 
   test("the waiting count is the headline, because it is the question", async () => {
@@ -6131,11 +8319,198 @@ describe("the notes page", () => {
     assert.match(window.document.querySelector(".status-line").textContent, /1 note waiting/);
   });
 
-  test("an answered note carries the reply and links the cycle that wrote it", async () => {
+  test("the composer sits under the conversation, not above it", async () => {
     const window = await loadSite("/notes", { notes: twoNotes });
-    const answered = [...window.document.querySelectorAll(".note-card")][1];
-    assert.match(answered.querySelector(".note-reply-body").textContent, /Recorded it/);
-    assert.equal(answered.querySelector(".note-cycle").getAttribute("href"), "/cycle/258");
+    const feed = window.document.getElementById("feed");
+    const capture = window.document.getElementById("capture");
+    assert.equal(capture.parentNode, feed, "the composer is not in the feed");
+    assert.equal(feed.lastElementChild, capture, "the composer is not the last thing on the page");
+    // The one composer the shell has, not a second copy that could drift
+    // from the handlers `captureBox()` bound at startup.
+    assert.equal(window.document.querySelectorAll("#capture-form").length, 1);
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+  });
+
+  test("navigating away puts the composer back rather than deleting it", async () => {
+    /* The destructive one. Every renderer's first act is to empty the
+     * feed, so a composer left inside it is gone -- and nothing rebinds
+     * `captureBox()`, so the box would be missing from every page until
+     * a reload. */
+    const window = await loadSite("/notes", { notes: twoNotes });
+    window.document.querySelector('.nav-tab[href="/issues"]').click();
+    await settle();
+    const capture = window.document.getElementById("capture");
+    assert.ok(capture, "the composer was destroyed by navigating away from Notes");
+    assert.equal(capture.parentNode, window.document.getElementById("feed").parentNode);
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+  });
+
+  test("it opens on the newest message instead of at the top", async () => {
+    const scrolls = [];
+    const window = await loadSite("/notes", {
+      notes: twoNotes,
+      install: (w) => { w.scrollTo = (x, y) => scrolls.push(y); },
+    });
+    assert.ok(scrolls.length, "nothing scrolled the page at all");
+    // jsdom lays nothing out, so scrollHeight is 0 and the value cannot
+    // be asserted -- what is checkable is that the page asked to go to
+    // the bottom of the document rather than to a fixed offset.
+    assert.equal(scrolls[scrolls.length - 1], window.document.documentElement.scrollHeight);
+  });
+
+  test("older messages are behind a pager that the scroll watcher fires", async () => {
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = () => {}; },
+    });
+    const shown = [...window.document.querySelectorAll(".note-msg-body")].map((b) => b.textContent);
+    assert.equal(shown.length, 12, "the page did not open on a window of the newest messages");
+    assert.equal(shown[shown.length - 1], "Note number 30");
+    assert.equal(shown[0], "Note number 19");
+    const pager = window.document.querySelector(".note-older");
+    assert.ok(pager, "no way to reach the older messages");
+    assert.ok(spy.watching.some((one) => one.node === pager), "the notes pager is not watched");
+    pager.click();
+    const wider = [...window.document.querySelectorAll(".note-msg-body")].map((b) => b.textContent);
+    assert.equal(wider.length, 24);
+    assert.equal(wider[0], "Note number 7");
+    assert.equal(wider[wider.length - 1], "Note number 30", "revealing older ones lost the newest");
+  });
+
+  test("scrolling up does not destroy the composer", async () => {
+    /* The bug the reviewer caught after this shipped, and the reason it
+     * is a separate test from the navigation one above: `captureHome()`
+     * in `load()` covers arriving and leaving, and `showOlderNotes`
+     * re-renders *in place* with the composer already inside the feed.
+     * `feed.textContent = ""` then detached the one composer the whole
+     * app has -- from every page, until a reload -- on the central
+     * interaction of this feature. */
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = () => {}; },
+    });
+    window.document.querySelector(".note-older").click();
+    const capture = window.document.getElementById("capture");
+    assert.ok(capture, "scrolling up destroyed the composer");
+    assert.equal(capture.parentNode, window.document.getElementById("feed"));
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+    // And it is still the last thing on the page, under the messages it
+    // just revealed.
+    assert.equal(window.document.getElementById("feed").lastElementChild, capture);
+  });
+
+  test("coming back to the page opens on the newest window again", async () => {
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = () => {}; },
+    });
+    window.document.querySelector(".note-older").click();
+    assert.equal(window.document.querySelectorAll(".note-msg-body").length, 24);
+    window.document.querySelector('.nav-tab[href="/issues"]').click();
+    await settle();
+    window.document.querySelector('.nav-tab[href="/notes"]').click();
+    await settle();
+    assert.equal(
+      window.document.querySelectorAll(".note-msg-body").length,
+      12,
+      "the page reopened on a stale, widened window",
+    );
+  });
+
+  /* The owner, issues.md 2026-08-24, on the page as it shipped:
+   *
+   * "Navigating to it takes me to the bottom of the page, but when i
+   * navigate then to another page i'm scrolled down on that page to and
+   * also the input box for ideas and issues are now gone. I have to
+   * refresh Nova to get it back, so lots of bugs there."
+   *
+   * One mechanism, both symptoms. The pager at the *top* of the
+   * conversation is watched by an IntersectionObserver, and nothing
+   * disconnected it on the way out. So leaving the page ran
+   * `window.scrollTo(0, 0)` in the link handler, which put that pager
+   * on screen, which fired the watcher, which clicked it, which
+   * re-rendered the whole notes conversation into the page he had just
+   * navigated to -- moving the app's one composer into the feed on the
+   * way, where the arriving page's `feed.textContent = ""` then deleted
+   * it -- and finished by scrolling him back down to keep his place in a
+   * conversation that was no longer on screen.
+   *
+   * Both tests below fire the observer by hand rather than trusting a
+   * spy that only records. The three notes tests above this one all use
+   * a stub that never fires, which is exactly why this survived them. */
+  const firablePager = (spy, window) => {
+    const pager = window.document.querySelector(".note-older");
+    assert.ok(pager, "no pager on the notes page, so this test proves nothing");
+    const watch = spy.watching.filter((one) => one.node === pager)[0];
+    assert.ok(watch, "the notes pager is not watched, so this test proves nothing");
+    return { pager, watch };
+  };
+
+  test("leaving the page stops the pager watching for a scroll", async () => {
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = () => {}; },
+    });
+    firablePager(spy, window);
+    window.document.querySelector('.nav-tab[href="/issues"]').click();
+    await settle();
+    /* Matched on the class, not on the node captured before the
+     * navigation. Against the unfixed code that identity check passes,
+     * and it passes *because the bug fires*: leaving the page repaints
+     * the conversation, which builds a second pager and disconnects the
+     * first, so the node this test was holding is legitimately no longer
+     * watched. The assertion was satisfied by the defect it was written
+     * to catch -- the rubric's item 13, arrived at from an unexpected
+     * direction. Any live notes pager is the honest question. */
+    assert.equal(
+      spy.watching.filter((one) => one.node.className.includes("note-older")).length,
+      0,
+      "a notes pager is still being watched from another page",
+    );
+  });
+
+  test("a pager that fires after the page is gone changes nothing", async () => {
+    const scrolls = [];
+    const spy = observerSpy();
+    const window = await loadSite("/notes", {
+      notes: manyNotes(30),
+      install: (w) => { spy.install(w); w.scrollTo = (x, y) => scrolls.push(y); },
+    });
+    const { pager, watch } = firablePager(spy, window);
+    window.document.querySelector('.nav-tab[href="/issues"]').click();
+    await settle();
+    scrolls.length = 0;
+    // What the browser does when `scrollTo(0, 0)` brings a pager that
+    // nobody disconnected into view. The node is detached by now, so this
+    // is the only way to reach that code path from a test.
+    watch.observer.callback([{ isIntersecting: true, target: pager }]);
+    await settle();
+    const feed = window.document.getElementById("feed");
+    assert.equal(
+      // `:not(.capture-reply)` because a cycle's answer under one of his
+      // unboarded captures reuses this markup deliberately -- same two
+      // colours, same shape as the notes page -- and one of those is on
+      // the issues page legitimately. Without it this counts the board's
+      // own reply bubble and reports the notes conversation as repainted.
+      feed.querySelectorAll(".note-msg:not(.capture-reply)").length,
+      0,
+      "the notes conversation was repainted over another page",
+    );
+    const capture = window.document.getElementById("capture");
+    assert.ok(capture, "the composer was destroyed from every page");
+    assert.equal(capture.parentNode, feed.parentNode, "the composer is inside the feed on a board page");
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+    assert.deepEqual(scrolls, [], "the notes page scrolled a page it was no longer on");
+  });
+
+  test("the top of the conversation says so instead of offering a pager", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    assert.equal(window.document.querySelector(".note-older"), null);
+    assert.match(window.document.querySelector(".note-start").textContent, /beginning/i);
   });
 
   test("a note moved to Read with no reply is not drawn as answered", async () => {
@@ -6143,15 +8518,180 @@ describe("the notes page", () => {
       notes: {
         waitingTotal: 0,
         readTotal: 1,
-        notes: [{
-          text: "Moved and never written up.",
-          blocks: [{ kind: "p", spans: [{ text: "Moved and never written up." }] }],
-          responses: [], answered: false, waiting: false,
-        }],
+        notesTotal: 1,
+        notes: [note("Moved and never written up.")],
       },
     });
     assert.match(feedText(window), /no reply written/i);
-    assert.equal(window.document.querySelectorAll(".note-cycle").length, 0);
+    assert.equal(window.document.querySelectorAll(".note-msg-cycle").length, 0);
+  });
+
+  /* Edit, delete and convert on the notes page.
+   *
+   * The owner, 2026-08-24: *"The note i sent regarding the rebuilding the
+   * notes page was sent as a note, but its actually an idea, but i have no
+   * way of changing it or editing it. So we need crude operations for
+   * notes, but also the possibility to change issues/ideas/notes into one
+   * of the other."* */
+  /* A note's controls moved into the same long-press sheet the two boards
+   * use -- the owner asked for it on all three surfaces at once ("Do this
+   * for issues, ideas and notes"), so the gesture is driven here the same
+   * way, as real events including the click a browser sends on release.
+   *
+   * `noteActs` still reads the message itself, and its meaning has
+   * inverted on purpose: it is now what proves a note has *no* controls,
+   * and `holdNote` returning null is the other half of that. */
+  const noteActs = (window, i = 0) =>
+    [...window.document.querySelectorAll(".note-msg")[i].querySelectorAll(".capture-act")];
+  const holdNote = async (window, i = 0) => {
+    const body = window.document.querySelectorAll(".note-msg")[i]
+      .querySelector(".note-msg-body");
+    const fire = (type) => body.dispatchEvent(
+      new window.MouseEvent(type, { bubbles: true, cancelable: true }));
+    fire("mousedown");
+    await new Promise((resolve) => setTimeout(resolve, 1030));
+    fire("mouseup");
+    click(window, body);
+    await settle();
+    return window.document.querySelector(".action-sheet");
+  };
+  const actNamed = (sheet, name) =>
+    [...sheet.querySelectorAll(".capture-act")].filter((b) => b.textContent === name)[0];
+  /* Save and Cancel are the exception: they belong to the editor that
+   * replaced the button row on the card, and holding again to find them
+   * would reopen the sheet over the box being typed into. */
+  const saveOn = (window, i = 0) =>
+    noteActs(window, i).filter((b) => b.textContent === "Save")[0];
+
+  test("a waiting note carries Edit, Delete and the two conversions", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    // Nothing on the card before the gesture -- that is the ask.
+    assert.equal(noteActs(window, waitingIndex).length, 0,
+      "the controls are on the note before it has been held");
+    const sheet = await holdNote(window, waitingIndex);
+    assert.ok(sheet, "a one-second hold on a waiting note opened no action sheet");
+    assert.deepEqual(
+      [...sheet.querySelectorAll(".capture-act")].map((b) => b.textContent),
+      ["Edit", "Make issue", "Make idea", "Delete"],
+      "Delete must stay last -- it is the destructive one",
+    );
+  });
+
+  test("a note a cycle has already answered has no controls at all", async () => {
+    /* Rewriting it would leave the reply underneath answering text that is
+     * gone, and the edit/delete/convert endpoints cannot address it in any case: the server
+     * sends `index: null` for everything under `## Read`. */
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const answered = [...window.document.querySelectorAll(".note-msg")]
+      .filter((m) => !m.className.includes("note-msg-waiting"))
+      .filter((m) => !m.className.includes("note-msg-nova"));
+    assert.ok(answered.length, "the fixture has no read note, so this proves nothing");
+    answered.forEach((m) =>
+      assert.equal(m.querySelectorAll(".capture-act").length, 0));
+    /* And holding it opens nothing either. Since the controls left the
+     * card, counting them there would now pass on a note that *does* have
+     * them -- so the gesture is the assertion that still has teeth. */
+    const answeredIndex = [...window.document.querySelectorAll(".note-msg")]
+      .indexOf(answered[0]);
+    assert.equal(await holdNote(window, answeredIndex), null,
+      "an answered note opened an action sheet");
+  });
+
+  test("a waiting note with no index gets no controls either", async () => {
+    /* The two parsers disagreed. Drawing nothing is the answer; drawing a
+     * Delete would hand the server an index pointing at a different line
+     * of his file. */
+    const window = await loadSite("/notes", {
+      notes: {
+        waitingTotal: 1,
+        readTotal: 0,
+        notesTotal: 1,
+        notes: [note("Nobody has read this one.", { waiting: true })],
+      },
+    });
+    assert.equal(window.document.querySelectorAll(".capture-act").length, 0);
+    assert.equal(await holdNote(window, 0),
+      null, "a note the server could not address opened an action sheet");
+  });
+
+  test("Make idea posts the note's own address, and the target board", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    click(window, actNamed(await holdNote(window, waitingIndex), "Make idea"));
+    await settle();
+    const posted = window.posted.find((p) => p.url === "/api/capture/convert");
+    assert.ok(posted, "no write reached /api/capture/convert");
+    assert.equal(posted.body.from, "notes");
+    assert.equal(posted.body.to, "ideas");
+    assert.equal(posted.body.index, 0);
+    assert.equal(posted.body.original, "Nobody has read this one.");
+  });
+
+  test("a second tap on Make idea cannot fire a second conversion", async () => {
+    /* The destination write is unconditional, so a double tap on a slow
+     * connection lands a second copy in the target file and the removal
+     * then fails because the first tap already took the line. The first
+     * version of `convertButtons` disabled only the caller's Edit and
+     * Delete and left its own buttons live for the whole fetch. */
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    const btn = actNamed(await holdNote(window, waitingIndex), "Make idea");
+    click(window, btn);
+    assert.equal(btn.disabled, true, "the button stayed live during its own fetch");
+    click(window, btn);
+    await settle();
+    assert.equal(
+      window.posted.filter((p) => p.url === "/api/capture/convert").length,
+      1,
+      "a double tap converted twice",
+    );
+  });
+
+  test("Delete on a note asks first and never fires when refused", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    window.confirm = () => false;
+    click(window, actNamed(await holdNote(window, waitingIndex), "Delete"));
+    await settle();
+    assert.equal(window.posted.filter((p) => p.url.includes("delete")).length, 0);
+    window.confirm = () => true;
+    click(window, actNamed(await holdNote(window, waitingIndex), "Delete"));
+    await settle();
+    const posted = window.posted.find((p) => p.url === "/api/capture/delete");
+    assert.ok(posted, "a confirmed delete never reached the server");
+    assert.equal(posted.body.target, "notes");
+    assert.equal(posted.body.index, 0);
+  });
+
+  test("Edit opens the raw text of the note, not the rendered blocks", async () => {
+    const window = await loadSite("/notes", { notes: twoNotes });
+    const waitingIndex = [...window.document.querySelectorAll(".note-msg")]
+      .findIndex((m) => m.className.includes("note-msg-waiting"));
+    click(window, actNamed(await holdNote(window, waitingIndex), "Edit"));
+    const box = window.document.querySelector(".note-acts .capture-input");
+    assert.ok(box, "Edit opened no box");
+    assert.equal(box.value, "Nobody has read this one.");
+    box.value = "   ";
+    click(window, saveOn(window, waitingIndex));
+    await settle();
+    assert.equal(
+      window.posted.filter((p) => p.url === "/api/capture/edit").length,
+      0,
+      "emptying the box is not how a note is deleted",
+    );
+    box.value = "Actually an idea.";
+    click(window, saveOn(window, waitingIndex));
+    await settle();
+    const posted = window.posted.find((p) => p.url === "/api/capture/edit");
+    assert.ok(posted, "no write reached /api/capture/edit");
+    assert.equal(posted.body.target, "notes");
+    assert.equal(posted.body.text, "Actually an idea.");
+    assert.equal(posted.body.original, "Nobody has read this one.");
   });
 
   test("a failed fetch says so instead of leaving the last page up", async () => {
@@ -6199,6 +8739,66 @@ describe("the plan page", () => {
       },
     ],
   };
+
+  /* The live card above the prose (idea #38). The owner, on the 2026-08-30
+   * survey: *"I have no idea on your plan for the next cycle or what
+   * different projects are currently prioritised"*. The two documents
+   * below it were last rewritten on 2026-08-16, which is the failure mode
+   * a hand-written plan has and a computed one cannot. */
+  const liveNext = {
+    captures: [{ board: "issues", text: "look at the NAS", priority: "" }],
+    active: [{ item: "idea-38", cycle: 668, title: "Real goals, and progress against them",
+               board: "idea", number: 38 }],
+    next: [{ board: "idea", number: 83, title: "A dreaming pass over my own memory",
+             priority: "🟠 High", project: "Nova", heldBy: null },
+           { board: "issue", number: 94, title: "Agora workflows are dead code",
+             priority: "🔵 Medium", project: "Agora", heldBy: 667 }],
+    waiting: [],
+    projects: [{ name: "Nova", open: 134, top: "A dreaming pass over my own memory" },
+               { name: "Agora", open: 6, top: "Agora workflows are dead code" }],
+    claimsReadable: true,
+  };
+
+  test("the live card leads with what a cycle is holding right now", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments, next: liveNext });
+    const card = window.document.querySelector(".next-card");
+    assert.ok(card, "the live card is drawn");
+    assert.match(card.textContent, /cycle 668/);
+    assert.match(card.textContent, /Real goals, and progress against them/);
+  });
+
+  test("his unfiled captures are shown above the ranked rows, in that order", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments, next: liveNext });
+    const headings = [...window.document.querySelectorAll(".next-card .next-heading")].map((h) => h.textContent);
+    assert.deepEqual(headings, ["Right now", "Your unfiled notes — these come first",
+                               "Then, in this order", "Projects, most urgent first"]);
+  });
+
+  test("a ranked row names its number, its rating and its project", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments, next: liveNext });
+    const rows = [...window.document.querySelectorAll(".next-card .next-row")];
+    const held = rows.find((r) => /Agora workflows/.test(r.textContent));
+    assert.match(held.textContent, /issue #94/);
+    assert.match(held.textContent, /🔵 Medium/);
+    assert.match(held.textContent, /Agora/);
+    // A row another cycle is on says so, rather than reading as free work.
+    assert.match(held.textContent, /cycle 667 is on it/);
+  });
+
+  test("an unreadable ledger says so instead of showing an idle loop", async () => {
+    const window = await loadSite("/plan", {
+      plan: twoDocuments,
+      next: { ...liveNext, active: [], claimsReadable: false },
+    });
+    assert.match(window.document.querySelector(".next-card").textContent,
+                 /could not read the claims ledger/i);
+  });
+
+  test("the prose still paints when the live half fails to load", async () => {
+    const window = await loadSite("/plan", { plan: twoDocuments, nextStatus: 500 });
+    assert.equal(window.document.querySelectorAll(".next-card").length, 0);
+    assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
+  });
 
   test("both documents paint, with their headings at their own depth", async () => {
     const window = await loadSite("/plan", { plan: twoDocuments });
@@ -6275,7 +8875,7 @@ describe("the plan page", () => {
     assert.match(window.document.querySelector("#feed").textContent, /Could not load the plan/);
   });
 
-  /* The goals scoreboard (issue #96). Edvard: "It is just a huge wall of
+  /* The goals scoreboard (issue #96). The owner: "It is just a huge wall of
    * text. I hate that ... i understand visuals much faster."
    *
    * What only the DOM can answer here is whether the numbers are readable
@@ -6320,6 +8920,74 @@ describe("the plan page", () => {
     // The verdict is a word. The class is the second encoding of it.
     assert.equal(row.querySelector(".goal-verdict").textContent, "Off target");
     assert.ok(row.querySelector(".goal-verdict").classList.contains("off"));
+  });
+
+  /* Approve / Strike on a goal (idea #38's last half). `goals.md` has told
+   * him since it was written that nothing in it is settled until he edits
+   * it, and editing it meant Obsidian on a phone -- so in ten days he
+   * settled nothing and the row stayed "In progress".
+   *
+   * What only the DOM can answer: whether the state is readable without a
+   * colour, whether the way back exists, and whether a double-tap can race
+   * two writes at one goal. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("a goal awaiting his call says so in words, and offers both taps", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "proposed" }]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.querySelector(".goal-state").textContent, /Awaiting your call/);
+    assert.deepEqual([...row.querySelectorAll(".goal-state-btn")].map((b) => b.textContent),
+      ["Approve", "Strike"]);
+    // Nothing pressed yet, so neither button claims to be the current one.
+    assert.deepEqual([...row.querySelectorAll(".goal-state-btn")].map((b) => b.getAttribute("aria-pressed")),
+      ["false", "false"]);
+  });
+
+  test("an approved goal reads as approved in text, not only in colour", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "approved" }]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.querySelector(".goal-state").textContent, /Approved/);
+    assert.ok(row.querySelector(".goal-state").classList.contains("approved"));
+    assert.equal(row.querySelector(".goal-state-btn[data-goal-status='approved']").getAttribute("aria-pressed"), "true");
+  });
+
+  test("a struck goal still offers the way back, because that is the point", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "declined" }]) });
+    const row = window.document.querySelector(".goal-row");
+    assert.match(row.querySelector(".goal-state").textContent, /Struck/);
+    // Approve is still there. Hiding it would make a struck goal a
+    // decision he could not take back without the app this replaces.
+    assert.ok(row.querySelector(".goal-state-btn[data-goal-status='approved']"));
+  });
+
+  test("tapping Approve sends the goal name and the status, and nothing else", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "proposed" }]) });
+    window.document.querySelector(".goal-state-btn[data-goal-status='approved']").click();
+    await settle();
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/goal/status");
+    assert.deepEqual(window.posted[0].body, { name: G1.name, status: "approved" });
+    assert.match(window.document.querySelector(".goal-state").textContent, /Approved/);
+  });
+
+  test("both buttons go disabled while the write is in flight", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "proposed" }]) });
+    const buttons = [...window.document.querySelectorAll(".goal-state-btn")];
+    buttons[0].click();
+    // Before the microtasks drain: a second tap here would race two writes
+    // at one goal, which is the failure the disable exists for.
+    assert.deepEqual(buttons.map((b) => b.disabled), [true, true]);
+    await settle();
+    assert.deepEqual(buttons.map((b) => b.disabled), [false, false]);
+  });
+
+  test("a refused write snaps back rather than showing a tick nobody wrote", async () => {
+    const window = await loadSite("/plan", { plan: scored([{ ...G1, status: "proposed" }]) });
+    window.postReply = { ok: false, message: "that goal is no longer where the page thought it was" };
+    window.document.querySelector(".goal-state-btn[data-goal-status='approved']").click();
+    await settle();
+    assert.match(window.document.querySelector(".goal-state").textContent, /Awaiting your call/);
+    assert.match(window.document.querySelector(".goal-state-note").textContent, /Could not save/);
   });
 
   test("the bar puts now and target on one shared scale", async () => {
@@ -6418,10 +9086,10 @@ describe("the plan page", () => {
   /* The roadmap's ranked strip (issue #96, design item 2). The DOM is the
    * only place that can answer whether the status reaches him as a word
    * rather than as a coloured circle he cannot tell apart. */
-  const ranked = (rows) => ({
+  const ranked = (rows, done) => ({
     documents: [{
       key: "roadmap", label: "Roadmap", title: "Roadmap", updated: "2026-08-21",
-      missing: false, scoreboard: [], ranked: rows,
+      missing: false, scoreboard: [], ranked: rows, rankedDone: done,
       sections: [{ level: 2, heading: "The five I would do next, in order", blocks: [
         { type: "p", spans: [{ kind: "text", text: "The argument." }] },
       ] }],
@@ -6464,6 +9132,50 @@ describe("the plan page", () => {
     const window = await loadSite("/plan", { plan: twoDocuments });
     assert.equal(window.document.querySelector(".rank-strip"), null);
     assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
+  });
+
+  /* The two lists (2026-08-25). The heading is a claim about every card
+   * under it, and on that morning three of the five cards under "What I
+   * would do next, in order" were finished. Only the DOM can say whether
+   * a reader can tell which list a card is in. */
+  const DONE3 = {
+    rank: "3", title: "Fix my vault write path",
+    claim: "It was garbage collection, not a write bug.",
+    board: "idea #61", statusSymbol: "✅", statusLabel: "Done",
+  };
+
+  test("a finished card sits under its own heading, not under the one saying it is next", async () => {
+    const window = await loadSite("/plan", { plan: ranked([R1], [DONE3]) });
+    const lists = window.document.querySelectorAll(".rank-list");
+    assert.equal(lists.length, 2);
+    assert.match(lists[0].textContent, /Get CI back/);
+    assert.doesNotMatch(lists[0].textContent, /vault write path/,
+      "a done card under 'what I would do next' is the whole bug");
+    assert.match(lists[1].textContent, /vault write path/);
+    assert.ok(lists[1].classList.contains("rank-done-list"));
+    const titles = [...window.document.querySelectorAll(".rank-strip-title")].map((h) => h.textContent);
+    assert.deepEqual(titles, ["What I would do next, in order", "Already finished"]);
+    // The rank number travels with the card. The file numbers an item once
+    // and never renumbers, so a finished 3 has to still read as 3.
+    assert.equal(lists[1].querySelector(".rank-num").textContent, "3");
+  });
+
+  test("a roadmap whose every item is finished says so instead of promising five next steps", async () => {
+    const window = await loadSite("/plan", { plan: ranked([], [DONE3]) });
+    assert.match(window.document.querySelector(".rank-strip").textContent,
+      /Nothing on this list is still open/);
+    assert.equal(window.document.querySelectorAll(".rank-list").length, 1,
+      "no empty list under the heading that says what is next");
+    assert.match(window.document.querySelector(".rank-done-list").textContent,
+      /vault write path/);
+  });
+
+  test("with nothing finished the strip is exactly what it was", async () => {
+    const window = await loadSite("/plan", { plan: ranked([R1], []) });
+    assert.equal(window.document.querySelectorAll(".rank-list").length, 1);
+    assert.equal(window.document.querySelector(".rank-done-title"), null);
+    assert.match(window.document.querySelector(".rank-strip-note").textContent,
+      /The argument for each one is below/);
   });
 });
 
@@ -6551,7 +9263,7 @@ describe("the plan page folds its prose", () => {
 
 /* The Questions page.
  *
- * Edvard, ideas.md 2026-08-19: "Make a questions page in Nova where i can
+ * the owner, ideas.md 2026-08-19: "Make a questions page in Nova where i can
  * ask questions in a box and a Claude sonnet model answers me."
  *
  * The behaviour worth pinning is the one this page has and no other page
@@ -6560,16 +9272,154 @@ describe("the plan page folds its prose", () => {
  * and "the answer showed up" are two separate things and both can fail on
  * their own.
  */
+/* The chat dock is the only surface that shows the ask thread now. These
+ * tests were written against the `/ask` page, which showed the same thread
+ * and was deleted in Cycle 759 on the owner's own ask; they open the dock
+ * instead. The thread container moved from `#feed` to `#chat-thread` with
+ * them, and the composer from `.ask-*` classes to the dock's `#chat-*` ids.
+ * The behaviour under test did not move: `renderAskThread`, `askMessage`
+ * and the mermaid drawing are the same functions either surface calls. */
+async function loadAskDock(options) {
+  const window = await loadSite("/", options);
+  window.document.getElementById("chat-btn").dispatchEvent(new window.Event("click"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return window;
+}
+
+/* Copying a message out of the chat.
+ *
+ * Issue #143: *"Chat is missing basic message controls: stop/cancel generation
+ * mid-response, edit-and-resubmit a sent message, regenerate a response, copy a
+ * message, thumbs up/down feedback, and a visible model picker."* Copy is the
+ * one of the six that needs nothing from the server, so it is the one that
+ * ships whole rather than as a stub.
+ *
+ * `askMessage` is the single renderer behind the dock, a conversation thread
+ * and the journal card's ask, so these tests open the dock and the button they
+ * assert on is the same button all three get.
+ */
+describe("copying a message", () => {
+  const withClipboard = (window, writeText) => {
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+  };
+
+  test("every message with text carries a copy button, and an empty one does not", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [
+          { id: "1", sender: "Edvard", text: "how many pods?" },
+          { id: "2", sender: "Nova Answers", text: "Seven." },
+          { id: "3", sender: "Edvard", text: "" },
+        ],
+      },
+    });
+    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    assert.equal(rows.length, 3, "the fixture did not render");
+    assert.deepEqual(rows.map((r) => !!r.querySelector(".ask-copy")), [true, true, false],
+      "an attachment-only line would copy an empty clipboard, which reads as broken");
+    assert.equal(rows[0].querySelector(".ask-copy").textContent, "Copy");
+  });
+
+  /* The assertion that matters, and the reason the source is passed to the
+   * button rather than read back off the node: `appendRichText` turns a
+   * markdown image into an `<img>`, so the rendered text of this message is
+   * the empty string and a DOM-scraping copy would hand him nothing. */
+  test("it copies the source he wrote, not the rendered bubble", async () => {
+    const source = "look at this ![shot](/api/upload/a.png) and `code`";
+    const copied = [];
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Edvard", text: source }],
+      },
+    });
+    withClipboard(window, (text) => { copied.push(text); return Promise.resolve(); });
+    const button = window.document.querySelector("#chat-thread .ask-copy");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(copied, [source]);
+    assert.equal(button.textContent, "Copied", "nothing told him it worked");
+  });
+
+  /* `navigator.clipboard` is a secure-context API. He reaches this site over
+   * https, but nothing else that loads it does, so the fallback is the path
+   * that has to work when the modern one is missing -- including here. */
+  test("with no clipboard API it falls back to a selected textarea", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+      },
+    });
+    delete window.navigator.clipboard;
+    let seen = null;
+    window.document.execCommand = (command) => {
+      const scratch = window.document.querySelector("textarea[readonly]");
+      seen = { command, value: scratch && scratch.value };
+      return true;
+    };
+    const button = window.document.querySelector("#chat-thread .ask-copy");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(seen, { command: "copy", value: "Seven." });
+    assert.equal(button.textContent, "Copied");
+    assert.equal(window.document.querySelector("textarea[readonly]"), null,
+      "the scratch textarea was left in the page");
+  });
+
+  test("a refused copy says so instead of claiming it worked", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+      },
+    });
+    withClipboard(window, () => Promise.reject(new Error("denied by permissions policy")));
+    const button = window.document.querySelector("#chat-thread .ask-copy");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(button.textContent, "Press ctrl+C");
+  });
+
+  test("the label goes back to Copy so a second copy is offered", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+      },
+    });
+    withClipboard(window, () => Promise.resolve());
+    const button = window.document.querySelector("#chat-thread .ask-copy");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(button.textContent, "Copied");
+    await new Promise((resolve) => setTimeout(resolve, 1700));
+    assert.equal(button.textContent, "Copy");
+  });
+});
+
 describe("the questions page", () => {
   test("an unused page offers the box and says so", async () => {
-    const window = await loadSite("/ask");
-    assert.ok(window.document.querySelector(".ask-box"), "no question box");
-    assert.ok(window.document.querySelector(".ask-send"), "no send button");
-    assert.match(window.document.querySelector(".ask-thread .empty").textContent, /Ask me anything/);
+    const window = await loadAskDock();
+    assert.ok(window.document.querySelector("#chat-box"), "no question box");
+    assert.ok(window.document.querySelector("#chat-send"), "no send button");
+    assert.match(window.document.querySelector("#chat-thread .empty").textContent, /Ask me anything/);
   });
 
   test("an existing thread renders question and answer, his own marked as his", async () => {
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: {
         conversationId: "c-ask",
         waiting: false,
@@ -6588,10 +9438,10 @@ describe("the questions page", () => {
   });
 
   test("asking posts the text and paints the question before any poll", async () => {
-    const window = await loadSite("/ask");
-    const box = window.document.querySelector(".ask-box");
+    const window = await loadAskDock();
+    const box = window.document.querySelector("#chat-box");
     box.value = "  why is the loop slow?  ";
-    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
+    window.document.querySelector("#chat-form").dispatchEvent(new window.Event("submit"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
@@ -6605,23 +9455,23 @@ describe("the questions page", () => {
   });
 
   test("a refused question keeps the text and says why", async () => {
-    const window = await loadSite("/ask");
+    const window = await loadAskDock();
     window.postReply = { ok: false, message: "that is longer than 4000 characters" };
-    const box = window.document.querySelector(".ask-box");
+    const box = window.document.querySelector("#chat-box");
     box.value = "a very long question";
-    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
+    window.document.querySelector("#chat-form").dispatchEvent(new window.Event("submit"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    assert.match(window.document.querySelector(".ask-status").textContent, /longer than 4000/);
+    assert.match(window.document.querySelector("#chat-status").textContent, /longer than 4000/);
     assert.equal(box.value, "a very long question", "his text was thrown away on a failure");
-    assert.equal(window.document.querySelector(".ask-send").disabled, false,
+    assert.equal(window.document.querySelector("#chat-send").disabled, false,
       "the button stayed disabled, so he cannot retry");
   });
 
   test("the answer arrives on a poll, and the polling then stops", async () => {
     let turn = 0;
     let timers;
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       install: (win) => { timers = captureTimers(win); },
       ask: () => {
         turn += 1;
@@ -6648,10 +9498,69 @@ describe("the questions page", () => {
     assert.equal(timers.queued.length, 0, "still polling after the answer landed");
   });
 
+  /* His capture, `issues.md` 2026-08-30 12:56: *"I asked Nova for a status
+   * report, but it just says thinking for a long time. I need feedback. What
+   * is it doing? Did it even recieve my messages? What tools does it use?"*
+   * Three questions, three lines in the bubble, one test each. */
+  test("the pending bubble says how long it has been thinking and what it is doing", async () => {
+    const window = await loadAskDock({
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "status report?" }],
+        progress: {
+          askedAt: new Date(Date.now() - 74000).toISOString(),
+          steps: 9,
+          latest: { capability: "vault_read", detail: "Read vault file \u00b7 journal.md" },
+        },
+      }),
+    });
+    const pending = window.document.querySelector(".ask-pending");
+    assert.ok(pending, "a thread owed an answer should say so");
+    // The clock: it is alive, and it has been alive for a while.
+    assert.match(pending.querySelector(".ask-pending-head").textContent, /1m 1[34]s/);
+    // The tool: what it is actually doing right now.
+    assert.equal(pending.querySelector(".ask-pending-tool").textContent, "vault_read");
+    assert.match(pending.querySelector(".ask-pending-detail").textContent, /journal\.md/);
+    assert.match(pending.querySelector(".ask-pending-count").textContent, /9 steps/);
+  });
+
+  test("a turn that has run nothing yet still says the question landed", async () => {
+    const window = await loadAskDock({
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "status report?" }],
+        progress: { askedAt: new Date().toISOString(), steps: 0, latest: null },
+      }),
+    });
+    const pending = window.document.querySelector(".ask-pending");
+    assert.match(pending.querySelector(".ask-pending-step").textContent, /Your question is in/);
+    // Nothing has run, so nothing claims a step count.
+    assert.equal(pending.querySelector(".ask-pending-count"), null);
+  });
+
+  test("an old thread with no progress block still draws a pending bubble", async () => {
+    /* The server only sends `progress` while the turn is running, and a
+     * cached page or an older pod sends none at all. The bubble must not
+     * disappear -- that would be the same lost feedback, from the other end. */
+    const window = await loadAskDock({
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "q" }],
+      }),
+    });
+    const pending = window.document.querySelector(".ask-pending");
+    assert.ok(pending);
+    assert.equal(pending.querySelector(".ask-pending-head").textContent, "Thinking\u2026");
+  });
+
+
   test("a failed poll keeps waiting instead of painting an error over a live question", async () => {
     let timers;
     let fail = false;
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       install: (win) => { timers = captureTimers(win); },
       ask: () => {
         // Rejected, not thrown: `serve` is called synchronously inside
@@ -6668,16 +9577,1089 @@ describe("the questions page", () => {
     assert.equal(timers.queued.length, 1, "gave up after one failed poll");
   });
 
-  test("navigating away stops the poll", async () => {
+  /* The `/ask` page cancelled its own poll on a navigation and this
+   * describe used to pin that. The dock does the opposite on purpose --
+   * surviving a navigation is the whole reason it exists -- so with the
+   * page gone the assertion has no subject left to make. It is not
+   * relaxed into something weaker: "the dock keeps polling across a
+   * navigation, and the answer still arrives", below, is the live claim
+   * about this behaviour and it asserts the opposite outcome. */
+});
+
+/* The chat dock -- his capture on `ideas.md`, 2026-08-25, rated High: a
+ * chat "in the bottom right of my page in Nova that i can talk to about
+ * anything".
+ *
+ * It is the same `/ask` thread and the same endpoint, so most of what it
+ * does is already pinned by "the questions page" above. What is new, and
+ * what these tests are for, is that it lives *outside* the page: it must
+ * survive a navigation, because the whole point is asking a question from
+ * wherever he happens to be. The ask page's own poll is deliberately
+ * cancelled on navigation (`stopPolling`); a dock that
+ * shared that timer would go silent in the exact minute the answer
+ * arrives in. That page is deleted now and the dock is the only surface,
+ * so the tests above open the dock too -- but they are still the thread's
+ * tests and these are still the dock's own.
+ */
+describe("the chat dock", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+
+  const waiting = { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] };
+  const answered = {
+    conversationId: "c",
+    waiting: false,
+    messages: [
+      { id: "1", sender: "Edvard", text: "q" },
+      { id: "2", sender: "Nova Answers", text: "Seven." },
+    ],
+  };
+  /** Waiting on the first read, answered on every one after it. */
+  function answersOnPoll() {
+    let turn = 0;
+    return () => {
+      turn += 1;
+      return turn === 1 ? waiting : answered;
+    };
+  }
+
+  test("the launcher is on a page that is not /ask, and the dock starts shut", async () => {
+    const window = await loadSite("/");
+    assert.ok(window.document.getElementById("chat-btn"), "no launcher");
+    const dock = window.document.getElementById("chat-dock");
+    assert.ok(dock, "no dock");
+    assert.ok(dock.hasAttribute("hidden"), "the dock opened itself");
+    assert.equal(dock.getAttribute("aria-hidden"), "true");
+    assert.equal(window.document.querySelector("#chat-thread .ask-msg"), null,
+      "the dock read the thread before he asked for it");
+  });
+
+  test("the launcher and the dock survive a navigation, which is the whole point", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new window.Event("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.getElementById("chat-btn"), "the launcher was rendered away");
+    assert.equal(window.document.getElementById("chat-dock").hasAttribute("hidden"), false,
+      "the dock closed itself on a navigation");
+  });
+
+  /* `hidden` is an attribute and `display: flex` is an author rule, and the
+   * author rule wins over the UA stylesheet's `[hidden] { display: none }`
+   * no matter what the specificity says. So the attribute assertions above
+   * would all pass on a dock that is permanently open on his screen. This
+   * is the one that looks at what the cascade actually resolves to. */
+  test("the dock is really invisible when it is shut, not just marked hidden", async () => {
+    const window = await loadSite("/", { install: withStyle, ask: answered });
+    const dock = window.document.getElementById("chat-dock");
+    assert.equal(window.getComputedStyle(dock).display, "none",
+      "the dock is on screen before he has opened it");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.getComputedStyle(dock).display, "flex", "opening it did not show it");
+  });
+
+  /* The reviewer's finding, and it killed a comment I had just written
+   * saying this could not happen. Opening starts a fetch; closing before it
+   * lands means the first paint of the session runs with the dock shut and
+   * `lastCount` still 0, so an old thread he has read a hundred times reads
+   * as unread. The first-paint guard is back because of this test. */
+  test("closing before the first read lands does not invent an unread answer", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    tap(window, "chat-close");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.getElementById("chat-dot").hasAttribute("hidden"),
+      "a thread he had already read came back as an unread answer");
+  });
+
+  test("tapping the launcher opens the thread and reads it", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")].map((n) => n.textContent),
+      ["q", "Seven."]);
+    assert.equal(window.document.getElementById("chat-btn").getAttribute("aria-expanded"), "true");
+    tap(window, "chat-close");
+    assert.ok(window.document.getElementById("chat-dock").hasAttribute("hidden"), "close did not close it");
+  });
+
+  /* His capture on `issues.md`, 2026-08-25: the dock used to focus the box
+   * as soon as it opened, so opening it to read an answer threw the phone
+   * keyboard over the answer. The keyboard on a *tap* is right and stays;
+   * this pins the one that happens without him asking. */
+  test("opening the dock does not put the cursor in the box", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = window.document.getElementById("chat-box");
+    assert.notEqual(window.document.activeElement, box,
+      "opening the dock focused the box, which opens his keyboard over the thread");
+    box.focus();
+    assert.equal(window.document.activeElement, box,
+      "the box cannot be focused at all, so he can never type");
+  });
+
+  /* Sticking to the bottom only when he is already there -- his capture on
+   * `issues.md`, 2026-08-30: *"Chat auto-scrolls to the bottom every time a
+   * new message arrives even if I've scrolled up to reread something --
+   * annoying, should only stick to bottom if I was already near it."*
+   *
+   * These three need faked layout and would be worthless without it, which
+   * is the whole reason the helper is here rather than inline. jsdom runs no
+   * layout, so `scrollHeight` and `clientHeight` are 0 on every element, and
+   * `atBottom` therefore answers true for every position -- a test written
+   * against the real jsdom numbers passes identically on the old code that
+   * always jumped and on the new code that does not. `scrollable` hands the
+   * thread what a browser would have measured: 1000px of messages in a 200px
+   * panel, so the bottom of it is `scrollTop` 800. */
+  function scrollable(node, scrollHeight, clientHeight) {
+    Object.defineProperty(node, "scrollHeight", { configurable: true, get: () => scrollHeight });
+    Object.defineProperty(node, "clientHeight", { configurable: true, get: () => clientHeight });
+    return node;
+  }
+
+  /** A thread that is one message longer on every poll, and never done, so a
+   *  repaint is guaranteed to have happened between two `fire()` calls. */
+  function growingThread() {
+    let turn = 0;
+    return () => {
+      turn += 1;
+      const messages = [{ id: "q", sender: "Edvard", text: "q" }];
+      for (let i = 0; i < turn; i += 1) {
+        messages.push({ id: "a" + i, sender: "Nova Answers", text: "answer " + i });
+      }
+      return { conversationId: "c", waiting: true, messages };
+    };
+  }
+
+  function threadTexts(window) {
+    return [...window.document.querySelectorAll("#chat-thread .ask-text")].length;
+  }
+
+  test("an answer arriving while he has scrolled up leaves him on the message he was rereading", async () => {
     let timers;
-    const window = await loadSite("/ask", {
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: growingThread(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    const before = threadTexts(window);
+    thread.scrollTop = 120;
+    await timers.fire();
+    assert.ok(threadTexts(window) > before,
+      "no new message was painted, so this test could not have failed");
+    assert.equal(thread.scrollTop, 120,
+      "a new message threw him back to the bottom while he was reading an older one");
+  });
+
+  test("an answer arriving while he is at the bottom still follows it down", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: growingThread(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    const before = threadTexts(window);
+    thread.scrollTop = 800;
+    await timers.fire();
+    assert.ok(threadTexts(window) > before,
+      "no new message was painted, so this test could not have failed");
+    assert.equal(thread.scrollTop, 1000,
+      "the newest answer arrived off screen for someone who was watching for it");
+  });
+
+  /* The other direction, and the one that would have made the fix worse than
+   * the bug. `renderAskThread` empties the container, and emptying it resets
+   * `scrollTop` to 0 -- so a fix that merely dropped the jump would have sent
+   * him to the *top* of the thread on every poll. */
+  test("a poll does not throw him to the top of the thread either", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: growingThread(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 450;
+    await timers.fire();
+    assert.notEqual(thread.scrollTop, 0, "the repaint put him at the top of the thread");
+  });
+
+  /* Scrolling back past the first page.
+   *
+   * His capture, `issues.md` 2026-08-31, with a screenshot of this dock:
+   * *"I can only see the latest messages in the chat. I can't scroll upwards
+   * and see the earlier messages."* The endpoints answer with the newest 40
+   * and took no parameter, so 79 of the 720 conversations in the store had a
+   * tail he could not reach.
+   *
+   * These need the same faked layout as the three above and for a sharper
+   * reason: the whole mechanism is `scrollTop` against `scrollHeight`, and
+   * on jsdom's real numbers (0 and 0) the trigger fires on every thread and
+   * the anchor arithmetic is 0 - 0. */
+  function pagedThread(pages) {
+    const urls = [];
+    let call = 0;
+    return {
+      urls,
+      ask: (url) => {
+        urls.push(url);
+        const page = pages[Math.min(call, pages.length - 1)];
+        call += 1;
+        return page;
+      },
+    };
+  }
+
+  function threadOf(count, hasMore) {
+    const messages = [];
+    for (let i = 0; i < count; i += 1) {
+      messages.push({ id: "m" + i, sender: "Nova Answers", text: "message " + i });
+    }
+    return { conversationId: "c", waiting: false, hasMore, messages };
+  }
+
+  test("reaching the top of a long thread fetches the page before it", async () => {
+    let timers;
+    const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: paged.ask,
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.equal(threadTexts(window), 40, "the first page did not paint");
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new window.Event("scroll"));
+    await timers.fire();
+    assert.equal(threadTexts(window), 80, "reaching the top fetched nothing older");
+    assert.ok(paged.urls[paged.urls.length - 1].includes("limit=80"),
+      "the second fetch did not ask for a bigger page: " + paged.urls.join(" "));
+  });
+
+  test("an older page leaves him on the message he was reading", async () => {
+    let timers;
+    const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: paged.ask,
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    // 1000px of thread in a 200px panel, and he has scrolled to the top of it.
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new window.Event("scroll"));
+    // The older page doubles the thread: 2000px, and everything added went in
+    // above him, so the message he was looking at is now 1000px down.
+    scrollable(thread, 2000, 200);
+    await timers.fire();
+    assert.equal(thread.scrollTop, 1000,
+      "the older page moved him off the message he asked for it from");
+  });
+
+  test("a thread with nothing older does not fetch when he reaches the top", async () => {
+    let timers;
+    const paged = pagedThread([threadOf(12, false)]);
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: paged.ask,
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const before = paged.urls.length;
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 0;
+    thread.dispatchEvent(new window.Event("scroll"));
+    await timers.fire();
+    assert.equal(paged.urls.length, before,
+      "the dock asked for messages the server had already said do not exist");
+  });
+
+  test("a flick at the top does not send one fetch per scroll event", async () => {
+    let timers;
+    const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: paged.ask,
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    const before = paged.urls.length;
+    const thread = scrollable(window.document.getElementById("chat-thread"), 1000, 200);
+    thread.scrollTop = 0;
+    // Three scroll events before any of them can have been answered.
+    thread.dispatchEvent(new window.Event("scroll"));
+    thread.dispatchEvent(new window.Event("scroll"));
+    thread.dispatchEvent(new window.Event("scroll"));
+    await timers.fire();
+    assert.equal(paged.urls.length - before, 1,
+      "one flick at the top sent " + (paged.urls.length - before) + " fetches");
+  });
+
+  /* The growing composer -- his capture, issues.md 2026-08-25: *"make the
+   * input field start at one line, then when the content is two lines it
+   * gets tall enough to fit two lines and dynamicly scales up to 10 lines
+   * tall which is the cap."*
+   *
+   * jsdom has no layout, so `scrollHeight` is 0 on every element and no
+   * amount of typing moves it. These tests hand the box a `scrollHeight`
+   * and a line height in pixels, which is what a browser would have
+   * measured, and assert on the height `growChatBox` computes from them --
+   * the arithmetic and the cap are the parts that can be wrong. What they
+   * cannot check is whether a browser's own measurement is the one I think
+   * it is; that half is `box-sizing: border-box`, asserted in the
+   * stylesheet test below. */
+  function measurable(box, scrollHeight) {
+    box.style.lineHeight = "20px";
+    box.style.paddingTop = "0px";
+    box.style.paddingBottom = "0px";
+    box.style.borderTopWidth = "0px";
+    box.style.borderBottomWidth = "0px";
+    Object.defineProperty(box, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    return box;
+  }
+
+  test("the composer starts at one line", async () => {
+    const window = await loadSite("/", { ask: answered });
+    assert.equal(window.document.getElementById("chat-box").getAttribute("rows"), "1",
+      "the box opens taller than the one line he asked for");
+  });
+
+  test("the composer grows to fit what he typed", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 60);
+    box.value = "one\ntwo\nthree";
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(box.style.height, "60px", "the box did not grow with the text");
+    assert.equal(box.style.overflowY, "hidden",
+      "a box that fits its text should have no scrollbar in it");
+  });
+
+  test("the composer stops growing at ten lines and scrolls after that", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 400);
+    box.value = new Array(20).fill("line").join("\n");
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(box.style.height, "200px", "ten 20px lines is 200px; the cap did not hold");
+    assert.equal(box.style.overflowY, "auto",
+      "past the cap the rest of the text is unreachable without a scrollbar");
+  });
+
+  test("a sent question leaves a one-line box behind, not the tall one", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 400);
+    box.value = new Array(20).fill("line").join("\n");
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(box.style.height, "200px");
+
+    // The box is empty after a send, so a browser would measure one line.
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => 20 });
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(box.value, "");
+    assert.equal(box.style.height, "20px",
+      "the box kept its ten-line height with nothing in it");
+  });
+
+  /* The other half of his capture: *"Make the new chat modal full height,
+   * atleast for mobile. It feels so small."* The panel was capped with
+   * `max-height`, which means it was only ever as tall as the thread in it
+   * -- three messages drew a three-message box. A `height` makes it the
+   * same panel however empty it is, and the absence of a `max-height` is
+   * the part that can silently come back.
+   *
+   * `box-sizing` is asserted here because `growChatBox` depends on it: a
+   * `content-box` textarea reports `scrollHeight` without its padding, and
+   * every height the composer sets would then be a padding short.
+   *
+   * What this cannot see is the `@media (max-width: 30rem)` full-screen
+   * rule -- jsdom resolves no media queries at all, so a computed style
+   * here is always the wide-screen one. I read that rule rather than
+   * measured it, and it is not covered by any test. */
+  /* The full-screen sheet covers the launcher by painting over it, and it
+   * cannot cover the hamburger: `.menu-btn` is `z-index: 30` against the
+   * dock's 14, fixed in the top right, exactly where the sheet puts its own
+   * close button. So the × would be unreachable on his phone. The rule that
+   * hides it is inside the media query and no test can see it; the class it
+   * keys off is JavaScript and this is it. */
+  test("opening the dock marks the body, so the hamburger can get out of the way", async () => {
+    const window = await loadSite("/", { ask: answered });
+    assert.equal(window.document.body.classList.contains("chat-open"), false,
+      "the body is marked before he opened anything");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.body.classList.contains("chat-open"),
+      "nothing tells the page the sheet is up, so the hamburger sits on the close button");
+    tap(window, "chat-close");
+    assert.equal(window.document.body.classList.contains("chat-open"), false,
+      "closing the dock left the hamburger hidden");
+  });
+
+  /* The fallback line height, which is what runs when `line-height` does
+   * not compute to pixels. Chrome resolves the stylesheet's `1.4` to px, so
+   * the primary branch is the one his phone takes and this branch is
+   * otherwise never executed by anything. */
+  test("the composer still caps at ten lines when the line height is a keyword", async () => {
+    const window = await loadSite("/", { ask: answered });
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = measurable(window.document.getElementById("chat-box"), 900);
+    box.style.lineHeight = "normal";
+    box.style.fontSize = "20px";
+    box.value = new Array(40).fill("line").join("\n");
+    box.dispatchEvent(new window.Event("input"));
+    // 20px font * 1.4 = 28px a line, ten of them.
+    assert.equal(box.style.height, "280px",
+      "the fallback line height is not the one the stylesheet declares");
+  });
+
+  test("the dock has a real height rather than shrinking to fit the thread", async () => {
+    const window = await loadSite("/", { install: withStyle, ask: answered });
+    const dock = window.getComputedStyle(window.document.getElementById("chat-dock"));
+    assert.notEqual(dock.height, "", "the dock has no height, so a short thread draws a short panel");
+    assert.match(dock.height, /40rem/, "the dock's height is not the one the stylesheet means");
+    assert.equal(dock.maxHeight, "", "a max-height is back, which is what made it feel small");
+
+    const box = window.getComputedStyle(window.document.getElementById("chat-box"));
+    assert.equal(box.boxSizing, "border-box", "growChatBox measures padding it would not be given");
+    assert.equal(box.resize, "none", "a drag handle fights the auto-grow; the next keystroke undoes it");
+  });
+
+  test("asking from the dock posts the text and paints the question before any poll", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = window.document.getElementById("chat-box");
+    box.value = "  why is the loop slow?  ";
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/ask", { text: "why is the loop slow?" }]]);
+    assert.equal(box.value, "", "the box should clear once the question is away");
+    assert.match(window.document.querySelector("#chat-thread .ask-msg").textContent, /why is the loop slow\?/);
+    assert.ok(window.document.querySelector("#chat-thread .ask-pending"), "nothing says an answer is coming");
+  });
+
+  test("a refused question keeps the text and says why", async () => {
+    const window = await loadSite("/");
+    window.postReply = { ok: false, message: "that is longer than 4000 characters" };
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const box = window.document.getElementById("chat-box");
+    box.value = "a very long question";
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.match(window.document.getElementById("chat-status").textContent, /longer than 4000/);
+    assert.equal(box.value, "a very long question", "his text was thrown away on a failure");
+    assert.equal(window.document.getElementById("chat-send").disabled, false,
+      "the button stayed disabled, so he cannot retry");
+  });
+
+  /* His capture, `ideas.md` 2026-08-25: *"now when i use the new chat i get
+   * alerted by agora whenever a new message arrives."* Agora's service worker
+   * cannot see a tab on this origin, so the page has to say it is watching.
+   * The ping rides the poll on purpose -- see `pingAskWatching` in app.js. */
+  test("a dock waiting for an answer tells Agora the thread is on his screen", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: answersOnPoll(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), [],
+      "presence was pinged before anything was waiting on an answer");
+
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), ["/api/ask/watching"],
+      "the poll that carries the answer did not say he was watching");
+  });
+
+  /* My reviewer's finding. Closing the dock deliberately leaves the poll
+   * running so the launcher dot can light; a closed panel is not a thread on
+   * his screen, and vouching there would silence the push while the only
+   * signal left is a dot on a page nobody is looking at. */
+  test("a dock he has closed stops vouching, even though it keeps polling", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: answersOnPoll(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    tap(window, "chat-close");
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), [],
+      "a shut dock told Agora the thread was on his screen");
+    assert.ok(window.document.querySelector("#chat-thread .ask-text"),
+      "the poll stopped as well, so this proves nothing");
+  });
+
+  test("a backgrounded phone stops vouching, which is when the notification matters", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => {
+        timers = captureTimers(win);
+        Object.defineProperty(win.document, "hidden", { value: true, configurable: true });
+      },
+      ask: answersOnPoll(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), [],
+      "a hidden page said he was reading it");
+  });
+
+  /* Its own copy rather than the switcher block's `LIST` further down: that
+   * one is scoped to those tests, and a fixture reached across a describe
+   * boundary is a shared mutable nobody owns. */
+  const WATCHED_LIST = {
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], updatedAt: "2026-08-25T20:00:00.000Z" },
+    ],
+  };
+
+  /* The half of his capture the switcher left behind. The vouch above names
+   * no conversation -- the server resolves the tagged one -- so once the dock
+   * could paint any thread, every thread but that one went back to buzzing
+   * his phone about a message already on his screen. */
+  test("a switched-to conversation vouches for itself, not for the ask thread", async () => {
+    let timers;
+    let turn = 0;
+    const window = await loadSite("/", {
+      install: (win) => {
+        timers = captureTimers(win);
+        win.localStorage.setItem("nova.chatSource.v1",
+          JSON.stringify({ kind: "conv", id: "c-1", name: "Roofing" }));
+      },
+      ask: { conversationId: "c-ask", waiting: false, messages: [] },
+      convList: WATCHED_LIST,
+      convThread: () => {
+        turn += 1;
+        return { conversationId: "c-1", waiting: turn === 1,
+          messages: [{ id: "9", sender: "Edvard", text: "when?" }] };
+      },
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/watching", { id: "c-1" }]],
+      "the open conversation did not tell Agora it was on his screen");
+  });
+
+  test("a shut dock on a conversation stops vouching too", async () => {
+    let timers;
+    let turn = 0;
+    const window = await loadSite("/", {
+      install: (win) => {
+        timers = captureTimers(win);
+        win.localStorage.setItem("nova.chatSource.v1",
+          JSON.stringify({ kind: "conv", id: "c-1", name: "Roofing" }));
+      },
+      ask: { conversationId: "c-ask", waiting: false, messages: [] },
+      convList: WATCHED_LIST,
+      convThread: () => {
+        turn += 1;
+        return { conversationId: "c-1", waiting: turn === 1,
+          messages: [{ id: "9", sender: "Edvard", text: "when?" }] };
+      },
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    tap(window, "chat-close");
+    await timers.fire();
+    assert.deepEqual(window.posted.map((p) => p.url), [],
+      "a shut dock told Agora the conversation was on his screen");
+  });
+
+  /* The one that costs an answer if it regresses. `stopPolling()` runs on
+   * every render; a dock poll registered in `livePolls` is cleared by the
+   * navigation and the answer never lands. */
+  test("the dock keeps polling across a navigation, and the answer still arrives", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: answersOnPoll(),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.ok(window.document.querySelector("#chat-thread .ask-pending"), "a thread owed an answer should say so");
+    assert.equal(timers.queued.length, 1, "nothing is polling for the answer");
+
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new window.Event("popstate"));
+    // A real drain, not `timers.fire()`. `fire()` collects what is due
+    // before it drains, so firing straight after the navigation runs the
+    // dock poll *before* the journal has re-rendered and called
+    // `stopPolling` -- and the answer lands either way. That version of
+    // this test passed with the poll registered in `livePolls`, which is
+    // the one thing it exists to catch.
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(timers.queued.length, 1, "the navigation cancelled the dock's poll -- it should have survived");
+
+    await timers.fire();
+
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")].map((n) => n.textContent),
+      ["q", "Seven."]);
+    assert.equal(window.document.querySelector("#chat-thread .ask-pending"), null);
+    assert.equal(timers.queued.length, 0, "still polling after the answer landed");
+  });
+
+  test("an answer that lands while the dock is shut lights the launcher, and opening clears it", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      ask: answersOnPoll(),
+    });
+    const dot = window.document.getElementById("chat-dot");
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.ok(dot.hasAttribute("hidden"), "an open dock does not need a dot");
+
+    tap(window, "chat-close");
+    await timers.fire();
+    assert.equal(dot.hasAttribute("hidden"), false, "the answer arrived unannounced");
+    assert.ok(window.document.getElementById("chat-btn").classList.contains("chat-btn-unread"));
+
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.ok(dot.hasAttribute("hidden"), "the dot outlived him reading it");
+  });
+
+  /* His own question is not an unread answer. The dot counts messages, and
+   * the send paints his question locally before the server has echoed it,
+   * so the next read comes back one longer than the dock last counted --
+   * which is indistinguishable from an answer unless the send says so. */
+  test("sending from the dock and then closing it does not light the dot on his own message", async () => {
+    let timers;
+    let asked = false;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); },
+      // Empty until he asks, then his own question comes back echoed --
+      // which is the only shape in which this can go wrong.
+      ask: () => (asked ? waiting : { conversationId: "c", waiting: false, messages: [] }),
+    });
+    tap(window, "chat-btn");
+    await timers.fire();
+    asked = true;
+    window.document.getElementById("chat-box").value = "q";
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await timers.fire();
+    tap(window, "chat-close");
+    await timers.fire();
+    assert.ok(window.document.getElementById("chat-dot").hasAttribute("hidden"),
+      "his own question came back as an unread answer");
+  });
+});
+
+/* His capture on `issues.md`, 2026-08-25: *"Make the new chat be able to
+ * display mermaid charts, images and also be able to upload files like all
+ * other input fields in the Nova app."* Two of the three, and they are the
+ * two the rest of the app already had an answer for -- the same
+ * `buildAttach` composer and the same `appendRichText` reader every other
+ * thread on this site uses. Mermaid is the third and is not here. */
+/* Two call sites ping presence and only the dock's was pinned -- my
+ * reviewer's finding: deleting the ping from `pollAsk` left the whole suite
+ * green. See `pingAskWatching` in app.js. */
+describe("the /ask page vouches for him too", () => {
+  test("a page waiting for an answer tells Agora the thread is on his screen", async () => {
+    let timers;
+    const window = await loadAskDock({
       install: (win) => { timers = captureTimers(win); },
       ask: { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] },
     });
-    assert.equal(timers.queued.length, 1);
-    window.history.pushState({}, "", "/costs");
+    assert.deepEqual(window.posted.map((p) => p.url), [],
+      "presence was pinged on render rather than on the poll");
     await timers.fire();
-    assert.equal(timers.queued.length, 0, "a poll survived the navigation");
+    assert.deepEqual(window.posted.map((p) => p.url), ["/api/ask/watching"]);
+  });
+});
+
+describe("attachments in the ask thread and its dock", () => {
+  const DOCK_INPUT = "#chat-form .attach-input";
+  const DOCK_TRAY = "#chat-form .attach-tray";
+
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+
+  /** Pick one file on a composer and wait for its chip. A local copy of the
+   *  capture-box helper deliberately -- it is four lines of stubbing, and
+   *  hoisting it into a shared helper would put the two composers' tests on
+   *  one fixture, which is the thing that makes a shared-code regression
+   *  invisible in both at once. */
+  async function pickOne(window, inputSelector, traySelector, file) {
+    const input = window.document.querySelector(inputSelector);
+    const tray = window.document.querySelector(traySelector);
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new window.File([new Uint8Array([1, 2, 3])], file.name, { type: file.type })],
+    });
+    window.fetch = () => res({
+      ok: true,
+      name: "x1",
+      url: "/api/upload/x1." + file.name.split(".").pop(),
+      bytes: 3,
+      isImage: file.isImage,
+    });
+    input.dispatchEvent(new window.Event("change"));
+    for (let i = 0; i < 60; i++) {
+      if (tray.querySelectorAll(".attach-chip").length >= 1) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return tray;
+  }
+
+  const withPicture = {
+    conversationId: "c",
+    waiting: false,
+    messages: [
+      { id: "1", sender: "Edvard", text: "what is this?\n\n![shot.jpg](/api/upload/ab12.jpg)" },
+      { id: "2", sender: "Nova Answers", text: "A chart. The log is [runner.log](/api/upload/cd34.log)" },
+    ],
+  };
+
+  test("a picture in the thread is a picture, not the markdown for one", async () => {
+    const window = await loadAskDock({ ask: withPicture });
+    const img = window.document.querySelector("#chat-thread .ask-msg img.attach-img");
+    assert.ok(img, "the picture he attached came back as text");
+    assert.equal(img.getAttribute("src"), "/api/upload/ab12.jpg");
+    assert.equal(img.getAttribute("alt"), "shot.jpg");
+    assert.equal(window.document.querySelector(".ask-thread").textContent.includes("/api/upload/ab12"),
+      false, "the raw URL is still on screen beside the picture");
+  });
+
+  test("a non-image attachment is a named link rather than a broken image", async () => {
+    const window = await loadAskDock({ ask: withPicture });
+    const link = window.document.querySelector("#chat-thread .ask-msg a.attach-file");
+    assert.ok(link, "the log came back as text");
+    assert.equal(link.getAttribute("href"), "/api/upload/cd34.log");
+    assert.match(link.textContent, /runner\.log/);
+  });
+
+  test("a plain answer still reads as it was written, line breaks and all", async () => {
+    const window = await loadAskDock({
+      ask: { conversationId: "c", waiting: false, messages: [{ id: "1", sender: "Nova Answers", text: "one\ntwo\n\nthree" }] },
+    });
+    const text = window.document.querySelector("#chat-thread .ask-text");
+    const paras = [...text.querySelectorAll("p")].map((p) => p.textContent);
+    // Two paragraphs, and the single newline inside the first one survives:
+    // `.ask-text` is `pre-wrap` and that inherits, so a list an answer wrote
+    // as one block of lines does not collapse onto one line.
+    assert.deepEqual(paras, ["one\ntwo", "three"]);
+  });
+
+  test("the dock has a paperclip, and what he picks goes with the question", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.querySelector("#chat-form .attach-btn"), "no paperclip in the dock");
+
+    await pickOne(window, DOCK_INPUT, DOCK_TRAY, { name: "shot.jpg", type: "image/jpeg", isImage: true });
+    window.document.getElementById("chat-box").value = "what is this?";
+
+    let sent = null;
+    window.fetch = (url, options) => { sent = JSON.parse(options.body); return res({ ok: true }); };
+    const thread = window.document.getElementById("chat-thread");
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    // On the echoed question, not on `sent` -- `sent` is set inside the stub
+    // before the `.then` chain that clears the tray has run, so a wait on it
+    // would assert the tray one tick too early and pass either way.
+    for (let i = 0; i < 40 && !thread.querySelector(".ask-mine"); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    assert.equal(sent.text, "what is this?\n\n![shot.jpg](/api/upload/x1.jpg)");
+    assert.equal(window.document.querySelector(`${DOCK_TRAY} .attach-chip`), null,
+      "the tray kept the picture after it was sent, so the next question carries it again");
+    assert.ok(window.document.querySelector("#chat-thread img.attach-img"),
+      "his own question painted the markdown back at him instead of the picture");
+  });
+
+  test("a picture with nothing typed under it is still a message", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await pickOne(window, DOCK_INPUT, DOCK_TRAY, { name: "shot.jpg", type: "image/jpeg", isImage: true });
+
+    let sent = null;
+    window.fetch = (url, options) => { sent = JSON.parse(options.body); return res({ ok: true }); };
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    for (let i = 0; i < 40 && !sent; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(sent, "a picture with no sentence under it was refused");
+    assert.equal(sent.text, "![shot.jpg](/api/upload/x1.jpg)");
+  });
+
+  /* The one that costs a duplicate message if it regresses. Send is held
+   * down by an upload and by a question in flight, and the two overlap: if
+   * the upload owns the button, its completion re-enables a Send whose
+   * question has not come back, and the next tap posts the same text twice. */
+  test("an upload finishing does not re-enable Send while a question is still out", async () => {
+    const window = await loadSite("/");
+    tap(window, "chat-btn");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const send = window.document.getElementById("chat-send");
+    window.document.getElementById("chat-box").value = "first";
+
+    // A question that never answers, so `sending` stays true.
+    window.fetch = () => new Promise(() => {});
+    window.document.getElementById("chat-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(send.disabled, true, "Send was live while the question was in flight");
+
+    await pickOne(window, DOCK_INPUT, DOCK_TRAY, { name: "shot.jpg", type: "image/jpeg", isImage: true });
+    assert.equal(send.disabled, true,
+      "an upload finishing re-enabled Send, so the unanswered question can be sent again");
+  });
+
+  test("the paperclip is a 44px target and does not sit stranded mid-row", async () => {
+    const window = await loadSite("/", { install: withStyle });
+    const rules = [...window.document.styleSheets[0].cssRules];
+    assert.ok(rules.some((r) => r.selectorText === ".attach-btn" && /44px/.test(r.style.cssText)),
+      "the paperclip lost its touch target");
+    // `cssText`, not `r.style.marginLeft` -- this CSSOM leaves the typed
+    // property undefined, so a check on it passes for any rule at all.
+    assert.ok(rules.some((r) => r.selectorText === ".chat-actions .attach-btn"
+      && /margin-left:\s*auto/.test(r.style.cssText)),
+      "nothing pulls the dock's paperclip over to Send");
+  });
+});
+
+/* Mermaid diagrams in the chat.
+ *
+ * the owner, issues.md 2026-08-25, the third of the three above: *"Make the
+ * new chat be able to display mermaid charts..."* Nothing on this site drew
+ * a mermaid diagram anywhere before this, so unlike the attachments it is
+ * not a reader being pointed at one more caller -- it is a 3.5 MB parser
+ * fetched only when a diagram turns up.
+ *
+ * These tests stub the library. That is not laziness about the real thing:
+ * mermaid measures text with `getBBox`, which jsdom does not implement, so
+ * a real render here would fail for a reason that says nothing about this
+ * code. What the stub pins is the wiring -- which source reaches `render`,
+ * what happens to the SVG it hands back, and what is on screen while it has
+ * not answered. The library itself was measured in headless Chromium off
+ * the vendored file: 14,617 bytes of SVG, 89 nodes, labels intact, no
+ * console errors, screenshotted at 390px. */
+describe("mermaid diagrams in the chat", () => {
+  const DIAGRAM = "flowchart TD\n  A[start] --> B[end]";
+
+  /** A mermaid that answers, and records what it was asked. */
+  function withMermaid(window) {
+    window.__mermaid = { init: null, calls: [] };
+    window.mermaid = {
+      initialize(options) { window.__mermaid.init = options; },
+      render(id, code) {
+        window.__mermaid.calls.push({ id, code });
+        return Promise.resolve({
+          svg: '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300">'
+            + '<text>' + code.split("\n")[0] + '</text></svg>',
+        });
+      },
+    };
+  }
+
+  const threadWith = (text) => ({
+    conversationId: "c",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text }],
+  });
+
+  /** The figure only becomes a diagram a microtask or two after render
+   *  resolves, so every drawn-state assertion has to wait for it. */
+  async function settle(window, selector) {
+    for (let i = 0; i < 60; i++) {
+      if (window.document.querySelector(selector)) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return window.document.querySelector(selector);
+  }
+
+  test("a ```mermaid block is drawn as a diagram, not printed as its source", async () => {
+    const window = await loadAskDock({
+      ask: threadWith("here is the shape:\n\n```mermaid\n" + DIAGRAM + "\n```\n\nmake sense?"),
+      install: withMermaid,
+    });
+    const svg = await settle(window, "#chat-thread .mermaid-drawn svg");
+    assert.ok(svg, "the diagram never replaced the code block");
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-source"), null,
+      "the source stayed on screen underneath the diagram");
+
+    // The fences are the marker, not part of the diagram: passing them on
+    // would make mermaid reject every block on this site.
+    assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [DIAGRAM]);
+
+    // Mermaid sizes for the width it measured, which is not a phone's.
+    assert.equal(svg.getAttribute("width"), null, "the measured width survived onto the page");
+    assert.equal(svg.getAttribute("height"), null, "the measured height survived onto the page");
+
+    // The prose either side is still prose.
+    const paras = [...window.document.querySelectorAll("#chat-thread .ask-text p")].map((p) => p.textContent);
+    assert.deepEqual(paras, ["here is the shape:", "make sense?"]);
+  });
+
+  test("it is initialised so it cannot sweep the page or trust a label", async () => {
+    const window = await loadAskDock({
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
+      install: withMermaid,
+    });
+    await settle(window, "#chat-thread .mermaid-drawn svg");
+    const init = window.__mermaid.init;
+    assert.ok(init, "mermaid was never initialised, so it runs on its own defaults");
+    // `startOnLoad` would have mermaid hunting the document for diagrams
+    // itself, which is a second renderer racing this one.
+    assert.equal(init.startOnLoad, false);
+    // `strict` is what puts a label through mermaid's own DOMPurify. The
+    // text in a chat message is whatever came back from a model.
+    assert.equal(init.securityLevel, "strict");
+    // Without this, an unparseable diagram paints mermaid's red bomb into
+    // the message instead of leaving the code block that says more.
+    assert.equal(init.suppressErrorRendering, true);
+    // This app has one theme and it is dark -- `--bg` is `#12131a` and
+    // there is no `prefers-color-scheme` rule in the stylesheet at all --
+    // so mermaid's default puts a white card inside a dark bubble.
+    assert.equal(init.theme, "dark");
+  });
+
+  test("the code block is what is on screen until the diagram is ready", async () => {
+    // No stub at all, which is also the offline case: jsdom fetches no
+    // external script, so `ensureMermaid` never settles -- exactly the
+    // state a phone off the tailnet is in while the 3.5 MB is not coming.
+    const window = await loadAskDock({
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
+    });
+    const source = window.document.querySelector("#chat-thread .mermaid-source code");
+    assert.ok(source, "nothing was drawn and the source was not left behind either");
+    assert.equal(source.textContent, DIAGRAM);
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-drawn"), null);
+    // The fence lines are markers and must not be read back at him.
+    assert.equal(window.document.querySelector(".ask-thread").textContent.includes("```"), false,
+      "the fences are on screen");
+  });
+
+  test("a blank line inside a diagram does not tear it in half", async () => {
+    // `appendRichText` splits paragraphs on blank lines, so the block has to
+    // be lifted out before that happens. A sequence diagram with a gap in it
+    // is the ordinary case, not a contrived one.
+    const spaced = "sequenceDiagram\n  Edvard->>Nova: a question\n\n  Nova->>Edvard: an answer";
+    const window = await loadAskDock({
+      ask: threadWith("```mermaid\n" + spaced + "\n```"),
+      install: withMermaid,
+    });
+    await settle(window, "#chat-thread .mermaid-drawn svg");
+    assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [spaced]);
+  });
+
+  test("an unfinished fence stays the text he typed", async () => {
+    // A finished block in the same message, deliberately: without it every
+    // assertion here is a negative, and a negative passes just as well with
+    // the whole feature deleted. The pair is what makes this a test of the
+    // declining rather than of the absence.
+    const window = await loadAskDock({
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```\n\nlook:\n```mermaid\nflowchart TD\n  A --> B"),
+      install: withMermaid,
+    });
+    await settle(window, "#chat-thread .mermaid-drawn svg");
+    assert.equal(window.document.querySelectorAll("#chat-thread .mermaid-figure").length, 1,
+      "a half-typed message was treated as a diagram");
+    assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [DIAGRAM]);
+    assert.match(window.document.querySelector("#chat-thread .ask-text").textContent, /```mermaid/);
+  });
+
+  test("two diagrams in one message are two diagrams", async () => {
+    const window = await loadAskDock({
+      ask: threadWith("```mermaid\n" + DIAGRAM + "\n```\n\nand\n\n```mermaid\npie title x\n  \"a\" : 1\n```"),
+      install: withMermaid,
+    });
+    for (let i = 0; i < 60; i++) {
+      if (window.document.querySelectorAll("#chat-thread .mermaid-drawn").length >= 2) break;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.equal(window.document.querySelectorAll("#chat-thread .mermaid-drawn svg").length, 2);
+    // Distinct ids: mermaid keys its own scratch element on the id it is
+    // given, and two blocks sharing one would have the second draw over the
+    // first.
+    const ids = window.__mermaid.calls.map((c) => c.id);
+    assert.equal(new Set(ids).size, 2, "both diagrams were rendered under the same id");
+  });
+
+  test("a fenced block that is not mermaid is left alone", async () => {
+    // Paired with a real diagram for the reason the test above is: on its
+    // own, "no diagram was drawn" is what a missing feature looks like.
+    const window = await loadAskDock({
+      ask: threadWith("```python\nprint(1)\n```\n\n```mermaid\n" + DIAGRAM + "\n```"),
+      install: withMermaid,
+    });
+    await settle(window, "#chat-thread .mermaid-drawn svg");
+    assert.equal(window.document.querySelectorAll("#chat-thread .mermaid-figure").length, 1,
+      "a python block was handed to a diagram renderer");
+    assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [DIAGRAM]);
+    assert.match(window.document.querySelector("#chat-thread .ask-text").textContent, /print\(1\)/);
+  });
+
+  test("a drawn diagram survives the four-second poll instead of flickering", async () => {
+    /* `renderAskThread` empties the thread and rebuilds every message, and
+     * `pollAsk` calls it every four seconds while an answer is coming. Text
+     * and pictures survive that; a diagram is built asynchronously, so
+     * without a memo each rebuild drops every drawn diagram back to its
+     * code block and redraws it a moment later -- for as long as he waits.
+     * My reviewer found this, not me. */
+    let timers;
+    const window = await loadAskDock({
+      install: (win) => { timers = captureTimers(win); withMermaid(win); },
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "```mermaid\n" + DIAGRAM + "\n```" }],
+      }),
+    });
+    await settle(window, "#chat-thread .mermaid-drawn svg");
+
+    await timers.fire();
+    assert.ok(window.document.querySelector("#chat-thread .mermaid-drawn svg"),
+      "the poll rebuilt the thread and the diagram was gone again");
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-source"), null,
+      "the diagram dropped back to its source on the poll");
+    assert.equal(window.__mermaid.calls.length, 1,
+      "every poll re-rendered a diagram that had not changed");
+  });
+
+  test("the diagram is capped to the width of the message, not the width mermaid measured", async () => {
+    const window = await loadSite("/", { install: withStyle });
+    const rules = [...window.document.styleSheets[0].cssRules];
+    // `cssText`, not the typed property -- this CSSOM leaves several of
+    // those undefined, so a check on one passes for any rule at all.
+    assert.ok(rules.some((r) => r.selectorText === ".mermaid-drawn svg"
+      && /max-width:\s*100%/.test(r.style.cssText)),
+      "a wide diagram can push the chat sideways");
+    assert.ok(rules.some((r) => r.selectorText === ".mermaid-source"
+      && /white-space:\s*pre\b/.test(r.style.cssText)),
+      "the fallback source inherits pre-wrap and reads as a paragraph");
   });
 });
 
@@ -6902,7 +10884,7 @@ describe("the device page", () => {
   });
 });
 
-/* Edvard, capture 2026-08-22: "I can't delete, edit or upload a file to a
+/* the owner, capture 2026-08-22: "I can't delete, edit or upload a file to a
  * boarded issues. I wanted to delete issue #4 but i'm not able to."
  *
  * #4 was an ordinary open row, so nothing had made it read-only -- the only
@@ -6940,7 +10922,7 @@ describe("an opened board row offers a visible way into the editor", () => {
 });
 
 describe("the status fields are one horizontal list, and they link down to the card", () => {
-  /* Edvard, capture 2026-08-22: *"The status fields at the top, we are
+  /* the owner, capture 2026-08-22: *"The status fields at the top, we are
    * keeping them. Please have them shown horisontal listed, not vertical.
    * Also clicking them navigates me down to the Journal it references."*
    *
@@ -6987,15 +10969,16 @@ describe("the status fields are one horizontal list, and they link down to the c
     assert.match(block, /flex-wrap:\s*wrap/);
   });
 
-  test("the field naming the last outcome scrolls the feed to that cycle", async () => {
+  test("the field naming the last PR scrolls the feed to that cycle", async () => {
     const window = await loadSite("/", {
       journal: () => withStatus({ cycle: 57, lastOutcome: "merged", lastPr: "#289" }),
       comments: { byCycle: {}, needs: [] },
     });
-    const badge = window.document.querySelector("#status .status-subs .badge-merged")
-      || [...window.document.querySelectorAll("#status .status-subs .status-sub")]
-        .find((f) => /merged/.test(f.textContent));
-    assert.ok(badge, "expected an outcome field in the header");
+    // Matched on the PR rather than the outcome: this test is about the
+    // field being a working link, and the field holds both halves.
+    const badge = [...window.document.querySelectorAll("#status .status-subs .status-sub")]
+      .find((f) => /#289/.test(f.textContent));
+    assert.ok(badge, "expected a PR field in the header");
     const field = badge.closest ? (badge.closest("a.status-sub") || badge) : badge;
     assert.equal(field.tagName, "A", "the outcome field is not clickable");
     assert.equal(field.getAttribute("href"), "/cycle/57");
@@ -7012,6 +10995,12 @@ describe("the status fields are one horizontal list, and they link down to the c
     field.dispatchEvent(ev);
     assert.ok(scrolled, "clicking the field did not scroll to the card");
     assert.ok(ev.defaultPrevented, "the click also followed the permalink");
+    /* The click starts a re-render in `app.js` that outlives the assertion
+     * above. The window used to stay open until the whole file finished, so
+     * that late callback always found a live `document` and nobody saw it;
+     * now that the window closes with the test, letting it land first is
+     * what the test always meant. Two heartbeat tests below do the same. */
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   test("a field that references no cycle is not a link", async () => {
@@ -7023,4 +11012,3108 @@ describe("the status fields are one horizontal list, and they link down to the c
     assert.ok(running, "expected the running field");
     assert.equal(running.tagName, "P");
   });
+
+  /* the owner, `issues.md` 2026-08-23: "Drop the Outcome pill from the
+   * top-of-page header too, not just the card view — it's the same ugly
+   * all-caps duplicate of the blue summary line, shown twice on the same
+   * screen." Both copies were on the feed at once, which is what "twice on
+   * the same screen" names: this header field, and the newest card below it.
+   *
+   * The control against a selector that matches nothing is the PR: the same
+   * field, same fixture, one child present and the other absent. */
+  test("a free-text outcome draws no header pill, and the PR is still named", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({
+        cycle: 57,
+        lastOutcome: "prompt.md wired to tools.backlog_brief; inbox cleared",
+        lastOutcomeDetail: "CI outage, merged nothing",
+        lastPr: "#289",
+      }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const subs = window.document.querySelector("#status .status-subs");
+    assert.ok(!/backlog_brief/.test(subs.textContent), subs.textContent);
+    assert.ok(!/merged nothing/.test(subs.textContent), subs.textContent);
+    assert.match(subs.textContent, /#289/);
+  });
+
+  /* The footer is mandatory, so a cycle with nothing to show still writes
+   * `PR: none`, and the field must not become the word "none" linking to a
+   * cycle -- that is the noise #300 removed and it stays removed.
+   *
+   * What changed on 2026-08-24 is the other half. The owner: "i miss the status
+   * fields. Please bring them back", written while a run of cycles was dying
+   * without shipping anything. So a cycle whose PR is `none` now gets a
+   * field again -- carrying its one-word status, never the `none`. */
+  test("a last cycle with no PR still gets a status word, and never says none", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "no-op", lastPr: "none" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const subs = window.document.querySelector("#status .status-subs");
+    assert.ok(subs, "the field carrying the status word was not drawn");
+    assert.ok(!/none/.test(subs.textContent), subs.textContent);
+    assert.match(subs.textContent, /no-op/);
+    // The control: the same fixture with a real reference draws both halves.
+    const w2 = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "no-op", lastPr: "runner#289" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const subs2 = w2.document.querySelector("#status .status-subs").textContent;
+    assert.match(subs2, /runner#289/);
+    assert.match(subs2, /no-op/);
+  });
+
+  /* `Outcome: none` is not a status word either, and this is the half that
+   * would have hurt: `isRealPr` keeps the word "none" out of this field, so
+   * a `none` admitted by `shortOutcome` would have walked back in beside it
+   * as a badge. Fails the moment the vocabulary gets permissive again. */
+  test("an outcome of none draws no header field", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "none", lastPr: "none" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const subs = window.document.querySelector("#status .status-subs");
+    assert.ok(!subs || !/none/.test(subs.textContent), subs && subs.textContent);
+    // The control: a real status word on the same fixture does draw one.
+    const w2 = await loadSite("/", {
+      journal: () => withStatus({ cycle: 57, lastOutcome: "research", lastPr: "none" }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.match(w2.document.querySelector("#status .status-subs").textContent, /research/);
+  });
+
+  /* And the case that has no field to draw at all: a free-text outcome is
+   * refused by `shortOutcome` and the PR is `none`, so neither half has
+   * anything a badge can hold. This is cycle 340's exact shape -- the card
+   * he complained about -- and it must still render nothing. */
+  test("a free-text outcome with no PR still gets no header field", async () => {
+    const window = await loadSite("/", {
+      journal: () => withStatus({
+        cycle: 57,
+        lastOutcome: "goal review written, 8 board rows reprioritised",
+        lastPr: "none",
+      }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const subs = window.document.querySelector("#status .status-subs");
+    assert.ok(!subs || !/reprioritised|none/.test(subs.textContent), subs && subs.textContent);
+  });
 });
+
+/* My own board rows got a search of their own (Cycle 408). His rows have
+ * had one since ideas.md #71 -- "Ability to search through issues or
+ * ideas" -- and the Nova tab shipped with no box at all, so the two
+ * halves of one page answered the same question differently. */
+describe("searching my own board rows", () => {
+  const MINE = {
+    ...payload.board,
+    novaItems: [
+      {
+        number: 1,
+        title: "Dead newspaper feeds",
+        status: "\u{1F7E1} In progress",
+        statusKey: "progress",
+        priority: "\u{1F7E0} High",
+        priorityKey: "high",
+        updated: "08-25",
+      },
+      {
+        number: 2,
+        title: "A title that says nothing useful",
+        status: "⚪ Backlog",
+        statusKey: "backlog",
+        updated: "08-25",
+      },
+    ],
+  };
+  const rows = (window) =>
+    [...window.document.querySelectorAll(".nova-board .item-number")].map((n) => n.textContent);
+  const novaTab = (window) =>
+    [...window.document.querySelectorAll(".tabs .tab")].find((b) => b.textContent.startsWith("Nova"));
+  const searchBox = (window) => window.document.querySelector(".nova-board .board-search-input");
+  const typeSearch = (window, text) => {
+    const input = searchBox(window);
+    input.value = text;
+    input.dispatchEvent(new window.Event("input"));
+    return input;
+  };
+  const settle = () => new Promise((r) => setTimeout(r, 260));
+
+  test("my tab has a search box, over my rows", async () => {
+    const window = await loadSite("/issues", { board: (url) => (url.includes("q=") ? null : MINE) });
+    click(window, novaTab(window));
+    assert.ok(searchBox(window), "the Nova tab should have a search box");
+    assert.deepEqual(rows(window), ["#1", "#2"]);
+  });
+
+  test("typing narrows my rows on the title without waiting for the server", async () => {
+    const window = await loadSite("/issues", { board: (url) => (url.includes("q=") ? null : MINE) });
+    click(window, novaTab(window));
+    typeSearch(window, "newspaper");
+    assert.deepEqual(rows(window), ["#1"]);
+  });
+
+  test("a write-up match asks the server for my board, not his", async () => {
+    /* The half the page cannot do itself: `board_page` windows
+     * `novaDetails` away on every list request, so my write-ups are not
+     * on the page any more than his are. `mine=1` is what makes the
+     * answer addressable -- both boards number from 1. */
+    const asked = [];
+    const window = await loadSite("/issues", {
+      board: (url) => {
+        if (!url.includes("q=")) return MINE;
+        asked.push(url);
+        return url.includes("mine=1") ? { query: "asknature", matches: [2] } : { query: "asknature", matches: [] };
+      },
+    });
+    click(window, novaTab(window));
+    typeSearch(window, "asknature");
+    // No title holds it, so the tab is empty until the answer lands.
+    assert.deepEqual(rows(window), []);
+    await settle();
+    assert.equal(asked.length, 1);
+    assert.ok(asked[0].includes("mine=1"), "the Nova tab's search should carry mine=1");
+    assert.deepEqual(rows(window), ["#2"]);
+  });
+
+  test("switching tabs clears the query rather than carrying his numbers over", async () => {
+    /* `matches` is a list of row numbers answered for one tab and both
+     * tabs number from 1, so carrying it across would apply his #1 to
+     * mine. */
+    const window = await loadSite("/issues", { board: (url) => (url.includes("q=") ? null : MINE) });
+    click(window, novaTab(window));
+    typeSearch(window, "newspaper");
+    assert.deepEqual(rows(window), ["#1"]);
+    const his = [...window.document.querySelectorAll(".tabs .tab")].find((b) => !b.textContent.startsWith("Nova"));
+    click(window, his);
+    assert.equal(window.document.querySelector(".board-search-input").value, "");
+    click(window, novaTab(window));
+    assert.equal(searchBox(window).value, "");
+    assert.deepEqual(rows(window), ["#1", "#2"]);
+  });
+});
+
+describe("searching the journal", () => {
+  const all = payload.journal.entries;
+
+  /* A server that honours `?q=` the way `nova_site.journal_page` does:
+   * matches ignore the window, `total` is the number of matches, and the
+   * query comes back with the answer. Written against that contract
+   * rather than against a fixed answer, so a change to the real one that
+   * this page could not survive shows up here as a failing test rather
+   * than as a fixture that no longer describes anything.
+   */
+  function searchable() {
+    const corpus = [];
+    for (let i = 0; i < 30; i += 1) {
+      corpus.push({
+        ...JSON.parse(JSON.stringify(all[2])),
+        cycle: 30 - i,
+        // Three of the thirty carry the word, and all three sit past the
+        // twenty-entry window on purpose: a filter over what was already
+        // on screen would find none of them.
+        title: "Cycle " + (30 - i) + (i >= 22 && i <= 24 ? " — the ingress" : " — a quiet one"),
+      });
+    }
+    const asked = [];
+    const serve = (url) => {
+      asked.push(url);
+      const params = new URL(url, "https://nova.example").searchParams;
+      const q = (params.get("q") || "").trim().toLowerCase();
+      const limit = Number(params.get("limit")) || corpus.length;
+      if (!q) {
+        return {
+          entries: corpus.slice(0, limit),
+          status: payload.journal.status,
+          total: corpus.length,
+          version: 'W/"plain-' + limit + '"',
+        };
+      }
+      const matched = corpus.filter((entry) => entry.title.toLowerCase().includes(q));
+      return {
+        entries: matched.slice(0, limit),
+        status: payload.journal.status,
+        total: matched.length,
+        query: q,
+        version: 'W/"q-' + q + '-' + limit + '"',
+      };
+    };
+    return { serve, asked };
+  }
+
+  /** Type into the box and wait past the 200ms debounce. */
+  async function search(window, text) {
+    const box = window.document.querySelector(".journal-search-input");
+    box.value = text;
+    box.dispatchEvent(new window.Event("input"));
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    return box;
+  }
+
+  test("the journal feed carries a search box", async () => {
+    const window = await loadSite("/", { journal: searchable().serve });
+    const box = window.document.querySelector(".journal-search-input");
+    assert.ok(box, "no way to search the journal");
+    assert.equal(box.getAttribute("aria-label"), "Search the journal");
+  });
+
+  test("it is not on the board pages, and not on a deep-linked cycle", async () => {
+    /* One box, on the page it searches. The boards have their own and a
+     * deep link asks the server for a single entry by number, so there is
+     * no window there for a query to narrow. */
+    const board = await loadSite("/issues");
+    const onBoard = board.document.querySelector("#journal-search");
+    assert.ok(!onBoard || onBoard.hidden, "the journal search box followed the reader onto the board");
+
+    const deep = await loadSite("/cycle/7", { journal: searchable().serve });
+    const onDeep = deep.document.querySelector("#journal-search");
+    assert.ok(!onDeep || onDeep.hidden, "a single-entry page offered a search over one entry");
+  });
+
+  test("typing asks the server and shows what came back", async () => {
+    const server = searchable();
+    const window = await loadSite("/", { journal: server.serve });
+    assert.equal(cards(window).length, 20, "the plain feed should be one window");
+
+    await search(window, "ingress");
+    assert.match(server.asked[server.asked.length - 1], /q=ingress/);
+    // Three matches, all of them past the first window -- so this is the
+    // whole journal being searched and not the page being filtered.
+    assert.equal(cards(window).length, 3);
+    assert.equal(window.document.querySelector("button.more"), null);
+  });
+
+  test("the count names the query the answer was built from", async () => {
+    const window = await loadSite("/", { journal: searchable().serve });
+    await search(window, "ingress");
+    const count = window.document.querySelector(".journal-search-count");
+    assert.ok(!count.hidden);
+    assert.match(count.textContent, /3 entries mention/);
+    assert.match(count.textContent, /ingress/);
+  });
+
+  test("a search nothing matches says so rather than looking empty", async () => {
+    /* A feed that simply went blank is the one outcome that reads as a
+     * broken page rather than as an answer. */
+    const window = await loadSite("/", { journal: searchable().serve });
+    await search(window, "kubernetes");
+    assert.equal(cards(window).length, 0);
+    const count = window.document.querySelector(".journal-search-count");
+    assert.ok(!count.hidden);
+    assert.match(count.textContent, /No entry mentions/);
+  });
+
+  test("clearing the box brings the feed back", async () => {
+    const server = searchable();
+    const window = await loadSite("/", { journal: server.serve });
+    await search(window, "ingress");
+    click(window, window.document.querySelector(".journal-search-clear"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(cards(window).length, 20);
+    assert.ok(!/q=/.test(server.asked[server.asked.length - 1]), "still searching after a clear");
+    assert.ok(window.document.querySelector(".journal-search-count").hidden);
+  });
+
+  test("a repaint of the feed does not take the box away mid-word", async () => {
+    /* The reason the box is outside `<main id="feed">`. `render` empties
+     * that element on every paint -- the 30-second poll, a new entry
+     * arriving, a tap on the pager -- so a box inside it would lose the
+     * caret and the keyboard on the first poll after he started typing.
+     * Asserting the node survives is not enough: it has to be the same
+     * node, still holding what he typed. */
+    const server = searchable();
+    const window = await loadSite("/", { journal: server.serve });
+    const box = await search(window, "ingress");
+    assert.ok(window.document.contains(box), "the search box was rebuilt out from under the caret");
+    assert.equal(box.value, "ingress");
+    assert.equal(window.document.querySelectorAll(".journal-search-input").length, 1);
+  });
+
+  test("no digest is asked for while a search is running", async () => {
+    /* `/api/digest?limit=N` resolves its window out of the newest N
+     * cycles, so its summaries belong to the feed's window and not to
+     * whatever the search matched. Asked for anyway, the page would hand
+     * cycle 30's summary to a card from cycle 6. */
+    const server = searchable();
+    const digest = { asked: [], serve: null };
+    digest.serve = (url) => { digest.asked.push(url); return payload.digest; };
+    const window = await loadSite("/", { journal: server.serve, digest: digest.serve });
+    const before = digest.asked.length;
+    await search(window, "ingress");
+    assert.equal(digest.asked.length, before, "the digest was fetched for a window the search is not in");
+  });
+});
+
+describe("the journal search box sits between the composer and the feed", () => {
+  test("the capture composer stays at the top and the box sits under it", async () => {
+    /* `captureHome` moves the composer back above the feed on every
+     * `load`, and this box is inserted immediately above the feed once.
+     * The order that produces is composer, search, feed -- so the search
+     * is next to the thing it searches, and the box he types captures
+     * into has not moved from where it has always been. Pinned because
+     * nothing else would notice the two swapping: both are above the
+     * feed either way and both still work. */
+    const window = await loadSite("/");
+    const feed = window.document.getElementById("feed");
+    const box = window.document.getElementById("journal-search");
+    const capture = window.document.getElementById("capture");
+    assert.equal(box.nextElementSibling, feed, "the search box is not directly above the feed");
+    assert.equal(capture.nextElementSibling, box, "the composer and the search box swapped places");
+  });
+});
+
+describe("a journal search answer that arrived too late", () => {
+  const all = payload.journal.entries;
+
+  /* Thirty entries. Three say "ingress"; three more say "ingredient", so
+   * "ingr" matches six and "ingress" matches three.
+   *
+   * That gap is the whole fixture, and the first version of this file did
+   * not have it: every title said "ingress", so the prefix he typed on the
+   * way there matched exactly the same rows, and a test named for a stale
+   * answer replacing a fresh one could not tell the two apart. It passed
+   * with the guard deliberately removed. A fixture in which the wrong
+   * answer and the right answer are identical proves nothing about which
+   * one is on screen. */
+  function corpus() {
+    const out = [];
+    for (let i = 0; i < 30; i += 1) {
+      const word = i >= 22 && i <= 24 ? " — the ingress"
+        : i >= 19 && i <= 21 ? " — the ingredient"
+          : " — a quiet one";
+      out.push({
+        ...JSON.parse(JSON.stringify(all[2])),
+        cycle: 30 - i,
+        title: "Cycle " + (30 - i) + word,
+      });
+    }
+    return out;
+  }
+
+  /** What the real endpoint answers for `q`, per `nova_site.journal_page`. */
+  function answer(rows, q, limit) {
+    const needle = (q || "").trim().toLowerCase();
+    if (!needle) {
+      return {
+        entries: rows.slice(0, limit), status: payload.journal.status,
+        total: rows.length, version: 'W/"plain"',
+      };
+    }
+    const matched = rows.filter((e) => e.title.toLowerCase().includes(needle));
+    return {
+      entries: matched.slice(0, limit), status: payload.journal.status,
+      total: matched.length, query: needle, version: 'W/"q-' + needle + '"',
+    };
+  }
+
+  async function type(window, text) {
+    const box = window.document.querySelector(".journal-search-input");
+    box.value = text;
+    box.dispatchEvent(new window.Event("input"));
+    await new Promise((resolve) => setTimeout(resolve, 260));
+  }
+
+  test("the results for a word he typed past never replace the ones he asked for", async () => {
+    /* Two searches in flight together are resolved in whatever order the
+     * server finishes them, and `nova_site` is a threading server where
+     * the broader, older query does more work -- so finishing last is the
+     * ordinary case. Without a guard the feed silently reverts to the
+     * shorter word's results, with a count line agreeing, and nothing
+     * anywhere says it happened.
+     *
+     * `window.fetch` is replaced rather than `loadSite`'s server used,
+     * because the ordering *is* the thing under test and the fixture
+     * server answers synchronously by construction.
+     */
+    const rows = corpus();
+    const window = await loadSite("/", { journal: (url) => answer(rows, null, 20) });
+
+    const held = [];
+    window.fetch = (url) => {
+      const s = String(url);
+      if (s.includes("/api/comments")) return res(payload.comments);
+      if (s.includes("/api/digest")) return res(payload.digest);
+      const params = new URL(s, "https://nova.example").searchParams;
+      const q = params.get("q") || "";
+      const body = answer(rows, q, Number(params.get("limit")) || 20);
+      if (q !== "ingr") return res(body);
+      // Held open until after the newer search has already rendered.
+      return new Promise((resolve) => {
+        held.push(() => resolve({ ok: true, status: 200, json: () => Promise.resolve(body) }));
+      });
+    };
+
+    await type(window, "ingr");
+    assert.equal(held.length, 1, "the first search never went out");
+    await type(window, "ingress");
+    assert.equal(cards(window).length, 3, "the newer search did not render");
+
+    held.forEach((release) => release());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Six is what "ingr" matches and three is what "ingress" matches, so
+    // the count of cards is the assertion: the label reads the box and
+    // would say "ingress" either way, which is a thing this test cannot
+    // use and the reason it asserts on the feed instead.
+    assert.equal(cards(window).length, 3, "the stale answer repainted the feed with its own six rows");
+    assert.match(
+      window.document.querySelector(".journal-search-count").textContent,
+      /^3 entries/,
+      "the count reverted to the total for the word he had already typed past",
+    );
+  });
+
+  test("the background poll does not fire a half-typed word", async () => {
+    /* The 200ms debounce exists so a word is searched once rather than
+     * seven times, and the 30-second poll reads the box directly through
+     * `journalUrl` -- so a timer landing between "ingr" and "ingress"
+     * would fetch and render the results for "ingr", the debounce
+     * defeated by an unrelated timer.
+     *
+     * `captureTimers` holds every timeout, so the debounce is queued and
+     * deliberately not fired here: this is exactly the window the poll
+     * must stay out of.
+     */
+    const rows = corpus();
+    let timers;
+    const window = await loadSite("/", {
+      journal: (url) => {
+        const params = new URL(String(url), "https://nova.example").searchParams;
+        return answer(rows, params.get("q"), Number(params.get("limit")) || 20);
+      },
+      install: (win) => { timers = captureTimers(win); },
+    });
+    assert.equal(cards(window).length, 20);
+
+    const box = window.document.querySelector(".journal-search-input");
+    box.value = "ingr";
+    box.dispatchEvent(new window.Event("input"));
+
+    await timers.firePagePoll();
+    assert.equal(cards(window).length, 20, "the poll searched a word he had not finished typing");
+    assert.ok(
+      window.document.querySelector(".journal-search-count").hidden,
+      "a count line appeared for a search he had not asked for yet",
+    );
+  });
+
+  test("the count line keeps his capitalisation, not the server's", async () => {
+    /* The query comes back lower-cased because that is what it was
+     * matched with. A line built from it tells him `TAILSCALE` found
+     * "tailscale", which reads like the box corrected him. */
+    const rows = corpus();
+    const window = await loadSite("/", {
+      journal: (url) => {
+        const params = new URL(String(url), "https://nova.example").searchParams;
+        return answer(rows, params.get("q"), Number(params.get("limit")) || 20);
+      },
+    });
+    await type(window, "Ingress");
+    const count = window.document.querySelector(".journal-search-count");
+    assert.match(count.textContent, /Ingress/);
+    assert.ok(!/ingress/.test(count.textContent.replace(/Ingress/g, "")), "showed the normalised copy too");
+  });
+});
+
+/* the owner, capture 2026-08-25: *"I want to have a status the Nova header if i
+ * have unread Journal comments. Journals should also show if i have some unread
+ * by highlightong the comment button somehow, maybe with the amount of unread
+ * messages."*
+ *
+ * Two surfaces, one definition of unread: a reply *I* wrote that he has not
+ * opened. The read marks live in `localStorage`, which is why every test here
+ * either seeds it through `install` or deliberately leaves it empty -- jsdom
+ * gives each window its own store, so "empty" is the honest first-load case.
+ */
+
+/** `install` hook that pre-seeds the read marks app.js keeps per card. */
+function withRepliesRead(marks) {
+  return (window) => {
+    window.localStorage.setItem("nova.repliesRead.v1", JSON.stringify(marks));
+  };
+}
+
+const unreadBadge = (window) => window.document.querySelector(".badge-unread");
+const unreadChip = (card) => card.querySelector(".comment-unread");
+
+describe("unread replies are counted on the card and in the header", () => {
+  /* Re-declared rather than shared: the two helpers of the same name live
+   * inside "commenting on a cycle"'s describe block and are not in scope
+   * here. */
+  const cardFor = (w, cycle) =>
+    cards(w).find((c) => c.querySelector("h2").textContent === "Cycle " + cycle);
+  const bubble = (card) => card.querySelector(".comment-toggle");
+
+  test("a first load claims nothing unread and seeds the marks instead", async () => {
+    /* The one that decides whether this feature is usable. There are three
+     * hundred-odd replies in the archive and no record of which he has read,
+     * so counting them all would print the absence of a measurement as a
+     * measurement -- and a badge reading "300" on day one teaches him to
+     * ignore the badge. */
+    const window = await loadSite("/");
+    assert.equal(unreadBadge(window), null, "a fresh device claimed unread replies it cannot know about");
+    assert.equal(bubble(cardFor(window, 55)).textContent, "💬 1");
+    assert.equal(unreadChip(cardFor(window, 55)), null);
+    const stored = JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"));
+    assert.equal(stored["55"], "2026-08-09 13:12", "the seed did not record the reply that was on screen");
+  });
+
+  test("a reply written after his last read shows on the card and in the header", async () => {
+    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const card = cardFor(window, 55);
+    assert.ok(bubble(card).classList.contains("has-unread"), "the 💬 button is not highlighted");
+    // Not "1" a second time. Cycle 55 holds one comment and one unread reply,
+    // so a bare count here would print the same number twice with nothing to
+    // tell them apart -- the "two purple 3 numbers" he filed on 2026-08-26.
+    assert.equal(unreadChip(card).textContent, "all new");
+    // The comment count survives beside it: a card he has caught up on must
+    // not look empty, which replacing the number would do.
+    assert.match(bubble(card).textContent, /^💬 1/);
+    const badge = unreadBadge(window);
+    assert.equal(badge.textContent, "1 new reply");
+    // A button, not a link into a card. See "the header badge opens the
+    // replies themselves" below for why that changed.
+    assert.equal(badge.tagName, "BUTTON");
+    assert.equal(badge.closest("a"), null);
+  });
+
+  test("opening the drawer clears the card chip and the header badge together", async () => {
+    /* Both, in one tap. The header clearing a poll later would insist on a
+     * reply that is open on his screen. */
+    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const card = cardFor(window, 55);
+    click(window, bubble(card));
+    assert.equal(unreadChip(card), null, "the chip survived him reading the reply");
+    assert.equal(bubble(card).classList.contains("has-unread"), false);
+    assert.equal(unreadBadge(window), null, "the header still claims an unread reply he just opened");
+    assert.equal(
+      JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"))["55"],
+      "2026-08-09 13:12",
+      "the read mark did not move to the reply he opened",
+    );
+  });
+
+  test("the header names the oldest card when more than one is unread", async () => {
+    const comments = JSON.parse(JSON.stringify(payload.comments));
+    comments.byCycle["57"][1].replies = [
+      { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
+    ];
+    const window = await loadSite("/", {
+      comments,
+      install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
+    });
+    const badge = unreadBadge(window);
+    assert.equal(badge.textContent, "2 new replies");
+    assert.match(badge.parentElement.textContent, /oldest on cycle 55/);
+  });
+
+  test("his own comments never count as unread", async () => {
+    /* A comment he typed is not a notification that he typed it. Cycle 57
+     * holds two of his comments and no reply at all, so with every card
+     * marked unread-from-the-beginning it must still draw no chip -- while
+     * cycle 55, which holds one real reply, does. That pairing is the test:
+     * an empty seed makes both cards eligible and only one of them counts. */
+    const window = await loadSite("/", { install: withRepliesRead({}) });
+    assert.equal(unreadChip(cardFor(window, 57)), null, "his own comments were counted as unread");
+    assert.equal(unreadChip(cardFor(window, 55)).textContent, "all new");
+    assert.equal(unreadBadge(window).textContent, "1 new reply");
+  });
+
+  test("a card with more comments than unread replies says how many are new", async () => {
+    /* The other half of his 2026-08-26 report. When the two numbers differ
+     * they are both worth printing -- five comments, two of them new -- and
+     * the word is what stops the second one reading as a second total. */
+    const comments = JSON.parse(JSON.stringify(payload.comments));
+    const only = comments.byCycle["55"][0];
+    const quiet = JSON.parse(JSON.stringify(only));
+    delete quiet.reply;
+    delete quiet.replyStamp;
+    delete quiet.replies;
+    comments.byCycle["55"] = [only, quiet, JSON.parse(JSON.stringify(quiet))];
+    const window = await loadSite("/", {
+      comments,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    const card = cardFor(window, 55);
+    assert.match(bubble(card).textContent, /^💬 3/, "the total stopped being the total");
+    assert.equal(unreadChip(card).textContent, "1 new");
+  });
+
+  test("more unread replies than comments prints the number, not \"all new\"", async () => {
+    /* `count` is comments and `unread` is replies, so they are not two
+     * measurements of one thing. One comment carrying two replies he has not
+     * read is 2 and 1, and "all new" there would describe the comments from a
+     * count of the replies. Two honest numbers beat one confident word. */
+    const comments = JSON.parse(JSON.stringify(payload.comments));
+    comments.byCycle["55"][0].replies = [
+      { author: "commentator", stamp: "2026-08-09 13:12", text: "one" },
+      { author: "commentator", stamp: "2026-08-09 13:20", text: "two" },
+    ];
+    const window = await loadSite("/", {
+      comments,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    const card = cardFor(window, 55);
+    assert.match(bubble(card).textContent, /^💬 1/);
+    assert.equal(unreadChip(card).textContent, "2 new");
+  });
+
+  /* the owner, `issues.md` 2026-08-26: *"The reply status that tells me that i
+   * have missed replies does not work as designed. Maybe it works technically,
+   * but its not user friendly. We need a better way to show me the message or
+   * drop it as it just noise now. I have read the replies, but the status still
+   * shows that i have not read them."*
+   *
+   * The screenshot read **7 new replies · oldest on cycle 456** on a
+   * twenty-card feed. Both halves of his report come from the same thing: the
+   * only path that marked a reply read was tapping open that one card's
+   * drawer, so seven replies were seven errands and the badge pointed at a card
+   * seventeen down. He took the "show me the message" option; these tests pin
+   * it.
+   *
+   * `spread()` is deliberately two cards rather than one -- a panel that only
+   * ever holds one card's replies is the card drawer with extra steps, and the
+   * failure he filed is specifically about replies scattered across cards. */
+  describe("the header badge opens the replies themselves", () => {
+    function spread() {
+      const comments = JSON.parse(JSON.stringify(payload.comments));
+      comments.byCycle["57"][1].replies = [
+        { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
+      ];
+      return comments;
+    }
+    const load = () =>
+      loadSite("/", {
+        comments: spread(),
+        install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
+      });
+    const panel = (window) => window.document.querySelector(".unread-panel");
+    const rows = (window) =>
+      Array.from(window.document.querySelectorAll(".unread-reply"));
+
+    test("nothing is open until he taps the badge", async () => {
+      const window = await load();
+      assert.equal(panel(window), null, "the panel drew itself uninvited");
+    });
+
+    test("tapping it shows every unread reply, newest first", async () => {
+      const window = await load();
+      click(window, unreadBadge(window));
+      const shown = rows(window);
+      assert.equal(shown.length, 2, "the panel did not hold both cards' replies");
+      // Cycle 57's reply is stamped 16:30 and cycle 55's 13:12, so newest
+      // first means 57 leads -- the opposite of the badge, which names the
+      // oldest card because that is the one about to scroll out of the feed.
+      assert.equal(shown[0].getAttribute("href"), "/cycle/57");
+      assert.match(shown[0].textContent, /on it/);
+      assert.equal(shown[1].getAttribute("href"), "/cycle/55");
+    });
+
+    test("the reply carries the comment it answers", async () => {
+      /* A reply read outside its thread has lost its question. "on it" is not
+       * a message on its own. */
+      const window = await load();
+      click(window, unreadBadge(window));
+      const asked = rows(window)[0].querySelector(".unread-reply-asked");
+      assert.ok(asked, "the panel showed my answer with nothing it answered");
+      assert.equal(asked.textContent, spread().byCycle["57"][1].text);
+    });
+
+    test("opening it marks every one of them read, in one tap", async () => {
+      /* The half that was actually broken. Seven replies over seven cards was
+       * seven taps on seven drawers, several of them off the bottom of the
+       * feed, which is why the count stood while he had read them. */
+      const window = await load();
+      click(window, unreadBadge(window));
+      assert.equal(unreadBadge(window), null, "the badge survived him reading the replies");
+      const stored = JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"));
+      assert.equal(stored["55"], "2026-08-09 13:12");
+      assert.equal(stored["57"], "2026-08-09 16:30");
+    });
+
+    test("the cards' own chips clear with it", async () => {
+      /* Same tap, same marks. Leaving these lit until the next poll would be
+       * the app insisting on a reply he has open on screen, which is the
+       * complaint one feature over. */
+      const window = await load();
+      click(window, unreadBadge(window));
+      assert.equal(window.document.querySelector(".comment-unread"), null);
+      assert.equal(window.document.querySelector(".comment-toggle.has-unread"), null);
+    });
+
+    test("the panel stays up after the badge it came from is gone", async () => {
+      /* The one that decides whether this is usable at all. The tap marks
+       * everything read, so a panel rebuilt from a fresh `unreadSummary` would
+       * find nothing unread and draw empty -- over the message he just asked
+       * to see. It renders from the items captured at the tap instead. */
+      const window = await load();
+      click(window, unreadBadge(window));
+      assert.ok(panel(window), "the panel vanished with the badge");
+      assert.equal(rows(window).length, 2);
+    });
+
+    test("closing it puts the header back to a normal, caught-up line", async () => {
+      const window = await load();
+      click(window, unreadBadge(window));
+      click(window, window.document.querySelector(".unread-panel-close"));
+      assert.equal(panel(window), null, "close left the panel up");
+      assert.equal(unreadBadge(window), null, "the badge came back on replies he has read");
+    });
+  });
+
+  /* The half of that report cycle 474 did not reach.
+   *
+   * His ask was for the *header* -- "I want to have a status the Nova header
+   * if i have unread Journal comments" -- and the header is one element that
+   * every page shares. The badge was built inside `renderStatus`, which only
+   * the journal view calls, and every other view opens by wiping the header
+   * and writing its own line. So on twelve of thirteen pages there was no
+   * badge, no panel and no way to find out a reply had landed. These pin the
+   * fix on a board page, which is where he spends most of his time. */
+  describe("the badge is on every page, not only the journal", () => {
+    function spread() {
+      const comments = JSON.parse(JSON.stringify(payload.comments));
+      comments.byCycle["57"][1].replies = [
+        { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
+      ];
+      return comments;
+    }
+    const onIssues = () =>
+      loadSite("/issues", {
+        comments: spread(),
+        install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
+      });
+
+    test("a board page shows the same count the journal does", async () => {
+      const window = await onIssues();
+      const badge = unreadBadge(window);
+      assert.ok(badge, "no unread badge on the Issues page");
+      assert.match(badge.textContent, /2 new replies/);
+    });
+
+    test("it lives outside the header, so drawing the page cannot destroy it", async () => {
+      /* The mechanism, not the symptom. A badge parked inside `#status` is
+       * removed by the `statusEl.textContent = ""` every view runs on entry,
+       * which is exactly how it went missing. */
+      const window = await onIssues();
+      const mail = window.document.getElementById("mail");
+      assert.ok(mail, "#mail is gone");
+      assert.equal(unreadBadge(window).closest("#mail"), mail);
+      assert.equal(window.document.querySelector("#status .badge-unread"), null);
+    });
+
+    test("tapping it reads the replies and marks them, off the journal too", async () => {
+      const window = await onIssues();
+      click(window, unreadBadge(window));
+      const rows = Array.from(window.document.querySelectorAll(".unread-reply"));
+      assert.equal(rows.length, 2, "the panel did not open on a board page");
+      assert.equal(unreadBadge(window), null, "the badge survived him reading the replies");
+      const stored = JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"));
+      assert.equal(stored["57"], "2026-08-09 16:30");
+    });
+
+    test("nothing unread leaves the node hidden rather than an empty gap", async () => {
+      const window = await loadSite("/issues", { comments: spread() });
+      const mail = window.document.getElementById("mail");
+      assert.equal(mail.hasAttribute("hidden"), true, "#mail took up space with nothing in it");
+    });
+  });
+
+  /* the owner, `issues.md` 2026-08-26: *"When i have a journal comments drawer
+   * open, i do not need notifications as i allready have it open."* He sent a
+   * screenshot of the drawer open with three of my replies landing in it over
+   * four minutes and the chip relighting after each one.
+   *
+   * The pair below is the whole rule: open *and* on screen is read; open on a
+   * hidden tab is not. Testing only the first would leave the drawer he falls
+   * asleep with silently eating the reply, which is the case the comment on
+   * `setCommentsOpen` was written to protect and which still holds. */
+  describe("a reply landing in a drawer he is looking at", () => {
+    /** Cycle 55's thread, awaiting a reply, with his read mark caught up. */
+    function opened(hidden) {
+      const waiting = JSON.parse(JSON.stringify(payload.comments));
+      waiting.byCycle["55"][0].replyPending = true;
+      return { waiting, hidden };
+    }
+
+    async function landReply({ hidden }) {
+      let timers;
+      const waiting = JSON.parse(JSON.stringify(payload.comments));
+      waiting.byCycle["55"][0].replyPending = true;
+      const window = await loadSite("/", {
+        comments: waiting,
+        install: (win) => {
+          withRepliesRead({ "55": "2026-08-09 13:12" })(win);
+          timers = captureTimers(win);
+        },
+      });
+      if (hidden) {
+        Object.defineProperty(window.document, "hidden", {
+          configurable: true,
+          get: () => true,
+        });
+      }
+      const card = cardFor(window, 55);
+      click(window, bubble(card));
+      assert.equal(unreadChip(card), null, "the fixture starts with him caught up");
+
+      const answered = JSON.parse(JSON.stringify(payload.comments));
+      answered.byCycle["55"][0].replyPending = false;
+      answered.byCycle["55"][0].replies = [
+        { author: "commentator", stamp: "2026-08-26 05:09", text: "and one more thing" },
+      ];
+      window.fetch = (url) =>
+        res(String(url).includes("/api/comments") ? answered : {});
+      const fired = await timers.fire();
+      assert.ok(fired > 0, "the drawer was not polling, so this pins nothing");
+      return { window, card: cardFor(window, 55) };
+    }
+
+    test("does not raise the chip, because he is reading it", async () => {
+      const { window, card } = await landReply({ hidden: false });
+      assert.equal(unreadChip(card), null,
+        "a reply that landed in the open drawer was announced as unread");
+      assert.equal(bubble(card).classList.contains("has-unread"), false);
+      assert.equal(unreadBadge(window), null,
+        "the header announced a reply that is open on his screen");
+    });
+
+    test("still raises it when the tab is hidden", async () => {
+      const { card } = await landReply({ hidden: true });
+      assert.equal(unreadChip(card).textContent, "all new",
+        "an open drawer on a locked phone ate the reply");
+      assert.ok(bubble(card).classList.contains("has-unread"));
+    });
+  });
+
+  test("a replayed page draws no badge", async () => {
+    /* The header already says it is showing a saved copy, and "you have
+     * something new" is a claim about right now. Same rule, and the same
+     * `status.replayed` flag, that the "waiting on you" pill follows. */
+    const window = await loadSite("/", {
+      replayed: true,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    assert.equal(unreadBadge(window), null, "the header counted unread replies out of a saved copy");
+  });
+
+  test("a browser with storage disabled still renders, without a badge", async () => {
+    /* Safari in private mode throws on the `localStorage` property itself,
+     * not on the call, so the guard has to wrap the lookup. Without it this
+     * page would not paint at all. */
+    const window = await loadSite("/", {
+      install: (w) => {
+        Object.defineProperty(w, "localStorage", {
+          configurable: true,
+          get() { throw new Error("storage is disabled"); },
+        });
+      },
+    });
+    assert.equal(cards(window).length > 0, true, "the feed did not render without localStorage");
+    assert.equal(unreadBadge(window), null);
+    assert.equal(unreadChip(cardFor(window, 55)), null);
+  });
+
+  test("an unrelated ask auto-opening the drawer does not consume the reply", async () => {
+    /* Reviewer finding, reproduced before it was fixed. A card carrying an
+     * open ask force-opens its own drawer on the first render of the session,
+     * and that used to run the same mark-read path a tap runs -- so a reply he
+     * had not seen was consumed before anything painted, and neither the chip
+     * nor the header badge ever appeared. Opening is not reading. */
+    const journal = JSON.parse(JSON.stringify(payload.journal));
+    const entry = journal.entries.find((e) => e.cycle === 55);
+    entry.askSpans = [{ kind: "text", text: "Yes or no, should this stay?" }];
+    const window = await loadSite("/", {
+      journal: () => journal,
+      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
+    });
+    const card = cardFor(window, 55);
+    assert.ok(card.classList.contains("is-commenting"), "the ask did not auto-open the drawer, so this test proves nothing");
+    assert.equal(unreadChip(card).textContent, "all new", "the auto-opened drawer ate the unread reply");
+    assert.equal(unreadBadge(window).textContent, "1 new reply");
+  });
+
+  test("only a tap on the bubble marks read, not the app re-asserting the drawer", async () => {
+    /* The other half of the same reviewer finding. `fold.comments` survives a
+     * card collapsing and the feed being rebuilt, so every repaint re-asserts
+     * the drawer through `setCommentsOpen` -- and that used to mark whatever
+     * had arrived read. Expanding the card is the cheapest re-assertion to
+     * reach from a test and runs the identical path. Open is a state, not a
+     * sightline. */
+    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const card = cardFor(window, 55);
+    click(window, card.querySelector("h2"));           // expand: re-asserts the drawer
+    assert.equal(unreadChip(card).textContent, "all new", "expanding the card consumed the unread reply");
+    assert.equal(
+      JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"))["55"],
+      "2026-08-09 13:00",
+      "the read mark moved without him opening the thread",
+    );
+  });
+
+  test("the deep-linked card counts and clears the same way the feed card does", async () => {
+    /* `/cycle/N` builds its own card through a second `setCommentsOpen`, and
+     * the two are separate code paths that have drifted before. */
+    const window = await loadSite("/cycle/55", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const card = window.document.querySelector(".entry.is-page");
+    assert.equal(unreadChip(card).textContent, "all new");
+    click(window, bubble(card));
+    assert.equal(unreadChip(card), null, "the deep-linked card kept its chip after he read the reply");
+  });
+});
+
+/* ---- The Conversations page --------------------------------------------
+ *
+ * His capture, ideas.md 2026-08-25: *"its basicly a chat app with multiple
+ * conversations history and i can start new ones etc."* The chat dock talks
+ * to one thread; this page is every thread, which means the failures worth
+ * pinning are the ones a single-thread page cannot have: opening the wrong
+ * conversation, sending into the wrong one, and a poll from a thread he has
+ * navigated away from painting over the one he is reading.
+ */
+/* The Chats page is deleted -- his capture, 2026-09-01: *"Delete the chats
+ * page entirely -- never use it."* What has to be pinned is the boundary,
+ * because two things that look like the same feature are emphatically not
+ * deleted: the chat dock, which he said in the same breath he uses all the
+ * time, and `/conversation/<id>`, which is the URL a push notification
+ * opens and what a Beats card opens. Deleting those with the listing would
+ * have taken his chat down with a page he never opened.
+ */
+describe("the chats page is gone and its thread view is not", () => {
+  const TWO = {
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude",
+        model: "claude-cli:claude-sonnet-5", tags: [],
+        updatedAt: "2026-08-25T20:00:00.000Z", cycleThread: false },
+      { id: "c-2", name: "Nova \u2014 Cycle 439", personaName: "Nova",
+        model: "claude-cli:claude-opus-5", tags: ["evolve-cycle:abc"],
+        updatedAt: "2026-08-25T19:00:00.000Z", cycleThread: true },
+    ],
+  };
+
+  test("the client no longer routes /conversations anywhere of its own", async () => {
+    const window = await loadSite("/conversations", { convList: TWO });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The listing, its rows and its new-conversation composer are all gone.
+    // A page that still drew any of them would be the Chats page under a
+    // different name.
+    assert.equal(window.document.querySelector(".conv-list"), null);
+    assert.equal(window.document.querySelectorAll(".conv-row").length, 0);
+    assert.equal(window.document.querySelector(".conv-new"), null);
+  });
+
+  test("no link anywhere in the app points at the deleted page", async () => {
+    const window = await loadSite("/", {});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const hrefs = [...window.document.querySelectorAll("a[href]")]
+      .map((a) => a.getAttribute("href"));
+    assert.equal(hrefs.filter((h) => h === "/conversations").length, 0);
+    assert.equal(hrefs.filter((h) => (h || "").toLowerCase().includes("chat")).length, 0);
+  });
+
+  test("a thread opened by URL still sends into that conversation", async () => {
+    // This is the half that survives, and the id is the whole of it: a send
+    // that dropped it would post his message into whichever thread the
+    // server guessed at, and the screen would look like it had worked.
+    const window = await loadSite("/conversation/c-1", {
+      convList: TWO,
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    window.document.querySelector(".ask-box").value = "  when is it done?  ";
+    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/send",
+        { conversationId: "c-1", text: "when is it done?" }]]);
+    assert.ok(window.document.querySelector(".ask-pending"),
+      "nothing says an answer is coming");
+  });
+});
+
+/* The heartbeats page.
+ *
+ * His capture: *"Make a page for heartbeats ... Then Agora can just be
+ * purely for heartbeats."* What is worth pinning here is the same thing as
+ * on the conversations page -- the ways this renders something plausible
+ * while being wrong. A row that says "On" for a disabled heartbeat, a run
+ * button that posts nothing, a never-run heartbeat drawn as if it ran at
+ * the epoch: none of those looks like a fault on screen.
+ */
+describe("the heartbeats page", () => {
+  const TWO = {
+    heartbeats: [
+      { id: "hb-1", name: "Nova", personaName: "Nova", personaId: "p-1",
+        conversationId: "c-1", schedule: "every@20m@16:20", task: "Follow prompt.md.",
+        enabled: true, forceRun: false,
+        lastRunAt: "2026-08-25T20:40:00.000Z", lastResult: "running", running: true },
+      { id: "hb-2", name: "K3s Sentinel", personaName: "Sentinel", personaId: "p-2",
+        conversationId: "", schedule: "daily@12:00", task: "Scan the cluster.",
+        enabled: false, forceRun: false,
+        lastRunAt: "", lastResult: "", running: false },
+    ],
+  };
+
+  test("every heartbeat is a row, and a switched-off one is marked not dropped", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".hb-name").textContent),
+      ["Nova", "K3s Sentinel"]);
+    assert.equal(rows[0].classList.contains("hb-off"), false);
+    assert.ok(rows[1].classList.contains("hb-off"));
+    assert.match(rows[0].querySelector(".hb-meta").textContent, /every@20m/);
+  });
+
+  test("the state line carries the word, never a colour on its own", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const states = [...window.document.querySelectorAll(".hb-state")].map((s) => s.textContent);
+    assert.deepEqual(states, ["Running now", "Off"]);
+  });
+
+  test("a heartbeat that has never run says so rather than showing nothing", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const whens = [...window.document.querySelectorAll(".hb-when")].map((s) => s.textContent);
+    assert.match(whens[0], /^Last run /);
+    assert.equal(whens[1], "Never run");
+  });
+
+  test("turning one off posts the opposite of what it is now", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    click(window, [...rows[0].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Turn off"));
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/heartbeats/enabled", { heartbeatId: "hb-1", enabled: false }]]);
+    // The off row offers the other direction, on the same button.
+    assert.ok([...rows[1].querySelectorAll(".hb-btn")].some((b) => b.textContent === "Turn on"));
+    // The POST's continuation touches the page after this assertion. Let it
+    // land while the window is still open -- see the status-fields suite.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  test("run now posts the id and nothing else", async () => {
+    const window = await loadSite("/heartbeats", { hbList: TWO });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    click(window, [...rows[1].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Run now"));
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/heartbeats/run", { heartbeatId: "hb-2" }]]);
+    // The POST's continuation touches the page after this assertion. Let it
+    // land while the window is still open -- see the status-fields suite.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  /* `openConversation`'s poller reads the location, so opened from here
+   * without moving the URL the thread paints once and never refreshes.
+   * `/conversations` was that URL until the Chats page was deleted;
+   * `/conversation/<id>` is the one that also survives a reload. */
+  test("opening a heartbeat's thread moves to that thread's own URL", async () => {
+    const window = await loadSite("/heartbeats", {
+      hbList: TWO,
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    click(window, [...rows[0].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Open thread"));
+    assert.equal(window.location.pathname, "/conversation/c-1");
+    // A heartbeat with no conversation has nothing to open.
+    assert.equal([...rows[1].querySelectorAll(".hb-btn")].some((b) => b.textContent === "Open thread"), false);
+  });
+
+  test("an unreachable store says so rather than showing an empty list", async () => {
+    const window = await loadSite("/heartbeats", { hbStatus: 502 });
+    assert.match(window.document.querySelector("#feed").textContent,
+      /Could not load your heartbeats/);
+    assert.equal(window.document.querySelectorAll(".hb-row").length, 0);
+  });
+
+  /* His capture, ideas.md 2026-08-26: *"The heartbeat conversations should
+   * rather somehow be listed in the beats page as they belong there. Somehow
+   * underneath their relative heartbeat and as a dropdown drawer so they are
+   * not shown unless i want to see them."*
+   *
+   * "Not shown unless i want to see them" is the half a rendering test can
+   * actually check, and the half that would silently regress: a `details`
+   * that ships with `open` looks identical in every assertion about its
+   * contents. */
+  const WITH_THREADS = {
+    heartbeats: [
+      Object.assign({}, TWO.heartbeats[0], {
+        conversations: [
+          { id: "c-1", name: "Nova — Cycle 464", updatedAt: "2026-08-26T05:45:00Z" },
+          { id: "c-0", name: "Nova — Cycle 463", updatedAt: "2026-08-26T05:22:00Z" },
+        ],
+      }),
+      Object.assign({}, TWO.heartbeats[1], { conversations: [] }),
+    ],
+  };
+
+  test("a heartbeat's conversations are folded under it, closed, with a count", async () => {
+    const window = await loadSite("/heartbeats", { hbList: WITH_THREADS });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    const box = rows[0].querySelector(".hb-threads");
+    assert.ok(box, "the drawer was not drawn at all");
+    assert.equal(box.hasAttribute("open"), false, "the drawer shipped open");
+    assert.equal(box.querySelector("summary").textContent, "2 conversations");
+    assert.deepEqual(
+      [...box.querySelectorAll(".hb-thread-name")].map((n) => n.textContent),
+      ["Nova — Cycle 464", "Nova — Cycle 463"]);
+  });
+
+  test("a heartbeat with no conversations gets no empty drawer", async () => {
+    const window = await loadSite("/heartbeats", { hbList: WITH_THREADS });
+    const rows = [...window.document.querySelectorAll(".hb-row")];
+    assert.equal(rows[1].querySelector(".hb-threads"), null);
+  });
+
+  /* Reviewer finding: `renderHeartbeats` wipes the feed and rebuilds every
+   * card, and it runs on a 4-30 second poll. A `details` rebuilt from scratch
+   * is closed, so the drawer he opened would snap shut under his thumb. The
+   * guard line below is what makes this test able to fail at all -- without a
+   * second render happening, the assertion under it is unfailable. */
+  test("a drawer he opened survives the page's own poll", async () => {
+    let timers;
+    const window = await loadSite("/heartbeats", {
+      hbList: WITH_THREADS,
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const before = window.document.querySelector(".hb-threads");
+    before.open = true;
+    before.dispatchEvent(new window.Event("toggle"));
+    await timers.firePagePoll();
+    const after = window.document.querySelector(".hb-threads");
+    assert.ok(!window.document.contains(before),
+      "the feed was not rebuilt, so this pins nothing");
+    assert.ok(after.hasAttribute("open"), "the poll closed a drawer he had opened");
+  });
+
+  /* Reviewer finding: six of the seven live heartbeats point at an untagged
+   * conversation, so the synthesised row is the common case, not the edge. */
+  test("a synthesised current thread is labelled, and opens under its heartbeat's name", async () => {
+    const ONE_STUB = {
+      heartbeats: [Object.assign({}, TWO.heartbeats[0], {
+        conversations: [{ id: "c-live", name: "", updatedAt: "" }],
+      })],
+    };
+    const window = await loadSite("/heartbeats", {
+      hbList: ONE_STUB,
+      convThread: () => ({ conversationId: "c-live", waiting: false, messages: [] }),
+    });
+    const btn = window.document.querySelector(".hb-thread");
+    assert.equal(btn.querySelector(".hb-thread-name").textContent, "Current thread");
+    click(window, btn);
+    assert.match(window.document.querySelector("#status").textContent, /Nova/);
+    assert.doesNotMatch(window.document.querySelector("#status").textContent, /Current thread/);
+  });
+
+  test("opening one from the drawer moves to that thread's own URL", async () => {
+    const window = await loadSite("/heartbeats", {
+      hbList: WITH_THREADS,
+      convThread: () => ({ conversationId: "c-0", waiting: false, messages: [] }),
+    });
+    const older = [...window.document.querySelectorAll(".hb-thread")][1];
+    click(window, older);
+    assert.equal(window.location.pathname, "/conversation/c-0");
+  });
+});
+
+
+/* The catalog page.
+ *
+ * What these guard is the pair of distinctions the markdown makes and a
+ * careless rendering would lose: a service scaled to zero on purpose is
+ * not a service that is down, and a catalog built from a partial read of
+ * the cluster is not a catalog. Both would look completely normal on
+ * screen if they were drawn wrong -- which is what makes them worth a
+ * test rather than a look.
+ */
+describe("the catalog page", () => {
+  const CATALOG = {
+    headline: "0 of 3 running services are composed by a claim.",
+    detail: "1 of them have a source repo that was ordered as one.",
+    incomplete: false,
+    unreadable: [],
+    services: [
+      { name: "agora", namespace: "agents", claim: "GitHubRepoPolicy",
+        deployedBy: "agora-config", host: "agora.tailc83eb3.ts.net",
+        url: "https://agora.tailc83eb3.ts.net", status: "up" },
+      { name: "ollama", namespace: "infra", claim: null, deployedBy: null,
+        host: null, url: null, status: "off" },
+      { name: "whatsapp-bridge", namespace: "infra", claim: null, deployedBy: null,
+        host: "whatsapp-bridge.tailc83eb3.ts.net",
+        url: "https://whatsapp-bridge.tailc83eb3.ts.net", status: "down" },
+    ],
+    doors: ["argocd/argocd-tailscale -> argocd-server (argocd.tailc83eb3.ts.net)"],
+    cycle: 448,
+    regenerated: "2026-08-26 00:48 Oslo",
+    missing: false,
+    total: 3, down: 1, off: 1,
+  };
+
+  test("every service is a card, grouped under its namespace", async () => {
+    const window = await loadSite("/catalog", { catalog: CATALOG });
+    const names = [...window.document.querySelectorAll(".cat-name")].map((n) => n.textContent);
+    assert.deepEqual(names, ["agora", "ollama", "whatsapp-bridge"]);
+    const groups = [...window.document.querySelectorAll(".cat-ns")].map((n) => n.textContent);
+    assert.equal(groups[0], "agents");
+    assert.equal(groups[1], "infra");
+  });
+
+  test("off on purpose and down are two different words, not two colours", async () => {
+    const window = await loadSite("/catalog", { catalog: CATALOG });
+    const states = [...window.document.querySelectorAll(".cat-state")].map((s) => s.textContent);
+    assert.deepEqual(states, ["Up", "Off on purpose", "DOWN"]);
+  });
+
+  test("a service with a URL is a link and one without is not", async () => {
+    const window = await loadSite("/catalog", { catalog: CATALOG });
+    const cards = [...window.document.querySelectorAll(".cat-row")];
+    assert.equal(cards[0].querySelector("a.cat-name").getAttribute("href"),
+      "https://agora.tailc83eb3.ts.net");
+    assert.equal(cards[1].querySelector("a.cat-name"), null);
+  });
+
+  test("the page says when the catalog was last read off the cluster", async () => {
+    const window = await loadSite("/catalog", { catalog: CATALOG });
+    assert.match(window.document.querySelector(".cat-when").textContent,
+      /2026-08-26 00:48 Oslo/);
+    assert.match(window.document.querySelector(".cat-when").textContent, /cycle 448/);
+  });
+
+  test("an incomplete catalog is marked, and names what could not be read", async () => {
+    const partial = Object.assign({}, CATALOG, {
+      incomplete: true,
+      headline: "Incomplete — do not read the table below as a full picture.",
+      unreadable: ["namespaces: Forbidden"],
+      doors: [],
+    });
+    const window = await loadSite("/catalog", { catalog: partial });
+    const lead = window.document.querySelector(".cat-headline");
+    assert.ok(lead.classList.contains("cat-warn"));
+    assert.match(lead.textContent, /namespaces: Forbidden/);
+  });
+
+  test("no catalog written yet says so instead of showing an empty table", async () => {
+    const window = await loadSite("/catalog");
+    assert.match(window.document.querySelector(".empty").textContent, /No catalog/);
+    assert.equal(window.document.querySelectorAll(".cat-row").length, 0);
+  });
+
+  test("a failed fetch says so rather than leaving the page blank", async () => {
+    const window = await loadSite("/catalog", { catalogStatus: 500 });
+    assert.match(window.document.querySelector(".empty").textContent, /Could not load the catalog/);
+  });
+});
+
+/* The chat dock's conversation switcher.
+ *
+ * His capture, `ideas.md` 2026-08-26: *"Add multi-conversation support to
+ * the chat modal: hamburger button top-left opens a list of previous
+ * conversations, switchable, modal remembers last-opened conversation.
+ * Once done, delete the /ask page entirely as dead code (chat modal
+ * replaces it in both agora and /ask)."*
+ *
+ * The dock talked to one thread and one endpoint. What is new here is that
+ * two endpoints of different shapes sit behind one panel -- `/api/ask`
+ * takes no id and `/api/conversations/*` takes one -- so the thing worth
+ * pinning is not that the list renders but that every read and every write
+ * follows the thread he last picked, and that a fetch for the thread he
+ * left cannot paint over the one he opened.
+ */
+describe("the chat dock's conversation switcher", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const askThread = {
+    conversationId: "c-ask",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+  };
+  /* The `/ask` conversation is a normal Agora conversation carrying the
+   * `nova-ask` tag, so it really is in this listing -- which is the reason
+   * the dock filters it out rather than trusting it to be absent. */
+  const LIST = {
+    conversations: [
+      { id: "c-ask", name: "Nova Ask", personaName: "Nova", model: "m",
+        tags: ["nova-ask"], updatedAt: "2026-08-26T08:00:00.000Z" },
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], updatedAt: "2026-08-25T20:00:00.000Z" },
+    ],
+  };
+
+  async function openSwitcher(opts = {}) {
+    const window = await loadSite("/", { ask: askThread, convList: LIST, ...opts });
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    return window;
+  }
+
+  test("the hamburger lists Ask Nova plus every other thread, and the ask thread only once", async () => {
+    const window = await openSwitcher();
+    const names = [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+      .map((n) => n.textContent);
+    assert.deepEqual(names, ["Ask Nova", "Roofing"]);
+    assert.equal(window.document.getElementById("chat-list").hasAttribute("hidden"), false);
+    assert.equal(window.document.getElementById("chat-menu").getAttribute("aria-expanded"), "true");
+    // The list takes the thread's place; the composer must not be typeable
+    // into while it is up, which is a class the stylesheet reads.
+    assert.ok(window.document.getElementById("chat-dock").classList.contains("list-open"));
+  });
+
+  /* Issue #141: the switcher was the word "loading\u2026" on every open.
+   *
+   * These four pin the whole trade. The list paints from its last answer
+   * so re-opening is instant; the fetch still runs every time and still
+   * repaints, so nothing he is waiting for can go unreported; and the
+   * first open, which has nothing to paint, is unchanged.
+   */
+  function heldList(first) {
+    // First call answers, every call after it hangs. A test can then look
+    // at the screen while the refresh is genuinely in flight, rather than
+    // at a race it happened to win.
+    let calls = 0;
+    const held = new Promise(() => { });
+    const fn = () => { calls += 1; return calls === 1 ? first : held; };
+    fn.calls = () => calls;
+    return fn;
+  }
+
+  test("re-opening the switcher shows the threads it already had, not loading\u2026", async () => {
+    const list = heldList(LIST);
+    const window = await openSwitcher({ convList: list });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    assert.equal(list.calls(), 2, "re-opening did not refresh the list");
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent),
+      ["Ask Nova", "Roofing"],
+      "the second open blanked the list while its refresh was in flight");
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .empty")]
+        .map((n) => n.textContent), []);
+  });
+
+  test("the first open has nothing to show yet and says so", async () => {
+    // The precondition for the test above: without this, "no loading\u2026 on
+    // the second open" would pass against an app that never says it at all.
+    const window = await openSwitcher({ convList: heldList(new Promise(() => { })) });
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .empty")]
+        .map((n) => n.textContent), ["loading\u2026"]);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent), ["Ask Nova"]);
+  });
+
+  test("the refresh behind the old list still repaints it", async () => {
+    // The whole safety argument for painting a stale list: the answer he
+    // opened the switcher to find still arrives and still lands on screen.
+    let calls = 0;
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        if (calls === 1) return LIST;
+        return { conversations: [{ id: "c-2", name: "Gutters", personaName: "",
+          model: "m", tags: [], updatedAt: "2026-08-27T08:00:00.000Z" }] };
+      },
+    });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent),
+      ["Ask Nova", "Gutters"],
+      "the refresh answered and the switcher kept showing the old rows");
+  });
+
+  test("a refresh that fails leaves the rows he can already see up", async () => {
+    // A stale list beats an error message here: the rows on screen were
+    // true a moment ago and every one of them still opens its thread.
+    let calls = 0;
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        return calls === 1 ? LIST : res({ error: "nope" }, 500);
+      },
+    });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent),
+      ["Ask Nova", "Roofing"]);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .empty")]
+        .map((n) => n.textContent), []);
+  });
+
+  test("picking a conversation reads that thread, not the ask thread", async () => {
+    const asked = [];
+    const window = await openSwitcher({
+      convThread: (url) => {
+        asked.push(url);
+        return { conversationId: "c-1", waiting: false,
+          messages: [{ id: "9", sender: "Claude", text: "Two coats." }] };
+      },
+    });
+    // Guard: without this the assertion below could pass on a list that
+    // never rendered the row, because `[...][1]` of an empty list is
+    // undefined and the tap would throw rather than assert.
+    const rows = [...window.document.querySelectorAll("#chat-list .chat-list-row")];
+    assert.equal(rows.length, 2, "the switcher did not render the conversation row");
+    rows[1].dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(asked, ["/api/conversations/thread?id=c-1&limit=40"]);
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
+      .map((n) => n.textContent), ["Two coats."]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Roofing");
+    assert.equal(window.document.getElementById("chat-dock").classList.contains("list-open"), false,
+      "picking a thread left the switcher up");
+  });
+
+  test("sending goes to the thread he picked, with its id", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    window.document.getElementById("chat-box").value = "when can you start?";
+    window.document.getElementById("chat-form")
+      .dispatchEvent(new window.Event("submit"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/send", { conversationId: "c-1", text: "when can you start?" }]]);
+  });
+
+  test("the dock opens on the thread he last had open", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: LIST,
+      convThread: () => ({ conversationId: "c-1", waiting: false,
+        messages: [{ id: "9", sender: "Claude", text: "Two coats." }] }),
+      install: (w) => w.localStorage.setItem("nova.chatSource.v1",
+        JSON.stringify({ kind: "conv", id: "c-1", name: "Roofing" })),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.equal(window.document.getElementById("chat-title").textContent, "Roofing");
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
+      .map((n) => n.textContent), ["Two coats."]);
+  });
+
+  test("a remembered conversation with no id is ignored rather than fetched", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: LIST,
+      install: (w) => w.localStorage.setItem("nova.chatSource.v1",
+        JSON.stringify({ kind: "conv", name: "Roofing" })),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.equal(window.document.getElementById("chat-title").textContent, "Ask Nova");
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
+      .map((n) => n.textContent), ["Seven."]);
+  });
+
+  test("picking a thread records it, so the next page load opens there", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(JSON.parse(window.localStorage.getItem("nova.chatSource.v1")),
+      { kind: "conv", id: "c-1", name: "Roofing" });
+  });
+
+  test("Escape closes the switcher first and the dock second", async () => {
+    const window = await openSwitcher();
+    const esc = () => window.document.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Escape" }));
+    esc();
+    assert.equal(window.document.getElementById("chat-dock").classList.contains("list-open"), false);
+    assert.equal(window.document.getElementById("chat-dock").hasAttribute("hidden"), false,
+      "Escape closed the whole dock from an open switcher");
+    esc();
+    assert.ok(window.document.getElementById("chat-dock").hasAttribute("hidden"));
+  });
+
+  test("a failed listing says so instead of leaving the switcher blank", async () => {
+    const window = await openSwitcher({ convStatus: 500 });
+    assert.match(window.document.querySelector("#chat-list .empty").textContent,
+      /Could not load your conversations/);
+    // Ask Nova is drawn locally, so it must still be there to go back to.
+    assert.deepEqual([...window.document.querySelectorAll("#chat-list .chat-list-name")]
+      .map((n) => n.textContent), ["Ask Nova"]);
+  });
+});
+
+/* The switcher's folds.
+ *
+ * His capture, `issues.md` 2026-08-26 11:41 and 11:42, two minutes apart:
+ * *"Great! However, the list of conversations are just filled with
+ * heartbeats."* and *"I ment not just filled with heartbeats, other
+ * converssations aswell but the beats take up a lot of space and i have to
+ * scroll past them. Maybe folders are the right solutions here aswell."*
+ *
+ * Measured against the live store that morning: 40 non-archived
+ * conversations, 30 of them cycle threads. The number is why this is a fold
+ * rather than a filter -- 30 rows he never reopens is a scrolling problem,
+ * not a set of rows that should stop existing, and a list that silently
+ * drops rows is the 400-chip cap again.
+ *
+ * jsdom does no layout, so what these can pin is the structure and the
+ * `open` attribute, never that the panel got shorter. That is the honest
+ * limit of this suite here and the screenshot is what settles the rest.
+ */
+describe("the chat dock folds the heartbeat threads away", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const askThread = {
+    conversationId: "c-ask", waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+  };
+  const MIXED = {
+    conversations: [
+      { id: "c-ask", name: "Nova Ask", personaName: "Nova", model: "m",
+        tags: ["nova-ask"], updatedAt: "2026-08-26T08:00:00.000Z" },
+      { id: "c-b1", name: "Nova — Cycle 471", personaName: "Nova", model: "m",
+        tags: ["evolve-cycle:471"], cycleThread: true,
+        updatedAt: "2026-08-26T07:00:00.000Z" },
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], cycleThread: false, updatedAt: "2026-08-25T20:00:00.000Z" },
+      { id: "c-b2", name: "Nova — Cycle 470", personaName: "Nova", model: "m",
+        tags: ["evolve-cycle:470"], cycleThread: true,
+        updatedAt: "2026-08-25T06:00:00.000Z" },
+    ],
+  };
+
+  const folds = (window) =>
+    [...window.document.querySelectorAll("#chat-list .chat-list-fold")].map((f) => ({
+      name: f.querySelector(".chat-list-group-name").textContent,
+      count: f.querySelector(".chat-list-group-count").textContent,
+      open: f.hasAttribute("open"),
+      rows: [...f.querySelectorAll(".chat-list-name")].map((n) => n.textContent),
+    }));
+
+  async function openSwitcher(opts = {}) {
+    const window = await loadSite("/", { ask: askThread, convList: MIXED, ...opts });
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    return window;
+  }
+
+  test("his own threads are open, the heartbeats are shut, and both say how many", async () => {
+    const window = await openSwitcher();
+    assert.deepEqual(folds(window), [
+      { name: "Conversations", count: "1", open: true, rows: ["Roofing"] },
+      { name: "Heartbeats", count: "2", open: false,
+        rows: ["Nova — Cycle 471", "Nova — Cycle 470"] },
+    ]);
+    // Ask Nova stays pinned above both folds rather than falling into one.
+    // The first child of the list is the "new conversation" control, which
+    // is deliberately not a `.chat-list-row` -- the rows are the threads.
+    const first = window.document.querySelector("#chat-list .chat-list-row");
+    assert.equal(first.querySelector(".chat-list-name").textContent, "Ask Nova");
+    assert.equal(window.document.querySelector("#chat-list > *").className,
+      "chat-list-new", "the new-conversation control is not above the list");
+  });
+
+  test("a folded heartbeat is still one tap away, not filtered out", async () => {
+    const asked = [];
+    const window = await openSwitcher({
+      convThread: (url) => {
+        asked.push(url);
+        return { conversationId: "c-b2", waiting: false,
+          messages: [{ id: "9", sender: "Nova", text: "Merged it." }] };
+      },
+    });
+    const beats = window.document.querySelectorAll("#chat-list .chat-list-fold")[1];
+    const rows = [...beats.querySelectorAll(".chat-list-row")];
+    assert.equal(rows.length, 2, "the heartbeat fold rendered no rows to tap");
+    rows[1].dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(asked, ["/api/conversations/thread?id=c-b2&limit=40"]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Nova — Cycle 470");
+  });
+
+  test("the heartbeat fold opens itself when he is reading a thread inside it", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: MIXED,
+      convThread: () => ({ conversationId: "c-b1", waiting: false, messages: [] }),
+      install: (w) => w.localStorage.setItem("nova.chatSource.v1",
+        JSON.stringify({ kind: "conv", id: "c-b1", name: "Nova — Cycle 471" })),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    // Guard: if the dock did not open on the remembered thread, the fold
+    // below would be shut for the ordinary reason and this would pin nothing.
+    assert.equal(window.document.getElementById("chat-title").textContent,
+      "Nova — Cycle 471", "the dock did not open on the remembered heartbeat");
+    tap(window, "chat-menu");
+    await tick();
+    const beats = folds(window)[1];
+    assert.equal(beats.name, "Heartbeats");
+    assert.equal(beats.open, true, "the switcher opened without the current thread on screen");
+    assert.equal(folds(window)[0].open, true);
+  });
+
+  test("no fold is drawn for a group with nothing in it", async () => {
+    const window = await openSwitcher({
+      convList: { conversations: MIXED.conversations.filter((c) => c.cycleThread) },
+    });
+    assert.deepEqual(folds(window).map((f) => f.name), ["Heartbeats"]);
+  });
+});
+
+/* Managing a conversation from the dock -- his capture, `issues.md`
+ * 2026-08-27, rated 🔴 Immediately: *"I need the chat bubble to be able to
+ * start ned conversations, delete them, change name, organize like move to
+ * a folder. Editing by pressing the conversation for 1 sec and it gives me
+ * edit options."*
+ *
+ * Driven through the real gesture and asserted on `window.posted`, for the
+ * board-row hold tests' reason: the whole feature is the difference between
+ * a tap and a hold, and what a hold is worth is the request it ends in. A
+ * test that called the handler would pass with the gesture unwired. */
+describe("holding a conversation in the switcher opens edit options", () => {
+  const HOLD = 1000;
+  const press = (window, node, type) =>
+    node.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true }));
+  const hold = async (window, node) => {
+    press(window, node, "mousedown");
+    await new Promise((resolve) => setTimeout(resolve, HOLD + 30));
+    press(window, node, "mouseup");
+    node.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  function tap(window, id) {
+    window.document.getElementById(id)
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const ASK = {
+    conversationId: "c-ask",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+  };
+
+  const LIST = {
+    folders: [{ id: "f-1", name: "House" }],
+    // `models` is what `nova_conversations.conversations()` now sends beside
+    // the folders. `m` is deliberately not in it: a conversation on a model
+    // the catalog no longer lists must still open on its own model.
+    models: [
+      { id: "claude-cli:claude-sonnet-5", label: "Claude Sonnet 5 (CLI)", metered: false },
+      { id: "anthropic:claude-opus-5", label: "Claude Opus 5", metered: true },
+    ],
+    conversations: [
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], cycleThread: false, folderId: "f-1",
+        updatedAt: "2026-08-26T07:00:00.000Z" },
+      { id: "c-2", name: "Loose thread", personaName: "Claude",
+        model: "claude-cli:claude-sonnet-5",
+        tags: [], cycleThread: false, folderId: "",
+        updatedAt: "2026-08-25T07:00:00.000Z" },
+    ],
+  };
+
+  async function openSwitcher(opts = {}) {
+    const window = await loadSite("/", { ask: ASK, convList: LIST, ...opts });
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    return window;
+  }
+
+  const rowNamed = (window, label) =>
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")]
+      .find((r) => r.querySelector(".chat-list-name").textContent === label);
+
+  test("his folders are their own folds, and a thread in one is not loose", async () => {
+    const window = await openSwitcher();
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-fold")].map((f) => ({
+        name: f.querySelector(".chat-list-group-name").textContent,
+        rows: [...f.querySelectorAll(".chat-list-name")].map((n) => n.textContent),
+      })),
+      [{ name: "House", rows: ["Roofing"] },
+       { name: "Conversations", rows: ["Loose thread"] }]);
+  });
+
+  test("a hold opens the editor on that row, prefilled, and does not switch to it", async () => {
+    const asked = [];
+    const window = await openSwitcher({
+      convThread: (url) => { asked.push(url); return { messages: [], waiting: false }; },
+    });
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    assert.ok(editor, "holding the row opened no editor");
+    assert.equal(editor.querySelector(".chat-row-edit-name").value, "Roofing");
+    assert.equal(editor.querySelector(".chat-row-edit-folder").value, "f-1",
+      "the editor did not open on the folder the conversation is in");
+    // The hold must not also count as the tap that opens the thread.
+    assert.deepEqual(asked, []);
+  });
+
+  test("saving a new name posts the rename, and moves the dock title with it", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    rowNamed(window, "Roofing").dispatchEvent(new window.Event("click"));
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-name").value = "New roof";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/rename", { id: "c-1", name: "New roof" }]]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "New roof");
+  });
+
+  test("an unchanged name and folder post nothing at all", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Roofing"));
+    window.document.querySelector(".chat-row-edit-save")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted, []);
+  });
+
+  test("moving to the top level posts an empty folderId, not the old one", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-folder").value = "";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/move", { id: "c-1", folderId: "" }]]);
+  });
+
+  test("a new folder is created first, and the move uses the id it answered with", async () => {
+    const window = await openSwitcher();
+    window.postReply = { ok: true, result: "f-new" };
+    await hold(window, rowNamed(window, "Loose thread"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    const pick = editor.querySelector(".chat-row-edit-folder");
+    pick.value = "+new";
+    pick.dispatchEvent(new window.Event("change"));
+    editor.querySelector('input[placeholder="New folder name"]').value = "Work";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]), [
+      ["/api/conversations/folder", { name: "Work" }],
+      ["/api/conversations/move", { id: "c-2", folderId: "f-new" }],
+    ]);
+  });
+
+  /* The model picker -- idea #95's opening line: *"It is hard to change model
+   * for a conversation because that means changing the model for all other
+   * conversations that personas is in."* Agora fixed the data model on 08-21
+   * and this panel is the only place in the app he reads that can reach it. */
+
+  test("the picker opens on the thread's own model and says which ones are metered", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Loose thread"));
+    const pick = window.document.querySelector("#chat-list .chat-row-edit-model");
+    assert.ok(pick, "the editor rendered no model picker");
+    assert.equal(pick.value, "claude-cli:claude-sonnet-5");
+    assert.deepEqual([...pick.options].map((o) => o.textContent),
+      ["Claude Sonnet 5 (CLI)", "Claude Opus 5 (metered)"]);
+  });
+
+  test("a model the catalog has dropped is still offered, selected, rather than silently swapped", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Roofing"));
+    const pick = window.document.querySelector("#chat-list .chat-row-edit-model");
+    assert.equal(pick.value, "m",
+      "the picker moved the thread off its own model just by opening");
+    assert.equal(pick.options.length, 3);
+  });
+
+  test("choosing another model posts it, and only for the thread that was held", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Loose thread"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-model").value = "anthropic:claude-opus-5";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/model",
+        { id: "c-2", model: "anthropic:claude-opus-5" }]]);
+  });
+
+  test("saving without touching the model posts no model change", async () => {
+    const window = await openSwitcher();
+    await hold(window, rowNamed(window, "Loose thread"));
+    const editor = window.document.querySelector("#chat-list .chat-row-edit");
+    editor.querySelector(".chat-row-edit-name").value = "Loose end";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => p.url),
+      ["/api/conversations/rename"]);
+  });
+
+  test("delete asks first, and does nothing when he says no", async () => {
+    const window = await openSwitcher();
+    window.confirm = () => false;
+    await hold(window, rowNamed(window, "Roofing"));
+    window.document.querySelector(".chat-row-edit-delete")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted, []);
+  });
+
+  test("delete posts the id once he confirms", async () => {
+    const window = await openSwitcher();
+    window.confirm = () => true;
+    await hold(window, rowNamed(window, "Roofing"));
+    window.document.querySelector(".chat-row-edit-delete")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/delete", { id: "c-1" }]]);
+  });
+
+  test("the new-conversation control starts a thread and opens it", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    window.postReply = { ok: true, result: "c-9" };
+    window.document.querySelector("#chat-list .chat-list-new")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    const form = window.document.querySelector("#chat-list .chat-row-edit");
+    assert.ok(form, "the new-conversation control opened no form");
+    // #119 again: no persona control in the switcher's form either, and the
+    // Start button is live immediately rather than waiting on a list that is
+    // no longer fetched.
+    assert.equal(form.querySelector(".chat-row-edit-folder"), null,
+      "the switcher form should offer no persona");
+    assert.equal(form.querySelector(".chat-row-edit-save").disabled, false);
+    form.querySelector(".chat-row-edit-name").value = "Gutters";
+    form.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/new", { name: "Gutters" }]]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Gutters");
+  });
+
+  /* The other half of issue #141's cache: a change he just made must never
+   * be repainted in its old form. `loadList(true)` drops the cache, so the
+   * frame after a rename is the honest empty one and not yesterday's row.
+   */
+  test("a rename does not repaint the row he just renamed", async () => {
+    let calls = 0;
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        // The refresh after the rename is held open on purpose: the frame
+        // being asserted is the one between his tap and the new listing,
+        // and a fetch that answers immediately hides it.
+        return calls === 1 ? LIST : new Promise(() => { });
+      },
+    });
+    window.postReply = { ok: true, result: "renamed" };
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector(".chat-row-edit");
+    editor.querySelector(".chat-row-edit-name").value = "Roofing done";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.equal(calls, 2, "saving the rename did not refresh the list");
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent), ["Ask Nova"],
+      "the switcher repainted its cached rows over a rename he had just made");
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .empty")]
+        .map((n) => n.textContent), ["loading\u2026"]);
+  });
+
+  test("a refresh landing mid-edit leaves his open editor alone", async () => {
+    // He can hold a row while the background refresh is in flight now,
+    // which the pre-cache switcher made impossible -- there was nothing on
+    // screen to hold. A repaint there throws away what he is typing.
+    let settle;
+    let calls = 0;
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        if (calls === 1) return LIST;
+        return new Promise((resolve) => { settle = resolve; });
+      },
+    });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector(".chat-row-edit");
+    assert.ok(editor, "holding a row during the refresh opened no editor");
+    editor.querySelector(".chat-row-edit-name").value = "half typed";
+    settle(res(LIST));
+    await tick();
+    assert.equal(window.document.querySelector(".chat-row-edit"), editor,
+      "the refresh repainted the list and took his editor with it");
+    assert.equal(editor.querySelector(".chat-row-edit-name").value, "half typed");
+  });
+
+  test("a listing that answers late does not overwrite a newer one", async () => {
+    // Open, shut, open leaves two fetches in flight. Before the cache this
+    // cost one wrong repaint; now the loser would also become what every
+    // later open paints first, so the ordering has to be pinned.
+    let calls = 0;
+    let settleSecond;
+    const LATER = {
+      folders: [], models: [],
+      conversations: [{ id: "c-3", name: "Gutters", personaName: "", model: "m",
+        tags: [], cycleThread: false, folderId: "",
+        updatedAt: "2026-08-27T07:00:00.000Z" }],
+    };
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        if (calls === 1) return LIST;
+        if (calls === 2) return new Promise((resolve) => { settleSecond = resolve; });
+        return LATER;
+      },
+    });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    assert.equal(calls, 3);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent), ["Ask Nova", "Gutters"]);
+    // The second open's listing finally answers, stale.
+    settleSecond(res(LIST));
+    await tick();
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent), ["Ask Nova", "Gutters"],
+      "an older listing landed last and repainted the switcher with it");
+  });
+});
+
+/* the owner, ideas board #115: *"You are asleep for nine cycles at a time and
+ * the app opens on the newest journal card with no sense of how much you
+ * missed. One line -- six cycles, two PRs merged, one thing needs your input,
+ * one board row moved -- would let you decide in two seconds whether to read
+ * or to close it."*
+ *
+ * The mark lives in `localStorage`, so every test here either seeds it through
+ * `install` or deliberately leaves it empty -- jsdom gives each window its own
+ * store, and empty is the honest first-load case. The fixture's journal is
+ * cycles 57 (twice, an entry and its addendum), 55, and one unnumbered report;
+ * `status.cycle` is 57 and 56 is a real hole in the numbering.
+ */
+describe("what changed since you last looked", () => {
+  const withLastSeen = (cycle) => (window) => {
+    window.localStorage.setItem("nova.lastSeen.v1", String(cycle));
+  };
+  const line = (window) => window.document.querySelector("#changed .changed-line");
+  const box = (window) => window.document.getElementById("changed");
+
+  test("a first load says nothing and seeds the mark instead", async () => {
+    /* The same call `nova.repliesRead.v1` makes one describe block up: with
+     * no mark there is no "last time", and printing "540 cycles" on day one
+     * is the absence of a measurement dressed as one. */
+    const window = await loadSite("/");
+    assert.equal(line(window), null, "a fresh device claimed news it cannot know about");
+    assert.equal(box(window).hasAttribute("hidden"), true);
+    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "57",
+      "the first load did not record where he got to");
+  });
+
+  test("it counts the cycles and the merges he missed", async () => {
+    const window = await loadSite("/", { install: withLastSeen(54) });
+    assert.equal(line(window).textContent, "2 cycles since you last looked · 2 PRs merged");
+  });
+
+  test("a cycle and its addendum are one cycle and one PR, not two", async () => {
+    /* Cycle 57 has two entries carrying the same `PR: agora#45` footer. */
+    const window = await loadSite("/", { install: withLastSeen(56) });
+    assert.equal(line(window).textContent, "1 cycle since you last looked · 1 PR merged");
+  });
+
+  test("nothing new says nothing at all", async () => {
+    const window = await loadSite("/", { install: withLastSeen(57) });
+    assert.equal(line(window), null, "drew a line with no news in it");
+    assert.equal(box(window).hasAttribute("hidden"), true);
+  });
+
+  test("a mark older than the feed's window says `at least`", async () => {
+    /* The feed is the newest N cycles, so a mark from before the oldest card
+     * on it cannot be counted exactly -- both numbers are floors. */
+    const window = await loadSite("/", { install: withLastSeen(3) });
+    assert.equal(line(window).textContent,
+      "at least 2 cycles since you last looked · at least 2 PRs merged");
+  });
+
+  test("a cycle that shipped no PR is counted as a cycle and not as a merge", async () => {
+    const journal = () => ({
+      status: { ...payload.journal.status, cycle: 60 },
+      entries: [
+        { ...payload.journal.entries[0], cycle: 60, pr: "none", outcome: "no-op" },
+        ...payload.journal.entries,
+      ],
+    });
+    const window = await loadSite("/", { install: withLastSeen(57), journal });
+    assert.equal(line(window).textContent, "1 cycle since you last looked",
+      "counted a cycle with no PR as a merge");
+  });
+
+  test("a dismissal only covers the news he was actually shown", async () => {
+    /* The tab stays open on his phone. A plain "dismissed" flag silenced the
+     * line for the whole session, so every cycle that ran while he had it
+     * open went unannounced -- which is the case the feature exists for. */
+    let cycle = 57;
+    const journal = () => ({
+      status: { ...payload.journal.status, cycle },
+      entries: cycle > 57
+        ? [{ ...payload.journal.entries[0], cycle, pr: "runner#500", outcome: "merged" },
+           ...payload.journal.entries]
+        : payload.journal.entries,
+    });
+    const window = await loadSite("/", { install: withLastSeen(54), journal });
+    line(window).dispatchEvent(new window.Event("click"));
+    assert.equal(line(window), null, "the tap left the line on screen");
+    // A cycle runs while he has the tab open, and the page re-renders.
+    cycle = 60;
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(line(window), "news that arrived after the tap was never shown");
+    assert.equal(line(window).textContent, "3 cycles since you last looked · 3 PRs merged");
+  });
+
+  test("tapping the line dismisses it", async () => {
+    const window = await loadSite("/", { install: withLastSeen(54) });
+    line(window).dispatchEvent(new window.Event("click"));
+    assert.equal(line(window), null, "the tap left the line on screen");
+    assert.equal(box(window).hasAttribute("hidden"), true);
+  });
+
+  test("the mark only moves forward", async () => {
+    /* A deep link or a search can hand `render` a `status.cycle` below the
+     * mark; writing it would invent a hundred cycles of news on his next
+     * open. */
+    const journal = () => ({ ...payload.journal, status: { ...payload.journal.status, cycle: 40 } });
+    const window = await loadSite("/", { install: withLastSeen(57), journal });
+    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "57");
+  });
+
+  test("a /cycle/N permalink neither draws the line nor moves the mark", async () => {
+    const window = await loadSite("/cycle/55", { install: withLastSeen(54) });
+    assert.equal(line(window), null, "a permalink drew a line about its own single entry");
+    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "54",
+      "a permalink overwrote the mark with the cycle he deep-linked to");
+  });
+
+  test("a payload replayed out of the worker's cache says nothing", async () => {
+    /* Same call the badges beside it make: "this is what changed" is a claim
+     * about now, and these bytes were cached at some unknown earlier time. */
+    const window = await loadSite("/", { install: withLastSeen(54), replayed: true });
+    assert.equal(line(window), null, "made a claim about now off a cached payload");
+  });
+
+  test("the page renders without localStorage at all", async () => {
+    const window = await loadSite("/", {
+      install: (w) => {
+        Object.defineProperty(w, "localStorage", {
+          get() { throw new Error("refused"); },
+        });
+      },
+    });
+    assert.equal(cards(window).length > 0, true, "the feed did not render without localStorage");
+    assert.equal(line(window), null);
+  });
+
+  test("a search takes the line down rather than recounting off its results", async () => {
+    /* A search answers with whichever cycles matched, from anywhere in the
+     * archive, so its entries are not "the newest N". Recomputing off them
+     * would describe the query rather than what he missed -- here, the one
+     * matched cycle would read "1 cycle" against the true "2 cycles".
+     * Clearing the search brings the original line back unchanged. */
+    const journal = (url) => {
+      if (!url.includes("q=")) return payload.journal;
+      return {
+        ...payload.journal,
+        query: "tailscale",
+        total: 1,
+        entries: [payload.journal.entries[0]],
+        status: { ...payload.journal.status, cycle: 57 },
+      };
+    };
+    const window = await loadSite("/", { install: withLastSeen(54), journal });
+    const before = line(window).textContent;
+    assert.equal(before, "2 cycles since you last looked · 2 PRs merged");
+    const input = window.document.querySelector(".journal-search-input");
+    input.value = "tailscale";
+    input.dispatchEvent(new window.Event("input"));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Guard: without this the assertion below passes on a search that never
+    // rendered, which is what the fixture does by default.
+    assert.equal(window.document.querySelector(".journal-search-count").textContent,
+      "1 entry mentions \u201Ctailscale\u201D", "the search never rendered");
+    assert.equal(line(window), null, "the search left a line over its own results");
+    window.document.querySelector(".journal-search-clear")
+      .dispatchEvent(new window.Event("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(line(window).textContent, before,
+      "clearing the search did not bring the same line back");
+  });
+
+  test("navigating to another page takes the line down with it", async () => {
+    /* Every internal link is a `pushState`, so without a hide the journal's
+     * line sits over the Issues board after one tap. */
+    const window = await loadSite("/", { install: withLastSeen(54) });
+    assert.ok(line(window), "no line on the journal");
+    window.document.querySelector('.nav-tab[href="/issues"]')
+      .dispatchEvent(new window.Event("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.location.pathname, "/issues", "the tap did not navigate");
+    assert.equal(line(window), null, "the journal's line stayed on the board page");
+  });
+
+  test("the line survives an in-page navigation", async () => {
+    /* The mark advances on the first paint, so a second read of storage
+     * would answer "nothing new" -- and tapping a card and coming back
+     * re-renders the header. */
+    const window = await loadSite("/", { install: withLastSeen(54) });
+    assert.ok(line(window), "no line on the first paint");
+    window.history.pushState({}, "", "/");
+    window.dispatchEvent(new window.PopStateEvent("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(line(window).textContent, "2 cycles since you last looked · 2 PRs merged",
+      "the line vanished when he navigated back to the feed");
+  });
+});
+
+/* The dock paints before the network answers.
+ *
+ * His `issues.md` #111, 2026-08-27, rated High: *"It takes 4-5 seconds to
+ * load the conversation when i open the chat bubble. Please do this
+ * background loading when i open the Nova app or use some local storage for
+ * it."*
+ *
+ * Measured from inside the cluster on 2026-08-28, five reads each: `/api/ask`
+ * answered in 0.52s to 2.04s, `/api/conversations/thread` in 0.03s to 0.08s.
+ * His phone reaches those over Tailscale on top of that, so the panel really
+ * did open onto "loading…" and stay there.
+ *
+ * What is worth pinning is not that a cache exists -- it is the three ways a
+ * cache of a live thread goes wrong: painting somebody else's thread, acting
+ * on a stale `waiting` flag, and never being overwritten by the answer that
+ * arrives a second later. A fixture whose promise never settles is how the
+ * first of those is testable at all: it holds the dock in the exact state he
+ * complains about, so anything on screen came from the device.
+ */
+describe("the chat dock paints the thread it last read", () => {
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const texts = (window) => [...window.document.querySelectorAll("#chat-thread .ask-text")]
+    .map((n) => n.textContent);
+  const cached = (window) => JSON.parse(window.localStorage.getItem("nova.chatThreads.v1") || "null");
+
+  const askThread = {
+    conversationId: "c-ask",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+  };
+  /** A read that never answers -- the seconds he is complaining about. */
+  const never = () => new Promise(() => {});
+
+  function store(window, key, payload) {
+    const held = JSON.parse(window.localStorage.getItem("nova.chatThreads.v1") || "{}");
+    held[key] = payload;
+    window.localStorage.setItem("nova.chatThreads.v1", JSON.stringify(held));
+  }
+
+  test("opening onto a server that has not answered still shows him the thread", async () => {
+    const window = await loadSite("/", {
+      ask: never,
+      install: (w) => store(w, "ask", askThread),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), ["Seven."],
+      "the dock waited for the network with a cached thread on the device");
+  });
+
+  test("the answer paints over the cached copy", async () => {
+    const fresh = {
+      conversationId: "c-ask",
+      waiting: false,
+      messages: [
+        { id: "1", sender: "Nova Answers", text: "Seven." },
+        { id: "2", sender: "Edvard", text: "and the roof?" },
+      ],
+    };
+    const window = await loadSite("/", {
+      ask: fresh,
+      install: (w) => store(w, "ask", askThread),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), ["Seven.", "and the roof?"]);
+  });
+
+  test("a read writes the cache, so the next page load has something to paint", async () => {
+    const window = await loadSite("/", { ask: askThread });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(cached(window), { ask: askThread });
+  });
+
+  /* The failure this is really about: `waiting` says an answer is being
+   * written, and a poll fires off the back of it. A cache is minutes or hours
+   * old, so a `waiting: true` in it is a question that was answered long ago
+   * -- and a dock that trusted it would poll ASK_POLL_MAX times on every open
+   * for an answer already on screen. The cached body is painted; only the
+   * network answer decides whether to poll. */
+  test("a stale waiting flag in the cache does not start a poll", async () => {
+    let timers;
+    const window = await loadSite("/", {
+      ask: never,
+      install: (w) => {
+        store(w, "ask", { conversationId: "c-ask", waiting: true,
+          messages: [{ id: "1", sender: "Edvard", text: "q" }] });
+        timers = captureTimers(w);
+      },
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), ["q"], "nothing was painted from the cache");
+    assert.equal(timers.queued.length, 0,
+      "the dock started a poll on a waiting flag it read off the device");
+  });
+
+  test("a cache for another thread is not painted over the one he opened", async () => {
+    const window = await loadSite("/", {
+      ask: never,
+      install: (w) => store(w, "conv:c-1", {
+        conversationId: "c-1", waiting: false,
+        messages: [{ id: "9", sender: "Claude", text: "Two coats." }],
+      }),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), [],
+      "the dock painted a different conversation into the ask thread");
+  });
+
+  /* The switcher is the other door into a thread, and it is the one where a
+   * cache earns the most: `switchTo` blanks the panel and paints "loading…"
+   * by design, so without this the second thread he opens is the slow one
+   * again. Three mutations survived my first pass here -- the switcher paint,
+   * the empty-thread guard and the key `cacheThread` writes under -- and each
+   * of the three tests below is the one that catches its own. */
+  const LIST = {
+    conversations: [
+      { id: "c-ask", name: "Nova Ask", personaName: "Nova", model: "m",
+        tags: ["nova-ask"], updatedAt: "2026-08-26T08:00:00.000Z" },
+      { id: "c-1", name: "Roofing", personaName: "Claude", model: "m",
+        tags: [], updatedAt: "2026-08-25T20:00:00.000Z" },
+    ],
+  };
+
+  /** Open the dock, open the switcher, tap the one conversation row. */
+  async function switchToRoofing(window) {
+    tap(window, "chat-btn");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+  }
+
+  test("switching to a cached thread paints it instead of the loading line", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: LIST,
+      convThread: never,
+      install: (w) => store(w, "conv:c-1", {
+        conversationId: "c-1", waiting: false,
+        messages: [{ id: "9", sender: "Claude", text: "Two coats." }],
+      }),
+    });
+    await switchToRoofing(window);
+    assert.deepEqual(texts(window), ["Two coats."],
+      "the switcher showed the loading line with that thread on the device");
+  });
+
+  test("reading a conversation caches it under that conversation, not under the ask thread", async () => {
+    const roofing = { conversationId: "c-1", waiting: false,
+      messages: [{ id: "9", sender: "Claude", text: "Two coats." }] };
+    const window = await loadSite("/", {
+      ask: askThread, convList: LIST, convThread: () => roofing,
+    });
+    await switchToRoofing(window);
+    assert.deepEqual(cached(window), { ask: askThread, "conv:c-1": roofing },
+      "the ask thread it opened on was dropped when the conversation was cached");
+  });
+
+  /* A thread with no messages is indistinguishable from a thread that has not
+   * loaded, so painting it would take the "loading…" line down and leave him
+   * looking at a blank panel with nothing saying a fetch was running. */
+  test("a cached thread with nothing in it leaves the loading line up", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      convList: LIST,
+      convThread: never,
+      install: (w) => store(w, "conv:c-1", { conversationId: "c-1", waiting: false, messages: [] }),
+    });
+    await switchToRoofing(window);
+    assert.equal(window.document.querySelector("#chat-thread .empty").textContent, "loading…");
+  });
+
+  /* Corrupt reads as empty rather than as absent, and the second assertion is
+   * the one that matters: if it read as absent the write would be skipped too,
+   * and one unparseable value would leave the dock uncached forever. */
+  test("a corrupt cache reads as no cache and is overwritten by the next read", async () => {
+    const window = await loadSite("/", {
+      ask: askThread,
+      install: (w) => w.localStorage.setItem("nova.chatThreads.v1", "{not json"),
+    });
+    tap(window, "chat-btn");
+    await tick();
+    assert.deepEqual(texts(window), ["Seven."]);
+    assert.deepEqual(cached(window), { ask: askThread },
+      "the corrupt value survived the read that should have replaced it");
+  });
+});
+
+/* The project page -- idea #92, phase 3.
+ *
+ * `/projects` and `/project/<name>` are one view over two URLs, the way
+ * `/` and `/cycle/49` are. What these pin is the half a Python test
+ * cannot reach: the URL is where the project name lives, so the page is
+ * only correct if a bookmarked `/project/Sokrates%20Post` asks the
+ * server for `Sokrates Post`. That decode is invisible from the server
+ * side -- it would answer an unknown-project page perfectly correctly
+ * for a name the owner never typed.
+ */
+describe("the project page", () => {
+  const NOVA = {
+    projects: ["Nova", "Agora"],
+    name: "Nova",
+    asked: "Nova",
+    boards: {
+      issues: {
+        total: 2,
+        columns: [
+          { key: "in-progress", label: "🟡 In progress", items: [
+            { number: 1, title: "One", priority: "🟠 High", priorityKey: "high" },
+          ] },
+          { key: "backlog", label: "⚪ Backlog", items: [
+            { number: 2, title: "Two", priority: "", priorityKey: "" },
+          ] },
+        ],
+      },
+      ideas: { total: 0, columns: [] },
+    },
+  };
+
+  /* The rating of a project, his capture's last line: *"Each project
+   * should also be able to be assigned a priority, making one project and
+   * its tasks more important than others."* The server does the ordering;
+   * what these hold is that the chip is drawn from the server's answer
+   * rather than from a name, and that the picker posts the project rather
+   * than a row. */
+  const RATED = {
+    ...NOVA,
+    projects: ["Marcus", "Nova", "Agora"],
+    projectPriority: {
+      marcus: { priority: "🔴 Immediately", priorityKey: "immediate" },
+      nova: { priority: "", priorityKey: "" },
+      agora: { priority: "⚪ Low", priorityKey: "low" },
+    },
+  };
+
+  test("the index chips only the projects that carry a rating", async () => {
+    const window = await loadSite("/project/Nova", { project: () => RATED });
+    const pills = [...window.document.querySelectorAll(".project-pill")];
+    assert.deepEqual(pills.map((p) => p.getAttribute("href")),
+      ["/project/Marcus", "/project/Nova", "/project/Agora"],
+      "the pills are not in the order the server sent");
+    const chipOf = (pill) => {
+      const chip = pill.querySelector(".chip");
+      return chip ? chip.textContent : null;
+    };
+    // Unrated draws no chip at all -- every project is unrated today, so an
+    // unconditional one would put an empty coloured pill on all of them.
+    assert.deepEqual(pills.map(chipOf), ["🔴 Immediately", null, "⚪ Low"]);
+    assert.ok(pills[0].querySelector(".prio-immediate"),
+      "the chip is not coloured from the server's priorityKey");
+    // The word beside the glyph, never the glyph alone.
+    assert.match(chipOf(pills[0]), /Immediately/);
+  });
+
+  test("rating a project posts the project, not a board row", async () => {
+    const window = await loadSite("/project/Nova", { project: () => RATED });
+    const trigger = window.document.querySelector(".project-prio > .chip.prio");
+    assert.ok(trigger, "no priority trigger on the project page");
+    // It opens on what the server holds for this project, which is unrated.
+    assert.equal(trigger.textContent, "Unrated");
+    click(window, trigger);
+    const high = [...window.document.querySelectorAll(".prio-option")]
+      .find((o) => o.textContent === "🟠 High");
+    click(window, high);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const posted = window.posted.find((p) => p.url === "/api/project/priority");
+    assert.ok(posted, "no write reached /api/project/priority");
+    assert.deepEqual(posted.body, { project: "Nova", priority: "🟠 High" });
+    // The project name, not a board target and not a row number -- this is
+    // the one write on this page that belongs to no row.
+    assert.equal(posted.body.number, undefined);
+    assert.equal(posted.body.target, undefined);
+  });
+
+  test("the trigger opens on the rating the server already holds", async () => {
+    const window = await loadSite("/project/Marcus",
+      { project: () => ({ ...RATED, name: "Marcus", asked: "Marcus" }) });
+    const trigger = window.document.querySelector(".project-prio > .chip.prio");
+    assert.equal(trigger.textContent, "🔴 Immediately");
+    assert.equal(trigger.className, "chip prio prio-immediate");
+  });
+
+  test("the index page has no picker, because no project is chosen", async () => {
+    const window = await loadSite("/projects",
+      { project: () => ({ ...RATED, name: null, asked: "" }) });
+    assert.ok(window.document.querySelector(".project-pill"),
+      "the index drew no pills at all, so this proves nothing");
+    assert.equal(window.document.querySelector(".project-prio"), null);
+  });
+
+  /* The summary strip -- idea #228, the burndown half.
+   *
+   * His idea asks for *"a backlog, roadmap and maybe a burndown chart"* and
+   * then for a project-manager pass. The rows carry one date each and it is
+   * the date they were last touched, so there is no history to draw a line
+   * from; what the data does support is where the project stands today,
+   * which is the burndown's last point. These hold the strip to printing
+   * the server's numbers rather than recomputing them on the page -- a bar
+   * that disagrees with the count beside it is worse than no bar. */
+  const SUMMARISED = {
+    ...NOVA,
+    summary: {
+      total: 10, done: 4, dropped: 1, open: 5, blocked: 2, percentDone: 44,
+      priorities: [
+        { key: "immediate", label: "🔴 Immediately", count: 1 },
+        { key: "high", label: "🟠 High", count: 3 },
+        { key: "", label: "Unrated", count: 1 },
+      ],
+    },
+  };
+
+  test("the bar is drawn at the server's percentage, not a recomputed one", async () => {
+    const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
+    const pct = window.document.querySelector(".project-summary-pct");
+    assert.equal(pct.textContent, "44%");
+    const fill = window.document.querySelector(".project-summary-fill");
+    // 4 done of 10 rows is 40%, and of the 9 still tracked it is 44%. The
+    // page must print the number the server sent either way: this fails if
+    // anything here divides for itself.
+    assert.equal(fill.style.width, "44%");
+  });
+
+  test("the counts spell out what the bar cannot", async () => {
+    const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
+    const counts = window.document.querySelector(".project-summary-counts").textContent;
+    assert.match(counts, /4 done/);
+    assert.match(counts, /5 open/);
+    // The two a bar has no room for and he actually acts on.
+    assert.match(counts, /2 on you/);
+    assert.match(counts, /1 dropped/);
+    // Read out as a sentence, not as a bare bar.
+    const track = window.document.querySelector(".project-summary-track");
+    assert.equal(track.getAttribute("role"), "img");
+    assert.match(track.getAttribute("aria-label"), /^44% done/);
+  });
+
+  test("a project with nothing blocked or dropped says neither", async () => {
+    const clean = { ...SUMMARISED,
+      summary: { ...SUMMARISED.summary, blocked: 0, dropped: 0 } };
+    const window = await loadSite("/project/Nova", { project: () => clean });
+    const counts = window.document.querySelector(".project-summary-counts").textContent;
+    assert.equal(counts, "4 done · 5 open");
+  });
+
+  test("the rating counts carry the word, worst first", async () => {
+    const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
+    const chips = [...window.document.querySelectorAll(".project-summary-prio")];
+    assert.deepEqual(chips.map((c) => c.textContent), [
+      "🔴 Immediately · 1", "🟠 High · 3", "Unrated · 1",
+    ]);
+    // A reader who has to know a colour code has not been told anything --
+    // the word is in the label, and the class only colours it.
+    assert.ok(chips[0].classList.contains("prio-immediate"));
+    assert.ok(chips[2].classList.contains("prio-none"));
+  });
+
+  test("a project with no rows draws no strip at all", async () => {
+    const empty = { ...NOVA, summary: {
+      total: 0, done: 0, dropped: 0, open: 0, blocked: 0,
+      percentDone: 0, priorities: [],
+    } };
+    const window = await loadSite("/project/Nova", { project: () => empty });
+    assert.equal(window.document.querySelector(".project-summary"), null,
+      "a 0% bar was drawn under a project with nothing filed under it");
+  });
+
+  test("an older payload with no summary still renders the page", async () => {
+    // The service worker serves a cached `app.js` against a fresh server
+    // and the other way round, so a page that throws on a missing key is a
+    // blank screen on his phone rather than a missing strip.
+    const window = await loadSite("/project/Nova", { project: () => NOVA });
+    assert.equal(window.document.querySelector(".project-summary"), null);
+    assert.ok(window.document.querySelector(".project-board"),
+      "the boards did not render, so the page threw");
+  });
+
+  /* The ordered backlog -- idea #228, the half that says which row is next.
+   *
+   * The columns below it say what state every row is in; this is the only
+   * thing on the page that answers "what do I do about it". The order is
+   * the server's -- `nova_next.rank`, the same one a cycle picks with --
+   * and these hold the page to printing it rather than sorting for itself,
+   * which is the whole reason the list is trustworthy. */
+  const BACKLOG = [
+    { number: 5, title: "First", board: "issue",
+      priority: "🔴 Immediately", priorityKey: "immediate", statusKey: "in-progress" },
+    { number: 6, title: "Second", board: "idea",
+      priority: "🟠 High", priorityKey: "high", statusKey: "backlog" },
+    { number: 7, title: "Third", board: "issue",
+      priority: "", priorityKey: "", statusKey: "backlog" },
+    { number: 8, title: "Fourth", board: "idea",
+      priority: "⚪ Low", priorityKey: "low", statusKey: "blocked-on-edvard" },
+  ];
+
+  test("the queue is drawn in the order the server sent, numbered", async () => {
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
+    const rows = [...window.document.querySelectorAll(".project-backlog-row")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".project-backlog-link").textContent),
+      ["First", "Second", "Third", "Fourth"]);
+    // Counted with our own span rather than the `<ol>` marker, because the
+    // fold restarts at 1 and the position has to keep counting across it.
+    assert.deepEqual(rows.map((r) => r.querySelector(".project-backlog-pos").textContent),
+      ["1", "2", "3", "4"]);
+    assert.match(window.document.querySelector(".project-backlog-head").textContent,
+      /What's next · 4/);
+  });
+
+  test("each row links to its own board, not all to one", async () => {
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
+    const links = [...window.document.querySelectorAll(".project-backlog-link")];
+    // The `board` key is the only thing that decides this: without it every
+    // row points at the same page and half the links are wrong.
+    assert.deepEqual(links.map((a) => a.getAttribute("href")),
+      ["/issues#5", "/ideas#6", "/issues#7", "/ideas#8"]);
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".project-backlog-num")].map((n) => n.textContent),
+      ["issue #5", "idea #6", "issue #7", "idea #8"]);
+  });
+
+  test("a rating is a word beside its symbol, and an unrated row gets no chip", async () => {
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
+    const rows = [...window.document.querySelectorAll(".project-backlog-row")];
+    assert.deepEqual(rows.map((r) => {
+      const chip = r.querySelector(".chip.prio");
+      return chip ? chip.textContent : null;
+    }), ["🔴 Immediately", "🟠 High", null, "⚪ Low"]);
+    // Only the row that is down here *because* it is on him says so; every
+    // other status is already the column the row sits in below.
+    assert.deepEqual(rows.map((r) => !!r.querySelector(".project-backlog-blocked")),
+      [false, false, false, true]);
+  });
+
+  test("past the fifth row the rest are folded, not dropped", async () => {
+    const many = [];
+    for (let i = 1; i <= 9; i++) {
+      many.push({ number: i, title: "Row " + i, board: "issue",
+                  priority: "🟠 High", priorityKey: "high", statusKey: "backlog" });
+    }
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: many }) });
+    // Every one of the nine is in the DOM -- the fold is an interface, not
+    // a cap. This fails if the extra four are sliced away.
+    const rows = [...window.document.querySelectorAll(".project-backlog-row")];
+    assert.equal(rows.length, 9);
+    assert.deepEqual(rows.map((r) => r.querySelector(".project-backlog-pos").textContent),
+      ["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+    const fold = window.document.querySelector(".project-backlog-fold");
+    assert.ok(fold, "the extra rows were not folded");
+    assert.equal(fold.open, false);
+    assert.equal(fold.querySelectorAll(".project-backlog-row").length, 4);
+    assert.match(window.document.querySelector(".project-backlog-more").textContent,
+      /The other 4/);
+  });
+
+  test("five rows or fewer need no fold", async () => {
+    const window = await loadSite("/project/Nova",
+      { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
+    assert.equal(window.document.querySelector(".project-backlog-fold"), null);
+  });
+
+  test("an older payload with no backlog still renders the page", async () => {
+    // Same failure the summary strip guards: the service worker serves a
+    // cached `app.js` against a fresh server and the other way round, so a
+    // page that throws on a missing key is a blank screen on his phone.
+    const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
+    assert.equal(window.document.querySelector(".project-backlog"), null);
+    assert.ok(window.document.querySelector(".project-board"),
+      "the boards did not render, so the page threw");
+  });
+
+  test("a bookmarked project URL asks the server for the decoded name", async () => {
+    let asked = null;
+    await loadSite("/project/Sokrates%20Post", {
+      project: (url) => { asked = url; return NOVA; },
+    });
+    assert.ok(asked, "the page never fetched /api/project");
+    assert.match(asked, /name=Sokrates%20Post/);
+  });
+
+  test("the index asks for no project at all", async () => {
+    let asked = null;
+    await loadSite("/projects", {
+      project: (url) => { asked = url; return { projects: ["Nova"], name: null, asked: "", boards: {} }; },
+    });
+    assert.equal(asked, "/api/project?name=");
+  });
+
+  test("rows are drawn under their status column", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const heads = [...window.document.querySelectorAll(".project-column-head")]
+      .map((el) => el.textContent);
+    assert.deepEqual(heads, ["🟡 In progress · 1", "⚪ Backlog · 1"]);
+    const titles = [...window.document.querySelectorAll(".project-row-title")]
+      .map((el) => el.textContent);
+    assert.deepEqual(titles, ["One", "Two"]);
+  });
+
+  test("a board with no rows for this project draws no section", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const heads = [...window.document.querySelectorAll(".project-board-head")]
+      .map((el) => el.firstChild.textContent);
+    assert.deepEqual(heads, ["Issues · 2"], "the empty Ideas board was drawn anyway");
+  });
+
+  test("a row with no priority draws no chip rather than an empty one", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const rows = window.document.querySelectorAll(".project-row");
+    assert.equal(rows[0].querySelectorAll(".chip.prio").length, 1);
+    assert.equal(rows[1].querySelectorAll(".chip.prio").length, 0);
+  });
+
+  test("the project you are on is the marked pill", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const on = [...window.document.querySelectorAll(".project-pill.on")]
+      .map((el) => el.textContent);
+    assert.deepEqual(on, ["Nova"]);
+    const links = [...window.document.querySelectorAll(".project-pill")]
+      .map((el) => el.getAttribute("href"));
+    assert.deepEqual(links, ["/project/Nova", "/project/Agora"]);
+  });
+
+  test("a project with nothing filed under it says so and still offers the others", async () => {
+    const window = await loadSite("/project/Newspaper", {
+      project: { projects: ["Nova"], name: null, asked: "Newspaper",
+                 boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } } },
+    });
+    assert.match(window.document.querySelector(".empty").textContent, /Newspaper/);
+    assert.equal(window.document.querySelectorAll(".project-pill").length, 1);
+  });
+
+  /* Phase 4 -- the conversation per project. */
+
+  const TALKED = Object.assign({}, NOVA, {
+    comments: [
+      { author: "Edvard", stamp: "2026-08-28 10:40",
+        blocks: [{ kind: "p", text: "Is the pool refilling?" }] },
+      { author: "Nova", stamp: "2026-08-28 10:55",
+        blocks: [{ kind: "p", text: "Three times a week." }] },
+    ],
+  });
+
+  test("a project's conversation draws as the same green and purple bubbles", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    const thread = window.document.querySelector(".project-thread");
+    assert.ok(thread, "the project page drew no conversation");
+    const mine = thread.querySelectorAll(".note-msg-mine");
+    const nova = thread.querySelectorAll(".note-msg-nova");
+    assert.equal(mine.length, 1, "his message is not the green one");
+    assert.equal(nova.length, 1, "the cycle's answer is not the purple one");
+  });
+
+  /* His complaint, comments board 2026-08-28: the box is at the bottom and
+   * he has to scroll the whole page to reach it. These pin the two halves
+   * of the answer -- the button is above the boards, and it focuses the box
+   * rather than merely landing him beside it. jsdom implements no
+   * scrollIntoView, so the focus is the observable half here; the guard in
+   * app.js is what keeps the missing method from throwing before it. */
+  test("the way down to the conversation sits above the boards and counts it", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    const jump = window.document.querySelector(".project-jump");
+    assert.ok(jump, "there is no way down to the conversation");
+    assert.equal(jump.textContent, "Conversation · 2");
+    const feed = window.document.querySelector("#feed");
+    const kids = [...feed.children];
+    const jumpAt = kids.indexOf(jump.parentNode);
+    const boardAt = kids.findIndex((n) => n.classList.contains("project-board"));
+    const threadAt = kids.findIndex((n) => n.classList.contains("project-thread"));
+    assert.ok(jumpAt >= 0 && boardAt >= 0 && threadAt >= 0, "the page is missing a section");
+    assert.ok(jumpAt < boardAt, "the jump is not above the boards");
+    assert.ok(boardAt < threadAt, "the boards stopped coming before the conversation");
+  });
+
+  test("the jump puts the cursor in the box, not just the box on screen", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    window.document.querySelector(".project-jump").click();
+    assert.equal(
+      window.document.activeElement,
+      window.document.querySelector(".project-thread .item-comment-box"),
+      "the jump landed him beside the box without opening it",
+    );
+  });
+
+  test("with nothing said yet the way down says so rather than showing a zero", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    assert.equal(window.document.querySelector(".project-jump").textContent, "Conversation");
+  });
+
+  test("a project nobody has said anything about says so and still offers the box", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const thread = window.document.querySelector(".project-thread");
+    assert.match(thread.querySelector(".empty").textContent, /Nova/);
+    assert.ok(thread.querySelector(".item-comment-box"), "there is nowhere to type");
+  });
+
+  test("commenting posts the project name and refetches rather than guessing", async () => {
+    let fetches = 0;
+    const window = await loadSite("/project/Nova", {
+      project: () => { fetches += 1; return TALKED; },
+    });
+    const before = fetches;
+    window.document.querySelector(".project-thread .item-comment-box").value = "one\ntwo";
+    window.document.querySelector(".project-thread .item-comment-send").click();
+    await new Promise((r) => window.setTimeout(r, 0));
+
+    const sent = window.posted.at(-1);
+    assert.equal(sent.url, "/api/project/comment");
+    assert.equal(sent.body.project, "Nova");
+    // Line breaks are kept: unlike a board comment, `comments.md` stores
+    // his text verbatim, so nothing here flattens what he typed.
+    assert.equal(sent.body.text, "one\ntwo");
+    assert.ok(fetches > before, "the page did not refetch after posting");
+  });
+
+  test("an empty box refuses rather than posting nothing", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const before = window.posted.length;
+    window.document.querySelector(".project-thread .item-comment-send").click();
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, before, "an empty comment was sent anyway");
+    assert.match(
+      window.document.querySelector(".project-thread .item-comment-status").textContent,
+      /Nothing to send/,
+    );
+  });
+
+  test("the Projects nav tab is the one marked current", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const on = [...window.document.querySelectorAll(".nav-tab[aria-current]")]
+      .map((el) => el.getAttribute("href"));
+    assert.deepEqual(on, ["/projects"]);
+  });
+
+  /* Idea #166 -- *"tabs/buttons that say issues, ideas, conversation. When
+   * one of them is pressed the relevant items are displayed and the others
+   * are hidden."* */
+
+  const tabs = (window) =>
+    [...window.document.querySelectorAll(".project-tab")].map((b) => b.textContent);
+
+  const press = (window, key) =>
+    window.document.querySelector('.project-tab[data-tab="' + key + '"]').click();
+
+  test("the tab strip names only the parts this project actually has", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    assert.deepEqual(tabs(window), ["All", "Issues · 2", "Conversation · 2"],
+      "an Ideas tab was drawn for a board with no rows under this project");
+  });
+
+  test("with nothing said yet the conversation tab says so rather than showing a zero", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    assert.deepEqual(tabs(window), ["All", "Issues · 2", "Conversation"]);
+  });
+
+  test("All is where the page opens and it draws both halves", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    const on = [...window.document.querySelectorAll(".project-tab.on")]
+      .map((b) => b.textContent);
+    assert.deepEqual(on, ["All"]);
+    assert.ok(window.document.querySelector(".project-board"), "no rows on the All tab");
+    assert.ok(window.document.querySelector(".project-thread"), "no conversation on the All tab");
+  });
+
+  test("pressing Conversation hides the rows and leaves the thread", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    press(window, "conversation");
+    assert.equal(window.document.querySelectorAll(".project-board").length, 0,
+      "the boards are still on screen after pressing Conversation");
+    assert.ok(window.document.querySelector(".project-thread"), "the conversation went away too");
+    // The jump exists to scroll past the boards. With no boards there is
+    // nothing to scroll past, and a button that goes nowhere is noise.
+    assert.equal(window.document.querySelectorAll(".project-jump").length, 0,
+      "the way down to the conversation is still drawn on the conversation itself");
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".project-tab.on")].map((b) => b.textContent),
+      ["Conversation · 2"]);
+  });
+
+  test("pressing Issues hides the conversation and leaves the rows", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    press(window, "issues");
+    assert.equal(window.document.querySelectorAll(".project-thread").length, 0,
+      "the conversation is still on screen after pressing Issues");
+    const heads = [...window.document.querySelectorAll(".project-board-head")]
+      .map((el) => el.firstChild.textContent);
+    assert.deepEqual(heads, ["Issues · 2"]);
+  });
+
+  test("a tab can be pressed twice without the page forgetting what it holds", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    press(window, "conversation");
+    press(window, "all");
+    press(window, "conversation");
+    // The order has to survive a redraw: reversing the payload in place
+    // would flip it back on the second press.
+    const said = [...window.document.querySelectorAll(".project-thread .note-msg-name")]
+      .map((el) => el.textContent);
+    assert.deepEqual(said, ["Nova", "Edvard"]);
+  });
+
+  test("a project with no rows at all draws no tab strip", async () => {
+    const bare = Object.assign({}, NOVA, {
+      boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } },
+    });
+    // Both halves in one test on purpose. On its own the empty assertion is
+    // unfailable -- with the whole feature reverted there is no
+    // `.project-tab` anywhere either, so it cannot tell "correctly
+    // suppressed" from "never built". My reviewer's finding.
+    const drawn = await loadSite("/project/Nova", { project: TALKED });
+    assert.ok(drawn.document.querySelectorAll(".project-tab").length > 1,
+      "a project with rows draws no strip, so the empty case below proves nothing");
+    const window = await loadSite("/project/Nova", { project: bare });
+    assert.equal(window.document.querySelectorAll(".project-tab").length, 0,
+      "a strip reading All / Conversation is two names for one screen");
+  });
+
+  /* My reviewer's finding. The tab is held in a variable across renders, so
+   * a board that empties between two visits to the same project used to
+   * leave him on a page with no strip, no rows and no comment box. */
+  test("a tab whose board has emptied falls back to All rather than to nothing", async () => {
+    const bare = Object.assign({}, TALKED, {
+      boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } },
+    });
+    // The same project answered twice, the second time with its last issue
+    // gone. Posting a comment is the real path that refetches it.
+    let call = 0;
+    const window = await loadSite("/project/Nova", {
+      project: () => (call++ === 0 ? TALKED : bare),
+    });
+    press(window, "conversation");
+    window.document.querySelector(".project-thread .item-comment-box").value = "still here?";
+    window.document.querySelector(".project-thread .item-comment-send").click();
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.document.querySelectorAll(".project-tab").length, 0,
+      "a strip was drawn for a project with nothing to split");
+    // The tell that the held tab was dropped rather than kept: `all` says
+    // there is nothing filed here, and a stale `conversation` suppresses
+    // that line, so he would be looking at a page that never mentions the
+    // rows are gone and offers no way back.
+    assert.match(window.document.querySelector(".empty").textContent,
+      /Nothing is filed/, "the page is still rendering the tab he can no longer see");
+    assert.ok(window.document.querySelector(".project-thread .item-comment-box"),
+      "there is nowhere to type");
+  });
+
+  /* Idea #166 -- *"The input field is at the top and the comments are below
+   * it with the newest reply at the top."* */
+  test("the box is above the thread and the newest reply is at the top of it", async () => {
+    const window = await loadSite("/project/Nova", { project: TALKED });
+    const thread = window.document.querySelector(".project-thread");
+    const kids = [...thread.children];
+    const boxAt = kids.findIndex((n) => n.classList.contains("item-comment"));
+    const msgsAt = kids.findIndex((n) => n.classList.contains("project-thread-messages"));
+    assert.ok(boxAt >= 0 && msgsAt >= 0, "the conversation is missing a part");
+    assert.ok(boxAt < msgsAt, "the box is still below the messages");
+    const said = [...thread.querySelectorAll(".note-msg-name")]
+      .map((el) => el.textContent);
+    assert.deepEqual(said, ["Nova", "Edvard"], "the oldest message is still first");
+  });
+
+  test("a project nobody has said anything about still puts the box first", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const thread = window.document.querySelector(".project-thread");
+    const kids = [...thread.children];
+    assert.ok(kids.findIndex((n) => n.classList.contains("item-comment"))
+      < kids.findIndex((n) => n.classList.contains("empty")),
+      "the box is below the 'nothing said yet' line");
+  });
+});
+
+/* The Pool page's third button -- idea #92, *"i can approve or comment on
+ * these"*. Phase 1 shipped Approve, Reject and Skip, and Skip writes
+ * nothing, so the comment box on a card he was not ready to decide had
+ * nowhere to send what he typed. */
+describe("the pool card keeps what he types without making him decide", () => {
+  const CANDIDATE = {
+    index: 0,
+    title: "Watch for a heartbeat that stopped firing",
+    project: "Agora",
+    priority: "🟠 High",
+    priorityKey: "high",
+    body: "There are five heartbeats now and nothing notices when one stops.",
+    comments: [],
+  };
+  const deck = (candidate) => ({
+    candidates: [candidate], generateRequested: false, missing: false });
+
+  test("Comment sits with the other answers rather than replacing Skip", async () => {
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    const labels = [...window.document.querySelectorAll(".pool-actions .pool-btn")]
+      .map((b) => b.textContent);
+    assert.deepEqual(labels, ["Approve", "Reject", "Comment", "Skip"]);
+  });
+
+  test("tapping Comment sends his words with the candidate's own address", async () => {
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    window.document.querySelector(".pool-comment").value = "only the cheap half";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(window.posted.map((p) => p.url), ["/api/pool/comment"]);
+    assert.deepEqual(window.posted[0].body, {
+      index: 0,
+      // The title rides with the index for the reason a decision's does: a
+      // refill that ran while the card was open renumbers everything below
+      // it, and annotating the wrong idea is worse than refusing.
+      title: CANDIDATE.title,
+      comment: "only the cheap half",
+    });
+  });
+
+  test("every answer is dead while the note is in flight", async () => {
+    /* Not cosmetic. Two taps are two requests on two threads, and the
+     * server's staleness check passes for both -- the same reason Approve
+     * disables itself, which it only learned to do after a reviewer said
+     * so. Read synchronously after the click, because the disabling happens
+     * before `fetch` and the harness resolves the POST straight away. */
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    window.document.querySelector(".pool-comment").value = "something";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    const buttons = [...window.document.querySelectorAll(".pool-actions .pool-btn")];
+    assert.equal(buttons.length, 4);
+    assert.ok(buttons.every((b) => b.disabled), "a second tap can still be sent");
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  test("an empty box notes nothing and says so rather than posting", async () => {
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    window.document.querySelector(".pool-comment").value = "   ";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(window.posted, []);
+    assert.match(window.document.querySelector(".pool-note").textContent, /empty/i);
+  });
+
+  test("his own words come back onto the card he wrote them on", async () => {
+    /* The proof a write landed, and the reason Comment re-fetches and stays
+     * on the same card instead of advancing past it. */
+    let asked = 0;
+    const window = await loadSite("/pool", {
+      pool: () => {
+        asked += 1;
+        return deck(asked === 1 ? CANDIDATE : Object.assign({}, CANDIDATE, {
+          comments: [{ dated: "2026-08-30", text: "only the cheap half" }],
+        }));
+      },
+    });
+    assert.equal(window.document.querySelectorAll(".pool-said").length, 0);
+    window.document.querySelector(".pool-comment").value = "only the cheap half";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    await new Promise((r) => setTimeout(r, 0));
+    const said = [...window.document.querySelectorAll(".pool-said")];
+    assert.equal(said.length, 1, "the pool was not re-read after the comment landed");
+    assert.match(said[0].textContent, /only the cheap half/);
+    assert.match(said[0].textContent, /2026-08-30/);
+    // And the candidate is still here to decide, which is the whole point.
+    assert.ok(window.document.querySelector(".pool-approve"));
+  });
+
+  test("a two-paragraph note draws as two lines, not as one run-on", async () => {
+    /* jsdom reports no computed layout, so the observable half is the
+     * `white-space` the stylesheet sets -- a note stored with a newline in
+     * it and drawn without one is a note he wrote more of than he can see. */
+    const window = await loadSite("/pool", {
+      install: withStyle,
+      pool: deck(Object.assign({}, CANDIDATE, {
+        comments: [{ dated: "2026-08-30", text: "the first half\nand the second" }],
+      })),
+    });
+    const said = window.document.querySelector(".pool-said");
+    assert.match(said.textContent, /the first half\nand the second/);
+    assert.equal(window.getComputedStyle(said).whiteSpace, "pre-wrap");
+  });
+
+  test("a failed comment re-enables the buttons and says what went wrong", async () => {
+    const window = await loadSite("/pool", { pool: deck(CANDIDATE) });
+    window.postReply = { ok: false, message: "no longer in the pool" };
+    window.document.querySelector(".pool-comment").value = "something";
+    click(window, window.document.querySelector(".pool-comment-btn"));
+    await new Promise((r) => setTimeout(r, 0));
+    const buttons = [...window.document.querySelectorAll(".pool-actions .pool-btn")];
+    assert.ok(buttons.every((b) => !b.disabled), "he is left with a card he cannot act on");
+    assert.match(window.document.querySelector(".pool-note").textContent, /no longer in the pool/);
+  });
+});
+

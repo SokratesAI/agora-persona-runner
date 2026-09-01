@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from agora_runner.config import (
     FETCH_LIMIT,
+    HEARTBEAT_MAX_CONCURRENT,
     HEARTBEAT_NO_REPORT_SENTINEL,
     NO_CAPS,
     NOVA_PERSONA_ID,
@@ -24,9 +25,9 @@ from agora_runner.conversation_rotation import cycle_tag, rotate_cycle_conversat
 from agora_runner.deferred import ANSWERED_LIVE_CAPABILITY
 
 # How many previous cycle-conversations the pending-message lookback may
-# walk back through, and how much of Edvard's text it may carry into one
+# walk back through, and how much of the owner's text it may carry into one
 # trigger. Retention (conversation_rotation.DEFAULT_RETENTION) is 5, so 5
-# is "everything still un-archived"; the char cap is Edvard's own
+# is "everything still un-archived"; the char cap is the owner's own
 # constraint -- a long-lived channel he can write into freely must not
 # quietly turn into megabytes of prompt every cycle.
 CYCLE_LOOKBACK = 5
@@ -44,7 +45,7 @@ def _elapsed(seconds):
 
 
 def _unread_from_edvard(detail, since=None):
-    """Everything Edvard wrote in one conversation that no run has read
+    """Everything the owner wrote in one conversation that no run has read
     yet, oldest first and joined, or None.
 
     This replaced a rule that only carried his words when the thread
@@ -109,7 +110,7 @@ def _unread_from_edvard(detail, since=None):
 
 
 def pending_across_cycles(heartbeat, previous_detail, current_id=None, since=None):
-    """Edvard's unanswered messages, walking back from the conversation
+    """The owner's unanswered messages, walking back from the conversation
     we just rotated away from through older cycle-conversations. Returns
     [(source_label, text)], oldest first.
 
@@ -117,7 +118,7 @@ def pending_across_cycles(heartbeat, previous_detail, current_id=None, since=Non
     conversation. But a cycle that dies before replying (which has now
     happened twice in one day -- merging into this repo rolls the pod
     running the cycle) leaves an EMPTY conversation behind, so one step
-    back lands on nothing and anything Edvard typed two cycles ago is
+    back lands on nothing and anything the owner typed two cycles ago is
     dropped silently and permanently. That is his own top complaint
     ("even if i write something in an older conversation, it is never
     read"), and the whole reason he currently has to talk to this loop
@@ -127,7 +128,7 @@ def pending_across_cycles(heartbeat, previous_detail, current_id=None, since=Non
     persona had replied, using that reply as the boundary of "already
     seen". That boundary was in the wrong place. A healthy loop replies
     in every cycle conversation, so the walk stopped after one step
-    essentially always, and anything Edvard wrote in an older thread was
+    essentially always, and anything the owner wrote in an older thread was
     never reached. The system covered for it by letting ordinary
     turn-taking answer those threads instead (see
     cycle_bound_conversation_ids) -- which meant one sentence typed into
@@ -218,7 +219,7 @@ def _parse_run_at(stamp):
 def nova_health_note(persona, previous_run_at, schedule=None):
     """The journal self-check, as a line for Nova's own heartbeat, or `""`.
 
-    Edvard, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not
+    The owner, `issues.md` 2026-08-12: *"Cycle 134 failed. If you do not
     already have a self check that your previous cycles worked correctly,
     you should make yourself do this and self repair automatically."*
     `cycle_health` answered the first half the same day and then sat there
@@ -325,7 +326,7 @@ def nova_health_note(persona, previous_run_at, schedule=None):
 def run_heartbeat(heartbeat):
     # Read BEFORE the claim PATCH below overwrites it: this is the
     # previous run's timestamp, and it is the boundary
-    # pending_across_cycles uses to tell "Edvard wrote this since I last
+    # pending_across_cycles uses to tell "the owner wrote this since I last
     # ran" from "already offered to an earlier run". Taken from the local
     # snapshot on purpose — the server-side value is gone one line later.
     previous_run_at = heartbeat.get("lastRunAt")
@@ -377,7 +378,7 @@ def run_heartbeat(heartbeat):
     if rotated:
         _status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
 
-    # 2026-08-05, Edvard: "The times when you start will not always be exactly
+    # 2026-08-05, the owner: "The times when you start will not always be exactly
     # 6 hours as I often manually trigger you to start when i see that we have
     # a lot of token quota left. Maybe a good idea to you is to add to the
     # agora manual trigger to let you know that you where triggered manually."
@@ -419,7 +420,7 @@ def run_heartbeat(heartbeat):
 
     caps = persona.get("capabilities") or dict(NO_CAPS)
     participants = detail.get("personas") or []
-    system = build_system(persona, detail, participants, heartbeat_extra)
+    system = build_system(persona, detail, heartbeat_extra)
     history = merge_history(detail.get("messages", []), persona["name"],
                             len(participants) > 1)
     # A heartbeat may fire into an empty/assistant-ended thread — providers
@@ -427,7 +428,7 @@ def run_heartbeat(heartbeat):
     #
     # 2026-08-02: claude-cli personas only ever see this LAST history entry
     # (bridge/cli.py's generate_reply forwards history[-1], not the full
-    # thread) -- so if Edvard's real last message was just sitting in
+    # thread) -- so if the owner's real last message was just sitting in
     # `history` unaddressed, a claude-cli persona would never actually see
     # it, only this synthetic trigger. Folding his real content into the
     # trigger when it's genuinely his turn (last message role is "user")
@@ -437,7 +438,7 @@ def run_heartbeat(heartbeat):
     # 2026-08-02, later: rotation (above) replaces `detail` with a
     # brand-new EMPTY conversation, so on a rotating heartbeat `history`
     # is always empty and the fold-in below could never fire -- the two
-    # halves of the fix cancelled each other out. Anything Edvard typed
+    # halves of the fix cancelled each other out. Anything the owner typed
     # between cycles lived only in the conversation we just rotated away
     # from, and was dropped silently, forever. So when we rotated, fall
     # back to the pre-rotation thread for his pending message.
@@ -466,7 +467,7 @@ def run_heartbeat(heartbeat):
                     f"answered yet, oldest first:\n{lines}")
     history.append({"role": "user", "content": trigger})
 
-    # 2026-08-03 (Edvard's ask): the "Ran heartbeat" chip is meant to show
+    # 2026-08-03 (the owner's ask): the "Ran heartbeat" chip is meant to show
     # that something is *processing*, but it was posted after notify() at
     # the very end of the run -- so it rendered BELOW the reply and only
     # appeared once there was nothing left to wait for. On a claude-cli
@@ -484,7 +485,7 @@ def run_heartbeat(heartbeat):
     # Those heartbeats keep the old end-of-run chip, unchanged.
     may_go_silent = HEARTBEAT_NO_REPORT_SENTINEL in system
     # The opening chip says which of the two started this run, so the thread
-    # itself records what Edvard did rather than only what the clock did.
+    # itself records what the owner did rather than only what the clock did.
     started_chip = f"{heartbeat['name']} ({'manual trigger' if manual else heartbeat['schedule']})"
     if not may_go_silent:
         audit(persona["name"], conversation_id, "heartbeat", started_chip)
@@ -500,7 +501,7 @@ def run_heartbeat(heartbeat):
         # 2026-07-25: deliberately NOT streamed (no on_text) -- unlike a
         # live chat turn, a monitoring heartbeat's prompt may ask for a
         # silent HEARTBEAT_NO_REPORT_SENTINEL reply when there's nothing
-        # worth Edvard's attention, and that decision can only be made
+        # worth the owner's attention, and that decision can only be made
         # once the full reply is in hand, before anything is posted.
         # 2026-08-21 (idea #95 slice 1): the model comes off the bound
         # conversation, not the persona. This path is how Nova's own cycles
@@ -516,7 +517,7 @@ def run_heartbeat(heartbeat):
             result = "checked, nothing to report (not posted to chat)"
             silent = True
         else:
-            # 2026-08-14, Edvard: "Did you fix the notification for agora
+            # 2026-08-14, the owner: "Did you fix the notification for agora
             # heartbeats? So i can turn them off?" -- pushNotifications:false
             # on the heartbeat posts the reply without the phone buzz. The
             # message still lands in the conversation, same as quiet hours:
@@ -536,8 +537,34 @@ def run_heartbeat(heartbeat):
     except Exception as e:
         result = f"failed: {e}"[:200]
         log(f"heartbeat {heartbeat['name']} failed: {e}")
+        # Sokrates' proposal on the owner's `issues.md`, 2026-08-24: a run that
+        # dies leaves `lastResult` on the heartbeat and a line in a log
+        # nobody opens, and the feed -- the one place the owner actually looks
+        # -- shows nothing at all. One marker, so the hole is visible where
+        # the entries are. `cycle_stub` says what it can and cannot cover
+        # and why it must not count as the loop writing.
+        #
+        # Nova's own cycle heartbeat only, through the same predicate
+        # `cycle_health` and `stall_notice` already share rather than a
+        # fourth copy of its three conditions: a monitoring heartbeat that
+        # fails writes no journal entry when it succeeds either, so a
+        # marker for it would be a card about a thing that has no cards.
+        # Wrapped, and `write_stub`'s own "never raises" is not enough for
+        # it. This block sits between the failure and the PATCH below that
+        # clears `forceRun` and sets `lastResult`, on a bare thread with no
+        # enclosing handler -- anything escaping here kills the thread, so
+        # the heartbeat stays `running` forever and never fires again. A
+        # marker is worth strictly less than that.
+        try:
+            from agora_runner.cycle_health import nova_cycle_heartbeats
+            from agora_runner.cycle_stub import write_stub
 
-    # 2026-08-05, Edvard: "it is hard for me to know when you are done. I just
+            if nova_cycle_heartbeats([heartbeat]):
+                write_stub(result)
+        except Exception as marker_error:  # noqa: BLE001 -- see above
+            log(f"heartbeat {heartbeat['name']}: silence marker failed: {marker_error!r}")
+
+    # 2026-08-05, the owner: "it is hard for me to know when you are done. I just
     # assume you are done when you post the final response and the Journal."
     # He was assuming correctly and had no way to confirm it. A cycle runs up
     # to ~45 minutes, and until now the thread's last entry during all of it
@@ -574,7 +601,7 @@ def run_heartbeat(heartbeat):
 # ordinary heartbeat that runs the Claude CLI, and seven measured runs
 # took 9m29s–21m44s (mean ~15m) each, all of it on the main thread with
 # every other conversation frozen behind it. At the 6-hourly schedule
-# that was ~4% of the day and nobody noticed. Edvard moved to a plan
+# that was ~4% of the day and nobody noticed. The owner moved to a plan
 # with 5x the limits and asked for the cycle rate to match, so the
 # schedule went to every@72m@22:00 — 20 runs a day, which is ~21% of
 # the day blocked, and up to 22 minutes of silence for anyone chatting
@@ -582,11 +609,114 @@ def run_heartbeat(heartbeat):
 # now applied to both paths.
 #
 # Those numbers are the 2026-08-09 cadence, kept because they are what
-# motivated the fix. They are not today's: Edvard has changed the
+# motivated the fix. They are not today's: The owner has changed the
 # schedule four times since and it is every@60m@19:00 as of 2026-08-14.
 # Nothing here reads the cadence — `schedule_minutes` is the one place
 # that does — so this is a note, not a constant going stale.
+#
+# 2026-08-23: the value is a LIST of threads, not one thread. It held one
+# because the guard below allowed one, and that guard is what actually
+# decided whether cycles overlap — the bridge's invocation lock is a
+# second gate underneath it, and opening only the bridge changes nothing.
+# Dead threads are pruned on every tick, so the list is "runs in flight".
 _heartbeat_threads = {}
+
+# The `lastRunAt` each heartbeat was last spawned against, and it only
+# matters once more than one run is allowed. `run_heartbeat` claims the
+# run by PATCHing `lastRunAt` from inside its own thread, so between
+# `thread.start()` and that PATCH landing, a poll tick re-reads the OLD
+# `lastRunAt` and computes the SAME slot as still due. With a limit of 1
+# the thread guard covers that window; with a limit of 3 a burst of ticks
+# inside it would spawn three runs for one slot. Remembering the exact
+# value we spawned against closes it without inventing a delay: the mark
+# changes the moment the claim lands.
+#
+# It is also DROPPED on any tick where nothing is in flight, and that half
+# is not decoration -- without it a run that dies without ever moving
+# `lastRunAt` leaves a mark that matches every later tick forever, and the
+# heartbeat never runs again. See the comment at the drop site.
+_heartbeat_spawn_marks = {}
+
+# "No mark recorded" — deliberately not None, because `lastRunAt` IS None on a
+# heartbeat that has never run, and `dict.get` returning None for a missing key
+# made those two states indistinguishable. A brand-new heartbeat therefore
+# matched its own absent mark on its very first due tick and was dropped, which
+# left `lastRunAt` None, which made the next tick match again: it could never
+# start at all. Measured live 2026-08-25 — all three weekly Nova heartbeats had
+# `lastRunAt: null` since they were created on 08-24, and the runner log showed
+# `256 due tick(s) dropped ... (claim for lastRunAt=None not visible yet)`.
+_NO_MARK = object()
+
+# Ticks this heartbeat was due for and did not run, since its last spawn.
+#
+# Every reason `run_due_heartbeats` declines a due tick used to be a
+# `debug_log`, and `DEBUG_LOGGING` is unset on the runner deployment
+# (checked 2026-08-23: no such env var on `deploy/agora-persona-runner`,
+# and zero `[debug]` lines in its last 400). So a dropped tick printed
+# nothing, and a run that never started prints nothing either -- the
+# `heartbeat <name>: <result>` line only exists once a run finishes.
+# There was no way to tell "not due" from "due and declined", which at an
+# 18-minute cadence means the first symptom of a scheduling bug is a
+# missing cycle with no evidence anywhere.
+#
+# Counted rather than logged per tick because the poll loop ticks every
+# POLL_INTERVAL_SECONDS (5s), so one 45-minute cycle holding the last
+# slot would print ~540 identical lines and bury the signal in itself.
+_heartbeat_dropped_ticks = {}
+
+
+def _drop_tick(hb_id, name, reason):
+    """Record a due tick that did not spawn a run, and say so on a doubling.
+
+    Logged at the 1st, 2nd, 4th, 8th ... drop rather than only the first.
+    "Reported on the next start" is a promise only if a next start
+    happens, and the case where it does not is exactly the one this whole
+    change exists for: a run thread that hangs has no timeout, on purpose
+    (see `join_running_heartbeats`), and a claim PATCH that never lands
+    leaves the spawn mark unchanged. Either wedges the heartbeat, every
+    later tick is declined, and under a log-once rule the operator gets
+    one line and then permanent silence during an ongoing outage.
+
+    Doubling keeps a wedged heartbeat talking for as long as it is wedged
+    -- about ten lines per 45-minute cycle instead of 540 -- and it needs
+    no interval invented for it.
+    """
+    n = _heartbeat_dropped_ticks.get(hb_id, 0) + 1
+    _heartbeat_dropped_ticks[hb_id] = n
+    if n & (n - 1) == 0:  # 1, 2, 4, 8, ... — never silent, never a flood
+        log(f"heartbeat {name}: {n} due tick(s) dropped since the last start ({reason})")
+    else:
+        debug_log(f"heartbeat {name}: due tick dropped ({reason}), {n} since last start")
+
+
+def _concurrency_limit(heartbeat):
+    """How many runs of this heartbeat may overlap.
+
+    Workflow-mode heartbeats stay at 1 whatever the config says. A
+    workflow step re-entering itself is the failure that killed the v1
+    loop (duplicate PRs, burned usage limits, half-finished cycles); the
+    switch the owner asked for is about Nova's own cycle, and widening it to
+    a path with that history is not what he asked for.
+    """
+    if heartbeat.get("workflowId"):
+        return 1
+    return HEARTBEAT_MAX_CONCURRENT
+
+
+def running_heartbeat_count():
+    """How many heartbeat run threads are still alive. -> int
+
+    `join_running_heartbeats` below blocks until this reaches zero. The
+    drain in main.py needs the same fact without blocking on it, because
+    the whole point of that wait is that there is time to spend: while a
+    cycle finishes, the process can still answer ordinary conversation
+    turns instead of ignoring every persona in Agora."""
+    return sum(
+        1
+        for threads in list(_heartbeat_threads.values())
+        for thread in list(threads)
+        if thread.is_alive()
+    )
 
 
 def join_running_heartbeats():
@@ -607,27 +737,29 @@ def join_running_heartbeats():
     shorter bound invented in this file could only ever kill a cycle
     the platform was still willing to wait for. The synchronous drain
     this replaces had no timeout either, for the same reason."""
-    for hb_id, thread in list(_heartbeat_threads.items()):
-        if thread.is_alive():
-            log(f"draining: waiting for heartbeat {hb_id} to finish")
-            thread.join()
+    for hb_id, threads in list(_heartbeat_threads.items()):
+        for thread in list(threads):
+            if thread.is_alive():
+                log(f"draining: waiting for heartbeat {hb_id} to finish")
+                thread.join()
 
 
 def workflow_bound_conversation_ids(heartbeats_list):
     """Conversation ids driven by an enabled, workflow-mode heartbeat.
-    poll_once (2026-07-30) skips ordinary curator/@mention turn-taking
-    for these entirely: a workflow step's own personaIds already decides
-    who acts and when, so decide_turn's @mention-chain logic has nothing
-    legitimate to do there -- and worse, can crash outright. Found live:
-    a workflow persona's reply naturally included "@OtherPersona", the
-    ordinary poll loop picked that up as a real mention and tried to
-    continue the exchange via speak(), but a workflow-only conversation
-    may never have a real Edvard message to anchor on (unlike one Edvard
-    started himself) -- merge_history pops every leading non-user turn,
-    so the history came back empty, speak() raised, and three such
-    crashes auto-paused the conversation via what is now FAILURE_BACKOFF_CAP. The
-    workflow engine's own turns are unaffected either way (run_workflow_steps
-    already appends its own synthetic user turn every round)."""
+    poll_once (2026-07-30) skips ordinary turn-taking for these
+    entirely: a workflow step's own personaIds already decides who acts
+    and when, so decide_turn has nothing legitimate to do there.
+
+    The @mention chain that used to make this dangerous rather than
+    merely redundant is gone (agora#67 -- one persona per conversation).
+    It is worth keeping the record of what it did, because it is why this
+    function exists: a workflow persona's reply naturally included
+    "@OtherPersona", the ordinary poll loop read that as a real mention
+    and tried to continue the exchange via speak(), but a workflow-only
+    conversation may never have a real owner message to anchor on --
+    merge_history pops every leading non-user turn, so the history came
+    back empty, speak() raised, and three such crashes auto-paused the
+    conversation via what is now FAILURE_BACKOFF_CAP."""
     return {
         hb["conversationId"] for hb in heartbeats_list
         if hb.get("enabled") and hb.get("workflowId") and hb.get("conversationId")
@@ -638,7 +770,7 @@ def in_flight_cycle_conversation_ids(heartbeats_list):
     """The transcript each *currently executing* rotating run is writing
     into. This is now the entire deferred set.
 
-    Edvard, 2026-08-20, on getting the Noted chip after writing in the
+    The owner, 2026-08-20, on getting the Noted chip after writing in the
     conversation of a cycle that had already retired: "What? I thought i
     could have a conversation with you again? Did cycle 267 in Nova lie?
     ... you should actually answer my responds and do actual work
@@ -656,7 +788,7 @@ def in_flight_cycle_conversation_ids(heartbeats_list):
     real cycle's own turn in the middle -- can therefore only exist for
     the one transcript this returns. Runs have had their own thread since
     2026-08-08, so `poll_once` keeps ticking every five seconds while a
-    cycle executes; without this check, Edvard typing into the transcript
+    cycle executes; without this check, the owner typing into the transcript
     of a cycle that is still working would have ordinary turn-taking call
     the bridge on the same `conversation_id` the run is already resumed
     on. `_run_in_flight` reuses `run_due_heartbeats`' own thread registry
@@ -687,8 +819,7 @@ def _run_in_flight(heartbeat_id):
     """
     if not heartbeat_id:
         return False
-    thread = _heartbeat_threads.get(heartbeat_id)
-    return thread is not None and thread.is_alive()
+    return any(t.is_alive() for t in _heartbeat_threads.get(heartbeat_id, []))
 
 
 def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
@@ -698,7 +829,7 @@ def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
     for all of these (2026-08-03), for a different reason than the
     workflow case above.
 
-    Edvard's own report: "I just replied in the Agora conversation 5...
+    The owner's own report: "I just replied in the Agora conversation 5...
     that triggered a normal conversation run... that makes me not going
     to write messages again in the conversation." Typing one sentence
     into the live Evolve transcript fired an immediate, full,
@@ -717,7 +848,7 @@ def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
     being heartbeat-bound. Rotation is the explicit signal that a
     conversation is a per-cycle machine transcript rather than a
     durable channel; a non-rotating heartbeat's conversation (K3s
-    Sentinel) is one Edvard may legitimately chat in and expect an
+    Sentinel) is one the owner may legitimately chat in and expect an
     ordinary answer from, and silencing that was not asked for.
 
     Older cycle-conversations used to keep ordinary turn-taking on
@@ -741,7 +872,7 @@ def cycle_bound_conversation_ids(heartbeats_list, conversations=()):
 
     2026-08-19, then again 2026-08-20: poll_once no longer skips ALL of
     these, and now skips almost none of them. It defers only
-    in_flight_cycle_conversation_ids() -- see that function for Edvard's
+    in_flight_cycle_conversation_ids() -- see that function for the owner's
     ask. This function is unchanged and still returns the full set,
     because the invariant above is about the set the *walk* must reach,
     and the walk must still reach every one of them: a message typed into
@@ -789,22 +920,69 @@ def run_due_heartbeats(heartbeats_list=None):
             if not due:
                 continue
             # Runs off the main thread — see _heartbeat_threads' comment
-            # above. In-flight guard: skip re-spawning if a prior run of
-            # the SAME heartbeat hasn't finished yet. A run can
-            # legitimately outlive its own schedule interval (a 5-minute
-            # "every@1m" workflow; a Nova cycle that overruns its 72
-            # minutes), and without this the claim PATCH is no defence —
-            # it moves lastRunAt to the run's START, so an anchored
-            # schedule's next slot reads as due while the run is still
-            # going and would spawn a second one on top of it.
+            # above. In-flight guard: a run can legitimately outlive its
+            # own schedule interval (a 5-minute "every@1m" workflow; a
+            # Nova cycle that overruns), and the claim PATCH is no
+            # defence on its own — it moves lastRunAt to the run's START,
+            # so an anchored schedule's next slot reads as due while the
+            # run is still going.
+            #
+            # 2026-08-23: that used to mean "at most one", full stop, and
+            # this was therefore the real reason cycles never overlapped
+            # — a tick dropped here never reaches the bridge at all, so
+            # opening the bridge's invocation lock on its own changes
+            # nothing. It is a limit now rather than a ban; see
+            # _concurrency_limit and config._max_concurrent_runs.
             hb_id = heartbeat["id"]
-            existing = _heartbeat_threads.get(hb_id)
-            if existing is not None and existing.is_alive():
-                debug_log(f"heartbeat {hb_id} still running, skipping this tick")
+            alive = [t for t in _heartbeat_threads.get(hb_id, []) if t.is_alive()]
+            _heartbeat_threads[hb_id] = alive
+            limit = _concurrency_limit(heartbeat)
+            name = heartbeat.get("name", hb_id)
+            if len(alive) >= limit:
+                _drop_tick(hb_id, name,
+                           f"{len(alive)} run(s) in flight, limit {limit}")
                 continue
+            if not alive:
+                # Nothing is running, so nothing can be mid-claim, so the
+                # mark below has no window left to guard. Dropping it here
+                # is what stops it wedging the heartbeat for good: the mark
+                # is only ever REPLACED by a different `lastRunAt`, so a run
+                # that dies without moving `lastRunAt` — claim PATCH fails
+                # in an Agora blip, then the thread dies before the final
+                # PATCH — would otherwise match every later tick forever
+                # and this heartbeat would never run again. The old
+                # one-at-a-time guard could not do that: a dead thread
+                # always meant "spawn on the next tick". Recovering the
+                # same way costs at most a duplicate run of one slot,
+                # which is what an unclaimed run already risks (see
+                # `run_heartbeat`'s claim-failure log) and is the safe
+                # direction — a duplicated cycle is visible, a heartbeat
+                # that silently stops is not.
+                _heartbeat_spawn_marks.pop(hb_id, None)
+            if limit > 1 and not heartbeat.get("forceRun"):
+                # See _heartbeat_spawn_marks: only reachable with a limit
+                # above 1, and only inside the window where this slot's
+                # own claim PATCH has not landed yet. forceRun is exempt
+                # because it is the owner pressing "run now" — that is a new
+                # request, not the same slot read twice.
+                mark = heartbeat.get("lastRunAt")
+                if _heartbeat_spawn_marks.get(hb_id, _NO_MARK) == mark:
+                    _drop_tick(hb_id, name,
+                               f"claim for lastRunAt={mark} not visible yet")
+                    continue
+                _heartbeat_spawn_marks[hb_id] = mark
             target = run_workflow_heartbeat if heartbeat.get("workflowId") else run_heartbeat
             thread = threading.Thread(target=target, args=(heartbeat,), daemon=True)
-            _heartbeat_threads[hb_id] = thread
+            alive.append(thread)
             thread.start()
+            # The only line that says a run STARTED. Everything else this
+            # module prints comes from a run that already finished, so
+            # without this a cycle that never began looks exactly like a
+            # cycle that was never due.
+            dropped = _heartbeat_dropped_ticks.pop(hb_id, 0)
+            log(f"heartbeat {name}: starting run, {len(alive)} now in flight "
+                f"(limit {limit})"
+                + (f", {dropped} due tick(s) dropped since the last start"
+                   if dropped else ""))
         except Exception as e:
             log(f"heartbeat {heartbeat.get('name')} scheduling error: {e}")

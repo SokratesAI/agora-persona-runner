@@ -13,7 +13,15 @@ from agora_runner.heartbeats import (
 )
 
 
-def poll_once():
+def poll_once(start_heartbeats=True):
+    """One tick. `start_heartbeats=False` answers conversations only.
+
+    That is the draining process's tick. A pod that has been told to shut
+    down must start no new cycle -- the run it starts would be killed
+    part-way -- but it is going to sit here until the in-flight cycle
+    finishes anyway, and until 2026-08-31 it spent that whole wait
+    answering nobody. See main.py's `_serve_while_draining`.
+    """
     clear_persona_cache()
     status, body = agora_get("/conversations")
     if status != 200:
@@ -32,20 +40,20 @@ def poll_once():
     # it isn't fetched twice) -- see each skip helper's own docstring
     # for why ordinary turn-taking must never touch these. The two have
     # separate rationales (a workflow's steps already decide who acts;
-    # a cycle transcript defers Edvard's message to the next scheduled
+    # a cycle transcript defers the owner's message to the next scheduled
     # run instead of firing an immediate one), so they stay separate
     # functions rather than one merged predicate.
     hb_status, hb_body = agora_internal("GET", "/heartbeats")
     heartbeats_list = hb_body.get("heartbeats", []) if hb_status == 200 else []
     # Kept apart rather than merged into one skip set, because only one of
-    # the two owes Edvard an answer later. A cycle transcript defers his
+    # the two owes the owner an answer later. A cycle transcript defers his
     # message to the next scheduled run and can therefore promise him one
     # (deferred.acknowledge_deferred says so out loud); a workflow-bound
     # conversation makes no such promise, and telling him it did would be
     # a lie in the exact place he already can't see what happened.
     workflow_ids = workflow_bound_conversation_ids(heartbeats_list)
     cycle_ids = cycle_bound_conversation_ids(heartbeats_list, conversations)
-    # 2026-08-20, Edvard's ask: EVERY cycle transcript answers him in real
+    # 2026-08-20, the owner's ask: EVERY cycle transcript answers him in real
     # time, not just the one a heartbeat currently points at. He got the
     # Noted chip after writing in a retired cycle's conversation and said
     # "you should actually answer my responds and do actual work
@@ -93,6 +101,8 @@ def poll_once():
                 mark_answered_live(summary)
             except Exception as e:
                 log(f"[{summary.get('name', summary.get('id'))}] answered-live chip failed: {e}")
+    if not start_heartbeats:
+        return
     try:
         run_due_heartbeats(heartbeats_list)
     except Exception as e:

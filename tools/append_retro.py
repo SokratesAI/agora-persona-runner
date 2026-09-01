@@ -1,6 +1,6 @@
 """Append one Friday retrospective to `retro-ledger.json`, or refuse.
 
-Edvard asked the Friday cycle to *"actually note down data and compare it
+The owner asked the Friday cycle to *"actually note down data and compare it
 to previous retros"*. This is how a retro cycle writes its row without
 having to know the shape by heart -- the shape lives in
 `agora_runner.nova_retro`, and this validates against it before anything
@@ -23,8 +23,18 @@ touches the vault.
       "overall": "One sentence on how it actually feels.",
       "good": "What is working.",
       "bad": "What is not.",
+      "week": {
+        "shipped": "What landed.",
+        "broke": "What broke.",
+        "stuck": "What is still stuck.",
+        "change": "The one thing I would change."
+      },
       "changes": ["What I am changing because of this retro."]
     }
+
+`week` is the one screen the owner reads on his phone (ideas.md #120) and
+all four parts are required. `resources/weekly-retro.md` is where the
+retro run is told what to put in them.
 
 Vault I/O is deliberately not in here, the same as `roll_digest.py`: the
 ledger comes in as a path and goes out as the same path, so this runs
@@ -41,6 +51,11 @@ import json
 import os
 import re
 import sys
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_retro import RetroError, append, load
 

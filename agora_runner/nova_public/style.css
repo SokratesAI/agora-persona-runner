@@ -32,7 +32,7 @@
    * either of those two numbers changes, this one has to change with
    * it", and a comment is not a mechanism.
    *
-   * The `env()` is the bug Edvard reported on 2026-08-21 ("I can't see
+   * The `env()` is the bug the owner reported on 2026-08-21 ("I can't see
    * the hamburger sodemenu button anymore"). `index.html` sets
    * `viewport-fit=cover` and the manifest sets `display: standalone`,
    * so on a notched iPhone added to the home screen the layout viewport
@@ -123,7 +123,7 @@ pre code { background: none; padding: 0; }
 .status-sub { margin: 0.6rem 0 0; display: flex; gap: 0.5rem; align-items: center; }
 .status-pr { color: var(--dim); font-size: 0.85rem; }
 
-/* The status fields, side by side -- Edvard, capture 2026-08-22: "Please
+/* The status fields, side by side -- the owner, capture 2026-08-22: "Please
  * have them shown horisontal listed, not vertical."
  *
  * `flex-wrap` and not a single line: there can be four of these at once
@@ -194,7 +194,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 }
 
 /* The priority picker briefly had its own row above the buttons --
- * Edvard, issues.md 2026-08-14: *"Ui is ugly for the priority rating. The
+ * the owner, issues.md 2026-08-14: *"Ui is ugly for the priority rating. The
  * issue, idea, note and priority dropdown are now just scrambled after
  * the addition of the priority dropdown."* Measured in Chromium at 390px:
  * the select was 136px wide because "🔴 Immediately" set a select's
@@ -203,7 +203,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  *
  * That stopped applying the same day: the select no longer shows a
  * rating's word, only its glyph (a dash for unrated), so it is a fixed
- * 44px circle rather than a text-sized pill, and Edvard asked for it back
+ * 44px circle rather than a text-sized pill, and the owner asked for it back
  * on the button row, at the far right. See `.capture-submit` below --
  * it is now the fourth item in that group, appended last in app.js so it
  * lands after Note. The label that named it stays in the document for a
@@ -212,7 +212,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * `.prio-select` rule it overrides -- see the comment there for why that
  * placement matters. The board row's own trigger used to have a sibling
  * override here too; it does not any more, because it went back to being
- * `.chip.prio` (Edvard, 2026-08-14: "the visual design is not changed
+ * `.chip.prio` (the owner, 2026-08-14: "the visual design is not changed
  * from the old design") rather than a fixed-shape circle. */
 
 .capture-actions {
@@ -225,7 +225,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
    * off the edge where it cannot be tapped. What it may no longer do is
    * wrap *between* the buttons -- see `.capture-submit`. */
   flex-wrap: wrap;
-  /* Edvard, 2026-08-14: the button row read as left-aligned. `.capture-status`
+  /* the owner, 2026-08-14: the button row read as left-aligned. `.capture-status`
    * below is empty most of the time, and an empty flex item with
    * `flex-grow` still claims the row's full width on its own wrapped
    * line -- which pushes `.capture-submit` onto a line of its own, and a
@@ -261,6 +261,29 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 .capture-status.is-error { color: var(--warn); }
 
+/* Appears only when the box holds more than one line, so it costs the
+ * one-line capture -- which is nearly every capture -- no height at all.
+ * `[hidden]` needs the explicit `display: none` because the rule below
+ * sets `display: flex` and would otherwise win on specificity. */
+.capture-one {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  /* 44px is the iOS touch-target minimum, same as `.capture-btn`. */
+  min-height: 44px;
+  color: var(--dim);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.capture-one[hidden] { display: none; }
+
+.capture-one input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+}
+
 .capture-btn {
   background: none;
   color: var(--accent);
@@ -277,7 +300,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .capture-btn:hover:not(:disabled) { border-color: var(--accent); }
 .capture-btn:disabled { color: var(--dim); cursor: default; }
 
-/* The ask, on the card that raised it -- Edvard, comments board 2026-08-16:
+/* The ask, on the card that raised it -- the owner, comments board 2026-08-16:
  * "add a new yellow block below the title or somehow higlight your issue so
  * that i see it."
  *
@@ -292,7 +315,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   margin: 0.2rem 0 0.9rem;
 }
 
-/* Collapsed, the block is the label row and nothing else -- Edvard,
+/* Collapsed, the block is the label row and nothing else -- the owner,
  * ideas.md 2026-08-16: "Don't delete it, just collapse it." The yellow
  * stays, so a card carrying an unanswered question still reads as one from
  * a scroll; only the prose folds. The padding tightens rather than
@@ -323,7 +346,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * `min-height: 44px` explicitly, and the reviewer is why. I wrote this
  * comment claiming "44px of tap height comes from the padding" and then set
  * 0.6rem of padding around 0.75rem text, which computes to about 29px --
- * two thirds of the floor, on the one control Edvard's whole ask depends on,
+ * two thirds of the floor, on the one control the owner's whole ask depends on,
  * on a page he opens from a phone. Fifteen other rules in this file set
  * `min-height: 44px` and say why. The negative block margin keeps the label
  * row from growing by the difference: the target is 44px, the row is not. */
@@ -354,11 +377,11 @@ a.status-sub:hover .status-pr { color: var(--text); }
   border-radius: 12px;
   padding: 1rem 1.1rem;
   margin-bottom: 1.1rem;
-  /* The whole card toggles (Edvard, issues.md 2026-08-09), so the whole
+  /* The whole card toggles (the owner, issues.md 2026-08-09), so the whole
    * card says so -- including the body, where a click really does collapse
    * it. Anchors keep the pointer they already had. */
   cursor: pointer;
-  /* Edvard, 2026-08-21: cycle 289's "Needs Edvard" block links a raw
+  /* the owner, 2026-08-21: cycle 289's "Needs Edvard" block links a raw  (not-prose: quoting a literal)
    * GitHub URL as its visible text (`renderSpans`' `pr-link`, same as
    * every PR reference), and that one line was long enough to push the
    * whole document wider than the viewport. On a real phone browser that
@@ -373,7 +396,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   overflow-wrap: anywhere;
 }
 
-/* The eight-cycle report (Edvard, comments board at cycle 156): "They
+/* The eight-cycle report (the owner, comments board at cycle 156): "They
  * should appear like a journal card, but stand out in both color and form
  * to show that they are just summaries."
  *
@@ -394,7 +417,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 .entry.is-report .cycle-link { color: var(--report); }
 
-/* Collapsed by default (Edvard, issues.md 2026-08-09): the median entry is
+/* Collapsed by default (the owner, issues.md 2026-08-09): the median entry is
  * 4830 characters, which is about 115 lines on a phone, and there are 57 of
  * them. The whole header row is the tap target. */
 .entry-head {
@@ -483,7 +506,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 /* Which of a cycle's parts you are reading, for the fourteen cycles that
  * wrote more than once. A tab strip rather than the subheadings this used to
- * draw -- Edvard asked for tabs three times (issue #59, and the comments
+ * draw -- the owner asked for tabs three times (issue #59, and the comments
  * board at cycle 81) and got subheadings twice.
  *
  * It reuses `.tabs`/`.tab` from the boards rather than inventing a second
@@ -499,7 +522,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 /* No uppercase and no letter-spacing. Those suit a short tag -- "ADDENDUM"
  * -- and these are not tags: the label is whatever prose the cycle typed
  * into its own heading, and cycle 75's runs to ninety characters ("I watched
- * it land, and caught myself re-filing a bug Edvard had already reported").
+ * it land, and caught myself re-filing a bug the owner had already reported").
  * So the strip wraps and a long label keeps its sentence case; uppercasing a
  * sentence that long makes it slower to read than the prose underneath. */
 .entry-part-tab { text-align: left; }
@@ -514,10 +537,10 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 /* No line clamp any more. The brief arrives already cut on a sentence
  * boundary, so a clamp has nothing left to do except break it again in the
- * middle -- which is the thing Edvard was reporting.
+ * middle -- which is the thing the owner was reporting.
  *
  * The colour is inherited from the `.entry-summary` this replaces, and the
- * reason it is not var(--dim) still holds -- Edvard, issues.md 2026-08-09:
+ * reason it is not var(--dim) still holds -- the owner, issues.md 2026-08-09:
  * "the Digest is hard to read with grey against the blue background. White
  * is better like the actual journal." #8b90a0 on the card's #191b24 is
  * about 4.3:1, which passes a contrast checker and was still the hardest
@@ -674,6 +697,58 @@ a.status-sub:hover .status-pr { color: var(--text); }
   min-height: 44px;
 }
 
+/* "2 new replies" -- the header's pointer at journal cards holding an answer
+ * he has not opened. Purple, and that is the deliberate part: this page has a
+ * colour code for *whose text is whose*, which the owner set himself -- his
+ * own comments green (`--good`), the instant commentator blue (`--accent`),
+ * a Nova cycle's reply purple (`--nova`, see `.comment-reply-cycle`). An
+ * unread reply is a cycle's reply, so it is purple, and the badge is the same
+ * colour as the bubble it points at.
+ *
+ * It was green for one merge and the reviewer caught it: green on this page
+ * already means "the owner wrote this", so a green pill announcing my answer
+ * said the opposite of what it meant. It must not be amber either --
+ * `.badge-ask` directly above is amber and means the other obligation, that I
+ * am waiting on *him*, and the two can be on screen at once.
+ *
+ * Link-shaped for `.badge-ask`'s reason: it is an anchor into a card, tapped
+ * on a phone, so it carries the 44px target and loses the underline. */
+.badge-unread {
+  color: var(--nova);
+  border-color: #5b3f7d;
+  background: #221a2e;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+/* The unread count on a card's 💬 button, and the highlight behind it.
+ *
+ * the owner, capture 2026-08-25: *"highlightong the comment button somehow,
+ * maybe with the amount of unread messages."* Two things, so this is two
+ * rules: the button itself stops being `--dim` and takes the same green as
+ * the header pill, and the number rides beside the comment count as a filled
+ * chip rather than replacing it. Purple for `.badge-unread`'s reason: it is
+ * the colour of the reply it is counting.
+ *
+ * Filled rather than outlined, unlike every `.badge` on this page. A chip
+ * this small in a row of dim chrome has to survive being glanced at on a
+ * phone in daylight, and an outline at 0.68rem does not. */
+.comment-toggle.has-unread { color: var(--nova); }
+
+.comment-unread {
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--nova);
+  color: #12131a;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+
 /* The last known header line while the page cannot reach the server. Dimmed
  * and italic so it never reads as a current claim. */
 .status-line.is-stale { font-style: italic; opacity: 0.7; }
@@ -711,7 +786,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .entry .comment-drawer { display: none; }
 .entry.is-commenting .comment-drawer { display: block; margin-top: 0.9rem; }
 
-/* Bottom right of the card (Edvard, ideas.md 2026-08-10). The foot is not
+/* Bottom right of the card (the owner, ideas.md 2026-08-10). The foot is not
  * in the collapse rules above, so the bubble stays reachable on a collapsed
  * card -- which is the whole point of it: comment on a cycle without
  * reading it first. */
@@ -748,7 +823,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   border-radius: 6px;
 }
 
-/* The disclosure over a folded Needs Edvard thread. Deliberately quiet --
+/* The disclosure over a folded Needs Edvard thread. Deliberately quiet --  (not-prose: quoting a literal)
  * it names something he asked to stop seeing, so it should read as a way
  * back to it and not as an invitation. Same 44px touch target as the
  * toggle above; it is a real tap on a phone. */
@@ -765,7 +840,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * hidden -- what he said stays visible, it just stops being the thing
  * asking for attention.
  *
- * The rule itself stays green. Edvard, comments board 2026-08-21: *"my
+ * The rule itself stays green. The owner, comments board 2026-08-21: *"my
  * previous comments in this chat gets a grey backline, i want to have it
  * green all the time so i clearly see it's my comments."* The colour was
  * carrying two meanings at once here -- whose comment it is, and whether
@@ -794,6 +869,18 @@ a.status-sub:hover .status-pr { color: var(--text); }
   padding: 0 0.45rem;
 }
 
+/* Set apart from `.comment-ack` rather than sharing it: "read" is a state
+   of the conversation and this is a claim about who wrote the thing, so
+   collapsing them into one chip style would be the collapse the marker
+   exists to undo. Same pill shape, no uppercasing -- it is a sentence. */
+.comment-relay {
+  font-size: 0.68rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 0.45rem;
+  color: var(--dim);
+}
+
 .comment-body { margin: 0 0 0.5rem; color: var(--text); }
 .comment-body:last-child { margin-bottom: 0; }
 
@@ -805,7 +892,16 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .comment-reply {
   border-left-color: var(--accent);
 }
-.comment-reply .comment-body { color: var(--dim); }
+/* The reply body is --text like the comment above it. It was --dim until
+ * 2026-08-25, on the same reasoning as the notes page's cycle replies and
+ * removed for the same reason -- he asked for the notes text to be white,
+ * and this is the identical colour on the identical role, one screen away,
+ * on the same phone. `.note-msg-body` carries the full argument. The rule
+ * of `.comment-reply` still says whose it is, and so does `.comment-who`.
+ *
+ * `.comment.is-acknowledged .comment-body` is deliberately left dim: that
+ * one marks a *state* rather than a speaker, and quietening something he
+ * has already dealt with is the affordance working. */
 
 .comment-who { color: var(--accent); }
 
@@ -813,7 +909,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
  * the same blue. The instant reply is `nova_replies.py` -- a restricted
  * session with the comment's text and nothing else, answering in seconds.
  * A cycle reply is written by an hourly cycle that read the vault, the
- * board and the code first, and it can land forty minutes later. Edvard,
+ * board and the code first, and it can land forty minutes later. The owner,
  * ideas board 2026-08-21: *"Give Nova cycle comments a purple
  * background/border in the app (mine is green, commentator is blue, Nova
  * should be purple)"*. So the rule's colour now says which of the two is
@@ -915,11 +1011,11 @@ a.status-sub:hover .status-pr { color: var(--text); }
 
 /* ---- The nav, and the two board pages (issues.md #57) ----------------
  *
- * Edvard: "Create more pages to contain more, such as issue list, idea
+ * the owner: "Create more pages to contain more, such as issue list, idea
  * list (separate pages)". Three sections now exist, so there has to be
  * something to move between them with.
  *
- * That started as one row of links under the header. Edvard, 2026-08-11:
+ * That started as one row of links under the header. The owner, 2026-08-11:
  * "Move the Journal, issues & ideas tabs buttons to a sidebar that opens
  * from a hamburger button that is placed at the top right of the Nova
  * page on the same horizontal line as the Nova header. Add slide
@@ -950,7 +1046,38 @@ a.status-sub:hover .status-pr { color: var(--text); }
    * down when the status bar pushes it, or the drawer's first link ends
    * up under the clock the moment the button stops being. At a zero
    * inset this is still exactly 4.6rem. */
-  padding: calc(var(--shell-top) + 3rem) 1rem 1rem;
+  /* The bottom was a flat `1rem` for as long as the drawer could not
+   * scroll, when nothing ever rested against that edge. Now the last
+   * link does, so it wants the same clearance every other bottom-pinned
+   * thing in this file already takes -- `.chat-btn`, `.chat-dock`, the
+   * composer -- or it sits under a home indicator on a phone that has
+   * one. My reviewer found this; the owner's own device reports zero
+   * insets, so nothing I can measure here would have shown it. */
+  padding: calc(var(--shell-top) + 3rem) 1rem max(1rem, env(safe-area-inset-bottom));
+  /* The drawer is pinned top and bottom, so its box is exactly one
+   * viewport tall and the links inside it are not. The owner, `issues.md`
+   * 2026-08-26: "The sliding sidebar menu in Nova is now so full with
+   * pages links that it starts to move out the bottom of my screen."
+   * Measured on the live site at the owner's own 360x697 (`tools.poke_page
+   * nav-reachable`): thirteen links end at 830px, so the last three hang
+   * 133px below the bottom edge -- and `body.nav-open` stops the page
+   * behind from scrolling, so there was no gesture that reached them.
+   *
+   * **That measurement is the one that made this rule necessary and it no
+   * longer describes this drawer.** Grouping the menu (Cycle 461) traded
+   * one link for three headings, so the content is 890px now rather than
+   * 830 -- taller, not shorter, which is the direction that matters here.
+   * Re-measured against that markup at the same 360x697: last link bottom
+   * 890 before a scroll, 681 after. The numbers are kept in both forms
+   * deliberately: the first says why the rule exists, the second says it
+   * is still doing the job it was written for.
+   *
+   * `contain` because the drawer scrolls over a body that is
+   * `overflow: hidden`; without it a flick past the last link chains to
+   * the document and pulls the whole page, which is the "rubber band
+   * under the menu" every phone browser does by default. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--card);
   border-left: 1px solid var(--line);
   box-shadow: -12px 0 28px #0008;
@@ -978,6 +1105,103 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .nav-tab.on {
   color: var(--accent);
   border-color: var(--accent);
+}
+/* A category inside the drawer: a native `<details>` fold, closed at rest.
+ *
+ * The links need a flex column so they keep the `gap` the drawer gives its
+ * own children -- a `<details>` is one box to its parent, so without it the
+ * links inside stack flush while the pinned three above them stay spaced.
+ * That column is `.nav-fold-body`, an extra `<div>` inside the fold, rather
+ * than `display: flex` on the `<details>` itself. Overriding `display` on a
+ * `<details>` replaces the box its closed-state hiding is built on, and how
+ * gracefully an engine survives that varies; a wrapper needs no engine to
+ * forgive anything. I did not measure a Chromium 131 failure here -- I wrote
+ * the flex on the element first, thought I had measured one, and the wrapper
+ * is what I kept once the measurement turned out to be my instrument.
+ *
+ * That instrument is worth a line, because it is the trap in checking this
+ * at all: **`getBoundingClientRect()` on a link inside a shut fold returns a
+ * real height, not zero.** Chromium skips the subtree's rendering without
+ * zeroing its box, so a probe that reads rects reports all twelve links laid
+ * out and visible with every group closed. `checkVisibility()` is the call
+ * that answers the question actually being asked, and a screenshot is what
+ * settles it. The browser suite cannot help either way -- jsdom does no
+ * layout.
+ *
+ * `tools.poke_page`'s `nav-reachable` probe read past this paragraph and
+ * paid for it: it took the last `.nav-tab` in the drawer, which from the
+ * day these folds shipped was a link inside a shut one, and asserted on
+ * that phantom box. What I measured on 2026-08-31 is the red: `Device`'s
+ * phantom sits at 728px in a 697 viewport with `checkVisibility()` false,
+ * while the same link after opening its fold lands at 681 and is
+ * reachable. I did not re-run the older green, so read that verdict as
+ * unexplained rather than as a pass. It opens every fold
+ * and filters on `checkVisibility()` before it measures anything now. */
+.nav-fold {
+  margin-top: 0.75rem;
+}
+
+.nav-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+}
+
+/* The heading is now a `<summary>`, which means it is a real tap target
+ * rather than a label -- hence the padding and the 44px floor, which the
+ * `<h2>` it replaced deliberately did not need.
+ *
+ * `list-style: none` plus the `::-webkit-details-marker` rule kills the
+ * default disclosure triangle; the chevron below is drawn on the right
+ * instead, where a thumb on a 360px-wide screen is already looking. */
+.nav-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.25rem 0.8rem;
+  margin: 0;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  opacity: 0.75;
+  list-style: none;
+}
+
+.nav-group::-webkit-details-marker {
+  display: none;
+}
+
+/* The chevron. A rotated border-corner rather than a glyph, so it inherits
+ * `currentColor` and needs no font that might not be there. `translateY`
+ * offsets the optical centre a rotated square loses. */
+.nav-group::after {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.nav-fold[open] > .nav-group::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+
+.nav-fold[open] > .nav-group {
+  opacity: 1;
+}
+
+/* A fold holding the page you are on reads as part of the highlight. */
+.nav-fold:has(.nav-tab.on) > .nav-group {
+  color: var(--accent);
+  opacity: 1;
 }
 
 /* Dims the page behind the drawer, and is the large tap target that
@@ -1083,6 +1307,11 @@ body.nav-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .nav, .nav.open, .scrim, .scrim.open, .menu-bar { transition: none; }
   .board-sort-dir { transition: none; }
+  /* The group chevron. One block, not a second one beside it -- the
+   * browser suite pins that there is exactly one reduced-motion block in
+   * this sheet, so a rule that lives anywhere else is a rule nothing
+   * checks the selector list of. */
+  .nav-group::after, .chat-list-group::after { transition: none; }
 }
 
 .tabs, .filters {
@@ -1171,9 +1400,84 @@ body.nav-open { overflow: hidden; }
   cursor: pointer;
 }
 
+/* Searching the journal. Deliberately the board search's own measurements
+ * -- 44px tap targets, the same radius, the same accent-on-focus -- rather
+ * than a second set: it sits one nav tap away from the board box and the
+ * two do the same job, so anything that made them look different would be
+ * a difference to explain.
+ *
+ * It is not a copy of those rules, because the two are not the same
+ * control: this one is a section holding a row and a count line, and the
+ * board's is the row itself. Sharing a class between them would mean the
+ * next change to either having to be true of both. */
+.journal-search { margin: 0 0 1rem; }
+
+.journal-search-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.journal-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+.journal-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Kept for the reason `.board-search-clear[hidden]` is kept, one screen
+ * up: this button declares no `display`, so the UA rule wins today and
+ * would stop winning the moment someone centres the × with flex. */
+.journal-search-clear[hidden] { display: none; }
+
+.journal-search-clear {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  background: var(--card);
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.journal-search-count[hidden] { display: none; }
+
+/* `--text`, not `--dim`. This is the answer to what he typed -- when it
+ * says no entry matched, that sentence is the entire result -- and he has
+ * twice reported grey text on this page as unreadable on a phone in
+ * daylight. */
+.journal-search-count {
+  margin: 0.5rem 0 0;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
 .filter-extra {
   flex: 0 1 auto;
   font-size: 0.82rem;
+}
+
+/* The project chips sit in the same strip as the extras and read the
+ * same size, so the strip stays one control rather than two. They are
+ * a single pick where the extras compose, and the italic heading is
+ * what says so without a label row costing another line on a phone. */
+.filter-project {
+  flex: 0 1 auto;
+  font-size: 0.82rem;
+  font-style: italic;
 }
 
 .board-sort {
@@ -1225,7 +1529,7 @@ body.nav-open { overflow: hidden; }
   transform: rotate(180deg);
 }
 
-/* Opens the filter modal -- Edvard, 2026-08-14: "place a new filter
+/* Opens the filter modal -- the owner, 2026-08-14: "place a new filter
  * button... next to the arrow button on the search." Same 44px square as
  * `.board-sort-dir` beside it, same card/border language, so the two read
  * as a matched pair of icon buttons rather than one control and one
@@ -1328,7 +1632,7 @@ body.nav-open { overflow: hidden; }
  * Nova" -- on 08-17 every capture on the issues board was finished and
  * the whole section was still painted as outstanding work. */
 /* `.captures-done` styled the "Done, not yet cleared" section, removed
-   from `renderBoardEdvard` on 2026-08-20 at Edvard's ask. No element
+   from `renderBoardEdvard` on 2026-08-20 at the owner's ask. No element  (not-prose: an identifier)
    carries the class any more, so these two rules were dead. */
 .capture-item-done { opacity: 0.75; }
 
@@ -1343,15 +1647,29 @@ body.nav-open { overflow: hidden; }
   white-space: nowrap;
 }
 
+/* Wraps, because this row grew from two buttons to four. Edit and Delete
+ * fitted a phone; Edit / Make issue / Make idea / Delete does not, and an
+ * unwrapped flex row answers that by squashing every button below the
+ * 44px touch target the rule further down exists to guarantee. The status
+ * span takes the whole first line when anything wraps (`flex-basis:100%`
+ * below) so an error message never pushes a button off the row. */
 .capture-edit {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   margin-top: 0.35rem;
 }
 
+/* The same row under a note, where the Edit box replaces the buttons and
+ * needs the full width rather than a share of a flex line. */
+.note-acts .capture-input { flex-basis: 100%; }
+
 .capture-item-status {
   flex: 1;
+  /* Its own line once the row wraps, so a long "copied to ideas, but could
+   * not remove it from notes" never shoulders a button onto a third row. */
+  flex-basis: 100%;
   font-size: 0.8rem;
   color: var(--dim);
   min-width: 0;
@@ -1378,20 +1696,102 @@ body.nav-open { overflow: hidden; }
 .capture-act:disabled { color: var(--dim); cursor: default; }
 .capture-act.is-danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
 
+/* The owner, 2026-08-24: *"The edit input box is very small (see image)
+ * should be the same width and height like the main input box."* So this
+ * is `.capture textarea`'s shape rather than a smaller cousin of it --
+ * same padding, same 10px radius, and the same `60vh` ceiling for the
+ * same measured reason (a box free to fill the viewport pushes Save off
+ * the bottom of a phone). app.js grows it to fit as he types; the
+ * min-height is the floor for an empty one, not the size. */
 .capture-input {
   width: 100%;
   box-sizing: border-box;
-  min-height: 3.5rem;
-  padding: 0.5rem;
+  min-height: 4.5rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 0.7rem 0.8rem;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 0.5rem;
+  border-radius: 10px;
   color: var(--text);
   font: inherit;
   resize: vertical;
 }
 
 .capture-input:focus { outline: none; border-color: var(--accent); }
+
+/* The box and its attachment strip are one block, so the chips sit under
+ * the text they belong to rather than joining the button row's flex
+ * line. `flex-basis: 100%` is what takes the whole width when this lands
+ * inside `.capture-edit`, which is a wrapping flex row. */
+.capture-editor {
+  flex-basis: 100%;
+  width: 100%;
+}
+
+/* The chips under an edit box wear the composer tray's chrome (see
+ * `.attach-tray`) and need only the gap above the box they belong to. */
+.edit-tray { margin-top: 0.4rem; }
+
+/* The long-press action sheet, in the shared `.prio-menu` overlay. One
+ * button per line and full width: these are five destinations rather than
+ * one row of pills, and a five-item wrap on a 360px phone is what he was
+ * looking at when he asked for them to go away. */
+.action-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.action-sheet .capture-act {
+  width: 100%;
+  text-align: left;
+  font-size: 0.95rem;
+}
+
+/* A card that answers a long press says so, faintly, on a pointer that
+ * can hover. On a phone there is no hover and nothing changes -- which is
+ * the honest state, since the gesture is the only affordance there. */
+/* The two new hold targets, and the one rule that decides whether the
+ * gesture works at all on the device it was built for. `.item-head` --
+ * the only other one-second hold on this site -- has carried this since
+ * issue #84 with the reason written beside it: on a phone a one-second
+ * hold on text is the browser's own gesture, iOS pops the selection
+ * handles and the callout menu, Android starts a selection, and both land
+ * on top of what the hold just opened. Worse here than there, because
+ * `touchcancel` is in `bindHoldMenu`'s end list, so a browser that takes
+ * the gesture over clears the timer and the sheet never opens.
+ *
+ * These two elements are pure prose, i.e. the most selectable thing on
+ * the page, and the first version of this rule set `cursor` and a focus
+ * outline and nothing else. Found reviewing the merged diff.
+ *
+ * Deliberately *not* `role="button"`: the capture body is his sentence,
+ * with the rating control and any links inside it, and an `aria-label` on
+ * a `role="button"` replaces all of that as the accessible name. On the
+ * notes page that would make the transcript itself unreadable. The card
+ * stays prose that happens to be focusable, so `user-select: none` is
+ * doing something a reader can notice and the text is still there. */
+.capture-hold {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.capture-hold:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 0.4rem;
+}
+
+/* `.capture-edit` sets an author `display: flex`, which beats the user
+ * agent's `[hidden] { display: none }` outright -- so without this the
+ * row is hidden in jsdom, which loads no stylesheet, and visible in every
+ * real browser. That is the exact trap `.item-head` has a paragraph about
+ * further down this file, and every other `hidden` consumer here
+ * (`.board-search-clear`, `.prio-menu`, `.attach-tray`) carries its
+ * companion rule. This one was added to that club without one. */
+.capture-edit[hidden] { display: none; }
 
 .item {
   background: var(--card);
@@ -1401,7 +1801,7 @@ body.nav-open { overflow: hidden; }
   overflow: hidden;
 }
 
-/* `role="button"` on a <div>, not a real <button> -- Edvard, 2026-08-14:
+/* `role="button"` on a <div>, not a real <button> -- the owner, 2026-08-14:
  * "the priority status button needs to be placed on the same horizontal
  * as the progress status, on its right side." That put the priority
  * trigger inside the same row as the status chip, and a <button> (the
@@ -1438,7 +1838,7 @@ body.nav-open { overflow: hidden; }
   gap: 0.4rem 0.6rem;
 }
 
-/* Status and priority side by side on the left (Edvard, 2026-08-14: "the
+/* Status and priority side by side on the left (the owner, 2026-08-14: "the
  * progress and the priority should both float left, not space between")
  * -- the reason they are real siblings in one flex row at all, rather
  * than two lines, is so the priority chip stays level with status
@@ -1484,6 +1884,33 @@ body.nav-open { overflow: hidden; }
 .item-edit-status { flex: 1 1 auto; color: var(--dim); font-size: 0.85rem; }
 .item-edit-status.is-error { color: var(--warn); }
 
+/* The project control in the held-row editor (his capture, 2026-09-01).
+   It wraps rather than shrinking the select, because a project name is
+   free text and "Sokrates Post" must stay readable on a 360px phone --
+   the same width the title box above it already gets. */
+.item-edit-project {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.item-edit-project-label { color: var(--dim); font-size: 0.85rem; }
+
+.item-edit-project-select,
+.item-edit-project-new {
+  flex: 1 1 8rem;
+  min-width: 0;
+  padding: 0.35rem 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
 /* The comment composer under a row's write-up (idea #64). Separated by a
    rule rather than a card, because the comments it sends land *inside*
    the write-up above it -- the line marks where his prose ends and the
@@ -1515,12 +1942,12 @@ body.nav-open { overflow: hidden; }
 
 .item-number { color: var(--dim); font-variant-numeric: tabular-nums; }
 .item-title { flex: 1 1 60%; }
-/* Its own row below status/priority (Edvard, 2026-08-14: "the date
+/* Its own row below status/priority (the owner, 2026-08-14: "the date
  * should be placed below them") rather than trailing the status chip. */
 .item-updated { color: var(--dim); font-size: 0.85rem; }
 
 /* Also a <button>'s class since the board row's priority chip became one
- * (Edvard, 2026-08-14: "make it into a button that opens the modal, but
+ * (the owner, 2026-08-14: "make it into a button that opens the modal, but
  * the visual design is not changed from the old design") -- `background`,
  * `font` and `cursor` are here only because a <button> has its own
  * defaults for all three that a <span> never had, and this rule has to
@@ -1545,7 +1972,7 @@ body.nav-open { overflow: hidden; }
    for done at a glance. It spends no colour, because the three that do are
    all states the row is still alive in. */
 .chip-outdated { color: var(--dim); opacity: 0.7; text-decoration: line-through; }
-/* Blocked on Edvard is the one status that is a request rather than a
+/* Blocked on the owner is the one status that is a request rather than a
    report, so it is the one that should catch his eye and not mine. It
    borrows the in-progress hue because the row is still alive, and adds a
    dashed edge because nothing is moving on it until he acts. Not struck
@@ -1570,7 +1997,7 @@ body.nav-open { overflow: hidden; }
 .chip.prio[aria-expanded="true"] { border-color: var(--accent); }
 
 .item-body { padding: 0 0.9rem 0.8rem; border-top: 1px solid var(--line); }
-/* The visible way into the row editor (Edvard, 2026-08-22). Right-aligned
+/* The visible way into the row editor (the owner, 2026-08-22). Right-aligned
    and quiet: it is a control he needs to find once, not one competing with
    the write-up underneath it. */
 .item-actions { display: flex; justify-content: flex-end; padding: 0.5rem 0 0.2rem; }
@@ -1595,41 +2022,105 @@ body.nav-open { overflow: hidden; }
 .note-cycle { color: var(--accent); text-decoration: none; }
 .note-body p { margin: 0.3rem 0; }
 
-/* The `/notes` page. `.note` above is the card on a board page's Nova
- * tab and these are the two things a note on its own page has that a
- * board note does not: a state, and Nova's answer under it.
+/* The `/notes` page, which is a conversation rather than a stack of
+ * cards. The owner, `notes.md` 2026-08-24: *"I want the notes page to be
+ * more like a conversation. So that alternating posts are green (mine)
+ * and purple (Nova cycle response). Just like the comments."*
  *
- * A waiting note gets a left edge in the warn colour rather than a
- * different background. The badge already carries the meaning in words
- * -- `personality.md`'s rule that a colour alone is not a sentence --
- * so the stripe is there to find the card while scrolling, not to say
- * anything on its own. */
-.note-waiting { border-left: 3px solid var(--warn); }
+ * "Just like the comments" is taken literally, and it is the reason
+ * these are left rules and not chat bubbles: `.comment` and
+ * `.comment-reply-cycle` already say "him" and "a cycle" in exactly
+ * these two colours on the journal cards, and a second visual language
+ * for the same two speakers would mean the app says one thing two ways.
+ * --good and --nova are those same variables, not new ones.
+ *
+ * The colour is never the only thing carrying it. Each message is
+ * labelled with who said it, and a cycle's carries its number as a link
+ * to the card -- `personality.md`'s rule that if a reader has to know a
+ * colour code to know what was said, it has not been said. */
+.note-thread { display: flex; flex-direction: column; }
 
-.note-reply {
-  margin-top: 0.6rem;
-  padding-left: 0.7rem;
+.note-msg {
   border-left: 2px solid var(--line);
+  padding-left: 0.8rem;
+  margin-bottom: 0.9rem;
 }
 
-.note-reply-who {
-  color: var(--accent);
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 0.15rem;
+.note-msg-mine { border-left-color: var(--good); }
+.note-msg-nova { border-left-color: var(--nova); }
+
+/* A cycle's answer under one of his captures, drawn as the notes page
+ * draws the same thing -- purple left rule, "Nova" above it -- so the two
+ * pages read alike. It reuses `.note-msg`; this rule only insets it under
+ * his bullet and takes the bottom margin back, since the capture list
+ * already separates its items with a top border.
+ *
+ * **It has to sit after `.note-msg`, not up beside `.capture-item`.**
+ * Both selectors are one class, so they tie on specificity and the later
+ * declaration wins per property -- with this rule written earlier,
+ * `.note-msg`'s `margin-bottom: 0.9rem` quietly overrode the `0.2rem` in
+ * this shorthand and the comment above was describing something that did
+ * not happen. Found by review. */
+.capture-reply {
+  margin: 0.4rem 0 0.2rem 0.6rem;
 }
 
-.note-reply-body p { margin: 0.3rem 0; }
-.note-reply-body { color: var(--dim); }
+.note-msg-who {
+  margin: 0 0 0.25rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
+.note-msg-mine .note-msg-name { color: var(--good); }
+.note-msg-nova .note-msg-name { color: var(--nova); }
+.note-msg-cycle { color: var(--nova); text-decoration: none; }
+
+/* Both halves of the conversation are --text, and that is the owner's
+ * correction rather than a preference of mine. `issues.md` 2026-08-25:
+ * *"The grey text for the notes in Nova is heard to read against a black
+ * background. Make it white."*
+ *
+ * What used to be here was `.note-msg-nova .note-msg-body { color:
+ * var(--dim) }`, reasoned as "a cycle's answer reads as the quieter half
+ * of the exchange -- his words are the ones the page is for." That is a
+ * fine thing to want and it was paid for in the wrong currency. --dim on
+ * --bg is 5.8:1, which clears WCAG AA for body text on paper and does not
+ * clear his phone in daylight, and it was applied to the half of the page
+ * that is *answers to his questions* -- the part he opened the page to
+ * read. Speaker is already carried three other ways on every message: the
+ * left rule's colour, the name in --good or --nova, and the "Cycle N"
+ * link. None of those cost legibility, so removing the fourth loses
+ * nothing. See `.comment-reply .comment-body`, which was the precedent
+ * this rule cited and is now fixed the same way. */
+.note-msg-body { color: var(--text); }
+.note-msg-body p { margin: 0.3rem 0; }
+
+/* Waiting for a cycle to pick it up. The badge says it in a word; this
+ * only makes it findable while scrolling. */
+.note-msg-waiting { border-left-width: 3px; }
 
 .note-reply-missing {
-  margin: 0.6rem 0 0;
+  margin: 0 0 0.9rem;
   color: var(--warn);
   font-size: 0.85rem;
 }
 
-/* Edvard's own words. Every item on his boards opens with one, and until
+/* The top of the transcript. Quiet -- it is a full stop, not a control. */
+.note-start {
+  margin: 0 0 1rem;
+  text-align: center;
+  color: var(--dim);
+  font-size: 0.8rem;
+}
+
+/* The scroll-up pager sits above the conversation rather than below it,
+ * so its margin goes the other way from `.more`'s. */
+.note-older { margin: 0 0 1rem; }
+
+/* the owner's own words. Every item on his boards opens with one, and until
  * the board pages existed nothing rendered a blockquote -- the `>` showed
  * on screen in front of the one paragraph on the page he wrote himself. */
 blockquote {
@@ -1805,7 +2296,41 @@ body.has-full-chart { overflow: hidden; }
 .share-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
 .share-note { margin: 0.4rem 0 0; color: var(--dim); font-size: 0.78rem; }
 
-/* Retrospectives (Edvard, issues.md 2026-08-13). One card per Friday,
+/* The one screen (ideas.md #120), at the top of the retro page. Built on
+ * the retro card's shape because it is the same kind of object, with an
+ * accent border down the leading edge -- it is the one thing on the page
+ * he is meant to read if he reads nothing else, and a card that looks
+ * exactly like the four under it says the opposite. */
+.week-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1.1rem;
+}
+
+.week-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.week-title { margin: 0; font-size: 1.05rem; }
+.week-date { margin: 0; color: var(--dim); font-size: 0.8rem; }
+
+.week-sub {
+  margin: 0.8rem 0 0.2rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.week-text { margin: 0; line-height: 1.55; }
+
+/* Retrospectives (the owner, issues.md 2026-08-13). One card per Friday,
  * built out of the journal card's shape rather than a new one -- it is
  * the same kind of object (a dated thing Nova wrote) and does not toggle,
  * which is the only reason it is not `.entry` itself. */
@@ -1869,7 +2394,7 @@ body.has-full-chart { overflow: hidden; }
  *
  * This used to be `.capture-prio, .prio-select` -- one rule shared with
  * the board row's picker, deliberately, so the two could not drift apart
- * silently. The board row's went back to being `.chip.prio` (Edvard,
+ * silently. The board row's went back to being `.chip.prio` (the owner,
  * 2026-08-14: "i liked the old issue priority status better... the
  * visual design is not changed from the old design"), which has its own
  * sizing already (`.chip` above) and no longer has anything in common
@@ -1893,7 +2418,7 @@ body.has-full-chart { overflow: hidden; }
 .item-prio-note { font-size: 0.8rem; opacity: 0.8; }
 
 /* Held one glyph -- a ball, or a dash for unrated -- until Cycle 268, when
- * Edvard, 2026-08-19: *"Please do not use these symbols '🟠' as i can't
+ * the owner, 2026-08-19: *"Please do not use these symbols '🟠' as i can't
  * really see the difference as they are colors. Please use the full
  * word"* put a word in it, which needed `width: auto` below so
  * "Immediately" could grow the fixed circle into a pill instead of
@@ -1923,7 +2448,7 @@ body.has-full-chart { overflow: hidden; }
 
 /* The backdrop and popup both pickers open, appended to <body> and
  * shared by every picker on the page -- see `getPrioMenuOverlay` for why
- * neither is nested under the trigger. Edvard, 2026-08-14, after trying
+ * neither is nested under the trigger. The owner, 2026-08-14, after trying
  * the first version live: the native picker it replaced read as a real
  * dialog, and an anchored dropdown -- however correctly it opened with
  * full words -- read as a smaller, lesser thing next to it. Centered,
@@ -2034,10 +2559,24 @@ body.has-full-chart { overflow: hidden; }
 .goal-name { font-size: 0.9rem; font-weight: 600; }
 
 /* The verdict is a word first. The colour is the second encoding, never
- * the only one -- Edvard, 2026-08-20, on bare priority symbols. */
+ * the only one -- the owner, 2026-08-20, on bare priority symbols. */
 .goal-verdict { font-size: 0.72rem; white-space: nowrap; padding: 0.1rem 0.4rem; border-radius: 999px; border: 1px solid; }
 .goal-verdict.on { color: var(--good); border-color: rgba(123, 216, 143, 0.45); }
 .goal-verdict.off { color: var(--warn); border-color: rgba(232, 183, 92, 0.45); }
+
+/* What the owner has said about this goal, and the two taps that say it.
+ * Wraps rather than scrolls: at his 360px the state word and both buttons
+ * do not fit on one line, and a control that needs a sideways scroll to
+ * reach is one he will not use. Touch targets are 44px tall (his own
+ * device report is 360x697 CSS px at DPR 3). */
+.goal-verdict-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; }
+.goal-state { font-size: 0.75rem; }
+.goal-state.approved { color: var(--good); }
+.goal-state.declined { color: var(--dim); }
+.goal-state-btn { min-height: 44px; padding: 0 0.7rem; font: inherit; font-size: 0.78rem; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text); }
+.goal-state-btn.current { border-color: var(--accent); color: var(--accent); }
+.goal-state-btn[disabled] { opacity: 0.5; cursor: default; }
+.goal-state-note { font-size: 0.72rem; color: var(--dim); }
 
 .goal-measure { margin: 0.2rem 0 0; font-size: 0.78rem; color: var(--dim); line-height: 1.4; }
 .goal-figures { margin: 0.3rem 0 0; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
@@ -2120,7 +2659,7 @@ body.has-full-chart { overflow: hidden; }
   color: var(--dim);
 }
 
-/* The Questions page -- Edvard's ideas.md capture, "a questions page in
+/* The Questions page -- the owner's ideas.md capture, "a questions page in
  * Nova where i can ask questions in a box and a Claude sonnet model
  * answers me."
  *
@@ -2200,14 +2739,98 @@ body.has-full-chart { overflow: hidden; }
  * it wrote is the whole formatting story -- see nova_ask.thread(). */
 .ask-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
+/* A message is paragraphs now rather than one text node, because an
+ * attached picture has to become an element and a text node cannot hold
+ * one. `white-space` and `overflow-wrap` inherit from `.ask-text`, so the
+ * wrapping is unchanged; only the default paragraph margins need undoing,
+ * which would otherwise put a blank line above every answer. */
+.ask-text p { margin: 0 0 0.55rem; }
+.ask-text p:last-child { margin-bottom: 0; }
+
+/* The Copy button sits under the message, dim until touched, so it never
+ * competes with the text it belongs to. It is `align-self` inside the bubble
+ * rather than absolutely positioned: a message can be one line or forty, and
+ * an overlay would land on the words in one of those cases. */
+.ask-copy {
+  align-self: flex-end;
+  margin-top: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.ask-copy:hover, .ask-copy:focus-visible { color: var(--text); border-color: var(--accent); }
+
+/* `.ask-msg` is not a flex container by default, so `align-self` above needs
+ * one; the bubble was a block and its children stacked, which they still do. */
+.ask-msg { display: flex; flex-direction: column; }
+
+/* A ```mermaid block, before and after it becomes a diagram.
+ *
+ * It starts as the code he typed and stays that way if the 3.5 MB library
+ * cannot be fetched or the diagram will not parse, so both states have to
+ * be readable. `white-space: pre` overrides the `pre-wrap` inherited from
+ * `.ask-text`: a flowchart's indentation is what makes it legible, and a
+ * message bubble is narrow enough that wrapping it turns the source into
+ * a paragraph. It scrolls sideways instead.
+ *
+ * `.mermaid-drawn` is the same figure with the SVG in it. The width and
+ * height mermaid measured are stripped in `app.js`, so `max-width: 100%`
+ * is what actually decides the size on a phone. */
+.mermaid-figure { margin: 0 0 0.55rem; }
+.mermaid-figure:last-child { margin-bottom: 0; }
+.mermaid-source {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+  white-space: pre;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.mermaid-drawn {
+  padding: 0.5rem 0;
+  overflow-x: auto;
+}
+.mermaid-drawn svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+
+/* The paperclip on the two composers that write into the ask thread. Both
+ * are ordinary block flow rather than the flex rows the board composers
+ * use, so the button needs the same top margin its neighbour has to sit on
+ * the same line as it. */
+.ask-form .attach-btn { margin: 0.5rem 0.45rem 0 0; vertical-align: top; }
+/* `margin-left: auto` rather than a size change. The row is
+ * `space-between` with three children, which would strand the paperclip in
+ * the middle of the dock; the auto margin absorbs the free space so the
+ * status sits left and the paperclip sits against Send. It keeps the 44px
+ * target the rest of this file holds every button to. */
+.chat-actions .attach-btn { margin-left: auto; }
+
 .ask-pending { color: var(--dim); font-style: italic; }
+/* The pending bubble carries three lines now (issues.md, 2026-08-30): the
+   clock, the tool it is on, and how many it has run. Only the head keeps the
+   italic -- a tool name set in italics reads as prose, and it is not. */
+.ask-pending-head { font-style: italic; }
+.ask-pending-step { font-style: normal; margin-top: 0.35rem; font-size: 0.9em; }
+.ask-pending-tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+.ask-pending-detail { margin-left: 0.5rem; opacity: 0.8; word-break: break-word; }
+.ask-pending-count { font-style: normal; margin-top: 0.2rem; font-size: 0.85em; opacity: 0.7; }
+/* A passage the answer is still being written in -- issue #129. Softened,
+   not hidden: it is real text and he asked to see the work as it happens. */
+.ask-partial { opacity: 0.75; }
 
 /* The roadmap's five as a ranked strip, above the argument for them.
  * Same box as `.goal-board` deliberately -- one idiom for "the answer,
  * before the prose", not a second one invented three sections later.
  *
  * The chip carries a symbol and a word together and is sized for the word,
- * because the word is the part Edvard can read: he cannot tell the coloured
+ * because the word is the part the owner can read: he cannot tell the coloured
  * circles apart by colour and said so on 2026-08-20. */
 .rank-strip {
   margin: 0.9rem 0 0.2rem;
@@ -2236,9 +2859,15 @@ body.has-full-chart { overflow: hidden; }
 .rank-claim { margin: 0.25rem 0 0 1.8rem; font-size: 0.8rem; line-height: 1.45; }
 .rank-board { margin: 0.2rem 0 0 1.8rem; font-size: 0.74rem; color: var(--dim); }
 
+/* The finished half of the ranked strip. It is on the page so the rank
+ * numbers do not read as though items had gone missing, and it is dimmed
+ * and ruled off so it does not read as a second list of live work. */
+.rank-done-title { margin-top: 0.9rem; padding-top: 0.75rem; border-top: 1px solid var(--line); }
+.rank-done-list .rank-card { opacity: 0.6; }
+
 /* The attach button and what it puts on the page.
  *
- * Edvard, comments board 2026-08-21: *"How do i send a screenshot?"* —
+ * the owner, comments board 2026-08-21: *"How do i send a screenshot?"* —
  * he could see a layout bug on his Galaxy S25 that no renderer in this
  * loop can reproduce, and the only channel between us was text.
  *
@@ -2265,6 +2894,88 @@ body.has-full-chart { overflow: hidden; }
 
 .attach-btn:hover:not(:disabled) { border-color: var(--accent); }
 .attach-btn:disabled { color: var(--dim); cursor: default; }
+
+/* The tray of things picked and not yet sent (Cycle 377).
+ *
+ * The owner, ideas board 2026-08-24: *"Lets me preview a miniatyr version of
+ * the uploaded images in the Nova app instead of the text that shows up in
+ * the input box. Also let me upload multiple (at once) and cross them out if
+ * i want to not send them after upload."*
+ *
+ * `flex-wrap` and not a row that scrolls: at 360px three chips already
+ * overflow, and a sideways scroll inside a composer is a thing he has
+ * reported as a bug on this app twice. Wrapping costs vertical space in a
+ * place that has it — the tray is empty except in the seconds between
+ * picking and sending. */
+.attach-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0;
+}
+
+.attach-tray[hidden] { display: none; }
+
+/* Each chip is the thumbnail plus its ✕, sized by the picture rather than
+ * fixed: a portrait phone screenshot and a landscape desktop one both have
+ * to be recognisable at this size, and pinning either dimension crops or
+ * distorts half of them. 64px tall is what makes four of them fit on one
+ * row of a 360px screen. */
+.attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  /* No fill, same as `.attach-file`: the border is what makes it a chip and
+   * the thumbnail supplies all the colour it needs. */
+  background: none;
+  max-width: 100%;
+}
+
+.attach-thumb {
+  display: block;
+  height: 64px;
+  width: auto;
+  max-width: 40vw;
+  object-fit: cover;
+  border-radius: 5px;
+  /* Set before the bytes arrive so a row of chips does not jump as each
+   * thumbnail loads -- same reason as `.attach-img`. */
+  background: var(--line);
+}
+
+/* Anything that is not a picture. `break-word` because a filename off a
+ * phone is often one long token with no space in it. */
+.attach-chip-name {
+  font-size: 0.85rem;
+  color: var(--text);
+  word-break: break-word;
+  max-width: 55vw;
+}
+
+/* 32px rather than the 44px the attach button gets. It is deliberately
+ * below the recommended touch target: it sits *on* the thing it destroys,
+ * so a generous one would be easy to hit by accident while trying to look
+ * at the picture, and the cost of a miss is asymmetric -- tapping the
+ * thumbnail does nothing, tapping the ✕ throws the upload away. */
+.attach-chip-remove {
+  flex: none;
+  min-width: 32px;
+  min-height: 32px;
+  background: none;
+  color: var(--dim);
+  border: none;
+  border-radius: 999px;
+  padding: 0;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.attach-chip-remove:hover { color: var(--accent); }
 
 /* `max-width: 100%` and not a fixed width: a phone screenshot is taller
  * than it is wide and a desktop one is the reverse, so anything that
@@ -2348,3 +3059,1056 @@ body.has-full-chart { overflow: hidden; }
   gap: 0.75rem;
   margin-top: 1.4rem;
 }
+
+/* The Pool page -- idea #92, phase 1.
+ *
+ * One candidate on screen at a time, so the card is allowed to be large
+ * and the three buttons are allowed to be thumb-sized. The whole point of
+ * this page is that a decision costs one tap; a row of small controls
+ * would hand that back. */
+.pool-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1.1rem 1rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.pool-head { margin-bottom: 0.7rem; }
+
+.pool-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.12rem;
+  line-height: 1.35;
+}
+
+.pool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pool-chip {
+  display: inline-block;
+  padding: 0.12rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+
+.pool-project { color: var(--accent); border-color: var(--accent); }
+
+.pool-body {
+  margin: 0 0 0.9rem;
+  line-height: 1.55;
+}
+
+/* His own words, back on the card he wrote them on. Full-strength text
+ * rather than `--dim` and left-marked in the accent, the same call
+ * `.pool-history-said` made: a comment he cannot read is the write not
+ * having landed, from where he is sitting. `white-space: pre-wrap` because
+ * the box is a textarea and a two-paragraph note is stored as one. */
+.pool-said {
+  margin: 0 0 0.6rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--accent);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.pool-said-when {
+  color: var(--dim);
+  font-size: 0.78rem;
+  margin-right: 0.45rem;
+}
+
+.pool-comment {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.6rem;
+  font: inherit;
+  font-size: 0.92rem;
+  resize: vertical;
+}
+
+.pool-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+/* `flex: 1` rather than fixed widths: three equal targets across whatever
+ * the phone is, and the labels are words rather than icons for the same
+ * reason priorities carry theirs -- a control identified only by colour
+ * or shape is one he has to learn. */
+.pool-btn {
+  flex: 1;
+  padding: 0.6rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.pool-approve { color: var(--good); border-color: var(--good); }
+.pool-reject { color: var(--danger); border-color: var(--danger); }
+.pool-comment-btn { color: var(--accent); border-color: var(--accent); }
+.pool-skip { color: var(--dim); }
+
+.pool-count {
+  margin: 0 0 1rem;
+  color: var(--dim);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.pool-note {
+  margin: 0.6rem 0 0;
+  color: var(--dim);
+  font-size: 0.85rem;
+}
+
+.pool-generate {
+  display: block;
+  width: 100%;
+  padding: 0.55rem;
+  border-radius: 8px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pool-generate:disabled { opacity: 0.55; cursor: default; }
+
+.pool-history-toggle {
+  display: block;
+  width: 100%;
+  margin-top: 0.6rem;
+  padding: 0.55rem;
+  border-radius: 8px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pool-history-group { margin-top: 1.1rem; }
+
+.pool-history-heading {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.pool-history-item {
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+}
+
+.pool-history-item.approved { border-left-color: var(--good); }
+.pool-history-item.rejected { border-left-color: var(--danger); }
+
+.pool-history-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+/* His own words, in the colour prose is written in. `--dim` would be the
+   second grey-too-dim complaint in a week, and this is the one line on the
+   card he actually asked to be able to read. */
+.pool-history-said {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.pool-history-meta {
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+
+/* The chat dock -- his capture, ideas.md 2026-08-25: a chat "in the bottom
+ * right of my page in Nova that i can talk to about anything".
+ *
+ * Right-edge arithmetic is copied from `.menu-btn` on purpose rather than
+ * invented: the feed is centred and capped, so `right: 1rem` alone would
+ * park the launcher against the window on a wide desktop instead of
+ * against the column he is reading. */
+.chat-btn {
+  position: fixed;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  right: max(1rem, calc(50% - 23rem + 1rem));
+  /* Under the scrim (15) and the drawer (20), deliberately. The first
+   * version sat at 40 and floated over an open menu, which is a button
+   * hovering on top of the thing that is supposed to have taken over the
+   * screen. The scrim is `visibility: hidden` while closed rather than
+   * transparent, so sitting below it costs no tap. */
+  z-index: 14;
+  width: 3.1rem;
+  height: 3.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chat-btn.open { border-color: var(--accent); }
+.chat-btn-glyph { font-size: 1.35rem; line-height: 1; }
+
+/* Purple, and a dot rather than a count -- the same signal the journal
+ * cards use for a reply he has not opened. */
+.chat-dot {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--accent);
+  border: 1px solid var(--bg);
+}
+
+.chat-dock {
+  position: fixed;
+  bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 3.7rem);
+  right: max(1rem, calc(50% - 23rem + 1rem));
+  z-index: 14;
+  width: min(23rem, calc(100vw - 2rem));
+  /* `height`, not `max-height`. His capture, issues.md 2026-08-25: *"Make
+   * the new chat modal full height, atleast for mobile. It feels so
+   * small."* Under `max-height` the panel was only ever as tall as the
+   * messages in it, so a two-line thread drew a two-line box -- the "small"
+   * he is describing is a short thread, not a small cap. A real height
+   * makes it the same panel whatever is in it. */
+  height: min(40rem, calc(100vh - 8rem));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.7rem 0.8rem 0.8rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* `display: flex` above is an author rule and `[hidden]` is a UA one, so the
+ * attribute alone leaves the panel permanently on his screen -- author beats
+ * UA regardless of specificity. Found by asserting the computed style rather
+ * than the attribute; every attribute assertion in the suite passed. */
+.chat-dock[hidden] { display: none; }
+
+/* The page behind the sheet is frozen while the sheet is up.
+ *
+ * The owner, `issues.md` 2026-08-31: *"When i have the chat modal open, i
+ * should not be able to scroll the page its hovering over. Currently i can
+ * and its wierd."* The dock is `position: fixed`, so the document under it
+ * stayed an ordinary scroller: every gesture that missed the thread -- the
+ * head, the composer, a flick past the last message -- scrolled the journal
+ * behind, and closing the sheet landed him somewhere he never navigated to.
+ * Measured in a real browser on 2026-08-31 at his own 360x697
+ * (`tools.poke_page chat-scroll-lock`): a wheel gesture under an open sheet
+ * moved the page the full 500px without this rule and 0px with it. It has
+ * to be a wheel -- `overflow: hidden` stops the user and deliberately still
+ * lets script scroll the box, so a `scrollTo` measures nothing here.
+ *
+ * `body.nav-open` two thousand lines up does exactly this for the menu
+ * drawer, and the class is already on `body` at every width -- the
+ * hamburger rule uses it inside a media query, and a scroll lock has no
+ * reason to be narrower than the sheet it belongs to. On a wide screen the
+ * dock is a small panel and freezing the page is still what he asked for. */
+body.chat-open { overflow: hidden; }
+
+/* Full screen on a phone -- the "atleast for mobile" half of the same
+ * capture. This is the stylesheet's first width media query; everything
+ * else here is fluid, and a fluid rule cannot express this one, because
+ * "full height" is a different panel rather than a wider one.
+ *
+ * `inset: 0` rather than `height: 100vh` on purpose: `100vh` on mobile
+ * Chrome is the viewport *without* the URL bar, so a 100vh sheet is taller
+ * than the screen and its composer sits below the fold until he scrolls.
+ * A fixed element pinned to all four edges has no such gap. It also covers
+ * the launcher button, which is why nothing hides it -- the sheet paints
+ * over it at the same z-index by document order. */
+@media (max-width: 30rem) {
+  .chat-dock {
+    inset: 0;
+    width: auto;
+    height: auto;
+    border-radius: 0;
+    /* All four borders, not just the sides: with `inset: 0` a top or bottom
+     * border is a hairline drawn along the edge of the screen. */
+    border: none;
+    padding-top: max(0.7rem, env(safe-area-inset-top));
+    padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
+  }
+
+  /* The hamburger has to go while the sheet is up, and it is the one thing
+   * the sheet cannot cover by painting over it: `.menu-btn` is `z-index:
+   * 30` against the dock's 14, fixed at roughly x 304-344, y 26-66 on a
+   * 360px screen -- which is on top of the dock's own close button. So the
+   * × would have been unreachable on his phone, tapped through to the menu
+   * instead. Found by my reviewer, not by me; no test sees it, because
+   * jsdom resolves no media queries. What a test *can* see is the class,
+   * and that is pinned below. */
+  body.chat-open .menu-btn { display: none; }
+}
+
+.chat-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+/* `flex: 1` and a centred line rather than the left-aligned heading this
+ * used to be: with a button on each side of the head, a left-aligned title
+ * reads as attached to the hamburger. It also has to be able to shrink --
+ * a conversation name is whatever he called it, and an unbounded one would
+ * push the close button off a 360px screen. */
+.chat-title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.chat-menu {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+  cursor: pointer;
+}
+
+/* The conversation switcher. It takes the thread's place inside the panel
+ * rather than floating over it, so there is only ever one scrolling region
+ * and the composer cannot be typed into while the list is up.
+ *
+ * `[hidden]` needs its own rule for the reason `.chat-dock[hidden]` does,
+ * eight rules up: `display: flex` here is an author declaration and
+ * `[hidden]` is a user-agent one, so the attribute alone would leave the
+ * list permanently drawn. */
+.chat-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  margin: 0.6rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.chat-list[hidden] { display: none; }
+.chat-dock.list-open .chat-thread,
+.chat-dock.list-open .chat-form { display: none; }
+.chat-list-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.chat-list-row.current { border-color: var(--accent); }
+.chat-list-name { font-size: 0.9rem; }
+.chat-list-meta { font-size: 0.75rem; color: var(--dim); margin-top: 0.15rem; }
+
+/* The switcher's folds. Same `<details>` treatment as `.nav-group` in the
+ * sidebar drawer, down to the chevron drawn as a rotated border corner --
+ * he asked for "folders here as well", so it should look like the folders
+ * he already has rather than a second idea of one.
+ *
+ * `.chat-list` is a flex column with a gap, so the fold body needs its own
+ * column to keep the rows spaced once they are one box deep. */
+.chat-list-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.35rem;
+}
+.chat-list-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 40px;
+  padding: 0.2rem 0.1rem;
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  list-style: none;
+}
+.chat-list-group::-webkit-details-marker { display: none; }
+/* The count sits between the name and the chevron: a shut fold otherwise
+ * hides how much it is hiding. */
+.chat-list-group-count {
+  margin-left: auto;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.chat-list-group::after {
+  content: "";
+  flex: none;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 160ms ease;
+}
+.chat-list-fold[open] > .chat-list-group::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+.chat-list-fold[open] > .chat-list-group { color: var(--text); }
+.chat-close {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 1.3rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+  cursor: pointer;
+}
+
+/* The thread is the only part that scrolls, so the composer stays on
+ * screen while he reads back -- `.capture textarea`'s finding, that a box
+ * free to grow pushes the way to submit off the bottom of a phone. */
+.chat-thread {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  margin: 0.6rem 0;
+  padding-right: 0.15rem;
+}
+
+.chat-form { flex: none; }
+
+.chat-box {
+  width: 100%;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+  /* The height is JavaScript's now -- one line at rest, growing with the
+   * text to a ten-line cap (`growChatBox`). A drag handle would fight it:
+   * the next keystroke overwrites whatever he dragged to. `overflow-y` is
+   * hidden until the cap, so a one-line box has no scrollbar gutter in it,
+   * and `growChatBox` turns it back on at the cap. */
+  resize: none;
+  overflow-y: hidden;
+  line-height: 1.4;
+}
+
+.chat-box:focus { outline: none; border-color: var(--accent); }
+
+.chat-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.45rem; }
+.chat-status { margin: 0; font-size: 0.76rem; color: var(--dim); }
+.chat-send {
+  flex: none;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.chat-send:disabled { opacity: 0.55; cursor: default; }
+
+/* ---- The Conversations page --------------------------------------------
+ *
+ * One thread at a time, opened from a push notification or from a Beats
+ * card. The listing that used to sit here is deleted (*"Delete the chats
+ * page entirely -- never use it"*), and its styles with it. The message
+ * bubbles and the composer are the `ask-*` classes unchanged -- a second
+ * set of chat styles would be two places to fix one spacing bug.
+ */
+.conv-back {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  padding: 0 0 0.6rem;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+
+/* ---- The Heartbeats page ------------------------------------------------
+ *
+ * *"Then Agora can just be purely for heartbeats."* -- his capture, and
+ * this is what takes that last reason to open the other app away. The rows
+ * carry the card shape the deleted Chats rows used to share with them;
+ * what is new is the state line and the two buttons.
+ */
+.hb-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.hb-row {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+}
+
+/* A switched-off heartbeat is history rather than machinery. Dimmed, not
+ * hidden -- the same call the deleted Chats page made on a cycle thread. */
+.hb-off { opacity: 0.62; }
+
+.hb-name { font-weight: 600; }
+.hb-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
+.hb-when { color: var(--dim); font-size: 0.78rem; margin-top: 0.1rem; }
+
+/* The word beside the state, never a bare colour -- his ask about the
+ * priority symbols, and the same reason: a reader who has to know a colour
+ * code to know what was said has not been told. */
+.hb-state { font-size: 0.78rem; margin-top: 0.35rem; font-weight: 600; }
+.hb-state-on { color: var(--good, #5ec27a); }
+.hb-state-off { color: var(--dim); }
+.hb-state-running { color: var(--accent, #a98bff); }
+
+.hb-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; flex-wrap: wrap; }
+
+.hb-btn {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  /* 44px is the tap target the rest of this file uses. */
+  min-height: 44px;
+  padding: 0.4rem 0.9rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.hb-btn[disabled] { opacity: 0.5; cursor: default; }
+
+/* The task is the prompt the heartbeat actually sends, and some of them are
+ * 1,500 characters. Folded behind a tap rather than truncated: the whole
+ * thing is kept and the interface decides what is on screen. */
+.hb-task { margin-top: 0.5rem; }
+.hb-task summary { color: var(--dim); font-size: 0.8rem; cursor: pointer; }
+.hb-task pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.78rem;
+  color: var(--dim);
+  margin: 0.4rem 0 0;
+}
+
+/* The conversations a heartbeat has run, folded under it. His capture,
+ * 2026-08-26: they belong on this page, under their own heartbeat, and
+ * behind a drawer so they are not shown unless he wants them. Same
+ * `details` treatment as the task fold above, so the two folds on a card
+ * read as one control repeated rather than two different things. */
+.hb-threads { margin-top: 0.5rem; }
+.hb-threads summary { color: var(--dim); font-size: 0.8rem; cursor: pointer; }
+.hb-thread-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.45rem; }
+
+.hb-thread {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.6rem;
+  width: 100%;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.hb-thread-name { word-break: break-word; }
+.hb-thread-when { color: var(--dim); font-size: 0.72rem; white-space: nowrap; }
+
+
+/* The service catalog (/catalog). Cards rather than the markdown table
+ * the vault file holds: seven columns is a laptop layout, and this page is
+ * opened on a phone. Same card shape as the heartbeats list beside it. */
+.cat-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.cat-row {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+}
+
+/* Scaled to zero on purpose, and the unaccounted-for doors: present, and
+ * not what the eye should land on first. */
+.cat-dim { opacity: 0.62; }
+
+.cat-head { display: flex; align-items: baseline; gap: 0.5rem; justify-content: space-between; }
+.cat-name { font-weight: 600; color: var(--text); }
+a.cat-name { color: var(--accent); text-decoration: none; }
+.cat-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
+/* The docs link is the one thing on a card worth tapping after the name, so
+ * it reads as a link; "No docs page" stays dim, because a gap is information
+ * and not a warning. */
+a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
+.cat-nodocs { font-style: italic; }
+
+/* The word beside the state, never a bare colour -- and "off on purpose"
+ * spelled out rather than shortened, because the whole point of the
+ * distinction is that one of these is fine and the other is not. */
+.cat-state { font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+.cat-state-up { color: var(--good); }
+.cat-state-off { color: var(--dim); }
+.cat-state-down { color: var(--danger); }
+.cat-state-unknown { color: var(--warn); }
+
+.cat-ns {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin: 1.1rem 0 0.5rem;
+}
+
+.cat-headline {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+}
+
+/* An incomplete catalog is a different claim from a complete one and has
+ * to read as one -- the table below it is a partial picture. */
+.cat-warn { border-color: var(--warn); }
+
+.cat-lead { font-weight: 600; margin: 0; }
+.cat-detail { color: var(--dim); font-size: 0.82rem; margin: 0.4rem 0 0; }
+.cat-when { color: var(--dim); font-size: 0.78rem; margin-top: 1rem; }
+
+/* The unread-replies panel in the header.
+ *
+ * the owner, `issues.md` 2026-08-26: *"We need a better way to show me the
+ * message or drop it as it just noise now."* The badge above is now a button
+ * that opens this, and this is the "show me the message" half: the replies
+ * themselves, newest first, under the header they were counted in.
+ *
+ * Styled as a list of cards rather than a modal on purpose. A modal would be
+ * a second dismissible surface on a page that already has the chat dock, and
+ * this one is short-lived by design -- opening it marks everything in it read,
+ * so it is a thing he reads once and closes, not a place he navigates to. */
+.status-unread-open {
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.mail {
+  /* The header above already carries the 1.5rem gap, so this only owns the
+     space under itself. Hidden when there is nothing unread, which is the
+     common case -- an empty box would push every page down for nothing. */
+  margin: -1rem 0 1.5rem;
+}
+
+.mail[hidden] { display: none; }
+
+/* "3 cycles since you last looked · 2 PRs merged" -- see `paintChanged`.
+   Sits between the header and the capture box, in the same negative-margin
+   slot `.mail` uses, so a page with nothing new to say is laid out exactly
+   as it was before this existed. */
+.changed {
+  margin: -1rem 0 1.5rem;
+}
+
+.changed[hidden] { display: none; }
+
+/* A button because tapping it dismisses the line, and the whole line is the
+   target: it is a phone-first surface and a small "x" beside it would be the
+   one thing on this page you have to aim at. */
+.changed-line {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--nova);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.unread-panel {
+  margin-top: 0.6rem;
+  border: 1px solid #5b3f7d;
+  border-radius: 10px;
+  background: #1a1420;
+  overflow: hidden;
+}
+
+.unread-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #35293f;
+}
+
+.unread-panel-count {
+  color: var(--nova);
+  font-size: 0.78rem;
+}
+
+.unread-panel-close {
+  color: var(--dim);
+  background: none;
+  border: 1px solid #35293f;
+  border-radius: 8px;
+  padding: 0 0.7rem;
+  min-height: 44px;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+/* One reply. A link and not a button: it is the same `/cycle/N` permalink
+ * everything else on this page uses to point at a card, so it survives a
+ * right-click, a share and the back button. */
+.unread-reply {
+  display: block;
+  padding: 0.6rem 0.75rem;
+  border-top: 1px solid #251d2d;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.unread-reply:first-of-type { border-top: none; }
+
+.unread-reply-meta {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 0 0.3rem;
+}
+
+/* His own comment, above my answer to it. Dim and clipped to two lines: it is
+ * context for the reply, not the thing he opened the panel to read. */
+.unread-reply-asked {
+  margin: 0 0 0.25rem;
+  color: var(--dim);
+  font-size: 0.78rem;
+  border-left: 2px solid #35293f;
+  padding-left: 0.5rem;
+}
+
+.unread-reply-text {
+  margin: 0;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
+/* Editing a conversation from the switcher — his 🔴 capture, `issues.md`
+ * 2026-08-27: *"delete them, change name, organize like move to a folder.
+ * Editing by pressing the conversation for 1 sec and it gives me edit
+ * options."*
+ *
+ * The panel takes the row's place rather than opening over it, so it wears
+ * the row's own box. `-webkit-user-select: none` on the rows is what stops
+ * a one-second press on a phone selecting the conversation's name instead
+ * of opening this. */
+.chat-list-row { -webkit-user-select: none; user-select: none; }
+/* Its own class rather than a second `.chat-list-row`: the switcher's rows
+ * are the conversations, and a control that is not one of them must not be
+ * counted as one -- by a stylesheet or by anything reading the list. */
+.chat-list-new {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.chat-row-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+}
+.chat-row-edit-name, .chat-row-edit-folder {
+  width: 100%;
+  font: inherit;
+  font-size: 0.9rem;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.35rem 0.45rem;
+  box-sizing: border-box;
+}
+.chat-row-edit-foot { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.chat-row-edit-foot button {
+  font: inherit;
+  font-size: 0.8rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: inherit;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+.chat-row-edit-save { border-color: var(--accent); }
+/* Delete is the only irreversible control in the dock, so it is the only
+ * one that reads as a warning. It still asks before it acts. */
+.chat-row-edit-delete { margin-left: auto; color: var(--bad, #c0392b); }
+.chat-row-edit-note { font-size: 0.75rem; color: var(--dim); margin: 0; }
+.chat-row-edit-note:empty { display: none; }
+
+/* The project page -- idea #92 phase 3. Columns wrap rather than scroll
+ * sideways: this is opened on a phone first, and a kanban that scrolls
+ * horizontally hides the columns after the first one behind a gesture
+ * nothing on the page suggests. */
+.project-index { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
+.project-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  text-decoration: none;
+  color: inherit;
+}
+.project-pill.on { border-color: var(--accent); color: var(--accent); }
+/* The way down to the conversation, so the box at the bottom of a long
+   project page is one tap rather than a scroll. Shaped like a pill because
+   it sits directly under the row of them. */
+/* The project tab strip -- idea #166. `.filters` already lays chips out in
+ * a wrapping row and `.filter` already draws them, so this only sets what
+ * is different: the strip sits directly under the project pills, and the
+ * chips size to their own labels rather than stretching to equal widths,
+ * because "All" and "Conversation · 12" are very different lengths. */
+.project-tabs { margin: -0.4rem 0 1rem; }
+.project-tab { flex: 0 0 auto; }
+
+.project-jump-row { margin: -0.5rem 0 1rem; }
+.project-jump {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+}
+.project-board { margin-bottom: 1.5rem; }
+.project-board-head { display: flex; align-items: baseline; gap: 0.6rem; font-size: 1rem; }
+.project-board-link { font-size: 0.8rem; color: var(--dim); }
+.project-columns { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-start; }
+/* The conversation about a project (idea #92 phase 4). The bubbles inside
+   it are `.note-msg`, shared with the notes page and the board rows, so
+   this only spaces the section off from the boards above it. */
+.project-thread { margin-top: 1.5rem; }
+.project-thread-head { font-size: 1rem; }
+.project-thread-messages { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 0.8rem; }
+.project-column { flex: 1 1 16rem; min-width: 0; }
+.project-column-head { font-size: 0.8rem; color: var(--dim); margin: 0 0 0.35rem; font-weight: 600; }
+.project-rows { list-style: none; margin: 0; padding: 0; }
+.project-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+.project-row-num { color: var(--dim); font-size: 0.8rem; }
+.project-row-title { flex: 1 1 8rem; min-width: 0; }
+
+
+/* The live "What happens next" card at the top of the plan page (idea #38).
+   It sits above the prose because it is the answer to the question he
+   actually asked; the roadmap below it is the argument. One row per line,
+   the number and the chips small, so the title is what the eye lands on. */
+.next-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1.1rem;
+}
+
+.next-card-title {
+  margin: 0;
+}
+
+.next-card-note {
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+  opacity: 0.7;
+}
+
+.next-block {
+  margin-top: 0.9rem;
+}
+
+/* Its own class rather than `plan-heading`, for the reason the card is not
+   a `plan-card`: those classes mean "part of one of the two prose
+   documents" to the page tests, and a fourth h3 wearing one made two of
+   them count this card's sections as the roadmap's. */
+.next-heading {
+  font-size: 0.95rem;
+  margin: 0 0 0.2rem;
+}
+
+.next-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+}
+
+.next-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.next-row:first-child {
+  border-top: none;
+}
+
+.next-num {
+  font-size: 0.78rem;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.next-title {
+  flex: 1 1 12rem;
+}
+
+.next-chip {
+  font-size: 0.72rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.next-held {
+  opacity: 1;
+}
+
+/* The project rating, on a project page. A row rather than a block: the
+ * label, the picker and the saving note read as one line, the same shape
+ * `.item-meta-row` gives a board row's rating. */
+/* Where a project stands, above its columns -- idea #228.
+ * The bar is the only progress meter on this site, so it is deliberately
+ * plain: one track, one fill, and the numbers spelled out beside it rather
+ * than left to be read off the width. A bar nobody can put a number to is
+ * a decoration. */
+.project-summary { margin: 12px 0 16px; }
+.project-summary-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.project-summary-pct { font-size: 1.5rem; font-weight: 600; }
+.project-summary-counts { color: var(--dim); font-size: 0.9rem; }
+.project-summary-track {
+  margin-top: 6px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line);
+  overflow: hidden;
+}
+.project-summary-fill { height: 100%; background: var(--accent); }
+.project-summary-prios { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.project-summary-prio {
+  font-size: 0.8rem;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+/* The ordered "what's next" list -- idea #228's backlog half. Numbered
+   with our own span rather than the `<ol>` marker, because the fold below
+   restarts at 1 and the position has to keep counting across it. */
+.project-backlog { margin: 16px 0; }
+.project-backlog-head { font-size: 0.95rem; margin: 0 0 8px; }
+.project-backlog-rows { list-style: none; margin: 0; padding: 0; }
+.project-backlog-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.project-backlog-pos {
+  color: var(--dim);
+  font-size: 0.8rem;
+  min-width: 1.4rem;
+  text-align: right;
+}
+.project-backlog-num { color: var(--dim); font-size: 0.8rem; white-space: nowrap; }
+.project-backlog-link { flex: 1 1 10rem; min-width: 0; color: inherit; }
+.project-backlog-blocked {
+  font-size: 0.8rem;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.project-backlog-fold { margin-top: 4px; }
+.project-backlog-more {
+  cursor: pointer;
+  color: var(--dim);
+  font-size: 0.85rem;
+  padding: 6px 0;
+}
+
+.project-prio { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.project-prio-label { color: var(--dim); font-size: 0.9rem; }
+.project-prio-note { color: var(--dim); font-size: 0.85rem; }
+/* Inside a pill the chip is a rating, not a tap target of its own -- the
+ * whole pill is the link, so the chip must not eat the tap. */
+.project-pill .chip { margin-left: 6px; pointer-events: none; }

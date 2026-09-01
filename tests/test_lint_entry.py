@@ -21,7 +21,7 @@ from datetime import datetime
 
 from agora_runner.config import OSLO
 from agora_runner.nova_journal import split_ask
-from tools.lint_entry import _raw_body, lint, main
+from tools.lint_entry import _raw_body, absolute_claim_notes, lint, main
 
 GOOD = """### Cycle 152 — 2026-08-01 02:00 Oslo — A Real Title
 
@@ -145,7 +145,7 @@ def test_heading_cycle_number_disagreeing_with_the_filename_is_caught():
 
 
 def test_a_filename_with_no_cycle_number_is_not_a_finding():
-    """Entry 004 is Edvard's own first message and never had one."""
+    """Entry 004 is the owner's own first message and never had one."""
     assert lint("004-2026-08-02-edvard-s-first-message-not-a.md", GOOD) == []
 
 
@@ -186,6 +186,115 @@ def test_main_exits_two_when_the_file_cannot_be_read(tmp_path):
     assert main([str(tmp_path / "nope.md")]) == 2
 
 
+class TestAbsoluteClaims:
+    """Claims about the whole of history, which the author usually cannot
+    have checked. Advisory on purpose -- 99 of the 368 live entries carry
+    one and many of those are honest, so a refusal would cost more than it
+    saves."""
+
+    def test_it_catches_the_sentence_edvard_objected_to(self):
+        notes = absolute_claim_notes(
+            "a Gemini key mounted on the runner that nothing has ever read"
+        )
+        assert len(notes) == 1
+        assert "nothing has ever read" in notes[0]
+        assert notes[0].startswith("scope:")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "the checker has never fired",
+            "that column had never been read",
+            "not once did the board rank on it",
+            "no cycle has ever tried to remove it",
+            "nobody has ever checked whether that pays for itself",
+            # The auxiliary is optional: I write both of these.
+            "nobody ever looked at it",
+            "no cycle ever tried to remove it",
+            "that column has always been empty",
+        ],
+    )
+    def test_it_catches_the_other_shapes_of_the_same_claim(self, text):
+        assert absolute_claim_notes(text)
+
+    def test_a_hyphenated_never_is_not_a_claim_about_history(self):
+        """"never-ending" is a description, not an assertion about the past.
+        The first draft of the pattern flagged it."""
+        assert absolute_claim_notes("the pod has never-ending logs") == []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "I checked the runner pod and nothing there reads it",
+            "no pod in `agents` currently mounts it",
+            "the deploy came up healthy",
+        ],
+    )
+    def test_a_sentence_without_the_absolute_vocabulary_passes(self, text):
+        """Named for what it pins. There is no scope logic here -- the
+        checker cannot tell a scoped claim from an unscoped one, it can
+        only spot the words I reach for when I am overreaching, which is
+        why it advises rather than refuses."""
+        assert absolute_claim_notes(text) == []
+
+    def test_my_own_history_is_mine_to_claim(self):
+        """What the owner objected to was my claiming *his* history. My own is
+        the one I can actually check."""
+        assert absolute_claim_notes("I have never used that key") == []
+        assert absolute_claim_notes("I had never checked it") == []
+        # Somebody else's whole history is still a claim about somebody
+        # else's whole history, and stays flagged.
+        assert absolute_claim_notes("he has never been part of this team")
+
+    def test_words_may_sit_between_the_subject_and_ever(self):
+        """Adjacency was a property of the one sentence this was built
+        from, not of the claim."""
+        assert absolute_claim_notes("nothing there has ever read it")
+
+    def test_edvards_own_words_are_not_hedged_back_at_him(self):
+        """Entries quote him constantly, and his sentences are not mine to
+        qualify. Same for a blockquote of a previous cycle."""
+        assert absolute_claim_notes('He wrote: "nothing has ever read it."') == []
+        assert absolute_claim_notes("> nothing has ever read it") == []
+        assert absolute_claim_notes("`has never` in a code span") == []
+
+    def test_it_reports_every_occurrence_not_just_the_first(self):
+        body = (
+            "The key has never been read.\n\nAnd the fallback was never once "
+            "exercised.\n"
+        )
+        assert len(absolute_claim_notes(body)) == 2
+
+    def test_main_prints_the_note_without_failing_the_entry(self, tmp_path, capsys):
+        """The whole point of the advisory channel: an entry that renders
+        correctly still exits 0, so the `&&` in `prompt.md` step 7 still
+        writes it. If this ever starts returning 1 the tool has quietly
+        become a censor."""
+        draft = tmp_path / "168-cycle-152.md"
+        draft.write_text(
+            GOOD.replace(
+                "Something real happened", "Nothing has ever happened"
+            ),
+            encoding="utf-8",
+        )
+        assert main([str(draft)]) == 0
+        err = capsys.readouterr().err
+        assert "scope:" in err
+        assert "Nothing has ever happened" in err
+
+    def test_the_title_is_checked_too(self, tmp_path, capsys):
+        """The owner read the card title, not the entry -- `"I'm reacting to
+        your title"` -- so a check that only saw the parsed body would have
+        missed the sentence that caused this."""
+        draft = tmp_path / "168-cycle-152.md"
+        draft.write_text(
+            GOOD.replace("A Real Title", "The key nothing has ever read"),
+            encoding="utf-8",
+        )
+        assert main([str(draft)]) == 0
+        assert "nothing has ever read" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "name,entry,expected",
     [
@@ -195,7 +304,7 @@ def test_main_exits_two_when_the_file_cannot_be_read(tmp_path):
 )
 def test_the_shapes_that_actually_reached_the_vault(name, entry, expected):
     """Reduced from the live documents. Six cycles wrote these four files
-    and every one of them was found afterwards, by Edvard or by a cycle
+    and every one of them was found afterwards, by the owner or by a cycle
     reading the folder, never by anything at write time."""
     assert _kinds(lint(name, entry)) == expected
 
@@ -330,7 +439,7 @@ def test_no_board_field_is_never_a_finding():
 def test_a_board_field_with_nothing_linkable_is_caught(field):
     """The failure this exists for: `parse_board_refs` leaves what it cannot
     place as plain text, on purpose, so `Board: #68` renders as the literal
-    characters and looks like a working reference until Edvard taps it. An
+    characters and looks like a working reference until the owner taps it. An
     entry is written once and never edited, so this is the last cheap
     moment."""
     entry = GOOD.replace(
@@ -506,7 +615,7 @@ def test_an_unquoted_claim_beside_a_quoted_one_is_still_caught():
     assert "30 minutes" in found[0]
 
 
-# --- The `Needs Edvard` ask label -----------------------------------------
+# --- The `Needs Edvard` ask label -----------------------------------------  (not-prose: quoting a literal)
 #
 # Cycle 262 made `_ASK_RE` require the colon, which fixed two 2026-08-11
 # entries that named the old digest section in prose and parsed as open
@@ -536,7 +645,7 @@ def test_an_ask_that_lost_its_colon_is_caught():
 
 
 def test_the_colon_outside_the_bold_is_the_parsers_other_accepted_form():
-    """`_ASK_RE` takes `**Needs Edvard**:` as well, so this check must not
+    """`_ASK_RE` takes `**Needs Edvard**:` as well, so this check must not  (not-prose: quoting a literal)
     contradict it -- a linter that disagrees with the parser is worse than
     no linter."""
     entry = GOOD.replace(
@@ -556,7 +665,7 @@ def test_prose_naming_the_section_mid_paragraph_is_not_an_ask():
     """The measured false positive, and why the anchor is a blank line
     rather than a line start.
 
-    `012-cycle-12.md` wraps a sentence so that `**Needs Edvard** and **Next
+    `012-cycle-12.md` wraps a sentence so that `**Needs Edvard** and **Next  (not-prose: quoting a literal)
     cycle** in there with it` begins a line in the middle of a paragraph.
     The entries are hard-wrapped, so a line start is not a paragraph start;
     anchoring on one fires on that entry, and on the blank line it matches
@@ -573,7 +682,7 @@ def test_prose_naming_the_section_mid_paragraph_is_not_an_ask():
 
 def test_prose_naming_the_section_at_a_paragraph_start_still_needs_no_colon_after_it():
     """A paragraph genuinely opening with the label as prose reads
-    `**Needs Edvard**,` -- punctuation, not whitespace -- so it is out of
+    `**Needs Edvard**,` -- punctuation, not whitespace -- so it is out of  (not-prose: quoting a literal)
     reach of the check by shape rather than by exception."""
     entry = GOOD.replace(
         "Something real happened and here is the honest account of it.",
@@ -585,7 +694,7 @@ def test_prose_naming_the_section_at_a_paragraph_start_still_needs_no_colon_afte
 
 # --- The ask has to open with the question --------------------------------
 #
-# Edvard, unboarded capture 2026-08-20, naming Cycle 273's block: *"its a
+# the owner, unboarded capture 2026-08-20, naming Cycle 273's block: *"its a
 # wall of text and a question hidden in it at the very bottom ... Example
 # is 'yes or no, keep the symbols for x, y, z?' After that, you can explain
 # the reason"*. Measured over all 333 live entries before the check was
@@ -654,7 +763,7 @@ def test_an_abbreviation_does_not_end_the_first_sentence(opening):
 def test_a_question_mark_inside_a_quotation_does_not_make_the_opening_a_question():
     """The failure this check exists to catch, surviving the check.
 
-    Every ask ever written quotes Edvard or an earlier entry, so a `?`
+    Every ask ever written quotes the owner or an earlier entry, so a `?`
     early in the paragraph is normal and says nothing about whether *this*
     paragraph opens by asking something. Reviewer finding on #254; the
     first version passed both of these silently.
@@ -720,7 +829,7 @@ def test_the_bare_label_is_told_about_the_colon_and_not_about_the_shape():
 
 
 def test_the_new_ask_label_without_a_colon_is_a_finding():
-    """`**Needs input**` drops the same silent way `**Needs Edvard**` did.
+    """`**Needs input**` drops the same silent way `**Needs Edvard**` did.  (not-prose: quoting a literal)
 
     The bare-label check imports `ASK_LABEL` from the parser instead of
     respelling it, so this is the test that the import actually carries
@@ -846,7 +955,7 @@ def test_clean_title_matches_the_renderer():
     """`clean_title` is a hand-copy of `cleanTitle` in `app.js` and
     nothing else enforces that it stays one. Pin the four rules against
     the literal JS source: if the JS moves and Python does not, this
-    fails rather than the two silently disagreeing on Edvard's cards."""
+    fails rather than the two silently disagreeing on the owner's cards."""
     import os
     from agora_runner import nova_journal
 

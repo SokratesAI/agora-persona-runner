@@ -210,7 +210,7 @@ def test_attach_button_is_wired_into_every_composer():
     """The guard for the gap that made every server-side test above moot.
 
     `buildAttach` returns a node. A node nobody appends is not a feature,
-    and no Python test can tell the difference. Edvard named four places
+    and no Python test can tell the difference. The owner named four places
     he wants it -- *"next to a comment, issue, note or idea"* -- and two
     composers covered all four: the journal comment drawer, and the
     capture box whose three buttons are Issue, Idea and Note.
@@ -220,12 +220,24 @@ def test_attach_button_is_wired_into_every_composer():
     a genuinely different composer from the journal drawer -- a board
     comment is appended to the row's write-up rather than stored in its
     own file -- so it needed its own call rather than inheriting one.
+
+    Fourth is the chat dock, added Cycle 436 on *"Make the new chat be able
+    to ... upload files like all other input fields in the Nova app."* It
+    was one of a pair -- the `/ask` page showed the same thread and built
+    its own -- until Cycle 759 deleted that page, which is why this count
+    went from six to five.
+
+    Fifth is the Conversations page's thread composer, added Cycle 441 on
+    *"its basicly a chat app with multiple conversations history"*. It
+    writes into whichever conversation is open rather than into the ask
+    thread, and it is built by `openConversation`, so it has no node to
+    share one with the dock either.
     """
     source = _app_js()
     # The definition matches `buildAttach(` too, so it is subtracted rather
-    # than pattern-dodged -- this counts call sites, and there are three.
+    # than pattern-dodged -- this counts call sites, and there are five.
     calls = source.count("buildAttach(") - source.count("function buildAttach(")
-    assert calls == 3, f"expected every composer to build one, found {calls}"
+    assert calls == 5, f"expected every composer to build one, found {calls}"
 
     # Defined once, and the returned button actually reaches the DOM.
     assert source.count("function buildAttach(") == 1
@@ -242,6 +254,11 @@ def test_attach_button_is_wired_into_every_composer():
     # and its hidden input goes into the same row. `foot` is that node.
     assert "foot.appendChild(attach.button)" in source
     assert "foot.appendChild(attach.input)" in source
+
+    # The dock's Send button lives in static markup, so its paperclip is
+    # placed relative to that rather than appended to a node this file made.
+    assert "send.parentNode.insertBefore(attach.button, send)" in source
+    assert "box.parentNode.insertBefore(attach.tray, box.nextSibling)" in source
 
 
 def test_an_attached_image_is_rendered_back_in_the_comment_thread():
@@ -272,13 +289,16 @@ def test_the_attach_button_has_styles_and_a_touch_target():
         css = handle.read()
     for selector in (".attach-btn", ".attach-img", ".attach-link"):
         assert selector + " {" in css, f"{selector} is used by app.js and unstyled"
-    rule = css.split(".attach-btn {", 1)[1].split("}", 1)[0]
+    # Anchored on the newline: `.ask-form .attach-btn {` is a positioning
+    # tweak that contains this selector as a substring and sits above it, so
+    # an unanchored split reads the wrong rule and asserts nothing.
+    rule = css.split("\n.attach-btn {", 1)[1].split("}", 1)[0]
     # 44px is the touch-target minimum the rest of this stylesheet holds to.
     assert "min-height: 44px" in rule and "min-width: 44px" in rule
 
 
 def test_the_content_type_allowlist_covers_what_an_android_phone_produces():
-    """Edvard is on a Galaxy S25 (comments board 2026-08-21), not iOS."""
+    """The owner is on a Galaxy S25 (comments board 2026-08-21), not iOS."""
     assert {"image/png", "image/jpeg", "image/webp", "image/heic"} <= set(CONTENT_TYPES)
     # Every extension is distinct, or two content types would collide on
     # one name and `read_upload` would hand back the wrong header.
@@ -287,7 +307,7 @@ def test_the_content_type_allowlist_covers_what_an_android_phone_produces():
 
 # --- Files that are not images (Cycle 309) ------------------------------
 #
-# Edvard, comments board 2026-08-21 21:09: *"How about a file? It seems i
+# the owner, comments board 2026-08-21 21:09: *"How about a file? It seems i
 # only can upload images. Or atleas the ui forces only my Google photos to
 # open and i have no option to upload files."* Two bugs behind that one
 # sentence -- the picker was pinned to `image/*` in `app.js`, and

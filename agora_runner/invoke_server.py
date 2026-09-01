@@ -15,6 +15,23 @@ from agora_runner.reply import generate_reply
 from agora_runner.tool_activity import report as report_tool_activity
 from agora_runner.tools_mcp import handle_http as handle_mcp
 
+# Every POST below reads `Content-Length` bytes off the wire before it has
+# decided anything about the caller, so an unbounded read is an allocation
+# any pod in `agents` can ask for -- /tool-activity and /mcp authenticate
+# from the body and the header respectively, which is *after* the read, and
+# the network policy admits the whole namespace. This pod's memory limit is
+# 256Mi, the tighter of the two servers in this repo.
+#
+# nova_site.py already holds exactly this line and says so in
+# `_read_json_body` ("The length is checked *before* the read, not after"),
+# but it caps at 64KiB because its callers are a phone typing a sentence.
+# These callers are not: /invoke carries a persona's whole personality and
+# /mcp carries `vault_write` content, and the largest document in the vault
+# today is 534KB. 8MiB is two orders of magnitude above that and five below
+# the pod limit, so it bounds the allocation without guessing at what a
+# legitimate body may hold.
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+
 
 class InvokeHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # quiet default request logging
@@ -28,6 +45,39 @@ class InvokeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_body(self):
+        """The request body, or None having already sent the error response.
+
+        `rfile.read(n)` allocates whatever `Content-Length` claims, so the
+        length is judged before the read rather than the bytes after it --
+        the same order nova_site.py uses, for the same reason.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if length <= 0:
+            self._send(411, {"error": "a Content-Length is required"})
+            return None
+        if length > MAX_REQUEST_BYTES:
+            self._send(413, {"error": f"body over {MAX_REQUEST_BYTES} bytes"})
+            return None
+        try:
+            return self.rfile.read(length)
+        except Exception:
+            # The read used to sit inside each route's own `except Exception`
+            # alongside the JSON parse, so a client that dropped mid-body got
+            # a 400. Lifting it into this helper without the guard turned a
+            # reset connection -- an OSError, not a TimeoutError, so
+            # `handle_one_request` does not catch it either -- into an
+            # unhandled exception, a dropped connection and a traceback in
+            # this pod's log. My reviewer found it; nothing in the suite could
+            # have, because every fixture here either succeeds or refuses
+            # outright. `nova_site._handle_mcp`, the route this helper cites
+            # as precedent, keeps the same net.
+            self._send(400, {"error": "could not read the request body"})
+            return None
+
     def _handle_tool_activity(self):
         """One tool call, reported by the bridge mid-session, rendered as an
         inline Activity chip.
@@ -38,9 +88,11 @@ class InvokeHandler(BaseHTTPRequestHandler):
         AGORA_TOKEN here would defeat it. An unknown or expired token is a
         401 and writes nothing.
         """
+        body = self._read_body()
+        if body is None:
+            return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = json.loads(body or b"{}")
         except Exception:
             self._send(400, {"error": "invalid json body"})
             return
@@ -60,6 +112,7 @@ class InvokeHandler(BaseHTTPRequestHandler):
             tool_use_id=str(payload.get("toolUseId", "")),
             output=payload.get("output"),
             is_error=payload.get("isError") is True,
+            retracted=payload.get("retracted") is True,
         ):
             self._send(401, {"error": "unknown or expired activity token"})
             return
@@ -79,11 +132,8 @@ class InvokeHandler(BaseHTTPRequestHandler):
         payload. Everything else, including tool failures, comes back as
         HTTP 200 with a JSON-RPC envelope.
         """
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(length)
-        except Exception:
-            self._send(400, {"error": "invalid json body"})
+        body = self._read_body()
+        if body is None:
             return
         try:
             status, payload = handle_mcp(self.headers.get("Authorization", ""), body)
@@ -111,9 +161,11 @@ class InvokeHandler(BaseHTTPRequestHandler):
         if AGORA_TOKEN and self.headers.get("x-agora-token") != AGORA_TOKEN:
             self._send(401, {"error": "invalid agent token"})
             return
+        body = self._read_body()
+        if body is None:
+            return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = json.loads(body or b"{}")
             persona = None
             if payload.get("personaId"):
                 persona = fetch_persona(payload["personaId"])
@@ -149,8 +201,28 @@ class InvokeHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "messages must contain a user turn"})
                 return
 
+            # The model belongs to the conversation, not the persona (idea
+            # #95, slice 1). Agora sends the conversation's own model here
+            # alongside `personaId`, because one persona curates many
+            # conversations -- Cycle 291 measured Nova as the persona on 291
+            # of the 297 that existed on 2026-08-21 -- so resolving
+            # the model off the fetched persona made every Ask on every one
+            # of those conversations run the persona's model no matter what
+            # the owner had picked on the conversation. `personaId` still
+            # carries everything that is genuinely shared (personality,
+            # memory, tool grants); only the model is overridden, and a
+            # payload without one falls back to the persona exactly as
+            # before. Passed as an override rather than written into
+            # `persona`, which fetch_persona caches and shares.
+            model_override = payload.get("model")
+            if not isinstance(model_override, str) or not model_override:
+                model_override = None
             system = build_system(persona)
-            reply = generate_reply(persona, dict(NO_CAPS), system, merged, None)
+            # /invoke serves Ask and Preview, both of which are a person
+            # pressing a button, so this is an attended turn and may use a
+            # metered model. Said out loud because reply.py defaults closed.
+            reply = generate_reply(persona, dict(NO_CAPS), system, merged, None,
+                                   model_override=model_override, unattended=False)
             self._send(200, {"reply": reply})
         except Exception as e:
             log(f"/invoke failed: {e}")

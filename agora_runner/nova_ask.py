@@ -1,12 +1,12 @@
-"""The Questions page: Edvard types a question, a Sonnet persona answers it.
+"""The Questions page: The owner types a question, a Sonnet persona answers it.
 
-Edvard's capture, `ideas.md` 2026-08-19: *"Make a questions page in Nova
+The owner's capture, `ideas.md` 2026-08-19: *"Make a questions page in Nova
 where i can ask questions in a box and a Claude sonnet model answers me."*
 
 **Almost nothing new happens on the answering side, and that is the whole
 design.** `poll_once` already walks every conversation each tick, and
 `decide_turn` already makes a persona speak whenever the last visible
-message came from Edvard. So a question posted into a conversation whose
+message came from the owner. So a question posted into a conversation whose
 curator is a Sonnet persona gets answered by the machinery that is already
 running -- no model call in this process, no second answer path to keep in
 step with `conversations.speak`, and nothing here to go stale when that
@@ -35,11 +35,13 @@ own context is bounded by `conversations.FETCH_LIMIT` exactly as it is for
 every other conversation.
 """
 
+from agora_runner.audit import fold_text_streams, narration_passage
+from agora_runner.nova_conversations import (
+    ANSWER_PERSONA_ID, clamp_thread_limit, keep_only_live_passages)
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.log import log
 
 
-ANSWER_PERSONA_ID = "8972a54d-cafa-4f07-a527-d8686cea51ca"
 # Persona display name is "Nova", not "Nova Answers" -- 2026-08-30, Edvard:
 # talking to three differently-branded, differently-permissioned "Novas"
 # (the cycle, the comment-reply turn, this one) read as three different
@@ -58,9 +60,9 @@ ASK_TAG = "nova-ask"
 MAX_QUESTION_CHARS = 4000
 
 # Newest N rendered on the page. The thread is one long-lived conversation,
-# so this is the only thing standing between Edvard's phone and a year of
+# so this is the only thing standing between the owner's phone and a year of
 # transcript -- the same "what does this look like after 100 items" question
-# that the Needs Edvard wall failed.
+# that the Needs Edvard wall failed.  (not-prose: quoting a literal)
 MAX_THREAD = 40
 
 
@@ -108,7 +110,7 @@ def conversation_id(create=False):
 
 
 def ask(text):
-    """(ok, message). `message` is for Edvard's screen on failure."""
+    """(ok, message). `message` is for the owner's screen on failure."""
     if not isinstance(text, str) or not text.strip():
         return False, "a question needs some text"
     text = text.strip()
@@ -117,7 +119,7 @@ def ask(text):
     cid = conversation_id(create=True)
     if not cid:
         return False, "could not reach the conversation store"
-    # sender="Edvard" is not decoration: `decide_turn` speaks only when the
+    # sender="Edvard" is not decoration: `decide_turn` speaks only when the  (not-prose: quoting a literal)
     # last visible message came from him, so any other sender posts a
     # question that nothing ever answers.
     # `agora_internal` answers `(status, body)`, and the first version of
@@ -139,7 +141,78 @@ def ask(text):
     return True, message_id
 
 
-def thread():
+def watching():
+    """Tell Agora this thread is on his screen here, so it holds the buzz.
+
+    His capture, `ideas.md` 2026-08-25: *"now when i use the new chat i get
+    alerted by agora whenever a new message arrives. This is not a huge
+    problem, but its not high quality of a product."* Agora's service worker
+    already refuses to notify while its own app is visible; it cannot see a
+    tab on this origin, so the page says so instead and `notify` withholds the
+    push for `WATCHING_TTL_MS` (30s at the time of writing).
+
+    `create=False` on purpose: a reader who has never asked anything has no
+    thread to be present in, and manufacturing a conversation for a presence
+    ping would be the same mistake `thread()` avoids below.
+
+    (ok, reason). A refused ping means no suppression, so failing here can only
+    ever cost a notification he was going to get anyway and the caller logs and
+    moves on. The expensive direction is the other one -- vouching when he is
+    not there -- and nothing on this path can do that.
+
+    Costs a `GET /conversations` per call, since `conversation_id` resolves by
+    tag. That is one extra listing per four-second poll tick and it is filed
+    rather than cached: a module-level cache here would be a second place the
+    thread's id lives, and the id is the one thing this module already goes to
+    some trouble not to duplicate.
+    """
+    cid = conversation_id()
+    if not cid:
+        return False, "no questions thread yet"
+    status, _body = agora_internal("POST", f"/conversations/{cid}/presence", {})
+    if status not in (200, 201):
+        log(f"nova_ask: presence ping failed HTTP {status}")
+        return False, "could not reach the conversation store"
+    return True, "watching"
+
+
+def _chip(message):
+    """A one-line label for a tool call the turn has made, or None.
+
+    His capture, `issues.md` 2026-08-30 12:56: *"I asked Nova for a status
+    report, but it just says thinking for a long time. I need feedback. What
+    is it doing? Did it even recieve my messages? What tools does it use? We
+    have some of this in Agora, but not in Nova."*
+
+    The data was already in the thread and this page was dropping it. Agora
+    posts one `activity` message per capability call (`audit.audit`), and
+    `thread()` above skips every one of them that is not a narration passage.
+    That is right for the *transcript* -- a tool chip is not something anyone
+    said -- and wrong for the pending bubble, which had nothing to show and so
+    showed a word that never changes.
+
+    `capability` is the tool name and `detail` is the chip label Agora renders
+    ("Read vault file · journal.md"). Both are returned rather than joined
+    here: how they read on a phone is the page's call, not this module's.
+
+    No guard against NARRATION_TEXT here, deliberately: the caller reaches
+    this only after `narration_passage` has come back None, so a passage
+    never arrives. A mutation pass showed the guard could be deleted with
+    every test still green, which is what dead code looks like.
+    """
+    activity = message.get("activity")
+    if not isinstance(activity, dict):
+        return None
+    capability = (activity.get("capability") or "").strip()
+    if not capability:
+        return None
+    return {
+        "capability": capability,
+        "detail": (activity.get("detail") or "").strip(),
+    }
+
+
+def thread(limit=MAX_THREAD):
     """What the page renders: the visible tail of the questions thread.
 
     Activity, thinking, forgotten and system messages are dropped for the
@@ -149,22 +222,69 @@ def thread():
     """
     cid = conversation_id()
     if not cid:
-        return {"conversationId": None, "messages": [], "waiting": False}
-    status, detail = agora_get(f"/conversations/{cid}/messages?limit={MAX_THREAD}")
+        return {"conversationId": None, "messages": [], "waiting": False,
+                "hasMore": False}
+    # `limit + 1` and `hasMore` mean exactly what they mean in
+    # `nova_conversations.thread`, and the clamp is imported from there
+    # rather than re-derived: this is the same dock asking the same
+    # question of a thread that happens to be found by tag instead of by id.
+    limit = clamp_thread_limit(limit)
+    status, detail = agora_get(f"/conversations/{cid}/messages?limit={limit + 1}")
     if status != 200:
         raise RuntimeError(f"conversation fetch returned {status}")
-    messages = [
-        {
+    has_more = len(detail.get("messages", [])) > limit
+    messages = []
+    # What the turn is doing right now, for the pending bubble. Reset on
+    # every settled message he sends, so a follow-up question does not
+    # inherit the previous turn's step count.
+    asked_at = ""
+    steps = 0
+    latest = None
+    for m in fold_text_streams(detail.get("messages", [])):
+        if m.get("forgotten") or m.get("system") or m.get("thinking"):
+            continue
+        # Keep exactly one kind of activity message: a passage the persona
+        # wrote on its way to the answer, pushed here live while the turn is
+        # still running. See audit.narration_passage and nova_conversations
+        # ._visible -- this is issue #129, the reply arriving in pieces
+        # instead of as one block after four minutes of nothing.
+        passage = narration_passage(m)
+        if m.get("activity") and passage is None:
+            # Dropped from the thread and read here instead. Agora's own
+            # Activity feed renders these as chips; this page threw them
+            # away, which is exactly the gap he reported -- a static
+            # "Thinking…" that says nothing about whether the turn is alive.
+            chip = _chip(m)
+            if chip:
+                steps += 1
+                latest = chip
+            continue
+        if (m.get("sender") or "") == "Edvard":
+            asked_at = m.get("createdAt") or ""
+            steps = 0
+            latest = None
+        messages.append({
             "id": m.get("id"),
             "sender": m.get("sender") or "",
-            "text": m.get("text") or "",
+            "text": passage if passage is not None else (m.get("text") or ""),
             "createdAt": m.get("createdAt") or "",
-        }
-        for m in detail.get("messages", [])
-        if not (m.get("forgotten") or m.get("system")
-                or m.get("activity") or m.get("thinking"))
-    ]
+            "partial": passage is not None,
+        })
+    messages = keep_only_live_passages(messages)
     # The page needs to know whether to keep polling, and it cannot work
     # that out from the sender alone without re-deriving `decide_turn`.
-    waiting = bool(messages) and messages[-1]["sender"] == "Edvard"
-    return {"conversationId": cid, "messages": messages[-MAX_THREAD:], "waiting": waiting}
+    #
+    # Deliberately blind to the partials above, and this is the one place
+    # they could do damage: a passage arrives from the persona mid-turn, so
+    # the naive "last sender is the owner" reads as answered and the page stops
+    # polling before the actual reply lands. A partial is evidence the turn
+    # is still going, never that it finished.
+    settled = [m for m in messages if not m["partial"]]
+    waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
+    payload = {"conversationId": cid, "messages": messages[-limit:],
+               "waiting": waiting, "hasMore": has_more}
+    if waiting:
+        # Only while the turn is running: a progress block on a finished
+        # thread is a stale clock the page would keep counting up.
+        payload["progress"] = {"askedAt": asked_at, "steps": steps, "latest": latest}
+    return payload

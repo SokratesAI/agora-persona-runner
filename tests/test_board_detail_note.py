@@ -7,7 +7,7 @@ without an account of itself is that drift pointing the other way.
 
 The tests that matter here are the ones about the *span*: a write-up ends
 at the next heading, so a note that lands outside it, or one that
-introduces a heading of its own, silently truncates Edvard's own text on
+introduces a heading of its own, silently truncates the owner's own text on
 the page rather than looking wrong.
 """
 
@@ -191,7 +191,7 @@ def test_a_missing_or_multiline_date_is_refused():
     assert append_detail_note(BOARD, 57, "Closed.", "08-15\n## 58 — Injected") is None
 
 
-# --- Idea #64: the same append, attributed to Edvard ---
+# --- Idea #64: the same append, attributed to the owner ---
 # *"Lets me have the same comment conversation on ideas, notes and issues
 # like the Journal."* The thread lives inside the write-up, so a comment
 # is `append_detail_note` with a different name in front of the colon --
@@ -283,7 +283,7 @@ def _write_comment(monkeypatch, **kwargs):
 def test_a_cycles_reply_is_written_under_novas_name(monkeypatch):
     """The bug this pins is not cosmetic and it is not hypothetical.
 
-    `comment_on_row` hardcoded `author="Edvard"` while its own docstring
+    `comment_on_row` hardcoded `author="Edvard"` while its own docstring  (not-prose: quoting a literal)
     told a cycle to reply with `author="Nova"`, so two replies this loop
     made are in his `issues.md` right now as words he said. And
     `unanswered_comments` calls a row waiting when the **last** note under
@@ -317,7 +317,7 @@ def test_an_unstated_author_is_still_him(monkeypatch):
 
 # --- The `Updated` cell ------------------------------------------------
 #
-# `tools.top_board_rows` ranks Edvard's boards by rating and then by
+# `tools.top_board_rows` ranks the owner's boards by rating and then by
 # `age_key(updated)`, oldest first, so this cell decides which row a cycle
 # is told to take. A note is the only call that always means the row was
 # genuinely worked, and it used to leave the cell alone -- measured live on

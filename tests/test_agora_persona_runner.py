@@ -1,6 +1,6 @@
 """
 Tests for the agora_runner package (moved here 2026-07-29 from agora-config's
-persona-runner.yaml embedded ConfigMap script -- Edvard's explicit ask to
+persona-runner.yaml embedded ConfigMap script -- the owner's explicit ask to
 migrate off a single giant embedded script onto a real repo + built image +
 real modules, both for editability and because a monolithic YAML-embedded
 script was a bad substrate for the planned self-evolution loop to work
@@ -825,7 +825,7 @@ def test_vault_write_path_lowercases_the_path_field_not_just_the_id(runner):
 
 def test_vault_write_path_does_not_copy_previous_content_into_the_vault(runner):
     """Every overwrite used to write a second document holding the old
-    content under agora/backups/. Edvard asked for it to stop
+    content under agora/backups/. The owner asked for it to stop
     (2026-08-05) -- "since the switch to Nova, this is just noise" -- and
     the folder was deleted. The daily GitHub snapshot is the recovery
     path now."""
@@ -882,7 +882,7 @@ def test_vault_append_path_appends_at_end_when_no_marker_given(runner):
 # instead -- silently, with no error. That is exactly how the identical
 # bug in the bridge's own vault tool (agora-claude-bridge#10) buried three
 # of Nova's journal entries at the bottom of a file whose header promises
-# newest-first; Edvard read it as the loop having stopped writing. The
+# newest-first; The owner read it as the loop having stopped writing. The
 # old behaviour had a passing test asserting it, which is why it survived.
 # Asking for a position and quietly getting the opposite end of the file
 # is the same class of mistake as appending to a file that doesn't exist,
@@ -937,7 +937,7 @@ def test_execute_tool_vault_append_dispatches_and_audits(runner):
 
 
 # 2026-08-03: the audit log is the only durable record of what a persona
-# did to Edvard's vault, and it was lying in exactly the cases worth
+# did to the owner's vault, and it was lying in exactly the cases worth
 # reviewing -- every write branch passed before/after unconditionally, so
 # a call that wrote nothing still produced an entry carrying the new
 # content as the "after" side, which Agora's Activity feed renders as a
@@ -1184,7 +1184,7 @@ def test_anthropic_generate_single_text_block_still_works(runner):
 
 
 # ---------------------------------------------------------------------------
-# 2026-07-31: bring back visible "thinking" (Edvard's old Slack-bridge setup
+# 2026-07-31: bring back visible "thinking" (the owner's old Slack-bridge setup
 # streamed thought blocks as thread replies to a "Thinking..." placeholder;
 # Agora never had this for either provider). Anthropic already excluded
 # thinking blocks from round_text correctly -- they just had nowhere to go.
@@ -1282,7 +1282,7 @@ def _make_poll_fixtures(runner, conversation_id="conv-1"):
 
 
 def test_repeated_speak_failures_back_off_without_pausing(runner):
-    """Edvard, 2026-08-05: auto-pause is gone -- it blocked the conversation
+    """The owner, 2026-08-05: auto-pause is gone -- it blocked the conversation
     until he resumed it by hand. The conversation must stay active and the
     retry must simply be deferred."""
     runner._conversation_failures.clear()
@@ -1309,7 +1309,7 @@ def test_repeated_speak_failures_back_off_without_pausing(runner):
 def test_backoff_notice_surfaces_the_real_exception(runner):
     # The label used to be a generic "(rate limit or outage)" guess, with
     # the real exception only ever reaching stdout via poll.py's own
-    # try/except -- never the conversation Edvard actually reads.
+    # try/except -- never the conversation the owner actually reads.
     runner._conversation_failures.clear()
     runner._conversation_backoff.clear()
     summary, detail, calls, fake_agora_get, fake_agora_internal, fake_decide_turn = _make_poll_fixtures(runner)
@@ -1510,7 +1510,7 @@ def test_speak_reads_sticky_fallback_from_conversation_detail(runner):
               "name": "Test", "stickyFallback": True}
     captured = {}
 
-    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None):
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None, unattended=True):
         captured["sticky"] = sticky
         return "reply text"
 
@@ -1529,7 +1529,7 @@ def test_speak_defaults_sticky_false_when_conversation_field_unset(runner):
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
     captured = {}
 
-    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None):
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False, on_text=None, on_thinking=None, unattended=True):
         captured["sticky"] = sticky
         return "reply text"
 
@@ -1739,14 +1739,16 @@ def test_backoff_delay_doubles_and_is_capped(runner):
     runner._conversation_backoff.clear()
 
 
-def test_turn_cap_stops_the_chain_without_pausing(runner):
-    """PAUSE_SENTINEL used to PATCH status=paused. Edvard asked for that gone;
-    the chain must just stop."""
+def test_no_turn_owed_neither_speaks_nor_patches(runner):
+    """decide_turn returning [] must end the tick silently -- no speak, and no
+    PATCH. Auto-pause used to live on this path via PAUSE_SENTINEL; the owner
+    asked for pausing gone (2026-08-05) and the sentinel went with the
+    persona-to-persona chain it capped (agora#67)."""
     summary, detail, calls, fake_agora_get, fake_agora_internal, _ = _make_poll_fixtures(runner)
 
     with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.conversations, "agora_internal", side_effect=fake_agora_internal), \
-         patch.object(runner.conversations, "decide_turn", return_value=[runner.PAUSE_SENTINEL]), \
+         patch.object(runner.conversations, "decide_turn", return_value=[]), \
          patch.object(runner.conversations, "speak", side_effect=AssertionError("must not speak")):
         runner.poll_conversation(summary)
 
@@ -1928,7 +1930,7 @@ def test_anthropic_generate_sends_real_image_content_end_to_end(runner):
 # Covers: on_text fires per round with the right is_final; the Gemini
 # fallback note lands on only the first streamed chunk; turn-taking stays
 # correct once one "turn" can be several messages (activity chips invisible
-# to visible/consecutive_ai_turns, turn-counted by run not by message); and
+# to the `visible` filter decide_turn builds); and
 # a turn that fails partway through rolls its own preamble back out.
 # ---------------------------------------------------------------------------
 
@@ -2010,7 +2012,7 @@ def test_gemini_generate_streams_preamble_before_function_call_then_final_text(r
 def test_gemini_generate_requests_include_thoughts_when_thinking_on(runner):
     """2026-07-31: thinkingBudget alone makes Gemini think for real but
     returns none of it -- includeThoughts is what actually makes the API
-    send thought-summary parts back. This is the entire reason Edvard
+    send thought-summary parts back. This is the entire reason the owner
     never saw Gemini's thoughts in Agora; not a UI gap, a missing request
     param."""
     caps = dict(runner.NO_CAPS)
@@ -2396,44 +2398,48 @@ def test_generate_reply_dispatches_claude_cli_provider(runner):
     mock_gen.assert_called_once()
 
 
-def test_consecutive_ai_turns_counts_runs_not_messages(runner):
-    """A single logical turn now streams as several messages -- the
-    AI_TURN_CAP must still count actual persona handoffs, not chunks."""
-    thread = [
-        {"sender": "Edvard", "text": "go"},
-        {"sender": "Gemini", "text": "chunk one"},
-        {"sender": "Gemini", "text": "chunk two"},
-        {"sender": "Gemini", "text": "chunk three"},
-    ]
-    assert runner.consecutive_ai_turns(thread) == 1
-
-    thread.append({"sender": "Haiku", "text": "handoff reply"})
-    assert runner.consecutive_ai_turns(thread) == 2
+def test_decide_turn_speaks_without_being_mentioned(runner):
+    """A conversation holds one persona, so the owner never has to name it.
+    The @mention requirement went with the second persona (agora#67)."""
+    personas = [{"name": "Gemini", "role": "curator"}]
+    thread = [{"sender": "Edvard", "text": "no name in this message at all"}]
+    assert runner.decide_turn(thread, personas) == ["Gemini"]
 
 
-def test_decide_turn_ignores_activity_messages_for_last_sender(runner):
-    """An activity chip trailing a persona's real text must not look like
-    'the persona already replied to a fresh @mention' -- and must not
-    itself satisfy an @mention (it's not a real speaker turn)."""
-    personas = [{"name": "Gemini", "role": "curator"}, {"name": "Haiku", "role": "listener"}]
-    thread = [
-        {"sender": "Edvard", "text": "@Haiku are you there?"},
-        {"sender": "Gemini", "text": "vault_read: notes.md", "activity": {"capability": "vault_read", "detail": "notes.md"}},
-    ]
+def test_decide_turn_speaks_for_a_lone_persona_that_is_not_a_curator(runner):
+    """The old code answered a non-curator only when @mentioned by name, so
+    a lone listener would have gone silent once the @mention path went."""
+    personas = [{"name": "Haiku", "role": "listener"}]
+    thread = [{"sender": "Edvard", "text": "hello"}]
     assert runner.decide_turn(thread, personas) == ["Haiku"]
 
 
-def test_decide_turn_stops_chain_at_cap_counting_handoffs_not_activity_chips(runner):
-    """Each handoff below carries an activity chip right after its text
-    (matching how a real streamed turn looks) -- the cap must trip based on
-    the AI_TURN_CAP-th real handoff, not be thrown off by the chips."""
-    personas = [{"name": f"P{i}", "role": "listener"} for i in range(runner.AI_TURN_CAP + 1)]
-    thread = [{"sender": "Edvard", "text": "@P0 go"}]
-    for i in range(runner.AI_TURN_CAP):
-        thread.append({"sender": f"P{i}", "text": f"@P{i + 1} your turn"})
-        thread.append({"sender": f"P{i}", "text": f"vault_read: x",
-                        "activity": {"capability": "vault_read", "detail": "x"}})
-    assert runner.decide_turn(thread, personas) == [runner.PAUSE_SENTINEL]
+def test_decide_turn_does_not_reply_to_a_persona(runner):
+    """The last visible message being a persona's is the end of the turn.
+
+    Note what this does and does not pin: the old code also returned [] here,
+    because it filtered a self-mention out before looking for a chain. What it
+    pins is that the rule is now the sender check alone -- mutate that check
+    away and this test is the one that fails. Proving the *chain* is gone would
+    need a fixture with a second persona in the thread, which Agora refuses to
+    create (agora#67), so there is no honest way to write it."""
+    personas = [{"name": "Gemini", "role": "curator"}]
+    thread = [
+        {"sender": "Edvard", "text": "go"},
+        {"sender": "Gemini", "text": "done, over to @Gemini"},
+    ]
+    assert runner.decide_turn(thread, personas) == []
+
+
+def test_decide_turn_ignores_activity_messages_for_last_sender(runner):
+    """An activity chip trailing the owner's message is a UI event, not a
+    reply -- the persona's turn is still owed."""
+    personas = [{"name": "Gemini", "role": "curator"}]
+    thread = [
+        {"sender": "Edvard", "text": "are you there?"},
+        {"sender": "Gemini", "text": "vault_read: notes.md", "activity": {"capability": "vault_read", "detail": "notes.md"}},
+    ]
+    assert runner.decide_turn(thread, personas) == ["Gemini"]
 
 
 def test_merge_history_excludes_activity_messages(runner):
@@ -2464,15 +2470,15 @@ def test_merge_history_excludes_thinking_messages(runner):
 
 
 def test_decide_turn_ignores_thinking_messages_for_last_sender(runner):
-    """A thinking chunk trailing a persona's real text must not look like
-    'the persona already replied to a fresh @mention', same reasoning as
+    """A thinking chunk is not something a persona said to anyone, so it
+    must not stand in for the reply that is still owed -- same reasoning as
     the activity-chip exclusion right above."""
-    personas = [{"name": "Gemini", "role": "curator"}, {"name": "Haiku", "role": "listener"}]
+    personas = [{"name": "Gemini", "role": "curator"}]
     thread = [
-        {"sender": "Edvard", "text": "@Haiku are you there?"},
+        {"sender": "Edvard", "text": "are you there?"},
         {"sender": "Gemini", "text": "let me think about that", "thinking": True},
     ]
-    assert runner.decide_turn(thread, personas) == ["Haiku"]
+    assert runner.decide_turn(thread, personas) == ["Gemini"]
 
 
 def test_notify_sends_push_field_defaulting_true(runner):
@@ -2528,7 +2534,7 @@ def test_speak_streams_each_chunk_with_push_only_on_the_final_one(runner):
     notify_calls = []
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_text("preamble", False)
         on_text("final answer", True)
         return "final answer"
@@ -2552,7 +2558,7 @@ def _speak_capturing_model(runner, detail, persona, model_override=None):
     seen = {}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         seen["model_override"] = model_override
         return "ok"
 
@@ -2605,7 +2611,7 @@ def test_speak_streams_thinking_chunks_with_thinking_true_and_push_false(runner)
     notify_calls = []
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_thinking("pondering the question...")
         on_text("final answer", True)
         return "final answer"
@@ -2637,7 +2643,7 @@ def test_speak_rolls_back_thinking_chunks_too_when_a_later_round_fails(runner):
     notify_calls = {"n": 0}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_thinking("thinking that got posted")
         raise RuntimeError("simulated failure")
 
@@ -2672,7 +2678,7 @@ def test_speak_rolls_back_posted_chunks_when_a_later_round_fails(runner):
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_text("preamble that got posted", False)
         raise RuntimeError("simulated failure on the next round")
 
@@ -2702,7 +2708,7 @@ def test_speak_rollback_is_best_effort_and_still_raises_the_original_error(runne
     detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
 
     def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
-                             sticky=False, on_text=None, on_thinking=None):
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
         on_text("preamble", False)
         raise RuntimeError("original failure")
 
@@ -2902,7 +2908,7 @@ def test_run_heartbeat_claims_run_even_when_persona_missing(runner):
 # 2026-07-25: K3s Sentinel was created via New Conversation without
 # kubectlRead (fixed separately, agora#19), and even once it had the tool,
 # a monitoring heartbeat reporting "all clear" every single run would be
-# noise -- Edvard's explicit ask: "only send a message back to the chat if
+# noise -- the owner's explicit ask: "only send a message back to the chat if
 # it finds something worth reporting. A clean working cluster should not
 # trigger a message." HEARTBEAT_NO_REPORT_SENTINEL is the mechanism: a
 # heartbeat's own prompt can ask for this exact string when there's
@@ -2954,7 +2960,7 @@ def test_run_heartbeat_uses_rotated_conversation_id(runner):
 
 def test_run_heartbeat_folds_edvards_last_message_into_the_trigger(runner):
     """2026-08-02: claude-cli only ever sees history[-1] (the synthetic
-    trigger) -- without this, a real message Edvard typed into the
+    trigger) -- without this, a real message the owner typed into the
     conversation would be invisible to a claude-cli persona regardless
     of timing."""
     heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
@@ -3012,7 +3018,7 @@ def test_run_heartbeat_trigger_stays_generic_when_last_message_is_from_persona(r
 
 
 # ---------------------------------------------------------------------------
-# 2026-08-05, Edvard's two asks in one message: tell the persona when *he*
+# 2026-08-05, the owner's two asks in one message: tell the persona when *he*
 # started the run rather than the schedule, and give him a visible end to a
 # run he currently has to guess at.
 # ---------------------------------------------------------------------------
@@ -3020,7 +3026,7 @@ def test_run_heartbeat_trigger_stays_generic_when_last_message_is_from_persona(r
 def _heartbeat_run(runner, heartbeat, reply="did a thing", raises=None, system_extra=""):
     """Drives run_heartbeat and returns (system prompt, last history entry,
     chip labels) so a test can assert on what the persona saw and what
-    Edvard saw."""
+    the owner saw."""
     persona = {"id": "p1", "name": "Nova", "model": "claude-cli:claude-opus-5",
                "capabilities": dict(runner.NO_CAPS)}
     detail = {"personas": [], "messages": [], "stickyFallback": False}
@@ -3036,7 +3042,7 @@ def _heartbeat_run(runner, heartbeat, reply="did a thing", raises=None, system_e
     with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
          patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
          patch.object(runner.heartbeats, "build_system",
-                      side_effect=lambda p, d, parts, extra: extra + system_extra), \
+                      side_effect=lambda p, d, extra: extra + system_extra), \
          patch.object(runner.heartbeats, "generate_reply", side_effect=fake_generate_reply), \
          patch.object(runner.heartbeats, "notify", return_value=(200, "m1")), \
          patch.object(runner.heartbeats, "audit") as mock_audit, \
@@ -3048,7 +3054,7 @@ def _heartbeat_run(runner, heartbeat, reply="did a thing", raises=None, system_e
 
 
 def test_run_heartbeat_tells_the_persona_edvard_triggered_it_by_hand(runner):
-    """forceRun is the only trace of "Edvard pressed Run", and the claim
+    """forceRun is the only trace of "the owner pressed Run", and the claim
     PATCH clears it server-side -- so if run_heartbeat doesn't read it from
     its own snapshot, nothing downstream can ever know."""
     system, trigger, chips = _heartbeat_run(runner, {
@@ -3088,7 +3094,7 @@ def test_run_heartbeat_closes_the_run_with_a_chip(runner):
 
 
 def test_run_heartbeat_closes_the_run_even_when_it_fails(runner):
-    """The case Edvard actually loses time to: no reply is coming, and
+    """The case the owner actually loses time to: no reply is coming, and
     without this the thread's last entry stays the opening chip forever."""
     _system, _trigger, chips = _heartbeat_run(runner, {
         "id": "hb1", "personaId": "p1", "conversationId": "conv-1",
@@ -3184,7 +3190,7 @@ def _rotating_heartbeat_run(runner, old_messages, persona_name="Test", older=Non
 
 def test_run_heartbeat_carries_edvards_message_across_a_rotation(runner):
     """2026-08-02: rotation replaces `detail` with a brand-new EMPTY
-    conversation, so the fold-in of Edvard's last message could never
+    conversation, so the fold-in of the owner's last message could never
     fire on a rotating heartbeat -- the two halves of #27 cancelled each
     other out and anything he typed between cycles was dropped silently.
     Evolve's own heartbeat rotates, so this was live."""
@@ -3197,7 +3203,7 @@ def test_run_heartbeat_carries_edvards_message_across_a_rotation(runner):
 
 def test_a_message_typed_while_the_cycle_was_running_is_still_carried(runner):
     """This test used to assert the opposite, on the theory that a persona
-    message underneath Edvard's meant he had been answered. In a cycle
+    message underneath the owner's meant he had been answered. In a cycle
     transcript that theory is wrong, and wrong in the most common case
     there is: he watches a run work, types something at minute ten, and at
     minute forty the run posts its own report -- built from a trigger
@@ -3234,7 +3240,7 @@ def test_run_heartbeat_carries_a_message_from_behind_a_dead_cycle(runner):
     """2026-08-02: #28's one-step lookback lands on an EMPTY conversation
     whenever the previous cycle was killed before it replied -- which has
     happened twice in one day, because merging into this repo rolls the
-    pod running the cycle. Everything Edvard typed the cycle before that
+    pod running the cycle. Everything the owner typed the cycle before that
     was then dropped silently and forever. That is exactly why he says he
     can only reach this loop through vault files."""
     history = _rotating_heartbeat_run(runner, [], older={
@@ -3247,7 +3253,7 @@ def test_run_heartbeat_carries_a_message_from_behind_a_dead_cycle(runner):
 
 def test_a_message_already_offered_to_an_earlier_run_is_not_carried_again(runner):
     """The boundary of "already seen". An old cycle conversation ends on
-    Edvard forever -- it gets answered in the NEW conversation, never in
+    the owner forever -- it gets answered in the NEW conversation, never in
     itself -- so without a boundary every cycle would re-surface the same
     line for the rest of its life. Until 2026-08-05 that boundary was "a
     persona replied here"; it is now "this arrived before my last run",
@@ -3263,7 +3269,7 @@ def test_a_message_already_offered_to_an_earlier_run_is_not_carried_again(runner
 
 
 def test_a_message_written_into_an_older_thread_since_the_last_run_is_carried(runner):
-    """The regression that cost a whole cycle on 2026-08-05. Edvard typed
+    """The regression that cost a whole cycle on 2026-08-05. The owner typed
     a one-line note into a transcript from an earlier cycle; the walk
     stopped before reaching it (the previous cycle had replied, as a
     healthy one always does), so ordinary turn-taking answered it instead
@@ -3283,7 +3289,7 @@ def test_a_message_written_into_an_older_thread_since_the_last_run_is_carried(ru
 
 
 def test_every_unanswered_cycle_conversation_is_carried_oldest_first(runner):
-    """Two dead cycles in a row, Edvard writing into both: he gets read
+    """Two dead cycles in a row, the owner writing into both: he gets read
     once, in the order he wrote, not just his newest line."""
     history = _rotating_heartbeat_run(runner, [], older={
         "c-cycle3": [{"sender": "Test", "text": "cycle 3's report", "id": "m1"},
@@ -3318,7 +3324,7 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
     the fan-out stays bounded: one listing plus at most CYCLE_LOOKBACK
     message fetches, however many old conversations exist."""
     heartbeat = {"id": "hb1", "conversationId": "c-new"}
-    # Nothing from Edvard anywhere: this test is about the fan-out, and a
+    # Nothing from the owner anywhere: this test is about the fan-out, and a
     # carried message would only make the empty-result assertion below
     # measure something it isn't trying to measure.
     previous = {"personas": [], "messages": [
@@ -3345,7 +3351,7 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
 
 
 def test_pending_across_cycles_drops_the_oldest_when_over_the_char_cap(runner):
-    """Edvard's own constraint on a long-lived channel: "i do not want
+    """The owner's own constraint on a long-lived channel: "i do not want
     Claude to read that every time as it can quickly be megabytes of
     tokens." Newest wins; nothing is truncated mid-sentence."""
     heartbeat = {"id": "hb1", "conversationId": "c-new"}
@@ -3411,7 +3417,7 @@ def test_run_heartbeat_skips_notify_when_sentinel_returned(runner):
 
 
 # ---------------------------------------------------------------------------
-# 2026-08-03, Edvard: "Tool usage and heartbeats does show in the
+# 2026-08-03, the owner: "Tool usage and heartbeats does show in the
 # conversations, but are displayed after the process is finished... They are
 # there to show that something is processing, but if its displayed after the
 # process is done they serve no purpose other than hindsight logging. I want
@@ -3449,14 +3455,14 @@ def _heartbeat_call_order(runner, *, task=None, reply="all done", raises=None):
 def test_heartbeat_chip_is_posted_before_the_model_is_called(runner):
     """The whole point of the chip is to show a run is in flight, so it has
     to land before the slow part, not after it. For a claude-cli cycle
-    generate_reply is the ~45 minutes Edvard spends staring at nothing."""
+    generate_reply is the ~45 minutes the owner spends staring at nothing."""
     assert _heartbeat_call_order(runner) == \
         ["audit", "generate_reply", "notify", "audit"]
 
 
 def test_heartbeat_chip_survives_a_run_that_dies_midway(runner):
     """A cycle killed or failed after it started used to leave NO trace in
-    the conversation at all -- the failure mode that made Edvard think the
+    the conversation at all -- the failure mode that made the owner think the
     loop had stopped. The up-front chip is now that trace -- and since
     2026-08-05 a closing one says the run is over, not still going."""
     assert _heartbeat_call_order(runner, raises=RuntimeError("boom")) == \
@@ -3559,12 +3565,435 @@ def test_run_due_heartbeats_skips_already_running_workflow(runner):
         def is_alive(self):
             return True
 
-    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": _AliveThread()}), \
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveThread()]}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor:
         runner.run_due_heartbeats()
 
     mock_thread_ctor.assert_not_called()
+
+
+def _plain_hb(**over):
+    hb = {
+        "id": "hb1", "name": "Nova", "enabled": True, "forceRun": False,
+        "schedule": "every@18m", "createdAt": "2026-01-01T00:00:00+00:00",
+        "lastRunAt": "2026-08-23T19:00:00+00:00", "conversationId": "c1",
+        "personaId": "p1",
+    }
+    hb.update(over)
+    return hb
+
+
+class _AliveStub:
+    def is_alive(self):
+        return True
+
+
+class _DeadStub:
+    def is_alive(self):
+        return False
+
+
+def test_a_second_nova_cycle_spawns_while_the_first_is_still_running(runner):
+    """The thing the owner's 18-minute cadence actually needs.
+
+    Opening the bridge's invocation lock (CLAUDE_CLI_CONCURRENT) does
+    nothing on its own: this guard sits a layer above it and used to drop
+    the tick before the bridge was ever called, so a 45-minute cycle ate
+    two of every three 18-minute slots.
+    """
+    heartbeat = _plain_hb(lastRunAt="2026-08-23T19:00:00+00:00")
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveStub()]}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", {"hb1": "older"}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1
+    assert created[0].started is True
+
+
+def test_a_fourth_concurrent_run_is_refused(runner):
+    """3 is a bound on a runaway -- a hung run's thread never dies, and
+    every later tick would stack another on it."""
+    heartbeat = _plain_hb()
+    running = [_AliveStub(), _AliveStub(), _AliveStub()]
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": running}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", {"hb1": "older"}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread") as mock_thread_ctor, \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    mock_thread_ctor.assert_not_called()
+
+
+def test_one_slot_cannot_spawn_twice_before_its_claim_lands(runner):
+    """`run_heartbeat` PATCHes `lastRunAt` from inside its own thread, so
+    for a moment after `thread.start()` a tick still reads the OLD
+    `lastRunAt` and finds the SAME slot due. At a limit of 1 the thread
+    guard covered that; at 3 a burst of ticks inside the window would
+    spawn three runs for one slot."""
+    heartbeat = _plain_hb(lastRunAt="2026-08-23T19:00:00+00:00")
+    marks = {}
+    threads = {}
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        t.is_alive = lambda: True
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()   # spawns for this slot
+        runner.run_due_heartbeats()   # same lastRunAt: claim has not landed
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1
+
+    # ...and the moment the claim does land, the next slot spawns.
+    heartbeat["lastRunAt"] = "2026-08-23T19:18:00+00:00"
+    with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 2
+
+
+def test_a_run_that_dies_without_claiming_does_not_wedge_the_heartbeat(runner):
+    """The regression the spawn-mark introduced, found in review of #308.
+
+    `_heartbeat_spawn_marks` is only ever REPLACED by a different
+    `lastRunAt`. So a run that dies without moving it -- claim PATCH
+    fails in an Agora blip, then the thread dies before the final PATCH,
+    which is the case `run_heartbeat` explicitly calls "not fatal" --
+    left a mark that matched every later tick forever, and the heartbeat
+    never ran again. The old one-at-a-time guard could not do this: a
+    dead thread always meant "spawn on the next tick".
+    """
+    heartbeat = _plain_hb(lastRunAt="2026-08-23T19:00:00+00:00")
+    threads = {}
+    marks = {}
+    created = []
+    liveness = {"alive": True}
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        t.is_alive = lambda: liveness["alive"]
+        created.append(t)
+        return t
+
+    def tick():
+        with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+             patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+             patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+             patch.object(runner.heartbeats, "agora_internal",
+                          return_value=(200, {"heartbeats": [heartbeat]})), \
+             patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+             patch.object(runner.heartbeats, "schedule_due", return_value=True):
+            runner.run_due_heartbeats()
+
+    tick()
+    assert len(created) == 1
+
+    # The run dies. `lastRunAt` never moved, because both PATCHes failed.
+    liveness["alive"] = False
+    tick()
+    tick()
+
+    assert len(created) == 3, "a dead unclaimed run wedged the heartbeat for good"
+
+
+def _scheduler_lines(runner, heartbeat, threads, marks, drops, limit=3,
+                     spawned=None, ticks=1):
+    """Run `run_due_heartbeats` `ticks` times and return what log() printed.
+
+    Every scheduling decision used to go through debug_log(), which is
+    off on the runner deployment, so these lines are the whole of what an
+    operator can see. `spawned` collects each thread constructed.
+    """
+    printed = []
+
+    def ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        if spawned is not None:
+            spawned.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "_heartbeat_dropped_ticks", drops), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", limit), \
+         patch.object(runner.heartbeats, "log", side_effect=printed.append), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        for _ in range(ticks):
+            runner.run_due_heartbeats()
+    return printed
+
+
+def test_a_started_run_says_so_where_debug_logging_is_off(runner):
+    """Nothing in this module announced that a run had STARTED.
+
+    `heartbeat <name>: <result>` is printed by a run that finished, so a
+    cycle that never began and a cycle that was never due looked
+    identical in the log. At 18 minutes that makes the first symptom of a
+    scheduling bug a missing cycle with no evidence at all.
+    """
+    printed = _scheduler_lines(runner, _plain_hb(), {}, {}, {})
+
+    starts = [line for line in printed if "starting run" in line]
+    assert len(starts) == 1, printed
+    assert "Nova" in starts[0]
+    assert "1 now in flight (limit 3)" in starts[0]
+
+
+def test_dropped_ticks_are_reported_logarithmically_not_every_five_seconds(runner):
+    """The poll loop ticks every POLL_INTERVAL_SECONDS (5s by default), so
+    a 45-minute cycle holding the last slot is ~540 ticks. Logging each
+    one buries the signal in itself; logging none of them is what this
+    change is fixing."""
+    threads = {"hb1": [_AliveStub(), _AliveStub(), _AliveStub()]}
+    drops = {}
+    spawned = []
+
+    printed = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
+                               drops, spawned=spawned, ticks=540)
+
+    assert spawned == []
+    dropped = [line for line in printed if "due tick(s) dropped" in line]
+    assert len(dropped) == 10, printed[:12]   # 1,2,4,...,512
+    assert "1 due tick(s) dropped" in dropped[0]
+    assert "3 run(s) in flight, limit 3" in dropped[0]
+    assert drops["hb1"] == 540, "the silent drops still have to be counted"
+
+
+def test_a_wedged_heartbeat_keeps_saying_so_and_never_goes_quiet(runner):
+    """A run thread that hangs has no timeout, on purpose, so "the total is
+    reported on the next start" is a promise that can never come due. Under
+    a log-once rule that is one line and then permanent silence through an
+    ongoing outage — which is the original bug, back again, in the exact
+    case this change was written for."""
+    threads = {"hb1": [_AliveStub(), _AliveStub(), _AliveStub()]}
+    drops = {}
+
+    first = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
+                             drops, ticks=64)
+    later = _scheduler_lines(runner, _plain_hb(), threads, {"hb1": "older"},
+                             drops, ticks=960)   # ~80 more minutes wedged
+
+    assert [ln for ln in later if "due tick(s) dropped" in ln], (
+        "a heartbeat still wedged an hour later printed nothing at all")
+    assert "1024 due tick(s) dropped since the last start" in later[-1], later[-3:]
+    # Rarer as it goes on, and that is the design: 7 lines over the first
+    # 64 declined ticks, 4 over the next 960. It thins out; it never stops.
+    assert len(later) < len(first) < 20, "and it must not become a flood either"
+
+
+def test_the_next_start_reports_how_many_ticks_were_dropped(runner):
+    """The count is the half that makes the single line above enough:
+    without it the log says the schedule started slipping and never says
+    by how much."""
+    heartbeat = _plain_hb()
+    threads = {"hb1": [_AliveStub()]}
+    drops = {}
+
+    _scheduler_lines(runner, heartbeat, threads, {}, drops, limit=1, ticks=3)
+    assert drops["hb1"] == 3
+
+    threads["hb1"] = [_DeadStub()]
+    printed = _scheduler_lines(runner, heartbeat, threads, {}, drops, limit=1)
+
+    starts = [line for line in printed if "starting run" in line]
+    assert len(starts) == 1, printed
+    assert "3 due tick(s) dropped since the last start" in starts[0]
+    assert "hb1" not in drops, "the counter has to reset, or it only ever grows"
+
+
+def test_force_run_is_exempt_from_the_spawn_mark(runner):
+    """The owner pressing "run now" is a new request, not one slot read
+    twice -- and under the old guard it silently no-opped whenever a
+    cycle was already in flight."""
+    heartbeat = _plain_hb(forceRun=True, lastRunAt="2026-08-23T19:00:00+00:00")
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveStub()]}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks",
+                      {"hb1": "2026-08-23T19:00:00+00:00"}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1
+
+
+def test_a_workflow_heartbeat_never_overlaps_itself(runner):
+    """v1's duplicate PRs came from a workflow step re-entering itself.
+    The switch the owner asked for is about Nova's own cycle."""
+    heartbeat = _plain_hb(workflowId="wf1")
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveStub()]}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", {"hb1": "older"}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread") as mock_thread_ctor, \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    mock_thread_ctor.assert_not_called()
+
+
+def test_finished_runs_are_pruned_from_the_registry(runner):
+    """Without pruning, the list is "runs ever started" and the limit
+    would permanently wedge the heartbeat after three cycles."""
+    heartbeat = _plain_hb()
+    threads = {"hb1": [_DeadStub(), _DeadStub(), _DeadStub()]}
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", {}), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1
+    assert threads["hb1"] == [created[0]]
+
+
+def test_a_heartbeat_that_has_never_run_still_starts(runner):
+    """The bug that stopped all three weekly Nova heartbeats dead.
+
+    `lastRunAt` is None on a heartbeat that has never run, and
+    `_heartbeat_spawn_marks.get(id)` also returns None when no mark is
+    recorded. The guard compared the two and read "I already spawned this
+    slot" on the very first due tick -- so the run never started, so
+    `lastRunAt` stayed None, so every later tick matched too. Measured live
+    2026-08-25: created 08-24, `lastRunAt: null`, and the runner log showed
+    256 dropped ticks against `lastRunAt=None`.
+    """
+    heartbeat = _plain_hb(id="hb-new", name="Nova - ideas & research",
+                          schedule="cron@0 6 * * 2,4,6", lastRunAt=None)
+    marks = {}
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        runner.run_due_heartbeats()
+
+    assert len(created) == 1, "a never-run heartbeat must start on its first due tick"
+
+
+def test_the_spawn_mark_still_guards_a_never_run_heartbeat(runner):
+    """The other half, so the fix above cannot be "delete the guard".
+
+    Once the first run is in flight and `lastRunAt` has not moved yet, a
+    second due tick must still be dropped -- that window is the whole
+    reason the mark exists, and None is a legitimate value inside it.
+    """
+    heartbeat = _plain_hb(id="hb-new", schedule="cron@0 6 * * 2,4,6",
+                          lastRunAt=None)
+    marks = {}
+    created = []
+
+    def fake_thread_ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        created.append(t)
+        return t
+
+    with patch.object(runner.heartbeats, "_heartbeat_threads",
+                      {"hb-new": [_AliveStub()]}), \
+         patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      return_value=(200, {"heartbeats": [heartbeat]})), \
+         patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
+         patch.object(runner.heartbeats, "schedule_due", return_value=True):
+        marks["hb-new"] = None  # this slot was already spawned against None
+        runner.run_due_heartbeats()
+
+    assert created == [], "an unclaimed in-flight slot must not spawn twice"
+
+
+def test_default_concurrency_is_one_unless_the_bridge_lane_is_open(monkeypatch):
+    """The default has to preserve today's behaviour exactly: with the
+    bridge lock shut, a second cycle would only queue behind the first
+    and burn its own 45-minute cap waiting."""
+    import importlib
+    import agora_runner.config as config_module
+
+    try:
+        monkeypatch.delenv("HEARTBEAT_MAX_CONCURRENT", raising=False)
+        monkeypatch.delenv("CLAUDE_CLI_CONCURRENT", raising=False)
+        assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 1
+
+        monkeypatch.setenv("CLAUDE_CLI_CONCURRENT", "1")
+        assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 3
+
+        monkeypatch.setenv("HEARTBEAT_MAX_CONCURRENT", "5")
+        assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 5
+
+        # A typo must not silently stop the heartbeat loop.
+        monkeypatch.setenv("HEARTBEAT_MAX_CONCURRENT", "three")
+        assert importlib.reload(config_module).HEARTBEAT_MAX_CONCURRENT == 3
+    finally:
+        # A failed assertion above must not leave `agora_runner.config`
+        # reloaded from this test's env for the rest of the session.
+        monkeypatch.delenv("HEARTBEAT_MAX_CONCURRENT", raising=False)
+        monkeypatch.delenv("CLAUDE_CLI_CONCURRENT", raising=False)
+        importlib.reload(config_module)
 
 
 def test_run_due_heartbeats_spawns_thread_for_plain_heartbeat_too(runner):
@@ -3616,7 +4045,7 @@ def test_run_due_heartbeats_skips_a_plain_heartbeat_already_running(runner):
         def is_alive(self):
             return True
 
-    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb2": _AliveThread()}), \
+    with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb2": [_AliveThread()]}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor, \
          patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb:
@@ -3704,7 +4133,7 @@ def test_poll_once_skips_workflow_bound_conversations_but_still_runs_heartbeats(
 def test_cycle_bound_conversation_ids_only_counts_enabled_rotating_heartbeats(runner):
     """Keyed on rotateConversationEachRun, not on being heartbeat-bound
     at all: a non-rotating heartbeat's conversation (K3s Sentinel) is a
-    durable channel Edvard may chat in and must keep ordinary
+    durable channel the owner may chat in and must keep ordinary
     turn-taking."""
     heartbeats_list = [
         {"enabled": True, "rotateConversationEachRun": True, "conversationId": "c1"},
@@ -3719,7 +4148,7 @@ def test_cycle_bound_conversation_ids_only_counts_enabled_rotating_heartbeats(ru
 def test_poll_once_answers_live_cycle_conversation_and_a_plain_heartbeats(runner):
     """A non-rotating heartbeat's conversation (K3s Sentinel) and a normal
     chat have always answered right away, and still do. Since 2026-08-19
-    the live cycle transcript joins them at Edvard's ask.
+    the live cycle transcript joins them at the owner's ask.
 
     This test used to assert the opposite for `cycle9`, on his 2026-08-03
     report that replying there fired an immediate full cycle. He reversed
@@ -3775,7 +4204,7 @@ def _run_in_flight_for(runner, heartbeat_id):
         def is_alive(self):
             return True
 
-    threads[heartbeat_id] = _Alive()
+    threads[heartbeat_id] = [_Alive()]
     try:
         yield
     finally:
@@ -3787,7 +4216,7 @@ def _run_in_flight_for(runner, heartbeat_id):
 
 def test_poll_once_answers_a_retired_cycle_conversation_too(runner):
     """2026-08-20: this test used to assert the opposite, and the reversal
-    is Edvard's, twice over.
+    is the owner's, twice over.
 
     The original rule (2026-08-05) skipped every cycle transcript because
     one line typed into an old thread fired a full Claude Code cycle nine
@@ -3840,7 +4269,7 @@ def test_poll_once_answers_a_retired_cycle_conversation_too(runner):
 
 def test_message_in_an_in_flight_cycle_conversation_still_reaches_the_next_trigger(runner):
     """The two halves of the deal, asserted together: poll_once must NOT
-    answer Edvard in a transcript whose own cycle is still running, and
+    answer the owner in a transcript whose own cycle is still running, and
     run_heartbeat MUST then carry what he wrote into the next scheduled
     run's trigger.
 
@@ -3886,7 +4315,7 @@ def test_message_in_an_in_flight_cycle_conversation_still_reaches_the_next_trigg
 
 
 def test_every_cycle_conversation_answers_edvard_on_the_spot(runner):
-    """Edvard's ask, 2026-08-20, after getting the Noted chip in a retired
+    """The owner's ask, 2026-08-20, after getting the Noted chip in a retired
     cycle's thread: "What? I thought i could have a conversation with you
     again? ... you should actually answer my responds and do actual work
     immediately."
@@ -3929,7 +4358,7 @@ def test_every_cycle_conversation_answers_edvard_on_the_spot(runner):
 
 def test_no_answered_live_chip_when_the_turn_did_not_speak(runner):
     """poll_conversation returns falsy for every reason it declined to
-    reply (archived, backoff, last sender not Edvard). Stamping the chip
+    reply (archived, backoff, last sender not the owner). Stamping the chip
     anyway would tell the next run a message had been answered when
     nothing was said, and that message would then never be carried --
     the silent drop #28/#30 exist to prevent."""
@@ -4111,7 +4540,7 @@ def test_run_workflow_steps_round_robin_continues_across_steps(runner):
 def test_run_workflow_steps_scopes_round_robin_to_step_personaids(runner):
     """2026-07-30 fix: a step with personaIds only round-robins among
     that subset, not the whole conversation's participants -- the whole
-    reason it exists (Edvard: round-robin was meant for multi-agent
+    reason it exists (the owner: round-robin was meant for multi-agent
     discussion, not a pipeline step with one designated owner)."""
     participants = [
         {"personaId": "p1", "name": "Coder", "role": "curator"},
@@ -4157,7 +4586,7 @@ def test_run_workflow_steps_skips_step_when_personaids_match_nobody(runner):
 def test_run_workflow_steps_refetches_conversation_every_round(runner):
     """2026-07-30 fix: each round re-fetches the conversation fresh
     instead of working from a static snapshot taken once at the start
-    of the run -- otherwise a message Edvard posts while a run is
+    of the run -- otherwise a message the owner posts while a run is
     executing never reaches a later round of that same run."""
     participants = [{"personaId": "p1", "name": "A", "role": "curator"}]
     persona = {"id": "p1", "name": "A", "model": "anthropic:claude-haiku-4-5-20251001",
@@ -4168,7 +4597,7 @@ def test_run_workflow_steps_refetches_conversation_every_round(runner):
     def fake_agora_get(path):
         fetch_count["n"] += 1
         if fetch_count["n"] == 2:
-            # Simulate Edvard posting mid-run, between round 1 and round 2.
+            # Simulate the owner posting mid-run, between round 1 and round 2.
             return 200, {"messages": [{"sender": "Edvard", "text": "stop and check X"}]}
         return 200, {"messages": []}
 
@@ -4804,6 +5233,110 @@ def test_execute_tool_create_heartbeat_ignores_same_name_different_persona(runne
     assert mock_call.call_count == 2
 
 
+def test_execute_tool_create_heartbeat_binds_a_workflow(runner):
+    """idea #94: a workflow only ever runs when a heartbeat carries its id.
+    POST /heartbeats has accepted workflowId since July; this payload dropped
+    it, which is why the row said 'I cannot bind one'."""
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       side_effect=[(200, {"heartbeats": []}), (201, {"heartbeat": {"id": "h1"}})]) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool(
+            "create_heartbeat",
+            {"name": "HB", "personaId": "p1", "schedule": "daily@08:00",
+             "newConversationName": "Fresh", "workflowId": "w1"},
+            persona, "c1",
+        )
+    assert "h1" in result
+    payload = mock_call.call_args[0][2]
+    assert payload["workflowId"] == "w1"
+
+
+def test_execute_tool_create_heartbeat_omits_workflow_id_when_absent(runner):
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       side_effect=[(200, {"heartbeats": []}), (201, {"heartbeat": {"id": "h1"}})]) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        runner.execute_tool(
+            "create_heartbeat",
+            {"name": "HB", "personaId": "p1", "schedule": "daily@08:00", "newConversationName": "Fresh"},
+            persona, "c1",
+        )
+    assert "workflowId" not in mock_call.call_args[0][2]
+
+
+def test_execute_tool_create_heartbeat_sends_enabled_false(runner):
+    """`enabled: False` is falsy, so a truthiness check would drop the one
+    value the field exists for -- creating a heartbeat dormant so a new
+    workflow can be fired once with forceRun instead of put on a timer."""
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       side_effect=[(200, {"heartbeats": []}), (201, {"heartbeat": {"id": "h1"}})]) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        runner.execute_tool(
+            "create_heartbeat",
+            {"name": "HB", "personaId": "p1", "schedule": "daily@08:00",
+             "newConversationName": "Fresh", "enabled": False},
+            persona, "c1",
+        )
+    payload = mock_call.call_args[0][2]
+    assert payload["enabled"] is False
+
+
+def test_execute_tool_create_heartbeat_omits_enabled_when_not_a_bool(runner):
+    """A string "false" is not a boolean; sending it on would be the same
+    wrongly-typed-field-accepted-silently bug agora#71/#74 closed one door
+    over, so it is left off and the server's default applies."""
+    persona = {"name": "Test"}
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       side_effect=[(200, {"heartbeats": []}), (201, {"heartbeat": {"id": "h1"}})]) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        runner.execute_tool(
+            "create_heartbeat",
+            {"name": "HB", "personaId": "p1", "schedule": "daily@08:00",
+             "newConversationName": "Fresh", "enabled": "false"},
+            persona, "c1",
+        )
+    assert "enabled" not in mock_call.call_args[0][2]
+
+
+def test_create_workflow_schema_exposes_every_step_field(runner):
+    """The Step interface in agora's workflow-store.ts has six fields and this
+    schema advertised two. A field the model cannot see is a field it will
+    never send, which is what made a working engine read as dead code."""
+    caps = dict(runner.NO_CAPS, manageAgora=True)
+    tools = {t["name"]: t for t in runner.client_tool_schemas(caps)}
+    step = tools["create_workflow"]["input_schema"]["properties"]["steps"]["items"]
+    assert set(step["properties"]) == {
+        "prompt", "loopCount", "personaIds", "toolWhitelist", "filepath", "workflowRef",
+    }
+    assert step["required"] == ["prompt", "loopCount"]
+
+
+def test_create_heartbeat_schema_exposes_workflow_id(runner):
+    caps = dict(runner.NO_CAPS, manageAgora=True)
+    tools = {t["name"]: t for t in runner.client_tool_schemas(caps)}
+    props = tools["create_heartbeat"]["input_schema"]["properties"]
+    assert "workflowId" in props
+    assert "enabled" in props
+
+
+def test_execute_tool_create_workflow_passes_full_steps_through(runner):
+    persona = {"name": "Test"}
+    steps = [{
+        "prompt": "Critique the prior turn.",
+        "loopCount": 2,
+        "personaIds": ["p1"],
+        "toolWhitelist": ["scoped_write"],
+        "filepath": "notes/",
+    }]
+    with patch.object(runner.tools_dispatch, "agora_internal",
+                       return_value=(201, {"workflow": {"id": "w1"}})) as mock_call, \
+         patch.object(runner.tools_dispatch, "audit"):
+        runner.execute_tool("create_workflow", {"name": "WF", "steps": steps}, persona, "c1")
+    assert mock_call.call_args[0][2]["steps"] == steps
+
+
 def test_execute_tool_create_workflow_calls_internal_api(runner):
     persona = {"name": "Test"}
     with patch.object(runner.tools_dispatch, "agora_internal", return_value=(201, {"workflow": {"id": "w1"}})), \
@@ -4933,80 +5466,177 @@ def test_create_pr_surfaces_file_write_failure(runner):
     assert "failed writing notes.md" in result
 
 
+def _merge_pr_http(pr=None, check_runs=None, workflows=None, merged_sha="mergedsha4567"):
+    """One fake for every merge_pr test: a PR object, its check-runs, and the
+    repo's workflow list. Anything a test leaves out is a call it asserts is
+    never made."""
+    pr_body = {"state": "open", "mergeable_state": "clean", "head": {"sha": "headsha"}}
+    pr_body.update(pr or {})
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+        if url.endswith("/pulls/42"):
+            return 200, pr_body
+        if url.endswith("/commits/headsha/check-runs"):
+            if check_runs is None:
+                raise AssertionError("check-runs must not be fetched here")
+            return 200, {"check_runs": check_runs}
+        if url.endswith("/actions/workflows"):
+            if workflows is None:
+                raise AssertionError("the workflow list must not be fetched here")
+            return 200, {"workflows": workflows}
+        if method == "PUT" and url.endswith("/pulls/42/merge"):
+            return 200, {"sha": merged_sha}
+        raise AssertionError(f"unexpected call {method} {url}")
+
+    return fake_http_json
+
+
+def _run_merge_pr(runner, fake, **kwargs):
+    kwargs.setdefault("_delay", 0)
+    kwargs.setdefault("_sleep", lambda _: None)
+    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
+         patch.object(runner.tools_github, "http_json", side_effect=fake):
+        return runner.merge_pr("agora", 42, **kwargs)
+
+
 def test_merge_pr_refuses_when_not_open(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+    """And asks once. A closed PR carries no mergeable_state, so the retry
+    loop would otherwise spend its whole budget reaching a refusal the first
+    answer already justified."""
+    seen = []
+
+    def fake(method, url, body=None, headers=None, timeout=30):
         if url.endswith("/pulls/42"):
-            return 200, {"state": "closed", "head": {"sha": "headsha"}}
+            seen.append(1)
+            return 200, {"state": "closed", "mergeable_state": "unknown", "head": {"sha": "headsha"}}
         raise AssertionError(f"unexpected call {method} {url}")
 
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
+    result = _run_merge_pr(runner, fake)
     assert "not open" in result
+    assert len(seen) == 1
 
 
-def test_merge_pr_refuses_with_no_check_runs(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
+def test_merge_pr_refuses_when_github_says_blocked(runner):
+    """`blocked` is GitHub's word for a check or review the repo actually
+    requires. That is the one red this tool must still stop on."""
+    result = _run_merge_pr(runner, _merge_pr_http(pr={"mergeable_state": "blocked"}))
+    assert "'blocked'" in result
+    assert "refusing to merge" in result
+
+
+def test_merge_pr_refuses_when_github_says_dirty_or_behind(runner):
+    for state in ("dirty", "behind", "draft"):
+        result = _run_merge_pr(runner, _merge_pr_http(pr={"mergeable_state": state}))
+        assert f"'{state}'" in result, state
+        assert "refusing to merge" in result, state
+
+
+def test_merge_pr_refuses_on_an_unrecognised_mergeable_state(runner):
+    """A state this tool has no opinion about is not a licence to merge."""
+    result = _run_merge_pr(runner, _merge_pr_http(pr={"mergeable_state": "brand_new_state"}))
+    assert "does not recognise" in result
+
+
+def test_merge_pr_retries_while_github_still_computing_mergeable_state(runner):
+    """GitHub answers `unknown` for a second or two after a push. Asking once
+    and refusing turns normal GitHub latency into a failed merge."""
+    seen = []
+
+    def fake(method, url, body=None, headers=None, timeout=30):
         if url.endswith("/pulls/42"):
-            return 200, {"state": "open", "head": {"sha": "headsha"}}
+            seen.append(1)
+            state = "unknown" if len(seen) < 3 else "clean"
+            return 200, {"state": "open", "mergeable_state": state, "head": {"sha": "headsha"}}
         if url.endswith("/commits/headsha/check-runs"):
-            return 200, {"check_runs": []}
-        raise AssertionError(f"unexpected call {method} {url}")
-
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
-    assert "no CI checks found" in result
-
-
-def test_merge_pr_refuses_while_checks_pending(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
-        if url.endswith("/pulls/42"):
-            return 200, {"state": "open", "head": {"sha": "headsha"}}
-        if url.endswith("/commits/headsha/check-runs"):
-            return 200, {"check_runs": [{"name": "build", "status": "in_progress", "conclusion": None}]}
-        raise AssertionError(f"unexpected call {method} {url}")
-
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
-    assert "still running" in result
-    assert "build" in result
-
-
-def test_merge_pr_refuses_on_failing_check(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
-        if url.endswith("/pulls/42"):
-            return 200, {"state": "open", "head": {"sha": "headsha"}}
-        if url.endswith("/commits/headsha/check-runs"):
-            return 200, {"check_runs": [{"name": "test", "status": "completed", "conclusion": "failure"}]}
-        raise AssertionError(f"unexpected call {method} {url}")
-
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
-    assert "failing checks" in result
-    assert "test" in result
-
-
-def test_merge_pr_succeeds_when_all_checks_green(runner):
-    def fake_http_json(method, url, body=None, headers=None, timeout=30):
-        if url.endswith("/pulls/42"):
-            return 200, {"state": "open", "head": {"sha": "headsha"}}
-        if url.endswith("/commits/headsha/check-runs"):
-            return 200, {"check_runs": [
-                {"name": "build", "status": "completed", "conclusion": "success"},
-                {"name": "test", "status": "completed", "conclusion": "success"},
-            ]}
+            return 200, {"check_runs": [{"name": "test", "status": "completed", "conclusion": "success"}]}
         if method == "PUT" and url.endswith("/pulls/42/merge"):
             return 200, {"sha": "mergedsha4567"}
         raise AssertionError(f"unexpected call {method} {url}")
 
-    with patch.object(runner.tools_github, "GITHUB_BOT_TOKEN", "fake-token"), \
-         patch.object(runner.tools_github, "http_json", side_effect=fake_http_json):
-        result = runner.merge_pr("agora", 42)
+    result = _run_merge_pr(runner, fake)
+    assert len(seen) == 3
+    assert "merged PR #42" in result
+
+
+def test_merge_pr_gives_up_when_mergeable_state_stays_unknown(runner):
+    result = _run_merge_pr(runner, _merge_pr_http(pr={"mergeable_state": "unknown"}), _attempts=2)
+    assert "has not finished computing" in result
+
+
+def test_merge_pr_merges_past_a_failing_check_the_repo_does_not_require(runner):
+    """The bug this whole change exists for: platform-config#580 was refused
+    over an advisory secret-scan that GitHub itself was happy to merge past.
+    `unstable` is GitHub saying exactly that."""
+    result = _run_merge_pr(runner, _merge_pr_http(
+        pr={"mergeable_state": "unstable"},
+        check_runs=[
+            {"name": "test", "status": "completed", "conclusion": "success"},
+            {"name": "secret-scan", "status": "completed", "conclusion": "failure"},
+        ],
+    ))
+    assert "merged PR #42 (squash)" in result
+    assert "secret-scan" in result and "non-required" in result
+
+
+def test_merge_pr_refuses_while_checks_pending(runner):
+    """`clean` is what GitHub says before CI has started too, so the pending
+    check is the only thing standing between a fresh push and a blind merge."""
+    result = _run_merge_pr(runner, _merge_pr_http(
+        check_runs=[{"name": "build", "status": "in_progress", "conclusion": None}],
+    ))
+    assert "still running" in result
+    assert "build" in result
+
+
+def test_merge_pr_refuses_with_no_check_runs_when_the_repo_has_workflows(runner):
+    result = _run_merge_pr(runner, _merge_pr_http(
+        check_runs=[], workflows=[{"name": "test", "state": "active"}],
+    ))
+    assert "refusing to merge blind" in result
+    assert "test" in result
+
+
+def test_merge_pr_merges_with_no_check_runs_when_the_repo_runs_no_workflows(runner):
+    """The `*-config` repos have zero workflows, so a check-run was never
+    coming and the old refusal was waiting for nothing."""
+    result = _run_merge_pr(runner, _merge_pr_http(check_runs=[], workflows=[]))
+    assert "merged PR #42 (squash)" in result
+    assert "no workflows" in result
+
+
+def test_merge_pr_ignores_a_disabled_workflow_when_no_check_ran(runner):
+    """A workflow someone switched off never produces a check-run, so counting
+    it means waiting forever for something that cannot arrive."""
+    result = _run_merge_pr(runner, _merge_pr_http(
+        check_runs=[], workflows=[{"name": "old-build", "state": "disabled_manually"}],
+    ))
+    assert "merged PR #42 (squash)" in result
+
+
+def test_merge_pr_refuses_with_no_check_runs_when_the_workflow_list_is_unreadable(runner):
+    """An unreadable workflow list is not an empty one."""
+    def fake(method, url, body=None, headers=None, timeout=30):
+        if url.endswith("/pulls/42"):
+            return 200, {"state": "open", "mergeable_state": "clean", "head": {"sha": "headsha"}}
+        if url.endswith("/commits/headsha/check-runs"):
+            return 200, {"check_runs": []}
+        if url.endswith("/actions/workflows"):
+            return 403, {"message": "Forbidden"}
+        raise AssertionError(f"unexpected call {method} {url}")
+
+    result = _run_merge_pr(runner, fake)
+    assert "could not read" in result
+    assert "merged" not in result
+
+
+def test_merge_pr_succeeds_when_all_checks_green(runner):
+    result = _run_merge_pr(runner, _merge_pr_http(check_runs=[
+        {"name": "build", "status": "completed", "conclusion": "success"},
+        {"name": "test", "status": "completed", "conclusion": "success"},
+    ]))
     assert "merged PR #42 (squash)" in result
     assert "mergeds" in result
+    assert "non-required" not in result
 
 
 def test_github_comment_requires_repo_number_and_body(runner):
@@ -5408,9 +6038,17 @@ def drainable_main():
     previous_flag = main_module._shutdown_requested
     previous_interval = main_module.POLL_INTERVAL_SECONDS
     main_module.POLL_INTERVAL_SECONDS = 0
+    # `main()` also starts the catalog refresher (Cycle 451), a daemon thread
+    # on an hourly timer. Nothing here is about it, and conftest fails any
+    # test that leaves a thread running past its own patches -- so it is
+    # stubbed for every drain test at once rather than in each of them. The
+    # wire itself is asserted in tests/test_catalog_refresh.py.
+    previous_refresh = main_module.start_catalog_refresh
+    main_module.start_catalog_refresh = lambda: None
     try:
         yield main_module
     finally:
+        main_module.start_catalog_refresh = previous_refresh
         main_module.POLL_INTERVAL_SECONDS = previous_interval
         main_module._shutdown_requested = previous_flag
         signal.signal(signal.SIGTERM, previous_term)
@@ -5466,7 +6104,7 @@ def test_main_waits_for_an_in_flight_heartbeat_thread_before_exiting(drainable_m
             thread.start()  # a heartbeat run is now in flight
             os.kill(os.getpid(), signal.SIGTERM)  # the pod is rolled mid-cycle
 
-    with patch.object(hb_module, "_heartbeat_threads", {"hb1": thread}), \
+    with patch.object(hb_module, "_heartbeat_threads", {"hb1": [thread]}), \
          patch.object(drainable_main, "poll_once", side_effect=fake_poll_once), \
          patch.object(drainable_main, "start_invoke_server", lambda: None), \
          patch.object(drainable_main, "log", lambda *a, **k: None), \
@@ -5535,7 +6173,7 @@ def test_sleep_between_ticks_returns_early_once_shutdown_is_requested(drainable_
 
 # ---------------------------------------------------------------------------
 # tool_activity.py + /tool-activity -- live tool-use chips for claude-cli
-# personas (2026-08-03). Edvard, asked whether he wanted every tool call or
+# personas (2026-08-03). The owner, asked whether he wanted every tool call or
 # only the ones that change something: "All. I want to know whats going on.
 # It takes away my feeling of control if everything is hidden."
 # ---------------------------------------------------------------------------
@@ -5560,7 +6198,7 @@ def test_grant_returns_a_token_and_report_posts_a_chip(clean_grants):
     # tool's return value, which does not exist yet when this one is sent.
     assert posted == [("Nova", "conv-1", "Bash", "pytest tests/",
                        {"ephemeral": True, "tool_use_id": "", "output": None,
-                        "is_error": False})]
+                        "is_error": False, "retracted": False})]
 
 
 def test_grant_is_declined_when_there_is_no_conversation_to_post_into(clean_grants):
@@ -5605,7 +6243,7 @@ def test_grants_are_unique_per_call(clean_grants):
 
 def test_every_tool_call_is_reported_however_many_there_are(clean_grants):
     """There is no ceiling here, on purpose. This used to stop at 400 chips
-    and go silent; Edvard struck that down on 2026-08-04 -- "limiting the tool
+    and go silent; The owner struck that down on 2026-08-04 -- "limiting the tool
     calls (which limits your ability) just because you think it will improve
     the ui is against everything we stand for". Volume is handled by
     collapsing narration in the UI (agora#38), not by dropping it here."""
@@ -5718,11 +6356,163 @@ def test_tool_activity_endpoint_records_a_chip(clean_grants):
     assert sent["status"] == 202
     assert posted == [("Nova", "conv-1", "Bash", "pytest tests/",
                        {"ephemeral": True, "tool_use_id": "", "output": None,
-                        "is_error": False})]
+                        "is_error": False, "retracted": False})]
+
+
+def test_tool_activity_endpoint_withdraws_a_streamed_passage(clean_grants):
+    """The bridge streams a passage as it is written and only learns at the
+    end of the turn which one was the reply. It withdraws that one by posting
+    a step under the same toolUseId with `retracted`, so the owner does not
+    read his answer twice -- once growing in the drawer and once in the
+    bubble (agora/public/app.js mergeTextStreams). This endpoint dropped the
+    field entirely until now, so the retracting half never reached Agora."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    handler, sent = _tool_activity_handler({
+        "token": token, "capability": "assistant_text",
+        "toolUseId": "text-3", "retracted": True,
+    })
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
+        handler.do_POST()
+    assert sent["status"] == 202
+    assert posted[0][4]["retracted"] is True
+
+
+def test_tool_activity_endpoint_leaves_an_ordinary_chip_unretracted(clean_grants):
+    """Agora treats any present `retracted` as the withdrawing half, so a
+    truthy-looking value on a normal chip would erase a real passage."""
+    posted = []
+    token = clean_grants.grant("Nova", "conv-1")
+    handler, sent = _tool_activity_handler({
+        "token": token, "capability": "Bash", "toolUseId": "toolu_c",
+        "retracted": "no",
+    })
+    with patch.object(clean_grants, "audit", lambda *a, **k: posted.append(a + (k,))):
+        handler.do_POST()
+    assert posted[0][4]["retracted"] is False
+
+
+def _step(msg_id, detail, stream_id="", retracted=False):
+    activity = {"capability": "assistant_text", "detail": detail}
+    if stream_id:
+        activity["toolUseId"] = stream_id
+    if retracted:
+        activity["retracted"] = True
+    return {"id": msg_id, "sender": "Nova", "text": "assistant_text: " + detail,
+            "activity": activity}
+
+
+def test_a_streamed_passage_folds_into_one_message():
+    """The bridge posts a step at every paragraph break, each carrying the
+    whole passage so far. Un-folded, one three-paragraph passage is three
+    messages, each a longer prefix of the next."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "one.", "text-1"),
+        _step("m2", "one.\n\ntwo.", "text-1"),
+        _step("m3", "one.\n\ntwo.\n\nthree.", "text-1"),
+    ])
+    assert len(folded) == 1
+    assert folded[0]["activity"]["detail"] == "one.\n\ntwo.\n\nthree."
+
+
+def test_the_fold_keeps_the_first_steps_slot():
+    """Every later step folds into the anchor, so a page redrawing mid-turn
+    keeps its scroll position while the passage grows underneath."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "one.", "text-1"),
+        _step("m2", "one.\n\ntwo.", "text-1"),
+    ])
+    assert folded[0]["id"] == "m1"
+
+
+def test_a_retracted_passage_is_dropped_from_the_thread():
+    """It is the reply, and the reply bubble is already carrying it."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "narration.", "text-1"),
+        _step("m2", "the answer.", "text-2"),
+        _step("m3", "", "text-2", retracted=True),
+    ])
+    assert [m["id"] for m in folded] == ["m1"]
+
+
+def test_a_retraction_whose_stream_fell_outside_the_window_still_drops():
+    """The page loads the newest N messages. A retraction can arrive with the
+    steps it withdraws already off the end of that window."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([_step("m3", "", "text-2", retracted=True)])
+    assert folded == []
+
+
+def test_a_passage_sent_whole_is_untouched():
+    """Every passage written before streaming existed, and every one from an
+    older bridge. No stream id, so nothing to fold."""
+    from agora_runner.audit import fold_text_streams
+    messages = [_step("m1", "one whole passage."),
+                {"id": "m2", "sender": "Edvard", "text": "thanks"}]
+    assert fold_text_streams(messages) == messages
+
+
+def test_two_passages_do_not_fold_into_each_other():
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "first.", "text-1"),
+        _step("m2", "second.", "text-2"),
+        _step("m3", "second.\n\nmore.", "text-2"),
+    ])
+    assert [m["activity"]["detail"] for m in folded] == \
+        ["first.", "second.\n\nmore."]
+
+
+def test_a_tool_chip_is_never_folded():
+    """Chips carry a toolUseId too -- it is what pairs a call with its
+    output -- so folding on the id alone would collapse every tool call."""
+    from agora_runner.audit import fold_text_streams
+    messages = [
+        {"id": "m1", "activity": {"capability": "Bash", "detail": "ls",
+                                  "toolUseId": "toolu_a"}},
+        {"id": "m2", "activity": {"capability": "Bash", "output": "a\nb",
+                                  "toolUseId": "toolu_a"}},
+    ]
+    assert fold_text_streams(messages) == messages
+
+
+def test_the_chat_thread_folds_a_streamed_passage():
+    """nova_conversations._visible is one of the two surfaces that builds its
+    thread here instead of in Agora's client, so the fold has to happen on
+    this side of it or the Nova app shows the passage three times."""
+    from agora_runner import nova_conversations
+    out = nova_conversations._visible([
+        _step("m1", "one.", "text-1"),
+        _step("m2", "one.\n\ntwo.", "text-1"),
+        _step("m3", "the answer.", "text-2"),
+        _step("m4", "", "text-2", retracted=True),
+    ])
+    assert [m["text"] for m in out] == ["one.\n\ntwo."]
+
+
+def test_audit_sends_retracted_only_when_it_is_true():
+    """Agora reads `body.retracted === true` and stores anything else as
+    undefined, so an ordinary chip must not carry the key at all -- a chip
+    that carried `retracted: false` would still be a well-formed step, but it
+    puts a field on every one of a cycle's hundreds of posts for nothing."""
+    import importlib
+    audit_mod = importlib.import_module("agora_runner.audit")
+    sent = []
+    with patch.object(audit_mod, "agora_internal",
+                      lambda method, path, payload: sent.append(payload)):
+        audit_mod.audit("Nova", "conv-1", "assistant_text", "half a passage",
+                        tool_use_id="text-3")
+        audit_mod.audit("Nova", "conv-1", "assistant_text", "",
+                        tool_use_id="text-3", retracted=True)
+    assert "retracted" not in sent[0]
+    assert sent[1]["retracted"] is True
 
 
 def test_tool_activity_endpoint_records_what_a_tool_returned(clean_grants):
-    """Edvard's issue 1, asked three times: "I need to see the command with
+    """The owner's issue 1, asked three times: "I need to see the command with
     all metadata and also the output from that command, such as the return
     of a echo command". The output arrives as its own report, tagged with
     the id of the call it belongs to."""
@@ -5902,9 +6692,49 @@ def test_redact_replaces_each_credential_shape_with_a_visible_marker(runner):
         assert out.startswith("before ") and out.endswith(" after")
 
 
+def test_redact_catches_a_google_key_with_no_name_beside_it(runner):
+    """The traceback case in the owner's idea #106, in both key formats.
+
+    `GEMINI_API_KEY` in the runner pod carries a trailing newline; `urllib`
+    refuses a header value with one in it and quotes the whole value back in
+    the exception. There is no `NAME=` in a traceback, so the name-anchored
+    value pattern cannot help -- only a format pattern can.
+
+    Both shapes are here because only one of them is on this box. Cycle 503
+    wrote the documented `AIza` form first and then measured the live key:
+    it is 53 characters and starts `AQ.`, so the documented form alone would
+    have been a filter that guards nothing on the one key it was built for.
+    """
+    redact = audit_module.redact
+    classic = "AIza" + "Sy" + "D" + "0" * 34          # 39, the documented form
+    current = "AQ" + "." + "e" * 50                   # 53, what AI Studio issues now
+    for key in (classic, current):
+        crash = "ValueError: Invalid header value b'%s\\n'" % key
+        out = redact(crash)
+        assert key not in out
+        assert "[redacted: google api key]" in out
+        # The exception still reads -- only the value went.
+        assert out.startswith("ValueError: Invalid header value b'")
+
+
+def test_redact_does_not_eat_a_sentence_that_merely_starts_like_a_key(runner):
+    """`AQ.` is a short prefix, so the length floor is what keeps it honest."""
+    redact = audit_module.redact
+    for text in ("The queue drained: AQ. Then the job exited.",
+                 # This is the one that actually bites the floor: seven
+                 # base64url characters run on from the dot, so a floor set
+                 # anywhere below 40 eats it. Cycle 503 shipped the sentence
+                 # above first, then mutated the floor to {2,} and watched
+                 # this test stay green -- a space follows that `AQ.`, so no
+                 # floor could ever have been tested by it.
+                 "rollback is covered in AQ.section 4 of the runbook",
+                 "AIzaSy is a prefix, not a credential."):
+        assert redact(text) == text
+
+
 def test_redact_keeps_the_variable_name_and_drops_only_the_value(runner):
     """Knowing that ANTHROPIC_API_KEY is *set* is exactly the kind of thing
-    Edvard wants to be able to see; the value is the part that must not ship."""
+    the owner wants to be able to see; the value is the part that must not ship."""
     out = audit_module.redact("ANTHROPIC_API_KEY=hunter2-and-then-some\nHOME=/root")
     assert "ANTHROPIC_API_KEY=[redacted: value]" in out
     assert "hunter2-and-then-some" not in out
@@ -5947,7 +6777,7 @@ def test_redact_covers_the_name_this_system_keeps_its_own_password_under(runner)
 
 def test_redact_does_not_eat_the_english_word_pass(runner):
     """Why `_PASS` carries its underscore. Over-redacting prose is the
-    failure Edvard's keep-everything rule is actually about, so the widening
+    failure the owner's keep-everything rule is actually about, so the widening
     above has to be pinned from both sides or the next cycle drops the
     underscore to catch one more case."""
     for text in ("second pass: completed successfully",
@@ -6084,7 +6914,7 @@ def test_a_second_message_after_an_acknowledgment_is_acknowledged_again(runner):
 
 def test_a_cycle_talking_to_itself_is_not_acknowledged(runner):
     """A running cycle fills its own transcript with chips and passages.
-    None of that is Edvard, and acknowledging it would post a chip every
+    None of that is the owner, and acknowledging it would post a chip every
     five seconds for forty-five minutes."""
     calls, _ = _ack(runner, [
         {"sender": "Nova", "text": "Bash: pytest", "ts": "2026-08-05T15:30:00Z",
@@ -6167,7 +6997,7 @@ def test_the_acknowledgment_reads_only_the_tail_of_the_conversation(runner):
 
 def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
     """The two skip sets are kept apart on purpose. A cycle transcript
-    defers Edvard's message to the next scheduled run and can promise him
+    defers the owner's message to the next scheduled run and can promise him
     one; a workflow-bound conversation makes no such promise, and saying
     it did would be a lie in the one place he already cannot see what
     happened.
@@ -6227,7 +7057,7 @@ def test_an_archived_cycle_thread_is_not_acknowledged(runner):
 
 # ---------------------------------------------------------------------------
 # tools_mcp.py + /mcp -- one toolset for every agent (2026-08-06).
-# Edvard: "There are different tools for you and Gemini? That should not be
+# The owner: "There are different tools for you and Gemini? That should not be
 # the case. Gemini and other agents should use the same custom tools as you
 # do." A claude-cli persona had none of Agora's capability tools while
 # build_system described all of them to it in prose; these serve the same
@@ -6495,7 +7325,7 @@ def test_claude_cli_generate_omits_the_mcp_block_for_a_persona_with_no_capabilit
 
 
 # ---------------------------------------------------------------------------
-# Anchored interval schedules — Edvard's issues.md capture, 2026-08-08:
+# Anchored interval schedules — the owner's issues.md capture, 2026-08-08:
 # "run every 6 hours from 12:00, so it runs 12:00 the first time, then 18:00,
 # then 24:00. Currently it runs 6 hours after the previous job was finished.
 # So all Nova heartbeats starts at somewhat random timestamps."
@@ -6610,7 +7440,7 @@ def test_anchored_minutes_work_too():
 
 
 # ---------------------------------------------------------------------------
-# cron schedules -- Edvard's issues.md #37, second half: "Maybe have it so we
+# cron schedules -- the owner's issues.md #37, second half: "Maybe have it so we
 # can tweak it as cronjobs or just as advanced timesetting. But it has to be
 # user friendly." Cron is the storage format; the picker in the heartbeat form
 # is the user-friendly half. These pin the three things the anchored interval
@@ -6859,7 +7689,7 @@ def test_a_delta_is_appended_to_the_window_rather_than_replacing_it(runner, poll
 
 
 def test_an_edit_behind_us_replaces_the_window_instead_of_appending(runner, polling):
-    """Edvard edits or deletes an older message: the server's fingerprint of
+    """The owner edits or deletes an older message: the server's fingerprint of
     the prefix stops matching, it answers incremental=False with the whole
     window, and we must replace. Appending here would duplicate history."""
     summary, seen, fake_decide_turn = polling
@@ -6971,7 +7801,7 @@ def test_pruning_drops_windows_for_conversations_that_are_gone(runner):
     assert set(runner.conversations._message_window_cache) == {"still-here"}
 
 
-# --- Metered-provider guard (2026-08-10, Edvard's "hard rule" capture in
+# --- Metered-provider guard (2026-08-10, the owner's "hard rule" capture in
 # issues.md: the prepaid Anthropic balance had $16 left and will not be
 # refilled, so no scheduled thing may spend it). Two halves, tested apart:
 # reply.py must refuse, AND the unattended call sites must actually ask it
@@ -6996,15 +7826,49 @@ def test_unattended_turn_on_metered_provider_is_refused_before_any_spend(runner)
 
 
 def test_attended_turn_on_metered_provider_still_runs(runner):
-    """Edvard kept testing and research allowed -- a person typing in the app
-    is bounded by the person. Blocking this would be over-reading the rule."""
+    """The owner kept testing and research allowed -- a person typing in the app
+    is bounded by the person. Blocking this would be over-reading the rule.
+    `unattended=False` is passed rather than left to the default, because the
+    default is now the closed one."""
     persona = {"name": "Test", "model": "anthropic:claude-haiku-4-5-20251001"}
 
     with patch.object(runner.reply, "anthropic_generate", return_value="billed reply") as mock_gen:
         result = runner.generate_reply(
             persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}], "conv-1",
+            unattended=False,
         )
     assert result == "billed reply"
+    mock_gen.assert_called_once()
+
+
+def test_a_call_site_that_says_nothing_is_treated_as_unattended(runner):
+    """Idea #85 -- spend enforced rather than remembered. The two halves above
+    only cover the call sites that exist today; this covers the one a later
+    cycle writes. Omitting the keyword entirely must refuse a metered model,
+    so forgetting the guard costs a failed turn rather than the balance."""
+    persona = {"name": "Test", "model": "anthropic:claude-haiku-4-5-20251001"}
+
+    with patch.object(runner.reply, "anthropic_generate") as mock_gen:
+        with pytest.raises(runner.reply.MeteredProviderBlocked):
+            runner.generate_reply(
+                persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}],
+                "conv-1",
+            )
+    mock_gen.assert_not_called()
+
+
+def test_a_call_site_that_says_nothing_still_runs_a_subscription_model(runner):
+    """The closed default must cost nothing on the paths that were never about
+    money. A forgotten keyword on a `claude-cli:` turn behaves exactly as it
+    did before -- otherwise defaulting closed would be a blanket ban wearing a
+    guard's name."""
+    persona = {"name": "Test", "model": "claude-cli:claude-opus-5"}
+
+    with patch.object(runner.reply, "claude_cli_generate", return_value="cycle reply") as mock_gen:
+        result = runner.generate_reply(
+            persona, dict(runner.NO_CAPS), "system", [{"role": "user", "content": "hi"}], "conv-1",
+        )
+    assert result == "cycle reply"
     mock_gen.assert_called_once()
 
 
@@ -7023,7 +7887,7 @@ def test_unattended_turn_on_subscription_provider_is_untouched(runner):
 
 
 def test_allow_metered_unattended_env_flag_reopens_the_path(runner):
-    """A deliberate override Edvard can set in one config line, so this is a
+    """A deliberate override the owner can set in one config line, so this is a
     guarded capability rather than a deleted one."""
     persona = {"name": "Test", "model": "anthropic:claude-sonnet-5"}
 
@@ -7091,6 +7955,31 @@ def test_blocked_heartbeat_records_the_refusal_as_its_result(runner):
     assert "metered" in updates[-1]["lastResult"]
 
 
+def test_speak_declares_itself_attended(runner):
+    """The mirror of the two `unattended=True` call-site tests. `speak` is the
+    one production path with a person on the other end, so it is the one that
+    may reach a metered model -- and now that reply.py defaults closed, it has
+    to say so. Without this, defaulting closed would silently break the owner
+    typing to an `anthropic:` persona and no test would notice."""
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-sonnet-5",
+               "capabilities": dict(runner.NO_CAPS)}
+    conversation = {"id": "conv-1"}
+    detail = {"personas": [{"personaId": "p1", "name": "Test", "role": "curator"}], "name": "Test"}
+    captured = {}
+
+    def fake_generate_reply(persona, caps, system, history, conversation_id, model_override=None,
+                             sticky=False, on_text=None, on_thinking=None, unattended=True):
+        captured["unattended"] = unattended
+        return "reply text"
+
+    with patch.object(runner.conversations, "fetch_persona", return_value=persona), \
+         patch.object(runner.conversations, "generate_reply", side_effect=fake_generate_reply), \
+         patch.object(runner.conversations, "notify", return_value=200):
+        runner.speak(conversation, detail, [], "Test")
+
+    assert captured["unattended"] is False
+
+
 def test_workflow_round_declares_itself_unattended(runner):
     """The other unattended call site -- workflows are heartbeat-triggered
     only, so they drain exactly the same way."""
@@ -7122,7 +8011,7 @@ def test_workflow_round_declares_itself_unattended(runner):
 def test_schedule_minutes_is_the_one_definition_of_an_every_interval():
     """Extracted from `schedule_due` so `cycle_health` measures a stalled
     loop in the interval that is actually running, rather than in a
-    constant nobody updates when Edvard changes the cadence."""
+    constant nobody updates when the owner changes the cadence."""
     from agora_runner.turns import schedule_minutes
 
     assert schedule_minutes("every@40m") == 40
@@ -7190,7 +8079,7 @@ def test_run_heartbeat_hands_the_journal_health_check_its_own_schedule(runner):
 
 
 # ---------------------------------------------------------------------------
-# 2026-08-14, Edvard: "Did you fix the notification for agora heartbeats?
+# 2026-08-14, the owner: "Did you fix the notification for agora heartbeats?
 # So i can turn them off?" -- pushNotifications:false on the heartbeat
 # mutes the phone push for its reply. The message is still posted.
 # ---------------------------------------------------------------------------
@@ -7372,7 +8261,7 @@ def test_a_running_cycle_keeps_its_own_conversation_out_of_the_live_set(runner):
              patch.object(runner.poll, "run_due_heartbeats"):
             runner.poll_once()
 
-    runner.heartbeats._heartbeat_threads["hb1"] = _StillRunning()
+    runner.heartbeats._heartbeat_threads["hb1"] = [_StillRunning()]
     try:
         acked, polled = [], []
         _poll(acked, polled)
@@ -7407,3 +8296,390 @@ def test_since_and_the_answered_live_chip_filter_together(runner):
 
     got = runner.heartbeats._unread_from_edvard(detail, since="2026-08-19T19:30:00+00:00")
     assert got == "still waiting"
+
+
+# --- Redaction by value, not by shape (idea #106, Cycle 560) -----------------
+# Measured on the live runner pod before any of this was written: redact()
+# returned the bare values of AGORA_TOKEN, COUCHDB_PASSWORD and
+# TINYFISH_API_KEY completely unaltered, because none of the three has a
+# documented format for a pattern to match. `environ` is injected here so the
+# tests never touch a real credential.
+
+_FAKE_ENV = {
+    "AGORA_TOKEN": "20" + "a" * 62,
+    "COUCHDB_PASSWORD": "Xk#notarealpw123",
+    "HOME": "/root",
+}
+
+
+def test_redact_catches_a_formatless_password_with_no_name_beside_it(runner):
+    """The traceback case: a value alone on the line, no `NAME=` to anchor on.
+
+    A 16-character random password has no shape, so every pattern in the table
+    is blind to it by construction. This is the failure idea #106 names and the
+    one the shape-based half of the filter can never reach.
+    """
+    out = audit_module.redact(
+        "urllib3.exceptions: rejected Xk#notarealpw123", _FAKE_ENV)
+    assert "Xk#notarealpw123" not in out
+    assert "[redacted: COUCHDB_PASSWORD]" in out
+
+
+def test_redact_names_which_credential_it_removed(runner):
+    """A silent deletion is against the keep-everything rule; the marker says
+    what went, the same way the shape patterns name the vendor."""
+    out = audit_module.redact("token=" + "20" + "a" * 62, _FAKE_ENV)
+    assert "[redacted: AGORA_TOKEN]" in out
+
+
+def test_redact_matches_the_stripped_value_so_a_trailing_newline_cannot_hide_it(runner):
+    """GEMINI_API_KEY on the runner pod carries a trailing newline, and it is
+    the *unstripped* value urllib quotes back in the exception. Redacting only
+    the stripped form would leave the real key in the one place it has actually
+    been seen printed."""
+    env = {"GEMINI_API_KEY": "AQ.notarealkey0123456789\n"}
+    # The text carries the value *without* the newline on purpose: whatever
+    # printed it may have trimmed the line. Matching on the raw value alone
+    # would miss this, and matching on the stripped one covers both.
+    out = audit_module.redact(
+        "ValueError: Invalid header value 'AQ.notarealkey0123456789'", env)
+    assert "AQ.notarealkey0123456789" not in out
+    assert "[redacted: GEMINI_API_KEY]" in out
+
+
+def test_redact_replaces_the_longer_secret_first(runner):
+    """One secret containing another must be replaced whole. Shortest-first
+    would blank the inner one and leave the outer one's tail in the output,
+    which reads as redacted and is not."""
+    env = {"A_TOKEN": "abcdefgh", "B_TOKEN": "abcdefgh-and-more-tail"}
+    out = audit_module.redact("value abcdefgh-and-more-tail here", env)
+    assert "abcdefgh" not in out
+    assert "[redacted: B_TOKEN]" in out
+
+
+def test_redact_ignores_a_secret_named_var_too_short_to_be_one(runner):
+    """The danger below the floor is over-redaction, not exposure: a var named
+    like a secret holding `true` would blank that word out of every sentence
+    this loop publishes. The shortest real one on either pod is 16 characters."""
+    env = {"DEBUG_SECRET": "true"}
+    text = "the answer is true and it stays true"
+    assert audit_module.redact(text, env) == text
+
+
+def test_redact_only_reads_env_vars_whose_name_says_they_hold_a_secret(runner):
+    """Redacting every long env value would eat HOME, PWD and the workspace
+    path out of ordinary tool output."""
+    env = {"NOVA_WORKSPACE": "/data/workspace-concurrent/7-129550988400320"}
+    text = "cd /data/workspace-concurrent/7-129550988400320 && pytest"
+    assert audit_module.redact(text, env) == text
+
+
+def test_redact_still_runs_the_shape_patterns_when_the_env_holds_nothing(runner):
+    """The value pass is additive. A copy that returned early on an empty
+    environment would pass every test above and ship the old hole."""
+    out = audit_module.redact("crash: sk-ant-notarealkeyvalue000000", {})
+    assert "[redacted: anthropic key]" in out
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-28 list_conversations / read_conversation — the owner asked the
+# "Claude" persona in Agora to read an earlier conversation called "Stuff"
+# and file its contents as issues. It could not do either, and its own
+# words were "there's no tool to list existing conversations or fetch their
+# message history". That was accurate: every manageAgora tool up to here
+# CREATES things (personas, conversations, heartbeats, workflows) or lists
+# personas and models. Nothing could read a conversation other than the one
+# the turn was already in, so "read that other conversation" had no answer
+# for any persona, not just that one.
+# ---------------------------------------------------------------------------
+
+CONVERSATIONS_FIXTURE = {"conversations": [
+    {"id": "c-stuff", "name": "Stuff", "lastMessageAt": "2026-08-27T07:33:14.931Z"},
+    {"id": "c-main", "name": "Main", "lastMessageAt": "2026-08-28T06:00:00.000Z"},
+    {"id": "c-quiet", "name": "Never spoken in"},
+]}
+
+
+def test_conversation_readers_only_advertised_with_manage_agora(runner):
+    caps_on = dict(runner.NO_CAPS, manageAgora=True)
+    caps_off = dict(runner.NO_CAPS, manageAgora=False)
+    names_on = {t["name"] for t in runner.client_tool_schemas(caps_on)}
+    names_off = {t["name"] for t in runner.client_tool_schemas(caps_off)}
+    assert {"list_conversations", "read_conversation"} <= names_on
+    assert not ({"list_conversations", "read_conversation"} & names_off)
+
+
+# 2026-08-29 (Cycle 613) -- the grant above was too wide. Reading a
+# conversation is read-only and `manageAgora` also hands out create_persona,
+# create_heartbeat, create_conversation and create_workflow, so the only way
+# to let a chat persona answer "read that other conversation" was to make it
+# a platform admin. `conversationRead` is the narrow grant; `manageAgora`
+# still implies it so nothing that works today stops working.
+
+
+def test_conversation_read_capability_grants_the_readers_and_nothing_else(runner):
+    caps = dict(runner.NO_CAPS, conversationRead=True)
+    names = {t["name"] for t in runner.client_tool_schemas(caps)}
+    assert {"list_conversations", "read_conversation"} <= names
+    creators = {
+        "create_persona",
+        "create_conversation",
+        "create_heartbeat",
+        "create_workflow",
+        "list_personas",
+        "list_models",
+    }
+    assert not (creators & names)
+
+
+def test_manage_agora_still_implies_conversation_read(runner):
+    caps = dict(runner.NO_CAPS, manageAgora=True, conversationRead=False)
+    names = {t["name"] for t in runner.client_tool_schemas(caps)}
+    assert {"list_conversations", "read_conversation"} <= names
+
+
+def test_whitelisting_read_conversation_keeps_the_narrow_grant(runner):
+    persona = {"capabilities": dict(runner.NO_CAPS, conversationRead=True)}
+    caps = runner.capabilities_for_step(persona, {"toolWhitelist": ["read_conversation"]})
+    assert caps["conversationRead"] is True
+    assert caps["manageAgora"] is False
+
+
+def test_list_conversations_sorts_newest_first_and_survives_a_never_used_row(runner):
+    with patch.object(runner.tools_dispatch, "agora_get",
+                      return_value=(200, CONVERSATIONS_FIXTURE)), \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool("list_conversations", {}, {"name": "T"}, "c1")
+    lines = result.splitlines()
+    assert lines[0] == "3 conversations:"
+    # Newest first, and the row with no lastMessageAt sorts last instead of
+    # raising on a None comparison.
+    assert lines[1].startswith("c-main | Main | 2026-08-28")
+    assert lines[2].startswith("c-stuff | Stuff | 2026-08-27")
+    assert lines[3] == "c-quiet | Never spoken in | never"
+
+
+def test_list_conversations_query_filters_and_reports_the_whole_count(runner):
+    with patch.object(runner.tools_dispatch, "agora_get",
+                      return_value=(200, CONVERSATIONS_FIXTURE)), \
+         patch.object(runner.tools_dispatch, "audit"):
+        hit = runner.execute_tool("list_conversations", {"query": "stu"}, {"name": "T"}, "c1")
+        miss = runner.execute_tool("list_conversations", {"query": "zzz"}, {"name": "T"}, "c1")
+    assert hit.splitlines()[0] == "1 of 3 conversations match 'stu':"
+    assert "c-stuff | Stuff" in hit
+    assert "c-main" not in hit
+    assert "no conversation name contains 'zzz'" in miss and "3 exist" in miss
+
+
+def _messages(n):
+    return {"messages": [
+        {"id": f"m{i}", "sender": "Edvard" if i % 2 else "Claude",
+         "text": f"line {i}", "ts": f"2026-08-27T0{i % 10}:00:00.000Z"}
+        for i in range(n)
+    ]}
+
+
+def test_read_conversation_resolves_a_name_and_windows_from_the_newest_end(runner):
+    def fake_get(path):
+        if path == "/conversations":
+            return 200, CONVERSATIONS_FIXTURE
+        assert path == "/conversations/c-stuff/messages"
+        return 200, _messages(71)
+
+    with patch.object(runner.tools_dispatch, "agora_get", side_effect=fake_get), \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool(
+            "read_conversation", {"conversation": "stuff"}, {"name": "T"}, "c1")
+    head = result.splitlines()[0]
+    assert "Stuff (c-stuff) -- 71 messages total" in head
+    assert "showing 50 (#22-#71)" in head
+    # The count of what was left out is stated rather than silently dropped.
+    assert "21 older and 0 newer not shown" in head
+    assert "line 70" in result and "line 21" in result
+    assert "line 20" not in result
+
+
+def test_read_conversation_offset_walks_further_back(runner):
+    def fake_get(path):
+        if path == "/conversations":
+            return 200, CONVERSATIONS_FIXTURE
+        return 200, _messages(71)
+
+    with patch.object(runner.tools_dispatch, "agora_get", side_effect=fake_get), \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool(
+            "read_conversation",
+            {"conversation": "c-stuff", "limit": 10, "offset": 50}, {"name": "T"}, "c1")
+    assert "showing 10 (#12-#21)" in result
+    assert "11 older and 50 newer not shown" in result
+    assert "line 20" in result and "line 21" not in result
+
+
+def test_read_conversation_refuses_an_ambiguous_name_instead_of_guessing(runner):
+    dupes = {"conversations": [
+        {"id": "a", "name": "Nova — Cycle 1", "lastMessageAt": "2026-08-01T00:00:00Z"},
+        {"id": "b", "name": "nova — cycle 1", "lastMessageAt": "2026-08-02T00:00:00Z"},
+    ]}
+    with patch.object(runner.tools_dispatch, "agora_get", return_value=(200, dupes)), \
+         patch.object(runner.tools_dispatch, "audit"):
+        result = runner.execute_tool(
+            "read_conversation", {"conversation": "Nova — Cycle 1"}, {"name": "T"}, "c1")
+    assert "2 conversations are named" in result
+    assert "a | Nova — Cycle 1" in result and "b | nova — cycle 1" in result
+
+
+def test_read_conversation_reports_a_miss_and_an_http_failure(runner):
+    with patch.object(runner.tools_dispatch, "agora_get",
+                      return_value=(200, CONVERSATIONS_FIXTURE)), \
+         patch.object(runner.tools_dispatch, "audit"):
+        missing = runner.execute_tool(
+            "read_conversation", {"conversation": "nope"}, {"name": "T"}, "c1")
+        empty = runner.execute_tool(
+            "read_conversation", {"conversation": ""}, {"name": "T"}, "c1")
+    assert "no conversation with id or name 'nope'" in missing
+    assert "list_conversations" in missing
+    assert "conversation (id or name) is required" in empty
+
+    with patch.object(runner.tools_dispatch, "agora_get", return_value=(503, {})), \
+         patch.object(runner.tools_dispatch, "audit"):
+        broken = runner.execute_tool(
+            "read_conversation", {"conversation": "Stuff"}, {"name": "T"}, "c1")
+    assert "HTTP 503" in broken
+
+
+def test_every_advertised_tool_is_in_the_capability_map(runner):
+    """A tool missing from TOOL_TO_CAPABILITY vanishes from any workflow step
+    that whitelists it.
+
+    `capabilities_for_step` builds the set of capabilities a whitelist keeps
+    by looking each whitelisted tool up in this map; a tool that is not in it
+    contributes nothing, so its capability is switched off and the step loses
+    the very tool it asked for. That fails closed rather than open, which is
+    why nothing has ever caught it — and it is exactly what I did here: I
+    added list_conversations and read_conversation to the schemas and to the
+    map, and only a mutation test told me the map entry was untested.
+
+    scoped_write and save_memory are deliberately absent: the first is gated
+    by active_step alone and the second is ungated (see NO_CAPS).
+    """
+    all_caps = dict.fromkeys(runner.NO_CAPS, True)
+    advertised = {t["name"] for t in runner.client_tool_schemas(all_caps)}
+    ungated = {"scoped_write", "save_memory"}
+    assert (advertised - ungated) <= set(runner.TOOL_TO_CAPABILITY)
+
+
+def test_read_conversation_says_so_plainly_when_the_offset_runs_off_the_end(runner):
+    """Without this the header reads '#1-#0', which is not a range."""
+    def fake_get(path):
+        if path == "/conversations":
+            return 200, CONVERSATIONS_FIXTURE
+        return 200, _messages(5)
+
+    with patch.object(runner.tools_dispatch, "agora_get", side_effect=fake_get), \
+         patch.object(runner.tools_dispatch, "audit"):
+        past = runner.execute_tool(
+            "read_conversation",
+            {"conversation": "c-stuff", "offset": 99}, {"name": "T"}, "c1")
+    assert "5 messages total, none in this window (offset 99 is past the oldest)." in past
+    assert "#1-#0" not in past
+
+
+def _invoke_handler(body):
+    """An /invoke handler over a canned body, same shape as the
+    /tool-activity helper above."""
+    from agora_runner import invoke_server
+    handler = invoke_server.InvokeHandler.__new__(invoke_server.InvokeHandler)
+    handler.path = "/invoke"
+    raw = json.dumps(body).encode()
+    handler.rfile = io.BytesIO(raw)
+    handler.headers = {"Content-Length": str(len(raw))}
+    sent = {}
+
+    def fake_send(status, payload):
+        sent["status"] = status
+        sent["payload"] = payload
+    handler._send = fake_send
+    return handler, sent
+
+
+def _invoke_capturing_the_model(body):
+    """Run /invoke against a stub persona and return the model
+    generate_reply was actually handed."""
+    from agora_runner import invoke_server
+    seen = {}
+    persona = {"id": "p1", "name": "Nova", "personality": "",
+               "model": "claude-cli:claude-opus-5", "thinking": False,
+               "sharedMemory": ""}
+
+    def fake_generate(persona_arg, caps, system, history, conversation_id,
+                      model_override=None, **kwargs):
+        seen["effective"] = model_override or persona_arg.get("model")
+        seen["override"] = model_override
+        seen["persona_model"] = persona_arg.get("model")
+        seen["unattended"] = kwargs.get("unattended")
+        return "ok"
+
+    handler, sent = _invoke_handler(body)
+    with patch.object(invoke_server, "AGORA_TOKEN", ""), \
+         patch.object(invoke_server, "fetch_persona", lambda pid: persona), \
+         patch.object(invoke_server, "build_system", lambda p: "sys"), \
+         patch.object(invoke_server, "generate_reply", fake_generate):
+        handler.do_POST()
+    return sent, seen, persona
+
+
+def test_invoke_runs_the_conversation_model_not_the_personas(clean_grants):
+    """Idea #95, slice 1, one route over. Ask sends `personaId` because the
+    persona still owns personality, memory and tool grants -- but one
+    persona curates hundreds of conversations, so resolving the model off it
+    ran every Ask on the persona's model no matter what was picked on the
+    conversation. The override wins, and it does not mutate the cached
+    persona."""
+    sent, seen, persona = _invoke_capturing_the_model({
+        "personaId": "p1",
+        "model": "claude-cli:claude-haiku-4-5-20251001",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert sent["status"] == 200
+    assert seen["effective"] == "claude-cli:claude-haiku-4-5-20251001"
+    assert seen["override"] == "claude-cli:claude-haiku-4-5-20251001"
+    # fetch_persona caches and shares its dict -- an override must never
+    # write through to it, or one Ask repoints every later turn.
+    assert persona["model"] == "claude-cli:claude-opus-5"
+
+
+def test_invoke_declares_itself_attended(clean_grants):
+    """/invoke serves Ask and Preview, both of which are a person pressing a
+    button. reply.py defaults closed now, so this route has to opt out
+    explicitly or the Ask box stops answering on a metered model."""
+    _, seen, _ = _invoke_capturing_the_model({
+        "personaId": "p1",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert seen["unattended"] is False
+
+
+def test_invoke_without_a_model_still_falls_back_to_the_persona(clean_grants):
+    """A conversation with no model of its own -- every one created before
+    the create route started copying the persona's -- behaves exactly as it
+    did before."""
+    _, seen, _ = _invoke_capturing_the_model({
+        "personaId": "p1",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert seen["override"] is None
+    assert seen["effective"] == "claude-cli:claude-opus-5"
+
+
+def test_invoke_ignores_a_model_that_is_not_a_non_empty_string(clean_grants):
+    """Agora sends `conversation.model`, which is `""` on older rows. An
+    empty string must read as "no override" rather than as a model, or
+    generate_reply raises `unknown model provider ''`."""
+    for bad in ("", None, 5, {"id": "x"}):
+        _, seen, _ = _invoke_capturing_the_model({
+            "personaId": "p1",
+            "model": bad,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert seen["override"] is None, bad
+        assert seen["effective"] == "claude-cli:claude-opus-5", bad

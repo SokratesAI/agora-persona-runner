@@ -53,7 +53,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Secret scan
@@ -72,7 +72,7 @@ jobs:
             echo "::error::Secret scan failed. If the finding is a FABRICATED test fixture, append '# gitleaks:allow' to that line and push again — it is per-line, stays visible in review, and needs no config file. If it is a REAL credential: do not allowlist it, rotate it, and do not merge this branch (the scan reads history, so the leak survives deleting the line)."
             exit 1
           }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # pyyaml is test-only: tests/test_build_workflow.py parses this file
@@ -86,9 +86,9 @@ jobs:
       # here rather than out of a scratch directory because a check that only
       # ever ran inside one cycle's session is a check nobody can repeat --
       # tests/browser/app.test.mjs names the cycle that learned that.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: tests/browser/package-lock.json
       - run: npm ci
@@ -97,8 +97,13 @@ jobs:
       # test but a hung process: a jsdom window left open keeps a rescheduling
       # poll on the event loop, every test passes, and `node --test` simply
       # never returns. Two runs sat at 33 and 52 minutes before anyone read
-      # them as hung rather than slow. The suite takes ~3s, so 5 minutes turns
-      # that into a red X inside the hour it happened.
+      # them as hung rather than slow. 5 minutes turns that into a red X
+      # inside the hour it happened.
+      #
+      # That sentence used to say the suite takes ~3s, which is where the
+      # 100x headroom in this bound came from. Measured 2026-08-26 on the
+      # bridge pod: 71 seconds. The bound still holds, but it is 4x, not
+      # 100x, so a genuinely slower suite will start hitting it.
       - run: node --test
         working-directory: tests/browser
         timeout-minutes: 5
@@ -119,21 +124,21 @@ jobs:
   vault-drift:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Generate installation token scoped to the bridge repo only
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_APP_ID }}
           private-key: ${{ secrets.ORG_APP_PRIVATE_KEY }}
           owner: SokratesAI
           repositories: agora-claude-bridge
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: SokratesAI/agora-claude-bridge
           token: ${{ steps.app-token.outputs.token }}
           path: .bridge
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The CI-workflow pair is compared as parsed YAML rather than as text,
@@ -150,16 +155,16 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -167,7 +172,7 @@ jobs:
             type=sha,prefix=sha-
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -201,13 +206,13 @@ jobs:
       # source checked out and must not clobber it.
       - name: Generate installation token scoped to the config repo only
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_APP_ID }}
           private-key: ${{ secrets.ORG_APP_PRIVATE_KEY }}
           owner: SokratesAI
           repositories: ${{ github.event.repository.name }}-config
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ env.CONFIG_REPO }}
           token: ${{ steps.app-token.outputs.token }}

@@ -168,7 +168,7 @@ def test_a_session_with_no_duration_does_not_donate_its_hour_to_the_one_before()
     mutation: falling back an hour puts the entry more than
     `MAX_LAG_SECONDS` after the earlier start, so that guard refused it
     and both rules answered `{}` for different reasons. The heartbeat has
-    actually run at 40 minutes (Edvard's `notes.md`, 2026-08-12), which is
+    actually run at 40 minutes (the owner's `notes.md`, 2026-08-12), which is
     exactly the spacing where the fallback lands *inside* the window and
     the wrong answer becomes reachable.
 

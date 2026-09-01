@@ -73,7 +73,7 @@ def test_the_two_live_clients_are_compared_by_value_not_by_text():
 
 def test_a_changed_routing_folder_is_drift():
     """The failure this exists for: one copy sends a path to Nova's database
-    and the other to Edvard's, so his file is answered by the wrong store."""
+    and the other to the owner's, so his file is answered by the wrong store."""
     other = _mutated('"projects/sokrates/projects/agora/nova/",',
                      '"projects/sokrates/projects/nova/",')
     drifted = sync_contract.compare(RUNNER_SOURCE, other)
@@ -216,7 +216,7 @@ def test_the_exact_gap_the_name_comparison_could_not_see(tmp_path):
     """Delete the exact-file branch from one copy's `db_for` and the name
     comparison still says every name is in sync, because the tuple it reads
     is untouched -- that is what the second reader proved on #152.
-    `journal-digest.md` is the file Edvard actually opens."""
+    `journal-digest.md` is the file the owner actually opens."""
     other = _bridge_copy(
         tmp_path,
         old="if lowered.startswith(NOVA_DB_FOLDERS) or lowered in NOVA_DB_FILES:",
@@ -512,7 +512,7 @@ def _answers_agree(runner_path, bridge_path):
 def test_edvards_own_nova_folder_added_to_both_copies_is_caught(tmp_path):
     """The mistake this table was written for, and it is a named trap rather
     than an invented one: two folders in the vault are called "nova" and only
-    `agora/nova/` is Nova's. `projects/nova/` is Edvard's own, deliberately
+    `agora/nova/` is Nova's. `projects/nova/` is the owner's own, deliberately
     left in his vault so his capture files survive the app breaking.
 
     Adding it to `NOVA_DB_FOLDERS` routes his `issues.md`, `ideas.md` and
@@ -543,7 +543,7 @@ def test_edvards_own_nova_folder_added_to_both_copies_is_caught(tmp_path):
 
 
 def test_the_exact_file_branch_lost_from_both_copies_is_caught(tmp_path):
-    """`journal-digest.md` is the file Edvard opens, and it is the one file
+    """`journal-digest.md` is the file the owner opens, and it is the one file
     routed by exact match rather than by folder. Losing that branch in one
     copy is the drift `test_the_exact_gap_the_name_comparison_could_not_see`
     covers. Losing it in both is the same page reading from the wrong
@@ -565,7 +565,7 @@ def test_the_exact_file_branch_lost_from_both_copies_is_caught(tmp_path):
 
 def test_a_straddling_prefix_narrowed_in_both_copies_is_caught(tmp_path):
     """The ancestor branch, dropped from both. A listing of `projects/` then
-    queries only Edvard's database and silently returns none of Nova's files
+    queries only the owner's database and silently returns none of Nova's files
     -- and because both copies return `[probe-edvard-db]`, which is a
     configured name, agreement and the stray guard are both satisfied.
     """
@@ -632,7 +632,7 @@ def test_the_expected_table_matches_what_the_copies_really_answer(tmp_path):
 
 def test_a_corrupted_expectation_is_caught_against_the_real_copies(
         tmp_path, monkeypatch):
-    """The noise half. `journal-digest.md` is the file Edvard opens and the
+    """The noise half. `journal-digest.md` is the file the owner opens and the
     one path routed by exact match, so claiming it belongs in his database is
     an expectation the live code disagrees with."""
     corrupted = dict(sync_contract._ROUTING_EXPECTED_PATHS)
@@ -952,7 +952,7 @@ def test_a_pattern_dropped_from_one_copy_is_drift(tmp_path):
 
 
 def test_a_label_reworded_in_one_copy_is_drift(tmp_path):
-    """The marker is what Edvard reads, so the two feeds saying different
+    """The marker is what the owner reads, so the two feeds saying different
     words for the same removal is a real difference, not cosmetics."""
     other = _redact_copy(tmp_path, old='("aws key id"', new='("aws access key"')
     labels = [label for label, _, _ in
@@ -963,7 +963,7 @@ def test_a_label_reworded_in_one_copy_is_drift(tmp_path):
 def test_a_copy_with_no_redact_is_an_error_not_agreement(tmp_path):
     """Same reasoning as ContractRouterMissing: a filter that cannot be
     found has not been shown to agree with anything."""
-    other = _redact_copy(tmp_path, old="def redact(text):", new="def scrub(text):")
+    other = _redact_copy(tmp_path, old="def redact(text, environ=None):", new="def scrub(text, environ=None):")
     with pytest.raises(sync_contract.ContractRedactorMissing):
         sync_contract.compare_redaction(redact.__file__, other)
 
@@ -988,7 +988,7 @@ def test_two_copies_that_both_stopped_redacting_is_an_error(tmp_path):
 
 
 def test_two_copies_that_both_redact_everything_is_an_error(tmp_path):
-    """The other direction, and the one Edvard's keep-everything rule is
+    """The other direction, and the one the owner's keep-everything rule is
     about: a filter that eats ordinary prose also agrees with itself."""
     everything = ('    if not isinstance(text, str) or not text:\n'
                   '        return text\n'
