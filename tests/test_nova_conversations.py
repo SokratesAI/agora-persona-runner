@@ -237,8 +237,14 @@ def test_the_one_persona_is_the_same_id_nova_ask_answers_on():
     assert nova_ask.ANSWER_PERSONA_ID == convs.ANSWER_PERSONA_ID
 
 
-def test_a_create_with_no_name_never_reaches_agora():
-    for bad in ["", "  ", None]:
+def test_a_create_with_a_name_that_is_not_text_never_reaches_agora():
+    """`""`, `"  "` and `None` used to be refused here too. They are legal
+    now -- `issues.md` #139, he does not always know what a thread is about
+    before he starts it -- and the pin that replaces that one is next door
+    in `test_a_blank_name_starts_a_thread_called_new_chat`. What still has
+    to refuse is a name that is not text at all, because `strip()` on it
+    would raise inside the route rather than answer him."""
+    for bad in [17, [], {"name": "x"}]:
         (result, calls) = _run(lambda b=bad: convs.create(b))
         assert result[0] is False
         assert calls == []
@@ -624,3 +630,94 @@ def test_a_finished_turns_passages_do_not_survive_its_reply():
     # "b" belonged to a turn that finished; "e" is the turn running now.
     assert [m["id"] for m in payload["messages"]] == ["a", "c", "d", "e"]
     assert payload["waiting"] is True
+
+
+# --- Starting a thread before you know what it is about ------------------
+#
+# His capture, `issues.md` #139: *"I have to type a conversation title
+# before I can even start it, but I don't always know what it'll be about.
+# Want it to work like the official Claude app: starts as 'New chat',
+# auto-titles itself after the first message."*
+#
+# What is worth pinning is the pair of directions, because they fail
+# silently in opposite ways: a blank name must *start* a thread rather than
+# refuse one, and a thread he named himself must never be renamed under him
+# by something he happened to say in it.
+
+
+def test_a_blank_name_starts_a_thread_called_new_chat():
+    (ok, new_id), calls = _run(lambda: convs.create(""))
+    assert ok is True and new_id == "c-new"
+    posted = [c for c in calls if c[1] == "/conversations"]
+    assert posted and posted[0][2]["name"] == convs.UNTITLED_NAME
+
+
+def test_a_name_he_typed_is_still_the_name():
+    (ok, _), calls = _run(lambda: convs.create("  Roofing  "))
+    assert ok is True
+    assert [c for c in calls if c[1] == "/conversations"][0][2]["name"] == "Roofing"
+
+
+def test_rename_still_refuses_a_blank_where_create_now_accepts_one():
+    """The two are deliberately not the same rule. Starting without a name
+    is him not knowing yet; emptying the name of a thread that has one
+    leaves a row he cannot find again in a list of seven hundred."""
+    ok, message = convs.rename("c-7", "   ")
+    assert ok is False and "needs a name" in message
+
+
+def test_the_first_message_becomes_the_title():
+    (ok, message), calls = _run(
+        lambda: convs.autotitle("c-7", convs.UNTITLED_NAME,
+                                "Can you look at the NAS backup? It has been failing."))
+    assert ok is True and message == "Can you look at the NAS backup?"
+    assert ("PATCH", "/conversations/c-7",
+            {"name": "Can you look at the NAS backup?"}) in calls
+
+
+def test_a_thread_he_named_is_never_retitled():
+    """The one check that carries the whole safety of the route. Without it
+    every opening message would overwrite a title he chose, and he would
+    have no way to tell that from the app losing his rename."""
+    (ok, message), calls = _run(
+        lambda: convs.autotitle("c-7", "Roofing", "Can you look at the NAS backup?"))
+    assert ok is False and "already has a name" in message
+    assert not [c for c in calls if c[0] == "PATCH"]
+
+
+def test_a_message_with_no_words_in_it_leaves_the_placeholder():
+    """`New chat` is honest. A title cut out of an emoji or an attachment
+    line is worse than no title, and it cannot be undone by sending a
+    better message afterwards -- the thread no longer looks untitled."""
+    (ok, _message), calls = _run(lambda: convs.autotitle("c-7", convs.UNTITLED_NAME, "😀😀"))
+    assert ok is False
+    assert not [c for c in calls if c[0] == "PATCH"]
+
+
+def test_an_attachment_line_is_the_pages_text_not_his():
+    assert convs.title_from_message("![shot](/api/upload/a.png)") == ""
+
+
+def test_a_long_opening_line_is_cut_on_a_word_boundary():
+    """Pinned as "the source has a space where this stopped", not as "the
+    title does not end in a space". The second is true of a mid-word cut as
+    well, so it passes against the bug -- the first run of this test did."""
+    source = "A very long opening line about the conversation title problem that goes on"
+    title = convs.title_from_message(source)
+    assert len(title) <= convs.TITLE_CHARS + 1
+    assert title.endswith("\u2026")
+    kept = title[:-1]
+    assert source.startswith(kept)
+    assert source[len(kept)] == " ", f"cut mid-word: {title!r}"
+
+
+def test_a_long_run_with_no_spaces_is_cut_where_it_falls():
+    """A URL has no word boundary to cut on, and refusing to shorten it
+    would put a 200-character row in the switcher."""
+    url = "https://example.com/" + "a" * 120
+    title = convs.title_from_message(url)
+    assert len(title) == convs.TITLE_CHARS + 1
+
+
+def test_only_the_first_line_is_the_title():
+    assert convs.title_from_message("Roofing\nthe felt is lifting at the ridge") == "Roofing"

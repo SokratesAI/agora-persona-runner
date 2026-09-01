@@ -172,8 +172,10 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.nova_conversation_reads import mark_seen as mark_conversation_seen
 from agora_runner.nova_conversations import (
+    autotitle as conversation_autotitle,
     conversations as conversation_list,
     create as conversation_create,
+    starting_name as conversation_starting_name,
     folder_create as conversation_folder_create,
     move as conversation_move,
     remove as conversation_remove,
@@ -3735,9 +3737,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         screen that no longer offers it.
         """
         name = payload.get("name")
-        if not isinstance(name, str):
+        if name is not None and not isinstance(name, str):
             self._send_json(400, {"error": "name must be a string"})
             return
+        # What the store will call it, computed once in `nova_conversations`
+        # so the header the page paints and the row the switcher lists are
+        # the same string. His capture #139: he does not always know what a
+        # conversation is about before he starts it, so a blank name is an
+        # answer rather than a missing field.
+        name = conversation_starting_name(name)
         try:
             ok, message = conversation_create(name)
         except Exception as e:
@@ -3762,7 +3770,26 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # message with "conversationId and text must be strings".
         self._send_json(200 if ok else (400 if bad_input else 502),
                         {"ok": ok, "result": message if ok else None,
+                         "name": name if ok else None,
                          "message": message})
+
+    def _post_conversation_autotitle(self, payload):
+        """`/api/conversations/autotitle` -- name a thread after its first message.
+
+        `issues.md` #139. It is `rename` with the title derived rather than
+        typed, and with one refusal `rename` does not have: it will not touch
+        a thread whose name is anything but the placeholder, so a title he
+        chose is never overwritten by something he said afterwards.
+
+        `name` is what the page believes the thread is called. See
+        `nova_conversations.autotitle` for why that is read off the page and
+        not off the store.
+        """
+        self._conversation_write(
+            payload, conversation_autotitle, "autotitle",
+            ("which conversation", "that conversation already has a name",
+             "there was no title"),
+            lambda p: (p.get("id"), p.get("name"), p.get("text")))
 
     def _post_conversation_rename(self, payload):
         """`/api/conversations/rename` -- change what a thread is called.
@@ -4195,6 +4222,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/board/comment", "/api/ask", "/api/ask/watching",
             "/api/conversations/send", "/api/conversations/new",
             "/api/conversations/watching", "/api/conversations/rename",
+            "/api/conversations/autotitle",
             "/api/conversations/move", "/api/conversations/delete",
             "/api/conversations/folder", "/api/conversations/model",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
@@ -4226,6 +4254,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/watching":
             self._post_conversation_watching(payload)
+            return
+        if path == "/api/conversations/autotitle":
+            self._post_conversation_autotitle(payload)
             return
         if path == "/api/conversations/rename":
             self._post_conversation_rename(payload)
