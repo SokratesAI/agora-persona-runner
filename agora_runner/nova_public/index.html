@@ -65,11 +65,11 @@
      re-deriving an answer I was handed, and paying for it with a stored
      tally and a reordering drawer.
 
-     `/ask` loses its link here and keeps its route: the chat dock is the
-     same thread, so the page is redundant on the menu, but a bookmark or an
-     older journal entry pointing at it still resolves. `PAGE_ROUTES` in
-     `nova_site.py` is unchanged and `tests/test_nav_is_grouped.py` pins that
-     `/ask` is the only route deliberately absent from this list.
+     `/ask` is gone -- link, route and page. The owner asked for the page to
+     be cut once the chat dock showed the same thread, and it is the dock's
+     `Ask Nova` row now. The API it used, `/api/ask`, is very much alive: the
+     dock talks to it. `tests/test_nav_is_grouped.py` pins that split, so a
+     later cycle cannot delete the endpoint along with the page.
 
      Each group is a `<details>`, closed on load. The owner asked for that the
      morning after the grouping shipped: "i want them to be dropdowns and

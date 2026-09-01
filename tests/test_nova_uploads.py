@@ -221,25 +221,23 @@ def test_attach_button_is_wired_into_every_composer():
     comment is appended to the row's write-up rather than stored in its
     own file -- so it needed its own call rather than inheriting one.
 
-    Fourth and fifth are the two that write into the ask thread -- the
-    `/ask` page and the chat dock -- added Cycle 436 on *"Make the new chat
-    be able to ... upload files like all other input fields in the Nova
-    app."* They are one conversation seen twice, and they still need two
-    calls: the dock's controls are static markup in `index.html` and the
-    page's are built by `renderAsk`, so there is no single node both could
-    hang a shared one off.
+    Fourth is the chat dock, added Cycle 436 on *"Make the new chat be able
+    to ... upload files like all other input fields in the Nova app."* It
+    was one of a pair -- the `/ask` page showed the same thread and built
+    its own -- until Cycle 759 deleted that page, which is why this count
+    went from six to five.
 
-    Sixth is the Conversations page's thread composer, added Cycle 441 on
-    *"its basicly a chat app with multiple conversations history"*. Same
-    argument as the fifth: it writes into whichever conversation is open
-    rather than into the ask thread, and it is built by
-    `openConversation`, so it has no node to share one with either.
+    Fifth is the Conversations page's thread composer, added Cycle 441 on
+    *"its basicly a chat app with multiple conversations history"*. It
+    writes into whichever conversation is open rather than into the ask
+    thread, and it is built by `openConversation`, so it has no node to
+    share one with the dock either.
     """
     source = _app_js()
     # The definition matches `buildAttach(` too, so it is subtracted rather
-    # than pattern-dodged -- this counts call sites, and there are six.
+    # than pattern-dodged -- this counts call sites, and there are five.
     calls = source.count("buildAttach(") - source.count("function buildAttach(")
-    assert calls == 6, f"expected every composer to build one, found {calls}"
+    assert calls == 5, f"expected every composer to build one, found {calls}"
 
     # Defined once, and the returned button actually reaches the DOM.
     assert source.count("function buildAttach(") == 1

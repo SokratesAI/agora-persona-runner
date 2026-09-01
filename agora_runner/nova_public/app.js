@@ -64,7 +64,6 @@
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
-    if (path === "/ask") return { view: "ask", cycle: null, board: null };
     if (path === "/conversations") return { view: "conversations", cycle: null, board: null };
     // `/conversation/<id>` -- the URL a push notification opens, so the tap
     // lands on the thread the notification was about instead of on whatever
@@ -1257,7 +1256,7 @@
    *
    * This is not a speed optimisation, it is the fix for a visible fault my
    * reviewer found on the first version. `renderAskThread` empties the
-   * thread and rebuilds every message from scratch, and `pollAsk` calls it
+   * thread and rebuilds every message from scratch, and `pollConv` calls it
    * every four seconds for up to four minutes while an answer is on its
    * way. Text and pictures survive that -- a picture is the same URL and
    * comes straight back out of the browser's cache -- but a diagram is
@@ -9222,109 +9221,6 @@
     if (payload.waiting) container.appendChild(askPending(payload.progress));
   }
 
-  /* One route guard, in the `.then` below and nowhere else. The first
-   * version checked here too, and a mutation pass showed the pair could
-   * not both be tested: removing either one alone left the other covering
-   * it, so both mutations passed and the navigation test pinned nothing.
-   * The `.then` is the one that has to stay -- it is what catches a fetch
-   * still in flight when the owner taps another tab -- so this is the copy
-   * that goes. */
-  function pollAsk(container, attempts) {
-    if (attempts >= ASK_POLL_MAX) return;
-    livePolls.push(setTimeout(function () {
-      // The /ask page: if this poll is still running, the route is still
-      // /ask, and the thread is the page.
-      pingAskWatching(route(window.location.pathname).view === "ask");
-      fetchPage("/api/ask")
-        .then(function (payload) {
-          if (route(window.location.pathname).view !== "ask") return;
-          renderAskThread(container, payload);
-          if (payload.waiting) pollAsk(container, attempts + 1);
-        })
-        // A failed poll is not a failed answer -- the thread is still in
-        // Agora and the next tick may well get it. Painting an error over
-        // a question that is being answered would be the wrong report.
-        .catch(function () { pollAsk(container, attempts + 1); });
-    }, ASK_POLL_MS));
-  }
-
-  function renderAsk(payload) {
-    stopPolling();
-    markNav();
-    statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
-    statusEl.appendChild(el("p", "status-line", "Ask me something"));
-    feed.textContent = "";
-
-    var thread = el("div", "ask-thread");
-    var form = el("form", "ask-form");
-    var box = el("textarea", "ask-box");
-    box.setAttribute("rows", "3");
-    box.setAttribute("placeholder", "Ask a question…");
-    box.setAttribute("aria-label", "Your question");
-    var send = el("button", "ask-send", "Ask");
-    send.setAttribute("type", "submit");
-    var status = el("p", "ask-status");
-    /* The same paperclip the dock has. The two composers write into one
-     * conversation, so a picture he can attach in the corner of the app and
-     * not on the page that shows the same thread would read as the page
-     * being broken. */
-    var uploading = false;
-    var sending = false;
-    function syncSend() { send.disabled = uploading || sending; }
-    var attach = buildAttach({
-      onBusy: function (isBusy) { uploading = isBusy; syncSend(); },
-      onStatus: function (text) { status.textContent = text; },
-    });
-    form.appendChild(box);
-    form.appendChild(attach.tray);
-    form.appendChild(attach.input);
-    form.appendChild(attach.button);
-    form.appendChild(send);
-    form.appendChild(status);
-    feed.appendChild(form);
-    feed.appendChild(thread);
-
-    renderAskThread(thread, payload);
-    if (payload.waiting) pollAsk(thread, 0);
-
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      var text = box.value.trim();
-      if (!text && !attach.count()) return;
-      var body = [text, attach.markdown()].filter(Boolean).join("\n\n");
-      sending = true;
-      syncSend();
-      status.textContent = "sending…";
-      fetch("/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: body }),
-      })
-        .then(function (r) { return r.json().catch(function () { return {}; }); })
-        .then(function (result) {
-          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
-          box.value = "";
-          attach.clear();
-          status.textContent = "";
-          sending = false;
-          syncSend();
-          // Paint his question immediately rather than waiting a poll for
-          // the server to echo it back: the send is the one moment the page
-          // knows something happened, and four seconds of a box that has
-          // gone blank with nothing to show for it reads as a lost message.
-          thread.appendChild(askMessage({ sender: "Edvard", text: body }));
-          thread.appendChild(askPending(null));
-          pollAsk(thread, 0);
-        })
-        .catch(function (err) {
-          sending = false;
-          syncSend();
-          status.textContent = "could not send: " + err.message;
-        });
-    });
-  }
-
   /* The Conversations page.
    *
    * His capture, `ideas.md` 2026-08-25: *"its basicly a chat app with
@@ -9354,10 +9250,16 @@
     if (payload.waiting) container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
   }
 
-  /* `pollAsk`'s shape against a conversation id. The route guard lives in
-   * the `.then` and nowhere else for the reason written above `pollAsk`:
-   * a second copy in the timer body cannot be independently tested, so a
-   * mutation pass pins neither. The extra guard here is `convOpenId` --
+  /* Poll one conversation for an answer that is still being written.
+   *
+   * The route guard lives in the `.then` and nowhere else. An earlier
+   * version checked in the timer body too, and a mutation pass showed the
+   * pair could not both be tested: removing either one alone left the
+   * other covering it, so both mutations passed and the navigation test
+   * pinned nothing. The `.then` is the copy that has to stay -- it is what
+   * catches a fetch still in flight when the owner taps another tab.
+   *
+   * The extra guard here is `convOpenId` --
    * he can tap back to the list and open a different thread without the
    * route changing, and a poll from the old thread must not paint over
    * the new one. */
@@ -9458,9 +9360,9 @@
           status.textContent = "";
           sending = false;
           syncSend();
-          // Paint it immediately, `renderAsk`'s reason: the send is the one
-          // moment the page knows something happened, and four seconds of a
-          // box that has gone blank reads as a lost message.
+          // Paint it immediately: the send is the one moment the page knows
+          // something happened, and four seconds of a box that has gone
+          // blank reads as a lost message.
           thread.appendChild(askMessage({ sender: "Edvard", text: body }));
           thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
           pollConv(thread, id, 0);
@@ -9988,19 +9890,6 @@
       });
   }
 
-  function loadAsk() {
-    fetchPage("/api/ask")
-      .then(function (payload) {
-        if (route(window.location.pathname).view !== "ask") return;
-        renderAsk(payload);
-      })
-      .catch(function (err) {
-        markNav();
-        feed.textContent = "";
-        feed.appendChild(el("p", "empty", "Could not load your questions: " + err));
-      });
-  }
-
   /* `/diag` -- what the owner's own device reports about itself.
    *
    * Three cycles running have now shipped a fix for a rendering fault on a
@@ -10447,10 +10336,6 @@
     }
     if (here.view === "plan") {
       loadPlan();
-      return;
-    }
-    if (here.view === "ask") {
-      loadAsk();
       return;
     }
     if (here.view === "conversations") {
@@ -11338,7 +11223,7 @@
             cacheThread(payload);
             if (payload.waiting) pollChat(attempts + 1);
           })
-          // A failed poll is not a failed answer, same as `pollAsk`.
+          // A failed poll is not a failed answer, same as `pollConv`.
           .catch(function () {
             if (token !== sourceToken) return;
             pollChat(attempts + 1);
@@ -12072,7 +11957,7 @@
           // polling the new thread on the old one's schedule.
           if (token !== sourceToken) return;
           // Paint his question straight away rather than waiting a poll for
-          // the server to echo it, for `renderAsk`'s reason: a box that has
+          // the server to echo it, for `pollConv`'s reason: a box that has
           // gone blank with nothing to show for it reads as a lost message.
           thread.appendChild(askMessage({ sender: "Edvard", text: body }));
           thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
