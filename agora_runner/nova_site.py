@@ -219,7 +219,7 @@ from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
 from agora_runner.vault import vault_read_path, vault_read_path_rev, vault_write_path
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
-from agora_runner.nova_next import next_payload
+from agora_runner.nova_next import next_payload, rank
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
 from agora_runner.nova_push import store_subscription, vapid_key
 from agora_runner.nova_plan import plan_payload as shape_plan
@@ -944,6 +944,46 @@ def _project_summary(items):
     }
 
 
+def _project_backlog(rows):
+    """The project's open rows, in the order a cycle would take them.
+
+    His idea #228 asks each project page for *"a backlog"*, and the half
+    the status columns cannot give him is an *order*. Four columns say
+    what state each row is in; none of them says which row is next, and
+    on a project with forty open rows that is the only question the page
+    is really asked.
+
+    So this is the same ranking `tools.top_board_rows` prints when a cycle
+    picks its work -- `nova_next.rank`, imported rather than re-spelled,
+    because a page that ordered the backlog its own way would be telling
+    him one thing while I did another. A row blocked on him sinks below
+    every actionable one whatever its rating, then rating, then the oldest
+    `Updated` first, then issues before ideas.
+
+    **Two of that ranking's raises are missing here and are named rather
+    than quietly dropped.** `rank` puts a row with an unanswered comment
+    from him first of all, and sinks a row another live cycle is holding
+    -- and neither flag is on a board payload item, because
+    `board_payload` does not read the comment threads or the claims
+    ledger. Both are absent rather than wrong: `rank` reads them with
+    `.get`, so their absence removes the raise and changes nothing else.
+    The claim one belongs absent anyway -- which cycle is mid-flight is
+    not a fact about the project -- and the comment one is a real gap,
+    worth one more read of `comments.md` on a later pass rather than a
+    second ordering rule invented here.
+
+    Closed rows are left out: `done` is delivered and `outdated` is scope
+    he dropped, and neither is something to do next. That is the same cut
+    `_project_summary` makes for the bar above it, so the number beside
+    this list and the "open" count in the summary can never disagree.
+    """
+    return rank([
+        row for row in rows
+        if not row.get("done")
+        and (row.get("statusKey") or "") not in _CLOSED_STATUS_KEYS
+    ])
+
+
 def project_payload(name=None):
     """One project's board rows, grouped by status (idea #92, phase 3).
 
@@ -1042,12 +1082,23 @@ def project_payload(name=None):
             "total": len(rows),
             "columns": _project_columns(rows),
         }
-        matched_rows.extend(rows)
+        # Copies, tagged with which board they came from. `rank` breaks a
+        # tie with `board == "issue"`, and the items here are the ones the
+        # board cache holds -- mutating them in place would put the key on
+        # the Issues and Ideas pages' own payloads too.
+        matched_rows.extend(
+            dict(item, board=("issue" if board == "issues" else "idea"))
+            for item in rows
+        )
     # One summary across both boards, not one each: he asked how the
     # *project* is going, and an issue and an idea are both a row of work
     # under it. The per-board totals are still on `boards[*].total` for the
     # tab labels.
     result["summary"] = _project_summary(matched_rows)
+    # One ordered queue across both boards, for the same reason the summary
+    # is one: "what is next on this project" does not have an issues answer
+    # and an ideas answer.
+    result["backlog"] = _project_backlog(matched_rows)
     return result
 
 
