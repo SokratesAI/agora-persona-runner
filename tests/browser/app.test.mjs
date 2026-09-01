@@ -5538,9 +5538,6 @@ describe("an ask nobody answered is named in the header", () => {
    * number. */
   const counter = (window) =>
     window.document.querySelector("#status .status-asks-open");
-  const askRows = (window) => Array.from(
-    window.document.querySelectorAll("#status .asks-panel a.unread-reply"),
-    (row) => row.getAttribute("href"));
 
   test("a second open ask is counted, not dropped", async () => {
     const window = await loadSite("/", {
@@ -5569,7 +5566,15 @@ describe("an ask nobody answered is named in the header", () => {
     assert.equal(counter(window), null);
   });
 
-  test("the count opens every open ask, oldest first", async () => {
+  /* The owner, capture 2026-09-01: *"Drop the current 'needs me'
+   * functionality (the yellow 'N WAITING ON YOU' button/list) ... and
+   * replace it with a simple filter that just lists the journal entries
+   * that need his input. No fancy list/carousel behavior, just a plain
+   * filtered view."*
+   *
+   * Both halves are asserted, because only asserting the link would pass
+   * against a page that still had the panel wired up beside it. */
+  test("the count is a link to the filtered view and expands nothing", async () => {
     const window = await loadSite("/", {
       journal: () => withAsks([
         { cycle: 271, date: "2026-08-18", time: "09:00" },
@@ -5578,13 +5583,17 @@ describe("an ask nobody answered is named in the header", () => {
       ]),
       comments: { byCycle: {}, needs: [] },
     });
-    assert.deepEqual(askRows(window), [], "the panel must start shut");
-    counter(window).click();
-    assert.deepEqual(askRows(window),
-      ["/cycle/247", "/cycle/260", "/cycle/271"]);
-    assert.equal(counter(window).getAttribute("aria-expanded"), "true");
-    counter(window).click();
-    assert.deepEqual(askRows(window), [], "a second press shuts it again");
+    assert.equal(counter(window).tagName, "A");
+    assert.equal(counter(window).getAttribute("href"), "/asks");
+    /* Not clicked: it is a real link now, and jsdom follows one. That is
+     * itself the assertion -- the control that used to be here was a
+     * `<button type="button">` whose only job was to toggle state. */
+    assert.equal(window.document.querySelector("#status button.status-asks-open"), null,
+      "the toggle is a link now, not a button");
+    assert.equal(window.document.querySelector("#status .asks-panel"), null,
+      "the expanding panel is deleted, not restyled");
+    assert.equal(counter(window).getAttribute("aria-expanded"), null,
+      "nothing expands, so nothing claims to");
   });
 
   /* An answered card leaves the list the same way it leaves the pill, and
@@ -5604,8 +5613,105 @@ describe("an ask nobody answered is named in the header", () => {
       },
     });
     assert.equal(counter(window).textContent, "2 waiting on you");
-    counter(window).click();
-    assert.deepEqual(askRows(window), ["/cycle/260", "/cycle/271"]);
+  });
+
+  /* The filtered view itself. `/asks` is `view: "journal"` with one
+   * predicate, so these assert what actually lands on the feed rather than
+   * what the header says about it -- the count and the page are two
+   * different claims and the whole complaint was that the count had
+   * nothing readable behind it. */
+  const askPayload = (cycles, asks) => {
+    const copy = JSON.parse(JSON.stringify(payload.journal));
+    const one = copy.entries[0];
+    copy.entries = cycles.map((cycle) => Object.assign({}, one, {
+      cycle,
+      title: "cycle " + cycle,
+      ask: "Yes or no, cycle " + cycle + "?",
+      askSpans: [{ kind: "text", text: "Yes or no, cycle " + cycle + "?" }],
+    }));
+    copy.total = cycles.length;
+    Object.assign(copy.status, { recentMissingCycles: [], asks: asks || cycles.map(
+      (cycle) => ({ cycle, date: "2026-08-17", time: "10:00" })) });
+    return copy;
+  };
+  const feedCycles = (window) => Array.from(
+    window.document.querySelectorAll("#feed article.entry"),
+    (card) => card.id);
+
+  test("the filtered view asks the server for the asks, not for a window", async () => {
+    const asked = [];
+    await loadSite("/asks", {
+      journal: (url) => { asked.push(String(url)); return askPayload([260, 247]); },
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.ok(asked.length, "the page fetched no journal at all");
+    assert.ok(asked.every((url) => url.includes("asks=1")),
+      "expected /api/journal?asks=1, got " + asked.join(", "));
+  });
+
+  test("the filtered view shows a card per unanswered ask", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.deepEqual(feedCycles(window), ["cycle-271", "cycle-260", "cycle-247"]);
+    assert.match(window.document.getElementById("feed").textContent,
+      /3 entries are waiting on you/);
+  });
+
+  /* The half the server deliberately does not decide. An ask is answered
+   * when he has commented on that card, and the comments payload is the
+   * only thing that knows -- so a card he replied to has to leave this
+   * page without the journal cache being rebuilt. */
+  test("a card he replied to leaves the filtered view", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: {
+        byCycle: { 260: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.deepEqual(feedCycles(window), ["cycle-271", "cycle-247"]);
+  });
+
+  test("the filtered view says so when nothing is waiting", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([247]),
+      comments: {
+        byCycle: { 247: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.deepEqual(feedCycles(window), []);
+    assert.match(window.document.getElementById("feed").textContent,
+      /Nothing is waiting on you/);
+  });
+
+  /* `total` is the number of asks the server found and the feed shows the
+   * ones he has not answered, so the two differ by exactly the answered
+   * ones -- and the pager reads that difference as "there is more to
+   * fetch". There is not: `/asks` sends no window. */
+  test("the filtered view draws no pager", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: {
+        byCycle: { 260: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.equal(window.document.querySelector("#feed button.more"), null);
+  });
+
+  /* The search box is a second filter over the same feed and the server
+   * treats `q` and `asks` as separate windows, so a search typed here
+   * would silently answer with matches from the whole archive. */
+  test("the filtered view has no search box", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([260, 247]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const box = window.document.querySelector(".journal-search");
+    assert.ok(!box || box.hidden, "the search box must be hidden on /asks");
   });
 
   /* Same guard the pill carries: a payload served out of the service

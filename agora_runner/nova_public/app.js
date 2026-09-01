@@ -60,6 +60,18 @@
     if (path === "/issues") return { view: "board", cycle: null, board: "issues" };
     if (path === "/ideas") return { view: "board", cycle: null, board: "ideas" };
     if (path === "/notes") return { view: "notes", cycle: null, board: null };
+    /* `/asks` -- the journal, filtered to the cards that asked him something.
+     *
+     * The owner, capture 2026-09-01: *"Drop the current 'needs me'
+     * functionality (the yellow 'N WAITING ON YOU' button/list) ... and
+     * replace it with a simple filter that just lists the journal entries
+     * that need his input. No fancy list/carousel behavior, just a plain
+     * filtered view."* So it is `view: "journal"` and not a view of its
+     * own: the cards render through exactly the same path the feed uses,
+     * which is what "plain" means here and is why the panel it replaces
+     * -- a second, differently-shaped rendering of the same asks -- is
+     * deleted rather than moved. */
+    if (path === "/asks") return { view: "journal", cycle: null, board: null, asks: true };
     if (path === "/pool") return { view: "pool", cycle: null, board: null };
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
@@ -97,9 +109,18 @@
     return route(pathname).cycle;
   }
 
+  /** Whether the URL is the open-asks filter. */
+  function routedAsks(pathname) {
+    return !!route(pathname).asks;
+  }
+
   function markNav() {
     var here = route(window.location.pathname);
-    setJournalSearchVisible(here.view === "journal" && here.cycle === null);
+    // Hidden on `/asks` for the reason a deep link hides it: the URL is
+    // already a filter, and a second one narrowing it would answer with
+    // the newest matches across the whole archive rather than within the
+    // asks -- `journal_page` treats `q` and `asks` as separate windows.
+    setJournalSearchVisible(here.view === "journal" && here.cycle === null && !here.asks);
     // Every view but the journal is named after its own path, so the two
     // single-page views need no branch of their own -- which is what a
     // third one turning the chain into a nested ternary made worth doing.
@@ -1627,12 +1648,6 @@
     return open.length ? open[open.length - 1] : null;
   }
 
-  /* Whether the panel listing every open ask is showing. Module-level for
-   * the reason `unreadOpen` is: `renderStatus` rebuilds `#status` from
-   * scratch on every poll, so state held inside it would close the panel
-   * under him twice a minute. */
-  var asksOpen = false;
-
   /* "since 08-16", and the day count when it has been more than one.
    *
    * The wait is computed here, off the reader's own clock, and not on the
@@ -1751,66 +1766,34 @@
       /* Every *other* open ask, which the field above cannot carry.
        *
        * the owner, ideas board #182: *"I'm not able to read all the 'waiting
-       * on you' and all the answers for the journals."* The answers half was
-       * built (the `#mail` panel below); this is the asks half, and the
-       * defect is exactly the one his sentence names. `status.asks` carries
-       * every card that raised an ask, and this header rendered one of them
-       * -- the oldest -- and dropped the rest on the floor. A second and a
-       * third open question were visible only by scrolling the feed and
-       * recognising a card, and an ask leaves the twenty-entry window in a
-       * day, so past that they were not reachable from this page at all.
+       * on you' and all the answers for the journals."* `status.asks`
+       * carries every card that raised an ask, and the field above renders
+       * one of them -- the oldest -- so a second and a third open question
+       * were visible only by scrolling the feed and recognising a card.
        *
-       * A button and not a link, because the field beside it is already a
-       * link and this one has to expand rather than navigate. It is drawn
-       * only when there is more than one: with a single open ask the field
-       * above says everything there is to say, and a control that opens a
-       * list of one is noise. */
+       * **This used to be a button that expanded a panel of its own, and
+       * he asked for that gone**, capture 2026-09-01: *"Drop the current
+       * 'needs me' functionality (the yellow 'N WAITING ON YOU'
+       * button/list) ... and replace it with a simple filter that just
+       * lists the journal entries that need his input. No fancy
+       * list/carousel behavior, just a plain filtered view."* The panel
+       * was a second rendering of cards the feed already knows how to
+       * draw: it showed a cycle number and a wait, and nothing else, so
+       * reading the question still meant tapping through to the card. So
+       * this is now a link to `/asks`, which is the feed with one
+       * predicate on it, and the whole expand/collapse mechanism is
+       * deleted rather than restyled.
+       *
+       * Drawn only when there is more than one, unchanged: with a single
+       * open ask the field above already points at the one card, and a
+       * filtered view of one is the card. */
       if (stillOpen.length > 1) {
         var more = statusField(null);
-        var toggle = el("button", "badge badge-ask status-asks-open",
+        var all = el("a", "badge badge-ask status-asks-open",
           stillOpen.length + " waiting on you");
-        toggle.type = "button";
-        toggle.setAttribute("aria-expanded", asksOpen ? "true" : "false");
-        toggle.addEventListener("click", function () {
-          asksOpen = !asksOpen;
-          renderStatus(status);
-        });
-        more.appendChild(toggle);
+        all.href = "/asks";
+        more.appendChild(all);
         subs.appendChild(more);
-      } else {
-        /* Nothing to expand, so the panel must not survive the ask that
-         * was answered while it was open. */
-        asksOpen = false;
-      }
-
-      if (asksOpen && stillOpen.length > 1) {
-        /* Oldest first: the same order the field above picks its one card
-         * by, so the list reads as that pill continued rather than as a
-         * second, differently-sorted opinion. */
-        var asksPanel = el("div", "unread-panel asks-panel");
-        var asksHead = el("p", "unread-panel-head");
-        asksHead.appendChild(el("span", "unread-panel-count",
-          stillOpen.length + " questions waiting on you"));
-        var shutAsks = el("button", "unread-panel-close", "Close");
-        shutAsks.type = "button";
-        shutAsks.addEventListener("click", function () {
-          asksOpen = false;
-          renderStatus(status);
-        });
-        asksHead.appendChild(shutAsks);
-        asksPanel.appendChild(asksHead);
-        for (var a = stillOpen.length - 1; a >= 0; a--) {
-          var ask = stillOpen[a];
-          var askRow = el("a", "unread-reply");
-          askRow.href = "/cycle/" + ask.cycle;
-          var askMeta = el("p", "unread-reply-meta");
-          askMeta.appendChild(el("span", "status-pr", "cycle " + ask.cycle));
-          var askWait = askWaitLabel(ask);
-          if (askWait) askMeta.appendChild(el("span", "status-pr", askWait));
-          askRow.appendChild(askMeta);
-          asksPanel.appendChild(askRow);
-        }
-        subs.appendChild(asksPanel);
       }
     }
 
@@ -3558,6 +3541,31 @@
       });
     }
 
+    /* `/asks`: the cards that asked him something and have not been
+     * answered.
+     *
+     * The server sends every card carrying an ask and deliberately does
+     * not decide which are still open -- an ask is answered when he has
+     * commented on that card, and comments live in a different document
+     * with its own cache, so folding it in there would leave the page
+     * claiming he had not replied until the journal cache next rebuilt.
+     * This is the same intersection `openAsks` makes for the header, done
+     * against the same payload, so the count in the header and the number
+     * of cards here can never disagree.
+     *
+     * A failed comments read leaves `commentsByCycle` empty and every ask
+     * therefore reads as open. That is the safe direction -- showing an
+     * answered question costs him a scroll, hiding an open one costs him
+     * the question -- and the "Comments could not be loaded" line below
+     * already says so on screen. */
+    var filtered = routedAsks(window.location.pathname);
+    if (filtered) {
+      entries = entries.filter(function (entry) {
+        var answers = commentsByCycle[String(entry.cycle)];
+        return !(answers && answers.length);
+      });
+    }
+
     /* One card per cycle, newest cycle first.
      *
      * A cycle's entries are usually adjacent on the wire but are not
@@ -3597,6 +3605,16 @@
      * an object, and a 304 is never asked for on this one. */
     if (comments === null) {
       feed.appendChild(el("p", "empty", "Comments could not be loaded — the entries below are complete, the replies are not."));
+    }
+    if (filtered) {
+      var backAll = el("a", "back", "← all entries");
+      backAll.href = "/";
+      feed.appendChild(backAll);
+      feed.appendChild(el("p", "empty", entries.length === 0
+        ? "Nothing is waiting on you."
+        : entries.length === 1
+          ? "1 entry is waiting on you."
+          : entries.length + " entries are waiting on you."));
     }
     if (wanted !== null) {
       var back = el("a", "back", "← all cycles");
@@ -3638,7 +3656,13 @@
      * to entries nobody has loaded yet, and pinning it to the edge would
      * claim a boundary this page cannot see. */
     var missing = {};
-    (journal.status && journal.status.missingCycles || []).forEach(function (n) {
+    /* Not on `/asks`. A hole is drawn between the two cards it sits
+     * between, and on a filtered feed the cards either side of it are not
+     * adjacent in the record -- so every real gap inside the range would
+     * be redrawn here, in a view whose whole point is that it is short.
+     * The gap is not wrong, it is just answering a question this page is
+     * not asking. */
+    (!filtered && journal.status && journal.status.missingCycles || []).forEach(function (n) {
       missing[n] = true;
     });
     var cycles = groups.map(function (parts) { return parts[0].cycle; });
@@ -3673,7 +3697,12 @@
      * this window, so the pager disappears on its own at the last page and
      * never appears at all on a server that does not paginate. */
     var total = journal.total;
-    if (wanted === null && typeof total === "number" && entries.length < total) {
+    /* `!filtered`: `/asks` sends no window, so there is nothing more to
+     * fetch -- and `total` is the number of asks the server found while
+     * `entries` is the ones he has not answered, so the two differ by
+     * exactly the answered ones and the pager would otherwise be drawn
+     * permanently, offering to load entries that are already here. */
+    if (wanted === null && !filtered && typeof total === "number" && entries.length < total) {
       // A search is not a window onto the newest entries, so "older" is
       // the wrong word for what the next twenty are -- they are the next
       // twenty matches, and they can be from any month.
@@ -3995,6 +4024,7 @@
   function journalUrl() {
     var wanted = routedCycle(window.location.pathname);
     if (wanted !== null) return "/api/journal?cycle=" + wanted;
+    if (routedAsks(window.location.pathname)) return "/api/journal?asks=1";
     var url = "/api/journal?limit=" + windowSize;
     var q = journalQuery.trim();
     if (q) url += "&q=" + encodeURIComponent(q);
@@ -4010,6 +4040,13 @@
   function digestUrl() {
     var wanted = routedCycle(window.location.pathname);
     if (wanted !== null) return "/api/digest?cycle=" + wanted;
+    /* No digest on `/asks`, for the same reason a search gets none:
+     * `/api/digest?limit=N` resolves its window out of the *newest* N
+     * cycles, and the asks are scattered across the archive -- so most
+     * cards would get no summary and the odd one would get somebody
+     * else's. Without a line, a card renders its own prose, which is what
+     * he is on this page to read. */
+    if (routedAsks(window.location.pathname)) return null;
     return "/api/digest?limit=" + windowSize;
   }
 
@@ -4024,7 +4061,8 @@
      * matching card renders its own prose directly, which is what a
      * search result should show anyway: he is looking for the entry, not
      * for the one-line version of it. */
-    var searching = !!journalQuery.trim() && routedCycle(window.location.pathname) === null;
+    var searching = (!!journalQuery.trim() && routedCycle(window.location.pathname) === null)
+      || digestUrl() === null;
     return Promise.all([
       fetchVersioned(journalUrl(), "journal"),
       searching

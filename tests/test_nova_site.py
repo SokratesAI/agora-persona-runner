@@ -5093,6 +5093,110 @@ def test_the_endpoint_actually_reads_q_off_the_query_string():
         assert json.loads(plain)["version"] != page["version"]
 
 
+def _with_asks():
+    """A journal where two cards asked him something and two did not.
+
+    Deliberately not the sample fixture, for the reason `_searchable` is
+    not: every assertion below is about *which* entries come back, and a
+    fixture built to exercise the parser would make that an assertion
+    about somebody else's prose.
+
+    Cycle 1 carries an ask and no cycle number is impossible, so the
+    unnumbered entry is the owner's own note -- the shape `open_asks`
+    skips, because a note has no card of its own for him to reply on.
+    """
+    return {
+        "entries": [
+            {"cycle": 4, "title": "Cycle 4", "body": "No ask.", "ask": ""},
+            {"cycle": 3, "title": "Cycle 3", "body": "Asked.",
+             "ask": "Yes or no, keep the pill?"},
+            {"cycle": None, "title": "A note", "body": "His own.",
+             "ask": "Which of these?"},
+            {"cycle": 1, "title": "Cycle 1", "body": "Asked.",
+             "ask": "How many nodes?"},
+        ],
+        "status": {"silentIntervals": 0},
+    }
+
+
+def test_the_asks_filter_returns_only_the_cards_that_asked_something():
+    page = nova_site.journal_page(_with_asks(), asks=True)
+    assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+    assert page["total"] == 2, "total is the number of asks, not of entries"
+    assert page["asks"] is True
+
+
+def test_an_ask_on_an_entry_with_no_cycle_number_is_not_offered():
+    """Same call `open_asks` makes one layer down: a note has no card of
+    its own, so an ask written into one has nowhere to be answered and
+    listing it would point him at nothing."""
+    page = nova_site.journal_page(_with_asks(), asks=True)
+    assert all(entry["cycle"] is not None for entry in page["entries"])
+
+
+def test_the_asks_filter_ignores_the_window():
+    """The point of the page is to see all of them at once, and there are
+    eight of these, not eight hundred. A `limit` that cut the list would
+    hide exactly the oldest ask -- the one that has waited longest, which
+    is the one the whole feature exists for."""
+    page = nova_site.journal_page(_with_asks(), asks=True, limit=1, offset=3)
+    assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+
+
+def test_the_asks_filter_does_not_decide_which_are_still_open():
+    """It sends every card carrying an ask, answered or not.
+
+    An ask is answered when he has commented on that card, comments live
+    in a different document with its own cache, and folding them in here
+    would keep the filter insisting he had not replied until the *journal*
+    cache next rebuilt -- minutes after he did. The client holds both
+    payloads and intersects them, which is the same split `open_asks`
+    documents.
+    """
+    payload = _with_asks()
+    page = nova_site.journal_page(payload, asks=True)
+    assert len(page["entries"]) == 2, (
+        "the server must not have an opinion about which are answered"
+    )
+
+
+def test_the_asks_window_gets_its_own_etag():
+    """The base etag is the journal build, identical for both, so without
+    its own window key the ask filter and an unwindowed read are answered
+    304 with each other's rows still on screen."""
+    payload = _with_asks()
+    filtered = nova_site.journal_page(payload, asks=True)
+    plain = nova_site.journal_page(payload, limit=20)
+    assert nova_site.journal_descriptor(filtered, None, 0, None, None, True) \
+        != nova_site.journal_descriptor(plain, 20, 0, None, None, False)
+
+
+def test_the_endpoint_actually_reads_asks_off_the_query_string():
+    """Every test above would pass if `_send_journal` never passed `asks`
+    down -- the handler would answer the plain window and look fine. So
+    ask over the socket, which is the only place the wiring exists."""
+    nova_site.reset_cache()
+    payload = _with_asks()
+    with patch.object(nova_site, "journal_payload", lambda: payload):
+        status, _, body = _get("/api/journal?asks=1")
+        assert status == 200
+        page = json.loads(body)
+        assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+
+        # And the etag really does move with it over the wire -- the
+        # descriptor test above proves the strings differ, not that the
+        # handler puts either of them in the header.
+        _, _, plain = _get("/api/journal?limit=20")
+        assert json.loads(plain)["version"] != page["version"]
+
+
+def test_the_asks_page_is_served_the_shell_on_a_cold_load():
+    """`/asks` has to survive a bookmark and a reload, not only a tap on
+    the header -- the header is on the front page and he opens this from a
+    push notification's tab as often as from there."""
+    assert "/asks" in nova_site.PAGE_ROUTES
+
+
 def test_replying_to_a_capture_reaches_the_vault_through_the_real_request_path():
     with patch.object(nova_site, "comment_on_capture",
                       return_value=(True, "replied in issues")) as rep:
