@@ -42,7 +42,16 @@ from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.log import log
 
 
-ANSWER_PERSONA_NAME = "Nova Answers"
+# Persona display name is "Nova", not "Nova Answers" -- the owner,
+# 2026-08-30:
+# talking to three differently-branded, differently-permissioned "Novas"
+# (the cycle, the comment-reply turn, this one) read as three different
+# people. The persona record's `name` and `personality` were updated live
+# via the Agora API (not from this repo -- see the persona-store, not git,
+# for the source of truth) to answer as one unified Nova with real write
+# tools instead of a read-only companion. This constant just needs to
+# stay in sync for anyone grepping the code for what the persona is called.
+ANSWER_PERSONA_NAME = "Nova"
 ASK_CONVERSATION_NAME = "Nova — Questions"
 
 # Found by tag rather than by name, so renaming the conversation in the
