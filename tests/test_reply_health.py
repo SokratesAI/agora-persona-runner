@@ -138,3 +138,46 @@ def test_replied_reads_the_partial_flag_not_the_position():
 def test_the_two_gates_are_on_the_boundaries_they_claim(minutes_ago, expected):
     assert reply_health.judge(_conversation("c", minutes_ago), NOW, 60,
                               24) == expected
+
+
+def test_the_relay_finds_the_words_in_a_thread_the_real_builder_produced():
+    """The fixtures above are hand-written and were a shape simpler than the
+    server's, which is how a real regression stayed green: Cycle 780 moved a
+    silent cycle's prose out of the row's `text` and into its `steps`, and
+    `last_narration` -- reading `text` -- answered "" for every silent cycle.
+    The push to his phone dropped its "the last thing it said was" line and
+    nothing said so.
+
+    So this one builds the thread with `nova_conversations.visible_rows`, the
+    function that actually feeds `/api/conversations/thread`. A hand-made
+    fixture cannot catch that class at all; only the real builder can."""
+    from agora_runner import nova_conversations, reply_check
+    rows = nova_conversations.visible_rows([
+        {"id": "a", "sender": "Edvard", "text": "how many pods?"},
+        {"id": "b", "sender": "Nova", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods",
+                      "toolUseId": "t1"}},
+        {"id": "c", "sender": "Nova", "text": "assistant_text: Checking the cluster now.",
+         "activity": {"capability": "assistant_text",
+                      "detail": "Checking the cluster now."}},
+    ])
+    thread = {"messages": rows}
+    # It really is a silent cycle: nothing here is a reply.
+    assert reply_check.replied(thread) is True  # his own question is settled
+    assert rows[-1]["stepsOnly"] is True
+    assert reply_check.last_narration(thread) == "Checking the cluster now."
+
+
+def test_the_relay_does_not_quote_a_tool_call_as_something_the_cycle_said():
+    """"It ran kubectl" is not the sentence he is owed. A turn whose last
+    step is a tool call has said nothing since its previous passage, and
+    that passage is the honest answer."""
+    from agora_runner import nova_conversations, reply_check
+    rows = nova_conversations.visible_rows([
+        {"id": "a", "sender": "Nova", "text": "assistant_text: Looking now.",
+         "activity": {"capability": "assistant_text", "detail": "Looking now."}},
+        {"id": "b", "sender": "Nova", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods",
+                      "toolUseId": "t1"}},
+    ])
+    assert reply_check.last_narration({"messages": rows}) == "Looking now."

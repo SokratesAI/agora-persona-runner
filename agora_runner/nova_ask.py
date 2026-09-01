@@ -246,7 +246,11 @@ def thread(limit=MAX_THREAD):
     settled = [m for m in messages if not m["partial"]]
     waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
     payload = {"conversationId": cid, "messages": messages[-limit:],
-               "waiting": waiting, "hasMore": has_more}
+               "waiting": waiting, "hasMore": has_more,
+               # `nova_conversations.thread`'s field, for its reason: the
+               # drawer asks for a step's output inside the same window the
+               # rows were built from.
+               "limit": limit}
     if waiting:
         # Only while the turn is running: a progress block on a finished
         # thread is a stale clock the page would keep counting up.

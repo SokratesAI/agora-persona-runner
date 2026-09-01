@@ -9877,7 +9877,7 @@
    * things went wrong -- a call the thread no longer holds (404) against a
    * fetch that did not land -- because "no output" and "I could not ask" mean
    * different things and only one of them is worth retrying. */
-  function showStepDetail(conversationId, step) {
+  function showStepDetail(conversationId, step, limit) {
     stepSheetBack.hidden = false;
     stepSheetTitle.textContent = step.capability || "tool";
     stepSheetSub.hidden = false;
@@ -9913,8 +9913,13 @@
       section("Inputs", step.input || "");
       stepSheetBody.appendChild(el("p", "step-note", note));
     }
+    /* `limit` is the window the thread rows came from, echoed back by the
+     * server. He can page back through a long thread, so a step on screen
+     * may be older than the default window -- asking without it reports a
+     * call he is looking at as gone. */
     fetch("/api/conversations/step?id=" + encodeURIComponent(conversationId)
-      + "&tool=" + encodeURIComponent(step.id)).then(function (r) {
+      + "&tool=" + encodeURIComponent(step.id)
+      + (limit ? "&limit=" + encodeURIComponent(limit) : "")).then(function (r) {
       if (r.status === 404) {
         failed("This call is no longer in the thread, so its output is gone.");
         return null;
@@ -9929,30 +9934,40 @@
       if (stepSheetBack.hidden) return;
       stepSheetBody.textContent = "";
       section("Inputs", found.input || step.input || "");
+      if (found.status === "running") {
+        /* An empty Output block over a call still running reads as "this
+         * printed nothing", which is a different and wrong fact. The sheet
+         * does not follow the four-second poll -- it draws the steps it was
+         * opened with -- so this says what is true and what to do about it
+         * rather than pretending to be live. */
+        stepSheetBody.appendChild(el("p", "step-note",
+          "Still running. Close and open this again for the output."));
+        return;
+      }
       section("Output", found.output || "");
     }, function () {
       failed("Could not reach the server for the output.");
     });
   }
 
-  function showStepList(conversationId, steps, label) {
+  function showStepList(conversationId, steps, label, limit) {
     stepSheetBack.hidden = true;
     stepSheetSub.hidden = true;
     stepSheetTitle.textContent = label;
     stepSheetBody.textContent = "";
     steps.forEach(function (step) {
       stepSheetBody.appendChild(stepRow(step, function (chosen) {
-        showStepDetail(conversationId, chosen);
+        showStepDetail(conversationId, chosen, limit);
       }));
     });
   }
 
-  function openStepSheet(conversationId, steps, label) {
+  function openStepSheet(conversationId, steps, label, limit) {
     buildStepSheet();
     stepSheetBack.onclick = function () {
-      showStepList(conversationId, steps, label);
+      showStepList(conversationId, steps, label, limit);
     };
-    showStepList(conversationId, steps, label);
+    showStepList(conversationId, steps, label, limit);
     setStepSheetHeight(STEP_SHEET_OPEN_VH);
     stepSheetBackdrop.hidden = false;
     stepSheet.hidden = false;
@@ -9962,7 +9977,7 @@
 
   /* The collapsed line itself. Returns null when there is nothing behind it,
    * so a message with no steps is unchanged. */
-  function stepsLine(conversationId, steps) {
+  function stepsLine(conversationId, steps, limit) {
     if (!steps || !steps.length) return null;
     var label = stepsLabel(steps);
     var line = el("button", "ask-steps");
@@ -9971,7 +9986,7 @@
     line.appendChild(el("span", "ask-steps-chev", "›"));
     line.setAttribute("aria-label", label + " — open the details");
     line.addEventListener("click", function () {
-      openStepSheet(conversationId, steps, label);
+      openStepSheet(conversationId, steps, label, limit);
     });
     return line;
   }
@@ -9981,8 +9996,8 @@
    * three surfaces render this -- the dock, a conversation thread and the
    * journal card's ask -- and only one of them has a module variable to
    * read. */
-  function askMessage(message, conversationId) {
-    var steps = stepsLine(conversationId, message.steps);
+  function askMessage(message, conversationId, limit) {
+    var steps = stepsLine(conversationId, message.steps, limit);
     /* A row that is only the work behind an answer still being written.
      * It is not a bubble: nothing has been said yet, and drawing it as one
      * is the thing he asked me to stop doing. */
@@ -10064,7 +10079,7 @@
       return;
     }
     messages.forEach(function (message) {
-      container.appendChild(askMessage(message, payload.conversationId));
+      container.appendChild(askMessage(message, payload.conversationId, payload.limit));
     });
     if (payload.waiting) container.appendChild(askPending(payload.progress));
   }
@@ -10093,7 +10108,7 @@
       return;
     }
     messages.forEach(function (message) {
-      container.appendChild(askMessage(message, payload.conversationId));
+      container.appendChild(askMessage(message, payload.conversationId, payload.limit));
     });
     if (payload.waiting) container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
   }

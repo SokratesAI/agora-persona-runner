@@ -907,3 +907,21 @@ def test_work_that_runs_into_his_next_message_does_not_land_on_it():
     assert payload["messages"][1]["steps"][0]["capability"] == "Bash"
     assert payload["messages"][2].get("steps") is None
     assert payload["messages"][2]["sender"] == "Edvard"
+
+
+def test_the_thread_says_which_window_its_rows_came_from():
+    """The drawer asks for a step's output inside the same window the rows
+    were built from, and it learns that window from here. A payload that
+    said `0` would send the client back to the default and answer 404 for a
+    call he can see, once he has paged back through a long thread -- which is
+    the bug this field exists to close, not a hypothetical."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1", 160), messages=[
+        {"id": "a", "sender": "Edvard", "text": "hi"},
+    ])
+    assert payload["limit"] == 160
+    # And it is the clamped window rather than the string off the wire, so a
+    # `?limit=junk` cannot come back out as a query parameter.
+    (payload, _calls) = _run(lambda: convs.thread("c-1", "junk"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "hi"},
+    ])
+    assert payload["limit"] == convs.MAX_THREAD

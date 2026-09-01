@@ -412,6 +412,12 @@ def thread(conversation_id, limit=MAX_THREAD):
         "conversationId": conversation_id,
         "messages": messages[-limit:],
         "waiting": waiting,
+        # The window these rows were built from, echoed back so the drawer
+        # can ask for a step's output inside the same one. He pages back
+        # through a long thread, so a step on screen can be older than the
+        # default window, and a detail view that asked with the default
+        # would report a call he is looking at as gone.
+        "limit": limit,
         # Whether scrolling to the top of the thread should fetch again.
         "hasMore": has_more,
         # What the caller stamps as seen. Settled only, for `waiting`'s

@@ -14154,7 +14154,7 @@ describe("the thoughts-and-tools drawer", () => {
   /* One turn: his question, then the persona's answer carrying the work that
    * produced it. This is `nova_conversations.visible_rows`' output shape. */
   const WITH_STEPS = {
-    conversationId: "c-ask", waiting: false,
+    conversationId: "c-ask", waiting: false, limit: 80,
     messages: [
       { id: "1", sender: "Edvard", text: "how many pods?" },
       { id: "2", sender: "Nova", text: "Seven.", steps: STEPS },
@@ -14247,8 +14247,14 @@ describe("the thoughts-and-tools drawer", () => {
     click(window, lines(window)[0]);
     click(window, toolRows(window)[0]);
     await tick();
+    /* `limit=80` is the window the thread rows came from, echoed back by
+     * the server. Without it the server looks in the newest 40 raw messages
+     * and answers 404 for a call he can see on screen, once he has paged
+     * back. Asserted as the whole URL rather than as "contains limit": the
+     * bug is a missing parameter, and a substring check for the two that
+     * are present would pass with it still missing. */
     assert.deepEqual(asked,
-      ["/api/conversations/step?id=c-ask&tool=toolu_a"]);
+      ["/api/conversations/step?id=c-ask&tool=toolu_a&limit=80"]);
     assert.equal(window.document.querySelector(".step-title").textContent, "Bash");
     assert.equal(window.document.querySelector(".step-sub").textContent, "Completed");
     assert.deepEqual(
@@ -14399,5 +14405,71 @@ describe("the thoughts-and-tools drawer", () => {
     assert.deepEqual(
       [...window.document.querySelectorAll(".step-tool-state")].map((n) => n.textContent),
       ["running", "failed"]);
+  });
+});
+
+/* Two things my reviewer found after the first version of the drawer shipped
+ * into a pull request. Both are about what he sees rather than about the
+ * shapes, which is where every real defect in this app has been. */
+describe("the drawer, after review", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  async function openDock(opts = {}) {
+    const window = await loadSite("/", opts);
+    window.document.getElementById("chat-btn")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    return window;
+  }
+
+  const RUNNING = {
+    conversationId: "c-ask", waiting: true, limit: 40,
+    messages: [
+      { id: "1", sender: "Edvard", text: "run the suite" },
+      { id: "", sender: "", text: "", partial: true, stepsOnly: true,
+        steps: [{ kind: "tool", capability: "Bash", input: "pytest",
+                  id: "toolu_r", status: "running" }] },
+    ],
+  };
+
+  test("a call still running says so instead of an empty Output block", async () => {
+    /* The sheet draws the steps it was opened with and does not follow the
+     * four-second poll, so a tool that finishes while he is looking at it
+     * would otherwise leave an Output heading over nothing -- which reads as
+     * "this command printed nothing", a different and wrong fact. */
+    const window = await openDock({
+      ask: RUNNING,
+      convStep: () => ({ capability: "Bash", input: "pytest", output: "",
+                         status: "running" }),
+    });
+    click(window, window.document.querySelector("#chat-thread .ask-steps"));
+    click(window, window.document.querySelector(".step-sheet .step-tool"));
+    await tick();
+    assert.equal(window.document.querySelector(".step-sub").textContent, "Running");
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".step-section-label")]
+        .map((n) => n.textContent), ["Inputs"]);
+    assert.match(window.document.querySelector(".step-note").textContent,
+      /Still running/);
+  });
+
+  test("a thread with no limit in its payload still asks for the output", async () => {
+    /* The field is new, so a cached page or an older server answers without
+     * it. The parameter is left off rather than sent as `undefined`, which
+     * the server would clamp back to the default anyway -- but as a literal
+     * string in the URL it would read as a caller that meant something. */
+    const asked = [];
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, messages: [
+        { id: "2", sender: "Nova", text: "Done.", steps: [
+          { kind: "tool", capability: "Bash", input: "ls", id: "t", status: "done" }] },
+      ] },
+      convStep: (url) => { asked.push(url); return { capability: "Bash",
+        input: "ls", output: "a", status: "done" }; },
+    });
+    click(window, window.document.querySelector("#chat-thread .ask-steps"));
+    click(window, window.document.querySelector(".step-sheet .step-tool"));
+    await tick();
+    assert.deepEqual(asked, ["/api/conversations/step?id=c-ask&tool=t"]);
   });
 });
