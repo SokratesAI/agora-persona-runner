@@ -222,6 +222,12 @@ PRIORITY_LABELS = {
     "immediate": "🔴 Immediately",
 }
 
+# The ratings in the order a reader wants them, worst news first. It lived
+# only inside `rank_projects` until Cycle 774 needed the same order to count
+# a project's open rows by rating; two hand-written copies of an ordering is
+# the drift this module keeps paying for, so it is a name now.
+PRIORITY_ORDER = ("immediate", "high", "medium", "low")
+
 # The glyph each rating carries, indexed the other way round so a bullet
 # written as a bare glyph -- every capture the owner typed before Cycle 268,
 # and every one his phone writes from an `app.js` cached before Cycle 274
@@ -1772,7 +1778,9 @@ def rank_projects(names, meta):
     shown them in rather than falling into alphabetical, which would look
     like a reshuffle every time he rates something.
     """
-    rank = {"immediate": 0, "high": 1, "medium": 2, "low": 4}
+    rank = {key: index for index, key in enumerate(PRIORITY_ORDER)}
+    # Low is pushed one past the end to leave room for unrated below.
+    rank["low"] = len(PRIORITY_ORDER)
     order = []
     for index, name in enumerate(names or []):
         key = (meta.get(name.lower()) or {}).get("priorityKey") or ""

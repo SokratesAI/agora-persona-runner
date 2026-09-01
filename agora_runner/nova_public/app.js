@@ -8593,6 +8593,59 @@
    * cannot scan; the same split the board already makes, where the list
    * shows chips and the held card edits.
    */
+  /* Where a project stands, in one strip -- idea #228, the burndown half.
+   *
+   * He asked each project page for "a backlog, roadmap and maybe a
+   * burndown chart", and then for a project-manager pass: *"really think
+   * 'what do i need' and 'how do i want it?'"*. Four status columns answer
+   * "what state is each row in". They do not answer the two questions a
+   * person opening a project page actually has, which are "how far along is
+   * this" and "is there anything red under it" -- for that he has to count
+   * cards, on a phone, in a column that can hold sixty.
+   *
+   * So the numbers come first and the columns stay below them. The bar is
+   * done against done-plus-open; `percentDone` is computed on the server so
+   * this cannot disagree with the counts printed beside it. Dropped rows
+   * are named separately rather than added to the bar, because "will never
+   * be built" is scope removed and not work delivered -- `_project_summary`
+   * carries the reasoning.
+   *
+   * The rating counts are chips with the word in them, never a bare glyph:
+   * a reader who has to know a colour code has not been told anything.
+   * Nothing is drawn for a project with no rows -- the page already says
+   * "nothing is filed under X yet" and a 0% bar under that is noise. */
+  function renderProjectSummary(payload) {
+    var summary = (payload && payload.summary) || null;
+    if (!summary || !summary.total) return null;
+    var box = el("section", "project-summary");
+    var head = el("div", "project-summary-head");
+    head.appendChild(el("span", "project-summary-pct", summary.percentDone + "%"));
+    var counts = summary.done + " done · " + summary.open + " open";
+    if (summary.blocked) counts += " · " + summary.blocked + " on you";
+    if (summary.dropped) counts += " · " + summary.dropped + " dropped";
+    head.appendChild(el("span", "project-summary-counts", counts));
+    box.appendChild(head);
+    var track = el("div", "project-summary-track");
+    var fill = el("div", "project-summary-fill");
+    fill.style.width = summary.percentDone + "%";
+    track.appendChild(fill);
+    // Read out as one sentence rather than as a bare number: a progress bar
+    // with no accessible name is a decoration to a screen reader.
+    track.setAttribute("role", "img");
+    track.setAttribute("aria-label",
+      summary.percentDone + "% done — " + counts);
+    box.appendChild(track);
+    if (summary.priorities && summary.priorities.length) {
+      var chips = el("div", "project-summary-prios");
+      summary.priorities.forEach(function (entry) {
+        chips.appendChild(el("span", "project-summary-prio prio-" + (entry.key || "none"),
+          entry.label + " · " + entry.count));
+      });
+      box.appendChild(chips);
+    }
+    return box;
+  }
+
   function renderProjectPriority(name, payload) {
     var row = el("div", "project-prio");
     row.appendChild(el("span", "project-prio-label", "Project priority"));
@@ -8837,6 +8890,8 @@
       return;
     }
     feed.appendChild(renderProjectPriority(name, payload));
+    var summary = renderProjectSummary(payload);
+    if (summary) feed.appendChild(summary);
     var tabs = projectTabs(payload);
     var tab = projectTabState(name, tabs);
     var tabRow = renderProjectTabs(tabs, function () { renderProject(payload); });
