@@ -9109,6 +9109,130 @@ async function loadAskDock(options) {
   return window;
 }
 
+/* Copying a message out of the chat.
+ *
+ * Issue #143: *"Chat is missing basic message controls: stop/cancel generation
+ * mid-response, edit-and-resubmit a sent message, regenerate a response, copy a
+ * message, thumbs up/down feedback, and a visible model picker."* Copy is the
+ * one of the six that needs nothing from the server, so it is the one that
+ * ships whole rather than as a stub.
+ *
+ * `askMessage` is the single renderer behind the dock, a conversation thread
+ * and the journal card's ask, so these tests open the dock and the button they
+ * assert on is the same button all three get.
+ */
+describe("copying a message", () => {
+  const withClipboard = (window, writeText) => {
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+  };
+
+  test("every message with text carries a copy button, and an empty one does not", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [
+          { id: "1", sender: "Edvard", text: "how many pods?" },
+          { id: "2", sender: "Nova Answers", text: "Seven." },
+          { id: "3", sender: "Edvard", text: "" },
+        ],
+      },
+    });
+    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    assert.equal(rows.length, 3, "the fixture did not render");
+    assert.deepEqual(rows.map((r) => !!r.querySelector(".ask-copy")), [true, true, false],
+      "an attachment-only line would copy an empty clipboard, which reads as broken");
+    assert.equal(rows[0].querySelector(".ask-copy").textContent, "Copy");
+  });
+
+  /* The assertion that matters, and the reason the source is passed to the
+   * button rather than read back off the node: `appendRichText` turns a
+   * markdown image into an `<img>`, so the rendered text of this message is
+   * the empty string and a DOM-scraping copy would hand him nothing. */
+  test("it copies the source he wrote, not the rendered bubble", async () => {
+    const source = "look at this ![shot](/api/upload/a.png) and `code`";
+    const copied = [];
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Edvard", text: source }],
+      },
+    });
+    withClipboard(window, (text) => { copied.push(text); return Promise.resolve(); });
+    const button = window.document.querySelector("#chat-thread .ask-copy");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(copied, [source]);
+    assert.equal(button.textContent, "Copied", "nothing told him it worked");
+  });
+
+  /* `navigator.clipboard` is a secure-context API. He reaches this site over
+   * https, but nothing else that loads it does, so the fallback is the path
+   * that has to work when the modern one is missing -- including here. */
+  test("with no clipboard API it falls back to a selected textarea", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+      },
+    });
+    delete window.navigator.clipboard;
+    let seen = null;
+    window.document.execCommand = (command) => {
+      const scratch = window.document.querySelector("textarea[readonly]");
+      seen = { command, value: scratch && scratch.value };
+      return true;
+    };
+    const button = window.document.querySelector("#chat-thread .ask-copy");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(seen, { command: "copy", value: "Seven." });
+    assert.equal(button.textContent, "Copied");
+    assert.equal(window.document.querySelector("textarea[readonly]"), null,
+      "the scratch textarea was left in the page");
+  });
+
+  test("a refused copy says so instead of claiming it worked", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+      },
+    });
+    withClipboard(window, () => Promise.reject(new Error("denied by permissions policy")));
+    const button = window.document.querySelector("#chat-thread .ask-copy");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(button.textContent, "Press ctrl+C");
+  });
+
+  test("the label goes back to Copy so a second copy is offered", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Nova Answers", text: "Seven." }],
+      },
+    });
+    withClipboard(window, () => Promise.resolve());
+    const button = window.document.querySelector("#chat-thread .ask-copy");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(button.textContent, "Copied");
+    await new Promise((resolve) => setTimeout(resolve, 1700));
+    assert.equal(button.textContent, "Copy");
+  });
+});
+
 describe("the questions page", () => {
   test("an unused page offers the box and says so", async () => {
     const window = await loadAskDock();

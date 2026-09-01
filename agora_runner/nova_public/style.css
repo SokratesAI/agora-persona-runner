@@ -2720,6 +2720,29 @@ body.has-full-chart { overflow: hidden; }
 .ask-text p { margin: 0 0 0.55rem; }
 .ask-text p:last-child { margin-bottom: 0; }
 
+/* The Copy button sits under the message, dim until touched, so it never
+ * competes with the text it belongs to. It is `align-self` inside the bubble
+ * rather than absolutely positioned: a message can be one line or forty, and
+ * an overlay would land on the words in one of those cases. */
+.ask-copy {
+  align-self: flex-end;
+  margin-top: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.ask-copy:hover, .ask-copy:focus-visible { color: var(--text); border-color: var(--accent); }
+
+/* `.ask-msg` is not a flex container by default, so `align-self` above needs
+ * one; the bubble was a block and its children stacked, which they still do. */
+.ask-msg { display: flex; flex-direction: column; }
+
 /* A ```mermaid block, before and after it becomes a diagram.
  *
  * It starts as the code he typed and stays that way if the 3.5 MB library
