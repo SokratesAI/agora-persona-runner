@@ -1101,6 +1101,11 @@ def test_the_age_is_printed_beside_a_named_holder_when_the_sweep_supplied_one():
 
 
 def test_an_ageless_sweep_prints_no_age_rather_than_a_placeholder():
+    # This one does NOT fail if the age line is reverted -- the output is
+    # byte-identical either way, which the reviewer caught. It guards the
+    # opposite direction, and that is checked rather than asserted: mutating
+    # the conditional to an unconditional f", {row.get('age_days')}d old"
+    # fails it, because an ageless sweep then prints "None d old".
     report, _ = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
     lines = hmt.name_swap_holders(report, top=1)
     assert ("407Mi swapped, 68Mi resident — claude.exe "
