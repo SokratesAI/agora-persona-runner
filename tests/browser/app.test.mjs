@@ -5175,6 +5175,124 @@ describe("the /conversation/<id> URL opens one thread", () => {
     assert.equal(window.document.querySelectorAll(".conv-back").length, 0,
       "the thread is still on screen under a Beats URL");
   });
+
+  /* His `issues.md` #140: *"Chat auto-scrolls to the bottom every time a new
+   * message arrives even if I've scrolled up to reread something -- annoying,
+   * should only stick to bottom if I was already near it."* Cycle 568 fixed
+   * that in the chat dock and left this page alone, where the same repaint
+   * does something worse: `.ask-thread` carries no `overflow` in `style.css`,
+   * so here the *document* is the scroll container, emptying the container
+   * collapses it, and the browser clamps him to the top of the page.
+   *
+   * These need faked layout and would be worthless without it. jsdom runs no
+   * layout, so `documentElement.scrollHeight` is 0, `pageAtBottom` answers
+   * true at every offset, and a test written against the real numbers passes
+   * identically on the old code that restored nothing. This hands the
+   * document what a browser would have measured -- 2000px of page in the
+   * 768px viewport jsdom reports, so the bottom is offset 1232 -- and makes
+   * `window.scrollTo` move the offset the way a browser would. */
+  function scrollablePage(window, scrollHeight) {
+    const doc = window.document.documentElement;
+    Object.defineProperty(doc, "scrollHeight",
+      { configurable: true, get: () => scrollHeight });
+    const scrolls = [];
+    window.scrollTo = (x, y) => { scrolls.push(y); doc.scrollTop = y; };
+    return { doc, scrolls };
+  }
+
+  /** A thread one message longer on every poll, and never done, so a repaint
+   *  is guaranteed to have happened between two `fire()` calls. */
+  function growingConvThread() {
+    let turn = 0;
+    return () => {
+      turn += 1;
+      const messages = [{ id: "q", sender: "Edvard", text: "q" }];
+      for (let i = 0; i < turn; i += 1) {
+        messages.push({ id: "a" + i, sender: "Nova", text: "answer " + i });
+      }
+      return { conversationId: "c-2", waiting: true, messages };
+    };
+  }
+
+  const painted = (window) => window.document.querySelectorAll(".ask-text").length;
+
+  test("an answer arriving while he has scrolled up leaves him where he was", async () => {
+    let timers;
+    const window = await loadSite("/conversation/c-2", {
+      install: (win) => { timers = captureTimers(win); },
+      convList: TWO_CONVS, convThread: growingConvThread(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { doc, scrolls } = scrollablePage(window, 2000);
+    const before = painted(window);
+    doc.scrollTop = 450;
+    await timers.fire();
+    assert.ok(painted(window) > before,
+      "no new message was painted, so this test could not have failed");
+    /* The *call* is the assertion, not the resting offset. jsdom stores
+     * `scrollTop` as a plain number and never clamps it when the document
+     * shrinks, so emptying the container leaves 450 sitting there either way
+     * and a state-only check passes on code that restores nothing. A real
+     * browser does clamp, which is the whole bug. */
+    assert.deepEqual(scrolls, [450],
+      "the repaint did not put him back on the message he was rereading");
+    assert.equal(doc.scrollTop, 450);
+  });
+
+  test("an answer arriving while he is at the bottom still follows it down", async () => {
+    let timers;
+    const window = await loadSite("/conversation/c-2", {
+      install: (win) => { timers = captureTimers(win); },
+      convList: TWO_CONVS, convThread: growingConvThread(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { doc, scrolls } = scrollablePage(window, 2000);
+    const before = painted(window);
+    doc.scrollTop = 1232;
+    await timers.fire();
+    assert.ok(painted(window) > before,
+      "no new message was painted, so this test could not have failed");
+    assert.deepEqual(scrolls, [2000],
+      "the answer he was waiting for arrived off screen");
+    assert.equal(doc.scrollTop, 2000);
+  });
+
+  /* The direction that makes this page's bug worse than the dock's, and the
+   * one a fix that merely dropped the jump would have shipped. */
+  test("a poll does not throw him to the top of the page either", async () => {
+    let timers;
+    const window = await loadSite("/conversation/c-2", {
+      install: (win) => { timers = captureTimers(win); },
+      convList: TWO_CONVS, convThread: growingConvThread(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const { doc, scrolls } = scrollablePage(window, 2000);
+    doc.scrollTop = 450;
+    await timers.fire();
+    assert.ok(scrolls.length, "the repaint scrolled him nowhere, so the browser's own clamp to the top of the collapsed page is what he is left with");
+    assert.notEqual(scrolls[scrolls.length - 1], 0, "the repaint put him at the top of the page");
+    assert.notEqual(doc.scrollTop, 0);
+  });
+
+  /* Half the ways in here are a tap on a push notification about the newest
+   * message, and the composer sits above the thread, so that message is at
+   * the very bottom of the document. This is also what makes the `follow`
+   * branch above reachable at all: open at the top and every later answer is
+   * correctly held there, forever. */
+  test("opening the thread lands on the newest message, not the oldest", async () => {
+    const scrolls = [];
+    const window = await loadSite("/conversation/c-2", {
+      install: (win) => { win.scrollTo = (x, y) => scrolls.push(y); },
+      convList: TWO_CONVS, convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(scrolls.length, "nothing scrolled the page at all");
+    // jsdom lays nothing out, so the value cannot be asserted -- what is
+    // checkable is that it asked for the bottom of the document rather than
+    // a fixed offset.
+    assert.equal(scrolls[scrolls.length - 1],
+      window.document.documentElement.scrollHeight);
+  });
 });
 
 describe("the service worker says so when it answers from its cache", () => {
