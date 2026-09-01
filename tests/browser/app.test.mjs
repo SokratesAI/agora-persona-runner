@@ -4413,7 +4413,7 @@ describe("the sidebar", () => {
     // groups became collapsible folds later the same day and this list is
     // unchanged by that -- `querySelectorAll` reads the DOM, not the layout,
     // so a link inside a closed `<details>` is still found here.
-    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/conversations", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
+    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -5159,17 +5159,21 @@ describe("the /conversation/<id> URL opens one thread", () => {
     assert.match(window.document.querySelector(".ask-text").textContent, /still here/);
   });
 
-  test("backing out lands on the list and leaves the deep link behind", async () => {
+  /* The Chats listing this used to back out to is deleted. Beats is the
+   * only page left that lists threads, and it is a real destination on a
+   * cold load from a notification, which `history.back()` is not. */
+  test("backing out lands on Beats and leaves the deep link behind", async () => {
     const window = await loadSite("/conversation/c-2", {
       convList: TWO_CONVS, convThread: () => THREAD,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     click(window, window.document.querySelector(".conv-back"));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(window.document.querySelectorAll(".conv-row").length, 2);
-    // Without this a reload from the list drops him straight back into the
+    // Without this a reload from here drops him straight back into the
     // thread he just backed out of.
-    assert.equal(window.location.pathname, "/conversations");
+    assert.equal(window.location.pathname, "/heartbeats");
+    assert.equal(window.document.querySelectorAll(".conv-back").length, 0,
+      "the thread is still on screen under a Beats URL");
   });
 });
 
@@ -11370,124 +11374,65 @@ describe("unread replies are counted on the card and in the header", () => {
  * conversation, sending into the wrong one, and a poll from a thread he has
  * navigated away from painting over the one he is reading.
  */
-describe("the conversations page", () => {
+/* The Chats page is deleted -- his capture, 2026-09-01: *"Delete the chats
+ * page entirely -- never use it."* What has to be pinned is the boundary,
+ * because two things that look like the same feature are emphatically not
+ * deleted: the chat dock, which he said in the same breath he uses all the
+ * time, and `/conversation/<id>`, which is the URL a push notification
+ * opens and what a Beats card opens. Deleting those with the listing would
+ * have taken his chat down with a page he never opened.
+ */
+describe("the chats page is gone and its thread view is not", () => {
   const TWO = {
     conversations: [
       { id: "c-1", name: "Roofing", personaName: "Claude",
         model: "claude-cli:claude-sonnet-5", tags: [],
         updatedAt: "2026-08-25T20:00:00.000Z", cycleThread: false },
-      { id: "c-2", name: "Nova — Cycle 439", personaName: "Nova",
+      { id: "c-2", name: "Nova \u2014 Cycle 439", personaName: "Nova",
         model: "claude-cli:claude-opus-5", tags: ["evolve-cycle:abc"],
         updatedAt: "2026-08-25T19:00:00.000Z", cycleThread: true },
     ],
   };
 
-  test("every conversation is a row, and a cycle's own thread is marked not dropped", async () => {
+  test("the client no longer routes /conversations anywhere of its own", async () => {
     const window = await loadSite("/conversations", { convList: TWO });
-    const rows = [...window.document.querySelectorAll(".conv-row")];
-    assert.deepEqual(rows.map((r) => r.querySelector(".conv-name").textContent),
-      ["Roofing", "Nova — Cycle 439"]);
-    // He asked for the history. Dimming a machine thread is a label; not
-    // listing it would be deciding for him.
-    assert.equal(rows[0].classList.contains("conv-cycle"), false);
-    assert.ok(rows[1].classList.contains("conv-cycle"));
-    assert.match(rows[0].querySelector(".conv-meta").textContent, /Claude/);
-  });
-
-  test("tapping a row opens that conversation and no other", async () => {
-    const asked = [];
-    const window = await loadSite("/conversations", {
-      convList: TWO,
-      convThread: (url) => {
-        asked.push(url);
-        return { conversationId: "c-2", waiting: false, messages: [
-          { id: "m", sender: "Nova", text: "the entry is written" },
-        ] };
-      },
-    });
-    click(window, window.document.querySelectorAll(".conv-row")[1]);
     await new Promise((resolve) => setTimeout(resolve, 0));
-
-    assert.equal(asked.length, 1);
-    assert.match(asked[0], /id=c-2/);
-    assert.match(window.document.querySelector(".ask-text").textContent,
-      /the entry is written/);
+    // The listing, its rows and its new-conversation composer are all gone.
+    // A page that still drew any of them would be the Chats page under a
+    // different name.
+    assert.equal(window.document.querySelector(".conv-list"), null);
+    assert.equal(window.document.querySelectorAll(".conv-row").length, 0);
+    assert.equal(window.document.querySelector(".conv-new"), null);
   });
 
-  test("sending names the open conversation on the wire", async () => {
-    const window = await loadSite("/conversations", {
+  test("no link anywhere in the app points at the deleted page", async () => {
+    const window = await loadSite("/", {});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const hrefs = [...window.document.querySelectorAll("a[href]")]
+      .map((a) => a.getAttribute("href"));
+    assert.equal(hrefs.filter((h) => h === "/conversations").length, 0);
+    assert.equal(hrefs.filter((h) => (h || "").toLowerCase().includes("chat")).length, 0);
+  });
+
+  test("a thread opened by URL still sends into that conversation", async () => {
+    // This is the half that survives, and the id is the whole of it: a send
+    // that dropped it would post his message into whichever thread the
+    // server guessed at, and the screen would look like it had worked.
+    const window = await loadSite("/conversation/c-1", {
       convList: TWO,
       convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
     });
-    click(window, window.document.querySelectorAll(".conv-row")[0]);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     window.document.querySelector(".ask-box").value = "  when is it done?  ";
     window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // The id is the whole difference from the /ask page: a send that
-    // dropped it would post his message into whichever thread the server
-    // guessed at, and the page would look like it had worked.
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
       [["/api/conversations/send",
         { conversationId: "c-1", text: "when is it done?" }]]);
     assert.ok(window.document.querySelector(".ask-pending"),
       "nothing says an answer is coming");
-  });
-
-  test("going back to the list stops the open thread from painting over it", async () => {
-    let answer = { conversationId: "c-1", waiting: false, messages: [] };
-    const window = await loadSite("/conversations", {
-      convList: TWO,
-      convThread: () => answer,
-    });
-    click(window, window.document.querySelectorAll(".conv-row")[0]);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(window.document.querySelector(".conv-list"), null);
-
-    click(window, window.document.querySelector(".conv-back"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(window.document.querySelector(".conv-list"),
-      "back should return to the list of conversations");
-    assert.equal(window.document.querySelector(".ask-form"), null);
-  });
-
-  test("the new-conversation form offers no persona and posts only a name", async () => {
-    // His issues board #119, 2026-08-29: "drop the Agora multi-persona chat
-    // picker from the Nova app entirely, the app should be Nova only, no
-    // Claude/Opus/Gemini/Haiku/Study buddy tabs inside it." The server picks
-    // the persona now, so a `personaId` in this body would be the picker
-    // surviving underneath the screen that no longer shows it.
-    const window = await loadSite("/conversations", {
-      convList: TWO,
-      convThread: () => ({ conversationId: "c-new", waiting: false, messages: [] }),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    assert.equal(window.document.querySelector(".conv-new-who"), null,
-      "the persona picker should be gone from the new-conversation form");
-    assert.ok(!window.askedForPersonas,
-      "the page should no longer ask for a persona list");
-
-    window.document.querySelector(".conv-new-name").value = "Roofing quote";
-    window.postReply = { ok: true, conversationId: "c-new" };
-    window.document.querySelector(".conv-new").dispatchEvent(new window.Event("submit"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
-      [["/api/conversations/new", { name: "Roofing quote" }]]);
-    assert.ok(window.document.querySelector(".ask-form"),
-      "a new conversation should open straight into its thread");
-  });
-
-  test("an unreachable store says so rather than showing an empty list", async () => {
-    // An empty list and a dead Agora render identically and mean opposite
-    // things -- the server raises for this reason and the page must not
-    // swallow it back into "no conversations yet".
-    const window = await loadSite("/conversations", { convStatus: 502 });
-    assert.match(window.document.querySelector(".empty").textContent,
-      /Could not load your conversations/);
   });
 });
 
@@ -11561,17 +11506,18 @@ describe("the heartbeats page", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
-  /* The thread lives on the conversations route, and `openConversation`'s
-   * poller and back button both read the location. Opened from here without
-   * moving the URL, the thread paints once and never refreshes. */
-  test("opening a heartbeat's thread moves to the conversations route", async () => {
+  /* `openConversation`'s poller reads the location, so opened from here
+   * without moving the URL the thread paints once and never refreshes.
+   * `/conversations` was that URL until the Chats page was deleted;
+   * `/conversation/<id>` is the one that also survives a reload. */
+  test("opening a heartbeat's thread moves to that thread's own URL", async () => {
     const window = await loadSite("/heartbeats", {
       hbList: TWO,
       convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
     });
     const rows = [...window.document.querySelectorAll(".hb-row")];
     click(window, [...rows[0].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Open thread"));
-    assert.equal(window.location.pathname, "/conversations");
+    assert.equal(window.location.pathname, "/conversation/c-1");
     // A heartbeat with no conversation has nothing to open.
     assert.equal([...rows[1].querySelectorAll(".hb-btn")].some((b) => b.textContent === "Open thread"), false);
   });
@@ -11662,14 +11608,14 @@ describe("the heartbeats page", () => {
     assert.doesNotMatch(window.document.querySelector("#status").textContent, /Current thread/);
   });
 
-  test("opening one from the drawer moves to the conversations route", async () => {
+  test("opening one from the drawer moves to that thread's own URL", async () => {
     const window = await loadSite("/heartbeats", {
       hbList: WITH_THREADS,
       convThread: () => ({ conversationId: "c-0", waiting: false, messages: [] }),
     });
     const older = [...window.document.querySelectorAll(".hb-thread")][1];
     click(window, older);
-    assert.equal(window.location.pathname, "/conversations");
+    assert.equal(window.location.pathname, "/conversation/c-0");
   });
 });
 

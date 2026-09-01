@@ -64,7 +64,6 @@
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
-    if (path === "/conversations") return { view: "conversations", cycle: null, board: null };
     // `/conversation/<id>` -- the URL a push notification opens, so the tap
     // lands on the thread the notification was about instead of on whatever
     // page a Nova tab was already showing. Decoded for the same reason
@@ -9287,17 +9286,19 @@
     statusEl.appendChild(el("p", "status-line", convOpenName));
     feed.textContent = "";
 
-    var back = el("button", "conv-back", "← All conversations");
+    var back = el("button", "conv-back", "← Beats");
     back.setAttribute("type", "button");
     back.addEventListener("click", function () {
       convOpenId = null;
       // The URL moves too, or a reload from here re-opens the thread he
-      // just backed out of -- only reachable since `/conversation/<id>`
-      // became a real URL.
-      if (route(window.location.pathname).conversationId) {
-        history.pushState(null, "", "/conversations");
-      }
-      loadConversations();
+      // just backed out of. Beats rather than a listing: the Chats page is
+      // deleted (his capture, *"Delete the chats page entirely -- never use
+      // it"*), and the heartbeat cards are the only place left in this app
+      // that lists threads. `history.back()` is not the answer -- half the
+      // ways in here are a cold load from a push notification, where there
+      // is no back entry to return to.
+      history.pushState(null, "", "/heartbeats");
+      load();
     });
     feed.appendChild(back);
 
@@ -9375,83 +9376,6 @@
     });
   }
 
-  function renderConvNew(host) {
-    var form = el("form", "conv-new");
-    var name = el("input", "conv-new-name");
-    name.setAttribute("type", "text");
-    name.setAttribute("placeholder", "What is it about?");
-    name.setAttribute("aria-label", "Conversation name");
-    var go = el("button", "ask-send", "Start");
-    go.setAttribute("type", "submit");
-    var status = el("p", "ask-status");
-    form.appendChild(name);
-    form.appendChild(go);
-    form.appendChild(status);
-    host.appendChild(form);
-
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      if (!name.value.trim()) return;
-      go.disabled = true;
-      status.textContent = "starting…";
-      fetch("/api/conversations/new", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.value.trim() }),
-      })
-        .then(function (r) { return r.json().catch(function () { return {}; }); })
-        .then(function (result) {
-          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
-          openConversation(result.conversationId, name.value.trim());
-        })
-        .catch(function (err) {
-          go.disabled = false;
-          status.textContent = "could not start: " + err.message;
-        });
-    });
-  }
-
-  function renderConversations(payload) {
-    stopPolling();
-    markNav();
-    statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
-    var rows = payload.conversations || [];
-    statusEl.appendChild(el("p", "status-line",
-      rows.length === 1 ? "1 conversation" : rows.length + " conversations"));
-    feed.textContent = "";
-
-    renderConvNew(feed);
-
-    if (!rows.length) {
-      feed.appendChild(el("p", "empty", "No conversations yet."));
-      return;
-    }
-    var list = el("div", "conv-list");
-    rows.forEach(function (row) {
-      var card = el("button", "conv-row" + (row.cycleThread ? " conv-cycle" : "")
-        + (row.unread ? " conv-unread" : ""));
-      card.setAttribute("type", "button");
-      // His capture, 2026-08-29: unread answers at the top of the list and
-      // highlighted. The server has already sorted them there; the word is
-      // here rather than a bare dot because a reader who does not know the
-      // colour code has not been told anything (personality.md).
-      var name = el("div", "conv-name", row.name);
-      if (row.unread) name.appendChild(el("span", "conv-unread-tag", "New reply"));
-      card.appendChild(name);
-      var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
-      if (meta) card.appendChild(el("div", "conv-meta", meta));
-      // `fmtStamp` takes milliseconds and lives further down the file; an
-      // unparseable timestamp yields NaN, which renders as "Invalid Date",
-      // so the row simply drops the line instead.
-      var when = row.updatedAt ? Date.parse(row.updatedAt) : NaN;
-      if (!isNaN(when)) card.appendChild(el("div", "conv-when", fmtStamp(when)));
-      card.addEventListener("click", function () { openConversation(row.id, row.name); });
-      list.appendChild(card);
-    });
-    feed.appendChild(list);
-  }
-
   /* Open one thread straight from a URL, with no listing tapped first.
    *
    * The thread endpoint answers with messages and no name, and the name is
@@ -9473,20 +9397,6 @@
       .catch(function () {
         if (route(window.location.pathname).conversationId !== id) return;
         openConversation(id, "");
-      });
-  }
-
-  function loadConversations() {
-    convOpenId = null;
-    fetchPage("/api/conversations")
-      .then(function (payload) {
-        if (route(window.location.pathname).view !== "conversations") return;
-        renderConversations(payload);
-      })
-      .catch(function (err) {
-        markNav();
-        feed.textContent = "";
-        feed.appendChild(el("p", "empty", "Could not load your conversations: " + err));
       });
   }
 
@@ -9654,13 +9564,12 @@
         open.setAttribute("type", "button");
         open.addEventListener("click", function () {
           // The URL has to move first. `openConversation` renders into the
-          // same feed either way, but its poller and its back button both
-          // guard on `route(location.pathname).view === "conversations"` --
-          // opened from `/heartbeats` the thread would paint once, never
-          // refresh, and the back button would draw the conversation list
-          // under a Beats tab. Two views on one route, and this is the
-          // route saying which.
-          history.pushState(null, "", "/conversations");
+          // same feed either way, but its poller guards on
+          // `route(location.pathname).view === "conversations"`, so opened
+          // from `/heartbeats` the thread would paint once and never
+          // refresh. `/conversations` was that URL until the Chats page was
+          // deleted; `/conversation/<id>` is the one that survives a reload.
+          history.pushState(null, "", "/conversation/" + encodeURIComponent(row.conversationId));
           openConversation(row.conversationId, row.name);
         });
         actions.appendChild(open);
@@ -9696,10 +9605,9 @@
           var tw = conv.updatedAt ? Date.parse(conv.updatedAt) : NaN;
           if (!isNaN(tw)) btn.appendChild(el("span", "hb-thread-when", fmtStamp(tw)));
           btn.addEventListener("click", function () {
-            // Same two-views-on-one-route reason as "Open thread" above: the
-            // poller and the back button both guard on the URL saying
-            // `conversations`, so the URL moves before the render.
-            history.pushState(null, "", "/conversations");
+            // Same reason as "Open thread" above: the poller guards on the
+            // URL saying `conversations`, so the URL moves before the render.
+            history.pushState(null, "", "/conversation/" + encodeURIComponent(conv.id));
             openConversation(conv.id, conv.name || row.name);
           });
           tlist.appendChild(btn);
@@ -10339,8 +10247,7 @@
       return;
     }
     if (here.view === "conversations") {
-      if (here.conversationId) openConversationById(here.conversationId);
-      else loadConversations();
+      openConversationById(here.conversationId);
       return;
     }
     if (here.view === "heartbeats") {

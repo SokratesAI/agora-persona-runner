@@ -3507,37 +3507,12 @@ body.chat-open { overflow: hidden; }
 
 /* ---- The Conversations page --------------------------------------------
  *
- * Every thread Agora holds, so this app is the only one he has to open.
- * The message bubbles and the composer are the `ask-*` classes unchanged --
- * a second set of chat styles would be two places to fix one spacing bug.
- * What is new here is only the list and the two things above it.
+ * One thread at a time, opened from a push notification or from a Beats
+ * card. The listing that used to sit here is deleted (*"Delete the chats
+ * page entirely -- never use it"*), and its styles with it. The message
+ * bubbles and the composer are the `ask-*` classes unchanged -- a second
+ * set of chat styles would be two places to fix one spacing bug.
  */
-.conv-list { display: flex; flex-direction: column; gap: 0.6rem; }
-
-.conv-row {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 0.7rem 0.85rem;
-  /* 44px is the tap target the rest of this file uses. */
-  min-height: 44px;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-}
-
-/* A cycle's own thread is one of mine talking to itself, not one of his.
- * Dimmed rather than hidden: he asked for the conversation history and a
- * list that silently drops most of its rows is the 400-chip cap again. */
-.conv-cycle .conv-name { color: var(--dim); }
-
-.conv-name { font-weight: 600; }
-.conv-meta { color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
-.conv-when { color: var(--dim); font-size: 0.78rem; margin-top: 0.1rem; }
-
 .conv-back {
   background: none;
   border: none;
@@ -3548,28 +3523,13 @@ body.chat-open { overflow: hidden; }
   cursor: pointer;
 }
 
-.conv-new { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.1rem; }
-
-.conv-new-name, .conv-new-who {
-  flex: 1 1 10rem;
-  background: var(--card);
-  color: inherit;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0 0.7rem;
-  min-height: 44px;
-  font: inherit;
-}
-
-.conv-new .ask-send { margin-top: 0; flex: 0 0 auto; }
-.conv-new .ask-status { flex: 1 1 100%; margin-top: 0; }
 
 /* ---- The Heartbeats page ------------------------------------------------
  *
  * *"Then Agora can just be purely for heartbeats."* -- his capture, and
  * this is what takes that last reason to open the other app away. The rows
- * borrow `.conv-row`'s card shape because they are the same object on the
- * same page furniture; what is new is the state line and the two buttons.
+ * carry the card shape the deleted Chats rows used to share with them;
+ * what is new is the state line and the two buttons.
  */
 .hb-list { display: flex; flex-direction: column; gap: 0.6rem; }
 
@@ -3581,7 +3541,7 @@ body.chat-open { overflow: hidden; }
 }
 
 /* A switched-off heartbeat is history rather than machinery. Dimmed, not
- * hidden -- the same call as a cycle thread on the Chats page. */
+ * hidden -- the same call the deleted Chats page made on a cycle thread. */
 .hb-off { opacity: 0.62; }
 
 .hb-name { font-weight: 600; }
@@ -3959,20 +3919,6 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-row-num { color: var(--dim); font-size: 0.8rem; }
 .project-row-title { flex: 1 1 8rem; min-width: 0; }
 
-/* An answer arrived in a conversation he has not opened since. The row is
-   already first in the list; this is the second half of his 2026-08-29
-   capture, and the tag carries the word so the colour is not the message. */
-.conv-row.conv-unread { border-color: var(--accent, #7aa2f7); }
-.conv-unread-tag {
-  margin-left: 0.5rem;
-  padding: 0.05rem 0.4rem;
-  border-radius: 0.6rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  background: var(--accent, #7aa2f7);
-  color: #10131a;
-  vertical-align: middle;
-}
 
 /* The live "What happens next" card at the top of the plan page (idea #38).
    It sits above the prose because it is the answer to the question he
