@@ -11705,7 +11705,71 @@
       return wrap;
     }
 
-    function loadList() {
+    /* The switcher's last answer, kept so re-opening it is not a blank wait.
+     *
+     * Issue #141: *"loads slowly every single time it's opened, not just on
+     * cold start -- worth investigating whether it's re-fetching/re-querying
+     * everything instead of caching."* It is not re-querying more than once:
+     * `/api/conversations` is one fetch per open and always was. What it is
+     * is slow -- measured Cycle 764 against the live store, that fetch takes
+     * 0.4s-1.3s, because Agora's own `/conversations` answers 1.33MB for 782
+     * rows and 871KB of that is a `personality` string per row that nothing
+     * on this page reads. The list showed the word "loading…" for all of it,
+     * every single open, including the ninth one in a row.
+     *
+     * So the last payload is kept and painted immediately on the next open,
+     * and the fetch still runs unconditionally behind it. **Nothing is
+     * suppressed and no answer is delayed** -- the same bytes arrive at the
+     * same moment and repaint the list. That is why this is not the caching
+     * `nova_site` refuses on purpose for this route: a cached *response*
+     * would let a reply he is waiting for go unreported, and this cannot,
+     * because it never skips a request.
+     *
+     * Anything that just changed the list passes `fresh`, so a rename, a
+     * delete or a new thread never repaints the row he acted on in its old
+     * form.
+     */
+    var listCache = null;
+    var listToken = 0;
+
+    function loadList(fresh) {
+      if (fresh) listCache = null;
+      // Open, shut, open leaves two fetches in flight, and without this the
+      // older one could land second and become the cache -- which used to
+      // cost one wrong repaint and would now cost every later open too.
+      var token = ++listToken;
+      if (listCache) {
+        renderList(listCache);
+      } else {
+        renderShell();
+        listEl.appendChild(el("p", "empty", "loading…"));
+      }
+      fetchPage("/api/conversations")
+        .then(function (payload) {
+          if (token !== listToken) return;
+          listCache = payload;
+          // He can hold a row and open its editor while the refresh is in
+          // flight now, which was impossible when the list was empty until
+          // the fetch landed. Repainting would throw away what he is typing;
+          // the cache is already updated, so the next open shows it.
+          if (listEl.querySelector(".chat-row-edit")) return;
+          renderList(payload);
+        })
+        .catch(function (err) {
+          if (token !== listToken) return;
+          // A failed refresh over a list already on screen leaves that list
+          // up. The rows he can see are the last ones that were true, and
+          // replacing them with an error message is a worse answer than a
+          // slightly old list.
+          if (listCache) return;
+          renderShell();
+          listEl.appendChild(
+            el("p", "empty", "Could not load your conversations: " + err));
+        });
+    }
+
+    /* The two rows that are there whatever the listing says. */
+    function renderShell() {
       listEl.textContent = "";
       // The label is the button's own text, not a `.chat-list-name` child:
       // that class means "a conversation is called this", and anything
@@ -11716,7 +11780,7 @@
       start.addEventListener("click", function () {
         if (listEl.querySelector(".chat-row-edit")) return;
         var form = newForm(function (changed) {
-          if (changed) loadList();
+          if (changed) loadList(true);
           else if (form.parentNode) listEl.replaceChild(start, form);
         });
         listEl.replaceChild(form, start);
@@ -11725,94 +11789,88 @@
       listEl.appendChild(listRow("Ask Nova", "", source.kind === "ask", function () {
         switchTo({ kind: "ask", id: null, name: "Ask Nova" });
       }));
-      var pending = el("p", "empty", "loading…");
-      listEl.appendChild(pending);
-      fetchPage("/api/conversations")
-        .then(function (payload) {
-          listEl.removeChild(pending);
-          var folders = payload.folders || [];
-          var models = payload.models || [];
-          var rows = (payload.conversations || []).filter(function (row) {
-            return (row.tags || []).indexOf("nova-ask") === -1;
-          });
-          if (!rows.length) {
-            listEl.appendChild(el("p", "empty", "No other conversations yet."));
-            return;
-          }
-          // `cycleThread` is `nova_conversations.conversations()`'s own flag
-          // for an `evolve-cycle:` tag. Reading the tag here as well would
-          // be a second copy of that rule in a second language.
-          var beats = rows.filter(function (row) { return !!row.cycleThread; });
-          var loose = rows.filter(function (row) { return !row.cycleThread; });
+    }
 
-          function fill(fold, group) {
-            var body = fold.lastChild;
-            group.forEach(function (row) {
-              var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
-              var node = listRow(
-                row.name, meta,
-                source.kind === "conv" && source.id === row.id,
-                function () {
-                  switchTo({ kind: "conv", id: row.id, name: row.name });
-                });
-              holdToEdit(node, function () {
-                if (listEl.querySelector(".chat-row-edit")) return;
-                var editor = rowEditor(row, folders, models, function (changed) {
-                  if (changed) loadList();
-                  else if (editor.parentNode) editor.parentNode.replaceChild(node, editor);
-                });
-                body.replaceChild(editor, node);
-              });
-              body.appendChild(node);
-            });
-            listEl.appendChild(fold);
-          }
+    function renderList(payload) {
+      renderShell();
+      var folders = payload.folders || [];
+      var models = payload.models || [];
+      var rows = (payload.conversations || []).filter(function (row) {
+        return (row.tags || []).indexOf("nova-ask") === -1;
+      });
+      if (!rows.length) {
+        listEl.appendChild(el("p", "empty", "No other conversations yet."));
+        return;
+      }
+      // `cycleThread` is `nova_conversations.conversations()`'s own flag
+      // for an `evolve-cycle:` tag. Reading the tag here as well would
+      // be a second copy of that rule in a second language.
+      var beats = rows.filter(function (row) { return !!row.cycleThread; });
+      var loose = rows.filter(function (row) { return !row.cycleThread; });
 
-          /* His folders, each as its own fold.
-           *
-           * His capture, `issues.md` 2026-08-27: *"organize like move to a
-           * folder"*. Agora has carried `folderId` on a conversation all
-           * along and the switcher grouped by the `evolve-cycle:` tag
-           * instead, so a folder he made was invisible here -- the rows in
-           * it fell into "Conversations" with everything else.
-           *
-           * A folder that holds nothing is deliberately still drawn. An
-           * empty fold is how he can see the folder exists, and dropping it
-           * would make a folder disappear the moment its last conversation
-           * moved out -- with no way to move anything back into it. */
-          var filed = {};
-          folders.forEach(function (folder) {
-            filed[folder.id] = loose.filter(function (row) {
-              return row.folderId === folder.id;
+      function fill(fold, group) {
+        var body = fold.lastChild;
+        group.forEach(function (row) {
+          var meta = [row.personaName, row.model].filter(Boolean).join(" · ");
+          var node = listRow(
+            row.name, meta,
+            source.kind === "conv" && source.id === row.id,
+            function () {
+              switchTo({ kind: "conv", id: row.id, name: row.name });
             });
-          });
-          var top = loose.filter(function (row) {
-            return !row.folderId || !filed[row.folderId];
-          });
-
-          folders.forEach(function (folder) {
-            var group = filed[folder.id];
-            var current = source.kind === "conv" && group.some(function (row) {
-              return row.id === source.id;
+          holdToEdit(node, function () {
+            if (listEl.querySelector(".chat-row-edit")) return;
+            var editor = rowEditor(row, folders, models, function (changed) {
+              if (changed) loadList(true);
+              else if (editor.parentNode) editor.parentNode.replaceChild(node, editor);
             });
-            fill(listFold(folder.name, group.length, current), group);
+            body.replaceChild(editor, node);
           });
-          // Open on the threads he starts, shut on the ones the loop starts
-          // for itself -- and open a fold anyway when it holds the thread he
-          // is reading, so the switcher never opens without the current row
-          // on screen.
-          if (top.length) fill(listFold("Conversations", top.length, true), top);
-          if (beats.length) {
-            var current = source.kind === "conv" && beats.some(function (row) {
-              return row.id === source.id;
-            });
-            fill(listFold("Heartbeats", beats.length, current), beats);
-          }
-        })
-        .catch(function (err) {
-          if (pending.parentNode) listEl.removeChild(pending);
-          listEl.appendChild(el("p", "empty", "Could not load your conversations: " + err));
+          body.appendChild(node);
         });
+        listEl.appendChild(fold);
+      }
+
+      /* His folders, each as its own fold.
+       *
+       * His capture, `issues.md` 2026-08-27: *"organize like move to a
+       * folder"*. Agora has carried `folderId` on a conversation all
+       * along and the switcher grouped by the `evolve-cycle:` tag
+       * instead, so a folder he made was invisible here -- the rows in
+       * it fell into "Conversations" with everything else.
+       *
+       * A folder that holds nothing is deliberately still drawn. An
+       * empty fold is how he can see the folder exists, and dropping it
+       * would make a folder disappear the moment its last conversation
+       * moved out -- with no way to move anything back into it. */
+      var filed = {};
+      folders.forEach(function (folder) {
+        filed[folder.id] = loose.filter(function (row) {
+          return row.folderId === folder.id;
+        });
+      });
+      var top = loose.filter(function (row) {
+        return !row.folderId || !filed[row.folderId];
+      });
+
+      folders.forEach(function (folder) {
+        var group = filed[folder.id];
+        var current = source.kind === "conv" && group.some(function (row) {
+          return row.id === source.id;
+        });
+        fill(listFold(folder.name, group.length, current), group);
+      });
+      // Open on the threads he starts, shut on the ones the loop starts
+      // for itself -- and open a fold anyway when it holds the thread he
+      // is reading, so the switcher never opens without the current row
+      // on screen.
+      if (top.length) fill(listFold("Conversations", top.length, true), top);
+      if (beats.length) {
+        var current = source.kind === "conv" && beats.some(function (row) {
+          return row.id === source.id;
+        });
+        fill(listFold("Heartbeats", beats.length, current), beats);
+      }
     }
 
     function setOpen(next) {
@@ -11975,7 +12033,7 @@
               source.untitled = false;
               titleEl.textContent = named;
               rememberSource();
-              if (dock.classList.contains("list-open")) loadList();
+              if (dock.classList.contains("list-open")) loadList(true);
             })
             // A thread that keeps the placeholder is a worse name, not a
             // failed send -- his message is already posted and the error
