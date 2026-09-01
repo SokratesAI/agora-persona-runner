@@ -280,6 +280,13 @@ def gh_commits(sha="abc1234def", minutes_ago=30, push_history=1, runs_on_sha=1,
                      "date": (NOW - timedelta(minutes=minutes_ago))
                      .strftime("%Y-%m-%dT%H:%M:%SZ")}] if sha else []
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(body), stderr="")
+        if "/settings/billing/usage" in path:
+            # `check` reads the meter on every sweep now, so a fake that did not
+            # answer this would fail four unrelated tests inside the fixture.
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"usageItems": []}), stderr="")
+        if "/repos?" in path:
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([]), stderr="")
         if "event=push" in path:
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(push_history), stderr="")
         if "head_sha=" in path:
@@ -641,9 +648,17 @@ def billing_gh(usage=None, repos=None, fail=None):
     return runner
 
 
-def usage_item(repo, minutes, net=0.0, product="actions"):
-    return {"product": product, "repositoryName": repo,
-            "quantity": minutes, "netAmount": net}
+def usage_item(repo, minutes, net=0.0, product="actions",
+               unit="Minutes", sku="Actions Linux"):
+    """One row as the usage endpoint really sends it.
+
+    `unitType` and `sku` are not decoration. The endpoint mixes
+    `Actions storage` rows measured in `GigabyteHours` into the same list, and
+    a fixture without the field let this tool add gigabyte-hours to a minute
+    count for a month without anyone seeing it.
+    """
+    return {"product": product, "repositoryName": repo, "sku": sku,
+            "unitType": unit, "quantity": minutes, "netAmount": net}
 
 
 def test_the_meter_splits_private_minutes_from_public_ones():
@@ -658,9 +673,9 @@ def test_the_meter_splits_private_minutes_from_public_ones():
         repos=[{"name": "agora-persona-runner", "private": False},
                {"name": "agora-claude-bridge", "private": False},
                {"name": "platform-config", "private": True}])
-    lines, why = ci_health.billing_meter("SokratesAI", run=run,
-                                         now=datetime(2026, 8, 31, 22, tzinfo=timezone.utc))
-    assert why is None
+    lines, over = ci_health.billing_meter("SokratesAI", run=run,
+                                          now=datetime(2026, 8, 31, 22, tzinfo=timezone.utc))
+    assert over is False
     text = "\n".join(lines)
     assert "597 metered Actions minute(s)" in text      # copilot is not Actions
     assert "7 on private repo(s)" in text
@@ -675,9 +690,9 @@ def test_an_unreadable_repo_list_does_not_read_as_zero_private_minutes():
     # and a cycle concludes the block cannot be the allowance. Unknown has to
     # stay unknown, and say so.
     run = billing_gh(usage=[usage_item("platform-config", 40.0)], fail="/repos?")
-    lines, why = ci_health.billing_meter("SokratesAI", run=run,
-                                         now=datetime(2026, 8, 31, tzinfo=timezone.utc))
-    assert why is None
+    lines, over = ci_health.billing_meter("SokratesAI", run=run,
+                                          now=datetime(2026, 8, 31, tzinfo=timezone.utc))
+    assert over is False
     text = "\n".join(lines)
     assert "0 on private repo(s)" in text
     assert "40 on repo(s) whose visibility could not be read" in text
@@ -692,10 +707,115 @@ def test_a_meter_it_cannot_read_is_not_a_clean_meter():
     assert "gh: refused" in why
 
 
-def test_the_meter_is_printed_only_where_a_repo_cannot_go_green():
-    # On a morning where nothing is refused this is a paragraph nobody reads,
-    # and printing it always is how a report stops being read at all.
+def test_the_meter_is_printed_on_every_sweep():
+    # This test used to assert the opposite, and the inversion is the finding.
+    # The meter only ran under `cannot_go_green` because it was built to explain
+    # a refusal — so when the refusals stopped on 2026-09-01, the meter stopped
+    # running, on the exact morning the owner asked to have the 2,000 minutes
+    # watched. A gauge that reads only while the thing is already on fire is not
+    # monitoring.
     _status, clean = ci_health.check(
         opener=status_page(), run=gh(runs={"SokratesAI/a": []}, history={"SokratesAI/a": []}),
         repos=["SokratesAI/a"], now=NOW)
-    assert not [line for line in clean if line.startswith("METER")]
+    assert [line for line in clean if line.startswith("METER")], clean
+
+
+def test_a_meter_it_cannot_read_makes_the_sweep_unreadable():
+    # `gh()` answers the usage endpoint; `gh_commits()` did not until this
+    # cycle, and the four tests that broke on it were the honest signal.
+    status, lines = ci_health.check(
+        opener=status_page(),
+        run=gh(runs={"SokratesAI/a": []}, history={"SokratesAI/a": []}, fail="billing/usage"),
+        repos=["SokratesAI/a"], now=NOW)
+    assert status == 1, lines
+    assert [l for l in lines if l.startswith("METER   could not read")], lines
+
+
+# --- burn_forecast ------------------------------------------------------
+# The owner, 2026-09-01, 🔴 Immediately: "We have 2000minutes of CI runs for
+# private repos. This must last us until 1.okt ... we need to monitor it and
+# adjust our usage of it if its oversubscribed." A level does not answer that.
+
+def test_a_part_day_does_not_get_a_forecast():
+    # The real trap on the morning this was built: 10 private minutes at 08:00
+    # on the 1st is 0.33 days of sample, and dividing by it projects 900 for
+    # September off one morning of me re-running builds by hand.
+    lines, over = ci_health.burn_forecast(
+        10.0, datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc))
+    text = "\n".join(lines)
+    assert over is False
+    assert "NOT FORECASTING" in text
+    assert "lands at" not in text
+
+
+def test_a_burn_that_overruns_the_allowance_raises():
+    # 700 minutes with 6 days gone is 117/day against a 67/day budget.
+    lines, over = ci_health.burn_forecast(
+        700.0, datetime(2026, 9, 7, 0, 0, tzinfo=timezone.utc))
+    text = "\n".join(lines)
+    assert over is True
+    assert "OVERSUBSCRIBED" in text
+    assert "lands at 3500" in text
+
+
+def test_a_burn_inside_the_allowance_does_not_raise():
+    # Two-sided against the test above: same 6 days elapsed, a rate that fits.
+    # Without this, a forecaster that raised on every month would pass.
+    lines, over = ci_health.burn_forecast(
+        60.0, datetime(2026, 9, 7, 0, 0, tzinfo=timezone.utc))
+    text = "\n".join(lines)
+    assert over is False
+    assert "within budget" in text
+    assert "OVERSUBSCRIBED" not in text
+
+
+def test_an_oversubscribed_month_raises_the_whole_check():
+    run = gh(runs={"SokratesAI/a": []}, history={"SokratesAI/a": []},
+             usage=[usage_item("platform-config", 900.0)],
+             repo_list=[{"name": "platform-config", "private": True}])
+    status, lines = ci_health.check(
+        opener=status_page(), run=run, repos=["SokratesAI/a"],
+        now=datetime(2026, 9, 9, 0, 0, tzinfo=timezone.utc))
+    assert status == 2, lines
+    assert "projected past the monthly allowance" in "\n".join(lines)
+
+
+def test_storage_gigabyte_hours_are_not_counted_as_minutes():
+    # The bug this found: every `product == "actions"` row was summed as a
+    # minute, and `Actions storage` is measured in GigabyteHours. It rounded
+    # away in September and was the wrong kind of thing all the same.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 40.0),
+               usage_item("platform-config", 500.0, unit="GigabyteHours",
+                          sku="Actions storage")],
+        repos=[{"name": "platform-config", "private": True}])
+    lines, over = ci_health.billing_meter(
+        "SokratesAI", run=run, now=datetime(2026, 9, 20, tzinfo=timezone.utc))
+    text = "\n".join(lines)
+    assert "40 on private repo(s)" in text
+    assert "500.000 GigabyteHour(s)" in text
+    assert over is False
+
+
+def test_a_windows_minute_costs_two():
+    # GitHub charges the allowance 2x for Windows. A meter that counted raw
+    # minutes would say 1,000 of 2,000 with the allowance actually spent.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 1000.0, sku="Actions Windows")],
+        repos=[{"name": "platform-config", "private": True}])
+    lines, _over = ci_health.billing_meter(
+        "SokratesAI", run=run, now=datetime(2026, 9, 20, tzinfo=timezone.utc))
+    assert "2000 on private repo(s)" in "\n".join(lines)
+
+
+def test_a_runner_sku_with_no_published_multiplier_is_named():
+    # Counted at 1x, because guessing high would invent an overrun — but said
+    # out loud, because 1x is the direction that understates.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 10.0, sku="Actions Quantum")],
+        repos=[{"name": "platform-config", "private": True}])
+    lines, _over = ci_health.billing_meter(
+        "SokratesAI", run=run, now=datetime(2026, 9, 20, tzinfo=timezone.utc))
+    text = "\n".join(lines)
+    assert "NOT JUDGED  runner SKU `Actions Quantum`" in text
+    assert "10 on private repo(s)" in text

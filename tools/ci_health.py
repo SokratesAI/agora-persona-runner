@@ -95,10 +95,12 @@ cause is GitHub's as when it is ours.
 """
 
 import argparse
+import calendar
 import concurrent.futures
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 
@@ -116,6 +118,26 @@ DEFAULT_MAX_WORKERS = 8
 # here: Actions has answered that on days this loop merged fine, so treating
 # it as a blocker would refuse work on a healthy pipeline.
 BLOCKING_STATUSES = {"major_outage", "partial_outage"}
+
+#: What one minute on each runner costs against the included allowance.
+#: GitHub bills Linux at 1x, Windows at 2x and macOS at 10x. A SKU that is
+#: not here is counted at 1x **and named** in the report rather than
+#: silently multiplied by a number I guessed -- understating the burn is the
+#: direction that costs, so an unpriced SKU has to be visible.
+MINUTE_MULTIPLIER = {
+    "Actions Linux": 1.0,
+    "Actions Linux Slim": 1.0,
+    "Actions Windows": 2.0,
+    "Actions macOS": 10.0,
+}
+
+#: Private-repo Actions minutes included per calendar month on this org's plan.
+#: The owner, 2026-09-01: "We have 2000minutes of CI runs for private repos."
+INCLUDED_PRIVATE_MINUTES = 2000.0
+
+#: A forecast needs this many days of the billing month behind it. See
+#: `burn_forecast` for why refusing is the whole point of the number.
+MIN_ELAPSED_DAYS = 2.0
 
 
 def actions_status(opener=urllib.request.urlopen):
@@ -462,8 +484,79 @@ def blocked_repo(repo, run=subprocess.run, sample=5):
              f"{cause}")], None
 
 
+def _month_position(now):
+    """`(days_in_month, days_elapsed)` — elapsed counts the part-day we are in."""
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    into_today = (now.hour * 3600 + now.minute * 60 + now.second) / 86400.0
+    return float(days_in_month), (now.day - 1) + into_today
+
+
+def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
+                  min_elapsed_days=MIN_ELAPSED_DAYS):
+    """`(lines, over)` — is this month's private-minute burn on track to overrun?
+
+    The owner, `issues.md` 2026-09-01, the morning the meter reset: *"We have
+    2000minutes of CI runs for private repos. This must last us until 1.okt
+    ... we need to monitor it and adjust our usage of it if its
+    oversubscribed. Please monitor it and look at the next days of usage and
+    then make a decision if more or less should be done."*
+
+    `billing_meter` already printed the level, and **a level cannot answer
+    that question**: 400 minutes spent is comfortable on the 20th and an
+    emergency on the 2nd. So this prints the rate, where the rate lands on
+    the last day of the month, and how many minutes a day are left if the
+    rest of the month is to fit.
+
+    **It refuses to forecast from a part-day, and the refusal is the point.**
+    At 08:00 on the 1st the month is 0.33 days old; the ten private minutes
+    on the meter right now are one morning of me re-running builds by hand to
+    prove the block had lifted, and dividing them by a third of a day
+    projects 900 minutes for September from a sample that is not a habit.
+    Under `min_elapsed_days` this prints the level, the daily budget and says
+    plainly that it is not forecasting yet -- the same refusal
+    `tools.host_memory_trend` makes until its ledger is six hours deep.
+
+    `over` is only ever True on a real projection, never on the refusal.
+    """
+    days_in_month, elapsed = _month_position(now)
+    remaining_days = days_in_month - elapsed
+    budget_per_day = allowance / days_in_month
+    lines = [
+        f"BURN    {used_private:.0f} of {allowance:.0f} included private minute(s) used, "
+        f"{elapsed:.2f} of {days_in_month:.0f} day(s) into the month, "
+        f"{remaining_days:.2f} day(s) left.",
+        f"        the flat budget is {budget_per_day:.0f} private minute(s)/day; "
+        f"{(allowance - used_private) / remaining_days:.0f}/day is what is left over the "
+        f"rest of the month." if remaining_days > 0 else
+        "        the month is over; there is no rest of it to spread the remainder over.",
+    ]
+    if elapsed < min_elapsed_days:
+        lines.append(
+            f"        NOT FORECASTING — {elapsed:.2f} day(s) of the month is under the "
+            f"{min_elapsed_days:.0f}-day floor. A rate divided out of a part-day is an "
+            f"extrapolation from one morning, not a habit. This line becomes a forecast "
+            f"on its own.")
+        return lines, False
+
+    rate = used_private / elapsed
+    projected = rate * days_in_month
+    lines.append(
+        f"        rate {rate:.1f} private minute(s)/day, which lands at {projected:.0f} "
+        f"for the month against the {allowance:.0f} included.")
+    if projected > allowance:
+        lines.append(
+            f"        OVERSUBSCRIBED — at this rate the allowance runs out with "
+            f"{(allowance / rate):.1f} of {days_in_month:.0f} day(s) gone. Cut private-repo "
+            f"CI or move a repo public; the biggest private spender is named above.")
+        return lines, True
+    lines.append(
+        f"        within budget — {projected / allowance * 100:.0f}% of the allowance at "
+        f"this rate, with {allowance - projected:.0f} minute(s) of headroom.")
+    return lines, False
+
+
 def billing_meter(org, run=subprocess.run, now=None):
-    """`(lines, None)` or `(None, why)` — what the org's Actions meter actually says.
+    """`(lines, over)` or `(None, why)` — what the org's Actions meter says, and where the month lands.
 
     `blocked_repo` above answers *that* GitHub is refusing to start jobs and
     quotes the annotation, which says two different things joined by an
@@ -495,8 +588,23 @@ def billing_meter(org, run=subprocess.run, now=None):
     scoped to. Repos are split by visibility from `/orgs/{org}/repos`, one
     page of 100; more than that and the split is flagged partial rather than
     quietly wrong.
+
+    **Two corrections, Cycle 750, both from the owner's 1 September capture.**
+
+    First, this used to sum `quantity` across every `product == "actions"`
+    row, and one of those rows is `Actions storage`, whose `unitType` is
+    `GigabyteHours`. Gigabyte-hours were being added to a minute count. It
+    happened to round away — September's storage rows are hundredths of a
+    unit — so the number looked right and was the wrong kind of thing. Only
+    `unitType == "Minutes"` counts as a minute now, and storage gets its own
+    line rather than being dropped, because a row nobody prints is a row
+    nobody can question.
+
+    Second, minutes are not all worth one minute: GitHub charges the
+    allowance 2x for a Windows runner and 10x for macOS. `MINUTE_MULTIPLIER`
+    holds those, and a SKU it has never seen is counted at 1x **and named**,
+    because the direction that costs is understating the burn.
     """
-    from datetime import datetime, timezone
     now = now or datetime.now(timezone.utc)
     usage, why = _gh_json(
         [f"/orgs/{org}/settings/billing/usage?year={now.year}&month={now.month}"], run)
@@ -515,6 +623,9 @@ def billing_meter(org, run=subprocess.run, now=None):
         partial = repo_why or "could not read repo visibility"
 
     minutes = {"private": 0.0, "public": 0.0, "unknown": 0.0}
+    per_repo = {}
+    storage_units = 0.0
+    unpriced_skus = set()
     net = 0.0
     for item in usage["usageItems"]:
         if not isinstance(item, dict) or item.get("product") != "actions":
@@ -524,7 +635,20 @@ def billing_meter(org, run=subprocess.run, now=None):
             net += float(item.get("netAmount") or 0)
         except (TypeError, ValueError):
             continue
-        minutes[visibility.get(item.get("repositoryName"), "unknown")] += quantity
+        if item.get("unitType") != "Minutes":
+            storage_units += quantity
+            continue
+        sku = item.get("sku") or ""
+        rate = MINUTE_MULTIPLIER.get(sku)
+        if rate is None:
+            unpriced_skus.add(sku or "(unnamed sku)")
+            rate = 1.0
+        charged = quantity * rate
+        name = item.get("repositoryName") or "(unnamed repo)"
+        where = visibility.get(item.get("repositoryName"), "unknown")
+        minutes[where] += charged
+        if where == "private":
+            per_repo[name] = per_repo.get(name, 0.0) + charged
 
     total = sum(minutes.values())
     lines = [
@@ -537,9 +661,20 @@ def billing_meter(org, run=subprocess.run, now=None):
         f"{minutes['private']:.0f} of 2,000 is the allowance half. If jobs are refused "
         f"with that allowance unspent, the gate is counting the public minutes too.",
     ]
+    if storage_units:
+        lines.append(f"        plus {storage_units:.3f} GigabyteHour(s) of Actions storage, "
+                     f"which is a different unit and is not a minute.")
+    for sku in sorted(unpriced_skus):
+        lines.append(f"        NOT JUDGED  runner SKU `{sku}` has no published multiplier here "
+                     f"and was counted at 1x; if it is Windows or macOS the burn above is low.")
+    for repo, spent in sorted(per_repo.items(), key=lambda pair: -pair[1]):
+        lines.append(f"        {spent:>6.0f} private minute(s) — {repo}")
     if partial:
         lines.append(f"        partial: {partial}")
-    return lines, None
+
+    forecast_lines, over = burn_forecast(minutes["private"], now)
+    lines.extend(forecast_lines)
+    return lines, over
 
 
 def _sweep_repo(repo, grace_minutes, run, now):
@@ -614,6 +749,7 @@ def check(opener=urllib.request.urlopen, run=subprocess.run,
           max_workers=DEFAULT_MAX_WORKERS):
     """Return `(exit_status, lines)`."""
     lines, unreadable, blocked, cannot_go_green = [], [], False, []
+    oversubscribed = False
 
     status, incidents, why = actions_status(opener)
     if status is None:
@@ -668,17 +804,27 @@ def check(opener=urllib.request.urlopen, run=subprocess.run,
             f"GitHub is creating the run and refusing to start the job. There is no "
             f"pull request that fixes that and a merge into any other repo above is "
             f"unaffected, so the status is deliberately not raised.")
-        # Only here: the meter answers the question this finding raises, and on a
-        # morning where nothing is refused it is a paragraph nobody reads.
-        for org in sorted({repo.split("/")[0] for repo in cannot_go_green if "/" in repo}):
-            meter_lines, meter_why = billing_meter(org, run=run)
-            if meter_lines is None:
-                lines.append(f"METER   could not read {org}'s Actions meter: {meter_why}")
-            else:
-                lines.extend(meter_lines)
+
+    # The meter used to run *only* under `cannot_go_green`, because it was built
+    # to explain a refusal. The refusals stopped on 2026-09-01 and the meter
+    # therefore stopped running -- so on the exact morning the owner asked to have
+    # the 2,000 minutes monitored, nothing was reading them. It runs every sweep
+    # now. Two `gh` calls, once per org, whatever the repos did.
+    for org in sorted({repo.split("/")[0] for repo in repos if "/" in repo}):
+        meter_lines, meter_over = billing_meter(org, run=run, now=now)
+        if meter_lines is None:
+            lines.append(f"METER   could not read {org}'s Actions meter: {meter_over}")
+            unreadable.append(f"{org} meter")
+        else:
+            lines.extend(meter_lines)
+            oversubscribed = oversubscribed or meter_over
 
     if blocked:
         lines.append("A merge cannot complete right now. Pick a cycle that does not end in one.")
+        return 2, lines
+    if oversubscribed:
+        lines.append("The private-minute burn is projected past the monthly allowance. "
+                     "That is the one thing the owner asked to be told about, so it raises.")
         return 2, lines
     if unreadable:
         lines.append("Being unable to check is not the same as nothing to check.")
