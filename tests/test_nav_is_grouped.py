@@ -54,6 +54,8 @@ PINNED = ["/", "/projects", "/issues", "/ideas"]
 #: `/ask` was the only member, and Cycle 759 deleted that page outright on
 #: the second half of the owner's ask. A route added here needs a reason
 #: beside it.
+from agora_runner import nova_site
+
 UNLINKED = set()
 
 
@@ -199,6 +201,47 @@ def test_the_ask_page_is_gone_and_its_api_is_not():
     )
     assert '"/api/ask"' in SITE.read_text(encoding="utf-8"), (
         "`/api/ask` is gone from nova_site.py -- the dock has nothing to talk to"
+    )
+
+
+def test_the_chats_page_is_gone_and_the_thread_view_is_not():
+    """His capture, 2026-09-01: *"Delete the chats page entirely -- never use it."*
+
+    Same split as `/ask` above and a sharper one, because he drew the line
+    himself in the same minute: *"But i use the chat modal all the time!"*
+    Three things share the word "chat" here and only the first is deleted --
+    the `/conversations` listing, the chat dock, and `/conversation/<id>`,
+    which is the URL a push notification opens and what a Beats card opens.
+    Taking the dock or the deep link down with the listing would be deleting
+    the thing he uses to keep a page he never opened.
+    """
+    linked = {href for kind, href in _nav_items() if kind == "link"}
+    assert "/conversations" not in linked, "the Chats tab is back in the menu"
+    assert "/conversations" not in _page_routes(), (
+        "`/conversations` is back in `PAGE_ROUTES`; the page was deleted, so "
+        "the server should 404 it"
+    )
+    app_js = (HTML.parent / "app.js").read_text(encoding="utf-8")
+    assert '"/conversations"' not in app_js, (
+        "app.js routes or navigates to `/conversations` again -- the client "
+        "router was the second place the page lived"
+    )
+    for gone in ("function renderConversations", "function loadConversations",
+                 "function renderConvNew"):
+        assert gone not in app_js, f"`{gone}` is back -- that is the listing itself"
+
+    # The half that stays. `/conversation/<id>` is a prefix route rather than
+    # an entry in `PAGE_ROUTES`, so it is checked against the prefix tuple.
+    assert "/conversation/" in nova_site.PAGE_ROUTE_PREFIXES, (
+        "`/conversation/<id>` is gone -- that is the URL a push notification "
+        "opens, not part of the deleted page"
+    )
+    assert "function openConversationById" in app_js, (
+        "the deep-link opener went with the listing"
+    )
+    assert '"/api/conversations"' in SITE.read_text(encoding="utf-8"), (
+        "`/api/conversations` is gone from nova_site.py -- the chat dock and "
+        "the deep link both read it"
     )
 
 
