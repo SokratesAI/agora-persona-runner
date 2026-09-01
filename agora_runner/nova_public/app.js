@@ -9069,6 +9069,42 @@
   // phone battery with a question mark on it.
   var ASK_POLL_MAX = 60;
 
+  /* How close to the bottom still counts as being at the bottom.
+   *
+   * Not an exact comparison, and the slop is not caution: the scroll offset
+   * is fractional on a phone at a non-integer zoom while `scrollHeight` and
+   * `clientHeight` are rounded integers, so `scrollHeight - clientHeight ===
+   * scrollTop` is false on a thread that is visually at the bottom, and the
+   * thread would then stop following the answer he is waiting for. 64px is
+   * about one message line and its gap -- near enough that the newest
+   * message is on his screen, far enough that one deliberate flick upwards
+   * is not read as staying put.
+   *
+   * Module scope because both threads need it and they measure different
+   * things: the dock scrolls inside its own panel, the `/conversation/<id>`
+   * page scrolls the document. Same number, one definition. */
+  var STICK_SLOP_PX = 64;
+
+  /* The `/conversation/<id>` page's version of the dock's `atBottom`.
+   *
+   * `.ask-thread` carries no `overflow` or height in `style.css`, so on this
+   * page it is not a scroll container at all -- the document is. Measuring
+   * `thread.scrollTop` here would read 0 forever and answer "at the bottom"
+   * for every position, which is why this is a separate pair of functions
+   * rather than the dock's reused. */
+  function pageScrollTop() {
+    return window.pageYOffset || document.documentElement.scrollTop || 0;
+  }
+
+  function pageAtBottom() {
+    var viewport = window.innerHeight || document.documentElement.clientHeight || 0;
+    return document.documentElement.scrollHeight - viewport - pageScrollTop() <= STICK_SLOP_PX;
+  }
+
+  function scrollPageToBottom() {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  }
+
   /* "He is reading this here, so do not buzz his phone about it."
    *
    * His capture, `ideas.md` 2026-08-25: *"The new chat is just a wrapper
@@ -9269,7 +9305,23 @@
         .then(function (payload) {
           if (route(window.location.pathname).view !== "conversations") return;
           if (convOpenId !== conversationId) return;
+          /* Both measurements are taken **before** the repaint and neither
+           * can be taken after it: `renderConvThread` empties the container,
+           * which collapses the document, and the browser clamps the scroll
+           * offset to the shorter page. So by the time the messages are back
+           * he is somewhere near the top and there is nothing left to read.
+           *
+           * His capture, `issues.md` #140: *"Chat auto-scrolls to the bottom
+           * every time a new message arrives even if I've scrolled up to
+           * reread something."* Cycle 568 fixed that in the chat dock and
+           * this page was never touched, where it is worse rather than the
+           * same -- the dock jumped him to the newest message, this threw
+           * him to the oldest one. */
+          var follow = pageAtBottom();
+          var was = pageScrollTop();
           renderConvThread(container, payload);
+          if (follow) scrollPageToBottom();
+          else window.scrollTo(0, was);
           if (payload.waiting) pollConv(container, conversationId, attempts + 1);
         })
         .catch(function () { pollConv(container, conversationId, attempts + 1); });
@@ -9332,6 +9384,13 @@
       .then(function (payload) {
         if (convOpenId !== id) return;
         renderConvThread(thread, payload);
+        /* The composer is above the thread on this page, so the newest
+         * message is at the very bottom of the document. Half the ways in
+         * here are a tap on a push notification about that message, and
+         * without this the page opens on the oldest one instead. It is also
+         * what makes the poll's `follow` branch reachable at all: land at
+         * the top and every later answer is correctly held there. */
+        scrollPageToBottom();
         if (payload.waiting) pollConv(thread, id, 0);
       })
       .catch(function (err) {
@@ -9366,6 +9425,11 @@
           // blank reads as a lost message.
           thread.appendChild(askMessage({ sender: "Edvard", text: body }));
           thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+          // Sending is him asking to be at the bottom, whatever he was
+          // rereading a second ago -- the same call the dock makes, and
+          // without it his own message lands below the fold of a long
+          // thread and the answer to it lands further below that.
+          scrollPageToBottom();
           pollConv(thread, id, 0);
         })
         .catch(function (err) {
@@ -10950,18 +11014,8 @@
       btn.classList.toggle("chat-btn-unread", !!on);
     }
 
-    /* How close to the bottom still counts as being at the bottom.
-     *
-     * Not an exact comparison, and the slop is not caution: `scrollTop` is
-     * fractional on a phone at a non-integer zoom while `scrollHeight` and
-     * `clientHeight` are rounded integers, so `scrollHeight - clientHeight
-     * === scrollTop` is false on a thread that is visually at the bottom,
-     * and the dock would then stop following the answer he is waiting for.
-     * 64px is about one message line and its gap -- near enough that the
-     * newest message is on his screen, far enough that one deliberate flick
-     * upwards is not read as staying put. */
-    var STICK_SLOP_PX = 64;
-
+    /* `STICK_SLOP_PX` is at module scope -- the conversation page needs the
+     * same number and measures it against the document instead. */
     function atBottom(node) {
       return node.scrollHeight - node.clientHeight - node.scrollTop <= STICK_SLOP_PX;
     }
