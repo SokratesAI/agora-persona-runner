@@ -153,9 +153,19 @@ SWAP_HOLDER_JOB = "host-process-memory"
 #: every preflight, and the tail of that list holds single megabytes.
 SWAP_HOLDER_TOP = 6
 
-#: A row of the sweep's report: pid, comm, resident, swapped, cgroup path.
+#: A row of the sweep's report: pid, comm, resident, swapped, age, cgroup path.
+#:
+#: The age column is optional because it was not always there. platform-config#594
+#: (2026-09-01) added `age N.Nd` between the swap figure and the cgroup path, and
+#: this pattern had `(\S*)` for the path immediately after the swap figure, so from
+#: that deploy onward every row failed to match and the reader reported that the
+#: format had moved -- correctly, and with nothing behind it. Accepting both shapes
+#: is deliberate rather than tidy: the CronJob and this reader live in two different
+#: repos and deploy independently, so a reader that only takes the newer shape goes
+#: blind the moment the older one is rolled back.
 SWAP_HOLDER_ROW = re.compile(
-    r"^\s*(\d+)\s+(.+?)\s+rss\s+(\d+)Mi\s+swap\s+(\d+)Mi\s*(\S*)\s*$")
+    r"^\s*(\d+)\s+(.+?)\s+rss\s+(\d+)Mi\s+swap\s+(\d+)Mi"
+    r"(?:\s+age\s+([\d.]+)d)?\s*(\S*)\s*$")
 
 #: ...and its `total` line, which is the denominator every share below is of.
 SWAP_HOLDER_TOTAL = re.compile(
@@ -530,7 +540,9 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
             rows.append({"pid": int(row.group(1)), "comm": row.group(2).strip(),
                          "rss_mib": float(row.group(3)),
                          "swap_mib": float(row.group(4)),
-                         "cgroup": row.group(5)})
+                         "age_days": (float(row.group(5))
+                                      if row.group(5) is not None else None),
+                         "cgroup": row.group(6)})
     if not rows:
         return None, (f"{best} carried no parseable 'TOP n BY SWAP' rows, so "
                       "its report format has moved and this reader has not")
@@ -569,9 +581,14 @@ def name_swap_holders(report, top=SWAP_HOLDER_TOP):
                  "outside every Pod — the same processes unowned_swap_mib counts, "
                  "now with names.")
     for row in rows[:top]:
+        # The age is what separates "one long-lived daemon" from "these have
+        # rebuilt since you last killed them", which is the whole question on
+        # issue #131. It is printed only when the sweep supplied it.
+        age = ("" if row.get("age_days") is None
+               else f", {row['age_days']:.1f}d old")
         lines.append(f"  {row['swap_mib']:.0f}Mi swapped, {row['rss_mib']:.0f}Mi "
                      f"resident — {row['comm']} (pid {row['pid']}, "
-                     f"{holder_scope(row['cgroup'])})")
+                     f"{holder_scope(row['cgroup'])}{age})")
     if len(rows) > top:
         rest = sum(r["swap_mib"] for r in rows[top:])
         lines.append(f"  the other {len(rows) - top} named process(es) hold "

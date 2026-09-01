@@ -1044,3 +1044,66 @@ def test_naming_the_holders_never_raises_because_judge_already_does():
     lines = hmt.name_swap_holders(report)
     assert not any(line.startswith(("SWAP FALLING", "MEMORY")) for line in lines)
     assert all("exit 2" not in line for line in lines)
+
+
+#: The shape platform-config#594 deploys as of 2026-09-01 -- an `age N.Nd`
+#: column between the swap figure and the cgroup path, and a `SWAP BY CGROUP`
+#: roll-up above the per-process table. Copied from a real
+#: `kubectl logs -n infra host-process-memory-29804670-822v4`, trimmed.
+SWEEP_LOG_WITH_AGE = """HOST PROCESS MEMORY -- 346 process(es) read, 1 exited mid-sweep
+  total    rss   5921Mi  swap   1606Mi
+  cgroup paths below are read through this container's own cgroup namespace and may be relativized -- context, not a verdict.
+SWAP BY CGROUP -- 67 bucket(s) holding 1606Mi; cgroup strings in full.
+  swap   1379Mi  85.8%    7 process(es)  oldest  14.0d  /../../../../system.slice/claude-remote.service
+  swap    165Mi  10.3%   46 process(es)  oldest  43.8d  /../../../../system.slice/k3s.service
+TOP 20 BY SWAP
+  1410665 claude.exe           rss     49Mi  swap    282Mi  age   0.4d  /../../../../system.slice/claude-remote.service
+  3435586 claude.exe           rss     44Mi  swap    236Mi  age   2.4d  /../../../../system.slice/claude-remote.service
+   242153 k3s-server           rss   2093Mi  swap    122Mi  age  29.6d  /../../../../system.slice/k3s.service
+TOP 20 BY RSS
+   242153 k3s-server           rss   2093Mi  swap    122Mi  age  29.6d  /../../../../system.slice/k3s.service
+"""
+
+
+def test_the_current_sweep_format_parses_because_the_age_column_is_read():
+    report, why = hmt.read_swap_holders(
+        runner=sweep_runner(log=SWEEP_LOG_WITH_AGE), now=NOW)
+    assert why is None
+    assert [row["pid"] for row in report["rows"]] == [1410665, 3435586, 242153]
+    assert report["rows"][0]["swap_mib"] == 282.0
+    assert report["rows"][0]["rss_mib"] == 49.0
+    assert (report["rows"][0]["cgroup"]
+            == "/../../../../system.slice/claude-remote.service")
+    assert report["rows"][0]["age_days"] == pytest.approx(0.4)
+    assert report["rows"][2]["age_days"] == pytest.approx(29.6)
+
+
+def test_the_cgroup_rollup_lines_are_not_read_as_processes():
+    # `SWAP BY CGROUP` sits above `TOP 20 BY SWAP` and its rows carry no pid,
+    # so counting them would double every figure the roll-up already totals.
+    report, _ = hmt.read_swap_holders(
+        runner=sweep_runner(log=SWEEP_LOG_WITH_AGE), now=NOW)
+    assert len(report["rows"]) == 3
+
+
+def test_a_sweep_without_the_age_column_still_parses_and_says_it_has_no_age():
+    report, why = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
+    assert why is None
+    assert all(row["age_days"] is None for row in report["rows"])
+
+
+def test_the_age_is_printed_beside_a_named_holder_when_the_sweep_supplied_one():
+    report, _ = hmt.read_swap_holders(
+        runner=sweep_runner(log=SWEEP_LOG_WITH_AGE), now=NOW)
+    lines = hmt.name_swap_holders(report, top=2)
+    assert ("282Mi swapped, 49Mi resident — claude.exe "
+            "(pid 1410665, unowned, 0.4d old)") in lines[2]
+
+
+def test_an_ageless_sweep_prints_no_age_rather_than_a_placeholder():
+    report, _ = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
+    lines = hmt.name_swap_holders(report, top=1)
+    assert ("407Mi swapped, 68Mi resident — claude.exe "
+            "(pid 3848650, unowned)") in lines[2]
+    assert "None" not in lines[2]
+    assert "d old" not in lines[2]
