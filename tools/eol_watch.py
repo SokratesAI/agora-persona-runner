@@ -26,6 +26,19 @@ release schedule too, so nothing needs a second call per image.
 **It reads the org, not the workspace**, via `pin_drift`'s repo sweep, so
 it cannot inherit `security_alerts`' old blind spot separately.
 
+**It also reads the live cluster, because a `FROM` line is not the only
+place a support window is pinned.** Idea #178 is that both version
+instruments here read Dockerfiles in our own repos, so software that runs
+on this cluster without being built here has never been judged by either
+of them. `tools.running_images` already reads every workload's image off
+the API server; this takes the references it classes as *version*-pinned
+and judges them exactly like a `FROM` line. The finding on the first run
+is `couchdb:3.3`, which holds the owner's vault and Nova's own database
+and went out of support 484 days ago -- visible to nothing here until
+now. The other two classes are deliberately left alone: a digest names no
+version, and a mutable tag such as `:latest` is `running_images`' own
+finding rather than a support-window question.
+
 **A tag variant is not judged and the report says so.** `node:24-alpine`
 pins two lines: Node 24, which is judged, and whatever Alpine the tag
 happens to resolve to today, which is not written down anywhere in the
@@ -63,6 +76,7 @@ import sys
 import urllib.request
 
 from tools.pin_drift import _tree, read_file
+from tools.running_images import classify, normalise, read_workloads, split_ref
 from tools.security_alerts import _repos_to_sweep
 
 CATALOGUE = "https://endoflife.date/api/v1/products/full"
@@ -79,10 +93,19 @@ FROM_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
-# The leading `24` of `24-alpine`, the `3.12` of `3.12-slim`. Anything
-# that does not start with a digit -- `latest`, `stable`, `bookworm` --
-# names no version line at all.
-LEADING_VERSION_RE = re.compile(r"\A(\d+(?:\.\d+)*)")
+# The leading `24` of `24-alpine`, the `3.12` of `3.12-slim`, the `3.3`
+# of `v3.3.2`. Anything that does not start with a digit -- `latest`,
+# `stable`, `bookworm` -- names no version line at all.
+#
+# The optional `v` is what Kubernetes images are tagged with far more
+# often than Dockerfile base images are: `argocd:v3.3.2`,
+# `tailscale:v1.102.3`, `dex:v2.43.0`. Without it every one of those read
+# as "names no version" the moment this learned to read the cluster. The
+# capture group deliberately excludes the `v`, because the catalogue's
+# release names carry no prefix -- and `judge` therefore has to measure
+# the variant from the match's own end rather than from the length of the
+# version it captured, or `v3.3.2` would report a variant of `2`.
+LEADING_VERSION_RE = re.compile(r"\Av?(\d+(?:\.\d+)*)")
 
 # `  go-version: "1.25"` in a workflow step. A runtime is pinned in two
 # shapes in this org and this reads the second: a `FROM` line pins what
@@ -315,8 +338,9 @@ def judge(image, products, mapping, today, within_days, ambiguous=None):
 
     version = leading.group(1)
     image["product"], image["version"] = product_name, version
-    if tag != version:
-        image["variant"] = tag[len(version):].lstrip("-")
+    rest = tag[leading.end():]
+    if rest:
+        image["variant"] = rest.lstrip("-")
 
     product = next((p for p in products if p["name"] == product_name), None)
     release = _release_for(product or {}, version)
@@ -352,6 +376,43 @@ def _days(eol, today):
         return (dt.date.fromisoformat(eol) - today).days
     except (TypeError, ValueError):
         return None
+
+
+def cluster_images(reader=read_workloads):
+    """`(pins, problems)` -- every version-pinned image running on this cluster.
+
+    Shaped exactly like `base_images` so `judge` and the report need no
+    second branch, the same contract `toolchain_pins` keeps. `path`
+    carries the namespace and the workload rather than a file, because
+    that is the whole address a cluster reference has -- there is no line
+    in a repo to send anyone to, and inventing one would be a lie about a
+    real file.
+
+    **Only the `version` class is taken, and the other two are not
+    oversights.** A digest pins bytes and names no line to look up, which
+    `judge` already says about a digest-pinned `FROM`; a mutable tag like
+    `:latest` resolves to a different release on every pull, so the
+    support window it sits in is not a property of anything written down
+    -- that reference is `running_images`' finding, and answering it here
+    with a window read off whatever the registry served this morning
+    would be a fact with no source.
+    """
+    images, problems = reader()
+    pins = []
+    for image in images:
+        ref = normalise(image["ref"])
+        if classify(ref) != "version":
+            continue
+        name, tag, _ = split_ref(ref)
+        pins.append({
+            "repo": "live cluster",
+            "path": "%s/%s %s" % (image["namespace"], image["kind"],
+                                  image["name"]),
+            "image": name,
+            "tag": tag,
+            "kind": "running",
+        })
+    return pins, problems
 
 
 def sweep(repos, products, today, within_days, run=None):
@@ -472,14 +533,15 @@ def format_report(judged, not_judged, problems, notes, within_days):
     for problem in problems:
         out.append("PROBLEM  %s" % problem)
     out.extend(notes)
-    froms = sum(1 for i in judged if i.get("kind") != "toolchain")
-    steps = len(judged) - froms
-    out.append("Judged %d distinct runtime line(s) across %d FROM line(s) and "
-               "%d workflow version pin(s) against endoflife.date, notice "
-               "window %d day(s); %d not judged. A tag variant such as "
-               "`-alpine` or `-slim` is a second line this cannot read and is "
-               "never judged."
-               % (len(group(judged)), froms, steps, within_days,
+    steps = sum(1 for i in judged if i.get("kind") == "toolchain")
+    running = sum(1 for i in judged if i.get("kind") == "running")
+    froms = len(judged) - steps - running
+    out.append("Judged %d distinct runtime line(s) across %d FROM line(s), %d "
+               "workflow version pin(s) and %d running container image(s) "
+               "against endoflife.date, notice window %d day(s); %d not "
+               "judged. A tag variant such as `-alpine` or `-slim` is a "
+               "second line this cannot read and is never judged."
+               % (len(group(judged)), froms, steps, running, within_days,
                   len(group(not_judged))))
     return "\n".join(out)
 
@@ -510,8 +572,22 @@ def main(argv=None):
               "judged. That is no instrument, not no finding.")
         return 1
 
+    today = dt.date.today()
     judged, not_judged, problems = sweep(
-        repos, products, dt.date.today(), args.within_days)
+        repos, products, today, args.within_days)
+
+    # The cluster is a source of pins, not a second sweep, so its findings
+    # go through the same `judge` and land in the same two lists -- a
+    # dead line is a dead line whether a Dockerfile or an API server
+    # names it.
+    mapping, ambiguous = image_map(products)
+    pins, cluster_problems = cluster_images()
+    problems.extend(cluster_problems)
+    for image in pins:
+        where = judge(image, products, mapping, today, args.within_days,
+                      ambiguous)
+        (judged if where == "judged" else not_judged).append(image)
+
     print(format_report(judged, not_judged, problems, notes, args.within_days))
 
     unreadable = bool(problems or incomplete or unplaceable)

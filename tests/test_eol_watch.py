@@ -283,11 +283,16 @@ def test_a_catalogue_with_no_products_is_a_problem_not_an_empty_sweep():
 
 # --- main()'s exit contract, which had no coverage at all.
 
-def _run_main(monkeypatch, judged_out, not_judged_out=(), problems=()):
+def _run_main(monkeypatch, judged_out, not_judged_out=(), problems=(),
+              pins=(), cluster_problems=()):
     monkeypatch.setattr(eol_watch, "catalogue", lambda *a, **k: (PRODUCTS, None))
     monkeypatch.setattr(eol_watch, "sweep",
                         lambda *a, **k: (list(judged_out),
                                          list(not_judged_out), list(problems)))
+    # Never let a test reach a real API server: a suite whose answer
+    # depends on what happens to be deployed is not a test.
+    monkeypatch.setattr(eol_watch, "cluster_images",
+                        lambda *a, **k: (list(pins), list(cluster_problems)))
     return eol_watch.main(["--repo", "o/r"])
 
 
@@ -440,3 +445,85 @@ def test_a_from_line_and_a_workflow_pin_of_one_version_stay_apart():
          "tag": "20", "kind": "toolchain"},
     ])
     assert len(groups) == 2
+
+
+# --- the live cluster as a source of pins (idea #178, Cycle 755) ---
+
+
+def _workloads(*refs):
+    """A `read_workloads` stand-in: one container per reference given."""
+    def reader():
+        return [{"ref": ref, "kind": "deployment", "name": "w%d" % i,
+                 "namespace": "ns", "container": "c"}
+                for i, ref in enumerate(refs)], []
+    return reader
+
+
+def test_a_version_pinned_running_image_becomes_a_judgeable_pin():
+    pins, problems = eol_watch.cluster_images(_workloads("node:20-alpine"))
+    assert problems == []
+    assert pins == [{"repo": "live cluster", "path": "ns/deployment w0",
+                     "image": "node", "tag": "20-alpine", "kind": "running"}]
+    where, entry = judged("node", "20-alpine", **{"kind": "running"})
+    assert (where, entry["verdict"]) == ("judged", "eol")
+
+
+def test_a_digest_or_mutable_reference_is_not_a_support_window_question():
+    # A digest names no line; `:latest` resolves to a different release on
+    # every pull, so neither has a window written down anywhere.
+    pins, _ = eol_watch.cluster_images(_workloads(
+        "node@sha256:" + "a" * 64, "grafana/grafana:latest", "ollama/ollama"))
+    assert pins == []
+
+
+def test_a_docker_hub_reference_is_normalised_before_it_is_judged():
+    # The API server says `docker.io/library/node:20` for the same
+    # container a pod spec writes as `node:20`; judging the raw string
+    # would look up a product called `node` under a name that is not it.
+    pins, _ = eol_watch.cluster_images(_workloads("docker.io/library/node:20"))
+    assert pins[0]["image"] == "node"
+
+
+def test_a_v_prefixed_tag_names_a_version_and_keeps_its_variant_intact():
+    # Kubernetes images are tagged `v3.3.2` far more often than base
+    # images are, and reading the variant off the version's length rather
+    # than the match's end would report a variant of `2` here.
+    where, entry = judged("node", "v20")
+    assert (where, entry["verdict"], entry["version"]) == ("judged", "eol", "20")
+    assert "variant" not in entry
+    _, variant = judged("node", "v20-alpine")
+    assert variant["variant"] == "alpine"
+
+
+def test_a_cluster_pin_prints_its_workload_rather_than_a_file():
+    _, entry = judged("node", "20", kind="running", repo="live cluster",
+                      path="obsidian/deployment couchdb")
+    report = eol_watch.format_report([entry], [], [], [], 180)
+    assert "live cluster  obsidian/deployment couchdb" in report
+    assert "node:20" in report
+
+
+def test_the_summary_counts_running_images_apart_from_from_lines():
+    _, from_line = judged("node", "24")
+    _, running = judged("node", "22", kind="running")
+    report = eol_watch.format_report([from_line, running], [], [], [], 180)
+    assert ("across 1 FROM line(s), 0 workflow version pin(s) and 1 running "
+            "container image(s)") in report
+
+
+def test_a_cluster_finding_raises_the_exit_status_like_any_other(monkeypatch):
+    _, supported = judged("node", "24")
+    dead = {"repo": "live cluster", "path": "ns/deployment w0",
+            "image": "node", "tag": "20", "kind": "running"}
+    # Without the cluster pin this run is clean, so the 2 can only come
+    # from the cluster half.
+    assert _run_main(monkeypatch, [supported]) == 0
+    assert _run_main(monkeypatch, [supported], pins=[dead]) == 2
+
+
+def test_an_unreadable_cluster_is_a_problem_and_never_reads_as_clean(
+        monkeypatch, capsys):
+    _, supported = judged("node", "24")
+    assert _run_main(monkeypatch, [supported],
+                     cluster_problems=["could not read deployments: nope"]) == 1
+    assert "could not read deployments: nope" in capsys.readouterr().out
