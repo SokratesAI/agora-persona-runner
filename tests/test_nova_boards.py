@@ -684,7 +684,11 @@ def test_the_projects_page_shares_one_cache_key_with_the_board_route(board_md, n
     def read(path):
         return notes_md if "/nova/resources/" in path else board_md
 
-    with patch.object(nova_sources, "vault_read_path", side_effect=read):
+    with patch.object(nova_sources, "vault_read_path", side_effect=read), \
+            patch.object(nova_site, "project_priorities", dict):
+        # The ratings are a separate uncached read and are stubbed rather
+        # than left to fall back, so this test still measures cache keys
+        # instead of accidentally measuring the fallback path.
         nova_site.warm_cache()
         warmed = set(nova_site._cache)
         status, _, _ = _get("/api/project")

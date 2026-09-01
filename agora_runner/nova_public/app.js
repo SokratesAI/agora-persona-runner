@@ -8554,6 +8554,7 @@
     var here = route(window.location.pathname);
     var wrap = el("div", "project-index");
     var projects = (payload && payload.projects) || [];
+    var rated = (payload && payload.projectPriority) || {};
     for (var i = 0; i < projects.length; i++) {
       var name = projects[i];
       var link = el("a", "project-pill", name);
@@ -8561,9 +8562,74 @@
       if (here.project && here.project.toLowerCase() === name.toLowerCase()) {
         link.className = "project-pill on";
       }
+      // The server has already put the highest-rated project first; the
+      // chip is what makes that order readable rather than mysterious.
+      // Only when there is one -- every project is unrated today, so an
+      // unconditional chip would draw an empty pill on all of them, the
+      // same call `renderProjectColumn` makes for a `## Done` row.
+      var rating = rated[name.toLowerCase()];
+      if (rating && rating.priority) {
+        link.appendChild(el(
+          "span", "chip prio prio-" + rating.priorityKey, rating.priority));
+      }
       wrap.appendChild(link);
     }
     return wrap;
+  }
+
+  /* The rating of one project, as something the owner can change --
+   * his capture, 2026-09-01: *"Each project should also be able to be
+   * assigned a priority, making one project and its tasks more important
+   * than others."*
+   *
+   * `buildPrioPicker` verbatim, the same control the board rows use, so a
+   * project's rating and a row's rating are picked the same way and read
+   * the same colour. It saves on change with no Save button, for the
+   * reason `renderPriorityPicker` gives: the only action it can take is
+   * the one just chosen.
+   *
+   * It lives on the project page rather than on every pill of the index.
+   * The index is a list to scan and a select on each entry is a list you
+   * cannot scan; the same split the board already makes, where the list
+   * shows chips and the held card edits.
+   */
+  function renderProjectPriority(name, payload) {
+    var row = el("div", "project-prio");
+    row.appendChild(el("span", "project-prio-label", "Project priority"));
+    var note = el("span", "project-prio-note", "");
+    var rated = ((payload && payload.projectPriority) || {})[name.toLowerCase()];
+    // `.el` -- `buildPrioPicker` answers `{el, getValue, setValue}`, not a
+    // node. It is a chip that opens the shared `.prio-menu` overlay, the
+    // same control a board row's rating uses, not a `<select>`.
+    row.appendChild(buildPrioPicker({
+      current: (rated && rated.priority) || "",
+      ariaLabel: "Priority of the " + name + " project",
+      chipStyle: true,
+      onPick: function (chosen) {
+        note.textContent = "Saving…";
+        return fetch("/api/project/priority", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project: name, priority: chosen })
+        })
+          .then(json)
+          .then(function (result) {
+            if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+            note.textContent = "";
+            // Reload rather than patching `payload` in place: the index
+            // above is *sorted* by this value, so the visible consequence
+            // of the pick is a reorder, and patching the one field would
+            // leave the pills in the old order with a new chip on one.
+            load();
+          })
+          .catch(function (err) {
+            note.textContent = "Could not save: " + err;
+            throw err;
+          });
+      },
+    }).el);
+    row.appendChild(note);
+    return row;
   }
 
   /* The conversation about a project -- idea #92, phase 4.
@@ -8770,6 +8836,7 @@
         "Nothing is filed under “" + asked + "” yet."));
       return;
     }
+    feed.appendChild(renderProjectPriority(name, payload));
     var tabs = projectTabs(payload);
     var tab = projectTabState(name, tabs);
     var tabRow = renderProjectTabs(tabs, function () { renderProject(payload); });

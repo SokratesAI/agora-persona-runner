@@ -54,6 +54,9 @@ from agora_runner.nova_boards import (
     add_row,
     CAPTURE_PRIORITY_SEP,
     PRIORITY_LABELS,
+    PROJECT_META_PATH,
+    parse_project_meta,
+    set_project_priority as _set_project_priority_md,
     canonical_priority,
     append_detail_note,
     capture_entries,
@@ -761,6 +764,69 @@ def edit_row(target, number, title):
     """
     return _amend_board(
         target, number, lambda md: set_row_title(md, number, title), "edited")
+
+
+def set_project_priority(project, priority, dated=None):
+    """Rate a project. Returns (ok, message).
+
+    The sixth write path on this site and the first that does not write to
+    one of his two boards -- a project-level rating has no row to live on,
+    so it goes to `PROJECT_META_PATH`. Same read-modify-write and same 409
+    retry as the other five, and for the same reason: a cycle boarding his
+    files is the concurrent writer.
+
+    A file that does not exist yet is not an error here. `vault_read_path_rev`
+    answers `None` for a missing document, and `set_project_priority` in
+    `nova_boards` writes the template whole in that case -- so the first
+    rating creates the file rather than failing on it. The `if_rev` is
+    passed through unchanged, so two cycles rating two projects in the same
+    second still cannot both create it.
+
+    `None` back from the markdown layer is a refusal, not a write failure,
+    and is not retried: the name or the rating is out of bounds and
+    re-reading gives the same answer, the same distinction `set_priority`
+    draws.
+    """
+    if dated is None:
+        # Oslo, not UTC, and stamped here rather than by the caller so the
+        # one write path owns the one clock. Rule 7: anything he reads.
+        dated = datetime.now(OSLO).strftime("%m-%d")
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(PROJECT_META_PATH)
+        updated = _set_project_priority_md(current or "", project, priority, dated=dated)
+        if updated is None:
+            return False, f"cannot rate {project!r} as {priority!r}"
+        result = vault_write_path(PROJECT_META_PATH, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture rated project {project!r} as {priority or '(unrated)'}")
+            return True, f"{project} is now {priority or 'unrated'}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed rating project {project!r}: {result}")
+    return False, f"could not write project ratings: {result}"
+
+
+def project_priorities():
+    """Every project rating, read fresh. `{lowercased name: {...}}`.
+
+    Uncached on purpose, the same call `/api/comments` makes: this file is
+    small, it is read once per project page, and a stale rating is a
+    reordered page that disagrees with the picker he is looking at.
+
+    **A read that fails answers "nothing is rated", not an error.** This is
+    a second vault fetch on the critical path of a page that worked without
+    it for a week, and the ranking is the least important thing on that
+    page -- so a CouchDB blip must cost him the ordering, never the rows.
+    The failure is logged rather than swallowed, because a page that has
+    quietly stopped ranking looks exactly like a board nobody has rated.
+    """
+    try:
+        current, _rev = vault_read_path_rev(PROJECT_META_PATH)
+    except Exception as e:
+        log(f"nova-capture could not read project ratings: {e}")
+        return {}
+    return parse_project_meta(current or "")
 
 
 def set_project(target, number, project):
