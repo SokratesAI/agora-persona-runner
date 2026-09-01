@@ -42,7 +42,8 @@ from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.log import log
 
 
-# Persona display name is "Nova", not "Nova Answers" -- 2026-08-30, Edvard:
+# Persona display name is "Nova", not "Nova Answers" -- the owner,
+# 2026-08-30:
 # talking to three differently-branded, differently-permissioned "Novas"
 # (the cycle, the comment-reply turn, this one) read as three different
 # people. The persona record's `name` and `personality` were updated live

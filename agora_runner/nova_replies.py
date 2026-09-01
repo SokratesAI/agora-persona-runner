@@ -33,7 +33,7 @@ which is precisely the thing he asked for. Anything beyond that -- a fix,
 a PR, a merge -- it still cannot do inline, and files instead. Since
 2026-08-30 it says so the way it says anything else -- "I'll take care of
 it," meaning it -- not with a paragraph about what this particular turn
-is or is not. Edvard's ask: talking to three differently-scoped "Nova"s
+is or is not. The owner's ask: talking to three differently-scoped "Nova"s
 (this turn, the cycle, the Questions-page chat) read as three different
 people, and he wants one felt identity across all of them even though
 the capability grants underneath stay genuinely different. See
