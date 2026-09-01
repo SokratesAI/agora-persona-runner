@@ -274,7 +274,6 @@ PAGE_ROUTES = (
     "/costs",
     "/retro",
     "/plan",
-    "/ask",
     "/conversations",
     "/heartbeats",
     "/catalog",

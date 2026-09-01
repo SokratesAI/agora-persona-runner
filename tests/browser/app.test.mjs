@@ -8794,16 +8794,30 @@ describe("the plan page folds its prose", () => {
  * and "the answer showed up" are two separate things and both can fail on
  * their own.
  */
+/* The chat dock is the only surface that shows the ask thread now. These
+ * tests were written against the `/ask` page, which showed the same thread
+ * and was deleted in Cycle 759 on the owner's own ask; they open the dock
+ * instead. The thread container moved from `#feed` to `#chat-thread` with
+ * them, and the composer from `.ask-*` classes to the dock's `#chat-*` ids.
+ * The behaviour under test did not move: `renderAskThread`, `askMessage`
+ * and the mermaid drawing are the same functions either surface calls. */
+async function loadAskDock(options) {
+  const window = await loadSite("/", options);
+  window.document.getElementById("chat-btn").dispatchEvent(new window.Event("click"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return window;
+}
+
 describe("the questions page", () => {
   test("an unused page offers the box and says so", async () => {
-    const window = await loadSite("/ask");
-    assert.ok(window.document.querySelector(".ask-box"), "no question box");
-    assert.ok(window.document.querySelector(".ask-send"), "no send button");
-    assert.match(window.document.querySelector(".ask-thread .empty").textContent, /Ask me anything/);
+    const window = await loadAskDock();
+    assert.ok(window.document.querySelector("#chat-box"), "no question box");
+    assert.ok(window.document.querySelector("#chat-send"), "no send button");
+    assert.match(window.document.querySelector("#chat-thread .empty").textContent, /Ask me anything/);
   });
 
   test("an existing thread renders question and answer, his own marked as his", async () => {
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: {
         conversationId: "c-ask",
         waiting: false,
@@ -8822,10 +8836,10 @@ describe("the questions page", () => {
   });
 
   test("asking posts the text and paints the question before any poll", async () => {
-    const window = await loadSite("/ask");
-    const box = window.document.querySelector(".ask-box");
+    const window = await loadAskDock();
+    const box = window.document.querySelector("#chat-box");
     box.value = "  why is the loop slow?  ";
-    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
+    window.document.querySelector("#chat-form").dispatchEvent(new window.Event("submit"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
@@ -8839,23 +8853,23 @@ describe("the questions page", () => {
   });
 
   test("a refused question keeps the text and says why", async () => {
-    const window = await loadSite("/ask");
+    const window = await loadAskDock();
     window.postReply = { ok: false, message: "that is longer than 4000 characters" };
-    const box = window.document.querySelector(".ask-box");
+    const box = window.document.querySelector("#chat-box");
     box.value = "a very long question";
-    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
+    window.document.querySelector("#chat-form").dispatchEvent(new window.Event("submit"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    assert.match(window.document.querySelector(".ask-status").textContent, /longer than 4000/);
+    assert.match(window.document.querySelector("#chat-status").textContent, /longer than 4000/);
     assert.equal(box.value, "a very long question", "his text was thrown away on a failure");
-    assert.equal(window.document.querySelector(".ask-send").disabled, false,
+    assert.equal(window.document.querySelector("#chat-send").disabled, false,
       "the button stayed disabled, so he cannot retry");
   });
 
   test("the answer arrives on a poll, and the polling then stops", async () => {
     let turn = 0;
     let timers;
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       install: (win) => { timers = captureTimers(win); },
       ask: () => {
         turn += 1;
@@ -8887,7 +8901,7 @@ describe("the questions page", () => {
    * is it doing? Did it even recieve my messages? What tools does it use?"*
    * Three questions, three lines in the bubble, one test each. */
   test("the pending bubble says how long it has been thinking and what it is doing", async () => {
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: () => ({
         conversationId: "c",
         waiting: true,
@@ -8910,7 +8924,7 @@ describe("the questions page", () => {
   });
 
   test("a turn that has run nothing yet still says the question landed", async () => {
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: () => ({
         conversationId: "c",
         waiting: true,
@@ -8928,7 +8942,7 @@ describe("the questions page", () => {
     /* The server only sends `progress` while the turn is running, and a
      * cached page or an older pod sends none at all. The bubble must not
      * disappear -- that would be the same lost feedback, from the other end. */
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: () => ({
         conversationId: "c",
         waiting: true,
@@ -8944,7 +8958,7 @@ describe("the questions page", () => {
   test("a failed poll keeps waiting instead of painting an error over a live question", async () => {
     let timers;
     let fail = false;
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       install: (win) => { timers = captureTimers(win); },
       ask: () => {
         // Rejected, not thrown: `serve` is called synchronously inside
@@ -8961,17 +8975,13 @@ describe("the questions page", () => {
     assert.equal(timers.queued.length, 1, "gave up after one failed poll");
   });
 
-  test("navigating away stops the poll", async () => {
-    let timers;
-    const window = await loadSite("/ask", {
-      install: (win) => { timers = captureTimers(win); },
-      ask: { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] },
-    });
-    assert.equal(timers.queued.length, 1);
-    window.history.pushState({}, "", "/costs");
-    await timers.fire();
-    assert.equal(timers.queued.length, 0, "a poll survived the navigation");
-  });
+  /* The `/ask` page cancelled its own poll on a navigation and this
+   * describe used to pin that. The dock does the opposite on purpose --
+   * surviving a navigation is the whole reason it exists -- so with the
+   * page gone the assertion has no subject left to make. It is not
+   * relaxed into something weaker: "the dock keeps polling across a
+   * navigation, and the answer still arrives", below, is the live claim
+   * about this behaviour and it asserts the opposite outcome. */
 });
 
 /* The chat dock -- his capture on `ideas.md`, 2026-08-25, rated High: a
@@ -8983,9 +8993,11 @@ describe("the questions page", () => {
  * what these tests are for, is that it lives *outside* the page: it must
  * survive a navigation, because the whole point is asking a question from
  * wherever he happens to be. The ask page's own poll is deliberately
- * cancelled on navigation (`stopPolling`, and the test directly above);
- * a dock that shared that timer would go silent in the exact minute the
- * answer arrives in.
+ * cancelled on navigation (`stopPolling`); a dock that
+ * shared that timer would go silent in the exact minute the answer
+ * arrives in. That page is deleted now and the dock is the only surface,
+ * so the tests above open the dock too -- but they are still the thread's
+ * tests and these are still the dock's own.
  */
 describe("the chat dock", () => {
   function tap(window, id) {
@@ -9675,7 +9687,7 @@ describe("the chat dock", () => {
 describe("the /ask page vouches for him too", () => {
   test("a page waiting for an answer tells Agora the thread is on his screen", async () => {
     let timers;
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       install: (win) => { timers = captureTimers(win); },
       ask: { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] },
     });
@@ -9731,8 +9743,8 @@ describe("attachments in the ask thread and its dock", () => {
   };
 
   test("a picture in the thread is a picture, not the markdown for one", async () => {
-    const window = await loadSite("/ask", { ask: withPicture });
-    const img = window.document.querySelector("#feed .ask-msg img.attach-img");
+    const window = await loadAskDock({ ask: withPicture });
+    const img = window.document.querySelector("#chat-thread .ask-msg img.attach-img");
     assert.ok(img, "the picture he attached came back as text");
     assert.equal(img.getAttribute("src"), "/api/upload/ab12.jpg");
     assert.equal(img.getAttribute("alt"), "shot.jpg");
@@ -9741,18 +9753,18 @@ describe("attachments in the ask thread and its dock", () => {
   });
 
   test("a non-image attachment is a named link rather than a broken image", async () => {
-    const window = await loadSite("/ask", { ask: withPicture });
-    const link = window.document.querySelector("#feed .ask-msg a.attach-file");
+    const window = await loadAskDock({ ask: withPicture });
+    const link = window.document.querySelector("#chat-thread .ask-msg a.attach-file");
     assert.ok(link, "the log came back as text");
     assert.equal(link.getAttribute("href"), "/api/upload/cd34.log");
     assert.match(link.textContent, /runner\.log/);
   });
 
   test("a plain answer still reads as it was written, line breaks and all", async () => {
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: { conversationId: "c", waiting: false, messages: [{ id: "1", sender: "Nova Answers", text: "one\ntwo\n\nthree" }] },
     });
-    const text = window.document.querySelector("#feed .ask-text");
+    const text = window.document.querySelector("#chat-thread .ask-text");
     const paras = [...text.querySelectorAll("p")].map((p) => p.textContent);
     // Two paragraphs, and the single newline inside the first one survives:
     // `.ask-text` is `pre-wrap` and that inherits, so a list an answer wrote
@@ -9887,13 +9899,13 @@ describe("mermaid diagrams in the chat", () => {
   }
 
   test("a ```mermaid block is drawn as a diagram, not printed as its source", async () => {
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: threadWith("here is the shape:\n\n```mermaid\n" + DIAGRAM + "\n```\n\nmake sense?"),
       install: withMermaid,
     });
-    const svg = await settle(window, "#feed .mermaid-drawn svg");
+    const svg = await settle(window, "#chat-thread .mermaid-drawn svg");
     assert.ok(svg, "the diagram never replaced the code block");
-    assert.equal(window.document.querySelector("#feed .mermaid-source"), null,
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-source"), null,
       "the source stayed on screen underneath the diagram");
 
     // The fences are the marker, not part of the diagram: passing them on
@@ -9905,16 +9917,16 @@ describe("mermaid diagrams in the chat", () => {
     assert.equal(svg.getAttribute("height"), null, "the measured height survived onto the page");
 
     // The prose either side is still prose.
-    const paras = [...window.document.querySelectorAll("#feed .ask-text p")].map((p) => p.textContent);
+    const paras = [...window.document.querySelectorAll("#chat-thread .ask-text p")].map((p) => p.textContent);
     assert.deepEqual(paras, ["here is the shape:", "make sense?"]);
   });
 
   test("it is initialised so it cannot sweep the page or trust a label", async () => {
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
       install: withMermaid,
     });
-    await settle(window, "#feed .mermaid-drawn svg");
+    await settle(window, "#chat-thread .mermaid-drawn svg");
     const init = window.__mermaid.init;
     assert.ok(init, "mermaid was never initialised, so it runs on its own defaults");
     // `startOnLoad` would have mermaid hunting the document for diagrams
@@ -9936,13 +9948,13 @@ describe("mermaid diagrams in the chat", () => {
     // No stub at all, which is also the offline case: jsdom fetches no
     // external script, so `ensureMermaid` never settles -- exactly the
     // state a phone off the tailnet is in while the 3.5 MB is not coming.
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: threadWith("```mermaid\n" + DIAGRAM + "\n```"),
     });
-    const source = window.document.querySelector("#feed .mermaid-source code");
+    const source = window.document.querySelector("#chat-thread .mermaid-source code");
     assert.ok(source, "nothing was drawn and the source was not left behind either");
     assert.equal(source.textContent, DIAGRAM);
-    assert.equal(window.document.querySelector("#feed .mermaid-drawn"), null);
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-drawn"), null);
     // The fence lines are markers and must not be read back at him.
     assert.equal(window.document.querySelector(".ask-thread").textContent.includes("```"), false,
       "the fences are on screen");
@@ -9953,11 +9965,11 @@ describe("mermaid diagrams in the chat", () => {
     // be lifted out before that happens. A sequence diagram with a gap in it
     // is the ordinary case, not a contrived one.
     const spaced = "sequenceDiagram\n  Edvard->>Nova: a question\n\n  Nova->>Edvard: an answer";
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: threadWith("```mermaid\n" + spaced + "\n```"),
       install: withMermaid,
     });
-    await settle(window, "#feed .mermaid-drawn svg");
+    await settle(window, "#chat-thread .mermaid-drawn svg");
     assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [spaced]);
   });
 
@@ -9966,27 +9978,27 @@ describe("mermaid diagrams in the chat", () => {
     // assertion here is a negative, and a negative passes just as well with
     // the whole feature deleted. The pair is what makes this a test of the
     // declining rather than of the absence.
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: threadWith("```mermaid\n" + DIAGRAM + "\n```\n\nlook:\n```mermaid\nflowchart TD\n  A --> B"),
       install: withMermaid,
     });
-    await settle(window, "#feed .mermaid-drawn svg");
-    assert.equal(window.document.querySelectorAll("#feed .mermaid-figure").length, 1,
+    await settle(window, "#chat-thread .mermaid-drawn svg");
+    assert.equal(window.document.querySelectorAll("#chat-thread .mermaid-figure").length, 1,
       "a half-typed message was treated as a diagram");
     assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [DIAGRAM]);
-    assert.match(window.document.querySelector("#feed .ask-text").textContent, /```mermaid/);
+    assert.match(window.document.querySelector("#chat-thread .ask-text").textContent, /```mermaid/);
   });
 
   test("two diagrams in one message are two diagrams", async () => {
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: threadWith("```mermaid\n" + DIAGRAM + "\n```\n\nand\n\n```mermaid\npie title x\n  \"a\" : 1\n```"),
       install: withMermaid,
     });
     for (let i = 0; i < 60; i++) {
-      if (window.document.querySelectorAll("#feed .mermaid-drawn").length >= 2) break;
+      if (window.document.querySelectorAll("#chat-thread .mermaid-drawn").length >= 2) break;
       await new Promise((r) => setTimeout(r, 5));
     }
-    assert.equal(window.document.querySelectorAll("#feed .mermaid-drawn svg").length, 2);
+    assert.equal(window.document.querySelectorAll("#chat-thread .mermaid-drawn svg").length, 2);
     // Distinct ids: mermaid keys its own scratch element on the id it is
     // given, and two blocks sharing one would have the second draw over the
     // first.
@@ -9997,15 +10009,15 @@ describe("mermaid diagrams in the chat", () => {
   test("a fenced block that is not mermaid is left alone", async () => {
     // Paired with a real diagram for the reason the test above is: on its
     // own, "no diagram was drawn" is what a missing feature looks like.
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       ask: threadWith("```python\nprint(1)\n```\n\n```mermaid\n" + DIAGRAM + "\n```"),
       install: withMermaid,
     });
-    await settle(window, "#feed .mermaid-drawn svg");
-    assert.equal(window.document.querySelectorAll("#feed .mermaid-figure").length, 1,
+    await settle(window, "#chat-thread .mermaid-drawn svg");
+    assert.equal(window.document.querySelectorAll("#chat-thread .mermaid-figure").length, 1,
       "a python block was handed to a diagram renderer");
     assert.deepEqual(window.__mermaid.calls.map((c) => c.code), [DIAGRAM]);
-    assert.match(window.document.querySelector("#feed .ask-text").textContent, /print\(1\)/);
+    assert.match(window.document.querySelector("#chat-thread .ask-text").textContent, /print\(1\)/);
   });
 
   test("a drawn diagram survives the four-second poll instead of flickering", async () => {
@@ -10016,7 +10028,7 @@ describe("mermaid diagrams in the chat", () => {
      * code block and redraws it a moment later -- for as long as he waits.
      * My reviewer found this, not me. */
     let timers;
-    const window = await loadSite("/ask", {
+    const window = await loadAskDock({
       install: (win) => { timers = captureTimers(win); withMermaid(win); },
       ask: () => ({
         conversationId: "c",
@@ -10024,12 +10036,12 @@ describe("mermaid diagrams in the chat", () => {
         messages: [{ id: "1", sender: "Edvard", text: "```mermaid\n" + DIAGRAM + "\n```" }],
       }),
     });
-    await settle(window, "#feed .mermaid-drawn svg");
+    await settle(window, "#chat-thread .mermaid-drawn svg");
 
     await timers.fire();
-    assert.ok(window.document.querySelector("#feed .mermaid-drawn svg"),
+    assert.ok(window.document.querySelector("#chat-thread .mermaid-drawn svg"),
       "the poll rebuilt the thread and the diagram was gone again");
-    assert.equal(window.document.querySelector("#feed .mermaid-source"), null,
+    assert.equal(window.document.querySelector("#chat-thread .mermaid-source"), null,
       "the diagram dropped back to its source on the poll");
     assert.equal(window.__mermaid.calls.length, 1,
       "every poll re-rendered a diagram that had not changed");

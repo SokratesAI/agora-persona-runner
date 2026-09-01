@@ -1,4 +1,4 @@
-"""The menu drawer is grouped, and every page but `/ask` is in it.
+"""The menu drawer is grouped, and every page is in it.
 
 The owner, `issues.md` 2026-08-26: *"Now that the sidebar for the Nova app
 has begun to contain a lot of page links, group the by category, but always
@@ -15,9 +15,9 @@ down as an assertion rather than left to whoever edits `index.html` next.
 The second is the **drift** that made the grouping worth guarding. Adding a
 page means editing `PAGE_ROUTES` in `nova_site.py`, the router in `app.js`,
 and this list -- three places, and nothing has ever checked that the third
-one happened. `/ask` is the single deliberate omission and it is named here,
-so a fourth route quietly missing its link fails instead of shipping
-unreachable. The complement matters too: a link to a route the server does
+one happened. `UNLINKED` is where a deliberate omission is named,
+so a route quietly missing its link fails instead of shipping unreachable.
+It is empty -- `/ask` was the one member and the page is deleted now. The complement matters too: a link to a route the server does
 not serve is a 404 in the menu, and that direction is checked as well.
 
 The groups became collapsible `<details>` folds the next morning, on the
@@ -39,6 +39,7 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HTML = ROOT / "agora_runner" / "nova_public" / "index.html"
+SITE = ROOT / "agora_runner" / "nova_site.py"
 
 #: The pinned rows, in document order. The owner named three on 2026-08-26
 #: and added `/projects` on 2026-08-31: *"make the projects link in the Nova
@@ -49,10 +50,11 @@ HTML = ROOT / "agora_runner" / "nova_public" / "index.html"
 #: below Ideas, which is the one arrangement the capture rules out.
 PINNED = ["/", "/projects", "/issues", "/ideas"]
 
-#: The one route deliberately reachable without a menu link. The chat dock
-#: is the same thread, so the page is redundant on the menu; the route stays
-#: so an existing bookmark still resolves.
-UNLINKED = {"/ask"}
+#: Routes deliberately reachable without a menu link. Empty on purpose:
+#: `/ask` was the only member, and Cycle 759 deleted that page outright on
+#: the second half of the owner's ask. A route added here needs a reason
+#: beside it.
+UNLINKED = set()
 
 
 def _nav_markup():
@@ -171,13 +173,32 @@ def test_the_menu_links_nowhere_the_server_does_not_serve():
     assert not stray, f"{stray} are in the menu and are not `PAGE_ROUTES`"
 
 
-def test_ask_is_off_the_menu_and_still_served():
-    """Both halves of the owner's "the ask page can be cut"."""
+def test_the_ask_page_is_gone_and_its_api_is_not():
+    """The owner's ask in full: *"delete the /ask page entirely as dead code"*.
+
+    The page is deleted in three places and the endpoint behind it is deleted
+    in none, because the chat dock is the same thread and talks to the same
+    `/api/ask`. Getting that split wrong in either direction is the failure
+    this test exists for: leaving the page half-deleted, or taking the dock
+    down with it.
+    """
     linked = {href for kind, href in _nav_items() if kind == "link"}
-    assert "/ask" not in linked, "`/ask` was cut from the menu; it is back"
-    assert "/ask" in _page_routes(), (
-        "`/ask` lost its route as well as its link -- the link was the ask, and a "
-        "bookmark to the page should still resolve"
+    assert "/ask" not in linked, "`/ask` is back in the menu"
+    assert "/ask" not in _page_routes(), (
+        "`/ask` is back in `PAGE_ROUTES`; the page was deleted, so the server "
+        "should 404 it"
+    )
+    app_js = (HTML.parent / "app.js").read_text(encoding="utf-8")
+    assert '"/ask"' not in app_js, (
+        "app.js routes `/ask` again -- the client router was the third place "
+        "the page lived"
+    )
+    assert '"/api/ask"' in app_js, (
+        "`/api/ask` is gone from app.js -- that is the chat dock's own "
+        "endpoint, not part of the deleted page"
+    )
+    assert '"/api/ask"' in SITE.read_text(encoding="utf-8"), (
+        "`/api/ask` is gone from nova_site.py -- the dock has nothing to talk to"
     )
 
 
