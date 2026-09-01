@@ -988,10 +988,11 @@ def _project_backlog(rows):
     the same `unanswered_comment_bodies` the tool uses, so the raise that
     matters here is live: a row where his comment is the last word tops
     this list, and a comment Sokrates relayed on his behalf does not.
-    What is still absent is `heldBy`, the sink for a row another live
-    cycle is holding, and that one belongs absent -- which cycle is
-    mid-flight is not a fact about the project. `rank` reads it with
-    `.get`, so its absence removes the sink and changes nothing else.
+    What is still absent is `heldBy` and `replyHeldBy`, the two sinks for
+    a row or a comment another live cycle is holding, and both belong
+    absent -- which cycle is mid-flight is not a fact about the project.
+    `rank` reads them with `.get`, so their absence removes the sink and
+    changes nothing else.
 
     Closed rows are left out: `done` is delivered and `outdated` is scope
     he dropped, and neither is something to do next. That is the same cut

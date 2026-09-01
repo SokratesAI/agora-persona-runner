@@ -76,8 +76,16 @@ def test_board_payload_leaves_an_answered_row_unmarked(monkeypatch):
     # No key at all rather than `False`: `rank` reads it with `.get`, and a
     # row nobody has ever commented on has to look the same as one whose
     # thread I have already answered.
+    #
+    # **Both rows, in one assertion, on purpose.** `"waiting" not in rows[2]`
+    # alone is true of a payload that never sets the key anywhere, so on its
+    # own it passes just as happily against the code before this shipped --
+    # a negative assertion whose fixture reaches nothing. Naming the row that
+    # *is* marked beside it is what makes the pair capable of failing.
     rows = {item["number"]: item for item in _payload(monkeypatch)["items"]}
+    assert [number for number in sorted(rows) if rows[number].get("waiting")] == [1, 3]
     assert "waiting" not in rows[2]
+    assert "relayed" not in rows[2]
 
 
 def test_board_payload_marks_a_relayed_comment_as_relayed(monkeypatch):
@@ -131,3 +139,31 @@ def test_a_relayed_comment_does_not_jump_the_queue(monkeypatch):
         _row(3, "low", waiting=True, relayed=True),
     ])
     assert [row["number"] for row in backlog] == [2, 3]
+
+
+def test_the_page_orders_the_real_payload_by_the_question_he_asked(monkeypatch):
+    """Markdown in, ordered list out -- the whole pipeline in one test.
+
+    The two tests above prove `board_payload` sets the flags and the two
+    below prove `rank` honours them, and neither proves they are wired to
+    each other: both halves passed before this shipped, because the
+    ordering fixtures hand-build rows that already carry `waiting`. This
+    one starts from the same board markdown a vault read returns and
+    asserts on what the page would draw.
+
+    Row 1 is Low with a question of his outstanding, row 2 is Immediately
+    with the thread already answered, row 3 is Low with a relayed comment.
+    Without the stamp the order is 2, 1, 3 -- rating, then the lower number
+    of the two Lows. With it, his question comes first.
+    """
+    monkeypatch.setattr(nova_site, "board_markdown", lambda name: (
+        (BOARD, "", "") if name == "issues" else ("", "", "")
+    ))
+    monkeypatch.setattr(
+        nova_site, "cached_payload",
+        lambda name, build: (build(), b"", "etag"),
+    )
+    monkeypatch.setattr(nova_site, "comments_markdown", lambda: "")
+    monkeypatch.setattr(nova_site, "project_priorities", dict)
+    backlog = nova_site.project_payload("Nova")["backlog"]
+    assert [row["number"] for row in backlog] == [1, 2, 3]
