@@ -18,7 +18,16 @@ import pytest
 from tools import host_memory_trend as hmt
 
 
-BASE = datetime(2026, 8, 29, 6, 0, tzinfo=timezone.utc)
+# The default start for a fabricated ledger, and it has to move with the clock.
+# `main` windows the ledger to the last 72h **measured from the reading it takes
+# right now**, so a fixed calendar date is a fixture with an expiry: this was
+# `datetime(2026, 8, 29, 6, 0)`, and at 08:15 Oslo on 1 September it fell 15
+# minutes out the back of that window. Two tests that had passed for days began
+# asserting on an empty window, red on main, with nothing in the diff that
+# caused it. Anchoring to the run makes the fixture mean what it always meant --
+# "recent readings" -- instead of meaning it only until a Tuesday.
+BASE = (datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        - timedelta(hours=12))
 
 
 def meminfo(total_kb=7931600, available_kb=2692208, swap_total_kb=2097148,
