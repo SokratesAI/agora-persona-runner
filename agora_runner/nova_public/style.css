@@ -149,12 +149,6 @@ pre code { background: none; padding: 0; }
 }
 .status-subs .status-sub { margin: 0; }
 
-/* The open-asks panel sits inside the same wrapping flex row as the fields,
- * so it has to claim a whole line of it -- otherwise a list of questions
- * lays itself out beside a pill. `.unread-panel` already carries the box;
- * this only decides where in the row it lands. */
-.status-subs .asks-panel { flex-basis: 100%; margin: 0; }
-
 /* A field that names a cycle scrolls the feed to that cycle's card. It is
  * a real `<a>` with a real href, so it inherits the page's text colour
  * rather than the link blue -- the badge inside it is already the visual

@@ -50,13 +50,20 @@ SITE = ROOT / "agora_runner" / "nova_site.py"
 #: below Ideas, which is the one arrangement the capture rules out.
 PINNED = ["/", "/projects", "/issues", "/ideas"]
 
-#: Routes deliberately reachable without a menu link. Empty on purpose:
-#: `/ask` was the only member, and Cycle 759 deleted that page outright on
-#: the second half of the owner's ask. A route added here needs a reason
-#: beside it.
+#: Routes deliberately reachable without a menu link. A route added here
+#: needs a reason beside it.
+#:
+#: `/asks` is the journal with one predicate on it, not a page of its own
+#: -- `route()` in `app.js` returns `view: "journal"` for it. It is reached
+#: from the count in the header, which is drawn exactly when there is more
+#: than one thing waiting on him, and it is empty most days. A permanent
+#: sidebar row for it is the length problem he asked us to fix on
+#: 2026-08-27: *"i want them to be dropdowns and default closed so i can
+#: navigate more easily and we can easily add more pages of necessary
+#: without expanding the sidebar length too much."*
 from agora_runner import nova_site
 
-UNLINKED = set()
+UNLINKED = {"/asks"}
 
 
 def _nav_markup():

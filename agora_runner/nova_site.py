@@ -272,6 +272,7 @@ PAGE_ROUTES = (
     "/issues",
     "/ideas",
     "/notes",
+    "/asks",
     "/pool",
     "/costs",
     "/retro",
@@ -1602,7 +1603,7 @@ def _refresh(name, build):
 
 
 def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
-                 record_age=None, search=None):
+                 record_age=None, search=None, asks=False):
     """One window of the journal, plus how many entries there are in all.
 
     The cold load is the half the 304 poll of #84 did not touch: 109
@@ -1649,6 +1650,23 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
     A reviewer found this on runner#452 and nothing covered it, which is
     why it is written down here with a test rather than left to be
     rediscovered.
+
+    `asks` is the owner's capture of 2026-09-01: *"Drop the current 'needs
+    me' functionality (the yellow 'N WAITING ON YOU' button/list) ... and
+    replace it with a simple filter that just lists the journal entries
+    that need his input."* It is a filter over the same corpus rather than
+    a new payload, so `/asks` is the feed with one predicate applied and
+    every card renders exactly as it does on the front page.
+
+    **It selects every card that raised an ask, answered or not**, which is
+    the same call `open_asks` makes one layer down and for the same reason:
+    an ask is answered when he has commented on that card, comments live in
+    a different document with its own cache, and folding them in here would
+    keep the filter claiming he had not replied until the *journal* cache
+    next rebuilt. The client holds both payloads and intersects them.
+
+    Like `cycle`, it ignores `offset` and `limit` -- the whole point is to
+    see all of them at once, and there are eight, not eight hundred.
     """
     entries = payload.get("entries") or []
     if search is not None and search.strip():
@@ -1670,6 +1688,24 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
             # search carries, and for the same reason: this is typed into,
             # so every keystroke has a request in flight behind it.
             "query": needle,
+        }
+    if asks:
+        # `cycle is not None` for the reason `open_asks` skips those
+        # entries: an entry with no cycle number has no card of its own to
+        # reply on, so an ask written into one has nowhere to be answered.
+        picked = [
+            entry for entry in entries
+            if entry.get("ask") and entry.get("cycle") is not None
+        ]
+        return {
+            "entries": [_rendered(entry) for entry in picked],
+            "status": _with_silence(
+                payload.get("status", {}), now, record_age=record_age
+            ),
+            # The number of asks, not the number of entries: the page says
+            # how many cards it is showing, and `total` is what it reads.
+            "total": len(picked),
+            "asks": True,
         }
     if cycle is not None:
         picked = [entry for entry in entries if entry.get("cycle") == cycle]
@@ -2151,7 +2187,7 @@ def board_descriptor(args):
     return "&".join(f"{name}={args[name]!r}" for name in sorted(args))
 
 
-def journal_descriptor(page, limit, offset, cycle, search=None):
+def journal_descriptor(page, limit, offset, cycle, search=None, asks=False):
     """What `/api/journal`'s etag must vary by, beyond the payload itself.
 
     The window, obviously -- a client that just asked for forty entries
@@ -2186,7 +2222,14 @@ def journal_descriptor(page, limit, offset, cycle, search=None):
     and would turn every conditional poll back into a full 184KB answer.
     """
     status = page.get("status") or {}
-    window = f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}"
+    if asks:
+        # Its own window key, not `0:None`: the ask filter and an unwindowed
+        # read of the whole corpus are different answers off the same base
+        # etag, and without this the second one asked for is served 304 with
+        # the first one's rows still on screen.
+        window = "asks"
+    else:
+        window = f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}"
     # Two different queries against the same journal build the same base
     # etag, so without this the second one is answered 304 with the
     # first one's rows still on screen -- a wrong answer that looks like
@@ -2325,12 +2368,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         limit = _journal_limit(query)
         offset = _int_param(query, "offset", 0)
         search = (query.get("q") or [None])[0]
+        asks = (query.get("asks") or ["0"])[0] == "1"
         page = journal_page(
             payload, limit=limit, offset=offset, cycle=cycle, record_age=age,
-            search=search,
+            search=search, asks=asks,
         )
         etag = page_etag(
-            base, journal_descriptor(page, limit, offset, cycle, search)
+            base, journal_descriptor(page, limit, offset, cycle, search, asks)
         )
         # The version travels inside the document as well as in the header,
         # for the reason `_versioned` puts it in both: a response served out
