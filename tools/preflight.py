@@ -136,6 +136,7 @@ CHECKS = (
     "crossplane_health",
     "claim_drift",
     "claim_schema",
+    "roll_health",
     "running_images",
     "workload_health",
     "host_memory_trend",
