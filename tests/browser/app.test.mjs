@@ -5146,6 +5146,70 @@ describe("the /conversation/<id> URL opens one thread", () => {
       "Nova — Cycle 656");
   });
 
+  /* The one thing his 2026-09-01 capture is about: the messages must not
+   * wait on the name.
+   *
+   * `openConversationById` used to call `openConversation` from inside the
+   * listing's `.then`, so the thread fetch could not even start until the
+   * listing came back. Measured the same day against the live site from
+   * inside the cluster, so with no tailnet leg in it: `/api/conversations`
+   * answered in 0.62s, 0.84s and 1.19s over three reads while the shell and
+   * `app.js` answered in 3-5ms -- a whole serial round trip, spent on one
+   * string, in front of the message a push notification had just told him
+   * about.
+   *
+   * Holding the listing open forever is what makes the difference visible.
+   * On the old code nothing is on screen at all; there is no arrangement of
+   * fixture bodies that separates the two, because both orders end with the
+   * same page once both requests land. */
+  test("the messages render while the name lookup is still in flight", async () => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const window = await loadSite("/conversation/c-2", {
+      convList: () => held.then(() => res(TWO_CONVS)),
+      convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector(".ask-text").textContent,
+      /the entry is written/);
+    // Empty rather than absent: the heading is drawn straight away and the
+    // name drops into it, so nothing on the page moves when it arrives.
+    assert.equal(window.document.querySelector("#status .status-line").textContent, "");
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.querySelector("#status .status-line").textContent,
+      "Nova — Cycle 656");
+  });
+
+  /* He can back out and open another thread while the first listing is still
+   * in flight, and now that the answer arrives after the page is painted, a
+   * late one could relabel a thread it is not about. */
+  test("a late name lookup does not relabel the thread he moved to", async () => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    // Both opens hit the same URL, so the only thing that can tell them
+    // apart is the order they arrive in: c-2 asks first and is held, c-1
+    // asks second and answers straight away.
+    let asks = 0;
+    const window = await loadSite("/conversation/c-2", {
+      convList: () => (asks++ === 0 ? held.then(() => res(TWO_CONVS)) : res(TWO_CONVS)),
+      convThread: () => THREAD,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Land on a different thread, which names itself, and only then let
+    // c-2's listing answer.
+    window.history.pushState(null, "", "/conversation/c-1");
+    window.dispatchEvent(new window.Event("popstate"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(asks, 2, "the second open has to have asked, or the guard is never reached");
+    assert.equal(window.document.querySelector("#status .status-line").textContent,
+      "Roofing", "the second open names itself before the first one answers");
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.querySelector("#status .status-line").textContent,
+      "Roofing");
+  });
+
   /* The name is a label and the messages are the thing he tapped for, so a
    * listing that fails must not cost him the thread. */
   test("a listing that fails still opens the thread", async () => {
