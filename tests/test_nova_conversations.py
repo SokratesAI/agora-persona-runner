@@ -885,3 +885,25 @@ def test_step_output_is_none_for_a_call_this_thread_does_not_hold():
 def test_step_output_refuses_without_both_a_thread_and_a_call():
     assert convs.step_output("", "t1") is None
     assert convs.step_output("c-1", "") is None
+
+
+def test_work_that_runs_into_his_next_message_does_not_land_on_it():
+    """A block with his own message under it is the persona's turn ending,
+    not the start of his -- so it stands alone rather than attaching. Without
+    this the collapsed line would appear on the question he typed, saying he
+    had run a tool.
+
+    This is the case the fixture above cannot reach: there, every block has a
+    reply under it. Here the turn narrated and stopped, and he asked again."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "how many pods?"},
+        {"id": "b", "sender": "Nova", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods",
+                      "toolUseId": "t1"}},
+        {"id": "c", "sender": "Edvard", "text": "well?"},
+    ])
+    assert [m["id"] for m in payload["messages"]] == ["a", "", "c"]
+    assert payload["messages"][1]["stepsOnly"] is True
+    assert payload["messages"][1]["steps"][0]["capability"] == "Bash"
+    assert payload["messages"][2].get("steps") is None
+    assert payload["messages"][2]["sender"] == "Edvard"
