@@ -15,7 +15,7 @@ documents still render.
 
 import pytest
 
-from agora_runner.nova_boards import capture_entries, parse_board
+from agora_runner.nova_boards import DEFAULT_PROJECT, capture_entries, parse_board
 from tools.board_capture import check, first_sentence, main, promote
 
 BOARD = """---
@@ -174,7 +174,7 @@ def test_first_sentence_keeps_a_long_one_whole(tmp_path):
 
 def test_check_catches_a_capture_lost_beside_the_one_boarded():
     """The off-by-one this guard exists for, forced by hand."""
-    after, number, title = promote(BOARD, 0, "medium", "backlog", "08-27")
+    after, number, title, _ = promote(BOARD, 0, "medium", "backlog", "08-27")
     assert not check(BOARD, after, number, title,
                      "The first thing he typed. It goes on for a second sentence.")
     damaged = after.replace("- 🟠 High: A rated capture.\n", "")
@@ -184,16 +184,77 @@ def test_check_catches_a_capture_lost_beside_the_one_boarded():
 
 
 def test_check_catches_a_reply_taken_with_the_cut():
-    after, number, title = promote(BOARD, 1, "medium", "backlog", "08-27")
+    after, number, title, _ = promote(BOARD, 1, "medium", "backlog", "08-27")
     damaged = after.replace("  - Cycle 500 answered this one.\n", "")
     problems = check(BOARD, damaged, number, title, "🟠 High: A rated capture.")
     assert any("a capture changed underneath" in p for p in problems)
 
 
 def test_check_catches_a_row_that_changed_underneath():
-    after, number, title = promote(BOARD, 0, "medium", "backlog", "08-27")
+    after, number, title, _ = promote(BOARD, 0, "medium", "backlog", "08-27")
     damaged = after.replace("| The second thing | 🟡 In progress |",
                             "| The second thing | ✅ Done |")
     problems = check(BOARD, damaged, number, title,
                      "The first thing he typed. It goes on for a second sentence.")
     assert any("#2 changed underneath" in p for p in problems)
+
+
+def test_a_project_tag_is_lifted_out_of_the_title_into_the_cell(tmp_path):
+    """His third capture prefix, and the one that went in as prose for 38 rows.
+
+    A rating prefix and a `DONE (Cycle N)` prefix were already stripped
+    before a bullet became a title; `(Project: X)` was not, so it was
+    written into the `Item` cell and the `Project` cell stayed at the
+    `Nova` default -- which is what he filed on 2026-09-01.
+    """
+    board = BOARD.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- (Project: Marcus) The first thing he typed. It goes on for a second sentence.",
+    )
+    code, path = _run(tmp_path, board=board, priority="medium")
+    assert code == 0
+    new = parse_board(path.read_text(encoding="utf-8"))["items"][0]
+    assert new["title"] == "The first thing he typed."
+    assert new["project"] == "Marcus"
+    # The write-up is still everything he wrote from the tag onwards --
+    # the prefix is a cell now, so it is not repeated in the prose either.
+    assert "(Project: Marcus)" not in path.read_text(encoding="utf-8")
+
+
+def test_a_project_tag_rides_beside_a_rating_and_a_done_marker(tmp_path):
+    board = BOARD.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- DONE (Cycle 501): 🟠 High: (Project: Marcus) Shipped already.",
+    )
+    code, path = _run(tmp_path, board=board)
+    assert code == 0
+    new = parse_board(path.read_text(encoding="utf-8"))["items"][0]
+    assert new["title"] == "Shipped already."
+    assert new["project"] == "Marcus"
+    assert new["status"] == "✅ Done"
+    # The rating is gone on purpose -- `set_row_status`'s own rule, a
+    # closed row loses its rating -- so all three prefixes were read and
+    # only the two that survive a closure are written.
+    assert new["priority"] == ""
+
+
+def test_an_explicit_project_flag_beats_the_bullets_own_tag(tmp_path):
+    board = BOARD.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- (Project: Marcus) The first thing he typed. It goes on.",
+    )
+    code, path = _run(tmp_path, board=board, priority="medium", project="Agora")
+    assert code == 0
+    assert parse_board(path.read_text(encoding="utf-8"))["items"][0]["project"] == "Agora"
+
+
+def test_an_untagged_capture_gets_no_project_cell(tmp_path):
+    """The control: nothing here may start stamping a project on every row."""
+    code, path = _run(tmp_path, priority="medium")
+    assert code == 0
+    after = path.read_text(encoding="utf-8")
+    assert parse_board(after)["items"][0]["project"] == DEFAULT_PROJECT
+    # And the table is still five columns wide -- no `Project` header was
+    # appended for a row that never asked for one.
+    header = [line for line in after.split("\n") if line.startswith("| # |")][0]
+    assert header.count("|") == 6

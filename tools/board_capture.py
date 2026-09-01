@@ -66,9 +66,11 @@ from agora_runner.nova_boards import (  # noqa: E402
     canonical_priority,
     capture_entries,
     parse_board,
+    set_row_project,
     set_row_status,
     split_capture_done,
     split_capture_priority,
+    split_capture_project,
 )
 
 # The statuses a cycle may move a capture into. `outdated` is deliberately
@@ -97,7 +99,7 @@ def first_sentence(text):
     return one
 
 
-def check(before, after, number, title, capture_text):
+def check(before, after, number, title, capture_text, project=""):
     """Refuse the write unless exactly one capture became exactly one row."""
     problems = []
     old_board, new_board = parse_board(before), parse_board(after)
@@ -126,6 +128,10 @@ def check(before, after, number, title, capture_text):
         problems.append(f"#{number} is not on the board afterwards")
     elif new_by_number[number]["title"] != title:
         problems.append(f"#{number} came back with a different title")
+    if project and number in new_by_number:
+        got = (new_by_number[number].get("project") or "").strip()
+        if got != project:
+            problems.append(f"#{number} came back under {got!r}, asked for {project!r}")
     if len(new_board["items"]) != len(old_board["items"]) + 1:
         problems.append(
             f"row count went {len(old_board['items'])} -> "
@@ -143,21 +149,32 @@ def check(before, after, number, title, capture_text):
     return problems
 
 
-def promote(before, index, priority, status, dated, title=None):
-    """`(after, number, title)` or `(None, reason, None)`."""
+def promote(before, index, priority, status, dated, title=None, project=None):
+    """`(after, number, title, project)` or `(None, reason, None, None)`.
+
+    The fourth element is the project the row actually landed under --
+    `""` when it landed under none. `check` needs it and only `promote`
+    knows it, because the tag is stripped out of his bullet in here.
+    """
     entries = capture_entries(before)
     if index < 0 or index >= len(entries):
-        return None, f"no capture at index {index} ({len(entries)} in the list)", None
+        return None, f"no capture at index {index} ({len(entries)} in the list)", None, None
     start, end, text, replies = entries[index]
 
     done_cycle, text = split_capture_done(text)
     own_rating, text = split_capture_priority(text)
+    own_project, text = split_capture_project(text)
     if not text.strip():
-        return None, "that capture is empty once its prefixes are stripped", None
+        return None, "that capture is empty once its prefixes are stripped", None, None
+
+    # His tag decides unless the caller named one, the same precedence the
+    # rating already has: a bullet that says which project it belongs to
+    # is him answering the question, not a default to be re-guessed.
+    tag = (project or own_project or "").strip()
 
     rating = priority if priority is not None else own_rating
     if canonical_priority(rating) is None:
-        return None, f"'{rating}' is not a rating", None
+        return None, f"'{rating}' is not a rating", None, None
     if done_cycle and status == "backlog":
         # He named this case himself: *"Even some issues are fixed and done
         # but still not moved out."* A bullet already marked `DONE (Cycle N)`
@@ -177,13 +194,18 @@ def promote(before, index, priority, status, dated, title=None):
         return None, (
             "could not board it -- no '## Board' table in that file, or the "
             "title carries a '|' or a newline"
-        ), None
+        ), None, None
     if status != "backlog":
         moved = set_row_status(after, number, STATUS_LABELS[status], updated=dated)
         if moved is None:
-            return None, f"could not set the status to {STATUS_LABELS[status]}", None
+            return None, f"could not set the status to {STATUS_LABELS[status]}", None, None
         after = moved
-    return after, number, row_title
+    if tag:
+        tagged = set_row_project(after, number, tag)
+        if tagged is None:
+            return None, f"could not set the project to {tag!r}", None, None
+        after = tagged
+    return after, number, row_title, tag
 
 
 def main(argv=None):
@@ -197,6 +219,10 @@ def main(argv=None):
     parser.add_argument("--status", default="backlog", choices=_STATUS_CHOICES)
     parser.add_argument("--dated", required=True, help="MM-DD, Oslo")
     parser.add_argument("--title", help="override the first-sentence title")
+    parser.add_argument(
+        "--project",
+        help="Project cell; default is the bullet's own '(Project: X)' prefix",
+    )
     parser.add_argument("--out", help="where to write (default: in place)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -234,14 +260,15 @@ def main(argv=None):
         return 1
     _, _, raw_text, _ = entries[args.index]
 
-    after, number, row_title = promote(
-        before, args.index, args.priority, args.status, args.dated, args.title
+    after, number, row_title, tag = promote(
+        before, args.index, args.priority, args.status, args.dated, args.title,
+        args.project,
     )
     if after is None:
         print(f"REFUSED: {number}", file=sys.stderr)
         return 1
 
-    problems = check(before, after, number, row_title, raw_text)
+    problems = check(before, after, number, row_title, raw_text, tag)
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
@@ -251,6 +278,8 @@ def main(argv=None):
     row = next(item for item in board["items"] if item["number"] == number)
     print(f"boarded #{number} — {row_title}")
     print(f"  status {row['status']!r}  priority {row['priority']!r}")
+    if tag:
+        print(f"  project {tag!r}, lifted out of the title")
     print(f"  captures {len(entries)} -> {len(capture_entries(after))}")
     print(f"  {len(before)} -> {len(after)} bytes")
     if args.dry_run:

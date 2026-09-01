@@ -80,6 +80,13 @@ _ROW_NUMBER_RE = re.compile(r"#(\d+)")
 # walking back in through a comma. The cycle number is still the only
 # thing captured, so every caller reads what it always read.
 _CAPTURE_DONE_RE = re.compile(r"^DONE\s*\(\s*(Cycle\s*\d+)[^)]*\)\s*:", re.IGNORECASE)
+
+#: `(Project: Marcus) rest` at the head of a capture. Bounded to 40
+#: characters and to characters a `Project` cell may legally hold, so a
+#: sentence that merely opens with a parenthesis can never be eaten.
+_CAPTURE_PROJECT_RE = re.compile(
+    r"^\(\s*Project\s*:\s*([^)|*\n]{1,40}?)\s*\)\s*", re.IGNORECASE
+)
 # A detail heading inside `# Details`, in either shape the live files use:
 # `## 57 — More pages in the Nova app` and `### #84 — Edit and delete a
 # boarded idea or issue by holding the card`.
@@ -382,6 +389,39 @@ def split_capture_done(bullet):
     if not match:
         return "", (bullet or "").strip()
     return match.group(1).strip(), match.string[match.end():].strip()
+
+
+def split_capture_project(bullet):
+    """`(Project: Marcus) text` -> `("Marcus", "text")`. Untagged -> `("", bullet)`.
+
+    The third prefix a bare capture can carry, and the last one nothing
+    read. The owner tags a bullet with the project it belongs to because
+    a capture is one line in his file with nowhere to put a column --
+    exactly the reasoning in `split_capture_priority` and
+    `split_capture_done` -- and `board_capture` then has to lift it into
+    the `Project` cell and strip it from the title, the same way it does
+    the rating.
+
+    It did not. Measured on his two boards, 2026-09-01: **38 rows** carry
+    a literal `(Project: Marcus)` inside their title text with the
+    `Project` cell left at the `Nova` default, so `board_projects` cannot
+    see one of them and the app's Marcus overview listed the two rows
+    whose cell happened to be filled by hand. He found it himself and
+    filed it.
+
+    Matched only as a prefix, for `split_capture_done`'s reason: the
+    bullet is his prose from that point on. The name is bounded to the
+    characters `set_row_project` will accept and to its 40-character
+    limit, so anything this returns is a name that can actually be
+    written into a cell -- a longer or `|`-carrying parenthetical is left
+    in the title where it does no harm, rather than being lifted into a
+    cell that would then be refused.
+    """
+    text = (bullet or "").strip()
+    match = _CAPTURE_PROJECT_RE.match(text)
+    if not match:
+        return "", text
+    return match.group(1).strip(), text[match.end():].strip()
 
 
 def set_row_priority(markdown, number, priority):

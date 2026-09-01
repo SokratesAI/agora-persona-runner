@@ -343,3 +343,44 @@ def test_the_javascript_outdated_key_is_the_one_python_actually_derives():
     assert f'item.statusKey === "{key}"' in app_js, "app.js branches on a different key"
     assert f'{{ key: "{key}", label: "Outdated"' in app_js, "the filter key does not match"
     assert f".chip-{key} " in style, "the chip has no stylesheet rule under that key"
+
+
+from agora_runner.nova_boards import split_capture_project  # noqa: E402
+
+
+def test_a_project_tag_comes_off_the_front_of_a_capture():
+    assert split_capture_project("(Project: Marcus) log a session by talking") == (
+        "Marcus",
+        "log a session by talking",
+    )
+    # His own typing: lower case, padded, a two-word name.
+    assert split_capture_project("(project:  Sokrates Post ) a thing") == (
+        "Sokrates Post",
+        "a thing",
+    )
+
+
+def test_a_sentence_that_merely_opens_with_a_parenthesis_is_left_alone():
+    """The boundary the prefix match exists for -- his prose is his prose."""
+    for bullet in (
+        "just a thought",
+        "(a parenthetical opener) and then the point",
+        "the Project: Marcus page is slow",
+        "a note (Project: Marcus) in the middle",
+    ):
+        assert split_capture_project(bullet) == ("", bullet)
+
+
+def test_a_tag_no_project_cell_could_hold_is_not_lifted():
+    """`set_row_project` refuses a `|`, a `*` and anything past 40 characters.
+
+    Lifting one of those out of the title would move his text into a cell
+    that then refuses it, which loses the words. Left in the title, where
+    it reads oddly and is still his.
+    """
+    for bullet in (
+        "(Project: Mar|cus) a thing",
+        "(Project: *Marcus*) a thing",
+        "(Project: " + "M" * 41 + ") a thing",
+    ):
+        assert split_capture_project(bullet) == ("", bullet)
