@@ -10954,7 +10954,8 @@
         // `conv` without one is corrupt and reads as never-stored rather
         // than as a thread that 404s on every open.
         if (!parsed || parsed.kind !== "conv" || !parsed.id) return;
-        source = { kind: "conv", id: parsed.id, name: parsed.name || "Conversation" };
+        source = { kind: "conv", id: parsed.id, name: parsed.name || "Conversation",
+                   untitled: parsed.untitled === true };
       } catch (err) { /* unreadable: stay on the ask thread */ }
     }
 
@@ -11730,7 +11731,8 @@
             // differ by exactly the case this whole change is about, and a
             // header reading "" while the switcher reads "New chat" is the
             // two-copies-of-one-rule bug wearing a title bar.
-            switchTo({ kind: "conv", id: id, name: answer.name || wanted });
+            switchTo({ kind: "conv", id: id, name: answer.name || wanted,
+                       untitled: !wanted });
             done(false);
           })
           .catch(function (err) {
@@ -11951,12 +11953,15 @@
       // it: he can switch threads while the request is in flight, and a
       // title derived here must land on the thread he typed it into.
       //
-      // "Nothing painted yet" is how the dock knows this is the opening
-      // message. It is not the safety check -- the server refuses to rename
-      // anything that is not still called `New chat`, and that check is
-      // there rather than here so the placeholder is spelled in one file.
-      // This only keeps the app from asking on every message he ever sends.
-      var titleFor = conv && !thread.querySelector(".ask-msg")
+      // Two conditions, neither of them the safety check -- the server
+      // refuses to rename anything not still called `New chat`, and that
+      // check lives there so the placeholder is spelled in one file. These
+      // only keep the app from asking when the answer is already known.
+      // `untitled` is set by the form when he starts a thread without
+      // naming it and rides along in the stored source, so a thread he
+      // named is never asked about; "nothing painted yet" is how the dock
+      // knows this is the opening message rather than the fortieth.
+      var titleFor = conv && source.untitled && !thread.querySelector(".ask-msg")
         ? { id: source.id, name: source.name, text: text }
         : null;
       fetch(conv ? "/api/conversations/send" : "/api/ask", {
@@ -12006,6 +12011,7 @@
               // The thread was named; only the screen still on it moves.
               if (token !== sourceToken || source.id !== titleFor.id) return;
               source.name = named;
+              source.untitled = false;
               titleEl.textContent = named;
               rememberSource();
               if (dock.classList.contains("list-open")) loadList();
