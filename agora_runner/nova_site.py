@@ -130,6 +130,7 @@ from agora_runner.nova_capture import (
     edit_row,
     remove_row,
     set_priority,
+    set_project,
 )
 from agora_runner.nova_comments import (
     add_comment,
@@ -3556,6 +3557,73 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_project(self, payload):
+        """`POST /api/board/project` -- the owner moving a row to a project.
+
+        His capture, 2026-09-01, rated \U0001f534 Immediately: *"I/you should
+        easily be able to assign issues and ideas to projects, and change
+        project if assigned wrongly ... I/you should easily be able to
+        create new projects."* Every `Project` cell on both boards today
+        was written by a cycle running `tools.board_project`, so this is
+        the first way he can disagree with one without opening Obsidian.
+
+        **The one place this deliberately differs from `_post_priority`:
+        the name is not checked against a list.** A rating is one of four
+        labels, so writing anything else through would be a client
+        putting arbitrary text into a cell of his file. A project name is
+        free text by design -- `board_projects` derives the project list
+        from the cells, so typing a name no row carries is how a project
+        is created, and a fixed set here would be the constant that
+        design ruled out. What bounds it is `set_row_project`, which
+        refuses a `|`, a line break, a `*` and anything past 40
+        characters -- the four things that would break out of the cell
+        rather than merely be unexpected in it.
+
+        The other two boundaries are unchanged and are the ones that
+        matter for a path: `target` is a key into `BOARD_PATHS`, never a
+        path, and `number` is `int` and not `bool`, since `True` is an
+        int in Python and would address row 1.
+        """
+        target = payload.get("target")
+        number = payload.get("number")
+        project = payload.get("project")
+        if target not in BOARD_PATHS:
+            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
+            return
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            self._send_json(400, {"error": "number must be a positive integer"})
+            return
+        if not isinstance(project, str) or not project.strip():
+            self._send_json(400, {"error": "project must be a non-empty string"})
+            return
+        project = project.strip()
+
+        try:
+            ok, message = set_project(target, number, project)
+        except Exception as e:
+            log(f"nova-site project failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            # Two caches, not one. `/api/board` is the page he is looking
+            # at; `/api/project` is built by re-reading both boards
+            # through the same `board:<name>` keys, so invalidating the
+            # board is what makes a brand-new project name appear in the
+            # index -- there is no separate project cache to clear.
+            invalidate("board:" + target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Move #{number} on {target} \u00b7 {'ok' if ok else message}",
+            after=project,
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def _post_board_comment(self, payload):
         """`POST /api/board/comment` -- idea #64, the comment half.
 
@@ -4260,7 +4328,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete",
             "/api/capture/convert", "/api/capture/promote", "/api/comment",
-            "/api/board/priority", "/api/board/edit", "/api/board/delete",
+            "/api/board/priority", "/api/board/project",
+            "/api/board/edit", "/api/board/delete",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
             "/api/conversations/send", "/api/conversations/new",
@@ -4342,6 +4411,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/board/priority":
             self._post_priority(payload)
+            return
+        if path == "/api/board/project":
+            self._post_project(payload)
             return
         if path in ("/api/board/edit", "/api/board/delete"):
             self._post_board_amend(payload, delete=path.endswith("delete"))
