@@ -2737,7 +2737,7 @@ body.has-full-chart { overflow: hidden; }
   cursor: pointer;
 }
 
-.ask-copy:hover, .ask-copy:focus-visible { color: var(--fg); border-color: var(--accent); }
+.ask-copy:hover, .ask-copy:focus-visible { color: var(--text); border-color: var(--accent); }
 
 /* `.ask-msg` is not a flex container by default, so `align-self` above needs
  * one; the bubble was a block and its children stacked, which they still do. */
