@@ -269,6 +269,9 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // differently. No default fixture beyond the empty shape: a board
       // with no `Project` cell filled in is a real state.
       const body = typeof project === "function" ? project(url) : project;
+      // A promise body, for `convList`'s reason: it is how a test holds the
+      // index in flight and looks at what the page does meanwhile.
+      if (body && typeof body.then === "function") return body;
       return res(body || { projects: [], name: null, asked: "", boards: {} }, projectStatus);
     }
     if (url.includes("/api/catalog")) {
@@ -7812,6 +7815,32 @@ describe("holding a board row opens edit mode", () => {
     await hold(window, head(window, 58));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(asked, 1, "the project index was fetched once per editor, not once per page");
+  });
+
+  test("a project index that lands after the editor is gone paints nothing", async () => {
+    /* The index arrives a round trip after the editor is drawn, and by
+     * then he may have cancelled it -- or the page may be gone entirely,
+     * which is when `el()` reaches for a `document` that no longer exists
+     * and throws with nobody near it. Two tests in this file reported
+     * exactly that as asynchronous activity after they had ended.
+     *
+     * The observable half, and what this pins: a picker that is no longer
+     * in the document is not repainted. */
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const window = await loadSite("/issues", { project: () => held });
+    await hold(window, head(window, 57));
+    const row = window.document.getElementById("item-57");
+    const select = picker(row);
+    assert.deepEqual([...select.options].map((o) => o.textContent),
+      ["Nova", "New project…"], "the picker was already filled from the index");
+    click(window, act(row, "Cancel"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(select.isConnected, false, "Cancel left the editor in the page");
+    release(res({ projects: ["Nova", "Marcus", "NAS"], name: null, asked: "", boards: {} }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual([...select.options].map((o) => o.textContent),
+      ["Nova", "New project…"], "a detached picker was repainted by a late index");
   });
 
   test("a failed project index still leaves a usable picker", async () => {

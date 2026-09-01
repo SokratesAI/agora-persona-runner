@@ -4724,8 +4724,21 @@
       select.appendChild(creator);
     }
 
+    /* The index arrives one round trip after the editor is drawn, and the
+     * editor can be gone by then -- he cancels, or the page navigates. A
+     * `fill` on a detached control is not merely wasted: `el()` reaches
+     * for `document`, which in a closed window is gone, so the late
+     * callback throws an unhandled rejection with no test and no user
+     * anywhere near it. Two existing browser tests reported exactly that
+     * before this guard. `isConnected` is the honest condition -- the
+     * question is whether there is still a page to paint into. */
+    function fillIfLive(names) {
+      if (!select.isConnected) return;
+      fill(names);
+    }
+
     fill([]);
-    loadProjects().then(fill);
+    loadProjects().then(fillIfLive);
 
     function save(name) {
       status.className = "item-edit-status";
@@ -4760,7 +4773,7 @@
           // Back to what the server still holds, never to the name that
           // was not written -- the same snap-back the priority picker does.
           fill([]);
-          loadProjects().then(fill);
+          loadProjects().then(fillIfLive);
           typed.hidden = true;
           typed.value = "";
         });
@@ -4785,7 +4798,7 @@
       if (!name) {
         typed.hidden = true;
         fill([]);
-        loadProjects().then(fill);
+        loadProjects().then(fillIfLive);
         return;
       }
       if (name === current) { typed.hidden = true; return; }
