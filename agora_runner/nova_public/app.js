@@ -9222,6 +9222,67 @@
    * instead of nothing at all. Drawn as an ordinary bubble on purpose: it
    * IS what was said, just not the last thing that will be. The class only
    * softens it, so the finished reply still reads as the finished reply. */
+  /* Copy one message's text to the clipboard.
+   *
+   * Two paths on purpose, and neither is defensive padding. `navigator.clipboard`
+   * exists only in a secure context, so it is there when he opens the site over
+   * https on the tailnet and absent when anything reaches nova-site over plain
+   * http inside the cluster -- and absent in jsdom, which is where the tests
+   * below run. The textarea path is the one that has to work when the modern
+   * API is missing, so it is the one under test; a button that silently does
+   * nothing is worse than no button.
+   *
+   * What gets copied is `message.text` -- the source he or I actually wrote,
+   * not the rendered node. `appendRichText` turns a picture into an `<img>`
+   * and a mermaid block into a diagram, so reading the DOM back would hand him
+   * a paste with the code fences and the image link gone. */
+  function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    var scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.setAttribute("readonly", "readonly");
+    scratch.style.position = "fixed";
+    scratch.style.left = "-9999px";
+    document.body.appendChild(scratch);
+    scratch.select();
+    var ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (err) {
+      ok = false;
+    }
+    document.body.removeChild(scratch);
+    return ok ? Promise.resolve() : Promise.reject(new Error("copy failed"));
+  }
+
+  /* The copy button on a message bubble.
+   *
+   * Issue #143 asks for six controls; this is the one that needs nothing from
+   * the server, so it is the one that ships whole. Every chat surface on this
+   * site renders through `askMessage` -- the dock, a conversation thread and
+   * the journal card's ask -- so one button here appears on all three.
+   *
+   * It says what happened rather than assuming: "Copied" on success, "Press
+   * ctrl+C" on failure, both reverting after a moment. A clipboard write can
+   * be refused by permission policy and there is no way to ask first. */
+  function askCopyButton(text) {
+    var button = el("button", "ask-copy", "Copy");
+    button.type = "button";
+    button.title = "Copy this message";
+    button.addEventListener("click", function () {
+      copyToClipboard(text).then(function () {
+        button.textContent = "Copied";
+      }, function () {
+        button.textContent = "Press ctrl+C";
+      }).then(function () {
+        setTimeout(function () { button.textContent = "Copy"; }, 1600);
+      });
+    });
+    return button;
+  }
+
   function askMessage(message) {
     var mine = message.sender === "Edvard";
     var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs")
@@ -9230,6 +9291,10 @@
     var body = el("div", "ask-text");
     appendRichText(body, null, message.text);
     row.appendChild(body);
+    /* No button on a message with nothing to copy -- an attachment-only line
+     * has an empty `text`, and a Copy that yields an empty clipboard reads as
+     * broken rather than as empty. */
+    if (message.text) row.appendChild(askCopyButton(message.text));
     return row;
   }
 
