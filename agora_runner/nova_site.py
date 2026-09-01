@@ -162,6 +162,11 @@ from agora_runner.nova_replies import (
 from agora_runner.nova_boards import (
     BOARD_PATHS,
     PRIORITY_LABELS,
+    PRIORITY_ORDER,
+    # Which statuses close a row. Imported rather than respelled here:
+    # `nova_boards` owns that answer, and a second copy would disagree with
+    # it the first time a status is added.
+    _CLOSED_STATUS_KEYS,
     rank_projects,
     STATUS_LABELS,
     board_projects,
@@ -872,6 +877,73 @@ def _project_thread(markdown, project):
     return out
 
 
+def _project_summary(items):
+    """How a project is actually going, as numbers rather than columns.
+
+    His idea #228 asks each project page for *"a backlog, roadmap and
+    maybe a burndown chart"*, and this is the honest half of the burndown.
+    A real burndown is a line: open rows against time. The rows carry one
+    date each -- `Updated`, as `MM-DD` with no year -- and it is the date
+    the row was last *touched*, not the date it was opened or closed, so
+    there is no history in the data to draw a line from. Inventing one
+    would mean back-dating rows off a field that does not mean what the
+    chart would claim. So this reports where the project stands *today*,
+    which is the burndown's last point and the only point I can measure.
+
+    **Dropped rows leave the denominator.** `done` and `outdated` both
+    close a row, but they are not the same news: `outdated` is "will never
+    be built", which is scope removed rather than work delivered. Counting
+    it as progress would let a project reach 100% by abandoning
+    everything. So `percentDone` is `done / (done + open)` and `dropped`
+    is reported beside it rather than folded into it.
+
+    The open rows are counted by rating in `PRIORITY_ORDER`, which is the
+    question a project page is actually asked -- "is there anything red
+    under this project" -- and which four status columns do not answer,
+    because a column is sorted by state and a person triaging is sorted by
+    rating. Unrated is listed last with the word "Unrated" rather than a
+    blank, since `PRIORITY_LABELS[""]` is the empty string and a count
+    beside nothing reads as a rendering bug.
+    """
+    done = 0
+    dropped = 0
+    blocked = 0
+    counts = {}
+    for item in items:
+        key = item.get("statusKey") or ""
+        if key == "outdated":
+            dropped += 1
+            continue
+        if key in _CLOSED_STATUS_KEYS:
+            done += 1
+            continue
+        if key == "blocked-on-edvard":
+            blocked += 1
+        rating = item.get("priorityKey") or ""
+        counts[rating] = counts.get(rating, 0) + 1
+    open_rows = sum(counts.values())
+    priorities = []
+    for key in PRIORITY_ORDER:
+        if counts.get(key):
+            priorities.append({
+                "key": key,
+                "label": PRIORITY_LABELS.get(key, key),
+                "count": counts[key],
+            })
+    if counts.get(""):
+        priorities.append({"key": "", "label": "Unrated", "count": counts[""]})
+    tracked = done + open_rows
+    return {
+        "total": len(items),
+        "done": done,
+        "dropped": dropped,
+        "open": open_rows,
+        "blocked": blocked,
+        "percentDone": int(round(done * 100.0 / tracked)) if tracked else 0,
+        "priorities": priorities,
+    }
+
+
 def project_payload(name=None):
     """One project's board rows, grouped by status (idea #92, phase 3).
 
@@ -960,6 +1032,7 @@ def project_payload(name=None):
     # useful thing to say about a project he has typed into one cell and
     # not yet used. Returning nothing would make a fresh project look
     # like a broken link.
+    matched_rows = []
     for board in ("issues", "ideas"):
         rows = [
             item for item in (boards[board].get("items") or [])
@@ -969,6 +1042,12 @@ def project_payload(name=None):
             "total": len(rows),
             "columns": _project_columns(rows),
         }
+        matched_rows.extend(rows)
+    # One summary across both boards, not one each: he asked how the
+    # *project* is going, and an issue and an idea are both a row of work
+    # under it. The per-board totals are still on `boards[*].total` for the
+    # tab labels.
+    result["summary"] = _project_summary(matched_rows)
     return result
 
 

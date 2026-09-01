@@ -4044,6 +4044,31 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 /* The project rating, on a project page. A row rather than a block: the
  * label, the picker and the saving note read as one line, the same shape
  * `.item-meta-row` gives a board row's rating. */
+/* Where a project stands, above its columns -- idea #228.
+ * The bar is the only progress meter on this site, so it is deliberately
+ * plain: one track, one fill, and the numbers spelled out beside it rather
+ * than left to be read off the width. A bar nobody can put a number to is
+ * a decoration. */
+.project-summary { margin: 12px 0 16px; }
+.project-summary-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.project-summary-pct { font-size: 1.5rem; font-weight: 600; }
+.project-summary-counts { color: var(--dim); font-size: 0.9rem; }
+.project-summary-track {
+  margin-top: 6px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--line);
+  overflow: hidden;
+}
+.project-summary-fill { height: 100%; background: var(--accent); }
+.project-summary-prios { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.project-summary-prio {
+  font-size: 0.8rem;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
 .project-prio { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
 .project-prio-label { color: var(--dim); font-size: 0.9rem; }
 .project-prio-note { color: var(--dim); font-size: 0.85rem; }

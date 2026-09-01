@@ -294,3 +294,106 @@ def test_a_good_comment_is_written_with_the_name_as_typed(monkeypatch):
     # Trimmed, not normalised: the spelling is his and `project_comments`
     # already matches case-insensitively.
     assert seen == {"project": "Sokrates Post", "text": "hi"}
+
+
+# --- The summary strip (idea #228, the burndown half) -------------------
+#
+# `_project_summary` is the answer to "how is this project going", and the
+# two things worth pinning are both judgement calls rather than arithmetic.
+# **A dropped row is not progress**: `outdated` means "will never be built",
+# so counting it as done would let a project reach 100% by abandoning
+# everything. And **open rows are counted by rating**, worst first, because
+# the question a project page is asked is "is there anything red under
+# this" and four status columns cannot answer it.
+
+
+def test_summary_counts_across_both_boards():
+    payload = nova_site.project_payload("Nova")
+    summary = payload["summary"]
+    # Three issues plus one idea are filed under Nova, across two boards
+    # and two spellings of the name.
+    assert summary["total"] == 4
+    assert summary["done"] == 1
+    assert summary["open"] == 3
+    assert summary["blocked"] == 1
+    assert summary["percentDone"] == 25
+
+
+def test_a_dropped_row_is_not_counted_as_progress(monkeypatch):
+    """`outdated` is scope removed, not work delivered.
+
+    Pinned with a project whose *only* closed row is dropped: if the two
+    closed statuses were folded together this reads 50% done, and the page
+    would tell him half of Ghost had shipped when none of it had.
+    """
+    rows = [
+        _row(20, "Dropped", "🗑 Outdated", "outdated", "Ghost"),
+        _row(21, "Open", "⚪ Backlog", "backlog", "Ghost"),
+    ]
+    monkeypatch.setattr(
+        nova_site, "board_payload",
+        lambda name: {"items": rows if name == "issues" else []},
+    )
+    summary = nova_site.project_payload("Ghost")["summary"]
+    assert summary["total"] == 2
+    assert summary["dropped"] == 1
+    assert summary["done"] == 0
+    assert summary["open"] == 1
+    assert summary["percentDone"] == 0
+
+
+def test_a_project_that_dropped_everything_is_not_a_hundred_percent(monkeypatch):
+    """The mirror of the test above, and the one that catches a `+ dropped`.
+
+    One done row and one dropped row: counting the dropped one into the
+    denominator would read 50%, folding it into `done` would read 100%.
+    The honest answer is 100% of what is still tracked, with the drop
+    reported beside it rather than inside it.
+    """
+    rows = [
+        _row(30, "Shipped", "✅ Done", "done", "Ghost"),
+        _row(31, "Dropped", "🗑 Outdated", "outdated", "Ghost"),
+    ]
+    monkeypatch.setattr(
+        nova_site, "board_payload",
+        lambda name: {"items": rows if name == "issues" else []},
+    )
+    summary = nova_site.project_payload("Ghost")["summary"]
+    assert summary["percentDone"] == 100
+    assert summary["dropped"] == 1
+    assert summary["open"] == 0
+
+
+def test_open_rows_are_counted_by_rating_worst_first(monkeypatch):
+    """Worst news first, and unrated last with a word rather than a blank.
+
+    `PRIORITY_LABELS[""]` is the empty string, so an unrated bucket that
+    took its label from there would render a count beside nothing.
+    """
+    rows = [
+        dict(_row(40, "A", "⚪ Backlog", "backlog", "Ghost"),
+             priority="⚪ Low", priorityKey="low"),
+        dict(_row(41, "B", "⚪ Backlog", "backlog", "Ghost"),
+             priority="", priorityKey=""),
+        dict(_row(42, "C", "🟡 In progress", "in-progress", "Ghost"),
+             priority="🔴 Immediately", priorityKey="immediate"),
+        # Closed rows carry no rating in the count: a chip on shipped work
+        # would make a finished project look busy.
+        dict(_row(43, "D", "✅ Done", "done", "Ghost"),
+             priority="🟠 High", priorityKey="high"),
+    ]
+    monkeypatch.setattr(
+        nova_site, "board_payload",
+        lambda name: {"items": rows if name == "issues" else []},
+    )
+    summary = nova_site.project_payload("Ghost")["summary"]
+    assert [(p["key"], p["count"]) for p in summary["priorities"]] == [
+        ("immediate", 1), ("low", 1), ("", 1),
+    ]
+    assert summary["priorities"][0]["label"] == "🔴 Immediately"
+    assert summary["priorities"][-1]["label"] == "Unrated"
+
+
+def test_the_index_carries_no_summary():
+    """`/projects` asks for no project, so there is nothing to summarise."""
+    assert "summary" not in nova_site.project_payload()

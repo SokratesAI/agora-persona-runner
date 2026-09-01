@@ -13520,6 +13520,92 @@ describe("the project page", () => {
     assert.equal(window.document.querySelector(".project-prio"), null);
   });
 
+  /* The summary strip -- idea #228, the burndown half.
+   *
+   * His idea asks for *"a backlog, roadmap and maybe a burndown chart"* and
+   * then for a project-manager pass. The rows carry one date each and it is
+   * the date they were last touched, so there is no history to draw a line
+   * from; what the data does support is where the project stands today,
+   * which is the burndown's last point. These hold the strip to printing
+   * the server's numbers rather than recomputing them on the page -- a bar
+   * that disagrees with the count beside it is worse than no bar. */
+  const SUMMARISED = {
+    ...NOVA,
+    summary: {
+      total: 10, done: 4, dropped: 1, open: 5, blocked: 2, percentDone: 44,
+      priorities: [
+        { key: "immediate", label: "🔴 Immediately", count: 1 },
+        { key: "high", label: "🟠 High", count: 3 },
+        { key: "", label: "Unrated", count: 1 },
+      ],
+    },
+  };
+
+  test("the bar is drawn at the server's percentage, not a recomputed one", async () => {
+    const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
+    const pct = window.document.querySelector(".project-summary-pct");
+    assert.equal(pct.textContent, "44%");
+    const fill = window.document.querySelector(".project-summary-fill");
+    // 4 done of 10 rows is 40%, and of the 9 still tracked it is 44%. The
+    // page must print the number the server sent either way: this fails if
+    // anything here divides for itself.
+    assert.equal(fill.style.width, "44%");
+  });
+
+  test("the counts spell out what the bar cannot", async () => {
+    const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
+    const counts = window.document.querySelector(".project-summary-counts").textContent;
+    assert.match(counts, /4 done/);
+    assert.match(counts, /5 open/);
+    // The two a bar has no room for and he actually acts on.
+    assert.match(counts, /2 on you/);
+    assert.match(counts, /1 dropped/);
+    // Read out as a sentence, not as a bare bar.
+    const track = window.document.querySelector(".project-summary-track");
+    assert.equal(track.getAttribute("role"), "img");
+    assert.match(track.getAttribute("aria-label"), /^44% done/);
+  });
+
+  test("a project with nothing blocked or dropped says neither", async () => {
+    const clean = { ...SUMMARISED,
+      summary: { ...SUMMARISED.summary, blocked: 0, dropped: 0 } };
+    const window = await loadSite("/project/Nova", { project: () => clean });
+    const counts = window.document.querySelector(".project-summary-counts").textContent;
+    assert.equal(counts, "4 done · 5 open");
+  });
+
+  test("the rating counts carry the word, worst first", async () => {
+    const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
+    const chips = [...window.document.querySelectorAll(".project-summary-prio")];
+    assert.deepEqual(chips.map((c) => c.textContent), [
+      "🔴 Immediately · 1", "🟠 High · 3", "Unrated · 1",
+    ]);
+    // A reader who has to know a colour code has not been told anything --
+    // the word is in the label, and the class only colours it.
+    assert.ok(chips[0].classList.contains("prio-immediate"));
+    assert.ok(chips[2].classList.contains("prio-none"));
+  });
+
+  test("a project with no rows draws no strip at all", async () => {
+    const empty = { ...NOVA, summary: {
+      total: 0, done: 0, dropped: 0, open: 0, blocked: 0,
+      percentDone: 0, priorities: [],
+    } };
+    const window = await loadSite("/project/Nova", { project: () => empty });
+    assert.equal(window.document.querySelector(".project-summary"), null,
+      "a 0% bar was drawn under a project with nothing filed under it");
+  });
+
+  test("an older payload with no summary still renders the page", async () => {
+    // The service worker serves a cached `app.js` against a fresh server
+    // and the other way round, so a page that throws on a missing key is a
+    // blank screen on his phone rather than a missing strip.
+    const window = await loadSite("/project/Nova", { project: () => NOVA });
+    assert.equal(window.document.querySelector(".project-summary"), null);
+    assert.ok(window.document.querySelector(".project-board"),
+      "the boards did not render, so the page threw");
+  });
+
   test("a bookmarked project URL asks the server for the decoded name", async () => {
     let asked = null;
     await loadSite("/project/Sokrates%20Post", {
