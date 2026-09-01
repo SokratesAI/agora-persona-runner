@@ -9478,28 +9478,52 @@
     });
   }
 
+  /* The thread's heading, filled in after its messages rather than before.
+   *
+   * Guarded on `convOpenId` and not on the URL because he can back out and
+   * open a different thread while the listing is still in flight, and a late
+   * answer must not relabel the one he is looking at now. `convOpenId` is
+   * set synchronously by `openConversation`, so it is already correct by the
+   * time any of these promises resolve.
+   */
+  function setConvName(id, name) {
+    if (convOpenId !== id) return;
+    convOpenName = name;
+    var line = statusEl.querySelector(".status-line");
+    if (line) line.textContent = name;
+  }
+
   /* Open one thread straight from a URL, with no listing tapped first.
    *
    * The thread endpoint answers with messages and no name, and the name is
-   * the line above them, so it is resolved from the listing here. A failed
-   * lookup still opens the thread: he tapped a notification to read a
-   * message, and a missing label is worth far less than the message.
+   * the line above them, so it is resolved from the listing. That lookup
+   * used to be *in front of* the thread fetch -- `openConversation` was
+   * called from inside the listing's `.then` -- so the message he tapped a
+   * notification to read waited on a whole extra round trip for one string.
+   *
+   * Measured 2026-09-01 against the live site from inside the cluster, so
+   * with no tailnet leg in the numbers: `/api/conversations` answered in
+   * 0.62s, 0.84s and 1.19s over three reads, while `/`, `/app.js` and
+   * `/style.css` each answered in 3-6ms and the thread itself in 0.17-0.40s.
+   * On the one path a push notification opens, the name lookup was the
+   * largest single thing on the critical path and every millisecond of it
+   * was spent before the thread fetch was allowed to start.
+   *
+   * So both go out together and the heading fills in behind the messages.
+   * A failed lookup still opens the thread, which was already true here and
+   * is now true by construction rather than by a `catch` branch: a missing
+   * label is worth far less than the message.
    */
   function openConversationById(id) {
+    openConversation(id, "");
     fetchPage("/api/conversations")
       .then(function (payload) {
-        if (route(window.location.pathname).conversationId !== id) return;
         var rows = payload.conversations || [];
-        var name = "";
         for (var i = 0; i < rows.length; i++) {
-          if (rows[i].id === id) name = rows[i].name || "";
+          if (rows[i].id === id) return setConvName(id, rows[i].name || "");
         }
-        openConversation(id, name);
       })
-      .catch(function () {
-        if (route(window.location.pathname).conversationId !== id) return;
-        openConversation(id, "");
-      });
+      .catch(function () { /* the thread is already on screen */ });
   }
 
   /* The Heartbeats page.
