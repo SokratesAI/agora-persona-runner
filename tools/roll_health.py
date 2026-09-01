@@ -19,8 +19,11 @@ replaces a tool result with a preview, which is the exact failure `KEEP` was
 sized against. The roll was not at fault and neither was `KEEP`: the `##
 Entries` section held 62 captures over 32KB, correctly bounded. **94 further
 captures were sitting outside that section**, between the frontmatter and the
-document's own `# ` title, running newest-first from Cycle 733 back to Cycle
-196. `agora_runner.rolling._body` splits on the `## Entries` marker and every
+document's own `# ` title, carrying markers from Cycle 355 to Cycle 733 --
+and not in order: that region has an ascent of its own (Cycle 579 above Cycle
+729), so it is a second copy of the two-conventions break `normalise_captures`
+was written for, in a place that tool cannot reach either.
+`agora_runner.rolling._body` splits on the `## Entries` marker and every
 guard in `roll_captures` reasons about the section it finds, so all 94 were
 invisible to the roller. They are invisible to the reader too:
 `nova_boards.parse_notes` returns notes only from a section titled `entries`,
@@ -91,7 +94,11 @@ _MARKER_RE = re.compile(r"^- (?:\d{4}-\d{2}-\d{2}[ \t]*)?\(Cycle[ \t]+(\d+)")
 
 
 def span(stranded):
-    """`"Cycle 196 to Cycle 733"`, or a count when nothing carries a marker.
+    """`"Cycle 355 to Cycle 733"`, or a count when nothing carries a marker.
+
+    The range, not the order: these are the smallest and largest markers, and
+    a stranded region is under no obligation to be sorted -- the live one is
+    not.
 
     The report names the range and not the captures. That is not a cap on
     what I will show: the captures are the file, one `get` away, and
