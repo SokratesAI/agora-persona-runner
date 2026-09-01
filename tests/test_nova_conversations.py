@@ -553,28 +553,41 @@ def test_set_model_reports_a_missing_conversation_as_gone():
     assert (ok, message) == (False, "that conversation is gone")
 
 
-def test_a_passage_the_persona_wrote_mid_turn_is_kept_and_marked_partial():
-    """Issue #129. The reply is written in passages with tool calls between
-    them and each one is pushed into the conversation as it is written --
-    so the answer is already arriving here while the turn runs. Dropping
-    those with the tool chips is what made a four-minute turn look like
-    nothing followed by one block of text.
+def test_a_turn_in_flight_becomes_one_steps_row_not_a_bubble_each():
+    """His capture, `issues.md` 2026-09-01: *"The streaming of the thoughts
+    in a conversation show up as multiple bubbles and i do not like that."*
 
-    The text comes off `activity.detail`, not off the message's own `text`:
-    Agora prefixes that with the capability name for its own search, so
-    rendering it would put "assistant_text: " in front of every paragraph.
+    Issue #129 put those passages on the page and was right to -- a
+    four-minute turn used to look like nothing at all. What it got wrong is
+    that each one became a message. A tool call and the passage after it are
+    one turn working, so they are one row carrying two steps, which the page
+    draws as one collapsed line.
+
+    The thought's text comes off `activity.detail`, not off the message's own
+    `text`: Agora prefixes that with the capability name for its own search,
+    so rendering it would put "assistant_text: " in front of every paragraph.
     """
     (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
         {"id": "a", "sender": "Edvard", "text": "how many pods?"},
         {"id": "b", "sender": "Nova", "text": "Bash: kubectl get pods",
-         "activity": {"capability": "Bash", "detail": "kubectl get pods"}},
+         "activity": {"capability": "Bash", "detail": "kubectl get pods",
+                      "toolUseId": "t1"}},
         {"id": "c", "sender": "Nova", "text": "assistant_text: Counting them now.",
          "activity": {"capability": "assistant_text", "detail": "Counting them now."}},
     ])
-    assert [m["id"] for m in payload["messages"]] == ["a", "c"]
-    assert payload["messages"][1]["text"] == "Counting them now."
-    assert payload["messages"][1]["partial"] is True
+    assert len(payload["messages"]) == 2
+    assert payload["messages"][0]["id"] == "a"
     assert payload["messages"][0]["partial"] is False
+    assert payload["messages"][0].get("steps") is None
+    working = payload["messages"][1]
+    assert working["stepsOnly"] is True
+    assert working["partial"] is True
+    assert working["text"] == ""
+    assert working["steps"] == [
+        {"kind": "tool", "capability": "Bash", "input": "kubectl get pods",
+         "id": "t1", "status": "running"},
+        {"kind": "thought", "text": "Counting them now."},
+    ]
 
 
 def test_a_mid_turn_passage_does_not_stop_the_page_polling():
@@ -613,11 +626,16 @@ def test_a_legacy_boolean_activity_flag_is_still_dropped():
     assert [m["id"] for m in payload["messages"]] == ["b"]
 
 
-def test_a_finished_turns_passages_do_not_survive_its_reply():
-    """The half of issue #129 that would have made the page worse. One Nova
-    cycle writes hundreds of passages and `MAX_THREAD` is 40 -- keeping the
-    old ones would push every sentence he actually wrote off the page, and
-    they are the same words as the reply that landed under them anyway."""
+def test_a_finished_turns_steps_attach_to_the_reply_they_produced():
+    """The half of issue #129 that used to have to be solved by throwing the
+    passages away. One Nova cycle writes hundreds of them and `MAX_THREAD`
+    is 40, so a bubble each would push every sentence he actually wrote off
+    the page -- `keep_only_live_passages` existed to drop the finished ones.
+    A collapsed line costs one row per turn instead of one per passage, so
+    the old ones can stay, attached to the answer they produced.
+
+    The steps of a turn still running have nothing to attach to, so they
+    stand alone -- and that row is what `waiting` keys on."""
     (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
         {"id": "a", "sender": "Edvard", "text": "how many pods?"},
         {"id": "b", "sender": "Nova", "text": "assistant_text: counting",
@@ -627,8 +645,14 @@ def test_a_finished_turns_passages_do_not_survive_its_reply():
         {"id": "e", "sender": "Nova", "text": "assistant_text: counting again",
          "activity": {"capability": "assistant_text", "detail": "counting again"}},
     ])
-    # "b" belonged to a turn that finished; "e" is the turn running now.
-    assert [m["id"] for m in payload["messages"]] == ["a", "c", "d", "e"]
+    assert [m["id"] for m in payload["messages"]] == ["a", "c", "d", ""]
+    # The finished turn's thought hangs off "Seven.", not off a row of its own.
+    assert payload["messages"][1]["steps"] == [
+        {"kind": "thought", "text": "counting"}]
+    assert payload["messages"][1]["partial"] is False
+    # ...and his own message never collects the persona's work.
+    assert payload["messages"][2].get("steps") is None
+    assert payload["messages"][3]["stepsOnly"] is True
     assert payload["waiting"] is True
 
 
@@ -721,3 +745,183 @@ def test_a_long_run_with_no_spaces_is_cut_where_it_falls():
 
 def test_only_the_first_line_is_the_title():
     assert convs.title_from_message("Roofing\nthe felt is lifting at the ridge") == "Roofing"
+
+
+# --- The drawer: one collapsed line per turn ------------------------------
+#
+# His capture, `issues.md` 2026-09-01: *"The streaming of the thoughts in a
+# conversation show up as multiple bubbles and i do not like that. It would
+# be better to replecate Claude mobile app patter where the thoughts and
+# tools are compressed to one clickable line that opens a modal drawer from
+# the bottom that can be dragged upwards, but contains the thoughts as text,
+# but if tools have been used it is showed as a list of clickable lines and
+# when clicked, the "input" and "output" of the tool is shown."*
+
+def test_the_two_halves_of_one_tool_call_are_one_step():
+    """`tool_activity.report` narrates a call twice under one `toolUseId` --
+    once with the arguments when it starts and once with the output when it
+    returns -- because a `pytest` run takes minutes and he asked to see it
+    start. Two rows in the drawer for one `ls` would be that implementation
+    detail on his screen."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "how many pods?"},
+        {"id": "b", "sender": "Nova", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods",
+                      "toolUseId": "t1"}},
+        {"id": "c", "sender": "Nova", "text": "Bash",
+         "activity": {"capability": "Bash", "output": "seven pods",
+                      "toolUseId": "t1"}},
+        {"id": "d", "sender": "Nova", "text": "Seven."},
+    ])
+    assert payload["messages"][1]["steps"] == [
+        {"kind": "tool", "capability": "Bash", "input": "kubectl get pods",
+         "id": "t1", "status": "done"},
+    ]
+
+
+def test_a_call_that_has_not_returned_yet_reads_as_running():
+    """The drawer is readable while the turn is in flight, so "no output has
+    arrived" has to be a state rather than a blank. Only the *presence* of an
+    output message says the call came back."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "run the suite"},
+        {"id": "b", "sender": "Nova", "text": "Bash: pytest",
+         "activity": {"capability": "Bash", "detail": "pytest",
+                      "toolUseId": "t1"}},
+    ])
+    assert payload["messages"][1]["steps"][0]["status"] == "running"
+
+
+def test_a_failed_call_says_so_rather_than_reading_as_finished():
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "read it"},
+        {"id": "b", "sender": "Nova", "text": "Read: /nope",
+         "activity": {"capability": "Read", "detail": "/nope", "toolUseId": "t1"}},
+        {"id": "c", "sender": "Nova", "text": "Read",
+         "activity": {"capability": "Read", "output": "no such file",
+                      "isError": True, "toolUseId": "t1"}},
+    ])
+    assert payload["messages"][1]["steps"][0]["status"] == "failed"
+
+
+def test_calls_with_no_tool_use_id_are_not_merged_into_one_step():
+    """Agora leaves `toolUseId` off some rows. Folding those together on ""
+    would collapse every anonymous call in a turn into one step, which reads
+    as the persona having done a quarter of the work it did."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "go"},
+        {"id": "b", "sender": "Nova", "text": "Bash: one",
+         "activity": {"capability": "Bash", "detail": "one"}},
+        {"id": "c", "sender": "Nova", "text": "Bash: two",
+         "activity": {"capability": "Bash", "detail": "two"}},
+        {"id": "d", "sender": "Nova", "text": "done"},
+    ])
+    assert [s["input"] for s in payload["messages"][1]["steps"]] == ["one", "two"]
+
+
+def test_no_tool_output_is_carried_in_the_thread():
+    """The measured reason there is a second route at all. Agora truncates a
+    tool output at 20,000 characters and there is one per call, so a window
+    of forty calls would put up to 800KB on his phone for a drawer he may
+    never open -- against 1-9KB of thought text and a `detail` that
+    `audit.DETAIL_CHARS_MAX` already bounds at 500 (three live threads,
+    Cycle 780).
+
+    Asserted as "the output string appears nowhere in the payload" rather
+    than as "the step has no `output` key": a later cycle adding it under
+    another name would pass the second and fail this."""
+    import json
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "go"},
+        {"id": "b", "sender": "Nova", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls", "toolUseId": "t1"}},
+        {"id": "c", "sender": "Nova", "text": "Bash",
+         "activity": {"capability": "Bash", "toolUseId": "t1",
+                      "output": "ENORMOUS-OUTPUT-BODY"}},
+        {"id": "d", "sender": "Nova", "text": "done"},
+    ])
+    assert "ENORMOUS-OUTPUT-BODY" not in json.dumps(payload)
+    # ...and the call itself is still there, so this is a test of what was
+    # withheld rather than of the whole step having been dropped.
+    assert payload["messages"][1]["steps"][0]["input"] == "ls"
+
+
+def test_step_output_returns_both_halves_of_one_call():
+    (found, _calls) = _run(lambda: convs.step_output("c-1", "t1"), messages=[
+        {"id": "b", "sender": "Nova", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls", "toolUseId": "t1"}},
+        {"id": "c", "sender": "Nova", "text": "Bash",
+         "activity": {"capability": "Bash", "output": "a\nb", "toolUseId": "t1"}},
+    ])
+    assert found == {"capability": "Bash", "input": "ls", "output": "a\nb",
+                     "status": "done"}
+
+
+def test_step_output_does_not_let_the_start_message_reset_the_status():
+    """The two halves arrive in order, but nothing guarantees Agora returns
+    them in it. A start message carries no output, so reading the status off
+    every row unconditionally would put a settled call back to `running`."""
+    (found, _calls) = _run(lambda: convs.step_output("c-1", "t1"), messages=[
+        {"id": "c", "sender": "Nova", "text": "Bash",
+         "activity": {"capability": "Bash", "output": "a", "toolUseId": "t1"}},
+        {"id": "b", "sender": "Nova", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls", "toolUseId": "t1"}},
+    ])
+    assert found["status"] == "done"
+    assert found["output"] == "a"
+
+
+def test_step_output_is_none_for_a_call_this_thread_does_not_hold():
+    """A call that has scrolled out of Agora's retention, or an id off a
+    stale page. `None` and an empty output are different answers and the
+    route turns this one into a 404."""
+    (found, _calls) = _run(lambda: convs.step_output("c-1", "gone"), messages=[
+        {"id": "b", "sender": "Nova", "text": "Bash: ls",
+         "activity": {"capability": "Bash", "detail": "ls", "toolUseId": "t1"}},
+    ])
+    assert found is None
+
+
+def test_step_output_refuses_without_both_a_thread_and_a_call():
+    assert convs.step_output("", "t1") is None
+    assert convs.step_output("c-1", "") is None
+
+
+def test_work_that_runs_into_his_next_message_does_not_land_on_it():
+    """A block with his own message under it is the persona's turn ending,
+    not the start of his -- so it stands alone rather than attaching. Without
+    this the collapsed line would appear on the question he typed, saying he
+    had run a tool.
+
+    This is the case the fixture above cannot reach: there, every block has a
+    reply under it. Here the turn narrated and stopped, and he asked again."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "how many pods?"},
+        {"id": "b", "sender": "Nova", "text": "Bash: kubectl get pods",
+         "activity": {"capability": "Bash", "detail": "kubectl get pods",
+                      "toolUseId": "t1"}},
+        {"id": "c", "sender": "Edvard", "text": "well?"},
+    ])
+    assert [m["id"] for m in payload["messages"]] == ["a", "", "c"]
+    assert payload["messages"][1]["stepsOnly"] is True
+    assert payload["messages"][1]["steps"][0]["capability"] == "Bash"
+    assert payload["messages"][2].get("steps") is None
+    assert payload["messages"][2]["sender"] == "Edvard"
+
+
+def test_the_thread_says_which_window_its_rows_came_from():
+    """The drawer asks for a step's output inside the same window the rows
+    were built from, and it learns that window from here. A payload that
+    said `0` would send the client back to the default and answer 404 for a
+    call he can see, once he has paged back through a long thread -- which is
+    the bug this field exists to close, not a hypothetical."""
+    (payload, _calls) = _run(lambda: convs.thread("c-1", 160), messages=[
+        {"id": "a", "sender": "Edvard", "text": "hi"},
+    ])
+    assert payload["limit"] == 160
+    # And it is the clamped window rather than the string off the wire, so a
+    # `?limit=junk` cannot come back out as a query parameter.
+    (payload, _calls) = _run(lambda: convs.thread("c-1", "junk"), messages=[
+        {"id": "a", "sender": "Edvard", "text": "hi"},
+    ])
+    assert payload["limit"] == convs.MAX_THREAD

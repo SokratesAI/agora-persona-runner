@@ -2825,6 +2825,189 @@ body.has-full-chart { overflow: hidden; }
    not hidden: it is real text and he asked to see the work as it happens. */
 .ask-partial { opacity: 0.75; }
 
+/* --- The work behind an answer: one collapsed line, and a bottom sheet ---
+ *
+ * His capture, `issues.md` 2026-09-01, with four screenshots attached:
+ * *"the thoughts and tools are compressed to one clickable line that opens a
+ * modal drawer from the bottom that can be dragged upwards"*. Issue #129 put
+ * every mid-turn passage on the page as its own bubble, which answered "is it
+ * alive" and made a turn read as five things said. This is the same data,
+ * one line.
+ *
+ * The line is deliberately not a button-shaped thing. In his Claude
+ * screenshots it is dim body text with a chevron, sitting in the flow above
+ * the paragraph it preceded -- so: no border, no background, no padding that
+ * would box it. The 44px tap target the rest of this file holds buttons to is
+ * not right here either; it is a line of text among lines of text, and
+ * padding it to 44 would put a gap above every answer. */
+.ask-steps {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0 0 0.45rem;
+  padding: 0.15rem 0;
+  background: none;
+  border: 0;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+  cursor: pointer;
+}
+.ask-steps:hover, .ask-steps:focus-visible { color: var(--text); }
+.ask-steps-chev { font-size: 1.05em; line-height: 1; }
+
+/* A turn still running has no answer to hang its line under, so the row is
+ * the line and nothing else -- no bubble, no name, because nothing has been
+ * said yet. */
+.ask-msg-steps { align-self: flex-start; max-width: 92%; }
+.ask-msg-steps .ask-steps { margin-bottom: 0; }
+
+.step-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.45);
+}
+.step-backdrop[hidden] { display: none; }
+
+/* The sheet. Anchored to the bottom and sized in `vh` by `app.js`, because
+ * the drag he asked for writes a height onto the node -- so the height is
+ * deliberately absent here and this rule must not grow one. */
+.step-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.35);
+}
+.step-sheet[hidden] { display: none; }
+
+/* The grab handle, and the only part of the sheet that is a drag target.
+ * `touch-action: none` is what stops the phone scrolling the page instead of
+ * handing the pointer moves to the drag. */
+.step-grip {
+  flex: none;
+  width: 44px;
+  height: 4px;
+  margin: 0.55rem auto 0.15rem;
+  border-radius: 2px;
+  background: var(--line);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.step-head {
+  flex: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0.2rem 0.6rem 0.5rem;
+}
+.step-titles {
+  /* Centred on the sheet rather than in the space the buttons leave, so the
+   * title does not shift sideways when the back arrow appears. */
+  position: absolute;
+  left: 3.2rem;
+  right: 3.2rem;
+  text-align: center;
+}
+.step-title { margin: 0; font-size: 1rem; }
+.step-sub { color: var(--dim); font-size: 0.8rem; }
+.step-sub[hidden] { display: none; }
+
+.step-back, .step-close {
+  min-width: 44px;
+  min-height: 44px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.step-back[hidden] { display: none; }
+
+.step-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0 0.9rem 1.2rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* A thought is prose and reads as prose. It is not a control: there is
+   nothing behind it to open. */
+.step-thought {
+  margin: 0 0 0.9rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.step-thought p { margin: 0 0 0.55rem; }
+.step-thought p:last-child { margin-bottom: 0; }
+
+/* A tool is a row you tap. The rail down the left is the line joining the
+   calls in his screenshot. */
+.step-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 44px;
+  margin: 0 0 0.15rem;
+  padding: 0.5rem 0.2rem 0.5rem 0.75rem;
+  border: 0;
+  border-left: 2px solid var(--line);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.step-tool:hover, .step-tool:focus-visible { border-left-color: var(--accent); }
+.step-tool-name { flex: none; font-weight: 600; }
+.step-tool-arg {
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  /* One line, clipped -- the whole argument is in the detail view one tap
+     away, and a forty-line `Bash` heredoc would otherwise be the list. */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.step-tool-state { flex: none; margin-left: auto; font-size: 0.75rem; }
+.step-tool-running { color: var(--dim); }
+.step-tool-failed { color: var(--warn); }
+
+.step-section-label {
+  margin: 0.9rem 0 0.3rem;
+  color: var(--dim);
+  font-size: 0.78rem;
+}
+/* Inputs and Output are verbatim machine text, so they wrap rather than
+   scroll sideways -- on a 360px phone a horizontal scroller inside a sheet
+   is a thing you find by accident. */
+.step-pre {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.05);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.step-loading, .step-note { color: var(--dim); font-size: 0.85rem; }
+
 /* The roadmap's five as a ranked strip, above the argument for them.
  * Same box as `.goal-board` deliberately -- one idiom for "the answer,
  * before the prose", not a second one invented three sections later.

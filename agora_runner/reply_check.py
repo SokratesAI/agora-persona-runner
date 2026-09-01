@@ -5,7 +5,9 @@ cycle thread contains at least one message that is not narration.**
 Narration -- the tool chips and the prose a cycle streams while it works --
 is marked `partial` by `nova_conversations`; the reply is the message that
 is not. A thread whose every message is `partial` is a cycle that talked to
-itself for an hour and then stopped.
+itself for an hour and then stopped. Since Cycle 780 that narration arrives
+as one `partial` row carrying `steps` rather than as a row per passage, so
+`replied` is unchanged and `last_narration` reads the steps.
 
 **This module holds the judgement and nothing else, because it now has two
 callers that reach the data by different routes.** `tools.reply_health` asks
@@ -65,9 +67,28 @@ def replied(thread):
 
 
 def last_narration(thread):
-    """The last thing the cycle said before it stopped, for the relay."""
-    texts = [m.get("text") or "" for m in (thread or {}).get("messages") or []]
-    return texts[-1].strip() if texts else ""
+    """The last thing the cycle said before it stopped, for the relay.
+
+    **The words moved and this had to follow them.** Cycle 780 collapsed a
+    turn's passages into `steps` on the row they belong to
+    (`nova_conversations.visible_rows`), so the trailing row of a cycle that
+    narrated and never replied now carries `text: ""` and its prose one level
+    down. Reading `text` alone returned the empty string for exactly the
+    case this function exists to describe -- a silent cycle -- and the push
+    to his phone dropped its "the last thing it said was" line without
+    saying anything was missing. Caught by my reviewer, not by me.
+
+    So: the row's own text when it has any, and otherwise the last thought in
+    its steps. A tool call is not something the cycle *said* and is skipped;
+    "it ran `kubectl get pods`" is not the sentence he is owed."""
+    for message in reversed((thread or {}).get("messages") or []):
+        text = (message.get("text") or "").strip()
+        if text:
+            return text
+        for step in reversed(message.get("steps") or []):
+            if step.get("kind") == "thought" and (step.get("text") or "").strip():
+                return step["text"].strip()
+    return ""
 
 
 def judge(conversation, now, grace_minutes, window_hours):

@@ -6480,17 +6480,19 @@ def test_a_tool_chip_is_never_folded():
 
 
 def test_the_chat_thread_folds_a_streamed_passage():
-    """nova_conversations._visible is one of the two surfaces that builds its
-    thread here instead of in Agora's client, so the fold has to happen on
-    this side of it or the Nova app shows the passage three times."""
+    """nova_conversations.visible_rows is one of the two surfaces that builds
+    its thread here instead of in Agora's client, so the fold has to happen on
+    this side of it or the Nova app shows the passage three times -- now three
+    times inside one drawer instead of as three bubbles, which is no better."""
     from agora_runner import nova_conversations
-    out = nova_conversations._visible([
+    out = nova_conversations.visible_rows([
         _step("m1", "one.", "text-1"),
         _step("m2", "one.\n\ntwo.", "text-1"),
         _step("m3", "the answer.", "text-2"),
         _step("m4", "", "text-2", retracted=True),
     ])
-    assert [m["text"] for m in out] == ["one.\n\ntwo."]
+    assert len(out) == 1
+    assert out[0]["steps"] == [{"kind": "thought", "text": "one.\n\ntwo."}]
 
 
 def test_audit_sends_retracted_only_when_it_is_true():
