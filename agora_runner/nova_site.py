@@ -173,6 +173,7 @@ from agora_runner.nova_boards import (
     canonical_priority,
     is_relayed,
     parse_board,
+    unanswered_comment_bodies,
     parse_notes,
     priority_key,
     split_capture_done,
@@ -653,6 +654,27 @@ def board_payload(name):
     """
     edvard_markdown, nova_markdown, nova_archive_markdown = board_markdown(name)
     board = parse_board(edvard_markdown)
+    # Which rows he asked a question on and nobody answered. Stamped onto
+    # the row here rather than worked out again by whoever needs it,
+    # because two things already rank these rows with `nova_next.rank` --
+    # `tools.top_board_rows`, which reads the markdown and computes this,
+    # and `_project_backlog`, which reads this payload and until now could
+    # not. `rank` looks the flag up with `.get`, so its absence removed the
+    # raise silently: the project page's "What's next" list put a row he is
+    # waiting on an answer to wherever its rating fell, while the ranking I
+    # actually pick work from put it first. Same function on the markdown
+    # this call has already read, so there is one definition of waiting and
+    # no second fetch.
+    waiting_bodies = unanswered_comment_bodies(edvard_markdown)
+    for item in board["items"]:
+        if item["number"] in waiting_bodies:
+            item["waiting"] = True
+            # A comment Sokrates relayed on his behalf is still owed a
+            # reply and still does not jump the queue -- his own ask,
+            # 2026-08-29. Carried rather than dropped because `rank` reads
+            # both keys together and a `waiting` with no `relayed` beside
+            # it would raise the relays this loop was told not to raise.
+            item["relayed"] = is_relayed(waiting_bodies[item["number"]])
     # The write-up and the conversation appended under it, told apart
     # here rather than on the page: `render_blocks` flattens both into the
     # same list of paragraphs, and once that has happened nothing
@@ -960,17 +982,17 @@ def _project_backlog(rows):
     every actionable one whatever its rating, then rating, then the oldest
     `Updated` first, then issues before ideas.
 
-    **Two of that ranking's raises are missing here and are named rather
-    than quietly dropped.** `rank` puts a row with an unanswered comment
-    from him first of all, and sinks a row another live cycle is holding
-    -- and neither flag is on a board payload item, because
-    `board_payload` does not read the comment threads or the claims
-    ledger. Both are absent rather than wrong: `rank` reads them with
-    `.get`, so their absence removes the raise and changes nothing else.
-    The claim one belongs absent anyway -- which cycle is mid-flight is
-    not a fact about the project -- and the comment one is a real gap,
-    worth one more read of `comments.md` on a later pass rather than a
-    second ordering rule invented here.
+    **A row he has asked a question on comes first, and one raise is
+    still missing and is named rather than quietly dropped.**
+    `board_payload` now stamps `waiting` and `relayed` on his rows off
+    the same `unanswered_comment_bodies` the tool uses, so the raise that
+    matters here is live: a row where his comment is the last word tops
+    this list, and a comment Sokrates relayed on his behalf does not.
+    What is still absent is `heldBy` and `replyHeldBy`, the two sinks for
+    a row or a comment another live cycle is holding, and both belong
+    absent -- which cycle is mid-flight is not a fact about the project.
+    `rank` reads them with `.get`, so their absence removes the sink and
+    changes nothing else.
 
     Closed rows are left out: `done` is delivered and `outdated` is scope
     he dropped, and neither is something to do next. That is the same cut
