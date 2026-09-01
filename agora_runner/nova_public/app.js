@@ -10954,7 +10954,8 @@
         // `conv` without one is corrupt and reads as never-stored rather
         // than as a thread that 404s on every open.
         if (!parsed || parsed.kind !== "conv" || !parsed.id) return;
-        source = { kind: "conv", id: parsed.id, name: parsed.name || "Conversation" };
+        source = { kind: "conv", id: parsed.id, name: parsed.name || "Conversation",
+                   untitled: parsed.untitled === true };
       } catch (err) { /* unreadable: stay on the ask thread */ }
     }
 
@@ -11335,7 +11336,12 @@
      * carries a 400, so a rejected promise here always has a sentence in it
      * that is worth showing him -- which is why nothing on this path
      * swallows. */
-    function chatWrite(path, body) {
+    /* `chatWrite` throws away everything but `result`, which is right for
+     * the five writes that answer with one string. `/api/conversations/new`
+     * answers with an id *and* the name it settled on, so this one hands the
+     * whole object back. `chatWrite` is written in terms of it rather than
+     * beside it -- one place that decides what a failed write looks like. */
+    function chatWriteFull(path, body) {
       return fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -11346,8 +11352,14 @@
           if (!result || !result.ok) {
             throw new Error((result && (result.message || result.error)) || "failed");
           }
-          return result.result;
+          return result;
         });
+    }
+
+    function chatWrite(path, body) {
+      return chatWriteFull(path, body).then(function (answer) {
+        return answer.result;
+      });
     }
 
     /* The edit options a held row turns into.
@@ -11671,7 +11683,7 @@
       var name = document.createElement("input");
       name.type = "text";
       name.className = "chat-row-edit-name";
-      name.placeholder = "What is it about?";
+      name.placeholder = "Optional \u2014 named after your first message";
       name.setAttribute("aria-label", "Conversation name");
       wrap.appendChild(name);
 
@@ -11690,16 +11702,17 @@
       name.focus();
 
       save.addEventListener("click", function () {
+        // Blank is an answer, not a missing field. His capture, issues.md
+        // #139: *"I have to type a conversation title before I can even
+        // start it, but I don't always know what it'll be about."* The
+        // server names it `New chat` and the first message renames it.
         var wanted = name.value.trim();
-        if (!wanted) {
-          note.textContent = "A conversation needs a name.";
-          return;
-        }
         save.disabled = true;
         cancel.disabled = true;
         note.textContent = "starting…";
-        chatWrite("/api/conversations/new", { name: wanted })
-          .then(function (id) {
+        chatWriteFull("/api/conversations/new", { name: wanted })
+          .then(function (answer) {
+            var id = answer.result;
             // A create that answers 200 without an id is the one failure
             // this form cannot recover from silently: `switchTo` would open
             // `?id=undefined`, which 404s, and the composer under it would
@@ -11714,7 +11727,12 @@
             }
             // Straight into the thread he just made: he started it to say
             // something, and leaving him on the list would make him find it.
-            switchTo({ kind: "conv", id: id, name: wanted });
+            // The name the store holds, not the box he typed into: those
+            // differ by exactly the case this whole change is about, and a
+            // header reading "" while the switcher reads "New chat" is the
+            // two-copies-of-one-rule bug wearing a title bar.
+            switchTo({ kind: "conv", id: id, name: answer.name || wanted,
+                       untitled: !wanted });
             done(false);
           })
           .catch(function (err) {
@@ -11931,6 +11949,21 @@
       // addressed by one.
       var conv = source.kind === "conv";
       var token = sourceToken;
+      // Everything `autotitle` needs, read before the send rather than after
+      // it: he can switch threads while the request is in flight, and a
+      // title derived here must land on the thread he typed it into.
+      //
+      // Two conditions, neither of them the safety check -- the server
+      // refuses to rename anything not still called `New chat`, and that
+      // check lives there so the placeholder is spelled in one file. These
+      // only keep the app from asking when the answer is already known.
+      // `untitled` is set by the form when he starts a thread without
+      // naming it and rides along in the stored source, so a thread he
+      // named is never asked about; "nothing painted yet" is how the dock
+      // knows this is the opening message rather than the fortieth.
+      var titleFor = conv && source.untitled && !thread.querySelector(".ask-msg")
+        ? { id: source.id, name: source.name, text: text }
+        : null;
       fetch(conv ? "/api/conversations/send" : "/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -11969,6 +12002,24 @@
           // His own message is not an unread answer.
           lastCount += 1;
           pollChat(0);
+        })
+        .then(function () {
+          if (!titleFor) return;
+          return chatWrite("/api/conversations/autotitle", titleFor)
+            .then(function (named) {
+              if (typeof named !== "string" || !named) return;
+              // The thread was named; only the screen still on it moves.
+              if (token !== sourceToken || source.id !== titleFor.id) return;
+              source.name = named;
+              source.untitled = false;
+              titleEl.textContent = named;
+              rememberSource();
+              if (dock.classList.contains("list-open")) loadList();
+            })
+            // A thread that keeps the placeholder is a worse name, not a
+            // failed send -- his message is already posted and the error
+            // line under the box would say otherwise.
+            .catch(function () { });
         })
         .catch(function (err) {
           sending = false;

@@ -1,8 +1,11 @@
 """The chat dock reads one key off every write; every write must answer under it.
 
-`app.js` has exactly one writer for the chat dock -- `chatWrite` -- and it
-returns a single key off the JSON body for every route it posts to. Five
-routes go through it. Four of them are answered by the shared
+`app.js` has one writer for the chat dock -- `chatWrite` -- and it returns a
+single key off the JSON body for every route it posts to. `chatWriteFull` is
+the same request with the whole answer handed back, for the one route that
+answers with two things worth reading; `chatWrite` is written in terms of it,
+so both are covered here by scanning for either name. Five routes went
+through it when this was written. Four of them are answered by the shared
 `_conversation_write`, which sends `{"ok", "result", "message"}`; the fifth,
 `/api/conversations/new`, was written on its own and sent the id under
 `conversationId` instead.
@@ -45,14 +48,14 @@ def _chat_write_source():
 
 def chat_write_key():
     """The one JSON key `chatWrite` hands its callers."""
-    match = re.search(r"return\s+result\.(\w+);", _chat_write_source())
+    match = re.search(r"return\s+\w+\.(\w+);", _chat_write_source())
     assert match, "chatWrite no longer returns a key off the result body"
     return match.group(1)
 
 
 def chat_write_paths():
     """Every route the dock posts through `chatWrite`."""
-    return sorted(set(re.findall(r'chatWrite\("([^"]+)"', APP_JS.read_text())))
+    return sorted(set(re.findall(r'chatWrite(?:Full)?\("([^"]+)"', APP_JS.read_text())))
 
 
 # A minimally valid body per route, and the argument-taking store function
@@ -60,6 +63,8 @@ def chat_write_paths():
 # handler puts around a success, not about what the store does with it.
 ROUTE_FIXTURES = {
     "/api/conversations/new": ({"name": "STUFF"}, "conversation_create"),
+    "/api/conversations/autotitle": ({"id": "c1", "name": "New chat", "text": "STUFF"},
+                                     "conversation_autotitle"),
     "/api/conversations/rename": ({"id": "c1", "name": "STUFF"}, "conversation_rename"),
     "/api/conversations/move": ({"id": "c1", "folderId": "f1"}, "conversation_move"),
     "/api/conversations/model": ({"id": "c1", "model": "claude-cli:claude-sonnet-5"},
@@ -120,3 +125,27 @@ def test_a_refused_write_hands_the_page_nothing_to_navigate_to(monkeypatch):
     assert status == 400
     assert answered["ok"] is False
     assert not answered[chat_write_key()]
+
+
+def test_the_new_route_also_answers_with_the_name_it_settled_on(stubbed_store):
+    """`chatWriteFull`'s one caller reads `name` as well as `result`.
+
+    `issues.md` #139: a blank name starts a thread called `New chat`, so the
+    string the page has in hand is not the string the store holds. Without
+    this key the header would open on "" while the switcher row said `New
+    chat` -- one rule, two copies, and only the copy he can see is wrong.
+    """
+    status, _, body = _post("/api/conversations/new", {"name": "  "})
+    assert status == 200
+    answered = json.loads(body)
+    assert answered["name"] == "New chat"
+
+
+def test_the_route_that_answers_with_a_name_is_posted_through_the_full_writer():
+    """`chatWrite` throws every key but `result` away. The route above is
+    the reason `chatWriteFull` exists, so a later cleanup that "simplifies"
+    it back to `chatWrite` would drop the name silently: the thread still
+    opens, the header just says the wrong thing. The route test next door
+    accepts either writer by design -- this is the half that does not."""
+    text = APP_JS.read_text()
+    assert 'chatWriteFull("/api/conversations/new"' in text

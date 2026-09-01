@@ -61,6 +61,18 @@ ANSWER_PERSONA_ID = "8972a54d-cafa-4f07-a527-d8686cea51ca"
 MAX_MESSAGE_CHARS = 4000
 MAX_NAME_CHARS = 200
 
+# What a thread is called before it has been about anything. His capture,
+# `issues.md` #139: *"I have to type a conversation title before I can even
+# start it, but I don't always know what it'll be about. Want it to work like
+# the official Claude app: starts as 'New chat', auto-titles itself after the
+# first message."* This is the exact string `autotitle` will overwrite and
+# nothing else -- a thread he named himself is never renamed under him.
+UNTITLED_NAME = "New chat"
+
+# How long a derived title may be. Far below `MAX_NAME_CHARS`, because this
+# one is read in a switcher row on a 360px phone rather than typed by him.
+TITLE_CHARS = 60
+
 # Threads the app runs for its own machinery rather than for him. Hiding
 # them is deliberately *not* done here: he asked for the conversation
 # history, and a list that silently drops rows is the same failure as the
@@ -301,6 +313,82 @@ def send(conversation_id, text):
     return True, message_id
 
 
+def starting_name(name):
+    """What a thread he is starting is called before anyone has typed a title.
+
+    One rule in one place: `create` writes this into the store and the route
+    answers with it, so the name the page paints in the header is the name
+    the store holds. Computing it twice is how a header ends up saying
+    something the switcher does not.
+    """
+    return (name or "").strip() or UNTITLED_NAME
+
+
+def title_from_message(text):
+    """A conversation title derived from the first thing he said in it.
+
+    Deliberately mechanical rather than a model call. Rule 9 in
+    `identity.md` forbids production work on the metered API, and the
+    subscription path costs a whole turn of a cycle's window to name a
+    thread -- so this takes his own opening line, which is what he would
+    have typed into the box anyway.
+
+    `""` means "I could not make a title out of that", never a bad one: the
+    caller leaves the thread on `UNTITLED_NAME`, which is honest, where a
+    title cut out of an emoji or a bare URL would be worse than no title.
+    """
+    if not isinstance(text, str):
+        return ""
+    # The first sentence or the first line, whichever ends sooner. He opens
+    # with the topic and then explains it; the explanation is not the title.
+    head = text.strip().split("\n", 1)[0]
+    for stop in (". ", "? ", "! "):
+        cut = head.find(stop)
+        if cut > 0:
+            head = head[:cut + 1]
+    head = " ".join(head.split())
+    # A markdown attachment line is the page's own text, not his.
+    if head.startswith("!["):
+        return ""
+    head = head.strip(" \t-*#>`\"'")
+    if len(head) > TITLE_CHARS:
+        # Cut on a word boundary when there is one anywhere near the end, so
+        # a title never ends mid-word; a 60-character run with no space in it
+        # is a URL or a token and is cut where it falls.
+        clipped = head[:TITLE_CHARS]
+        space = clipped.rfind(" ")
+        head = (clipped[:space] if space >= TITLE_CHARS // 2 else clipped).rstrip()
+        head += "\u2026"
+    # A title has to be readable as words. One that is only punctuation or
+    # emoji tells him nothing the placeholder did not.
+    if not any(c.isalnum() for c in head):
+        return ""
+    return head
+
+
+def autotitle(conversation_id, current_name, text):
+    """(ok, message). Name an untitled thread after the first thing he said.
+
+    `current_name` is what the page believes the thread is called, and this
+    refuses unless it is exactly `UNTITLED_NAME`. That check is the whole
+    safety of the route: a thread he named is never renamed under him. It is
+    a claim from the page rather than a fact read from the store, and that is
+    deliberate -- Agora publishes no `GET /conversations/{id}` (measured, it
+    404s), so the only way to read one name is to list all 700, which is the
+    single most expensive call this app makes. The page is not being trusted
+    with any authority it did not already have: `/api/conversations/rename`
+    lets it rename any thread to anything.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    if current_name != UNTITLED_NAME:
+        return False, "that conversation already has a name"
+    title = title_from_message(text)
+    if not title:
+        return False, "there was no title in that message"
+    return rename(conversation_id, title)
+
+
 def create(name):
     """(ok, id-or-message). Starting a new thread from the page.
 
@@ -316,9 +404,13 @@ def create(name):
     is found by being in the list, and inventing a tag for it would put a
     second name on something Agora already identifies by id.
     """
-    if not isinstance(name, str) or not name.strip():
+    if name is not None and not isinstance(name, str):
         return False, "a conversation needs a name"
-    name = name.strip()
+    # A blank name is his answer to "what is it about?" when he does not know
+    # yet, and it is the common case -- so it starts a thread rather than
+    # refusing one. `rename` deliberately still refuses a blank: emptying the
+    # name of a thread that has one leaves a row he cannot find again.
+    name = starting_name(name)
     if len(name) > MAX_NAME_CHARS:
         return False, f"that name is longer than {MAX_NAME_CHARS} characters"
     status, created = agora_internal("POST", "/conversations", {
