@@ -7677,6 +7677,154 @@ describe("holding a board row opens edit mode", () => {
       "a short press opened edit mode later");
   });
 
+  /* The project control inside that same editor -- his capture, 2026-09-01,
+   * rated 🔴 Immediately: *"I/you should easily be able to assign issues and
+   * ideas to projects, and change project if assigned wrongly ... I/you
+   * should easily be able to create new projects."*
+   *
+   * Every one of these drives the real `change`/`blur` events rather than
+   * calling the save function, because the whole control is the difference
+   * between picking a name that exists and typing one that does not, and
+   * only the event sequence has that in it. */
+  const picker = (row) => row.querySelector(".item-edit-project-select");
+  const newBox = (row) => row.querySelector(".item-edit-project-new");
+  const change = async (window, node) => {
+    node.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  test("the picker opens on the project the row is already in", async () => {
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova", "Marcus", "NAS"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    assert.ok(picker(row), "no project picker in the editor");
+    assert.equal(picker(row).value, "Nova");
+    const names = [...picker(row).options].map((o) => o.textContent);
+    assert.deepEqual(names, ["Nova", "Marcus", "NAS", "New project…"]);
+    // Nothing was written by opening it.
+    assert.equal(window.posted.length, 0);
+  });
+
+  test("picking another project posts the move and nothing else", async () => {
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova", "Marcus"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    picker(row).value = "Marcus";
+    await change(window, picker(row));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].url, "/api/board/project");
+    assert.deepEqual(window.posted[0].body,
+      { target: "issues", number: 57, project: "Marcus" });
+  });
+
+  test("re-picking the project it is already in posts nothing", async () => {
+    /* Opening the editor, scrolling past the picker and closing it is the
+     * common case, and it must not rewrite a cell that already says that. */
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova", "Marcus"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    picker(row).value = "Nova";
+    await change(window, picker(row));
+    assert.equal(window.posted.length, 0);
+  });
+
+  test("New project… reveals a box, and typing a name creates the project", async () => {
+    /* The create half of the capture. There is no create endpoint and there
+     * is not meant to be one: the server reads the project list back off
+     * the cells, so a name no row carries is a new project. */
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    assert.equal(newBox(row).hidden, true, "the new-project box is showing before it was asked for");
+    picker(row).value = "|new";
+    await change(window, picker(row));
+    assert.equal(newBox(row).hidden, false, "New project… did not reveal the box");
+    assert.equal(window.posted.length, 0, "revealing the box posted something");
+    newBox(row).value = "  Maintenance  ";
+    newBox(row).dispatchEvent(new window.Event("blur", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 1);
+    assert.deepEqual(window.posted[0].body,
+      { target: "issues", number: 57, project: "Maintenance" });
+  });
+
+  test("an empty new-project box is a cancelled create, not a blanked cell", async () => {
+    /* `set_row_project` refuses an empty name, so posting one is a
+     * guaranteed 502 with an error on his screen for doing nothing. */
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova"], name: null, asked: "", boards: {} },
+    });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    picker(row).value = "|new";
+    await change(window, picker(row));
+    newBox(row).value = "   ";
+    newBox(row).dispatchEvent(new window.Event("blur", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 0);
+    assert.equal(newBox(row).hidden, true, "the box stayed open after a cancelled create");
+  });
+
+  test("a refused write says so and snaps back to the project on the server", async () => {
+    const window = await loadSite("/issues", {
+      project: { projects: ["Nova", "Marcus"], name: null, asked: "", boards: {} },
+    });
+    window.postReply = { ok: false, message: "could not write to issues" };
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    picker(row).value = "Marcus";
+    await change(window, picker(row));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const note = row.querySelector(".item-edit-project .item-edit-status");
+    assert.match(note.textContent, /Could not save/);
+    assert.ok(note.classList.contains("is-error"));
+    // The cell on his board still says Nova, so the control must too.
+    assert.equal(picker(row).value, "Nova");
+    assert.equal(picker(row).disabled, false, "the picker stayed disabled after a failure");
+  });
+
+  test("the project index is fetched once however many rows are opened", async () => {
+    /* Three rows held is three editors, and a request per editor for a
+     * list that cannot have changed is the cost this memo exists for. */
+    let asked = 0;
+    const window = await loadSite("/issues", {
+      project: () => {
+        asked += 1;
+        return { projects: ["Nova"], name: null, asked: "", boards: {} };
+      },
+    });
+    assert.equal(asked, 0, "the board page fetched the project index on load");
+    await hold(window, head(window, 57));
+    await hold(window, head(window, 58));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(asked, 1, "the project index was fetched once per editor, not once per page");
+  });
+
+  test("a failed project index still leaves a usable picker", async () => {
+    /* Degrading to "you can still type a name" rather than to an error he
+     * cannot act on: the row's own project is always an option. */
+    const window = await loadSite("/issues", { projectStatus: 500 });
+    await hold(window, head(window, 57));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const row = window.document.getElementById("item-57");
+    const names = [...picker(row).options].map((o) => o.textContent);
+    assert.deepEqual(names, ["Nova", "New project…"]);
+  });
+
   test("Save sends the row's number and the new title", async () => {
     const window = await loadSite("/issues");
     await hold(window, head(window, 57));

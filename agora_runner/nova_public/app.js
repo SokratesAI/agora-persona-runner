@@ -4643,6 +4643,166 @@
    * into edit mode"*. His number, not a tuned one. */
   var HOLD_MS = 1000;
 
+  /* Every project name on either board, fetched once per page load.
+   *
+   * `/api/project` with no name returns only the index, and it is built
+   * from the two cached board payloads the page has usually already paid
+   * for, so this is cheap. It is memoised on the promise rather than on
+   * the value so that opening three rows in a row makes one request, not
+   * three -- and deliberately not cached across a save: a name typed into
+   * `New project…` has to appear in the next row's list, and that is what
+   * `forgetProjects` is for. */
+  var projectsPromise = null;
+  function loadProjects() {
+    if (!projectsPromise) {
+      projectsPromise = fetch("/api/project")
+        .then(json)
+        .then(function (payload) { return (payload && payload.projects) || []; })
+        .catch(function () {
+          // A failed index is not a failed editor. The picker still offers
+          // the row's own project and `New project…`, which is enough to
+          // move a row -- so this degrades to typing rather than to an
+          // error the owner cannot act on.
+          projectsPromise = null;
+          return [];
+        });
+    }
+    return projectsPromise;
+  }
+  function forgetProjects() { projectsPromise = null; }
+
+  /* The project cell of one boarded row, as a control in the held-row
+   * editor.
+   *
+   * the owner, capture 2026-09-01, rated 🔴 Immediately: *"I/you should
+   * easily be able to assign issues and ideas to projects, and change
+   * project if assigned wrongly ... I/you should easily be able to create
+   * new projects."* Both halves are this one control: the list moves a row
+   * between projects that exist, and `New project…` creates one, because
+   * the server derives the project list from the cells rather than from a
+   * document. There is nothing else to create.
+   *
+   * It saves on change rather than on Save, matching the priority picker
+   * beside it -- the only action the control can take is the one just
+   * chosen. The Save button next to it belongs to the title box and
+   * pressing it must not also rewrite a project cell the owner only
+   * scrolled past. */
+  function renderProjectPicker(board, item, onSaved) {
+    var wrap = el("div", "item-edit-project");
+    var label = el("label", "item-edit-project-label", "Project");
+    var select = el("select", "item-edit-project-select");
+    var typed = el("input", "item-edit-project-new");
+    var status = el("span", "item-edit-status");
+    typed.type = "text";
+    typed.placeholder = "New project name";
+    typed.hidden = true;
+    typed.setAttribute("aria-label", "New project for #" + item.number);
+    select.setAttribute("aria-label", "Project of #" + item.number);
+    // A sentinel that cannot collide with a real project: `set_row_project`
+    // refuses a `|` outright, so no cell on either board can ever hold this.
+    var NEW = "|new";
+    var current = (item.project || "").trim();
+
+    function fill(names) {
+      select.textContent = "";
+      var seen = [];
+      // The row's own project first and always, even when the index did
+      // not come back -- a picker that cannot show where the row is now
+      // reads as if the row has no project.
+      if (current) seen.push(current);
+      (names || []).forEach(function (name) {
+        if (seen.indexOf(name) === -1) seen.push(name);
+      });
+      seen.forEach(function (name) {
+        var option = el("option", "", name);
+        option.value = name;
+        if (name === current) option.selected = true;
+        select.appendChild(option);
+      });
+      var creator = el("option", "", "New project…");
+      creator.value = NEW;
+      select.appendChild(creator);
+    }
+
+    fill([]);
+    loadProjects().then(fill);
+
+    function save(name) {
+      status.className = "item-edit-status";
+      status.textContent = "Saving…";
+      select.disabled = true;
+      typed.disabled = true;
+      return fetch("/api/board/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: board, number: item.number, project: name })
+      })
+        .then(json)
+        .then(function (payload) {
+          if (!payload || !payload.ok) throw new Error((payload && payload.message) || "failed");
+          // `current` and not `item.project`: the row object belongs to the
+          // board payload the page is holding, and the reload below is what
+          // replaces it. Writing the new name back into it looks harmless
+          // and is how a picker on a *second* row would show a project that
+          // is only true because this one saved.
+          current = name;
+          status.textContent = "";
+          // A name that did not exist a moment ago is a project now, so
+          // the next picker on this page has to see it.
+          forgetProjects();
+          onSaved();
+        })
+        .catch(function (err) {
+          status.textContent = "Could not save: " + String((err && (err.message || err)) || err);
+          status.className = "item-edit-status is-error";
+          select.disabled = false;
+          typed.disabled = false;
+          // Back to what the server still holds, never to the name that
+          // was not written -- the same snap-back the priority picker does.
+          fill([]);
+          loadProjects().then(fill);
+          typed.hidden = true;
+          typed.value = "";
+        });
+    }
+
+    select.addEventListener("change", function () {
+      if (select.value === NEW) {
+        typed.hidden = false;
+        typed.value = "";
+        typed.focus();
+        return;
+      }
+      typed.hidden = true;
+      if (select.value && select.value !== current) save(select.value);
+    });
+
+    function commitTyped() {
+      var name = typed.value.trim();
+      // An empty box is a cancelled create, not a request to blank the
+      // cell -- `set_row_project` refuses an empty name anyway, so this
+      // stops a guaranteed 502 rather than adding a rule.
+      if (!name) {
+        typed.hidden = true;
+        fill([]);
+        loadProjects().then(fill);
+        return;
+      }
+      if (name === current) { typed.hidden = true; return; }
+      save(name).then(function () { typed.hidden = true; });
+    }
+    typed.addEventListener("blur", commitTyped);
+    typed.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); commitTyped(); }
+    });
+
+    wrap.appendChild(label);
+    wrap.appendChild(select);
+    wrap.appendChild(typed);
+    wrap.appendChild(status);
+    return wrap;
+  }
+
   /* The edit-mode panel a held row turns into: the title in a box, and
    * save, cancel and delete.
    *
@@ -4724,6 +4884,10 @@
     actions.appendChild(cancel);
     actions.appendChild(del);
     panel.appendChild(box);
+    // Between the title and the buttons, because it belongs to the row
+    // rather than to the title edit -- it has already saved by the time
+    // Save is pressed, and sitting above the buttons is what says so.
+    panel.appendChild(renderProjectPicker(board, item, function () { loadBoard(board); }));
     panel.appendChild(actions);
     return { el: panel, focus: function () { box.focus(); } };
   }

@@ -61,6 +61,7 @@ from agora_runner.nova_boards import (
     _frontmatter_end,
     extract_row,
     set_row_priority,
+    set_row_project,
     set_row_title,
     split_capture_done,
     split_capture_priority,
@@ -760,6 +761,28 @@ def edit_row(target, number, title):
     """
     return _amend_board(
         target, number, lambda md: set_row_title(md, number, title), "edited")
+
+
+def set_project(target, number, project):
+    """Move one boarded row to a project. Returns (ok, message).
+
+    His capture, 2026-09-01: *"I/you should easily be able to assign
+    issues and ideas to projects, and change project if assigned wrongly
+    or for some other reason needs to change project. I/you should easily
+    be able to create new projects."* `set_row_project` has existed since
+    the project column was added and only ever had CLI callers, so until
+    now the only way he could correct a project cell was Obsidian --
+    which is exactly what `edit_row` was written to end for the title.
+
+    **Creating a project is this call with a name no row carries yet**,
+    and that is why nothing here checks the name against a list.
+    `board_projects` reads the set of projects back off the rows, so a
+    new name in one cell is a new project and there is no second
+    document to keep in step. The only bound is `set_row_project`'s own,
+    which refuses the characters that would break out of the table cell.
+    """
+    return _amend_board(
+        target, number, lambda md: set_row_project(md, number, project), "moved")
 
 
 def remove_row(target, number):

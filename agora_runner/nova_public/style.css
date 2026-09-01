@@ -1884,6 +1884,33 @@ body.nav-open { overflow: hidden; }
 .item-edit-status { flex: 1 1 auto; color: var(--dim); font-size: 0.85rem; }
 .item-edit-status.is-error { color: var(--warn); }
 
+/* The project control in the held-row editor (his capture, 2026-09-01).
+   It wraps rather than shrinking the select, because a project name is
+   free text and "Sokrates Post" must stay readable on a 360px phone --
+   the same width the title box above it already gets. */
+.item-edit-project {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.item-edit-project-label { color: var(--dim); font-size: 0.85rem; }
+
+.item-edit-project-select,
+.item-edit-project-new {
+  flex: 1 1 8rem;
+  min-width: 0;
+  padding: 0.35rem 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
 /* The comment composer under a row's write-up (idea #64). Separated by a
    rule rather than a card, because the comments it sends land *inside*
    the write-up above it -- the line marks where his prose ends and the
