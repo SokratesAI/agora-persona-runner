@@ -348,6 +348,27 @@ def _check_digest_roll_reads_the_whole_document() -> Optional[str]:
     return None
 
 
+def _stub_actions_meter(cmd) -> subprocess.CompletedProcess:
+    """Answer the Actions meter for a stubbed `gh` that is not about the meter.
+
+    Cycle 750 made `ci_health.check` read the org's private-minute allowance on
+    every run rather than only while builds were being refused. Every probe
+    below stubs `gh` to describe one run history, so the meter's two calls fell
+    through to whichever branch the stub ended on, `ci_health` correctly
+    reported that it could not read the meter, and the exit status the probe
+    asserts on came back 1 for a reason the probe is not about. That turned
+    `_check_ci_health_ignores_an_abandoned_run` permanently red on the morning
+    of 2026-09-01 while the behaviour it guards was working -- a gate that
+    refuses every merge teaches the reader to merge over it, which is the same
+    cost as a gate that passes everything.
+
+    An empty `usageItems` is the honest stub: the meter reads cleanly, reports
+    nothing spent, and contributes nothing to the status the probe measures.
+    """
+    return subprocess.CompletedProcess(
+        cmd, 0, stdout=json.dumps({"usageItems": []}), stderr="")
+
+
 def _check_ci_health_ignores_an_abandoned_run() -> Optional[str]:
     """A queued run that later runs have overtaken must not read as a live stall.
 
@@ -384,6 +405,8 @@ def _check_ci_health_ignores_an_abandoned_run() -> Optional[str]:
     def gh_with_completed_at(stamp):
         def gh(cmd, **kwargs):
             path = cmd[2]
+            if "settings/billing/usage" in path:
+                return _stub_actions_meter(cmd)
             if "/jobs" in path:
                 return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
             if "status=completed" in path:
@@ -451,6 +474,8 @@ def _check_ci_health_separates_the_two_causes() -> Optional[str]:
 
     def gh(cmd, **kwargs):
         path = cmd[2]
+        if "settings/billing/usage" in path:
+            return _stub_actions_meter(cmd)
         if "/jobs" in path:
             return subprocess.CompletedProcess(cmd, 0, stdout="0", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([{
