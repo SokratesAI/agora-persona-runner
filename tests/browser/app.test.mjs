@@ -5396,6 +5396,100 @@ describe("an ask nobody answered is named in the header", () => {
     assert.equal(pill(window), null);
   });
 
+  /* the owner, ideas board #182: *"I'm not able to read all the 'waiting on
+   * you' and all the answers for the journals."* The header named the oldest
+   * open ask and silently dropped every other one, and an ask leaves the
+   * twenty-entry feed inside a day, so a second open question was not
+   * reachable from this page at all once its card scrolled off.
+   *
+   * The count is the entry point and the panel is the answer, so both are
+   * asserted -- a count with nothing behind it is the same defect wearing a
+   * number. */
+  const counter = (window) =>
+    window.document.querySelector("#status .status-asks-open");
+  const askRows = (window) => Array.from(
+    window.document.querySelectorAll("#status .asks-panel a.unread-reply"),
+    (row) => row.getAttribute("href"));
+
+  test("a second open ask is counted, not dropped", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    const found = counter(window);
+    assert.ok(found, "expected a count of every open ask");
+    assert.equal(found.textContent, "2 waiting on you");
+    assert.equal(askLink(window).getAttribute("href"), "/cycle/247",
+      "the pill must still name the oldest one");
+  });
+
+  /* The control: one open ask must NOT draw the counter. A list of one is
+   * the field beside it said twice, and a button that always appears is a
+   * button whose count nobody reads. */
+  test("a single open ask draws no counter", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.ok(pill(window), "the fixture must still raise the pill");
+    assert.equal(counter(window), null);
+  });
+
+  test("the count opens every open ask, oldest first", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 271, date: "2026-08-18", time: "09:00" },
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ]),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.deepEqual(askRows(window), [], "the panel must start shut");
+    counter(window).click();
+    assert.deepEqual(askRows(window),
+      ["/cycle/247", "/cycle/260", "/cycle/271"]);
+    assert.equal(counter(window).getAttribute("aria-expanded"), "true");
+    counter(window).click();
+    assert.deepEqual(askRows(window), [], "a second press shuts it again");
+  });
+
+  /* An answered card leaves the list the same way it leaves the pill, and
+   * the counter has to fall with it -- otherwise the header keeps insisting
+   * on a question he replied to, which is the complaint the `#mail` badge
+   * already collected once (`issues.md` 2026-08-26). */
+  test("a card he replied to is not counted", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 271, date: "2026-08-18", time: "09:00" },
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ]),
+      comments: {
+        byCycle: { 247: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
+        needs: [],
+      },
+    });
+    assert.equal(counter(window).textContent, "2 waiting on you");
+    counter(window).click();
+    assert.deepEqual(askRows(window), ["/cycle/260", "/cycle/271"]);
+  });
+
+  /* Same guard the pill carries: a payload served out of the service
+   * worker's cache cannot support "he has not replied to these". */
+  test("a saved copy counts nothing", async () => {
+    const window = await loadSite("/", {
+      journal: () => withAsks([
+        { cycle: 260, date: "2026-08-17", time: "10:00" },
+        { cycle: 247, date: "2026-08-16", time: "21:20" },
+      ], { replayed: true }),
+      comments: { byCycle: {}, needs: [] },
+    });
+    assert.equal(counter(window), null);
+  });
+
   /* `/api/comments` is tolerated when it fails -- it resolves to null and
    * costs the bubbles, not the feed. The header must not read that as "he
    * has replied to nothing" and raise the pill on every open ask: it would

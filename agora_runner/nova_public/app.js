@@ -1610,16 +1610,30 @@
    * scrolls out of the twenty-entry window in a day and stops being
    * something he can stumble across; #94's sat unanswered for a day with
    * the row it blocks at the top of his board. */
-  function oldestOpenAsk(status, commentsByCycle) {
+  function openAsks(status, commentsByCycle) {
     var asks = (status && status.asks) || [];
-    var open = null;
+    var open = [];
     for (var i = 0; i < asks.length; i++) {
       var answers = commentsByCycle[String(asks[i].cycle)];
       if (answers && answers.length) continue;
-      open = asks[i];
+      open.push(asks[i]);
     }
     return open;
   }
+
+  /* The oldest of them, or null. Kept as its own name because the pill has
+   * always named exactly one card and still does; `openAsks` is what the
+   * count and the panel beside it read. */
+  function oldestOpenAsk(status, commentsByCycle) {
+    var open = openAsks(status, commentsByCycle);
+    return open.length ? open[open.length - 1] : null;
+  }
+
+  /* Whether the panel listing every open ask is showing. Module-level for
+   * the reason `unreadOpen` is: `renderStatus` rebuilds `#status` from
+   * scratch on every poll, so state held inside it would close the panel
+   * under him twice a minute. */
+  var asksOpen = false;
 
   /* "since 08-16", and the day count when it has been more than one.
    *
@@ -1720,7 +1734,8 @@
      * card carries, so it survives a right-click, a share and the back
      * button, and it lands on the page where the reply box is. */
     if (!replayed && haveComments) {
-      var open = oldestOpenAsk(status, lastCommentsByCycle);
+      var stillOpen = openAsks(status, lastCommentsByCycle);
+      var open = stillOpen.length ? stillOpen[stillOpen.length - 1] : null;
       if (open) {
         /* The pill used to be the only link in here and it was an `<a>`
          * inside a `<p>`; now the whole field is the link, so the pill
@@ -1733,6 +1748,71 @@
         var wait = askWaitLabel(open);
         if (wait) waiting.appendChild(el("span", "status-pr", wait));
         subs.appendChild(waiting);
+      }
+
+      /* Every *other* open ask, which the field above cannot carry.
+       *
+       * the owner, ideas board #182: *"I'm not able to read all the 'waiting
+       * on you' and all the answers for the journals."* The answers half was
+       * built (the `#mail` panel below); this is the asks half, and the
+       * defect is exactly the one his sentence names. `status.asks` carries
+       * every card that raised an ask, and this header rendered one of them
+       * -- the oldest -- and dropped the rest on the floor. A second and a
+       * third open question were visible only by scrolling the feed and
+       * recognising a card, and an ask leaves the twenty-entry window in a
+       * day, so past that they were not reachable from this page at all.
+       *
+       * A button and not a link, because the field beside it is already a
+       * link and this one has to expand rather than navigate. It is drawn
+       * only when there is more than one: with a single open ask the field
+       * above says everything there is to say, and a control that opens a
+       * list of one is noise. */
+      if (stillOpen.length > 1) {
+        var more = statusField(null);
+        var toggle = el("button", "badge badge-ask status-asks-open",
+          stillOpen.length + " waiting on you");
+        toggle.type = "button";
+        toggle.setAttribute("aria-expanded", asksOpen ? "true" : "false");
+        toggle.addEventListener("click", function () {
+          asksOpen = !asksOpen;
+          renderStatus(status);
+        });
+        more.appendChild(toggle);
+        subs.appendChild(more);
+      } else {
+        /* Nothing to expand, so the panel must not survive the ask that
+         * was answered while it was open. */
+        asksOpen = false;
+      }
+
+      if (asksOpen && stillOpen.length > 1) {
+        /* Oldest first: the same order the field above picks its one card
+         * by, so the list reads as that pill continued rather than as a
+         * second, differently-sorted opinion. */
+        var asksPanel = el("div", "unread-panel asks-panel");
+        var asksHead = el("p", "unread-panel-head");
+        asksHead.appendChild(el("span", "unread-panel-count",
+          stillOpen.length + " questions waiting on you"));
+        var shutAsks = el("button", "unread-panel-close", "Close");
+        shutAsks.type = "button";
+        shutAsks.addEventListener("click", function () {
+          asksOpen = false;
+          renderStatus(status);
+        });
+        asksHead.appendChild(shutAsks);
+        asksPanel.appendChild(asksHead);
+        for (var a = stillOpen.length - 1; a >= 0; a--) {
+          var ask = stillOpen[a];
+          var askRow = el("a", "unread-reply");
+          askRow.href = "/cycle/" + ask.cycle;
+          var askMeta = el("p", "unread-reply-meta");
+          askMeta.appendChild(el("span", "status-pr", "cycle " + ask.cycle));
+          var askWait = askWaitLabel(ask);
+          if (askWait) askMeta.appendChild(el("span", "status-pr", askWait));
+          askRow.appendChild(askMeta);
+          asksPanel.appendChild(askRow);
+        }
+        subs.appendChild(asksPanel);
       }
     }
 
