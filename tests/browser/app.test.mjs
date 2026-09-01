@@ -246,7 +246,16 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // thread fail independently in real life, and the deep-link path
       // reads both -- one knob cannot express "the name lookup failed
       // and the messages arrived", which is the case worth pinning.
-      return res(convList || { conversations: [] }, convListStatus || convStatus);
+      //
+      // A function, for `convThread`'s reason and one of its own: the
+      // switcher now fetches this route more than once per window (it
+      // repaints from its last answer and refreshes behind it), so a test
+      // about the *second* open cannot express itself with one fixture.
+      // A function may return a promise, which is how a test holds the
+      // refresh in flight and looks at what is on screen meanwhile.
+      const body = typeof convList === "function" ? convList(url) : convList;
+      if (body && typeof body.then === "function") return body;
+      return res(body || { conversations: [] }, convListStatus || convStatus);
     }
     /* Only the listing needs a branch: the two writes are POSTs, and
      * `window.fetch` answers every POST from `window.postReply` before
@@ -11884,6 +11893,101 @@ describe("the chat dock's conversation switcher", () => {
     assert.ok(window.document.getElementById("chat-dock").classList.contains("list-open"));
   });
 
+  /* Issue #141: the switcher was the word "loading\u2026" on every open.
+   *
+   * These four pin the whole trade. The list paints from its last answer
+   * so re-opening is instant; the fetch still runs every time and still
+   * repaints, so nothing he is waiting for can go unreported; and the
+   * first open, which has nothing to paint, is unchanged.
+   */
+  function heldList(first) {
+    // First call answers, every call after it hangs. A test can then look
+    // at the screen while the refresh is genuinely in flight, rather than
+    // at a race it happened to win.
+    let calls = 0;
+    const held = new Promise(() => { });
+    const fn = () => { calls += 1; return calls === 1 ? first : held; };
+    fn.calls = () => calls;
+    return fn;
+  }
+
+  test("re-opening the switcher shows the threads it already had, not loading\u2026", async () => {
+    const list = heldList(LIST);
+    const window = await openSwitcher({ convList: list });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    assert.equal(list.calls(), 2, "re-opening did not refresh the list");
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent),
+      ["Ask Nova", "Roofing"],
+      "the second open blanked the list while its refresh was in flight");
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .empty")]
+        .map((n) => n.textContent), []);
+  });
+
+  test("the first open has nothing to show yet and says so", async () => {
+    // The precondition for the test above: without this, "no loading\u2026 on
+    // the second open" would pass against an app that never says it at all.
+    const window = await openSwitcher({ convList: heldList(new Promise(() => { })) });
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .empty")]
+        .map((n) => n.textContent), ["loading\u2026"]);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent), ["Ask Nova"]);
+  });
+
+  test("the refresh behind the old list still repaints it", async () => {
+    // The whole safety argument for painting a stale list: the answer he
+    // opened the switcher to find still arrives and still lands on screen.
+    let calls = 0;
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        if (calls === 1) return LIST;
+        return { conversations: [{ id: "c-2", name: "Gutters", personaName: "",
+          model: "m", tags: [], updatedAt: "2026-08-27T08:00:00.000Z" }] };
+      },
+    });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent),
+      ["Ask Nova", "Gutters"],
+      "the refresh answered and the switcher kept showing the old rows");
+  });
+
+  test("a refresh that fails leaves the rows he can already see up", async () => {
+    // A stale list beats an error message here: the rows on screen were
+    // true a moment ago and every one of them still opens its thread.
+    let calls = 0;
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        return calls === 1 ? LIST : res({ error: "nope" }, 500);
+      },
+    });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent),
+      ["Ask Nova", "Roofing"]);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .empty")]
+        .map((n) => n.textContent), []);
+  });
+
   test("picking a conversation reads that thread, not the ask thread", async () => {
     const asked = [];
     const window = await openSwitcher({
@@ -12349,6 +12453,106 @@ describe("holding a conversation in the switcher opens edit options", () => {
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
       [["/api/conversations/new", { name: "Gutters" }]]);
     assert.equal(window.document.getElementById("chat-title").textContent, "Gutters");
+  });
+
+  /* The other half of issue #141's cache: a change he just made must never
+   * be repainted in its old form. `loadList(true)` drops the cache, so the
+   * frame after a rename is the honest empty one and not yesterday's row.
+   */
+  test("a rename does not repaint the row he just renamed", async () => {
+    let calls = 0;
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        // The refresh after the rename is held open on purpose: the frame
+        // being asserted is the one between his tap and the new listing,
+        // and a fetch that answers immediately hides it.
+        return calls === 1 ? LIST : new Promise(() => { });
+      },
+    });
+    window.postReply = { ok: true, result: "renamed" };
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector(".chat-row-edit");
+    editor.querySelector(".chat-row-edit-name").value = "Roofing done";
+    editor.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.equal(calls, 2, "saving the rename did not refresh the list");
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent), ["Ask Nova"],
+      "the switcher repainted its cached rows over a rename he had just made");
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .empty")]
+        .map((n) => n.textContent), ["loading\u2026"]);
+  });
+
+  test("a refresh landing mid-edit leaves his open editor alone", async () => {
+    // He can hold a row while the background refresh is in flight now,
+    // which the pre-cache switcher made impossible -- there was nothing on
+    // screen to hold. A repaint there throws away what he is typing.
+    let settle;
+    let calls = 0;
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        if (calls === 1) return LIST;
+        return new Promise((resolve) => { settle = resolve; });
+      },
+    });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    await hold(window, rowNamed(window, "Roofing"));
+    const editor = window.document.querySelector(".chat-row-edit");
+    assert.ok(editor, "holding a row during the refresh opened no editor");
+    editor.querySelector(".chat-row-edit-name").value = "half typed";
+    settle(res(LIST));
+    await tick();
+    assert.equal(window.document.querySelector(".chat-row-edit"), editor,
+      "the refresh repainted the list and took his editor with it");
+    assert.equal(editor.querySelector(".chat-row-edit-name").value, "half typed");
+  });
+
+  test("a listing that answers late does not overwrite a newer one", async () => {
+    // Open, shut, open leaves two fetches in flight. Before the cache this
+    // cost one wrong repaint; now the loser would also become what every
+    // later open paints first, so the ordering has to be pinned.
+    let calls = 0;
+    let settleSecond;
+    const LATER = {
+      folders: [], models: [],
+      conversations: [{ id: "c-3", name: "Gutters", personaName: "", model: "m",
+        tags: [], cycleThread: false, folderId: "",
+        updatedAt: "2026-08-27T07:00:00.000Z" }],
+    };
+    const window = await openSwitcher({
+      convList: () => {
+        calls += 1;
+        if (calls === 1) return LIST;
+        if (calls === 2) return new Promise((resolve) => { settleSecond = resolve; });
+        return LATER;
+      },
+    });
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    tap(window, "chat-menu");
+    await tick();
+    assert.equal(calls, 3);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent), ["Ask Nova", "Gutters"]);
+    // The second open's listing finally answers, stale.
+    settleSecond(res(LIST));
+    await tick();
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-list .chat-list-name")]
+        .map((n) => n.textContent), ["Ask Nova", "Gutters"],
+      "an older listing landed last and repainted the switcher with it");
   });
 });
 
