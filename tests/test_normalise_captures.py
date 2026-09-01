@@ -12,6 +12,8 @@ import pytest
 
 from tools.normalise_captures import keys, merge, normalise, split_streams
 from tools.roll_captures import MARKER, check_newest_first
+from agora_runner.rolling import _body
+from tools.roll_captures import spec_for
 from tools.rolling import RollError, split_bullets
 
 
@@ -144,3 +146,131 @@ def test_the_top_stream_is_never_reordered_and_the_bottom_is_exactly_reversed():
     positions = [out.index(e) for e in entries]
     assert positions[:cut] == sorted(positions[:cut])
     assert positions[cut:] == sorted(positions[cut:], reverse=True)
+
+
+# --- `--mode strays`, and the section boundary it depends on -----------
+#
+# The live files stopped being two streams. Measured 2026-09-01: inside
+# `## Entries`, `ideas.md` is already newest-first and `issues.md` has a
+# single ascent. What made it look like eleven was reading past the end of
+# the section, which is what the fixtures below pin.
+
+
+def _section(text):
+    """Just the `## Entries` section -- `_entries` above reads past it."""
+    return split_bullets(_body(text, spec_for(text))[1])
+
+
+def _file_with_tail(*entries):
+    return (
+        "---\ntype: log\n---\n\n# Nova — Issues\n"
+        + MARKER
+        + "\n"
+        + "\n\n".join(entries)
+        + "\n\n## Retired\n\n- DONE (Cycle 9): (Cycle 400) — retired, and out of scope\n"
+        + "\n## Board\n\n| # | Item |\n| - | - |\n| 1 | a row |\n"
+    )
+
+
+def test_a_marker_below_the_entries_section_is_not_an_ascent():
+    """`## Retired` holds cycle numbers and is not a capture list.
+
+    The two-piece `split_at_heading` returns everything under the marker,
+    so a retired item dated Cycle 400 read as an entry sitting under a
+    Cycle 10 capture -- an ascent, in a section the roller never touches.
+    """
+    live = _file_with_tail("- (Cycle 12) — newest", "- (Cycle 10) — older")
+    assert normalise(live, mode="strays") == live
+
+
+def test_the_sections_below_entries_come_back_byte_for_byte():
+    live = _file_with_tail(
+        "- (Cycle 10) — older", "- (Cycle 12) — newest", "- (Cycle 8) — oldest"
+    )
+    out = normalise(live, mode="strays")
+    assert out != live
+    assert out.split("\n## Retired\n", 1)[1] == live.split("\n## Retired\n", 1)[1]
+
+
+def test_a_stray_moves_to_where_its_own_cycle_belongs():
+    live = _file_with_tail(
+        "- (Cycle 20) — a", "- (Cycle 10) — b", "- (Cycle 15) — c", "- (Cycle 5) — d"
+    )
+    assert [e[:12] for e in _section(normalise(live, mode="strays"))] == [
+        "- (Cycle 20)",
+        "- (Cycle 15)",
+        "- (Cycle 10)",
+        "- (Cycle 5) ",
+    ]
+
+
+def test_a_block_of_same_cycle_strays_keeps_its_own_order():
+    live = _file_with_tail(
+        "- (Cycle 20) — a",
+        "- (Cycle 5) — b",
+        "- (Cycle 12) — first of the block",
+        "- (Cycle 12) — second of the block",
+    )
+    assert [e for e in _section(normalise(live, mode="strays"))] == [
+        "- (Cycle 20) — a",
+        "- (Cycle 12) — first of the block",
+        "- (Cycle 12) — second of the block",
+        "- (Cycle 5) — b",
+    ]
+
+
+def test_an_unmarked_entry_is_never_moved_by_the_stray_repair():
+    """It has no key of its own, so relocating it would be a guess."""
+    live = _file_with_tail(
+        "- (Cycle 20) — a", "- undated, and it stays put", "- (Cycle 30) — the stray"
+    )
+    out = _section(normalise(live, mode="strays"))
+    assert out.index("- undated, and it stays put") == 2
+    assert out[0] == "- (Cycle 30) — the stray"
+
+
+def test_the_stray_repair_is_idempotent():
+    live = _file_with_tail("- (Cycle 10) — a", "- (Cycle 30) — b", "- (Cycle 5) — c")
+    once = normalise(live, mode="strays")
+    assert normalise(once, mode="strays") == once
+
+
+def test_the_stray_repair_refuses_to_lose_a_capture():
+    live = _file_with_tail("- (Cycle 10) — a", "- (Cycle 30) — b")
+    before = _section(live)
+    after = _section(normalise(live, mode="strays"))
+    assert sorted(before) == sorted(after)
+    check_newest_first(after)
+
+
+def test_merge_mode_also_stops_at_the_section_boundary():
+    """The wide read was `normalise`'s, not one mode's."""
+    live = _file_with_tail("- (Cycle 10) — a", "- (Cycle 30) — b")
+    out = normalise(live, mode="merge")
+    assert out.split("\n## Retired\n", 1)[1] == live.split("\n## Retired\n", 1)[1]
+
+
+def test_an_unmarked_entry_at_the_top_does_not_become_the_floor():
+    """The first *marker* sets the descending run, not the first entry.
+
+    An entry with no marker has no cycle, and treating it as one -- as
+    `-1`, say -- makes every real capture below it larger than the floor
+    and therefore a stray, so a file that is already in order gets its
+    whole list lifted above its own oldest entry.
+    """
+    live = _file_with_tail(
+        "- undated, and it stays at the top",
+        "- (Cycle 10) — a",
+        "- (Cycle 30) — the one real stray",
+        "- (Cycle 5) — b",
+    )
+    # The undated entry inherits Cycle 10 from the marker below it, so a
+    # Cycle 30 stray lands above it. What it must not do is fall to the
+    # bottom, which is where it goes the moment "no marker" is read as a
+    # cycle of its own.
+    assert _section(normalise(live, mode="strays")) == [
+        "- (Cycle 30) — the one real stray",
+        "- undated, and it stays at the top",
+        "- (Cycle 10) — a",
+        "- (Cycle 5) — b",
+    ]
