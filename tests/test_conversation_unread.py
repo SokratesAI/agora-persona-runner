@@ -121,20 +121,21 @@ def test_a_mid_turn_passage_is_not_the_newest(monkeypatch):
     """The reply still being written must not clear the highlight.
 
     A passage is pushed into the thread the moment it is written, so the
-    newest row in a running turn is `partial`. Stamping that as seen would
-    mark the answer read before the answer exists.
+    newest row in a running turn is the steps-only one, which carries
+    `partial`. Stamping that as seen would mark the answer read before the
+    answer exists.
     """
     detail = {"messages": [
         {"id": "1", "sender": "Edvard", "text": "hi", "ts": "2026-08-29T10:00:00Z"},
-        {"id": "2", "sender": "Nova", "text": "half a", "ts": "2026-08-29T11:00:00Z",
-         "activity": True},
+        {"id": "2", "sender": "Nova", "text": "assistant_text: half an answer",
+         "ts": "2026-08-29T11:00:00Z",
+         "activity": {"capability": "assistant_text", "detail": "half an answer"}},
     ]}
     monkeypatch.setattr(nova_conversations, "agora_get", lambda p: (200, detail))
-    monkeypatch.setattr(
-        nova_conversations, "narration_passage",
-        lambda m: "half an answer" if m.get("activity") else None)
     out = nova_conversations.thread("c1")
     assert [m["partial"] for m in out["messages"]] == [False, True]
+    assert out["messages"][1]["steps"] == [
+        {"kind": "thought", "text": "half an answer"}]
     assert out["newestAt"] == "2026-08-29T10:00:00Z"
 
 

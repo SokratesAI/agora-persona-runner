@@ -205,3 +205,48 @@ def test_the_conversation_route_passes_his_page_size_through():
 
 def test_the_ask_route_passes_his_page_size_through():
     assert _route("/api/ask?limit=160", "ask_thread", ask) == ("160",)
+
+
+# The drawer's second route. `/api/conversations/step` is separate from the
+# thread for one measured reason (`nova_conversations._steps`): a tool output
+# is capped at 20,000 characters and a window holds forty calls, so folding
+# outputs into the thread would put up to 800KB on his phone for a drawer he
+# may never open.
+
+def _step_route(path, answer=None):
+    import json
+    import agora_runner.nova_site as site
+    from tests.test_nova_site import _get
+    seen = {}
+
+    def fake(*args):
+        seen["args"] = args
+        return answer
+
+    with patch.object(site, "conversation_step_output", side_effect=fake):
+        status, _head, body = _get(path)
+    return seen.get("args"), status, json.loads(body or b"{}")
+
+
+def test_the_step_route_hands_back_what_the_call_returned():
+    found = {"capability": "Bash", "input": "ls", "output": "a\nb",
+             "status": "done"}
+    _args, status, body = _step_route(
+        "/api/conversations/step?id=c-1&tool=toolu_a", answer=found)
+    assert status == 200
+    assert body == found
+
+
+def test_the_step_route_passes_the_thread_the_call_and_the_page_size():
+    args, _status, _body = _step_route(
+        "/api/conversations/step?id=c-1&tool=toolu_a&limit=160")
+    assert args == ("c-1", "toolu_a", "160")
+
+
+def test_a_call_this_thread_does_not_hold_is_a_404_not_an_empty_output():
+    """"It returned nothing" and "I could not find it" are different answers
+    and the drawer says which. A 200 with an empty body would draw an empty
+    Output block over a call that may have printed a page."""
+    _args, status, body = _step_route("/api/conversations/step?id=c-1&tool=gone")
+    assert status == 404
+    assert "error" in body

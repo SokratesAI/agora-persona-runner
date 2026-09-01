@@ -191,6 +191,7 @@ from agora_runner.nova_conversations import (
     rename as conversation_rename,
     send as conversation_send,
     set_model as conversation_set_model,
+    step_output as conversation_step_output,
     thread as conversation_thread,
     watching as conversation_watching,
 )
@@ -2836,6 +2837,27 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                     # direction, and the thread he asked for is already built.
                     log(f"nova-site conversation marker failed: {e}")
                 self._send_json(200, payload)
+                return
+            if path == "/api/conversations/step":
+                # What one tool call returned, asked for when he opens that
+                # row in the drawer. It is a separate route from the thread
+                # for one measured reason, which
+                # `nova_conversations._steps` carries in full: an output is
+                # capped at 20,000 characters and a window holds forty
+                # calls, so folding outputs into the thread would put up to
+                # 800KB on his phone for a drawer he may never open.
+                found = conversation_step_output(
+                    (query.get("id") or [""])[0],
+                    (query.get("tool") or [""])[0],
+                    (query.get("limit") or [""])[0])
+                if found is None:
+                    # 404 rather than an empty body: a call that returned
+                    # nothing and a call that has scrolled out of Agora's
+                    # retention are different answers, and the drawer says
+                    # which.
+                    self._send_json(404, {"error": "no such tool call in this thread"})
+                    return
+                self._send_json(200, found)
                 return
             if path == "/api/push/key":
                 # Agora owns the VAPID keypair and the subscription store;

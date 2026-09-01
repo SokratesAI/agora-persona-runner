@@ -80,65 +80,197 @@ TITLE_CHARS = 60
 NOVA_ASK_TAG = "nova-ask"
 
 
-def keep_only_live_passages(rows):
-    """Drop the mid-turn passages of every turn except the one still running.
+def _step_status(activity):
+    """`"failed"`, `"done"` or `"running"` for one tool call.
 
-    A passage is worth seeing while it is the newest thing in the thread --
-    that is the whole point, the answer arriving instead of four minutes of
-    nothing. Once the turn's real reply lands underneath it, it is the same
-    words a second time and it costs the thread its whole visible tail: one
-    Nova cycle writes hundreds of them, and `MAX_THREAD` is 40, so a day-old
-    cycle would push every actual sentence he wrote off the page.
-
-    So partials survive only in the run at the very end of the thread, after
-    the last settled message. `nova_ask.thread` imports this rather than
-    keeping a second copy -- the rule is one rule, and the two pages
-    disagreeing about it is the bug this function exists to not have.
+    A call is narrated twice under one `toolUseId` -- once when it starts,
+    carrying the arguments in `detail`, and once when it returns, carrying
+    `output` (tool_activity.report). So the *presence* of an output message
+    is what says the call came back, and `isError` says how. A call whose
+    second half has not arrived is still running, which is a real state on
+    this page: the drawer is readable while the turn is in flight.
     """
-    last_settled = -1
-    for i, row in enumerate(rows):
-        if not row.get("partial"):
-            last_settled = i
-    return [row for i, row in enumerate(rows)
-            if i > last_settled or not row.get("partial")]
+    if activity.get("isError"):
+        return "failed"
+    if activity.get("output") is not None:
+        return "done"
+    return "running"
 
 
-def _visible(messages):
-    """Drop narration of the machinery, keep the conversation.
+def _steps(pending, message):
+    """Fold one activity message into `pending`, a list of drawer steps.
 
-    Same filter as `nova_ask.thread` and `turns.build_history`: activity,
-    thinking, forgotten and system messages are how the loop talks to
-    itself, not what he said or what was said back.
+    Two kinds come out, and they are the two halves of his capture,
+    `issues.md` 2026-09-01: *"the thoughts and tools are compressed to one
+    clickable line that opens a modal drawer ... but contains the thoughts
+    as text, but if tools have been used it is showed as a list of
+    clickable lines and when clicked, the \"input\" and \"output\" of the
+    tool is shown."*
 
-    One activity message is kept, and it is the reason this is a loop rather
-    than the comprehension it used to be. A persona's reply is written in
-    passages with tool calls between them, and each passage is pushed into
-    the conversation the moment it is written -- so the answer is already
-    arriving here, in pieces, while the turn runs. Dropping those passages
-    with the tool chips is what made a four-minute turn look like nothing
-    followed by one block of text (issue #129). `audit.narration_passage`
-    is the test; `partial` marks them for the page, which draws them as the
-    reply taking shape rather than as separate finished messages.
+    - `kind: "thought"` -- a passage the persona wrote between two tool
+      calls. `narration_passage` is the test, and the text is carried whole
+      because it is prose he asked to read. `fold_text_streams` has already
+      collapsed the steps of one passage into one message and dropped the
+      passage that turned out to be the reply, so nothing here is written
+      twice.
+    - `kind: "tool"` -- one capability call. The two halves are folded into
+      one step by `toolUseId`, so a call appears once whether or not it has
+      returned yet.
+
+    **The output is deliberately not carried**, and the number behind that
+    is the only reason this needs a second route at all. Agora truncates an
+    output at 20,000 characters and there is one per call, so a 40-message
+    window can hold 800KB of tool output -- against 1-9KB of thought text
+    and a `detail` that `audit.DETAIL_CHARS_MAX` already bounds at 500
+    (measured against three live threads, Cycle 780: thoughts 913-9,338
+    characters per window, tool arguments 2,284-2,726, outputs
+    3,588-17,243 and rising with no ceiling but the per-call one). The
+    drawer's *list* needs none of it; the detail view fetches one call's
+    output when he taps that row. Same principle as never truncating what
+    he reads: keep all of it, and let the interface decide when to send it.
+    """
+    activity = message.get("activity")
+    if not isinstance(activity, dict):
+        # A legacy row carries `activity: true` rather than a block. It is
+        # still narration and is still dropped -- there is simply nothing in
+        # it to put in the drawer.
+        return
+    passage = narration_passage(message)
+    if passage is not None:
+        pending.append({"kind": "thought", "text": passage})
+        return
+    capability = (activity.get("capability") or "").strip()
+    if not capability:
+        return
+    tool_use_id = str(activity.get("toolUseId") or "")
+    detail = (activity.get("detail") or "").strip()
+    # The second half of a call already in the list amends it rather than
+    # appending a twin. Only ever matched on a non-empty id: Agora leaves
+    # `toolUseId` off some rows, and folding those together on "" would
+    # merge every anonymous call in the turn into one step.
+    if tool_use_id:
+        for step in pending:
+            if step["kind"] == "tool" and step["id"] == tool_use_id:
+                if detail and not step["input"]:
+                    step["input"] = detail
+                step["status"] = _step_status(activity)
+                return
+    pending.append({
+        "kind": "tool",
+        "capability": capability,
+        # What the call was given. Named `input` rather than `detail`
+        # because that is the word on the screen he screenshotted.
+        "input": detail,
+        "id": tool_use_id,
+        "status": _step_status(activity),
+    })
+
+
+def visible_rows(messages):
+    """Drop narration of the machinery, keep the conversation -- and hand
+    the machinery to the message it happened under.
+
+    Same filter as `turns.build_history`: thinking, forgotten and system
+    messages are how the loop talks to itself.
+
+    **Activity is no longer thrown away, and no longer drawn as a message
+    either.** His capture, `issues.md` 2026-09-01: *"The streaming of the
+    thoughts in a conversation show up as multiple bubbles and i do not
+    like that."* Each passage the persona wrote on the way to an answer was
+    a bubble of its own, so a turn that thought four times and answered
+    once read as five things said (issue #129 put them there, and that was
+    the right fix for a four-minute silence and the wrong shape for the
+    transcript). Now every step between two real messages is collected into
+    `steps` on the message that follows them, which the page draws as one
+    collapsed line above the prose.
+
+    A block with nothing after it -- a turn still running, or a cycle that
+    narrated for an hour and never replied -- becomes a row of its own with
+    no text. It keeps `partial: True`, which is what `waiting`, `newestAt`
+    and `reply_check.replied` already key on to mean "narration, not an
+    answer", so none of those three had to learn a second word for it.
     """
     out = []
+    pending = []
+
+    def flush(into):
+        """Attach the collected steps to `into`, or emit them alone."""
+        if not pending:
+            return
+        if into is not None:
+            into["steps"] = list(pending)
+        else:
+            out.append({"id": "", "sender": "", "text": "", "createdAt": "",
+                        "partial": True, "stepsOnly": True,
+                        "steps": list(pending)})
+        del pending[:]
+
     for m in fold_text_streams(messages):
         if m.get("forgotten") or m.get("system") or m.get("thinking"):
             continue
-        passage = narration_passage(m)
-        if m.get("activity") and passage is None:
+        if m.get("activity"):
+            _steps(pending, m)
             continue
-        out.append({
+        row = {
             "id": m.get("id"),
             "sender": m.get("sender") or "",
-            "text": passage if passage is not None else (m.get("text") or ""),
+            "text": m.get("text") or "",
             # Agora's `/messages` calls this `ts`; `createdAt` is accepted
             # too so a caller holding a message from `/conversations` (which
             # does use `createdAt`) is not silently undated. Measured
             # against the live store, Cycle 441.
             "createdAt": m.get("ts") or m.get("createdAt") or "",
-            "partial": passage is not None,
-        })
+            "partial": False,
+        }
+        # Steps belong to what the persona said after them, never to what he
+        # said next: a block that runs into one of his messages is his turn
+        # ending, not the start of the next one, so it stands alone.
+        flush(None if row["sender"] == "Edvard" else row)
+        out.append(row)
+    flush(None)
     return out
+
+
+def step_output(conversation_id, tool_use_id, limit=None):
+    """What one tool call returned, fetched when he opens that row.
+
+    The other half of `_steps`' bargain: the thread carries every call's
+    name and arguments and none of their outputs, because an output is
+    20,000 characters and a window holds forty of them. This reads the same
+    messages the thread was built from and answers for one `toolUseId`.
+
+    Returns `None` when nothing in the window carries that id -- a call that
+    has scrolled out of Agora's retention, or an id off a stale page. The
+    route turns that into a 404 rather than an empty string, because "it
+    returned nothing" and "I could not find it" are different answers and
+    the drawer says so.
+    """
+    if not conversation_id or not tool_use_id:
+        return None
+    limit = clamp_thread_limit(limit)
+    status, detail = agora_get(
+        f"/conversations/{conversation_id}/messages?limit={limit + 1}")
+    if status != 200:
+        raise RuntimeError(f"conversation fetch returned {status}")
+    found = None
+    for m in detail.get("messages", []):
+        activity = m.get("activity") or {}
+        if str(activity.get("toolUseId") or "") != tool_use_id:
+            continue
+        if found is None:
+            found = {"capability": (activity.get("capability") or "").strip(),
+                     "input": "", "output": "", "status": "running"}
+        text = (activity.get("detail") or "").strip()
+        if text and not found["input"]:
+            found["input"] = text
+        if activity.get("output") is not None:
+            found["output"] = str(activity.get("output"))
+        # Read off every half rather than only the last: the start message
+        # carries no output and would otherwise reset a status the finish
+        # message already settled.
+        if activity.get("output") is not None or activity.get("isError"):
+            found["status"] = _step_status(activity)
+    return found
 
 
 def visible_persona_name(persona_id, name):
@@ -263,16 +395,17 @@ def thread(conversation_id, limit=MAX_THREAD):
         raise RuntimeError(f"conversation fetch returned {status}")
     raw = detail.get("messages", [])
     # Counted on the raw rows rather than the visible ones on purpose.
-    # `_visible` drops narration, and a page whose older half is all
+    # `visible_rows` drops narration, and a page whose older half is all
     # narration would report "nothing older" while older messages exist.
     # The question this answers is "is another fetch worth making", which is
     # about what Agora holds, not about what survives the filter.
     has_more = len(raw) > limit
-    messages = keep_only_live_passages(_visible(raw))
-    # Blind to the partial passages `_visible` now keeps, for the reason
-    # `nova_ask.thread` spells out: a passage arriving mid-turn is evidence
-    # the turn is still running, and reading it as "answered" would stop the
-    # page polling before the real reply lands.
+    messages = visible_rows(raw)
+    # Blind to the steps-only row `visible_rows` emits for a turn with nothing
+    # after it: narration arriving mid-turn is evidence the turn is still
+    # running, and reading it as "answered" would stop the page polling
+    # before the real reply lands. `partial` is the flag it carries, so this
+    # is the same line it always was.
     settled = [m for m in messages if not m.get("partial")]
     waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
     return {

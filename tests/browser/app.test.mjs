@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -232,6 +232,15 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       const body = typeof convThread === "function" ? convThread(url) : convThread;
       if (body && typeof body.then === "function") return body;
       return res(body || { conversationId: null, messages: [], waiting: false }, convStatus);
+    }
+    /* One tool call's input and output, for the drawer's detail view. It
+     * has to be told apart before the bare `/api/conversations` branch for
+     * that branch's own stated reason: answered with the listing, the sheet
+     * would draw an empty Output over a call that printed a page. */
+    if (url.includes("/api/conversations/step")) {
+      const body = typeof convStep === "function" ? convStep(url) : convStep;
+      if (body && typeof body.then === "function") return body;
+      return res(body || { error: "not found" }, body ? convStepStatus : 404);
     }
     /* The route is gone from the server (#119, the app is Nova-only), so
      * the honest stub is the 404 a live site would send -- and it records
@@ -14117,3 +14126,278 @@ describe("the pool card keeps what he types without making him decide", () => {
   });
 });
 
+
+/* The work behind an answer: one collapsed line and a bottom sheet.
+ *
+ * His capture, `issues.md` 2026-09-01, with four screenshots attached: *"The
+ * streaming of the thoughts in a conversation show up as multiple bubbles and
+ * i do not like that. It would be better to replecate Claude mobile app patter
+ * where the thoughts and tools are compressed to one clickable line that opens
+ * a modal drawer from the bottom that can be dragged upwards, but contains the
+ * thoughts as text, but if tools have been used it is showed as a list of
+ * clickable lines and when clicked, the "input" and "output" of the tool is
+ * shown."*
+ *
+ * These drive the real dock against a real payload from the real server shape,
+ * because the failure worth catching is the one his screenshot shows: a turn
+ * rendering as several things said instead of one.
+ */
+describe("the thoughts-and-tools drawer", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const STEPS = [
+    { kind: "tool", capability: "Bash", input: "kubectl get pods",
+      id: "toolu_a", status: "done" },
+    { kind: "thought", text: "Seven of them.\n\nAll running." },
+  ];
+
+  /* One turn: his question, then the persona's answer carrying the work that
+   * produced it. This is `nova_conversations.visible_rows`' output shape. */
+  const WITH_STEPS = {
+    conversationId: "c-ask", waiting: false,
+    messages: [
+      { id: "1", sender: "Edvard", text: "how many pods?" },
+      { id: "2", sender: "Nova", text: "Seven.", steps: STEPS },
+    ],
+  };
+
+  async function openDock(opts = {}) {
+    const window = await loadSite("/", { ask: WITH_STEPS, ...opts });
+    window.document.getElementById("chat-btn")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    return window;
+  }
+
+  const lines = (window) =>
+    [...window.document.querySelectorAll("#chat-thread .ask-steps")];
+  const sheet = (window) => window.document.querySelector(".step-sheet");
+  const toolRows = (window) =>
+    [...window.document.querySelectorAll(".step-sheet .step-tool")];
+
+  test("a turn is one message and one line, not a bubble per thought", async () => {
+    const window = await openDock();
+    // The whole of his complaint, as an assertion: two things said, not three.
+    assert.equal(
+      window.document.querySelectorAll("#chat-thread .ask-msg").length, 2);
+    assert.deepEqual(
+      [...window.document.querySelectorAll("#chat-thread .ask-text")]
+        .map((n) => n.textContent),
+      ["how many pods?", "Seven."]);
+    assert.equal(lines(window).length, 1);
+    // Named, because the block ran exactly one distinct capability -- which
+    // is the rule Claude mobile's "Used ToolSearch" follows.
+    assert.match(lines(window)[0].textContent, /Used Bash/);
+  });
+
+  test("the line sits above the prose it preceded, not under it", async () => {
+    /* Order, because that is what makes it read as "I did this, then said
+     * this". Asserted on the DOM position rather than on any styling, which
+     * jsdom cannot compute. */
+    const window = await openDock();
+    const answer = [...window.document.querySelectorAll("#chat-thread .ask-msg")][1];
+    const kids = [...answer.children].map((n) => n.className.split(" ")[0]);
+    assert.deepEqual(kids.slice(0, 3), ["ask-who", "ask-steps", "ask-text"]);
+  });
+
+  test("a message with no steps grows no line", async () => {
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false,
+             messages: [{ id: "1", sender: "Nova", text: "Seven." }] },
+    });
+    assert.equal(lines(window).length, 0);
+  });
+
+  test("nothing is on screen until he taps, and then the sheet is", async () => {
+    const window = await openDock();
+    // Built lazily, so before the first tap there is no dialog in the
+    // document at all -- a long thread must not carry one per message.
+    assert.equal(sheet(window), null);
+    click(window, lines(window)[0]);
+    assert.equal(sheet(window).hasAttribute("hidden"), false);
+    assert.equal(
+      window.document.querySelector(".step-backdrop").hasAttribute("hidden"), false);
+    assert.equal(window.document.querySelector(".step-title").textContent, "Used Bash");
+  });
+
+  test("the drawer holds the thoughts as text and the tools as rows", async () => {
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    // His words: thoughts as text, tools as clickable lines. So the passage
+    // must not be a button and the call must be one.
+    const thought = window.document.querySelector(".step-sheet .step-thought");
+    assert.equal(thought.tagName, "DIV");
+    assert.match(thought.textContent, /Seven of them\./);
+    assert.match(thought.textContent, /All running\./);
+    assert.equal(toolRows(window).length, 1);
+    assert.equal(toolRows(window)[0].tagName, "BUTTON");
+    assert.match(toolRows(window)[0].textContent, /Bash/);
+    assert.match(toolRows(window)[0].textContent, /kubectl get pods/);
+  });
+
+  test("tapping a tool asks for that call's output and shows both halves", async () => {
+    const asked = [];
+    const window = await openDock({
+      convStep: (url) => {
+        asked.push(url);
+        return { capability: "Bash", input: "kubectl get pods",
+                 output: "pod/a  Running", status: "done" };
+      },
+    });
+    click(window, lines(window)[0]);
+    click(window, toolRows(window)[0]);
+    await tick();
+    assert.deepEqual(asked,
+      ["/api/conversations/step?id=c-ask&tool=toolu_a"]);
+    assert.equal(window.document.querySelector(".step-title").textContent, "Bash");
+    assert.equal(window.document.querySelector(".step-sub").textContent, "Completed");
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".step-section-label")]
+        .map((n) => n.textContent), ["Inputs", "Output"]);
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".step-pre")].map((n) => n.textContent),
+      ["kubectl get pods", "pod/a  Running"]);
+  });
+
+  test("the back arrow appears with the detail and returns to the list", async () => {
+    const window = await openDock({
+      convStep: () => ({ capability: "Bash", input: "x", output: "y", status: "done" }),
+    });
+    click(window, lines(window)[0]);
+    const back = window.document.querySelector(".step-back");
+    assert.equal(back.hasAttribute("hidden"), true, "the list has nothing to go back to");
+    click(window, toolRows(window)[0]);
+    await tick();
+    assert.equal(back.hasAttribute("hidden"), false);
+    click(window, back);
+    assert.equal(back.hasAttribute("hidden"), true);
+    assert.equal(window.document.querySelector(".step-title").textContent, "Used Bash");
+    assert.equal(toolRows(window).length, 1, "the list did not come back");
+  });
+
+  test("a call the thread no longer holds says so instead of an empty Output", async () => {
+    /* The server answers 404 for a call that has scrolled out of Agora's
+     * retention. Drawing an empty Output block over it would read as "this
+     * command printed nothing", which is a different and wrong fact. */
+    const window = await openDock({ convStep: null });
+    click(window, lines(window)[0]);
+    click(window, toolRows(window)[0]);
+    await tick();
+    assert.match(window.document.querySelector(".step-note").textContent,
+      /no longer in the thread/);
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".step-section-label")]
+        .map((n) => n.textContent), ["Inputs"],
+      "an Output heading over nothing is the thing this avoids");
+  });
+
+  test("closing puts the sheet and its backdrop away together", async () => {
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    click(window, window.document.querySelector(".step-close"));
+    assert.equal(sheet(window).hasAttribute("hidden"), true);
+    assert.equal(
+      window.document.querySelector(".step-backdrop").hasAttribute("hidden"), true,
+      "a backdrop left up is a page he cannot tap");
+  });
+
+  test("a tap on the backdrop closes it too", async () => {
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    click(window, window.document.querySelector(".step-backdrop"));
+    assert.equal(sheet(window).hasAttribute("hidden"), true);
+  });
+
+  test("dragging the handle upwards makes the sheet taller", async () => {
+    /* The half of his ask that is a gesture: *"a modal drawer from the
+     * bottom that can be dragged upwards"*. jsdom has no layout, so what is
+     * observable is the height the drag writes onto the node -- which is
+     * also the only thing the real drag changes. */
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    const grip = window.document.querySelector(".step-grip");
+    const opened = parseFloat(sheet(window).style.height);
+    assert.ok(opened > 0, "the sheet opened at no height at all");
+    grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 600 }));
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 200 }));
+    const dragged = parseFloat(sheet(window).style.height);
+    assert.ok(dragged > opened, `dragging up did not grow the sheet (${dragged})`);
+    // And it stops rather than climbing off the top of the screen.
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: -9000 }));
+    assert.ok(parseFloat(sheet(window).style.height) <= 92);
+  });
+
+  test("dragging down stops short of a sheet he cannot grab again", async () => {
+    /* The other end of the clamp, and it is here because a floor-only or
+     * ceiling-only assertion is the shape that let a previous cycle's
+     * mutation raise a cap to 8GiB with every test still green. */
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    const grip = window.document.querySelector(".step-grip");
+    grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 100 }));
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 9000 }));
+    const height = parseFloat(sheet(window).style.height);
+    assert.ok(height >= 25, `the sheet collapsed to ${height}vh`);
+    assert.ok(height <= 30, `the sheet did not shrink at all (${height}vh)`);
+  });
+
+  test("the pointer stops moving the sheet once he lets go", async () => {
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    const grip = window.document.querySelector(".step-grip");
+    grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 600 }));
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 400 }));
+    const held = parseFloat(sheet(window).style.height);
+    window.dispatchEvent(new window.MouseEvent("pointerup", { clientY: 400 }));
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 100 }));
+    assert.equal(parseFloat(sheet(window).style.height), held,
+      "the sheet kept following the pointer after he let go");
+  });
+
+  test("a turn still running is its line alone, with no empty bubble", async () => {
+    /* `stepsOnly` is the server's row for work with no answer under it yet.
+     * Issue #129 put those passages on the page and was right to; drawing
+     * one as a bubble with no text in it is what this replaces. */
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, messages: [
+        { id: "1", sender: "Edvard", text: "how many pods?" },
+        { id: "", sender: "", text: "", partial: true, stepsOnly: true,
+          steps: [{ kind: "thought", text: "Counting." }] },
+      ] },
+    });
+    assert.equal(
+      window.document.querySelectorAll("#chat-thread .ask-msg").length, 1,
+      "the running turn drew a bubble of its own");
+    assert.equal(
+      window.document.querySelectorAll("#chat-thread .ask-msg-steps").length, 1);
+    assert.equal(lines(window).length, 1);
+    assert.match(lines(window)[0].textContent, /Thought/);
+  });
+
+  test("more than one capability is counted rather than named", async () => {
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, messages: [
+        { id: "2", sender: "Nova", text: "Done.", steps: [
+          { kind: "tool", capability: "Bash", input: "ls", id: "a", status: "done" },
+          { kind: "tool", capability: "Read", input: "/x", id: "b", status: "done" },
+        ] },
+      ] },
+    });
+    assert.match(lines(window)[0].textContent, /Used 2 tools/);
+  });
+
+  test("a call still running or failed says which on its own row", async () => {
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, messages: [
+        { id: "2", sender: "Nova", text: "Done.", steps: [
+          { kind: "tool", capability: "Bash", input: "pytest", id: "a", status: "running" },
+          { kind: "tool", capability: "Read", input: "/x", id: "b", status: "failed" },
+        ] },
+      ] },
+    });
+    click(window, lines(window)[0]);
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".step-tool-state")].map((n) => n.textContent),
+      ["running", "failed"]);
+  });
+});

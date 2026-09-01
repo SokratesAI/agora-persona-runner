@@ -9670,11 +9670,334 @@
     return button;
   }
 
-  function askMessage(message) {
+  /* --- The work behind an answer, as one line and a drawer ---------------
+   *
+   * His capture, `issues.md` 2026-09-01: *"The streaming of the thoughts in
+   * a conversation show up as multiple bubbles and i do not like that. It
+   * would be better to replecate Claude mobile app patter where the thoughts
+   * and tools are compressed to one clickable line that opens a modal drawer
+   * from the bottom that can be dragged upwards, but contains the thoughts as
+   * text, but if tools have been used it is showed as a list of clickable
+   * lines and when clicked, the "input" and "output" of the tool is shown.
+   * ... Please research on how Claude mobile does this and try to replecate
+   * it exactly."*
+   *
+   * He sent four screenshots and they are the specification, so this follows
+   * them rather than my own idea of the same thing:
+   *
+   * - the collapsed line is dim, inline in the flow above the prose it
+   *   preceded, and carries a `›` -- it is not a bubble and not a button
+   *   that looks like one;
+   * - the sheet rises from the bottom with a grab handle, a centred title
+   *   and an `✕` on the left;
+   * - tapping a tool row pushes a second view *inside the same sheet* --
+   *   back arrow, the tool's name, its status under it, then `Inputs` and
+   *   `Output`. His WebFetch screenshot is exactly that.
+   *
+   * Everything in `steps` comes from the server (`nova_conversations`), and
+   * the one thing it does not carry is a tool's output: capped at 20,000
+   * characters each, forty to a window, so they are fetched one at a time
+   * when he opens that row. */
+
+  /* What the collapsed line says.
+   *
+   * Claude mobile names the tool when there is one thing to name ("Used
+   * ToolSearch") and generalises when there is not ("Browsed the web").
+   * Same rule: name it when the block ran exactly one distinct capability,
+   * count otherwise, and fall back to the thinking when no tool ran at all.
+   *
+   * The count is of steps, not of the two halves of each call -- the server
+   * already folded those. */
+  function stepsLabel(steps) {
+    var names = [];
+    var thoughts = 0;
+    steps.forEach(function (step) {
+      if (step.kind === "tool") {
+        if (names.indexOf(step.capability) === -1) names.push(step.capability);
+      } else {
+        thoughts += 1;
+      }
+    });
+    var tools = steps.length - thoughts;
+    if (!tools) return thoughts === 1 ? "Thought about it" : "Thought it through";
+    if (names.length === 1) return "Used " + names[0];
+    return "Used " + tools + " tools";
+  }
+
+  /* The one sheet, appended to <body> and reused, the way `.prio-menu` is.
+   * A sheet per message would be a hundred hidden dialogs in a long thread,
+   * and only one can ever be open. */
+  var stepSheet = null;
+  var stepSheetBackdrop = null;
+  var stepSheetBody = null;
+  var stepSheetTitle = null;
+  var stepSheetSub = null;
+  var stepSheetBack = null;
+  var stepSheetClose = null;
+
+  function buildStepSheet() {
+    if (stepSheet) return stepSheet;
+    stepSheetBackdrop = el("div", "step-backdrop");
+    stepSheetBackdrop.hidden = true;
+    stepSheetBackdrop.addEventListener("click", closeStepSheet);
+    document.body.appendChild(stepSheetBackdrop);
+
+    stepSheet = el("div", "step-sheet");
+    stepSheet.hidden = true;
+    stepSheet.setAttribute("role", "dialog");
+    stepSheet.setAttribute("aria-modal", "true");
+
+    /* The grab handle. It is a real control, not decoration: he asked for a
+     * drawer "that can be dragged upwards", and `dragStepSheet` below is
+     * what does it. */
+    var grip = el("div", "step-grip");
+    grip.setAttribute("aria-hidden", "true");
+    stepSheet.appendChild(grip);
+
+    var head = el("div", "step-head");
+    stepSheetBack = el("button", "step-back", "‹");
+    stepSheetBack.type = "button";
+    stepSheetBack.title = "Back to the list";
+    stepSheetBack.setAttribute("aria-label", "Back to the list");
+    stepSheetBack.hidden = true;
+    head.appendChild(stepSheetBack);
+    stepSheetClose = el("button", "step-close", "✕");
+    stepSheetClose.type = "button";
+    stepSheetClose.title = "Close";
+    stepSheetClose.setAttribute("aria-label", "Close");
+    stepSheetClose.addEventListener("click", closeStepSheet);
+    head.appendChild(stepSheetClose);
+    var titles = el("div", "step-titles");
+    stepSheetTitle = el("h2", "step-title", "");
+    titles.appendChild(stepSheetTitle);
+    stepSheetSub = el("div", "step-sub", "");
+    stepSheetSub.hidden = true;
+    titles.appendChild(stepSheetSub);
+    head.appendChild(titles);
+    stepSheet.appendChild(head);
+
+    stepSheetBody = el("div", "step-body");
+    stepSheet.appendChild(stepSheetBody);
+    document.body.appendChild(stepSheet);
+    dragStepSheet(grip);
+    return stepSheet;
+  }
+
+  /* Drag the sheet taller.
+   *
+   * Pointer events rather than touch events: one code path covers his phone
+   * and a mouse, and jsdom can drive it. The height is a percentage of the
+   * viewport written onto the node, so nothing here has to know the CSS.
+   *
+   * Bounded at both ends deliberately. A sheet dragged past the top has
+   * nowhere further to go and one dragged to nothing leaves a strip he
+   * cannot grab again -- and a floor-only clamp is the shape that let a
+   * previous cycle's mutation raise a cap to 8GiB with every test green. */
+  // Where the sheet opens: enough to read a few steps without covering
+  // the message it belongs to, which is the height his screenshot shows.
+  var STEP_SHEET_OPEN_VH = 55;
+  var STEP_SHEET_MIN_VH = 25;
+  var STEP_SHEET_MAX_VH = 92;
+  function dragStepSheet(grip) {
+    var from = 0;
+    var startVh = 0;
+    function move(e) {
+      var vh = window.innerHeight || 1;
+      var next = startVh + ((from - e.clientY) / vh) * 100;
+      setStepSheetHeight(next);
+    }
+    function end() {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+    }
+    grip.addEventListener("pointerdown", function (e) {
+      from = e.clientY;
+      startVh = currentStepSheetHeight();
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end);
+      if (e.preventDefault) e.preventDefault();
+    });
+  }
+
+  function currentStepSheetHeight() {
+    var raw = parseFloat((stepSheet && stepSheet.style.height) || "");
+    return isNaN(raw) ? STEP_SHEET_OPEN_VH : raw;
+  }
+
+  function setStepSheetHeight(vh) {
+    var clamped = Math.max(STEP_SHEET_MIN_VH, Math.min(STEP_SHEET_MAX_VH, vh));
+    stepSheet.style.height = clamped + "vh";
+    return clamped;
+  }
+
+
+  function closeStepSheet() {
+    if (!stepSheet || stepSheet.hidden) return;
+    stepSheet.hidden = true;
+    stepSheetBackdrop.hidden = true;
+    document.removeEventListener("keydown", onStepSheetKey, true);
+  }
+
+  function onStepSheetKey(e) {
+    if (e.key !== "Escape") return;
+    // Escape from the detail view goes back to the list rather than closing
+    // the sheet, which is what the back arrow beside it does -- one gesture,
+    // two ways to make it.
+    if (!stepSheetBack.hidden) stepSheetBack.click();
+    else closeStepSheet();
+  }
+
+  /* One row in the drawer.
+   *
+   * A thought is text and is not clickable: it is the whole of what there is
+   * to say, and a tap target that opens nothing is worse than none. A tool is
+   * a button, because there is an input and an output behind it. */
+  function stepRow(step, onOpen) {
+    if (step.kind !== "tool") {
+      var passage = el("div", "step-thought");
+      appendRichText(passage, null, step.text || "");
+      return passage;
+    }
+    var row = el("button", "step-tool");
+    row.type = "button";
+    row.appendChild(el("span", "step-tool-name", step.capability || "tool"));
+    if (step.input) row.appendChild(el("span", "step-tool-arg", step.input));
+    if (step.status && step.status !== "done") {
+      row.appendChild(el("span", "step-tool-state step-tool-" + step.status,
+        step.status === "failed" ? "failed" : "running"));
+    }
+    row.addEventListener("click", function () { onOpen(step); });
+    return row;
+  }
+
+  /* The detail view: his WebFetch screenshot.
+   *
+   * The output is fetched here rather than carried in the thread, so this is
+   * the one place in the drawer that can fail. It says which of the two
+   * things went wrong -- a call the thread no longer holds (404) against a
+   * fetch that did not land -- because "no output" and "I could not ask" mean
+   * different things and only one of them is worth retrying. */
+  function showStepDetail(conversationId, step) {
+    stepSheetBack.hidden = false;
+    stepSheetTitle.textContent = step.capability || "tool";
+    stepSheetSub.hidden = false;
+    stepSheetSub.textContent = step.status === "failed" ? "Failed"
+      : step.status === "running" ? "Running" : "Completed";
+    stepSheetBody.textContent = "";
+    var pending = el("p", "step-loading", "Loading…");
+    stepSheetBody.appendChild(pending);
+
+    function section(label, text) {
+      stepSheetBody.appendChild(el("div", "step-section-label", label));
+      stepSheetBody.appendChild(el("pre", "step-pre", text));
+    }
+
+    if (!step.id) {
+      // A call Agora never gave a `toolUseId`. There is nothing to ask for,
+      // and the arguments are already here.
+      stepSheetBody.textContent = "";
+      section("Inputs", step.input || "");
+      stepSheetBody.appendChild(
+        el("p", "step-note", "This call has no id, so its output cannot be fetched."));
+      return;
+    }
+    /* `fetch` rather than `fetchPage`, and the status is why. A call Agora
+     * no longer holds is a 404 and a site that did not answer is anything
+     * else; `fetchPage` turns both into one rejected promise carrying a
+     * message, and telling them apart by that string would be this file
+     * agreeing with `nova_site.py` about a sentence. The status is the
+     * contract. */
+    function failed(note) {
+      if (stepSheetBack.hidden) return;  // he went back while it was in flight
+      stepSheetBody.textContent = "";
+      section("Inputs", step.input || "");
+      stepSheetBody.appendChild(el("p", "step-note", note));
+    }
+    fetch("/api/conversations/step?id=" + encodeURIComponent(conversationId)
+      + "&tool=" + encodeURIComponent(step.id)).then(function (r) {
+      if (r.status === 404) {
+        failed("This call is no longer in the thread, so its output is gone.");
+        return null;
+      }
+      if (!r.ok) {
+        failed("Could not reach the server for the output.");
+        return null;
+      }
+      return r.json();
+    }).then(function (found) {
+      if (!found) return;
+      if (stepSheetBack.hidden) return;
+      stepSheetBody.textContent = "";
+      section("Inputs", found.input || step.input || "");
+      section("Output", found.output || "");
+    }, function () {
+      failed("Could not reach the server for the output.");
+    });
+  }
+
+  function showStepList(conversationId, steps, label) {
+    stepSheetBack.hidden = true;
+    stepSheetSub.hidden = true;
+    stepSheetTitle.textContent = label;
+    stepSheetBody.textContent = "";
+    steps.forEach(function (step) {
+      stepSheetBody.appendChild(stepRow(step, function (chosen) {
+        showStepDetail(conversationId, chosen);
+      }));
+    });
+  }
+
+  function openStepSheet(conversationId, steps, label) {
+    buildStepSheet();
+    stepSheetBack.onclick = function () {
+      showStepList(conversationId, steps, label);
+    };
+    showStepList(conversationId, steps, label);
+    setStepSheetHeight(STEP_SHEET_OPEN_VH);
+    stepSheetBackdrop.hidden = false;
+    stepSheet.hidden = false;
+    document.addEventListener("keydown", onStepSheetKey, true);
+    stepSheetClose.focus();
+  }
+
+  /* The collapsed line itself. Returns null when there is nothing behind it,
+   * so a message with no steps is unchanged. */
+  function stepsLine(conversationId, steps) {
+    if (!steps || !steps.length) return null;
+    var label = stepsLabel(steps);
+    var line = el("button", "ask-steps");
+    line.type = "button";
+    line.appendChild(el("span", "ask-steps-label", label));
+    line.appendChild(el("span", "ask-steps-chev", "›"));
+    line.setAttribute("aria-label", label + " — open the details");
+    line.addEventListener("click", function () {
+      openStepSheet(conversationId, steps, label);
+    });
+    return line;
+  }
+
+  /* `conversationId` is what the drawer's detail view asks the server with.
+   * It is threaded through rather than read off a module variable because
+   * three surfaces render this -- the dock, a conversation thread and the
+   * journal card's ask -- and only one of them has a module variable to
+   * read. */
+  function askMessage(message, conversationId) {
+    var steps = stepsLine(conversationId, message.steps);
+    /* A row that is only the work behind an answer still being written.
+     * It is not a bubble: nothing has been said yet, and drawing it as one
+     * is the thing he asked me to stop doing. */
+    if (message.stepsOnly) {
+      var working = el("div", "ask-msg-steps");
+      if (steps) working.appendChild(steps);
+      return working;
+    }
     var mine = message.sender === "Edvard";
     var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs")
       + (message.partial ? " ask-partial" : ""));
     row.appendChild(el("div", "ask-who", mine ? "You" : message.sender || "Nova Answers"));
+    /* Above the prose, the way Claude mobile puts it above the paragraph the
+     * tool call led to -- and the way it happened. */
+    if (steps) row.appendChild(steps);
     var body = el("div", "ask-text");
     appendRichText(body, null, message.text);
     row.appendChild(body);
@@ -9741,7 +10064,7 @@
       return;
     }
     messages.forEach(function (message) {
-      container.appendChild(askMessage(message));
+      container.appendChild(askMessage(message, payload.conversationId));
     });
     if (payload.waiting) container.appendChild(askPending(payload.progress));
   }
@@ -9770,7 +10093,7 @@
       return;
     }
     messages.forEach(function (message) {
-      container.appendChild(askMessage(message));
+      container.appendChild(askMessage(message, payload.conversationId));
     });
     if (payload.waiting) container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
   }
