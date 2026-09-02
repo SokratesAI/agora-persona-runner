@@ -42,8 +42,10 @@ class RollSpec:
     """What a particular file needs that the shared engine cannot know.
 
     `marker` is the heading the entries live under, including its
-    newlines. `split_entries` turns the text below it into a list of
-    entries, newest first. `join_entries` puts them back. `archive_title`
+    newlines. `marker_aliases` are other spellings of that same heading,
+    for a section the owner has renamed -- see `_locate`.
+    `split_entries` turns the text below it into a list of entries,
+    newest first. `join_entries` puts them back. `archive_title`
     is the level-one heading in the archive, and `archive_frontmatter` is
     used only when the archive does not exist yet -- an existing archive
     keeps its own header verbatim.
@@ -83,6 +85,7 @@ class RollSpec:
         keep,
         noun="entries",
         archive_section="",
+        marker_aliases=(),
         check_entry=None,
         check_entries=None,
         check_archive=None,
@@ -93,6 +96,7 @@ class RollSpec:
         self.check_entries = check_entries
         self.noun = noun
         self.marker = marker
+        self.marker_aliases = tuple(marker_aliases)
         self.archive_title = archive_title
         self.archive_section = archive_section
         self.archive_frontmatter = archive_frontmatter
@@ -157,6 +161,50 @@ def join_bullets(entries):
     return "\n\n".join(entries)
 
 
+def _locate(live, spec):
+    """(the heading this file actually uses, the split around it).
+
+    A section can be renamed under a roller that still names the old
+    heading, and the roller then refuses every file forever -- which is
+    what `roll_needs_edvard` did from 2026-08-21, when the digest's
+    `## Needs Edvard` became `## Needs input`, until this was written. The  (not-prose: quoting a literal)
+    refusal was correct on its own terms and read as a broken tool. It
+    went unreported for the twelve days between the rename and this fix,
+    and would have gone longer: a cycle with no answered ask never runs
+    that roller, so nothing exercises it on a normal morning.
+
+    `spec.marker_aliases` is the other spellings of the same section. The
+    precedent is `nova_journal.ASK_LABEL`, which accepts both spellings of
+    the ask label for the same reason: the writer was renamed and the
+    readers were not.
+
+    **Two of them present is a refusal, not a preference order.** A digest
+    holding both headings is a spliced file, and picking one would roll
+    half a document while the other half kept accumulating -- the shape
+    `check_live` exists to catch on the digest. Naming both and stopping
+    is the honest answer.
+    """
+    found = [
+        (marker, parts)
+        for marker in (spec.marker, *spec.marker_aliases)
+        for parts in [split_at_heading(live, marker)]
+        if parts is not None
+    ]
+    if not found:
+        names = " or ".join(
+            repr(marker.strip()) for marker in (spec.marker, *spec.marker_aliases)
+        )
+        raise RollError(f"refusing to roll: no {names} section in the live file")
+    if len(found) > 1:
+        names = " and ".join(repr(marker.strip()) for marker, _ in found)
+        raise RollError(
+            f"refusing to roll: the live file carries both {names} -- two "
+            "spellings of one section, so which one holds the live items "
+            "cannot be read from the file"
+        )
+    return found[0]
+
+
 def _body(live, spec):
     """(everything up to and including the marker, the section, the rest).
 
@@ -177,17 +225,13 @@ def _body(live, spec):
     into these files every hour, so a paragraph naming `## Digest` is not
     a hypothetical -- see `md_sections.split_at_heading`.
     """
-    parts = split_at_heading(live, spec.marker)
-    if parts is None:
-        raise RollError(
-            f"refusing to roll: no {spec.marker.strip()!r} section in the live file"
-        )
+    marker, parts = _locate(live, spec)
     head, _rest = parts
     lines = live.split("\n")
     # `section_bounds` counts lines; `split_at_heading` counts characters.
     # Convert through the same `len(line) + 1` sum it uses, so the three
     # pieces still concatenate back to the input byte for byte.
-    end = sum(len(line) + 1 for line in lines[: section_bounds(lines, spec.marker)[1]])
+    end = sum(len(line) + 1 for line in lines[: section_bounds(lines, marker)[1]])
     return head, live[len(head):end], live[end:]
 
 

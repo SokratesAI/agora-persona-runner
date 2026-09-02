@@ -30,8 +30,22 @@ from agora_runner.rolling import (
     verify,
 )
 
-MARKER = "\n## Needs Edvard\n"
-ARCHIVE_TITLE = "# Needs Edvard — Answered"
+MARKER = "\n## Needs input\n"
+# The owner renamed the section on 2026-08-21 -- `nova_journal.ASK_LABEL`
+# took the same rename on the ask *label* and kept both spellings, and
+# this heading did not. From that day this module refused every digest
+# with "no '## Needs Edvard' section in the live file", which is a  (not-prose: quoting a literal)
+# correct refusal that reads as a broken tool, unreported for the twelve
+# days between the rename and the fix -- a cycle with no answered ask
+# never runs the roll, so nothing exercises it on a normal morning.
+# The old spelling stays readable: `digest-archive.md` and every digest
+# revision written before the rename carry it, and this module is what
+# a cycle repairing one of those reaches for.
+MARKER_ALIASES = ("\n## Needs Edvard\n",)
+# The archive title is *not* renamed: `needs-edvard-archive.md` is
+# append-only and an existing archive keeps its own header verbatim, so
+# changing this would refuse the one file it is meant to write to.
+ARCHIVE_TITLE = "# Needs Edvard \u2014 Answered"
 
 # `**Since 08-15**` -- the date the ask was first put to him. Written by the
 # cycle that raises the item; this module only reads it, and only to say how
@@ -89,6 +103,7 @@ def _check_archive(new_archive):
 
 SPEC = RollSpec(
     marker=MARKER,
+    marker_aliases=MARKER_ALIASES,
     archive_title=ARCHIVE_TITLE,
     archive_frontmatter=ARCHIVE_FRONTMATTER,
     split_entries=split_items,

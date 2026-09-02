@@ -385,3 +385,66 @@ def test_a_stale_page_cannot_clear_the_wrong_ask():
         archive_answered(
             LIVE, "", ["an ask that was rewritten away"], "n/a", dt.date(2026, 8, 16)
         )
+
+
+# --- The section was renamed and this roller was not (Cycle 785) ---------
+#
+# The owner renamed `## Needs Edvard` to `## Needs input` on 2026-08-21 and  (not-prose: quoting a literal)
+# `nova_needs.MARKER` kept the old spelling, so every call above this line
+# passed against a fixture nobody writes any more while the tool refused
+# the one real file it exists to edit. `LIVE` still carries the old
+# spelling on purpose -- that is what `digest-archive.md` and every digest
+# revision before the rename look like, and they stay readable.
+
+LIVE_RENAMED = LIVE.replace("## Needs Edvard", "## Needs input")
+
+
+def test_the_renamed_heading_rolls():
+    """The live digest's own heading, which is the one that was refused."""
+    new_live, new_archive, moved = R.archive_answered(
+        LIVE_RENAMED, ARCHIVE, ["spending limit"], "He raised it.", TODAY
+    )
+    assert len(moved) == 1
+    assert "spending limit" in new_archive
+    assert "spending limit" not in new_live
+    # The heading it found is the one written back, not the module default.
+    assert "## Needs input" in new_live
+    assert "## Needs Edvard" not in new_live
+    # And the section is still bounded -- the two sections below it are
+    # neither archived nor parsed as items.
+    assert "## Next cycle" in new_live and "## Digest" in new_live
+    assert "Something else" not in new_archive
+
+
+def test_the_old_heading_still_rolls():
+    """363 written entries and the archive carry it; dropping it loses them."""
+    _new_live, new_archive, moved = R.archive_answered(
+        LIVE, ARCHIVE, ["spending limit"], "He raised it.", TODAY
+    )
+    assert len(moved) == 1
+    assert "spending limit" in new_archive
+
+
+def test_both_headings_at_once_is_refused():
+    """A file carrying both spellings is spliced, and picking one rolls half of it."""
+    spliced = LIVE_RENAMED.replace(
+        "## Next cycle", "## Needs Edvard\n**Since 08-01** — An older ask.\n\n## Next cycle"
+    )
+    with pytest.raises(RollError) as excinfo:
+        R.archive_answered(spliced, ARCHIVE, ["spending limit"], "x", TODAY)
+    message = str(excinfo.value)
+    assert "Needs input" in message and "Needs Edvard" in message
+
+
+def test_no_section_at_all_names_both_spellings():
+    """The refusal has to say what it looked for, or it reads as the old bug."""
+    with pytest.raises(RollError) as excinfo:
+        R.archive_answered(
+            LIVE.replace("## Needs Edvard", "## Something else"),
+            ARCHIVE,
+            ["spending limit"],
+            "x",
+            TODAY,
+        )
+    message = str(excinfo.value)
+    assert "Needs input" in message and "Needs Edvard" in message
