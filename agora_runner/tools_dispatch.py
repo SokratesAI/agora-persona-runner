@@ -20,6 +20,7 @@ from agora_runner.vault import (
     unreadable_note,
 )
 from agora_runner.tools_kubectl import kubectl_read
+from agora_runner.tools_kubectl_test import kubectl_test
 from agora_runner.tools_github import github_read, create_pr, github_comment, merge_pr
 from agora_runner.tools_terminal import terminal_exec
 from agora_runner.tools_search import web_search_tinyfish
@@ -367,6 +368,10 @@ def execute_tool(name, args, persona, conversation_id, active_step=None):
             detail = f"{args.get('verb', '?')} {args.get('resource', '?')}"
             audit(persona_name, conversation_id, "kubectl_read", detail)
             return kubectl_read(args)
+        if name == "kubectl_test":
+            detail = f"{args.get('verb', '?')} {args.get('resource', '?')}"
+            audit(persona_name, conversation_id, "kubectl_test", detail)
+            return kubectl_test(args)
         if name == "github_read":
             detail = f"{args.get('command', '?')} {args.get('subcommand', '?')}"
             audit(persona_name, conversation_id, "github_read", detail)
