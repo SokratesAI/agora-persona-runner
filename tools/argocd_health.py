@@ -212,6 +212,7 @@ def report(apps, jobs_by_owner, now):
     """The printed lines and the exit status, as (lines, status)."""
     lines = []
     actionable = False
+    held = []
 
     for app in sorted(apps, key=lambda a: a["name"]):
         age = _age(app["since"], now)
@@ -241,6 +242,7 @@ def report(apps, jobs_by_owner, now):
                     "the Application, so open the UI")
             continue
 
+        held.append(f"{app['name']} ({app['health']}{aged}, {len(stale)} Job(s))")
         lines.append(
             f"STALE JOB FAILURE  {app['name']}: {app['health']}{aged}, and every "
             f"failing Job it holds has been succeeded past")
@@ -250,11 +252,26 @@ def report(apps, jobs_by_owner, now):
                 f"{row['created']}, {row['cronjob']} succeeded "
                 f"{row['succeeded_since']}")
 
-    lines.append(
+    swept = (
         f"Read {len(apps)} ArgoCD Application(s) from the live cluster, not from git.")
-    lines.append(
-        "A Degraded held open by a Job a later run succeeded past is not raised — "
-        "no pull request fixes it and every cycle would re-derive it.")
+    if held:
+        # `preflight` collapses a check that exits 0 to one line, and it picks
+        # the last line carrying a digit — which was this one. So a
+        # STALE JOB FAILURE, the whole reason this check does not raise,
+        # vanished from the only report a cycle reads every morning: Cycle 810
+        # swept clean here and still wrote "sokratesai-infra reports Degraded
+        # and I do not know why or since when" into the handoff, while the
+        # answer and the age were both three lines above the summary. The
+        # names ride on the swept line specifically because that is the line
+        # the collapse keeps.
+        swept += (
+            " Held unhealthy right now by stale Job failures and deliberately"
+            f" not raised: {', '.join(held)}.")
+    lines.append(swept)
+    if held:
+        lines.append(
+            "A Degraded held open by a Job a later run succeeded past is not raised — "
+            "no pull request fixes it and every cycle would re-derive it.")
     return lines, (2 if actionable else 0)
 
 
