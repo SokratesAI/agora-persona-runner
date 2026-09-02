@@ -719,6 +719,22 @@ def board_payload(name):
     # today and every row on it will have been put there by a cycle that
     # judged it worth tracking. When it grows past a page it takes the
     # same treatment -- `board_page` is where that would go.
+    # A write-up that has been rolled into the archive is still that
+    # row's write-up. Nothing moves a `# Details` body out of the live
+    # file yet -- `tools/roll_captures.py` moves the older *captures* and
+    # stops there -- and that is precisely the order this has to happen
+    # in: `mine` is the live file only, so the day the roller learns to
+    # move a body, every row it moved would draw an empty write-up on the
+    # page with nothing failing anywhere. The page has to be able to read
+    # a rolled body before the roller may write one.
+    #
+    # Live wins on a collision. A number in both files is a row whose
+    # write-up was rolled and then written again, and the live file is
+    # the newer of the two. `parse_board` over an archive that has no
+    # `## Board` table returns no items, so this adds bodies and never
+    # rows -- an archived row is still a row on the live board.
+    for number, body in parse_board(nova_archive_markdown)["details"].items():
+        mine["details"].setdefault(number, body)
     nova_details, nova_detail_comments = _split_details(mine["details"])
     # Live first, then the rolled-off older half -- both files are
     # newest-first and the archive holds only what is older than the live
