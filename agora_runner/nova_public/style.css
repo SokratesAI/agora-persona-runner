@@ -3627,6 +3627,7 @@ body.chat-open { overflow: hidden; }
 }
 .chat-list[hidden] { display: none; }
 .chat-dock.list-open .chat-thread,
+.chat-dock.list-open #chat-model-host,
 .chat-dock.list-open .chat-form { display: none; }
 .chat-list-row {
   display: block;
@@ -4314,3 +4315,30 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 /* Inside a pill the chip is a rating, not a tap target of its own -- the
  * whole pill is the link, so the chip must not eat the tap. */
 .project-pill .chip { margin-left: 6px; pointer-events: none; }
+
+/* The visible model picker on a thread (his issue #143).
+ *
+ * A thin line under the heading rather than a control inside it: the dock's
+ * head is already three items wide on a 360px phone, and a fourth would
+ * squeeze the thread's title, which is the thing that says where he is.
+ * `[hidden]` on the bar is what keeps it out of the layout entirely until
+ * the model is actually known -- see `modelPicker` in `app.js`. */
+.model-pick-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0 0.15rem;
+}
+.model-pick-bar[hidden] { display: none; }
+.model-pick {
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--dim);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.2rem 0.35rem;
+  max-width: 100%;
+}
+.model-pick:disabled { opacity: 0.6; }
+.model-pick-note { font-size: 0.75rem; color: var(--dim); }

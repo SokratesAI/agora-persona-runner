@@ -10117,6 +10117,121 @@
     return row;
   }
 
+  /* The visible model picker, on the thread itself.
+   *
+   * His issue #143 lists *"a visible model picker"* among the controls the
+   * chat is missing. `nova_conversations.set_model` has existed since idea
+   * #95 and the only thing that ever called it is the row editor behind a
+   * press-and-hold in the switcher -- so from the thread he is reading,
+   * which model is answering him was neither visible nor changeable. This is
+   * the same write, on the surface he is actually looking at.
+   *
+   * `(metered)` is on the label for `rowEditor`'s reason and it is a money
+   * reason rather than a cosmetic one: a metered model spends the prepaid
+   * balance per token, and a picker that hides which ones do would let him
+   * spend it by reaching for the top of a list.
+   *
+   * A model the catalog does not list still gets an option, selected, so
+   * opening the picker can never silently repoint a thread at something else
+   * because Agora's catalog moved on.
+   */
+  function modelOption(value, label) {
+    var node = document.createElement("option");
+    node.value = value;
+    node.textContent = label;
+    return node;
+  }
+
+  function modelPicker(conversationId) {
+    var wrap = el("div", "model-pick-bar");
+    /* Hidden until the answer lands, and it stays hidden on every path that
+     * does not produce one. A picker drawn empty and filled in a second
+     * later is a control that reads as "no model" for that second, on the
+     * one question this is meant to answer. */
+    wrap.hidden = true;
+    var pick = document.createElement("select");
+    pick.className = "model-pick";
+    pick.setAttribute("aria-label", "Model");
+    var note = el("span", "model-pick-note");
+    wrap.appendChild(pick);
+    wrap.appendChild(note);
+    if (!conversationId) return wrap;
+    var current = "";
+    fetchPage("/api/conversations/model?id=" + encodeURIComponent(conversationId))
+      .then(function (payload) {
+        var models = payload.models || [];
+        /* `found` is the server's answer to "does Agora still hold this
+         * thread", and it is not the same question as "has it a model".
+         * Both leave `model` empty and they mean opposite things -- see
+         * `nova_conversations.model_choice`. No catalog, no picker either:
+         * a select holding only the model the thread already has cannot
+         * change anything. */
+        if (!payload.found || !models.length) return;
+        current = payload.model || "";
+        var listed = false;
+        models.forEach(function (m) {
+          if (m.id === current) listed = true;
+          pick.appendChild(modelOption(
+            m.id, m.label + (m.metered ? " (metered)" : "")));
+        });
+        if (current && !listed) {
+          pick.insertBefore(modelOption(current, current), pick.firstChild);
+        }
+        if (!current) {
+          pick.insertBefore(modelOption("", "Model (unset)"), pick.firstChild);
+        }
+        // After the options exist, never with `selected` on each one --
+        // `rowEditor` carries the measurement, and the failure is a picker
+        // that opens on a model the thread is not on.
+        pick.value = current;
+        wrap.hidden = false;
+      })
+      .catch(function () { /* no picker; the messages are what he came for */ });
+
+    pick.addEventListener("change", function () {
+      var wanted = pick.value;
+      if (!wanted || wanted === current) return;
+      pick.disabled = true;
+      note.textContent = "switching…";
+      fetch("/api/conversations/model", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: conversationId, model: wanted }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) {
+            throw new Error((result && (result.message || result.error)) || "failed");
+          }
+          current = wanted;
+          note.textContent = "";
+        })
+        .catch(function (err) {
+          /* Put the control back on the model the thread is actually on.
+           * Leaving it showing the one that did not take is the failure this
+           * app keeps filing against itself -- a page reporting a write that
+           * never happened. */
+          pick.value = current;
+          note.textContent = "could not switch: " + err.message;
+        })
+        .then(function () { pick.disabled = false; });
+    });
+    return wrap;
+  }
+
+  /* Draw a fresh picker into a host node, replacing whatever was there.
+   *
+   * Both surfaces reuse one host across threads -- the dock switches
+   * conversations inside the same panel, and the page is rebuilt per open --
+   * so the old thread's picker has to go before the new one's fetch lands,
+   * or a slow answer for the thread he left paints over the one he is on.
+   */
+  function paintModelPicker(host, conversationId) {
+    if (!host) return;
+    host.textContent = "";
+    host.appendChild(modelPicker(conversationId));
+  }
+
   /* One loop for both threads. It carries the last thing he said forward so
    * every answer knows the question it came from -- the messages arrive as a
    * flat list with no reply-to on them, so position is the only link there is,
@@ -10249,6 +10364,12 @@
       load();
     });
     feed.appendChild(back);
+    // The page knows its own id up front, unlike the dock's Ask row, so this
+    // goes out beside the thread fetch rather than after it -- the heading's
+    // reason, one screen up: nothing he came here to read waits on it.
+    var modelHost = el("div", "model-pick-host");
+    feed.appendChild(modelHost);
+    paintModelPicker(modelHost, id);
 
     var thread = el("div", "ask-thread");
     var form = el("form", "ask-form");
@@ -11796,6 +11917,7 @@
     var menuBtn = document.getElementById("chat-menu");
     var listEl = document.getElementById("chat-list");
     var titleEl = document.getElementById("chat-title");
+    var modelHost = document.getElementById("chat-model-host");
 
     /* Which thread the dock is showing.
      *
@@ -12174,6 +12296,14 @@
           if (token !== sourceToken) return;
           paint(payload);
           cacheThread(payload);
+          /* Here and not in `switchTo`, because the Ask row has no id of its
+           * own -- `nova_ask` finds its conversation by tag, and the thread
+           * payload is the first thing on this side that knows which one it
+           * is. `pollChat` deliberately does not do this: the model behind a
+           * thread changes when he changes it, and re-fetching the listing
+           * every four seconds to re-answer that would be the cost
+           * `model_choice` is a separate route to avoid. */
+          paintModelPicker(modelHost, payload.conversationId);
           if (payload.waiting) pollChat(0);
         })
         .catch(function (err) {
@@ -12520,6 +12650,17 @@
       loadingOlder = false;
       pendingAnchor = null;
       titleEl.textContent = source.name;
+      /* And the picker goes with it, before anything is painted.
+       *
+       * `modelHost` is a singleton in `index.html`, not a node rebuilt per
+       * thread, and the picker for the new thread only arrives when its own
+       * `loadThread` fetch lands. Without this the previous thread's picker
+       * stays on screen -- live, and closed over the previous thread's id --
+       * over messages that are already the new thread's, because
+       * `paintCached` repaints them instantly. Changing it in that window
+       * repoints the thread he just left, at a model he was choosing for the
+       * one he is looking at. Reviewer caught it. */
+      paintModelPicker(modelHost, "");
       thread.textContent = "";
       // Only the thread the cache actually holds paints instantly; every
       // other row in the switcher still shows the placeholder.

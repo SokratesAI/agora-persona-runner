@@ -5533,3 +5533,24 @@ def test_a_relayed_comment_is_marked_on_the_wire():
     # comment he typed must not carry it.
     assert payload["byCycle"]["55"][0]["relayed"] is False
     assert payload["needs"][0]["relayed"] is True
+
+
+# --- GET /api/conversations/model -- the visible picker's read (issue #143)
+
+def test_the_model_route_answers_the_thread_the_query_names():
+    """A GET beside the POST that already lives on this path. The id comes
+    off the query string for `/api/conversations/thread`'s reason: the route
+    table stays a set of exact strings."""
+    seen = {}
+
+    def fake(conversation_id):
+        seen["id"] = conversation_id
+        return {"model": "claude-cli:claude-sonnet-5", "models": [], "found": True}
+
+    with patch.object(nova_site, "conversation_model_choice", fake):
+        status, head, body = _get("/api/conversations/model?id=c-7")
+    assert status == 200
+    assert "application/json" in head
+    assert seen["id"] == "c-7"
+    assert json.loads(body)["model"] == "claude-cli:claude-sonnet-5"
+

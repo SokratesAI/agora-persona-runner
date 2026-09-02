@@ -191,6 +191,7 @@ from agora_runner.nova_conversations import (
     create as conversation_create,
     starting_name as conversation_starting_name,
     folder_create as conversation_folder_create,
+    model_choice as conversation_model_choice,
     move as conversation_move,
     remove as conversation_remove,
     rename as conversation_rename,
@@ -2885,6 +2886,17 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                     # direction, and the thread he asked for is already built.
                     log(f"nova-site conversation marker failed: {e}")
                 self._send_json(200, payload)
+                return
+            if path == "/api/conversations/model":
+                # Which model answers in this thread, plus the catalog he
+                # may switch it to. Its own route rather than a field on
+                # `/api/conversations/thread` because that one is polled
+                # every four seconds and this answer only changes when he
+                # changes it -- `nova_conversations.model_choice` carries
+                # the whole reasoning, including why the conversation
+                # listing is the only place the current model can be read.
+                self._send_json(200, conversation_model_choice(
+                    (query.get("id") or [""])[0]))
                 return
             if path == "/api/conversations/step":
                 # What one tool call returned, asked for when he opens that
