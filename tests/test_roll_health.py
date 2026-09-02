@@ -239,3 +239,38 @@ def test_the_report_points_at_roll_done_details_when_one_would_move():
     printed = out.getvalue()
     assert "tools.roll_done_details" in printed
     assert "would move nothing" not in printed
+
+
+def test_a_clean_file_still_says_what_it_is_made_of():
+    """The hole the first version left: `Rollable` says nothing about the
+    62,801 bytes of write-ups that survive the roll, and the whole finding
+    disappeared the moment the roll it named was actually run."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    assert findings == [] and unreadable == []
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 0
+    printed = out.getvalue()
+    assert "Rollable" in printed
+    assert "write-up bodies across 1 row(s)" in printed
+    assert "largest single write-up is row #1" in printed
+
+
+def test_the_clean_summary_line_is_last_and_carries_the_write_up_weight():
+    """`preflight` collapses an exit-0 check to its last line holding a
+    digit, so a decomposition printed above the tail note is invisible on a
+    normal morning."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 0
+    lines = [ln for ln in out.getvalue().split("\n") if ln.strip()]
+    last_with_digit = [ln for ln in lines if re.search(r"\d", ln)][-1]
+    assert "write-ups no roller moves" in last_with_digit
+    assert "0 of 1 on a done row" in last_with_digit
