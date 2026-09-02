@@ -220,7 +220,7 @@ def check(pairs=PAIRS, fetch=_fetch):
     """`(findings, unreadable, clean)` -- three lists, in report order.
 
     A `findings` entry is `(live path, bytes, stranded, refusal, owed,
-    weight)`.
+    weight)`; a `clean` entry is `(live path, bytes, weight)`.
     Taking `fetch` as an argument is what lets the tests run without a vault
     client; nothing else passes it.
     """
@@ -236,7 +236,7 @@ def check(pairs=PAIRS, fetch=_fetch):
             findings.append((live_path, len(live), stranded, refusal, owed,
                              weight(live, archive)))
         else:
-            clean.append((live_path, len(live)))
+            clean.append((live_path, len(live), weight(live, archive)))
     return findings, unreadable, clean
 
 
@@ -310,9 +310,29 @@ def report(findings, unreadable, clean, out=sys.stdout):
         print(f"Could not read {len(unreadable)} document(s) — that is no "
               "instrument, not no roll owed.", file=out)
         return 1
-    swept = ", ".join(f"{p} ({n:,} bytes)" for p, n in clean)
-    print(f"Rollable. Swept {len(clean)} capture file(s): {swept}", file=out)
+    swept = ", ".join(f"{p} ({n:,} bytes)" for p, n, _ in clean)
+    print(f"Every pair is reachable and no roll is owed: {swept}", file=out)
+    # **A clean pair gets the decomposition too, and leaving it off made the
+    # answer disappear the moment it was acted on.** Cycle 815 shipped this
+    # under findings only, ran the roll it named, and watched a 120,992-byte
+    # file with 62,801 bytes of write-ups in it print as `Rollable` with
+    # nothing but its size. "Rollable" is a fact about the roller, not about
+    # the file, and the size alone does not say which half of it is which.
+    for path, size, weights in clean:
+        print(f"    {path}", file=out)
+        _report_weight(size, weights, out)
     print(tail_note, file=out)
+    # **Last, and carrying a digit, because that is the line `preflight`
+    # shows.** It collapses a check that exits 0 to the last line holding a
+    # number, so the per-file block above is invisible on a normal morning
+    # and this is the whole of what a cycle reads. Putting the write-up
+    # weight here is the same fix `argocd_health` needed: exiting 0 for a
+    # good reason is not the same as having nothing to say.
+    marks = [w["writeups"] for _, _, w in clean if w.get("writeups")]
+    print(f"Rollable. Swept {len(clean)} capture file(s); "
+          f"{sum(m['bytes'] for m in marks):,} bytes of them are '# Details' "
+          f"write-ups no roller moves, {sum(m['done_count'] for m in marks)} "
+          f"of {sum(m['count'] for m in marks)} on a done row.", file=out)
     return 0
 
 
