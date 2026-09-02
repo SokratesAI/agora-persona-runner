@@ -2,7 +2,7 @@
 
 `tools_kubectl.kubectl_read` next door is read-only over the whole cluster.
 This is its mirror image: it can create, patch, delete and exec, and it can
-only ever touch one namespace. Edvard's idea #230 asked for exactly that --
+only ever touch one namespace. Idea #230 on the owner's board asked for that --
 "a dedicated `test` k8s namespace where Nova has full CRUD access, with a
 stable pod off the prod image for live coding/testing sessions" -- and item 1
 of that spec (the namespace and the RBAC grant) landed in platform-config#599.

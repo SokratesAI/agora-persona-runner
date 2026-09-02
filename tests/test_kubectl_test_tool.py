@@ -1,6 +1,6 @@
 """kubectl_test -- the namespace pin, and the four ways round it.
 
-Edvard's idea #230 item 2. Every test here names the escape it closes, so a
+Idea #230 item 2 on the owner's board. Every test here names the escape it closes, so a
 regression says which door reopened rather than only that something broke.
 """
 
