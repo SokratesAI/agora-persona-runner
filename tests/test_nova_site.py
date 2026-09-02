@@ -4190,12 +4190,16 @@ def test_health_routes_pin_every_branch_of_the_routing_rule():
     assert routes["projects/sokrates/projects/agora/journal-digest.md"] == "nova"
     # A `.bak` beside the digest is the owner's file and must not follow it.
     assert routes["projects/sokrates/projects/agora/journal-digest.md.bak"] == "obsidian"
-    # The Nova folder he asked to keep in his own vault.
-    assert routes["projects/sokrates/projects/nova/nova.md"] == "obsidian"
-    # A file he writes by hand. It sat under the agora folder until
-    # 2026-08-12 and moved into the Nova folder in his own vault at his
-    # ask -- the folder changed, the database deliberately did not.
-    assert routes["projects/sokrates/projects/nova/issues.md"] == "obsidian"
+    # The Nova folder in his own vault. It sat in `obsidian` until
+    # 2026-09-02, when he asked for it -- *"I never open them either, so
+    # better to move them so that you control them"* -- so this route
+    # asserts the opposite of what it asserted before that date.
+    assert routes["projects/sokrates/projects/nova/nova.md"] == "nova"
+    # A file he writes by hand, through the app rather than through
+    # Obsidian. It sat under the agora folder until 2026-08-12 and moved
+    # into the Nova folder in his own vault at his ask; the database then
+    # followed on 2026-09-02, also at his ask.
+    assert routes["projects/sokrates/projects/nova/issues.md"] == "nova"
     assert routes[
         "projects/sokrates/projects/agora/nova/journal/138-cycle-121.md"
     ] == "nova"

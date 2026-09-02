@@ -369,8 +369,8 @@ _ROUTING_EXPECTED_PATHS = {
     "projects/sokrates/projects/agora/journal-digest.md.bak": "edvard",
     # The owner's own Nova folder, which is not Nova's. Two folders now say
     # "nova" and only `agora/nova/` routes to Nova's database.
-    "projects/sokrates/projects/nova/nova.md": "edvard",
-    "projects/sokrates/projects/nova/issues.md": "edvard",
+    "projects/sokrates/projects/nova/nova.md": "nova",
+    "projects/sokrates/projects/nova/issues.md": "nova",
     # EXTRA_PROBE_PATHS.
     "": "edvard",
     None: "edvard",
@@ -379,7 +379,7 @@ _ROUTING_EXPECTED_PATHS = {
     # slash, so this is not inside it and is not the exact file either.
     "projects/sokrates/projects/agora/nova": "edvard",
     "projects/sokrates/projects/agora/novaX/file.md": "edvard",
-    "projects/sokrates/projects/nova/notes.md": "edvard",
+    "projects/sokrates/projects/nova/notes.md": "nova",
     "unrelated/file.md": "edvard",
 }
 
@@ -397,7 +397,7 @@ _ROUTING_EXPECTED_PREFIXES = {
     "projects/sokrates/projects/agora/journal-digest.md": "both",
     # One character longer than any Nova target, so nothing is under it.
     "projects/sokrates/projects/agora/journal-digest.md.bak": "edvard",
-    "projects/sokrates/projects/nova/": "edvard",
+    "projects/sokrates/projects/nova/": "nova",
     "unrelated/": "edvard",
 }
 
