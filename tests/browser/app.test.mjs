@@ -5530,17 +5530,15 @@ describe("an ask nobody answered is named in the header", () => {
    * 247 -- by then fourteen cards down -- while the board row it blocks sat
    * at the top of the owner's board and three cycles in a row skipped it. The
    * card was the right home for the ask; nothing was the home for "this one
-   * is still waiting". */
+   * is still waiting".
+   *
+   * Used to name the oldest ask on its own pill, linking straight to that
+   * one card, with a second "N waiting on you" pill only appearing once a
+   * second ask piled up. The owner, 2026-09-01: "2 is redundant from 3" --
+   * the single-ask pill duplicated the always-available link to the filtered
+   * feed, so it is gone, and the remaining pill fires on one open ask
+   * exactly as it does on ten. */
   const pill = (window) => window.document.querySelector("#status .badge-ask");
-  /* The href moved off the badge and onto the field around it when the
-   * status fields became one horizontal, clickable list (the owner's capture,
-   * 2026-08-22): the whole field is the link now, so the badge inside it
-   * had to stop being one -- an `<a>` inside an `<a>` is unnested by the
-   * parser. Same destination, bigger tap target. */
-  const askLink = (window) => {
-    const found = pill(window);
-    return found && found.closest("a.status-sub");
-  };
   const head = (window) => window.document.getElementById("status");
 
   const withAsks = (asks, extra) => {
@@ -5549,36 +5547,21 @@ describe("an ask nobody answered is named in the header", () => {
     return copy;
   };
 
-
-  test("an unanswered ask links to the card it lives on", async () => {
+  test("an unanswered ask draws a pill linking to the filtered view", async () => {
     const window = await loadSite("/", {
       journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
       comments: { byCycle: {}, needs: [] },
     });
     const found = pill(window);
     assert.ok(found, "expected a waiting-on-you pill");
-    assert.equal(askLink(window).getAttribute("href"), "/cycle/247");
-    assert.match(window.document.getElementById("status").textContent, /cycle 247/);
+    assert.equal(found.getAttribute("href"), "/asks");
+    assert.equal(found.textContent, "1 waiting on you");
   });
 
-  /* The longest wait is the one worth surfacing: a fresh ask is on a card
-   * he can still see. Taking the first of the list instead would name an
-   * ask -- plausible, wrong, and untestable by eye. */
-  test("the oldest open ask wins", async () => {
-    const window = await loadSite("/", {
-      journal: () => withAsks([
-        { cycle: 260, date: "2026-08-17", time: "10:00" },
-        { cycle: 247, date: "2026-08-16", time: "21:20" },
-      ]),
-      comments: { byCycle: {}, needs: [] },
-    });
-    assert.equal(askLink(window).getAttribute("href"), "/cycle/247");
-  });
-
-  /* A comment on the card is the answer, so the pill has to move on to the
-   * next one still waiting rather than staying on the one he just replied
-   * to. This is the assertion that makes the feature capable of stopping. */
-  test("a card he has replied to is not still waiting", async () => {
+  /* A comment on the card is the answer, so the count has to drop rather
+   * than staying put. This is the assertion that makes the feature capable
+   * of stopping. */
+  test("a card he has replied to is no longer counted", async () => {
     const window = await loadSite("/", {
       journal: () => withAsks([
         { cycle: 260, date: "2026-08-17", time: "10:00" },
@@ -5589,7 +5572,7 @@ describe("an ask nobody answered is named in the header", () => {
         needs: [],
       },
     });
-    assert.equal(askLink(window).getAttribute("href"), "/cycle/260");
+    assert.equal(pill(window).textContent, "1 waiting on you");
   });
 
   test("nothing is said when every ask has an answer", async () => {
@@ -5612,18 +5595,14 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   /* the owner, ideas board #182: *"I'm not able to read all the 'waiting on
-   * you' and all the answers for the journals."* The header named the oldest
-   * open ask and silently dropped every other one, and an ask leaves the
-   * twenty-entry feed inside a day, so a second open question was not
-   * reachable from this page at all once its card scrolled off.
-   *
-   * The count is the entry point and the panel is the answer, so both are
-   * asserted -- a count with nothing behind it is the same defect wearing a
-   * number. */
+   * you' and all the answers for the journals."* The header used to name
+   * only the oldest open ask and silently drop every other one, and an ask
+   * leaves the twenty-entry feed inside a day, so a second open question
+   * was not reachable from this page at all once its card scrolled off. */
   const counter = (window) =>
     window.document.querySelector("#status .status-asks-open");
 
-  test("a second open ask is counted, not dropped", async () => {
+  test("every open ask is counted, not just the oldest", async () => {
     const window = await loadSite("/", {
       journal: () => withAsks([
         { cycle: 260, date: "2026-08-17", time: "10:00" },
@@ -5631,23 +5610,7 @@ describe("an ask nobody answered is named in the header", () => {
       ]),
       comments: { byCycle: {}, needs: [] },
     });
-    const found = counter(window);
-    assert.ok(found, "expected a count of every open ask");
-    assert.equal(found.textContent, "2 waiting on you");
-    assert.equal(askLink(window).getAttribute("href"), "/cycle/247",
-      "the pill must still name the oldest one");
-  });
-
-  /* The control: one open ask must NOT draw the counter. A list of one is
-   * the field beside it said twice, and a button that always appears is a
-   * button whose count nobody reads. */
-  test("a single open ask draws no counter", async () => {
-    const window = await loadSite("/", {
-      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
-      comments: { byCycle: {}, needs: [] },
-    });
-    assert.ok(pill(window), "the fixture must still raise the pill");
-    assert.equal(counter(window), null);
+    assert.equal(counter(window).textContent, "2 waiting on you");
   });
 
   /* The owner, capture 2026-09-01: *"Drop the current 'needs me'
@@ -10963,7 +10926,11 @@ describe("the status fields are one horizontal list, and they link down to the c
 
   test("every status field sits in one row container, not loose in the header", async () => {
     const window = await loadSite("/", {
-      journal: () => withStatus({ running: true, stalled: false }),
+      journal: () => withStatus({
+        running: true,
+        stalled: false,
+        asks: [{ cycle: 57, date: "2026-08-16", time: "21:20" }],
+      }),
       comments: { byCycle: {}, needs: [] },
     });
     const rows = window.document.querySelectorAll("#status .status-subs");
@@ -10986,40 +10953,6 @@ describe("the status fields are one horizontal list, and they link down to the c
     assert.match(block, /flex-wrap:\s*wrap/);
   });
 
-  test("the field naming the last PR scrolls the feed to that cycle", async () => {
-    const window = await loadSite("/", {
-      journal: () => withStatus({ cycle: 57, lastOutcome: "merged", lastPr: "#289" }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    // Matched on the PR rather than the outcome: this test is about the
-    // field being a working link, and the field holds both halves.
-    const badge = [...window.document.querySelectorAll("#status .status-subs .status-sub")]
-      .find((f) => /#289/.test(f.textContent));
-    assert.ok(badge, "expected a PR field in the header");
-    const field = badge.closest ? (badge.closest("a.status-sub") || badge) : badge;
-    assert.equal(field.tagName, "A", "the outcome field is not clickable");
-    assert.equal(field.getAttribute("href"), "/cycle/57");
-
-    /* The card is on this page, so the click must stay on this page and
-     * scroll rather than follow the href. Both halves are asserted: a
-     * `preventDefault` with no scroll would be a link that does nothing. */
-    const card = window.document.getElementById("cycle-57");
-    assert.ok(card, "the control failed: cycle 57 has no card in this feed, "
-      + "so the in-page branch could not have been taken either way");
-    let scrolled = false;
-    card.scrollIntoView = () => { scrolled = true; };
-    const ev = new window.MouseEvent("click", { bubbles: true, cancelable: true });
-    field.dispatchEvent(ev);
-    assert.ok(scrolled, "clicking the field did not scroll to the card");
-    assert.ok(ev.defaultPrevented, "the click also followed the permalink");
-    /* The click starts a re-render in `app.js` that outlives the assertion
-     * above. The window used to stay open until the whole file finished, so
-     * that late callback always found a live `document` and nobody saw it;
-     * now that the window closes with the test, letting it land first is
-     * what the test always meant. Two heartbeat tests below do the same. */
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-
   test("a field that references no cycle is not a link", async () => {
     const window = await loadSite("/", {
       journal: () => withStatus({ running: true, stalled: false }),
@@ -11030,91 +10963,23 @@ describe("the status fields are one horizontal list, and they link down to the c
     assert.equal(running.tagName, "P");
   });
 
-  /* the owner, `issues.md` 2026-08-23: "Drop the Outcome pill from the
-   * top-of-page header too, not just the card view — it's the same ugly
-   * all-caps duplicate of the blue summary line, shown twice on the same
-   * screen." Both copies were on the feed at once, which is what "twice on
-   * the same screen" names: this header field, and the newest card below it.
-   *
-   * The control against a selector that matches nothing is the PR: the same
-   * field, same fixture, one child present and the other absent. */
-  test("a free-text outcome draws no header pill, and the PR is still named", async () => {
+  /* the owner, `issues.md` 2026-08-23, then again 2026-09-01: the header's
+   * outcome-and-PR field ("merged" / "no-op" / ... plus the PR reference)
+   * duplicated the newest journal card, which is always the top card in
+   * the feed below it. Restored once in between (2026-08-24) when he missed
+   * it; this time it is gone for good, with the card as the only place that
+   * pair is drawn. `shortOutcome` / `outcomeClass` keep their own tests
+   * against the card's badge -- this header field no longer exists to test. */
+  test("no outcome-and-PR field is drawn in the header, only on the card", async () => {
     const window = await loadSite("/", {
-      journal: () => withStatus({
-        cycle: 57,
-        lastOutcome: "prompt.md wired to tools.backlog_brief; inbox cleared",
-        lastOutcomeDetail: "CI outage, merged nothing",
-        lastPr: "#289",
-      }),
+      journal: () => withStatus({ cycle: 57, lastOutcome: "merged", lastPr: "#289" }),
       comments: { byCycle: {}, needs: [] },
     });
     const subs = window.document.querySelector("#status .status-subs");
-    assert.ok(!/backlog_brief/.test(subs.textContent), subs.textContent);
-    assert.ok(!/merged nothing/.test(subs.textContent), subs.textContent);
-    assert.match(subs.textContent, /#289/);
-  });
-
-  /* The footer is mandatory, so a cycle with nothing to show still writes
-   * `PR: none`, and the field must not become the word "none" linking to a
-   * cycle -- that is the noise #300 removed and it stays removed.
-   *
-   * What changed on 2026-08-24 is the other half. The owner: "i miss the status
-   * fields. Please bring them back", written while a run of cycles was dying
-   * without shipping anything. So a cycle whose PR is `none` now gets a
-   * field again -- carrying its one-word status, never the `none`. */
-  test("a last cycle with no PR still gets a status word, and never says none", async () => {
-    const window = await loadSite("/", {
-      journal: () => withStatus({ cycle: 57, lastOutcome: "no-op", lastPr: "none" }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    const subs = window.document.querySelector("#status .status-subs");
-    assert.ok(subs, "the field carrying the status word was not drawn");
-    assert.ok(!/none/.test(subs.textContent), subs.textContent);
-    assert.match(subs.textContent, /no-op/);
-    // The control: the same fixture with a real reference draws both halves.
-    const w2 = await loadSite("/", {
-      journal: () => withStatus({ cycle: 57, lastOutcome: "no-op", lastPr: "runner#289" }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    const subs2 = w2.document.querySelector("#status .status-subs").textContent;
-    assert.match(subs2, /runner#289/);
-    assert.match(subs2, /no-op/);
-  });
-
-  /* `Outcome: none` is not a status word either, and this is the half that
-   * would have hurt: `isRealPr` keeps the word "none" out of this field, so
-   * a `none` admitted by `shortOutcome` would have walked back in beside it
-   * as a badge. Fails the moment the vocabulary gets permissive again. */
-  test("an outcome of none draws no header field", async () => {
-    const window = await loadSite("/", {
-      journal: () => withStatus({ cycle: 57, lastOutcome: "none", lastPr: "none" }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    const subs = window.document.querySelector("#status .status-subs");
-    assert.ok(!subs || !/none/.test(subs.textContent), subs && subs.textContent);
-    // The control: a real status word on the same fixture does draw one.
-    const w2 = await loadSite("/", {
-      journal: () => withStatus({ cycle: 57, lastOutcome: "research", lastPr: "none" }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    assert.match(w2.document.querySelector("#status .status-subs").textContent, /research/);
-  });
-
-  /* And the case that has no field to draw at all: a free-text outcome is
-   * refused by `shortOutcome` and the PR is `none`, so neither half has
-   * anything a badge can hold. This is cycle 340's exact shape -- the card
-   * he complained about -- and it must still render nothing. */
-  test("a free-text outcome with no PR still gets no header field", async () => {
-    const window = await loadSite("/", {
-      journal: () => withStatus({
-        cycle: 57,
-        lastOutcome: "goal review written, 8 board rows reprioritised",
-        lastPr: "none",
-      }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    const subs = window.document.querySelector("#status .status-subs");
-    assert.ok(!subs || !/reprioritised|none/.test(subs.textContent), subs && subs.textContent);
+    assert.ok(!subs || !/#289|merged/.test(subs.textContent), subs && subs.textContent);
+    // The card still carries its own outcome badge -- unaffected by this
+    // header change, and covered by `shortOutcome`'s own card-level tests.
+    assert.match(window.document.getElementById("cycle-57").textContent, /merged/);
   });
 });
 

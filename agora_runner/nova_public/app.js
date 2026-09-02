@@ -1648,23 +1648,6 @@
     return open.length ? open[open.length - 1] : null;
   }
 
-  /* "since 08-16", and the day count when it has been more than one.
-   *
-   * The wait is computed here, off the reader's own clock, and not on the
-   * server: this payload is cached and warmed, so a number of days baked
-   * into it would freeze at build time -- the same reason `build_status`
-   * refuses to consult a clock at all. */
-  function askWaitLabel(ask, now) {
-    var stamp = (ask.date || "").slice(5);
-    var label = stamp ? "since " + stamp : "";
-    var start = Date.parse((ask.date || "") + "T" + (ask.time || "00:00") + ":00");
-    if (!isNaN(start)) {
-      var days = Math.floor(((now || Date.now()) - start) / 86400000);
-      if (days >= 1) label += " · " + days + (days === 1 ? " day" : " days");
-    }
-    return label;
-  }
-
   /* One status field, and where it points.
    *
    * the owner, capture 2026-08-22: *"The status fields at the top, we are
@@ -1736,106 +1719,42 @@
       subs.appendChild(saved);
     }
 
-    /* An ask with no answer, pointing at the card it lives on.
+    /* Every open ask, linking to the feed filtered down to just the cards
+     * he owes a reply on.
+     *
+     * Used to also draw the oldest ask as its own pill here, pointing
+     * straight at that one card, with this field only appearing once a
+     * second ask piled up. The owner, 2026-09-01: "2 is redundant from 3"
+     * -- drop the single-ask pill, since a link to the same feed already
+     * says "you have something to answer" for any count including one.
+     * So this now fires on one open ask exactly as it does on ten, and it
+     * is the only ask pill left in the header.
      *
      * Suppressed on a replayed payload for the same reason the badges
      * below are: "he has not replied" is a claim about now, and a cached
      * comments payload cannot support it -- the failure mode is telling
-     * him he owes an answer he gave an hour ago.
-     *
-     * A link and not a button: it is the same `/cycle/N` permalink every
-     * card carries, so it survives a right-click, a share and the back
-     * button, and it lands on the page where the reply box is. */
+     * him he owes an answer he gave an hour ago. */
     if (!replayed && haveComments) {
       var stillOpen = openAsks(status, lastCommentsByCycle);
-      var open = stillOpen.length ? stillOpen[stillOpen.length - 1] : null;
-      if (open) {
-        /* The pill used to be the only link in here and it was an `<a>`
-         * inside a `<p>`; now the whole field is the link, so the pill
-         * goes back to being a `<span>` — an `<a>` nested in an `<a>` is
-         * not valid HTML and the parser unnests it, which would leave the
-         * badge outside the field it belongs to. */
-        var waiting = statusField(open.cycle);
-        waiting.appendChild(el("span", "badge badge-ask", "waiting on you"));
-        waiting.appendChild(el("span", "status-pr", "cycle " + open.cycle));
-        var wait = askWaitLabel(open);
-        if (wait) waiting.appendChild(el("span", "status-pr", wait));
-        subs.appendChild(waiting);
-      }
-
-      /* Every *other* open ask, which the field above cannot carry.
-       *
-       * the owner, ideas board #182: *"I'm not able to read all the 'waiting
-       * on you' and all the answers for the journals."* `status.asks`
-       * carries every card that raised an ask, and the field above renders
-       * one of them -- the oldest -- so a second and a third open question
-       * were visible only by scrolling the feed and recognising a card.
-       *
-       * **This used to be a button that expanded a panel of its own, and
-       * he asked for that gone**, capture 2026-09-01: *"Drop the current
-       * 'needs me' functionality (the yellow 'N WAITING ON YOU'
-       * button/list) ... and replace it with a simple filter that just
-       * lists the journal entries that need his input. No fancy
-       * list/carousel behavior, just a plain filtered view."* The panel
-       * was a second rendering of cards the feed already knows how to
-       * draw: it showed a cycle number and a wait, and nothing else, so
-       * reading the question still meant tapping through to the card. So
-       * this is now a link to `/asks`, which is the feed with one
-       * predicate on it, and the whole expand/collapse mechanism is
-       * deleted rather than restyled.
-       *
-       * Drawn only when there is more than one, unchanged: with a single
-       * open ask the field above already points at the one card, and a
-       * filtered view of one is the card. */
-      if (stillOpen.length > 1) {
-        var more = statusField(null);
-        var all = el("a", "badge badge-ask status-asks-open",
+      if (stillOpen.length) {
+        var asksField = statusField(null);
+        var asksLink = el("a", "badge badge-ask status-asks-open",
           stillOpen.length + " waiting on you");
-        all.href = "/asks";
-        more.appendChild(all);
-        subs.appendChild(more);
+        asksLink.href = "/asks";
+        asksField.appendChild(asksLink);
+        subs.appendChild(asksField);
       }
     }
 
-
-    /* The newest written entry's PR, so the cycle it references is
-     * `status.cycle` — the same number the line above it prints.
-     *
-     * This field used to lead with the outcome pill. The owner, `issues.md`
-     * 2026-08-23: "Drop the Outcome pill from the top-of-page header too,
-     * not just the card view — it's the same ugly all-caps duplicate of the
-     * blue summary line, shown twice on the same screen." Both copies were
-     * on the feed at once: this field, and the newest card directly under
-     * it. So the pill and its qualifier are gone from here as well, and
-     * what the field is for — jump to what the last cycle shipped — is the
-     * PR reference, which is why that is what survives.
-     *
-     * `isRealPr` because the footer is mandatory: a cycle with nothing to
-     * show still writes `PR: none`, and a header field reading "none" is
-     * the noise this ask is about wearing a shorter word. It is the same
-     * predicate `settledPart` uses, so the header and the card agree about
-     * what counts as a PR.
-     *
-     * The paragraph above describes #300 and is kept as the reason the
-     * *qualifier* is still gone; its sentence about the pill itself was
-     * overtaken on 2026-08-24 and the block below is what holds now. */
-    /* ...and it is back, narrowed. The owner, `issues.md` 2026-08-24: "i miss
-     * the status fields. Please bring them back." Same rule as the card:
-     * `shortOutcome` only, so the field can hold a badge and can never hold
-     * the clause that got it cut. The field draws when either half has
-     * something to say -- a cycle that shipped nothing still has a status
-     * worth one word, and that is the case he is asking about. */
-    var headerOutcome = shortOutcome(status.lastOutcome);
-    if (headerOutcome || isRealPr(status.lastPr)) {
-      var line = statusField(status.cycle);
-      if (headerOutcome) {
-        line.appendChild(el("span", outcomeClass(headerOutcome), headerOutcome));
-      }
-      if (isRealPr(status.lastPr)) {
-        line.appendChild(el("span", "status-pr", status.lastPr));
-      }
-      subs.appendChild(line);
-    }
+    /* The outcome pill used to live here too (`merged` / `no-op` / ...),
+     * restored 2026-08-24 after the owner missed it, then dropped again
+     * for good on 2026-09-01: "4 is redundant from the latest journal
+     * which I can already see at the top" -- the newest card is always
+     * the top card in the feed below, and it already carries this same
+     * outcome-and-PR pair. Unlike 2026-08-23's removal, there is nothing
+     * standing in for it up here on purpose; the card is the field now.
+     * `shortOutcome` / `outcomeClass` stay defined -- the card still uses
+     * them for its own badge. */
 
     /* The other half of #72: "Nova is 1 behind agora." The header names the
      * newest cycle that has *written*, and for the first 20-45 minutes of
