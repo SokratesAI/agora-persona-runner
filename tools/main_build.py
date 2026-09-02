@@ -52,7 +52,7 @@ your spending limit needs to be increased."* A refused run concludes
 `failure` exactly like a real one, so `RED` was the honest verdict from
 the payload and the wrong instruction to a cycle -- it says debug the
 code, and there is no code to debug. Re-running all five after private
-Actions came back on 2026-09-01 turned four of them green immediately.
+Actions came back on 2026-09-01 turned all five green immediately.
 
 `RUNNING` never raises: a merge four minutes old is not a finding.
 
