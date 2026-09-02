@@ -15,8 +15,10 @@ from agora_runner.nova_handoff import (
     archive_retired,
     item_slug,
     live_items,
+    count_items,
     newest_cycle,
     select_slugs,
+    split_items,
 )
 from agora_runner.rolling import RollError
 from tools import roll_handoff
@@ -238,3 +240,65 @@ def test_cli_dry_run_writes_neither_file(tmp_path):
     ) == 0
     assert live.read_text() == LIVE
     assert not archive.exists()
+
+
+def test_a_roll_onto_an_archive_holding_a_duplicated_stamp():
+    """The jam that made `roll_handoff` refuse every multi-item roll.
+
+    `stamp_retired` writes the reason as its own paragraph, so the
+    paragraph splitter reads each stamp back as an item -- and two items
+    retired in one call with one reason leave two identical paragraphs.
+    `archive_retired` splices the stamps in *after* `verify`, so the roll
+    that writes them passes; the **next** roll is the one that reads them
+    back, `rolling.dedup` collapses the pair on the before side and not on
+    the after side, and a correct roll is refused as `N in, N+1 out`.
+
+    So the reproduction needs two rolls, and the first one has to retire
+    two items under a single reason. One roll onto an empty archive
+    cannot show this, which is what the mutation check caught.
+    """
+    live_one, archive_one, moved = archive_retired(
+        _live(),
+        "",
+        ["second-thing", "third-thing"],
+        "both landed in the same PR",
+        TODAY,
+    )
+    assert len(moved) == 2
+    # The identical stamp, twice, is what the next roll has to survive.
+    assert archive_one.count("**Retired 08-30** — both landed in the same PR") == 2
+
+    live_two, archive_two, _ = archive_retired(
+        live_one, archive_one, ["first-thing"], "finished too", TODAY
+    )
+    assert [item_slug(i) for i in live_items(live_two)] == [None]
+    assert archive_one.count("**Retired 08-30** — both landed in the same PR") == 2
+    assert "**Retired 08-30** — finished too" in archive_two
+
+
+def test_an_earlier_rolls_reason_survives_the_next_roll():
+    """The wrong fix, caught: do not filter stamps out of `split_items`.
+
+    Cycle 792 hid stamps from the splitter itself, which made `verify`
+    pass and made `plan` rebuild the archive without them -- 29 reasons
+    were deleted from the live file and had to be recovered from the
+    hourly vault mirror. `count_items` is a separate splitter for exactly
+    this reason: counting may ignore a stamp, reconstructing may not.
+    """
+    live_one, archive_one, _ = archive_retired(
+        _live(), "", ["third-thing"], "first retirement", TODAY
+    )
+    live_two, archive_two, _ = archive_retired(
+        live_one, archive_one, ["second-thing"], "second retirement", TODAY
+    )
+    assert "**Retired 08-30** — first retirement" in archive_two
+    assert "**Retired 08-30** — second retirement" in archive_two
+
+
+def test_count_items_ignores_stamps_and_split_items_does_not():
+    _, archive, _ = archive_retired(
+        _live(), "", ["second-thing", "third-thing"], "one reason", TODAY
+    )
+    body = archive.split(ARCHIVE_TITLE, 1)[1]
+    assert len(split_items(body)) == 4  # two items and two stamps
+    assert len(count_items(body)) == 2  # the two items
