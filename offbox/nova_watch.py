@@ -10,7 +10,8 @@ inside `nova-site`, which posts to `agora`, which signs the Web Push — three
 hops, all three on `server1`, which is the only node there is. A watcher for
 a machine cannot run on that machine. So this program is written to be run
 somewhere else (his NAS, in Docker) and to hold everything it needs to reach
-his phone without asking anything of the box it is watching.
+his phone without asking anything of the box it is watching. The NAS can reach
+the cluster as of 2026-09-02; the README says what was wrong and what is left.
 
 **Two verdicts, kept apart on purpose.**
 
@@ -74,6 +75,16 @@ import urllib.request
 # it fires one false UNREACHABLE and then goes quiet forever, which is
 # indistinguishable from a healthy watcher.
 DEFAULT_URL = "https://nova.tailc83eb3.ts.net/api/journal?limit=1"
+
+# **This name does not resolve on the NAS, and that is the one thing still in
+# the way there.** Its tailnet *route* was fixed on 2026-09-02 (`chmod 0666
+# /dev/net/tun`, see README) and `--resolve` proves the path: 200 in 0.18s. But
+# MagicDNS never reached that box's `/etc/resolv.conf` -- tailscaled is refused
+# permission to write it on Synology -- so a bare lookup of this host fails
+# there in 4ms. Give the container `--add-host nova.tailc83eb3.ts.net:<ip>`
+# rather than putting a bare IP in this URL: the certificate is for the name,
+# so an IP URL fails at the TLS handshake instead, which `fetch_status` reports
+# as exactly the same `Unreachable` as a dead box.
 
 # Seconds between polls. The thing being detected is measured in heartbeat
 # intervals -- tens of minutes -- so polling faster buys little, and every
