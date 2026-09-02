@@ -98,6 +98,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -1039,6 +1040,90 @@ def _project_backlog(rows):
     ])
 
 
+# A row reference inside a `\`\`\`next` block's `board:` field, which the
+# roadmap writes as free prose -- `issue #131, issue #130, idea #179`. The
+# plural is allowed because the field is typed by hand and `issues #131`
+# means the same thing; the number is what carries the identity.
+_ROADMAP_ROW_RE = re.compile(r"\b(issue|idea)s?\s*#\s*(\d+)")
+
+
+def _roadmap_refs(text):
+    """A `board:` field -> `{("issue", 131), ("idea", 179)}`.
+
+    A set rather than a list: the field is prose he and I both edit, and
+    naming one row twice is a typo rather than two rows.
+    """
+    return {
+        (match.group(1), int(match.group(2)))
+        for match in _ROADMAP_ROW_RE.finditer(text or "")
+    }
+
+
+def _project_roadmap(rows, plan):
+    """The ranked roadmap items that touch this project -- idea #228's last half.
+
+    His idea asks each project page for *"a backlog, roadmap and maybe a
+    burndown chart"*. The other three are built. The roadmap half stalled
+    on something I wrote on this row on 09-01: *"a roadmap is a claim
+    about when, and every row on your boards carries exactly one date --
+    the day it was last touched"*, so I asked him for target dates or an
+    order and the row has waited on that since.
+
+    **That was the wrong thing to wait for.** An order already exists and
+    he already reads it: `roadmap.md` is the five things I would do next,
+    in order, with the reasoning under each, and it has been the strip at
+    the top of `/plan` since Cycle 226. Every one of those items already
+    names the rows it is about, in its `board:` field. So "what is this
+    project's roadmap" is answerable today, from data both pages already
+    hold: it is the ranked items whose rows are filed under this project,
+    in the order the roadmap itself sets.
+
+    A dated roadmap is still a better roadmap and still needs him. This
+    is not that, and the page does not claim it is -- it says what is
+    ranked, not when it lands.
+
+    Two things this deliberately reports rather than hides. An item is
+    included only when at least one row it names is *under this project*,
+    because an item about `issue #131` is not Marcus's roadmap for
+    happening to sit above it in the file. And `unattributed` counts the
+    open items that name **no** row at all -- those can appear on no
+    project page ever, which is a fact about the roadmap rather than
+    about this project, and a subset with no complement beside it reads
+    as a complete list.
+    """
+    documents = (plan or {}).get("documents") or []
+    ranked = []
+    for document in documents:
+        if document.get("key") == "roadmap":
+            ranked = document.get("ranked") or []
+            break
+
+    mine = {
+        ("issue" if row.get("board") == "issue" else "idea", row.get("number"))
+        for row in rows
+    }
+    items = []
+    unattributed = 0
+    for card in ranked:
+        refs = _roadmap_refs(card.get("board"))
+        if not refs:
+            unattributed += 1
+            continue
+        here = sorted(ref for ref in refs if ref in mine)
+        if not here:
+            continue
+        items.append({
+            "rank": card.get("rank", ""),
+            "title": card.get("title", ""),
+            "claim": card.get("claim", ""),
+            "statusSymbol": card.get("statusSymbol", ""),
+            "statusLabel": card.get("statusLabel", ""),
+            "rows": [{"board": kind, "number": number} for kind, number in here],
+            "elsewhere": len(refs) - len(here),
+        })
+    return {"items": items, "unattributed": unattributed}
+
+
 def project_payload(name=None):
     """One project's board rows, grouped by status (idea #92, phase 3).
 
@@ -1154,6 +1239,12 @@ def project_payload(name=None):
     # is one: "what is next on this project" does not have an issues answer
     # and an ideas answer.
     result["backlog"] = _project_backlog(matched_rows)
+    # The roadmap half of the same idea, and the same cache the `/plan`
+    # page reads -- `"plan"`, the key `_send_cached_json` already uses and
+    # `invalidate("plan")` already clears. A second key over the same
+    # build is the bug the board comment above describes, one page down.
+    plan, _plan_body, _plan_etag = cached_payload("plan", plans_payload)
+    result["roadmap"] = _project_roadmap(matched_rows, plan)
     return result
 
 

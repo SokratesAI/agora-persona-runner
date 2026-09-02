@@ -4309,6 +4309,51 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   padding: 6px 0;
 }
 
+.project-roadmap { margin: 16px 0; }
+.project-roadmap-head { font-size: 0.95rem; margin: 0 0 8px; }
+.project-roadmap-rows { list-style: none; margin: 0; padding: 0; }
+.project-roadmap-row {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+/* The roadmap's own rank, sitting beside the title rather than above it,
+   so the number reads as "3 of the five things next" and not as this
+   list's position. */
+.project-roadmap-rank {
+  color: var(--dim);
+  font-size: 0.8rem;
+  min-width: 1.4rem;
+  display: inline-block;
+  text-align: right;
+  margin-right: 8px;
+}
+.project-roadmap-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.project-roadmap-status { color: var(--dim); font-size: 0.8rem; white-space: nowrap; }
+.project-roadmap-claim {
+  margin: 4px 0 6px 1.9rem;
+  color: var(--dim);
+  font-size: 0.88rem;
+}
+.project-roadmap-refs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: 1.9rem;
+}
+.project-roadmap-ref { color: var(--dim); font-size: 0.8rem; white-space: nowrap; }
+.project-roadmap-elsewhere { color: var(--dim); font-size: 0.8rem; }
+.project-roadmap-none,
+.project-roadmap-orphans {
+  color: var(--dim);
+  font-size: 0.85rem;
+  margin: 6px 0 0;
+}
+
 .project-prio { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
 .project-prio-label { color: var(--dim); font-size: 0.9rem; }
 .project-prio-note { color: var(--dim); font-size: 0.85rem; }

@@ -8713,6 +8713,83 @@
     return box;
   }
 
+  /* Where this project sits in the order I actually work in -- idea #228,
+   * the roadmap half.
+   *
+   * The list under this is ordered by rating; that is what to take next
+   * *within* the project. It cannot say whether the project itself is
+   * ahead of anything else, and that is the question a roadmap answers.
+   * `roadmap.md` has held that order since Cycle 226 and he already reads
+   * it at the top of `/plan`; every ranked item there names the rows it is
+   * about, so this is the same order, filtered to the rows filed here.
+   *
+   * The rank number is the roadmap's own and is deliberately not
+   * renumbered per project -- "3 of the five things I would do next" is the
+   * fact, and a page that renumbered it to 1 would be claiming this project
+   * leads the whole roadmap.
+   *
+   * Nothing is drawn when no ranked item touches this project, except the
+   * one line saying how many name no row at all. That line is the
+   * complement of the list: without it, "no roadmap items here" and "the
+   * roadmap names no rows anywhere" read identically and mean different
+   * things.
+   */
+  function renderProjectRoadmap(payload) {
+    var roadmap = (payload && payload.roadmap) || {};
+    var items = roadmap.items || [];
+    var orphans = roadmap.unattributed || 0;
+    if (!items.length && !orphans) return null;
+    var box = el("section", "project-roadmap");
+    box.appendChild(el("h2", "project-roadmap-head", "On the roadmap"));
+
+    var list = el("ol", "project-roadmap-rows");
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      var li = el("li", "project-roadmap-row");
+      // The roadmap's own rank, not this list's position.
+      li.appendChild(el("span", "project-roadmap-rank", String(item.rank || "")));
+      var head = el("div", "project-roadmap-title", item.title);
+      // Word beside the symbol, never the symbol alone.
+      if (item.statusLabel) {
+        head.appendChild(el("span", "project-roadmap-status",
+          (item.statusSymbol ? item.statusSymbol + " " : "") + item.statusLabel));
+      }
+      li.appendChild(head);
+      if (item.claim) li.appendChild(el("p", "project-roadmap-claim", item.claim));
+      var refs = el("div", "project-roadmap-refs");
+      var rows = item.rows || [];
+      for (var r = 0; r < rows.length; r++) {
+        var ref = rows[r];
+        var link = el("a", "project-roadmap-ref",
+          (ref.board === "issue" ? "issue #" : "idea #") + ref.number);
+        link.setAttribute("href",
+          "/" + (ref.board === "issue" ? "issues" : "ideas") + "#" + ref.number);
+        refs.appendChild(link);
+      }
+      // Said rather than hidden: this item is partly somewhere else, and a
+      // list of only the local rows reads as the whole item.
+      if (item.elsewhere) {
+        refs.appendChild(el("span", "project-roadmap-elsewhere",
+          "+ " + item.elsewhere + " row" + (item.elsewhere === 1 ? "" : "s")
+          + " outside this project"));
+      }
+      li.appendChild(refs);
+      list.appendChild(li);
+    }
+    if (items.length) box.appendChild(list);
+    if (!items.length) {
+      box.appendChild(el("p", "project-roadmap-none",
+        "Nothing on the roadmap names a row filed here."));
+    }
+    if (orphans) {
+      box.appendChild(el("p", "project-roadmap-orphans",
+        orphans + " roadmap item" + (orphans === 1 ? "" : "s")
+        + " name no board row, so " + (orphans === 1 ? "it appears" : "they appear")
+        + " on no project page."));
+    }
+    return box;
+  }
+
   function renderProjectPriority(name, payload) {
     var row = el("div", "project-prio");
     row.appendChild(el("span", "project-prio-label", "Project priority"));
@@ -8962,6 +9039,11 @@
     // Under the bar and above the tabs: the bar says how far along the
     // project is, this says what to do about it, and both belong before he
     // has chosen which board to look at.
+    // Above the ordered list on purpose: the roadmap says whether this
+    // project is ahead of the others, the list below says what to take
+    // next inside it, and the first question comes first.
+    var roadmap = renderProjectRoadmap(payload);
+    if (roadmap) feed.appendChild(roadmap);
     var backlog = renderProjectBacklog(payload);
     if (backlog) feed.appendChild(backlog);
     var tabs = projectTabs(payload);

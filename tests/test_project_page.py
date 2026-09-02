@@ -77,6 +77,11 @@ def _boards(monkeypatch):
     # which is what every project on his board is today, so these tests
     # keep asserting the order the boards produce.
     monkeypatch.setattr(nova_site, "project_priorities", dict)
+    # `roadmap.md` and `goals.md` are two more live vault reads, added when
+    # the project page grew a roadmap. Empty by default: these tests are
+    # about the regrouping, and the roadmap has its own block at the foot
+    # of this file.
+    monkeypatch.setattr(nova_site, "plans_payload", lambda: {"documents": []})
 
 
 def test_index_lists_every_project_both_boards_name():
@@ -531,3 +536,124 @@ def test_backlog_does_not_stamp_the_board_onto_the_cached_rows(monkeypatch):
 def test_the_index_carries_no_backlog():
     """`/projects` asks for no project, so there is nothing to order."""
     assert "backlog" not in nova_site.project_payload()
+
+
+# --- The roadmap (idea #228, the last half) -------------------------------
+#
+# `roadmap.md` is the order I would work in, and every ranked item names the
+# rows it is about. The project page reads that order rather than inventing
+# one, so these tests are pointed at the two ways it could quietly lie: an
+# item appearing under a project none of its rows belong to, and the page
+# showing a subset with no sign that anything was left out.
+
+
+def _plan(*cards):
+    return {"documents": [
+        {"key": "goals", "ranked": []},
+        {"key": "roadmap", "ranked": list(cards)},
+    ]}
+
+
+def _card(rank, title, board, claim="because", label="In progress"):
+    return {
+        "rank": rank, "title": title, "board": board, "claim": claim,
+        "statusSymbol": "\U0001f7e1", "statusLabel": label, "finished": False,
+    }
+
+
+def test_roadmap_keeps_only_the_items_naming_a_row_in_this_project(monkeypatch):
+    """An item is this project's roadmap when a row of its own is in it.
+
+    Card 2 names only rows on other projects. Returning the whole ranked
+    strip -- which is what reading `roadmap.md` and stopping would do --
+    puts Agora's work on Nova's page.
+    """
+    monkeypatch.setattr(nova_site, "plans_payload", lambda: _plan(
+        _card("1", "Memory", "issue #1, issue #3"),
+        _card("2", "Chat", "issue #3"),
+        _card("3", "Boards", "idea #10"),
+    ))
+    roadmap = nova_site.project_payload("Nova")["roadmap"]
+    assert [item["title"] for item in roadmap["items"]] == ["Memory", "Boards"]
+
+
+def test_roadmap_says_which_rows_are_here_and_how_many_are_not(monkeypatch):
+    """The link targets, and the count that stops them reading as all of them.
+
+    Card 1 names three rows and only #1 is under Nova; #3 is Agora's and
+    #99 is on no board at all. A card that printed three links would send
+    him to two rows that are not this project's.
+    """
+    monkeypatch.setattr(nova_site, "plans_payload", lambda: _plan(
+        _card("1", "Memory", "issue #1, issue #3, issue #99"),
+    ))
+    item = nova_site.project_payload("Nova")["roadmap"]["items"][0]
+    assert item["rows"] == [{"board": "issue", "number": 1}]
+    assert item["elsewhere"] == 2
+
+
+def test_roadmap_counts_the_items_that_can_appear_on_no_project_page(monkeypatch):
+    """The complement, without which the list reads as the whole roadmap.
+
+    An item with no `board:` field names no row, so no project can ever
+    claim it and it is invisible on every project page. Dropping it
+    silently is how a page shows two of four ranked items and looks
+    complete.
+    """
+    monkeypatch.setattr(nova_site, "plans_payload", lambda: _plan(
+        _card("1", "Memory", "issue #1"),
+        _card("2", "Something", ""),
+        _card("3", "Else", None),
+    ))
+    roadmap = nova_site.project_payload("Nova")["roadmap"]
+    assert [item["title"] for item in roadmap["items"]] == ["Memory"]
+    assert roadmap["unattributed"] == 2
+
+
+def test_roadmap_matches_an_idea_and_an_issue_of_the_same_number(monkeypatch):
+    """`issue #1` and `idea #1` are two different rows.
+
+    Nova owns issue #1 and Sokrates Post owns idea #9. A matcher that
+    compared numbers alone would put this card on both pages, and the
+    boards genuinely re-use numbers across the two files.
+    """
+    monkeypatch.setattr(nova_site, "plans_payload", lambda: _plan(
+        _card("1", "Memory", "idea #1"),
+    ))
+    assert nova_site.project_payload("Nova")["roadmap"]["items"] == []
+    assert nova_site.project_payload("Nova")["roadmap"]["unattributed"] == 0
+
+
+def test_roadmap_reads_the_plural_spelling_too(monkeypatch):
+    """`issues #1` is the same row -- the field is prose, typed by hand."""
+    monkeypatch.setattr(nova_site, "plans_payload", lambda: _plan(
+        _card("1", "Memory", "issues #1"),
+    ))
+    rows = nova_site.project_payload("Nova")["roadmap"]["items"][0]["rows"]
+    assert rows == [{"board": "issue", "number": 1}]
+
+
+def test_roadmap_is_absent_from_the_index(monkeypatch):
+    """`/projects` asks for no project, so there is no roadmap to build.
+
+    The early return is what keeps the index off `roadmap.md` entirely --
+    the index is one fetch of two board payloads and must stay that way.
+    """
+    def _boom():
+        raise AssertionError("the index must not read the plan")
+    monkeypatch.setattr(nova_site, "plans_payload", _boom)
+    assert "roadmap" not in nova_site.project_payload()
+
+
+def test_roadmap_is_empty_when_the_roadmap_document_is_missing(monkeypatch):
+    """A vault with no `roadmap.md` in it answers, rather than erroring.
+
+    `plan_payload` renders a missing document as a card with no `ranked`
+    key at all, which is a different shape from an empty strip.
+    """
+    monkeypatch.setattr(nova_site, "plans_payload", lambda: {"documents": [
+        {"key": "roadmap", "missing": True},
+    ]})
+    assert nova_site.project_payload("Nova")["roadmap"] == {
+        "items": [], "unattributed": 0,
+    }
