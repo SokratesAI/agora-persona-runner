@@ -456,6 +456,51 @@ def _title_finding(entry, path, normalised):
 STAMP_TOLERANCE_MINUTES = 3
 
 
+# The key shape `app.js` builds an entry thread from: `entryKeyOf` returns
+# "" for anything else, and the card then draws no comment button at all.
+# Deliberately stricter than `nova_journal._TIME_RE`, which accepts
+# `\d{1,2}:\d{2}` -- a heading stamped `7:09` parses fine on this side and
+# fails that regex, so the card would render normally and silently have no
+# way to be answered.
+_COMMENT_KEY_RE = re.compile(r"\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}\Z")
+
+
+def _comment_key_finding(entry):
+    """An entry with no cycle number and no stamp gets no comment box.
+
+    Until #639 a comment filed under a cycle number, so a card written by
+    something other than an hourly cycle -- a retrospective, a cost
+    review, a silence marker -- had nowhere for one to land and got no
+    button. Those key on the entry's own `date time` now, which is
+    exactly why the stamp stopped being decoration on such a heading and
+    became the only thing that makes the card answerable.
+
+    The owner reported the symptom from the other end, issues.md
+    2026-09-02: *"The retrospective needs my input, but I have no ability
+    to give it as those do not have a comment section."* The retrospective
+    carries a stamp and is fixed by #639; `858-cost-review.md` did not,
+    and would have been the next card he could not answer. Nothing warned
+    the cycle that wrote it, because before #639 the stamp genuinely did
+    not matter here.
+
+    Only for `cycle is None`. An hourly entry keys on its number and is
+    answerable with no stamp at all, and `_stamp_finding` already owns
+    the separate question of whether a stamp that *is* there is real.
+    """
+    if entry.get("cycle") is not None:
+        return None
+    key = f"{entry.get('date') or ''} {entry.get('time') or ''}".strip()
+    if _COMMENT_KEY_RE.match(key):
+        return None
+    return (
+        "comment key: this entry carries no cycle number, so the site files "
+        "a comment on it under its heading's `YYYY-MM-DD HH:MM` stamp -- and "
+        f"this heading gives {key!r}. Written as it stands the card renders "
+        "with no comment box, so he cannot answer it at all. Stamp the "
+        "heading (`TZ=Europe/Oslo date +'%F %H:%M'`), zero-padding the hour."
+    )
+
+
 def _stamp_finding(entry, now):
     """The heading claims a time the cycle has not reached yet.
 
@@ -858,6 +903,9 @@ def lint(name, content, now=None, clock=_UNSET):
     stamp = _stamp_finding(entry, now)
     if stamp:
         findings.append(stamp)
+    comment_key = _comment_key_finding(entry)
+    if comment_key:
+        findings.append(comment_key)
     findings.extend(_clock_findings(raw, clock))
     return findings
 

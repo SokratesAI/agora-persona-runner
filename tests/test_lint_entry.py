@@ -980,3 +980,59 @@ def test_an_entry_with_no_cycle_number_is_skipped_even_with_no_title():
     assert "title" not in _kinds(
         lint("004-2026-08-02-edvard-s-first-message-not-a.md", body)
     )
+
+
+# --- the comment key on a card with no cycle number ---------------------
+#
+# These pin the contract `app.js`'s `entryKeyOf` sets: an entry with no
+# cycle number files a comment under its heading's `date time`, and
+# returns "" -- so the card draws no button -- for anything that is not
+# exactly `YYYY-MM-DD HH:MM`.
+
+_SPECIAL_FOOTER = "\n---\nPR: none | Outcome: shipped\n"
+
+
+def test_a_stamped_special_entry_passes():
+    body = "### 2026-09-02 07:09 (Oslo) — Retrospective\n\nWhat happened.\n"
+    assert "comment key" not in _kinds(lint("854-retrospective.md", body + _SPECIAL_FOOTER))
+
+
+def test_a_special_entry_with_no_stamp_is_caught():
+    """`858-cost-review.md` as it was actually written, which is the entry
+    that would have been the next card he could not answer."""
+    body = "### Cost review 2 — the loop got 21% cheaper\n\nWhat it cost.\n"
+    findings = lint("858-cost-review.md", body + _SPECIAL_FOOTER)
+    assert "comment key" in _kinds(findings)
+
+
+def test_an_hourly_entry_with_no_stamp_is_not_a_comment_key_finding():
+    """A cycle entry keys on its number, so it is answerable with no
+    stamp at all -- and 200-odd live entries are written that way."""
+    body = "### Cycle 152 — A Real Title\n\nSomething real.\n\n---\nPR: none | Outcome: shipped\n"
+    assert "comment key" not in _kinds(lint("168-cycle-152.md", body))
+
+
+def test_an_unpadded_hour_is_caught_even_though_python_parses_it():
+    """`nova_journal._TIME_RE` accepts `\\d{1,2}:\\d{2}` and `entryKeyOf`
+    does not, so this is the one shape that reads as correct on the
+    Python side and renders a card with no way to answer it. Written
+    against `7:09` specifically because a check that re-used the parser's
+    own regex would pass it."""
+    body = "### 2026-09-02 7:09 (Oslo) — Retrospective\n\nWhat happened.\n"
+    findings = lint("854-retrospective.md", body + _SPECIAL_FOOTER)
+    assert "comment key" in _kinds(findings)
+    assert "7:09" in [f for f in findings if f.startswith("comment key")][0]
+
+
+def test_a_date_with_no_time_is_caught():
+    body = "### 2026-09-02 — Retrospective\n\nWhat happened.\n"
+    assert "comment key" in _kinds(lint("854-retrospective.md", body + _SPECIAL_FOOTER))
+
+
+def test_the_finding_names_the_consequence_not_just_the_shape():
+    body = "### Cost review 2 — cheaper\n\nWhat it cost.\n"
+    finding = [
+        f for f in lint("858-cost-review.md", body + _SPECIAL_FOOTER)
+        if f.startswith("comment key")
+    ][0]
+    assert "no comment box" in finding
