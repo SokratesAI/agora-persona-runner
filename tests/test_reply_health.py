@@ -181,3 +181,97 @@ def test_the_relay_does_not_quote_a_tool_call_as_something_the_cycle_said():
                       "toolUseId": "t1"}},
     ])
     assert reply_check.last_narration({"messages": rows}) == "Looking now."
+
+
+# --- why a cycle went silent: the bridge container, or the cycle itself ---
+
+def _kill(minutes_ago, reason="Error", exit_code=137, pod="bridge-abc"):
+    return {"pod": pod, "at": NOW - timedelta(minutes=minutes_ago),
+            "reason": reason, "exit_code": exit_code}
+
+
+def _kubectl(pods=(), error=None):
+    def run(args, timeout=30):
+        if error is not None:
+            raise error
+        return json.dumps({"items": list(pods)})
+    return run
+
+
+def _pod(name, finished_at, reason="Error", exit_code=137):
+    return {"metadata": {"name": name},
+            "status": {"containerStatuses": [
+                {"lastState": {"terminated": {"finishedAt": finished_at,
+                                              "reason": reason,
+                                              "exitCode": exit_code}}}]}}
+
+
+def test_a_kill_after_the_last_message_is_named_on_the_silence():
+    listing = _listing(_conversation("Nova — Cycle 796", 90, ident="c796"))
+    threads = {"c796": _thread(_narration("Meanwhile, a test for the key."))}
+    status, lines = _sweep(listing, threads,
+                           run=_kubectl([_pod("bridge-w5x2b", _stamp(88))]))
+    assert status == 2
+    said = "\n".join(lines)
+    assert "killed with the pod" in said
+    assert "bridge-w5x2b" in said
+    assert "exit 137" in said
+    # The gap is reported, not just the fact of a kill.
+    assert "2m after" in said
+
+
+def test_a_kill_before_the_last_message_does_not_explain_it():
+    """A container that died *before* the cycle spoke cannot have killed it."""
+    listing = _listing(_conversation("Nova — Cycle 796", 90, ident="c796"))
+    threads = {"c796": _thread(_narration("Still working."))}
+    status, lines = _sweep(listing, threads,
+                           run=_kubectl([_pod("bridge-w5x2b", _stamp(95))]))
+    assert status == 2
+    said = "\n".join(lines)
+    assert "killed with the pod" not in said
+    assert "unattributed: no bridge container death" in said
+
+
+def test_a_kill_past_the_turn_cap_does_not_explain_it():
+    listing = _listing(_conversation("Nova — Cycle 796", 200, ident="c796"))
+    threads = {"c796": _thread(_narration("Still working."))}
+    status, lines = _sweep(
+        listing, threads,
+        run=_kubectl([_pod("bridge-w5x2b", _stamp(200 - 46))]))
+    assert "unattributed: no bridge container death" in "\n".join(lines)
+
+
+def test_an_unreadable_history_is_not_reported_as_no_kill():
+    listing = _listing(_conversation("Nova — Cycle 796", 90, ident="c796"))
+    threads = {"c796": _thread(_narration("Still working."))}
+    status, lines = _sweep(listing, threads,
+                           run=_kubectl(error=OSError("kubectl: not found")))
+    assert status == 2
+    said = "\n".join(lines)
+    assert "could not read the bridge Pod's restart history" in said
+    assert "unattributed: no bridge container death" not in said
+
+
+def test_attribution_never_changes_the_verdict():
+    """A cycle that replied stays a pass whatever the restart history says."""
+    listing = _listing(_conversation("Nova — Cycle 796", 90, ident="c796"))
+    threads = {"c796": _thread(_narration("Working."), _reply("Done."))}
+    status, lines = _sweep(listing, threads,
+                           run=_kubectl([_pod("bridge-w5x2b", _stamp(88))]))
+    assert status == 0
+    assert "killed with the pod" not in "\n".join(lines)
+
+
+def test_bridge_kills_reads_the_newest_termination_first():
+    run = _kubectl([_pod("older", _stamp(300)), _pod("newer", _stamp(10))])
+    kills, note = reply_health.bridge_kills(run=run)
+    assert note == ""
+    assert [kill["pod"] for kill in kills] == ["newer", "older"]
+
+
+def test_a_pod_that_has_never_restarted_contributes_no_kill():
+    pod = {"metadata": {"name": "fresh"},
+           "status": {"containerStatuses": [{"lastState": {}}]}}
+    kills, note = reply_health.bridge_kills(run=_kubectl([pod]))
+    assert note == ""
+    assert kills == []
