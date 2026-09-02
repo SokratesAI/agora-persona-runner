@@ -81,6 +81,14 @@ check is a non-zero exit and gets the loud treatment, so the failure mode
 of this tool is noisy, not silent -- which is the direction "How to work"
 asks for when a negative result could otherwise be guaranteed in advance.
 
+**Every row says where its subject lives, and the footer counts the two
+separately.** All 34 of these run here, on server1, inside the cycle -- so
+the ones whose subject is *also* here cannot report that subject failing
+completely. On 2026-09-01 the box was dark for eight hours and eighteen
+minutes and not one check in this sweep said so. That is structural, not a
+bug in any of them, and the honest fix is to stop counting a status readout
+as coverage. See `SUBJECT`.
+
 Checks run concurrently because they are independent and several are slow
 (`pin_drift` ~30s, `security_alerts` ~14s against 21 repos); output is
 printed in the declared order regardless, so two runs are comparable.
@@ -150,6 +158,80 @@ CHECKS = (
     "nas_privilege",
     "survey",
 )
+
+#: Where each check's *subject* lives, and it is not where the check runs --
+#: every one of these runs here, inside the cycle, on server1.
+#:
+#: server1 went dark at 22:40 Oslo on 2026-09-01 and came back at 06:58 the
+#: next morning. Eight hours and eighteen minutes, about twenty-five heartbeat
+#: slots that produced nothing, and not one of the 34 checks below reported it
+#: -- because when the box dies, a check that runs on the box dies with it.
+#: Three retros in a row tried to fix the growth of this sweep with a count
+#: ("no new instrument without deleting one"). Both counts failed. The
+#: criterion that replaces them is not a number
+#: (`nova/resources/research/monitoring-that-survives-2026-09-02.md`):
+#:
+#:     Would this still report if the thing it watches failed completely?
+#:
+#: `off-box` means yes -- the subject is somewhere else (GitHub, the NAS,
+#: endoflife.date), so the subject can fail while the check keeps answering.
+#: `on-box` means no. Those are **status readouts**, not monitors. They are
+#: cheap and worth having and this does not propose deleting any of them; the
+#: one thing they must not do is be counted as coverage of the failure they
+#: cannot survive. The only instrument that reported last night is
+#: `nova-deadman`, which is not in this sweep at all and does not run here.
+#:
+#: The string is the subject, so the label carries its own reason.
+SUBJECT = {
+    "source_revision":   ("on-box",  "this checkout"),
+    "cadence_control":   ("on-box",  "my own heartbeat and burn rate"),
+    "security_alerts":   ("off-box", "GitHub advisories"),
+    "agentic_health":    ("off-box", "GitHub workflow history"),
+    "doc_integrity":     ("on-box",  "the vault, served by CouchDB here"),
+    "redact_coverage":   ("on-box",  "workloads in this cluster"),
+    "cli_pin":           ("off-box", "published Claude CLI releases"),
+    "pin_drift":         ("off-box", "upstream action and image versions"),
+    "eol_watch":         ("off-box", "endoflife.date"),
+    "cli_features":      ("on-box",  "the CLI's flag cache on this pod"),
+    "changelog_watch":   ("off-box", "the upstream CLI changelog"),
+    "cache_health":      ("on-box",  "my own cycle records"),
+    "hook_cost":         ("on-box",  "my own cycle records"),
+    "heartbeat_health":  ("on-box",  "Agora, in this cluster"),
+    "cycle_postmortem":  ("on-box",  "my own journal and Agora"),
+    "reply_health":      ("on-box",  "nova-site, in this cluster"),
+    "schedule_health":   ("off-box", "GitHub Actions scheduling"),
+    "helm_repo_health":  ("on-box",  "Helm sources in this cluster"),
+    "argocd_health":     ("on-box",  "ArgoCD in this cluster"),
+    "crossplane_health": ("on-box",  "Crossplane in this cluster"),
+    "claim_drift":       ("on-box",  "live claims in this cluster"),
+    "claim_schema":      ("on-box",  "live claims in this cluster"),
+    "roll_health":       ("on-box",  "my own digest and handoff files"),
+    "running_images":    ("on-box",  "containers running in this cluster"),
+    "workload_health":   ("on-box",  "workloads in this cluster"),
+    "host_memory_trend": ("on-box",  "server1's own memory"),
+    "memory_headroom":   ("on-box",  "server1's own memory"),
+    "ci_health":         ("off-box", "GitHub's minute meter"),
+    "nas_health":        ("off-box", "the NAS"),
+    "nas_watch":         ("off-box", "the NAS"),
+    "nas_egress":        ("off-box", "the NAS"),
+    "nas_versions":      ("off-box", "the NAS"),
+    "nas_ports":         ("off-box", "the NAS"),
+    "nas_privilege":     ("off-box", "the NAS"),
+    "survey":            ("on-box",  "this repository's own source"),
+}
+
+
+def unlabelled_checks(names):
+    """Names in `names` with no entry in `SUBJECT`.
+
+    Treated exactly like a name with no module: a hard error before anything
+    runs. An unlabelled check would be counted in neither total, so adding a
+    check and forgetting the label would quietly shrink the coverage figure
+    this whole thing exists to state -- the same silent-shrink failure as a
+    roster that has gone stale.
+    """
+    return [n for n in names if n not in SUBJECT]
+
 
 #: Wall-clock ceiling per check. Above any of them by a wide margin --
 #: the slowest measured is `pin_drift` at ~30s against 21 repos -- so a
@@ -545,12 +627,14 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
     worst = 0
     noisy = []
     repeated = []
-    print(f"{'check':20}{'verdict':12}{'s':>6}  summary", file=stream)
+    print(f"{'check':20}{'where':9}{'verdict':12}{'s':>6}  summary", file=stream)
     caveated = 0
     for name, code, output, seconds in results:
         worst = max(worst, code)
         word = STATUS_WORD.get(code, f"EXIT {code}")
-        print(f"{name:20}{word:12}{seconds:>6.1f}  {summary_line(output)}", file=stream)
+        where, _subject = SUBJECT.get(name, ("?", "unlabelled"))
+        print(f"{name:20}{where:9}{word:12}{seconds:>6.1f}  {summary_line(output)}",
+              file=stream)
         if code == 0:
             # A caveat that is *already* the summary line is not repeated: a
             # one-line report -- `source_revision` with no git checkout says
@@ -561,7 +645,7 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
             if caveats:
                 caveated += 1
             for line in caveats:
-                print(f"{'':32}  {line}", file=stream)
+                print(f"{'':41}  {line}", file=stream)
         # A check whose entire output IS its summary line has already been
         # reproduced, in the row above. `source_revision` is the live case:
         # it reports one sentence, so a "===== full output =====" block would
@@ -574,7 +658,7 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
             if keep is not None:
                 keep[name] = entry
             if collapse:
-                print(f"{'':32}  {note}", file=stream)
+                print(f"{'':41}  {note}", file=stream)
                 repeated.append(name)
                 continue
         elif state is not None and keep is not None:
@@ -589,6 +673,13 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
 
     print(file=stream)
     print(f"Ran {len(results)} check(s): {', '.join(n for n, _, _, _ in results)}.", file=stream)
+    on_box = [n for n, _, _, _ in results if SUBJECT.get(n, ("?",))[0] == "on-box"]
+    off_box = [n for n, _, _, _ in results if SUBJECT.get(n, ("?",))[0] == "off-box"]
+    print(f"{len(off_box)} watch(es) something off this box and would still answer if "
+          f"server1 died: {', '.join(off_box) or 'none'}. The other {len(on_box)} run on "
+          f"the box they watch, so they are status readouts rather than monitors and a "
+          f"total failure of their subject silences them -- that is what happened on "
+          f"2026-09-01 and it is not a fault in any of them.", file=stream)
     unclean = sum(1 for _, code, _, _ in results if code != 0)
     if worst == 0:
         print("Every check exited 0 -- nothing to act on, and each line above "
@@ -638,6 +729,14 @@ def main(argv=None):
     if missing:
         print(f"NO SUCH CHECK: {', '.join(missing)} -- refusing to run, because a "
               f"check that never ran must not read as a check that came back clean.",
+              file=sys.stderr)
+        return 1
+
+    unlabelled = unlabelled_checks(names)
+    if unlabelled:
+        print(f"NO SUBJECT LABEL: {', '.join(unlabelled)} -- refusing to run. Add it to "
+              f"SUBJECT as on-box or off-box; an unlabelled check is counted in neither "
+              f"total and would shrink the coverage figure without saying so.",
               file=sys.stderr)
         return 1
 

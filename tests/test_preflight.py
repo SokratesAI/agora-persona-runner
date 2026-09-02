@@ -619,3 +619,55 @@ def test_a_marker_in_the_second_word_of_a_header_is_a_caveat():
     assert preflight.is_caveat(
         "SERVICES UNREADABLE -- the SSH hop exists but no service answered.")
     assert preflight.is_caveat("CANNOT ATTRIBUTE MEMORY — /proc/meminfo says")
+
+
+# --- on-box vs off-box: which checks survive the failure they are for ------
+
+
+def test_every_check_that_runs_carries_a_subject_label():
+    # source_revision is deliberately out of CHECKS but is a row in the report,
+    # so it needs a label too or the two counts do not add up to the sweep.
+    assert preflight.unlabelled_checks(preflight.CHECKS) == []
+    assert preflight.unlabelled_checks(["source_revision"]) == []
+
+
+def test_a_check_with_no_subject_label_is_a_hard_error_not_a_skip(capsys, monkeypatch):
+    # Precondition: the name resolves to a real module, so the existing
+    # NO SUCH CHECK guard cannot be what refuses it. Without this the test
+    # passes on a build where SUBJECT is never consulted at all.
+    assert preflight.unknown_checks(["doc_integrity"]) == []
+    monkeypatch.delitem(preflight.SUBJECT, "doc_integrity")
+    assert preflight.main(["--only", "doc_integrity"]) == 1
+    err = capsys.readouterr().err
+    assert "NO SUBJECT LABEL: doc_integrity" in err
+    assert "NO SUCH CHECK" not in err
+
+
+def test_the_two_labels_are_counted_separately_in_the_footer():
+    _, text = render([
+        ("host_memory_trend", 0, "server1 has headroom\n", 0.1),
+        ("memory_headroom", 0, "pods fit\n", 0.1),
+        ("nas_health", 0, "the NAS answers\n", 0.1),
+    ])
+    assert "1 watch(es) something off this box" in text
+    assert "The other 2 run on the box they watch" in text
+    assert "nas_health" in text.split("would still answer if server1 died:")[1]
+
+
+def test_a_row_says_where_its_subject_lives():
+    _, text = render([("nas_ports", 0, "8 port(s) open\n", 0.2)])
+    line = [ln for ln in text.splitlines() if ln.startswith("nas_ports")][0]
+    assert "off-box" in line
+    _, text = render([("argocd_health", 0, "13 Application(s)\n", 0.2)])
+    line = [ln for ln in text.splitlines() if ln.startswith("argocd_health")][0]
+    assert "on-box" in line
+
+
+def test_the_checks_that_watch_this_box_are_labelled_on_box():
+    # The point of the split: everything that watches server1, this cluster or
+    # my own record is silenced by the outage it would need to report.
+    for name in ("host_memory_trend", "memory_headroom", "heartbeat_health",
+                 "cycle_postmortem", "reply_health", "workload_health"):
+        assert preflight.SUBJECT[name][0] == "on-box", name
+    for name in ("nas_health", "security_alerts", "ci_health", "eol_watch"):
+        assert preflight.SUBJECT[name][0] == "off-box", name
