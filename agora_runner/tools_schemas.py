@@ -3,6 +3,12 @@
 from agora_runner.config import NO_CAPS
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.tools_kubectl import KUBECTL_ALLOWED_VERBS, KUBECTL_ALLOWED_FLAGS
+from agora_runner.tools_kubectl_test import (
+    KUBECTL_TEST_NAMESPACE,
+    KUBECTL_TEST_ALLOWED_VERBS,
+    KUBECTL_TEST_ALLOWED_FLAGS,
+    KUBECTL_TEST_ALLOWED_RESOURCE_KINDS,
+)
 from agora_runner.tools_github import GITHUB_ALLOWED_SUBCOMMANDS
 from agora_runner.tools_terminal import TERMINAL_EXEC_OUTPUT_MAX
 
@@ -243,6 +249,38 @@ def client_tool_schemas(caps, active_step=None):
                              "description": f"extra flags only from {sorted(KUBECTL_ALLOWED_FLAGS)}"},
                 },
                 "required": ["verb", "resource"],
+            },
+        })
+    if caps.get("kubectlTest"):
+        tools.append({
+            "name": "kubectl_test",
+            "description": (
+                f"Full CRUD kubectl, pinned to the {KUBECTL_TEST_NAMESPACE!r} namespace "
+                "and refused everywhere else -- at this tool as well as in RBAC. "
+                "Create, patch, delete, scale, roll out and exec into workloads there. "
+                "YAML goes in `manifest` as a string, never a file path; every document "
+                f"must omit metadata.namespace or set it to {KUBECTL_TEST_NAMESPACE!r}. "
+                "Secrets and cluster-scoped resources are never reachable. "
+                "Use kubectl_read for anything outside this namespace."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "verb": {"type": "string", "enum": sorted(KUBECTL_TEST_ALLOWED_VERBS)},
+                    "resource": {"type": "string",
+                                 "description": "e.g. 'pods', 'deployment/nova-scratch'; "
+                                                "omit for apply/create"},
+                    "manifest": {"type": "string",
+                                 "description": "YAML for apply/create, one or more documents"},
+                    "command": {"type": "array", "items": {"type": "string"},
+                                "description": "argv for exec, e.g. ['sh', '-c', 'ls /app']"},
+                    "namespace": {"type": "string",
+                                  "description": f"omit, or exactly {KUBECTL_TEST_NAMESPACE!r}"},
+                    "args": {"type": "array", "items": {"type": "string"},
+                             "description": f"extra flags only from {sorted(KUBECTL_TEST_ALLOWED_FLAGS)}; "
+                                            f"resource kinds allowed: {sorted(KUBECTL_TEST_ALLOWED_RESOURCE_KINDS)}"},
+                },
+                "required": ["verb"],
             },
         })
     if caps.get("githubRead"):
@@ -653,6 +691,7 @@ TOOL_TO_CAPABILITY = {
     "vault_append": "vaultWrite",
     "vault_update_frontmatter_batch": "vaultWrite",
     "kubectl_read": "kubectlRead",
+    "kubectl_test": "kubectlTest",
     "github_read": "githubRead",
     "terminal_exec": "terminalExec",
     # A tuple means "any one of these grants it" -- see capabilities_for_step.
