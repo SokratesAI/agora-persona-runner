@@ -44,11 +44,25 @@ HEALTH_TIMEOUT_SECONDS = 5
 # database holds a document is a pure function of its path and needs no
 # lookup — which is what makes one rule in one place possible at all.
 #
-# `issues.md` and `ideas.md` deliberately stay in `obsidian`. He offered
-# them ("Take all of 'my' files aswell with you if you want"), but they are
-# the two files Obsidian LiveSync may still write, and a second writer that
-# cannot see the routing rule would silently re-create them in the vault
-# Nova had stopped reading.
+# `projects/sokrates/projects/nova/` moved into Nova's database on 2026-09-02,
+# at the owner's ask: *"Move the goals, issues, ideas, notes, projects and
+# roadmap.md markdown files out of my obsidian vault and into yours. I often
+# get a conflict error when i open obsidian since there has been changes in
+# those files. I never open them either, so better to move them so that you
+# control them."* That reverses the paragraph this replaces, which kept them
+# in `obsidian` because "Obsidian LiveSync may still write them and a second
+# writer that cannot see this rule would silently re-create them in the vault
+# Nova had stopped reading". The risk was real and is now the point: he does
+# not open those files in Obsidian, and LiveSync writing them is what was
+# giving him conflicts. He types into them through the Nova app, which reads
+# and writes through this rule, so the app is unaffected -- but an edit made
+# in Obsidian after this lands is invisible to Nova, permanently.
+#
+# **All ten documents were copied into Nova's database first**, verified
+# byte-identical on read-back, before this constant changed (Cycle 789). Do
+# that again before adding any folder here: flipping the rule ahead of the
+# copy answers every read from a database that has never held the file, and
+# the boards go blank with nothing reporting it.
 # Folders match by prefix; single files must match exactly. Keeping them in
 # one tuple and testing everything with startswith routed
 # `journal-digest.md.bak` — and any other file merely *beginning* with that
@@ -56,6 +70,7 @@ HEALTH_TIMEOUT_SECONDS = 5
 # by the wrong store.
 NOVA_DB_FOLDERS = (
     "projects/sokrates/projects/agora/nova/",
+    "projects/sokrates/projects/nova/",
 )
 NOVA_DB_FILES = (
     "projects/sokrates/projects/agora/journal-digest.md",
@@ -117,13 +132,13 @@ def couch_get_doc(doc_id, db=None):
 
 
 # Paths whose routing this process reports on demand. Five distinct
-# behaviours of `db_for`, two of which are regressions rather than
-# examples: a `.bak` beside the digest must NOT follow it into Nova's
-# database (caught in the review of #103), and the Nova folder the owner
-# asked to keep in his own vault must stay there (Cycle 121 found that
-# anything under `agora/nova/` would have been routed away from him).
-# The other three are the folder rule, the exact-file rule and a file of
-# his that must never move.
+# behaviours of `db_for`, one of which is a regression rather than an
+# example: a `.bak` beside the digest must NOT follow it into Nova's
+# database (caught in the review of #103). The rest are the two folder
+# rules and the exact-file rule. `projects/sokrates/projects/nova/` was
+# the fifth case -- a folder of his that had to stay in `obsidian` -- and
+# it now probes the opposite, because he asked for that folder on
+# 2026-09-02; see the note on `NOVA_DB_FOLDERS`.
 #
 # **These are real paths and must stay real.** The first one is a live
 # journal entry, and journal filenames are `<sequence>-cycle-<n>.md`
@@ -137,11 +152,12 @@ HEALTH_PROBE_PATHS = (
     "projects/sokrates/projects/agora/journal-digest.md.bak",
     "projects/sokrates/projects/nova/nova.md",
     # Was `agora/issues.md` until 2026-08-12, when his three capture files
-    # moved into the Nova folder in his own vault at his ask. The rule it
-    # probes is unchanged -- a file he writes by hand must resolve to his
-    # database -- but the path it probes had to move with the file, or
-    # this tuple would be pointing at a document nobody can open, which is
-    # the exact failure the paragraph above is about.
+    # moved into the Nova folder in his own vault at his ask; that folder
+    # then moved into Nova's database on 2026-09-02, also at his ask, so
+    # this path now probes Nova's store rather than his. The path stays
+    # real either way -- a tuple pointing at a document nobody can open
+    # turns the one endpoint built to remove ambiguity into a second thing
+    # to disambiguate.
     "projects/sokrates/projects/nova/issues.md",
 )
 

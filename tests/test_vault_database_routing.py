@@ -18,7 +18,11 @@ from agora_runner import vault
 
 NOVA_FILE = "projects/sokrates/projects/agora/nova/journal/118-cycle-118.md"
 DIGEST = "projects/sokrates/projects/agora/journal-digest.md"
-HIS_FILE = "projects/sokrates/projects/nova/issues.md"
+HIS_FILE = "projects/sokrates/projects/agora/resources/architecture.md"
+# Was HIS_FILE until 2026-09-02, when he asked for this whole folder to
+# move into Nova's database. It is kept under its own name because the
+# tests below assert the opposite of what they used to about it.
+HIS_OLD_CAPTURE_FILE = "projects/sokrates/projects/nova/issues.md"
 
 
 def _routing_on():
@@ -45,9 +49,7 @@ def test_novas_own_paths_route_to_novas_database():
 
 
 def test_edvards_files_stay_in_his_vault():
-    """He offered issues.md and ideas.md; they deliberately did not move
-    database. Obsidian LiveSync may still write them and cannot see this
-    rule."""
+    """Everything of his outside the two routed folders is untouched."""
     with _routing_on():
         assert vault.db_for(HIS_FILE) == vault.COUCHDB_DB
         assert vault.db_for("projects/sokrates/projects/agora/architecture.md") == vault.COUCHDB_DB
@@ -55,37 +57,46 @@ def test_edvards_files_stay_in_his_vault():
         assert vault.db_for("projects/sokrates/projects/agora/nova-notes.md") == vault.COUCHDB_DB
 
 
-def test_the_nova_folder_in_edvards_own_vault_is_not_novas_database():
-    """Two folders say "nova" and only one of them is Nova's.
+def test_the_nova_folder_in_edvards_own_vault_moved_to_novas_database():
+    """This asserts the opposite of what it asserted until 2026-09-02, and
+    the reversal is the owner's, not a cycle's.
 
-    `projects/sokrates/projects/agora/nova/` is Nova's database;
-    `projects/sokrates/projects/nova/` is a folder in the owner's vault that
-    he asked to keep, and on 2026-08-12 the three files he writes by hand
-    moved into it -- *"they can be moved into the Nova folder in my Vault
-    and not be underneath the agora project folder"*. Adding that second
-    prefix to `NOVA_DB_FOLDERS` because it reads like Nova's would take
-    every capture he types off his phone, and nothing else would notice:
-    the boards would keep working, because the site reads through the
-    same wrong rule that wrote them.
+    `projects/sokrates/projects/nova/` used to be pinned to `obsidian` here
+    because adding it to `NOVA_DB_FOLDERS` "because it reads like Nova's"
+    would have been an accident. He then asked for exactly that move -- *"I
+    often get a conflict error when i open obsidian since there has been
+    changes in those files. I never open them either, so better to move them
+    so that you control them."* The captures survive because he types them
+    through the Nova app, which reads and writes through this same rule.
+
+    What is *not* covered by any test, and is the real cost of the move: an
+    edit he makes to one of these files in Obsidian after this lands never
+    reaches Nova. No routing assertion can catch that; only he can.
     """
     with _routing_on():
-        for name in ("issues.md", "ideas.md", "notes.md", "nova.md"):
+        for name in ("issues.md", "ideas.md", "notes.md", "nova.md",
+                     "goals.md", "projects.md", "roadmap.md"):
             path = "projects/sokrates/projects/nova/" + name
-            assert vault.db_for(path) == vault.COUCHDB_DB, path
+            assert vault.db_for(path) == "nova", path
         assert vault.dbs_for_prefix(
-            "projects/sokrates/projects/nova/") == [vault.COUCHDB_DB]
+            "projects/sokrates/projects/nova/") == ["nova"]
+        # The name without the trailing slash is not inside the folder, and
+        # a sibling that merely starts with it is his.
+        assert vault.db_for("projects/sokrates/projects/nova") == vault.COUCHDB_DB
+        assert vault.db_for(
+            "projects/sokrates/projects/nova-old/x.md") == vault.COUCHDB_DB
 
 
-def test_every_capture_target_lands_in_edvards_database():
-    """The pin that survives a rename. The test above names paths; this
-    one asks the module that actually decides, so moving a capture file
-    into a folder that routes to Nova cannot pass by being consistent
-    with itself."""
+def test_every_capture_target_lands_in_one_named_database():
+    """The pin that survives a rename. The test above names paths; this one
+    asks the module that actually decides, so a capture file that drifted
+    out of the routed folder -- written to one store and read from another
+    -- cannot pass by being consistent with itself."""
     from agora_runner.nova_capture import CAPTURE_TARGETS
 
     with _routing_on():
         for kind, path in CAPTURE_TARGETS.items():
-            assert vault.db_for(path) == vault.COUCHDB_DB, f"{kind} -> {path}"
+            assert vault.db_for(path) == "nova", f"{kind} -> {path}"
 
 
 def test_case_is_not_a_way_out_of_the_routing_rule():
@@ -145,6 +156,23 @@ def test_chunks_for_edvards_files_still_come_from_his_vault():
     assert seen and seen[0].startswith(f"{vault.COUCHDB_DB}/"), seen
 
 
+def test_chunks_for_his_moved_capture_files_come_from_novas_database():
+    """The quiet failure this module exists to catch, on the documents the
+    move actually touched: a doc read from `nova` whose chunks are fetched
+    from `obsidian` assembles as empty, not as an error."""
+    seen = []
+
+    def fake_couch_req(method, path, body=None):
+        seen.append(path)
+        return 200, {"rows": [{"key": "h:ddd", "doc": {"data": "his"}}]}
+
+    doc = {"_id": HIS_OLD_CAPTURE_FILE, "path": HIS_OLD_CAPTURE_FILE,
+           "children": ["h:ddd"]}
+    with _routing_on(), patch.object(vault, "couch_req", fake_couch_req):
+        assert vault.vault_assemble(doc, HIS_OLD_CAPTURE_FILE) == "his"
+    assert seen and seen[0].startswith("nova/"), seen
+
+
 def test_assemble_routes_from_the_doc_when_no_path_is_passed():
     """`vault_bulk_fetch` and friends hand over a doc with no separate
     path argument; the doc's own id is the routing key."""
@@ -191,8 +219,26 @@ def test_a_write_to_edvards_vault_is_unaffected():
         return 200, {"rows": []}    # no chunk already present
 
     with _routing_on(), patch.object(vault, "couch_req", fake_couch_req):
-        vault._vault_put_raw(HIS_FILE, "- a capture\n")
+        vault._vault_put_raw(HIS_FILE, "- a note\n")
     assert puts and all(p.startswith(f"{vault.COUCHDB_DB}/") for p in puts), puts
+
+
+def test_a_capture_write_puts_doc_and_chunks_in_novas_database():
+    """The write side of the move. A capture boarded after this lands must
+    not leave its chunks in the database the doc no longer lives in."""
+    puts = []
+
+    def fake_couch_req(method, path, body=None):
+        if method == "PUT":
+            puts.append(path)
+            return 201, {}
+        if method == "GET":
+            return 404, {}
+        return 200, {"rows": []}
+
+    with _routing_on(), patch.object(vault, "couch_req", fake_couch_req):
+        vault._vault_put_raw(HIS_OLD_CAPTURE_FILE, "- a capture\n")
+    assert puts and all(p.startswith("nova/") for p in puts), puts
 
 
 def test_listing_an_ancestor_prefix_merges_both_databases():

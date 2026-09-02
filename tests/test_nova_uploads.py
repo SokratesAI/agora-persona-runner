@@ -109,8 +109,12 @@ def test_it_lands_in_novas_database_not_edvards(store):
     with patch.object(vault, "COUCHDB_NOVA_DB", "nova"), \
          patch.object(vault, "COUCHDB_DB", "obsidian"):
         assert vault.db_for(path) == "nova"
-        # His three capture files are the ones that must stay on the phone.
-        assert vault.db_for("projects/sokrates/projects/nova/issues.md") == "obsidian"
+        # His capture files moved into Nova's database on 2026-09-02 at his
+        # ask; a path outside both routed folders is what still answers
+        # from his vault, and that is the split this pins.
+        assert vault.db_for("projects/sokrates/projects/nova/issues.md") == "nova"
+        assert vault.db_for(
+            "projects/sokrates/projects/agora/resources/architecture.md") == "obsidian"
 
 
 @pytest.mark.parametrize(

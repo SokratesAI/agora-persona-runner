@@ -82,12 +82,17 @@ from agora_runner.vault import vault_read_path_rev, vault_write_path
 # `obsidian` -- his database, and therefore on his phone -- and only the
 # folder changed.
 #
-# `projects/sokrates/projects/nova/` is deliberately NOT the same folder
-# as `projects/sokrates/projects/agora/nova/`, which routes to Nova's own
-# database. One is his; one is Nova's; they differ by a path segment.
-# `test_vault_database_routing` pins these three to `obsidian` for that
-# reason -- adding this prefix to `NOVA_DB_FOLDERS` because it says
-# "nova" would take the only three files he writes by hand off his phone.
+# `projects/sokrates/projects/nova/` is a different folder from
+# `projects/sokrates/projects/agora/nova/` -- one is his, one is Nova's,
+# they differ by a path segment -- but since 2026-09-02 both route to
+# Nova's database, at his ask. Until then this comment said adding his
+# prefix to `NOVA_DB_FOLDERS` "would take the only three files he writes
+# by hand off his phone"; it does not, because he writes them through the
+# Nova app and the app reads through the same rule. What it does take
+# away is editing them in Obsidian. `test_vault_database_routing` pins
+# these three to Nova's database now, and the pin still matters in the
+# same way: a capture file that drifts out of a routed folder would be
+# written to one store and read from another.
 CAPTURE_TARGETS = {
     "issues": "projects/sokrates/projects/nova/issues.md",
     "ideas": "projects/sokrates/projects/nova/ideas.md",

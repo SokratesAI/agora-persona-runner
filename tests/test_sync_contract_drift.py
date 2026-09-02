@@ -90,8 +90,10 @@ def test_a_routing_tuple_turned_into_a_list_is_drift():
     so this is a crash in the other pod, not a style difference, and a
     value-only comparison would call it in sync."""
     other = _mutated(
-        'NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n)',
-        'NOVA_DB_FOLDERS = [\n    "projects/sokrates/projects/agora/nova/",\n]')
+        'NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n'
+        '    "projects/sokrates/projects/nova/",\n)',
+        'NOVA_DB_FOLDERS = [\n    "projects/sokrates/projects/agora/nova/",\n'
+        '    "projects/sokrates/projects/nova/",\n]')
     assert "NOVA_DB_FOLDERS" in sync_contract.compare(RUNNER_SOURCE, other)
 
 
@@ -155,7 +157,8 @@ def test_a_reworded_comment_or_docstring_is_not_drift():
 BRIDGE_STUB = '''
 import os
 
-NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",)
+NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",
+                   "projects/sokrates/projects/nova/",)
 NOVA_DB_FILES = ("projects/sokrates/projects/agora/journal-digest.md",)
 NOVA_DB_TARGETS = NOVA_DB_FOLDERS + NOVA_DB_FILES
 
@@ -404,7 +407,13 @@ def _runner_copy(tmp_path, old, new):
 
 # A path both copies will be made to answer with an unconfigured database.
 # `db_for` lowercases, so this is what the id would really be.
-_STRAY = "projects/sokrates/projects/nova/notes.md"
+# Was `projects/sokrates/projects/nova/notes.md` until 2026-09-02, when that
+# folder moved into Nova's database at the owner's ask. It has to be a path
+# `compare_routing` actually probes -- an unprobed one never reaches the
+# injected branch, and the guard then reads as removed when it is only
+# unexercised -- and one that is not routed to Nova, or the injected
+# `obsidian` is the honest answer rather than a name nothing supplied.
+_STRAY = "unrelated/file.md"
 
 # The same early return in each copy's own indentation: a module-level
 # function in the runner, a method in the bridge. That difference is the
@@ -509,26 +518,31 @@ def _answers_agree(runner_path, bridge_path):
     return True
 
 
-def test_edvards_own_nova_folder_added_to_both_copies_is_caught(tmp_path):
-    """The mistake this table was written for, and it is a named trap rather
-    than an invented one: two folders in the vault are called "nova" and only
-    `agora/nova/` is Nova's. `projects/nova/` is the owner's own, deliberately
-    left in his vault so his capture files survive the app breaking.
+def test_edvards_own_nova_folder_dropped_from_both_copies_is_caught(tmp_path):
+    """The named trap, inverted on 2026-09-02 -- and the inversion is the
+    owner's, not a cycle's.
 
-    Adding it to `NOVA_DB_FOLDERS` routes his `issues.md`, `ideas.md` and
-    `notes.md` into Nova's database, where his phone does not look. Typed
-    into both copies -- which is how every fix in this pair gets written --
-    the two agree, both answers are databases this tool configured, and every
-    other guard on this stage is green.
+    This test used to assert that *adding* `projects/sokrates/projects/nova/`
+    to `NOVA_DB_FOLDERS` was caught, because that folder was his and routing
+    it away would have taken his capture files off his phone. He then asked
+    for exactly that move. So the direction that now needs catching is the
+    revert: dropping the folder from both copies sends every read of his
+    `issues.md` back to a database whose copy stopped being written on the
+    day of the move, and the boards keep rendering the stale text.
+
+    What makes it this table's job rather than any guard above it is
+    unchanged: typed into both copies -- which is how every fix in this pair
+    gets written -- the two agree, both answers are databases this tool
+    configured, and every other guard on this stage is green.
     """
     runner, bridge = _both_copies(
         tmp_path,
-        runner_old='NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n)',
-        runner_new='NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n'
+        runner_old='NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n'
                    '    "projects/sokrates/projects/nova/",\n)',
-        bridge_old='NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",)',
-        bridge_new='NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",'
-                   ' "projects/sokrates/projects/nova/",)')
+        runner_new='NOVA_DB_FOLDERS = (\n    "projects/sokrates/projects/agora/nova/",\n)',
+        bridge_old='NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",\n'
+                   '                   "projects/sokrates/projects/nova/",)',
+        bridge_new='NOVA_DB_FOLDERS = ("projects/sokrates/projects/agora/nova/",)')
 
     # Agreement first, or this test proves nothing about the expected table:
     # if the copies differed, drift would be reported and the check would
