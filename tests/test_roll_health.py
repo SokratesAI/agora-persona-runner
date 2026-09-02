@@ -7,6 +7,7 @@ in miniature, plus the shapes that must NOT fire.
 """
 
 import io
+import re
 
 import pytest
 
@@ -149,3 +150,92 @@ def test_a_clean_pair_exits_0_and_prints_what_it_did_not_judge():
 def test_roll_health_is_in_preflight():
     from tools import preflight
     assert "roll_health" in preflight.CHECKS
+
+
+def _board(rows, details):
+    """A live capture file whose `## Board` and `# Details` are real.
+
+    `document()` above writes a `# Details` section holding one bullet and no
+    `### #N` block at all, which is the shape `writeups` must answer `None`
+    for -- so a fixture with real write-ups has to be built separately rather
+    than by passing another argument to it.
+    """
+    head = ["---", "type: note", "---", "", "# Nova — Issues", MARKER.strip(),
+            "", "- 2026-08-29 (Cycle 600) — a capture", "", "## Board", "",
+            "| # | Item | Status | Updated | Priority |",
+            "|---|------|--------|---------|---|"]
+    for number, status in rows:
+        head.append(f"| [[#{number} — T{number}\\|{number}]] | T{number} "
+                    f"| {status} | 09-02 |  |")
+    head += ["", "# Details", ""]
+    for number, body in details:
+        head += [f"### #{number} — T{number}", "", body, ""]
+    return "\n".join(head) + "\n"
+
+
+def test_writeups_is_none_when_the_file_has_no_write_up_blocks():
+    """The precondition for the test below: `document()` has a `# Details`
+    heading and no `### #N` block under it, so a `None` here is the absence
+    of write-ups and not the absence of the section."""
+    live = document(entries=["- 2026-08-29 (Cycle 600) — three"])
+    assert "# Details" in live
+    assert roll_health.writeups(live) is None
+
+
+def test_writeups_counts_the_bodies_and_names_the_largest():
+    live = _board([(1, "⚪ Backlog"), (2, "⚪ Backlog")],
+                  [(1, "x" * 40), (2, "y" * 400)])
+    marks = roll_health.writeups(live)
+    assert marks["count"] == 2
+    assert marks["bytes"] >= 440
+    assert marks["largest"][0] == 2
+    assert marks["done_count"] == 0 and marks["done_bytes"] == 0
+
+
+def test_writeups_separates_a_done_rows_body_from_an_open_ones():
+    live = _board([(1, "✅ Done"), (2, "⚪ Backlog")],
+                  [(1, "x" * 40), (2, "y" * 400)])
+    marks = roll_health.writeups(live)
+    assert marks["count"] == 2 and marks["done_count"] == 1
+    assert 0 < marks["done_bytes"] < marks["bytes"]
+
+
+def test_the_report_says_how_little_the_capture_roll_moves():
+    """The finding this was built for: `owed` is true, and the roll it names
+    moves a rounding error against the write-ups nothing rolls."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    entries = "\n".join(f"- 2026-08-29 (Cycle {900 - i}) — n{i}"
+                        for i in range(roll_health.roll_captures.KEEP + 2))
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    live = live.replace("- 2026-08-29 (Cycle 600) — a capture", entries)
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    printed = out.getvalue()
+    assert "A roll is owed" in printed
+    moved = int(re.search(r"The capture roll moves ([\d,]+) of", printed)
+                .group(1).replace(",", ""))
+    # A real, non-zero number that is nonetheless small against the file --
+    # `in printed` alone passes on a hardcoded 0, which is the whole claim.
+    assert 0 < moved < len(live) // 2
+    assert "write-up bodies across 1 row(s)" in printed
+    assert "would move nothing" in printed
+    assert "largest single write-up is row #1" in printed
+
+
+def test_the_report_points_at_roll_done_details_when_one_would_move():
+    live_path, archive_path = roll_health.PAIRS[0]
+    entries = "\n".join(f"- 2026-08-29 (Cycle {900 - i}) — n{i}"
+                        for i in range(roll_health.roll_captures.KEEP + 2))
+    live = _board([(1, "✅ Done")], [(1, "y" * 4000)])
+    live = live.replace("- 2026-08-29 (Cycle 600) — a capture", entries)
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    printed = out.getvalue()
+    assert "tools.roll_done_details" in printed
+    assert "would move nothing" not in printed

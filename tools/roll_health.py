@@ -61,8 +61,9 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner.nova_boards import parse_board
 from agora_runner.rolling import RollError, _body
-from tools import roll_captures
+from tools import roll_captures, roll_done_details
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
@@ -115,6 +116,70 @@ def span(stranded):
     return f"Cycle {min(seen)} to Cycle {max(seen)}"
 
 
+def writeups(live):
+    """How much of a live capture file is `# Details` write-up, or `None`.
+
+    **The capture roll is not the lever on this file and the report said it
+    was.** Measured on the live `nova/resources/issues.md`, 2026-09-02: the
+    file is 123,582 bytes, the roll `owed` below moves 2,591 of them, and
+    62,801 sit in nineteen `# Details` write-up bodies that `roll_captures`
+    has never touched -- one row's alone is 25,102. So "a roll is owed" was
+    true, and read as an explanation of the size, which it is not.
+
+    `tools.roll_done_details` is the roller for this half and it already
+    exists (#655). What it can move is only the write-up of a `✅ Done` row,
+    and today that is zero of nineteen: all eight done rows on that file
+    carry no write-up at all, which is what a run of it leaves behind.
+    **That is the number worth printing**: a big `# Details` section with
+    nothing done in it is not a roll anybody has forgotten, it is open work,
+    and a cycle that reads "owed" without it goes looking for a roller that
+    already exists.
+
+    `statusKey == "done"` is read through `roll_done_details._done_numbers`
+    rather than re-spelled here, and the bodies come from
+    `parse_board(live)["details"]` -- the same dict the page draws from, so
+    this cannot disagree with what would actually move. Bodies only: the
+    `### #N` heading line is not counted, because the heading is not what
+    travels.
+
+    `None` when the file has no write-ups at all, which is a different answer
+    from zero bytes of them and must not print as one.
+    """
+    board = parse_board(live)
+    sizes = {n: len(body) for n, body in board["details"].items()}
+    if not sizes:
+        return None
+    done = [n for n in roll_done_details._done_numbers(board) if n in sizes]
+    largest = max(sizes, key=lambda n: sizes[n])
+    return {
+        "bytes": sum(sizes.values()),
+        "count": len(sizes),
+        "done_bytes": sum(sizes[n] for n in done),
+        "done_count": len(done),
+        "largest": (largest, sizes[largest]),
+    }
+
+
+def weight(live, archive):
+    """`{"moved": bytes-or-None, "writeups": writeups(live)}` for one pair.
+
+    `moved` is what the capture roll would actually take off the live file,
+    so the report can put it beside the file's own size instead of leaving
+    "a roll is owed" to imply it. `None` when the roller refuses -- it never
+    got far enough to say, the same reason `inspect` reports `owed` as
+    `None` there.
+
+    A dict rather than two more slots on the finding tuple, so the next thing
+    worth measuring about a file does not widen it again.
+    """
+    try:
+        new_live, _ = roll_captures.plan(live, archive)
+        moved = len(live) - len(new_live)
+    except RollError:
+        moved = None
+    return {"moved": moved, "writeups": writeups(live)}
+
+
 def inspect(live, archive):
     """`(stranded, refusal, owed)` for one pair, without writing anything.
 
@@ -154,7 +219,8 @@ def _fetch(path):
 def check(pairs=PAIRS, fetch=_fetch):
     """`(findings, unreadable, clean)` -- three lists, in report order.
 
-    A `findings` entry is `(live path, bytes, stranded, refusal, owed)`.
+    A `findings` entry is `(live path, bytes, stranded, refusal, owed,
+    weight)`.
     Taking `fetch` as an argument is what lets the tests run without a vault
     client; nothing else passes it.
     """
@@ -167,15 +233,48 @@ def check(pairs=PAIRS, fetch=_fetch):
             continue
         stranded, refusal, owed = inspect(live, archive)
         if stranded or refusal or owed:
-            findings.append((live_path, len(live), stranded, refusal, owed))
+            findings.append((live_path, len(live), stranded, refusal, owed,
+                             weight(live, archive)))
         else:
             clean.append((live_path, len(live)))
     return findings, unreadable, clean
 
 
+def _report_weight(size, weights, out):
+    """The size decomposition, under whatever else the pair was flagged for.
+
+    Printed on every finding rather than only under `owed`, because the
+    question it answers -- what is this file made of -- does not depend on
+    which of the three checks fired.
+    """
+    moved = weights.get("moved")
+    if moved is not None:
+        print(f"    The capture roll moves {moved:,} of {size:,} bytes.",
+              file=out)
+    marks = weights.get("writeups")
+    if marks is None:
+        print("    No '# Details' write-ups in this file, so its size is "
+              "captures and board rows.", file=out)
+        return
+    print(f"    {marks['bytes']:,} bytes are '# Details' write-up bodies "
+          f"across {marks['count']} row(s), which roll_captures never "
+          "touches.", file=out)
+    if marks["done_count"]:
+        print(f"    {marks['done_count']} of them ({marks['done_bytes']:,} "
+              "bytes) belong to a done row: run "
+              "`python3 -m tools.roll_done_details`.", file=out)
+    else:
+        print("    None of them belong to a done row, so roll_done_details "
+              "would move nothing — that weight is open work, not a roll "
+              "anybody forgot.", file=out)
+    number, largest = marks["largest"]
+    print(f"    The largest single write-up is row #{number} at "
+          f"{largest:,} bytes.", file=out)
+
+
 def report(findings, unreadable, clean, out=sys.stdout):
     """Print the finding, and return the exit code it deserves."""
-    for path, size, stranded, refusal, owed in findings:
+    for path, size, stranded, refusal, owed, weights in findings:
         print(f"UNROLLABLE — {path} ({size:,} bytes)", file=out)
         if stranded:
             print(f"    {len(stranded)} capture(s) sit above the "
@@ -195,6 +294,7 @@ def report(findings, unreadable, clean, out=sys.stdout):
         if owed:
             print("    A roll is owed: there are more captures than "
                   f"roll_captures.KEEP ({roll_captures.KEEP}).", file=out)
+        _report_weight(size, weights, out)
     for path in unreadable:
         print(f"COULD NOT READ — {path}", file=out)
     tail_note = ("    Not judged: captures below the section — '## Retired', "
