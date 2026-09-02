@@ -65,6 +65,20 @@ class RollSpec:
     caller wants run before any write. All three default to nothing,
     because the generic checks below are the ones that matter.
 
+    `count_entries` is the splitter `verify` counts with, and it defaults
+    to `split_entries` because for three of the four callers they are the
+    same question. They are not the same question for the handoff, and the
+    reason generalises: an archive may hold text that is *not* an entry.
+    `roll_handoff` writes a retirement reason into the archive as its own
+    paragraph, so a paragraph splitter reads each stamp back as an item --
+    and two items retired on one day with one reason leave two identical
+    paragraphs, which `dedup` collapses on the before side and not on the
+    after side, so `verify` refuses every multi-item roll. The fix is not
+    to hide stamps from `split_entries`: `plan` reconstructs the archive
+    with that same splitter, so filtering there drops every earlier roll's
+    reason -- it did, on the live file, Cycle 792. Counting and
+    reconstructing are two jobs and this is the seam between them.
+
     `check_live` is the odd one out: it is handed the *whole* live
     document rather than anything this engine parsed out of it, and it
     runs before the marker is even located. Every other check here asks
@@ -84,6 +98,7 @@ class RollSpec:
         join_entries,
         keep,
         noun="entries",
+        count_entries=None,
         archive_section="",
         marker_aliases=(),
         check_entry=None,
@@ -101,6 +116,7 @@ class RollSpec:
         self.archive_section = archive_section
         self.archive_frontmatter = archive_frontmatter
         self.split_entries = split_entries
+        self.count_entries = count_entries or split_entries
         self.join_entries = join_entries
         self.keep = keep
         self.check_entry = check_entry
@@ -270,7 +286,14 @@ def _split_title(archive, spec):
     return split_at_heading(archive, spec.archive_title)
 
 
-def _archived(archive, spec):
+def _archived(archive, spec, split_with=None):
+    """The archive's entries. `split` overrides the spec's splitter.
+
+    `verify` passes `spec.count_entries` here so that both sides of its
+    comparison are counted the same way; everything else wants
+    `split_entries`, which is the default.
+    """
+    split_with = split_with or spec.split_entries
     if not archive.strip():
         return []
     # Cut below the title, then below the section heading if that is what
@@ -296,7 +319,7 @@ def _archived(archive, spec):
         stripped = body.lstrip("\n")
         if stripped.startswith(spec.archive_section):
             body = stripped[len(spec.archive_section):]
-    return spec.split_entries(body)
+    return split_with(body)
 
 
 def _archive_header(archive, spec):
@@ -432,10 +455,13 @@ def verify(live, archive, new_live, new_archive, spec, ordered=True):
     """
     if spec.check_archive:
         spec.check_archive(new_archive)
+    count = spec.count_entries
     kept = dedup(
-        spec.split_entries(_body(live, spec)[1]) + _archived(archive, spec)
+        count(_body(live, spec)[1]) + _archived(archive, spec, count)
     )
-    rolled = spec.split_entries(_body(new_live, spec)[1]) + _archived(new_archive, spec)
+    rolled = count(_body(new_live, spec)[1]) + _archived(
+        new_archive, spec, count
+    )
     lost = kept != rolled if ordered else sorted(kept) != sorted(rolled)
     if lost:
         raise RollError(

@@ -96,6 +96,30 @@ ARCHIVE_FRONTMATTER = (
 # two definitions of where an item ends is one disagreement waiting.
 split_items = split_needs_items
 
+# The stamp `stamp_retired` writes below an archived item, matched at the
+# start of a paragraph only.
+_STAMP_RE = re.compile(r"^\*\*Retired \d{2}-\d{2}\*\*")
+
+
+def count_items(text):
+    """The items in `text`, not counting the retirement stamps under them.
+
+    `verify` counts with this and `plan` reconstructs with `split_items`,
+    and the two must stay separate. A stamp is its own paragraph, so the
+    paragraph splitter reads it back as an item; two items retired on one
+    day with one reason leave two identical stamp paragraphs, `dedup`
+    collapses them on the before side and not on the after side, and every
+    multi-item roll is refused with `N in, N+4 out`.
+
+    The tempting fix is to filter stamps out of `split_items` itself.
+    **Do not.** `rolling.plan` rebuilds the archive from that same
+    splitter, so filtering there writes an archive with every earlier
+    roll's reason deleted -- it did, on the live file, and the 29 lost
+    stamps had to be recovered from the hourly vault mirror (Cycle 792).
+    Counting is allowed to ignore text; reconstructing is not.
+    """
+    return [item for item in split_items(text) if not _STAMP_RE.match(item)]
+
 
 def _check_archive(new_archive):
     """No level-two heading in the archive.
@@ -118,6 +142,7 @@ SPEC = RollSpec(
     archive_title=ARCHIVE_TITLE,
     archive_frontmatter=ARCHIVE_FRONTMATTER,
     split_entries=split_items,
+    count_entries=count_items,
     join_entries=join_paragraphs,
     keep=0,  # unused: the caller always names slugs, never rolls by age
     noun="handoff items",
