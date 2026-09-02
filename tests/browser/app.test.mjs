@@ -14682,6 +14682,43 @@ describe("the model picker on a thread", () => {
       assert.equal(barIn(window).hidden, true);
     });
 
+  test("switching threads takes the previous thread's picker off the screen first",
+    async () => {
+      /* Reviewer caught this. `#chat-model-host` is a singleton in
+       * `index.html`, and the new thread's picker only arrives when its own
+       * thread fetch lands -- while `paintCached` repaints the messages
+       * instantly. So without a reset the previous thread's picker sits over
+       * the new thread's messages, still closed over the previous thread's
+       * id, and changing it repoints the thread he just left. */
+      const window = await loadSite("/", {
+        ask: ASK,
+        convList: {
+          folders: [], models: CATALOG,
+          conversations: [{ id: "c-1", name: "Roofing", personaName: "Claude",
+            model: "claude-cli:claude-sonnet-5", tags: [], cycleThread: false,
+            folderId: "", updatedAt: "2026-08-26T07:00:00.000Z" }],
+        },
+        // Never resolves: this is the window between the switch and the new
+        // thread's payload, which is exactly where the stale picker lived.
+        convThread: () => new Promise(() => {}),
+        convModel: { model: "claude-cli:claude-sonnet-5", models: CATALOG, found: true },
+      });
+      tap(window, "chat-btn");
+      await tick();
+      await tick();
+      assert.equal(barIn(window).hidden, false, "the Ask thread had no picker to begin with");
+      tap(window, "chat-menu");
+      await tick();
+      [...window.document.querySelectorAll("#chat-list .chat-list-row")]
+        .find((r) => r.querySelector(".chat-list-name").textContent === "Roofing")
+        .dispatchEvent(new window.Event("click"));
+      await tick();
+      assert.equal(barIn(window).hidden, true,
+        "the previous thread's picker was still on screen after the switch");
+      assert.equal(pickerIn(window).options.length, 0,
+        "the previous thread's options were still selectable");
+    });
+
   test("the conversation page draws its own picker, for the thread in the URL", async () => {
     const asked = [];
     const window = await loadSite("/conversation/c-9", {

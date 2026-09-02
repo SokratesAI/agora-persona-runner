@@ -3627,6 +3627,7 @@ body.chat-open { overflow: hidden; }
 }
 .chat-list[hidden] { display: none; }
 .chat-dock.list-open .chat-thread,
+.chat-dock.list-open #chat-model-host,
 .chat-dock.list-open .chat-form { display: none; }
 .chat-list-row {
   display: block;

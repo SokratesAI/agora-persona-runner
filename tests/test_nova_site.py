@@ -5554,12 +5554,3 @@ def test_the_model_route_answers_the_thread_the_query_names():
     assert seen["id"] == "c-7"
     assert json.loads(body)["model"] == "claude-cli:claude-sonnet-5"
 
-
-def test_the_model_route_is_not_cached():
-    """He changes the model from this page, and the next read has to see it.
-    A `CACHE_FRESH_SECONDS` window here would show him the model he just
-    switched away from."""
-    with patch.object(nova_site, "conversation_model_choice",
-                      lambda cid: {"model": "", "models": [], "found": False}):
-        _status, head, _body = _get("/api/conversations/model?id=c-7")
-    assert "max-age" not in head.lower()

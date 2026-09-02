@@ -12650,6 +12650,17 @@
       loadingOlder = false;
       pendingAnchor = null;
       titleEl.textContent = source.name;
+      /* And the picker goes with it, before anything is painted.
+       *
+       * `modelHost` is a singleton in `index.html`, not a node rebuilt per
+       * thread, and the picker for the new thread only arrives when its own
+       * `loadThread` fetch lands. Without this the previous thread's picker
+       * stays on screen -- live, and closed over the previous thread's id --
+       * over messages that are already the new thread's, because
+       * `paintCached` repaints them instantly. Changing it in that window
+       * repoints the thread he just left, at a model he was choosing for the
+       * one he is looking at. Reviewer caught it. */
+      paintModelPicker(modelHost, "");
       thread.textContent = "";
       // Only the thread the cache actually holds paints instantly; every
       // other row in the switcher still shows the placeholder.
