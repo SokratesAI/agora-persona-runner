@@ -39,8 +39,12 @@ handoff; this module only ever compares the strings it is given.
 
 import hashlib
 import json
+import os
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+OSLO = ZoneInfo("Europe/Oslo")
 
 #: Where the ledger lives. It was hand-typed in `tools/claim.py`'s docstring
 #: and nowhere else, which was fine while one module read it; Cycle 342 added
@@ -65,6 +69,67 @@ CLAIM_TTL_MINUTES = 45
 #: once every cycle that could still be holding the stale handoff has
 #: finished.
 DONE_KEEP_HOURS = 24
+
+#: The pod every cycle's shell runs inside. `container_started_at` refuses
+#: to answer anywhere else, because the whole inference below is "the
+#: process that made this claim lived in *this* container", and that is
+#: false in the site pod and in the runner pod -- both of which import this
+#: module and neither of which a cycle claims from.
+CLAIM_HOST_PREFIX = "agora-claude-bridge"
+
+
+def container_started_at(now=None, hostname=None, proc="/proc"):
+    """When this container started, or None if that cannot be known here.
+
+    A claim goes stale on a clock (`CLAIM_TTL_MINUTES`), and for 45 minutes
+    after a cycle dies its claim is indistinguishable from a cycle that is
+    simply still working. That window has a cost the ledger cannot see:
+    2026-09-02, the bridge container was killed at 11:08 Oslo taking cycles
+    796 and 797 with it, and cycle 799 read the board four minutes later and
+    was refused the owner's only unprocessed capture by a cycle that had
+    stopped existing. It was the top row on either board.
+
+    The container's own start time settles it without waiting: every cycle's
+    shell runs inside this container, so a claim stamped *before* the
+    container started was made by a process that is provably gone. Nothing
+    about it is a heuristic -- it is not "probably dead", it is "that pid
+    namespace does not exist any more".
+
+    Deliberately guarded by hostname. `nova_claims` is imported by the site
+    pod (`nova_next`) and could be imported by the runner pod, and in either
+    of those `/proc/1` is a different container whose start time says
+    nothing about a claim; a recently restarted *other* pod would then
+    declare live claims dead, which is the one direction this must never
+    fail in. Returning None restores the previous behaviour exactly.
+    """
+    host = hostname if hostname is not None else os.uname().nodename
+    if not host.startswith(CLAIM_HOST_PREFIX):
+        return None
+    try:
+        with open(f"{proc}/stat", encoding="utf-8") as handle:
+            boot = next(int(line.split()[1]) for line in handle
+                        if line.startswith("btime "))
+        with open(f"{proc}/1/stat", encoding="utf-8") as handle:
+            stat = handle.read()
+    except (OSError, StopIteration, ValueError):
+        return None
+    # `comm` is field 2 and may contain spaces and brackets, so the fields
+    # are counted from the last ')' -- the documented way to parse this.
+    try:
+        fields = stat[stat.rindex(")") + 2:].split()
+        ticks = int(fields[19])
+        hz = os.sysconf("SC_CLK_TCK")
+    except (ValueError, IndexError, OSError):
+        return None
+    if hz <= 0:
+        return None
+    started = datetime.fromtimestamp(boot + ticks / hz, tz=OSLO)
+    if now is not None and started > now:
+        # A clock that puts this container's start in the future would make
+        # every claim look dead. Refuse rather than empty the ledger.
+        return None
+    return started
+
 
 #: Slugs are lowercase, hyphen-separated, and long enough to mean
 #: something. The rule exists because the whole mechanism is string
@@ -197,10 +262,25 @@ def find(ledger, item):
     return None
 
 
-def is_stale(row, now, ttl_minutes=CLAIM_TTL_MINUTES):
-    """True when an open claim is older than a cycle can possibly be."""
+def is_stale(row, now, ttl_minutes=CLAIM_TTL_MINUTES, host_started_at=None):
+    """True when the cycle holding this claim cannot still be working on it.
+
+    Two independent reasons, and the second one is not a clock. Older than
+    the hard turn cap means the cycle is dead by arithmetic. Stamped before
+    `host_started_at` -- the start of the container every cycle's shell runs
+    in, see `container_started_at` -- means the cycle is dead by evidence:
+    its process was in a pid namespace that no longer exists. The second is
+    the earlier of the two whenever a restart is what killed the cycle, and
+    it is the one that matters, because the 45 minutes it saves is exactly
+    the window in which the owner's top board row is unclaimable.
+
+    `host_started_at=None` is the answer everywhere the question cannot be
+    asked honestly, and it restores the clock-only behaviour exactly.
+    """
     if row.get("state") != OPEN:
         return False
+    if host_started_at is not None and _parse_at(row) < host_started_at:
+        return True
     return _minutes_between(_parse_at(row), now) > ttl_minutes
 
 
@@ -269,7 +349,8 @@ def prune(ledger, now, keep_hours=DONE_KEEP_HOURS):
     return ledger
 
 
-def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
+def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES,
+         host_started_at=None):
     """Claim `item` for `cycle`. Returns (granted, message).
 
     Granted is False for an item another live cycle holds and for one that
@@ -293,6 +374,7 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
 
     existing = find(ledger, item)
     taken_over = None
+    taken_over_row = None
     resumed = None
     carried = None
     if existing is not None:
@@ -310,7 +392,7 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
             ledger["claims"].remove(existing)
         elif existing["cycle"] == cycle:
             return True, f"{item} was already yours (cycle {cycle}), unchanged"
-        elif not is_stale(existing, now, ttl_minutes):
+        elif not is_stale(existing, now, ttl_minutes, host_started_at):
             held = int(_minutes_between(_parse_at(existing), now))
             return False, (
                 f"{item} is held by cycle {existing['cycle']}, claimed {held} min ago "
@@ -319,6 +401,7 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
         else:
             ledger["claims"].remove(existing)
             taken_over = existing["cycle"]
+            taken_over_row = existing
             # Carry any inherited breadcrumb across the takeover. A cycle
             # that resumed a progressed item and was then killed at the
             # turn cap is the canonical case for this state, and it was
@@ -341,9 +424,19 @@ def take(ledger, item, cycle, now, note=None, ttl_minutes=CLAIM_TTL_MINUTES):
     ledger["claims"].insert(0, row)
     prune(ledger, now)
     if taken_over is not None:
+        # Say which of the two reasons it was. "Older than 45 min" on a
+        # claim four minutes old reads as a bug in the tool, and the two
+        # answers mean different things to whoever reads the ledger next:
+        # one cycle ran out of time, the other was killed with the pod.
+        why = f"whose claim was older than {ttl_minutes} min"
+        if (host_started_at is not None
+                and _parse_at(taken_over_row) < host_started_at):
+            why = ("which cannot still be running -- it claimed at "
+                   f"{taken_over_row['at']}, before this container started at "
+                   f"{host_started_at.isoformat()}")
         return True, (
             f"{item} claimed by cycle {cycle} -- taken over from cycle {taken_over}, "
-            f"whose claim was older than {ttl_minutes} min"
+            f"{why}"
         )
     if resumed is not None:
         left = " ".join((resumed.get("outcome") or "no outcome recorded").split())
@@ -487,7 +580,7 @@ def slug_for_comment(board, number, text):
     return f"reply-{board}-{int(number)}-{digest}"
 
 
-def held_by(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
+def held_by(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES, host_started_at=None):
     """`{item: cycle}` for every claim a cycle could still be working on.
 
     Open and not yet stale. A `done` claim is deliberately not in here:
@@ -497,7 +590,8 @@ def held_by(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
     """
     live = {}
     for row in ledger["claims"]:
-        if row.get("state") == OPEN and not is_stale(row, now, ttl_minutes):
+        if row.get("state") == OPEN and not is_stale(
+                row, now, ttl_minutes, host_started_at):
             live.setdefault(row["item"], row["cycle"])
     return live
 
@@ -547,7 +641,7 @@ def progressed_claims(ledger):
             if row.get("state") == PROGRESSED}
 
 
-def summarise(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
+def summarise(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES, host_started_at=None):
     """One line per claim, newest first, for a cycle reading the ledger."""
     lines = []
     for row in ledger["claims"]:
@@ -555,7 +649,7 @@ def summarise(ledger, now, ttl_minutes=CLAIM_TTL_MINUTES):
             state = "done"
         elif row.get("state") == PROGRESSED:
             state = "prog"
-        elif is_stale(row, now, ttl_minutes):
+        elif is_stale(row, now, ttl_minutes, host_started_at):
             state = "stale"
         else:
             state = "open"
