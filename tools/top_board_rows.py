@@ -98,7 +98,8 @@ from agora_runner.nova_next import (
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_claims import (
-    CLAIMS_PATH, ClaimError, finished_claims, held_by, load as load_claims,
+    CLAIMS_PATH, ClaimError, container_started_at, finished_claims, held_by,
+    load as load_claims,
     progressed_claims, slug_for_capture,
     slug_for_comment, slug_for_row,
 )
@@ -628,7 +629,9 @@ def main(argv=None):
         claims_text, claims_readable = fetch_claims()
     try:
         ledger = load_claims(claims_text)
-        live = held_by(ledger, datetime.now(OSLO))
+        now = datetime.now(OSLO)
+        live = held_by(ledger, now,
+                       host_started_at=container_started_at(now))
         finished = finished_claims(ledger)
         progressed = progressed_claims(ledger)
     except ClaimError as exc:

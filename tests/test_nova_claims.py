@@ -21,6 +21,7 @@ import pytest
 
 from agora_runner.nova_claims import (
     CLAIM_TTL_MINUTES,
+    container_started_at,
     PROGRESSED,
     ClaimError,
     dumps,
@@ -843,3 +844,140 @@ def test_the_same_comment_read_twice_is_one_claim():
 def test_the_two_boards_do_not_share_a_comment_claim():
     assert slug_for_comment("issue", 7, "q") != \
         slug_for_comment("idea", 7, "q")
+
+
+# --- a claim whose container is gone ---------------------------------------
+#
+# The 45-minute expiry is arithmetic: it assumes a cycle that has not
+# released is either working or out of time. A pod restart breaks that
+# assumption in the one direction that costs -- 2026-09-02, the bridge
+# container was killed at 11:08 Oslo with two cycles inside it, and the next
+# cycle was refused the owner's only unprocessed capture by a cycle that had
+# stopped existing two minutes before it claimed. Every test below fixes the
+# container start explicitly; none of them read /proc.
+
+
+def test_a_claim_stamped_before_the_container_started_is_not_live():
+    row = {"item": "capture-x", "cycle": 797, "state": "open", "at": at(0).isoformat()}
+    # Four minutes old, so the clock alone says it is live.
+    assert not is_stale(row, at(4))
+    assert is_stale(row, at(4), host_started_at=at(2))
+
+
+def test_a_claim_made_after_the_container_started_is_still_live():
+    # The direction that must never fail: a cycle running right now, in this
+    # container, keeps its claim.
+    row = {"item": "capture-x", "cycle": 800, "state": "open", "at": at(10).isoformat()}
+    assert not is_stale(row, at(14), host_started_at=at(2))
+
+
+def test_without_a_container_start_the_clock_alone_still_decides():
+    row = {"item": "capture-x", "cycle": 797, "state": "open", "at": at(0).isoformat()}
+    assert not is_stale(row, at(4), host_started_at=None)
+    assert is_stale(row, at(CLAIM_TTL_MINUTES + 1), host_started_at=None)
+
+
+def test_take_grants_an_item_held_by_a_cycle_the_restart_killed():
+    ledger = {"claims": [
+        {"item": "capture-x", "cycle": 797, "state": "open", "at": at(0).isoformat()},
+    ]}
+    refused, _ = take(dict(claims=[dict(ledger["claims"][0])]), "capture-x", 799, at(4))
+    assert refused is False, "without the container start this is a live claim"
+
+    granted, message = take(ledger, "capture-x", 799, at(4), host_started_at=at(2))
+    assert granted is True
+    assert "797" in message and "before this container started" in message
+    assert str(CLAIM_TTL_MINUTES) not in message, (
+        "a four-minute-old claim was not taken over on the 45-minute rule, and "
+        "saying so would send the reader looking for a clock bug"
+    )
+    assert ledger["claims"][0]["cycle"] == 799
+    assert ledger["claims"][0]["took_over_from"] == 797
+
+
+def test_a_timed_out_claim_still_says_it_timed_out():
+    ledger = {"claims": [
+        {"item": "capture-x", "cycle": 797, "state": "open", "at": at(0).isoformat()},
+    ]}
+    granted, message = take(ledger, "capture-x", 799, at(CLAIM_TTL_MINUTES + 1),
+                            host_started_at=at(-30))
+    assert granted is True
+    assert f"older than {CLAIM_TTL_MINUTES} min" in message
+
+
+def test_held_by_drops_a_claim_the_restart_killed():
+    ledger = {"claims": [
+        {"item": "capture-x", "cycle": 797, "state": "open", "at": at(0).isoformat()},
+        {"item": "idea-9", "cycle": 800, "state": "open", "at": at(3).isoformat()},
+    ]}
+    assert held_by(ledger, at(4)) == {"capture-x": 797, "idea-9": 800}
+    assert held_by(ledger, at(4), host_started_at=at(2)) == {"idea-9": 800}
+
+
+def test_summarise_calls_a_killed_claim_stale():
+    ledger = {"claims": [
+        {"item": "capture-x", "cycle": 797, "state": "open", "at": at(0).isoformat()},
+    ]}
+    assert summarise(ledger, at(4)).startswith("open ")
+    assert summarise(ledger, at(4), host_started_at=at(2)).startswith("stale")
+
+
+# --- reading the container's own start time --------------------------------
+
+
+def _proc(tmp_path, btime, ticks, comm="tini"):
+    (tmp_path / "stat").write_text(
+        f"cpu 1 2 3\nbtime {btime}\nprocesses 4\n", encoding="utf-8")
+    one = tmp_path / "1"
+    one.mkdir()
+    (one / "stat").write_text(
+        # Fields 1-3 are pid, comm, state; starttime is field 22, so 18
+        # fields sit between the state and it. The layout is not guessed --
+        # the live /proc/1/stat on the bridge pod, parsed this way, gives
+        # 2026-09-02 11:08:53 Oslo, which is the startedAt kubectl reports
+        # for that container to the second.
+        f"1 ({comm}) S " + " ".join(str(i) for i in range(1, 19)) + f" {ticks} 0 0\n",
+        encoding="utf-8")
+    return str(tmp_path)
+
+
+def test_container_start_is_boot_time_plus_pid_one_starttime(tmp_path):
+    import os
+    hz = os.sysconf("SC_CLK_TCK")
+    boot = int(datetime(2026, 9, 2, 7, 0, tzinfo=OSLO).timestamp())
+    got = container_started_at(hostname="agora-claude-bridge-67459f6f88-w5x2b",
+                              proc=_proc(tmp_path, boot, 60 * hz))
+    assert got == datetime(2026, 9, 2, 7, 1, tzinfo=OSLO)
+
+
+def test_a_comm_containing_spaces_and_brackets_does_not_shift_the_fields(tmp_path):
+    import os
+    hz = os.sysconf("SC_CLK_TCK")
+    boot = int(datetime(2026, 9, 2, 7, 0, tzinfo=OSLO).timestamp())
+    got = container_started_at(hostname="agora-claude-bridge-x",
+                               proc=_proc(tmp_path, boot, 60 * hz, comm="a b) c"))
+    assert got == datetime(2026, 9, 2, 7, 1, tzinfo=OSLO)
+
+
+def test_another_pod_is_refused_rather_than_answered(tmp_path):
+    # `nova_claims` is imported by the site pod, where /proc/1 is a container
+    # that has nothing to do with any claim. Answering there would let one
+    # unrelated restart free every live claim at once.
+    proc = _proc(tmp_path, 1, 0)
+    assert container_started_at(hostname="nova-site-6d9b", proc=proc) is None
+    assert container_started_at(hostname="agora-persona-runner-1", proc=proc) is None
+    assert container_started_at(hostname="agora-claude-bridge-1", proc=proc) is not None
+
+
+def test_an_unreadable_proc_is_none_not_a_crash(tmp_path):
+    assert container_started_at(hostname="agora-claude-bridge-1",
+                                proc=str(tmp_path / "nope")) is None
+
+
+def test_a_start_time_in_the_future_is_refused(tmp_path):
+    import os
+    hz = os.sysconf("SC_CLK_TCK")
+    boot = int(datetime(2026, 9, 2, 7, 0, tzinfo=OSLO).timestamp())
+    proc = _proc(tmp_path, boot, 60 * hz)
+    now = datetime(2026, 9, 2, 6, 0, tzinfo=OSLO)
+    assert container_started_at(now, hostname="agora-claude-bridge-1", proc=proc) is None

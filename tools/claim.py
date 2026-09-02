@@ -53,6 +53,7 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_claims import (
     DONE,
+    container_started_at,
     PROGRESSED,
     ClaimError,
     dumps,
@@ -120,6 +121,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     now = datetime.now(OSLO)
+    # None anywhere but the pod cycles actually run in, which is the whole
+    # point of asking the container rather than trusting the ledger.
+    host_started_at = container_started_at(now)
     try:
         ledger = load(_read(args.ledger))
     except ClaimError as exc:
@@ -137,7 +141,7 @@ def main(argv=None):
         return 1
 
     if args.action == "list":
-        print(summarise(ledger, now))
+        print(summarise(ledger, now, host_started_at=host_started_at))
         return 0
 
     if not args.item or args.cycle is None:
@@ -155,7 +159,8 @@ def main(argv=None):
 
     try:
         if args.action == "take":
-            ok, message = take(ledger, args.item, args.cycle, now, note=args.note)
+            ok, message = take(ledger, args.item, args.cycle, now, note=args.note,
+                               host_started_at=host_started_at)
         else:
             ok, message = release(ledger, args.item, args.cycle, now,
                                   outcome=args.outcome, state=args.release_state)
