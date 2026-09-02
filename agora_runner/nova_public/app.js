@@ -2324,7 +2324,7 @@
        * `fold.comments`, a state, and the comment above is right that a state
        * is not a sightline. */
       if (openedByTap && !document.hidden) {
-        if (markRepliesRead(target.cycle, lastItems) && lastStatus) {
+        if (markRepliesRead(target.readKey, lastItems) && lastStatus) {
           renderStatus(lastStatus, null);
         }
       }
@@ -2355,11 +2355,14 @@
        * numbers. "all new" is only ever printed when the chip would otherwise
        * have repeated the count exactly, which is the case he reported.
        *
-       * `target.cycle` and not a guard on it: both callers of this function
-       * are `cycleTarget`, so there is no drawer here without a cycle. A
+       * `target.readKey` and not a guard on it: every target this drawer is
+       * built with carries one, so there is no drawer here without a key. A
        * null-check would have looked like defence and been dead code -- I
-       * wrote one, mutated it away, and all eight tests stayed green. */
-      var unread = unreadReplies(target.cycle, lastItems);
+       * wrote one, mutated it away, and all eight tests stayed green. It was
+       * `target.cycle` until entry threads existed, and those have no cycle
+       * number at all -- `String(undefined)` would have filed every one of
+       * them under one shared key. */
+      var unread = unreadReplies(target.readKey, lastItems);
       if (unread) {
         toggle.appendChild(el("span", "comment-unread",
           unread === count ? "all new" : unread + " new"));
@@ -2506,7 +2509,7 @@
      * again in miniature. `renderStatus(lastStatus, null)` re-uses the held
      * comments, so this costs no fetch. */
     function seen() {
-      if (!markRepliesRead(target.cycle, lastItems)) return;
+      if (!markRepliesRead(target.readKey, lastItems)) return;
       paint(lastItems);
       if (lastStatus) renderStatus(lastStatus, null);
     }
@@ -2522,10 +2525,49 @@
     return { toggle: toggle, drawer: drawer, seen: seen, tapped: tapped };
   }
 
+  /* The key a card with no cycle number files a comment under: its own
+   * `date time`, off the heading the entry was written with.
+   *
+   * the owner, issues.md 2026-09-02: *"The retrospective needs my input, but
+   * I have no ability to give it as those do not have a comment section.
+   * Please make them and other special journals have a comment section like
+   * the rest of the journals."*
+   *
+   * Returns "" when either half is missing, and the caller draws no box in
+   * that case -- the same call the cycle branch has always made, for the
+   * same reason: a box that has nowhere to file what he types silently
+   * drops it. The server validates the shape again, so a key this builds
+   * wrongly is a 400 he can see rather than a write nobody can find. */
+  function entryKeyOf(entry) {
+    var date = (entry && entry.date) || "";
+    var time = (entry && entry.time) || "";
+    if (!date || !time) return "";
+    var key = date + " " + time;
+    return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(key) ? key : "";
+  }
+
+  function entryTarget(key, label) {
+    var name = label || "this entry";
+    return {
+      key: "entry:" + key,
+      entry: key,
+      // What the "replies I have read" store files this drawer under. A
+      // separate field from `key` because that one also keys the unsent
+      // draft, and the two are stored in different places for different
+      // lifetimes.
+      readKey: "entry:" + key,
+      placeholder: "Say something about " + name + "…",
+      ariaLabel: "Comment on " + name,
+      body: function (text) { return { target: "entry", entry: key, text: text }; },
+      pick: function (data) { return ((data && data.byEntry) || {})[key]; },
+    };
+  }
+
   function cycleTarget(cycle) {
     return {
       key: "cycle:" + cycle,
       cycle: cycle,
+      readKey: String(cycle),
       placeholder: "Say something about cycle " + cycle + "…",
       ariaLabel: "Comment on cycle " + cycle,
       body: function (text) { return { cycle: cycle, text: text }; },
@@ -2810,11 +2852,19 @@
 
     /* One comment button per cycle, which is now simply one per card.
      *
-     * A comment is stored keyed by cycle number, so an entry with no number
-     * has nowhere for one to land -- offering the button there would be a
-     * box that silently drops what he typed. */
+     * A comment used to be stored keyed by cycle number alone, so an entry
+     * with no number had nowhere for one to land and got no button --
+     * offering it would have been a box that silently drops what he typed.
+     * A retrospective is written by its own heartbeat and carries no cycle
+     * number, which is how the one journal card he most wanted to answer
+     * was the one card with no way to (issues.md 2026-09-02). Those file
+     * under the entry's own `date time` now. The condition is still "is
+     * there a key", not "is there a number". */
+    var entryKey = entry.cycle === null || entry.cycle === undefined
+      ? entryKeyOf(entry)
+      : "";
     var commenting = null;
-    if (entry.cycle !== null && entry.cycle !== undefined) {
+    if ((entry.cycle !== null && entry.cycle !== undefined) || entryKey) {
       /* Bottom right of the card rather than beside the permalink in the
        * head -- the owner, ideas.md 2026-08-10: "Move the Journal chat bubble
        * icon to the bottom right of the Journal cards."
@@ -2824,7 +2874,13 @@
        * drawer opens above the button that opened it. */
       var foot = el("div", "entry-foot");
       card.appendChild(foot);
-      commenting = renderComments(card, cycleTarget(entry.cycle), comments);
+      commenting = renderComments(
+        card,
+        entryKey
+          ? entryTarget(entryKey, entry.title || "this entry")
+          : cycleTarget(entry.cycle),
+        comments
+      );
       foot.appendChild(commenting.toggle);
     }
 
@@ -3495,6 +3551,7 @@
     renderedVersion = (journal && journal.version) || null;
     renderedComments = JSON.stringify(comments);
     var commentsByCycle = (comments && comments.byCycle) || {};
+    var commentsByEntry = (comments && comments.byEntry) || {};
 
     // `null` and not the empty object when the fetch itself failed: "no
     // comments" and "no answer about the comments" are different, and only
@@ -3685,7 +3742,15 @@
     });
     groups.forEach(function (parts, index) {
       var cycle = parts[0].cycle;
-      feed.appendChild(renderEntry(parts, byCycle[cycle], commentsByCycle[String(cycle)]));
+      /* `parts` is newest-first and `renderEntry` reads it reversed, so the
+       * card's identity comes from the *last* element -- the same one it
+       * uses for the anchor and the title. Keying off `parts[0]` here would
+       * hand a two-part entry the wrong thread. */
+      var head = parts[parts.length - 1];
+      var thread = cycle === null || cycle === undefined
+        ? commentsByEntry[entryKeyOf(head)]
+        : commentsByCycle[String(cycle)];
+      feed.appendChild(renderEntry(parts, byCycle[cycle], thread));
       if (!markers[index]) return;
       var gap = markers[index].sort(function (a, b) { return a - b; });
       feed.appendChild(el("p", "cycle-gap", gap.length === 1

@@ -136,10 +136,13 @@ from agora_runner.nova_capture import (
 )
 from agora_runner.nova_comments import (
     add_comment,
+    ENTRY_KEY_RE,
+    add_entry_comment,
     add_needs_comment,
     add_project_comment,
     clean_comment_text,
     comments_by_cycle,
+    comments_by_entry,
     format_stamp,
     needs_comments,
     project_comments,
@@ -514,6 +517,7 @@ def comments_payload():
     """
     markdown = comments_markdown()
     grouped = comments_by_cycle(markdown)
+    by_entry = comments_by_entry(markdown)
     # A reply the worker is still waiting on the bridge for. Sent from the
     # server rather than remembered by the client, so the "replying…" line
     # survives a reload, a second device, and the minutes this can take
@@ -589,6 +593,16 @@ def comments_payload():
             dict(_drop_legacy_reply(c), relayed=is_relayed(c.get("text")))
             for c in needs_comments(markdown)
         ],
+        # Journal entries with no cycle number -- a retrospective, an ideas
+        # run, a silence marker. Keyed by the entry's own `date time`, which
+        # is what the card has instead of a number. They carry no
+        # `replyPending`/`replyWaiting` for the same reason `needs` does not:
+        # those are set in the loop over `grouped` above, and nothing
+        # enqueues an automatic reply for these.
+        "byEntry": {
+            key: [_drop_legacy_reply(c) for c in items]
+            for key, items in by_entry.items()
+        },
     }
 
 
@@ -4394,6 +4408,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
         `{"target": "needs"}` instead of a `cycle` answers the digest's
         Needs Edvard block (2026-08-10) -- see `nova_comments`.  (not-prose: quoting a literal)
+        `{"target": "entry", "entry": "2026-09-02 07:09"}` comments on a
+        journal entry that carries no cycle number (issues.md 2026-09-02).
 
         The same two boundaries as the capture box, and the same reason
         they hold: the tailnet authenticates, and the endpoint's shape
@@ -4411,11 +4427,29 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "text must be a string"})
             return
         if target is not None:
-            if target != "needs":
-                self._send_json(400, {"error": "target must be 'needs'"})
+            if target not in ("needs", "entry"):
+                self._send_json(400, {"error": "target must be 'needs' or 'entry'"})
                 return
             if not clean_comment_text(text):
                 self._send_json(400, {"error": "nothing to comment"})
+                return
+            if target == "entry":
+                # A journal entry with no cycle number -- a retrospective, an
+                # ideas run, a silence marker. The key is the entry's own
+                # `date time` and it is validated here as well as in
+                # `add_entry_comment`, so a malformed key is a 400 the box can
+                # show rather than a write that lands under a heading no
+                # reader will ever look under.
+                key = payload.get("entry")
+                if not isinstance(key, str) or not ENTRY_KEY_RE.match(key.strip()):
+                    self._send_json(
+                        400, {"error": "entry must be a 'YYYY-MM-DD HH:MM' key"}
+                    )
+                    return
+                key = key.strip()
+                self._store_comment(
+                    lambda: add_entry_comment(key, text), text, f"entry {key}"
+                )
                 return
             self._store_comment(lambda: add_needs_comment(text), text, "Needs Edvard")
             return
