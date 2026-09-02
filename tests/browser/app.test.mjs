@@ -9390,6 +9390,109 @@ describe("copying a message", () => {
   });
 });
 
+/* Asking a question again -- issue #143's "regenerate a response".
+ *
+ * Agora threads are append-only, so nothing can replace the answer that is
+ * already there. What ships is the honest half: the question that produced an
+ * answer, sent again, with the new answer landing at the bottom. These pin the
+ * two things that make it a control rather than a second Send button -- that
+ * the button finds the right question by position, and that a tap paints
+ * something immediately instead of leaving the thread looking untouched.
+ */
+describe("asking a question again", () => {
+  const thread = {
+    conversationId: "c-again",
+    waiting: false,
+    messages: [
+      { id: "1", sender: "Nova Answers", text: "An answer with nothing above it." },
+      { id: "2", sender: "Edvard", text: "how many pods?" },
+      { id: "3", sender: "Nova Answers", text: "Seven." },
+      { id: "4", sender: "Nova Answers", text: "Six, I miscounted." },
+    ],
+  };
+
+  test("the button is on an answer that has a question above it, and nowhere else", async () => {
+    const window = await loadAskDock({ ask: thread });
+    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    assert.equal(rows.length, 4, "the fixture did not render");
+    assert.deepEqual(rows.map((r) => !!r.querySelector(".ask-retry")), [false, false, true, true],
+      "his own message re-asks itself, and the first answer has no question to re-ask");
+    assert.equal(rows[2].querySelector(".ask-retry").textContent, "Ask again");
+  });
+
+  /* The answer is not finished being written; sending its question again would
+   * spend a turn racing the one already running. */
+  test("a partial answer offers nothing to re-ask", async () => {
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-again",
+        waiting: false,
+        messages: [
+          { id: "1", sender: "Edvard", text: "how many pods?" },
+          { id: "2", sender: "Nova Answers", text: "Sev", partial: true },
+        ],
+      },
+    });
+    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    assert.equal(rows.length, 2, "the fixture did not render");
+    assert.equal(rows[1].querySelector(".ask-retry"), null);
+  });
+
+  test("it sends the question above the answer, into this thread", async () => {
+    const window = await loadAskDock({ ask: thread });
+    const before = window.posted.length;
+    window.document.querySelectorAll("#chat-thread .ask-retry")[0]
+      .dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const posts = window.posted.slice(before);
+    assert.equal(posts.length, 1, "one tap, one send");
+    assert.equal(posts[0].url, "/api/conversations/send");
+    assert.deepEqual(posts[0].body, { conversationId: "c-again", text: "how many pods?" },
+      "it must re-ask the question, not the answer, and into the open thread");
+  });
+
+  /* Two answers in a row -- I follow up on myself -- and both belong to the
+   * one question he asked. Nothing but his own lines may become the thing the
+   * button sends, or the second button re-asks the first answer. */
+  test("an answer that follows another answer re-asks the same question", async () => {
+    const window = await loadAskDock({ ask: thread });
+    const before = window.posted.length;
+    window.document.querySelectorAll("#chat-thread .ask-retry")[1]
+      .dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(window.posted.slice(before).map((p) => p.body.text), ["how many pods?"]);
+  });
+
+  test("the question and a pending row appear straight away, and the button stays spent", async () => {
+    const window = await loadAskDock({ ask: thread });
+    const button = window.document.querySelector("#chat-thread .ask-retry");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(button.textContent, "Asked again");
+    assert.equal(button.disabled, true, "a second tap is a second turn on one question");
+    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    assert.equal(rows.length, 6, "nothing was painted, so the tap looks like it failed");
+    assert.equal(rows[4].querySelector(".ask-text").textContent, "how many pods?");
+    assert.ok(rows[5].classList.contains("ask-pending"), "no sign an answer is coming");
+  });
+
+  test("a refused send says so and lets him try again", async () => {
+    const window = await loadAskDock({ ask: thread });
+    window.postReply = { ok: false, message: "502 from Agora" };
+    const button = window.document.querySelector("#chat-thread .ask-retry");
+    button.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(button.textContent, "could not send");
+    assert.equal(button.disabled, false, "nothing was sent, so the tap has to be repeatable");
+    assert.equal(window.document.querySelectorAll("#chat-thread .ask-msg").length, 4,
+      "a failed send painted a question that was never asked");
+  });
+});
+
 describe("the questions page", () => {
   test("an unused page offers the box and says so", async () => {
     const window = await loadAskDock();

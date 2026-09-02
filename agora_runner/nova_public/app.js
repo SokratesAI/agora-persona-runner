@@ -9654,6 +9654,61 @@
     return button;
   }
 
+  /* "Ask again" -- issue #143's regenerate, as far as this thread can honestly
+   * go. Agora's conversations are append-only: there is no route that replaces
+   * a message, so a button labelled "Regenerate" would promise a swap that
+   * cannot happen. This sends the question that produced the answer again, and
+   * the new answer lands at the bottom beside the old one, which is what the
+   * data model actually supports. The label says that rather than hiding it.
+   *
+   * It posts to `/api/conversations/send` from both surfaces, including the
+   * ask thread -- that route takes a conversation id and `nova_ask.thread`
+   * hands one out, so the dock does not need `/api/ask`'s find-by-tag.
+   *
+   * `afterSend` is the surface's own repaint, because the two of them differ:
+   * the dock owns `pollChat` and a `lastCount` that must not read his own
+   * question as an unread answer, and the conversation page owns `pollConv`.
+   * A button that sent and painted nothing would look like it had failed. */
+  function askRetryButton(conversationId, question, afterSend) {
+    var button = el("button", "ask-retry", "Ask again");
+    button.type = "button";
+    button.title = "Send this question again";
+    button.addEventListener("click", function () {
+      if (button.disabled) return;
+      // Disabled for the whole flight, not just re-labelled: a second tap
+      // while the first is in the air is two turns spent on one question.
+      button.disabled = true;
+      button.textContent = "sending…";
+      fetch("/api/conversations/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: conversationId, text: question }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+          button.textContent = "Asked again";
+          if (afterSend) afterSend(question);
+        })
+        .catch(function () {
+          // Re-enabled on failure, and only on failure: nothing was sent, so
+          // trying again is the right move. A success stays spent.
+          button.disabled = false;
+          button.textContent = "could not send";
+          setTimeout(function () { button.textContent = "Ask again"; }, 2400);
+        });
+    });
+    return button;
+  }
+
+  /* What both surfaces do the moment a message goes out: show it, and show
+   * that something is coming. Without this the thread sits unchanged for up
+   * to a poll interval and the tap reads as having done nothing. */
+  function askPaintSent(container, text) {
+    container.appendChild(askMessage({ sender: "Edvard", text: text }));
+    container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+  }
+
   /* --- The work behind an answer, as one line and a drawer ---------------
    *
    * His capture, `issues.md` 2026-09-01: *"The streaming of the thoughts in
@@ -9980,7 +10035,7 @@
    * three surfaces render this -- the dock, a conversation thread and the
    * journal card's ask -- and only one of them has a module variable to
    * read. */
-  function askMessage(message, conversationId, limit) {
+  function askMessage(message, conversationId, limit, retry) {
     var steps = stepsLine(conversationId, message.steps, limit);
     /* A row that is only the work behind an answer still being written.
      * It is not a bubble: nothing has been said yet, and drawing it as one
@@ -10004,6 +10059,13 @@
      * has an empty `text`, and a Copy that yields an empty clipboard reads as
      * broken rather than as empty. */
     if (message.text) row.appendChild(askCopyButton(message.text));
+    /* Only on an answer, and only when there is a question above it to send
+     * again. A partial answer is one still being written, and re-asking a
+     * question that has not finished being answered spends a turn to race
+     * the one already running. */
+    if (!mine && !message.partial && conversationId && retry && retry.question) {
+      row.appendChild(askRetryButton(conversationId, retry.question, retry.afterSend));
+    }
     return row;
   }
 
@@ -10055,16 +10117,30 @@
     return row;
   }
 
-  function renderAskThread(container, payload) {
+  /* One loop for both threads. It carries the last thing he said forward so
+   * every answer knows the question it came from -- the messages arrive as a
+   * flat list with no reply-to on them, so position is the only link there is,
+   * and reading it here is what keeps `askMessage` from needing the list. */
+  function askPaintThread(container, payload, afterSend) {
+    var asked = "";
+    (payload.messages || []).forEach(function (message) {
+      container.appendChild(askMessage(message, payload.conversationId, payload.limit,
+        { question: asked, afterSend: afterSend }));
+      // Only his lines become the question to re-ask, and the update happens
+      // after the row is built: an answer re-asks what was said *above* it,
+      // and two answers in a row both point at the same question.
+      if (message.sender === "Edvard" && message.text) asked = message.text;
+    });
+  }
+
+  function renderAskThread(container, payload, afterSend) {
     container.textContent = "";
     var messages = payload.messages || [];
     if (!messages.length) {
       container.appendChild(el("p", "empty", "Ask me anything. I answer here, in a minute or so."));
       return;
     }
-    messages.forEach(function (message) {
-      container.appendChild(askMessage(message, payload.conversationId, payload.limit));
-    });
+    askPaintThread(container, payload, afterSend);
     if (payload.waiting) container.appendChild(askPending(payload.progress));
   }
 
@@ -10084,16 +10160,14 @@
   var convOpenId = null;
   var convOpenName = "";
 
-  function renderConvThread(container, payload) {
+  function renderConvThread(container, payload, afterSend) {
     container.textContent = "";
     var messages = payload.messages || [];
     if (!messages.length) {
       container.appendChild(el("p", "empty", "Nothing said here yet."));
       return;
     }
-    messages.forEach(function (message) {
-      container.appendChild(askMessage(message, payload.conversationId, payload.limit));
-    });
+    askPaintThread(container, payload, afterSend);
     if (payload.waiting) container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
   }
 
@@ -10110,6 +10184,16 @@
    * he can tap back to the list and open a different thread without the
    * route changing, and a poll from the old thread must not paint over
    * the new one. */
+  /* The conversation page's repaint after a message goes out, shared by the
+   * composer's own path and the Ask-again button so the two cannot drift. */
+  function convAfterSend(container, id) {
+    return function (text) {
+      askPaintSent(container, text);
+      scrollPageToBottom();
+      pollConv(container, id, 0);
+    };
+  }
+
   function pollConv(container, conversationId, attempts) {
     if (attempts >= ASK_POLL_MAX) return;
     livePolls.push(setTimeout(function () {
@@ -10131,7 +10215,7 @@
            * him to the oldest one. */
           var follow = pageAtBottom();
           var was = pageScrollTop();
-          renderConvThread(container, payload);
+          renderConvThread(container, payload, convAfterSend(container, conversationId));
           if (follow) scrollPageToBottom();
           else window.scrollTo(0, was);
           if (payload.waiting) pollConv(container, conversationId, attempts + 1);
@@ -10195,7 +10279,7 @@
     fetchPage("/api/conversations/thread?id=" + encodeURIComponent(id))
       .then(function (payload) {
         if (convOpenId !== id) return;
-        renderConvThread(thread, payload);
+        renderConvThread(thread, payload, convAfterSend(thread, id));
         /* The composer is above the thread on this page, so the newest
          * message is at the very bottom of the document. Half the ways in
          * here are a tap on a push notification about that message, and
@@ -11886,7 +11970,16 @@
       var was = thread.scrollTop;
       var grewFrom = pendingAnchor;
       pendingAnchor = null;
-      renderAskThread(thread, payload);
+      renderAskThread(thread, payload, function (text) {
+        askPaintSent(thread, text);
+        // Same three lines the composer runs, and for the same reasons:
+        // asking is asking to be at the bottom, and his own question is not
+        // an unread answer for the dot to light on.
+        stickToBottom = true;
+        thread.scrollTop = thread.scrollHeight;
+        lastCount += 1;
+        pollChat(0);
+      });
       loaded = true;
       /* The repaint is what moved him, so his place has to be put back either
        * way -- to the newest message when he was already on it, and to the

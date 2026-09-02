@@ -2766,6 +2766,25 @@ body.has-full-chart { overflow: hidden; }
 
 .ask-copy:hover, .ask-copy:focus-visible { color: var(--text); border-color: var(--accent); }
 
+/* Ask again sits beside Copy under an answer, same weight as it: neither is
+ * the thing you came to the message for. `.ask-msg` lays its children out in
+ * a column, so the two would stack one per line without this row. */
+.ask-retry {
+  align-self: flex-end;
+  margin-top: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--dim);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.ask-retry:hover, .ask-retry:focus-visible { color: var(--text); border-color: var(--accent); }
+.ask-retry:disabled { cursor: default; opacity: 0.6; }
+
 /* `.ask-msg` is not a flex container by default, so `align-self` above needs
  * one; the bubble was a block and its children stacked, which they still do. */
 .ask-msg { display: flex; flex-direction: column; }
