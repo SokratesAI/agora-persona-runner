@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -241,6 +241,16 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       const body = typeof convStep === "function" ? convStep(url) : convStep;
       if (body && typeof body.then === "function") return body;
       return res(body || { error: "not found" }, body ? convStepStatus : 404);
+    }
+    /* The visible model picker's read (issue #143). Ahead of the bare
+     * `/api/conversations` branch for that branch's own stated reason: the
+     * listing carries no `found`, so answered with it the picker would stay
+     * hidden -- and a test asserting it is absent would pass against code
+     * that never drew it. */
+    if (url.includes("/api/conversations/model")) {
+      const body = typeof convModel === "function" ? convModel(url) : convModel;
+      if (body && typeof body.then === "function") return body;
+      return res(body || { model: "", models: [], found: false }, convStatus);
     }
     /* The route is gone from the server (#119, the app is Nova-only), so
      * the honest stub is the 404 a live site would send -- and it records
@@ -14538,5 +14548,154 @@ describe("commenting on a journal entry that has no cycle number", () => {
     const card = cardFor(window, "Retrospective");
     assert.ok(card, "the card is still drawn");
     assert.equal(card.querySelector(".comment-toggle"), null);
+  });
+});
+
+/* The visible model picker on a thread.
+ *
+ * His issue #143: *"Chat is missing basic message controls: ... and a visible
+ * model picker."* The write has existed since idea #95; the only control that
+ * reached it was the row editor behind a press-and-hold in the switcher, so
+ * from the thread he is reading the model was neither visible nor changeable.
+ */
+describe("the model picker on a thread", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const tap = (window, id) => window.document.getElementById(id)
+    .dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+
+  const CATALOG = [
+    { id: "claude-cli:claude-sonnet-5", label: "Claude Sonnet 5 (CLI)", metered: false },
+    { id: "anthropic:claude-opus-5", label: "Claude Opus 5", metered: true },
+  ];
+  const ASK = {
+    conversationId: "c-ask",
+    waiting: false,
+    messages: [{ id: "1", sender: "Nova", text: "Seven." }],
+  };
+
+  const pickerIn = (window, root) => (root || window.document).querySelector(".model-pick");
+  const barIn = (window, root) => (root || window.document).querySelector(".model-pick-bar");
+
+  async function openDock(convModel) {
+    const window = await loadSite("/", { ask: ASK, convModel });
+    tap(window, "chat-btn");
+    await tick();
+    await tick();
+    return window;
+  }
+
+  test("the dock asks about the thread its payload names, not about nothing", async () => {
+    /* The Ask row has no id of its own -- `nova_ask` finds its conversation
+     * by tag -- so the thread payload is the first thing on this side that
+     * knows which conversation the picker is for. */
+    const asked = [];
+    await openDock((url) => {
+      asked.push(url);
+      return { model: "claude-cli:claude-sonnet-5", models: CATALOG, found: true };
+    });
+    assert.deepEqual(asked, ["/api/conversations/model?id=c-ask"]);
+  });
+
+  test("it opens on the model the thread is actually on", async () => {
+    const window = await openDock({
+      model: "anthropic:claude-opus-5", models: CATALOG, found: true,
+    });
+    const pick = pickerIn(window);
+    assert.ok(pick, "no picker was drawn");
+    assert.equal(pick.value, "anthropic:claude-opus-5");
+    assert.equal(barIn(window).hidden, false);
+  });
+
+  test("a metered model says so on its own label", async () => {
+    /* A money reason, not a cosmetic one: a metered model spends the prepaid
+     * balance per token, and a picker that hides which ones do would let him
+     * spend it by reaching for the top of a list. */
+    const window = await openDock({
+      model: "claude-cli:claude-sonnet-5", models: CATALOG, found: true,
+    });
+    assert.deepEqual([...pickerIn(window).options].map((o) => o.textContent),
+      ["Claude Sonnet 5 (CLI)", "Claude Opus 5 (metered)"]);
+  });
+
+  test("a model the catalog no longer lists is still the selected option", async () => {
+    /* Otherwise opening the picker silently repoints the thread at whatever
+     * happens to be first, and the page shows him a model he is not on. */
+    const window = await openDock({ model: "gone:v1", models: CATALOG, found: true });
+    const pick = pickerIn(window);
+    assert.equal(pick.value, "gone:v1");
+    assert.equal(pick.options[0].textContent, "gone:v1");
+  });
+
+  test("choosing another model posts the switch", async () => {
+    const window = await openDock({
+      model: "claude-cli:claude-sonnet-5", models: CATALOG, found: true,
+    });
+    const pick = pickerIn(window);
+    pick.value = "anthropic:claude-opus-5";
+    pick.dispatchEvent(new window.Event("change"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/model", { id: "c-ask", model: "anthropic:claude-opus-5" }]]);
+  });
+
+  test("a refused switch puts the control back on the model the thread is on", async () => {
+    /* The failure this app keeps filing against itself: a page reporting a
+     * write that never happened. */
+    const window = await openDock({
+      model: "claude-cli:claude-sonnet-5", models: CATALOG, found: true,
+    });
+    window.postReply = { ok: false, message: "Agora does not have that model" };
+    const pick = pickerIn(window);
+    pick.value = "anthropic:claude-opus-5";
+    pick.dispatchEvent(new window.Event("change"));
+    await tick();
+    await tick();
+    assert.equal(pick.value, "claude-cli:claude-sonnet-5");
+    assert.match(window.document.querySelector(".model-pick-note").textContent,
+      /could not switch/);
+    assert.equal(pick.disabled, false, "the control was left disabled");
+  });
+
+  test("a thread Agora no longer holds gets no picker rather than one reading unset",
+    async () => {
+      /* `found` is the whole of this. A missing thread and a thread with no
+       * model both come back with an empty `model`, and drawing
+       * "Model (unset)" over the first is the page answering a question it
+       * does not have an answer to. */
+      const window = await openDock({ model: "", models: CATALOG, found: false });
+      assert.equal(barIn(window).hidden, true);
+    });
+
+  test("a thread with no model set does get a picker, opened on unset", async () => {
+    const window = await openDock({ model: "", models: CATALOG, found: true });
+    const pick = pickerIn(window);
+    assert.equal(barIn(window).hidden, false);
+    assert.equal(pick.value, "");
+    assert.equal(pick.options[0].textContent, "Model (unset)");
+  });
+
+  test("no catalog, no picker -- a select that cannot change anything is not a control",
+    async () => {
+      const window = await openDock({
+        model: "claude-cli:claude-sonnet-5", models: [], found: true,
+      });
+      assert.equal(barIn(window).hidden, true);
+    });
+
+  test("the conversation page draws its own picker, for the thread in the URL", async () => {
+    const asked = [];
+    const window = await loadSite("/conversation/c-9", {
+      convThread: () => ({ conversationId: "c-9", waiting: false, messages: [] }),
+      convList: { conversations: [], folders: [], models: [] },
+      convModel: (url) => {
+        asked.push(url);
+        return { model: "anthropic:claude-opus-5", models: CATALOG, found: true };
+      },
+    });
+    await tick();
+    assert.deepEqual(asked, ["/api/conversations/model?id=c-9"]);
+    const pick = window.document.querySelector("#feed .model-pick");
+    assert.ok(pick, "the conversation page drew no picker");
+    assert.equal(pick.value, "anthropic:claude-opus-5");
   });
 });

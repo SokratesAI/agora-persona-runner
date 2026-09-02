@@ -665,6 +665,47 @@ def _model_rows():
     return rows
 
 
+def model_choice(conversation_id):
+    """This thread's model and the catalog, for the picker in the chat header.
+
+    His issue #143 lists a *"visible model picker"* among the controls the
+    chat is missing. `set_model` below has existed since idea #95 and the
+    only thing that ever called it is the row editor behind a press-and-hold
+    in the switcher -- so from the thread he is reading, which model is
+    answering him was neither visible nor changeable.
+
+    **A separate route from `thread()` on purpose.** That endpoint is polled
+    every four seconds while an answer is being written, and the model behind
+    a thread changes when he changes it and at no other time; folding this
+    into it would re-fetch the whole conversation listing on every tick to
+    answer a question that had not moved.
+
+    **The listing is the only place the answer lives.** Agora has no
+    `GET /conversations/<id>` -- it answers 404, measured Cycle 805 against
+    the live store -- so the model on one conversation can only be read out
+    of the list of all of them.
+
+    `found` is not decoration. A conversation Agora does not hold and a
+    conversation with no model set both leave `model` empty, and they mean
+    opposite things: the second is a real thread the picker should offer to
+    point somewhere, the first is a thread that is gone. Without the flag the
+    page would draw "Model (unset)" over an answer it does not have.
+    """
+    if not conversation_id:
+        return {"model": "", "models": [], "found": False}
+    status, body = agora_get("/conversations")
+    if status != 200:
+        raise RuntimeError(f"conversation listing returned {status}")
+    model = ""
+    found = False
+    for c in body.get("conversations", []):
+        if c.get("id") == conversation_id:
+            found = True
+            model = c.get("model") or ""
+            break
+    return {"model": model, "models": _model_rows(), "found": found}
+
+
 def set_model(conversation_id, model):
     """(ok, message). Point one thread at a different model.
 

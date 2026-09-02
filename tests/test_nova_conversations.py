@@ -925,3 +925,51 @@ def test_the_thread_says_which_window_its_rows_came_from():
         {"id": "a", "sender": "Edvard", "text": "hi"},
     ])
     assert payload["limit"] == convs.MAX_THREAD
+
+
+# --- model_choice: what the visible picker in the chat reads (his issue #143)
+
+def test_model_choice_reads_this_threads_model_out_of_the_listing():
+    """Agora has no `GET /conversations/<id>` -- it answers 404, measured
+    Cycle 805 -- so the model on one thread can only come out of the list of
+    all of them. Pinned because a future cycle reaching for the cheaper
+    single-conversation fetch would get a 404 and an empty picker."""
+    other = dict(LIVE_ROW, id="c-2", model="anthropic:claude-opus-5", tags=[])
+    (payload, _calls) = _run(
+        lambda: convs.model_choice("c-1"), conversations=[other, LIVE_ROW])
+    assert payload["model"] == "claude-cli:claude-sonnet-5"
+    assert payload["found"] is True
+    assert [m["id"] for m in payload["models"]] == [
+        "claude-cli:claude-sonnet-5", "anthropic:claude-opus-5"]
+
+
+def test_model_choice_separates_a_thread_with_no_model_from_a_thread_that_is_gone():
+    """Both leave `model` empty and they mean opposite things: the first is a
+    real conversation the picker should offer to point somewhere, the second
+    is one Agora no longer holds. Without `found` the page draws
+    "Model (unset)" over an answer it does not have."""
+    unset = dict(LIVE_ROW, model="")
+    (has_no_model, _c) = _run(
+        lambda: convs.model_choice("c-1"), conversations=[unset])
+    (is_gone, _c2) = _run(
+        lambda: convs.model_choice("c-404"), conversations=[unset])
+    assert (has_no_model["model"], has_no_model["found"]) == ("", True)
+    assert (is_gone["model"], is_gone["found"]) == ("", False)
+
+
+def test_model_choice_raises_when_the_listing_cannot_be_read():
+    """`conversations()`' rule, for its reason: an unreachable store and a
+    thread with no model render the same and mean opposite things. The
+    picker hides itself on a failed fetch; it must not hide itself on a
+    successful one that says nothing."""
+    with pytest.raises(RuntimeError):
+        _run(lambda: convs.model_choice("c-1"), list_status=502)
+
+
+def test_model_choice_asks_agora_nothing_without_a_conversation():
+    """The dock's Ask row has no id until its thread payload arrives, so this
+    is called with an empty one on the way there. A listing fetch for a
+    thread that does not exist yet is 826 rows spent on nothing."""
+    (payload, calls) = _run(lambda: convs.model_choice(""))
+    assert payload == {"model": "", "models": [], "found": False}
+    assert calls == []
