@@ -21,7 +21,7 @@ red an hour before a scheduled scan ran green would read as green. So
 this asks the other way round: resolve the default branch's HEAD commit,
 then ask GitHub for every workflow run *on that exact commit*.
 
-**Four verdicts, three of which raise.**
+**Five verdicts, four of which raise.**
 
 `RED` is a completed run on HEAD that concluded badly. That is the `#93`
 shape and it is the whole reason this exists.
@@ -43,6 +43,17 @@ branch that same job is exactly what a merge is for, so a skipped run
 here means the merge landed and no image came out of it. Same
 conclusion, opposite meaning, because the branch is different.
 
+`BLOCKED` is the fifth, added Cycle 802, and it exists because `RED`
+merged two causes with different owners. All five red branches this tool
+found on its first sweep were red for the same reason and none of them
+had a broken build: GitHub refused to start the job, with the annotation
+*"The job was not started because recent account payments have failed or
+your spending limit needs to be increased."* A refused run concludes
+`failure` exactly like a real one, so `RED` was the honest verdict from
+the payload and the wrong instruction to a cycle -- it says debug the
+code, and there is no code to debug. Re-running all five after private
+Actions came back on 2026-09-01 turned all five green immediately.
+
 `RUNNING` never raises: a merge four minutes old is not a finding.
 
 Exit status, matching `tools.open_prs` and `tools.security_alerts`: 0
@@ -55,6 +66,7 @@ import json
 import subprocess
 import sys
 
+from tools.agentic_health import start_failure
 from tools.open_prs import has_workflows
 from tools.security_alerts import repos_in_org
 
@@ -112,7 +124,7 @@ def runs_for_commit(repo, sha, run=None):
             "api",
             f"repos/{repo}/actions/runs?head_sha={sha}&per_page={RUNS_PAGE}",
             "--jq",
-            "[.workflow_runs[] | {name: .name, status: .status, "
+            "[.workflow_runs[] | {id: .id, name: .name, status: .status, "
             "conclusion: .conclusion, url: .html_url}]",
         ]
     )
@@ -148,6 +160,20 @@ def newest_per_workflow(runs):
     return list(seen.values())
 
 
+def failing_runs(runs):
+    """The runs `judge` blames for a `red` verdict -- one rule, two callers.
+
+    `main` needs their ids, to ask GitHub whether those runs ever started a
+    job. Re-selecting them there would be a second copy of the rule that
+    decides what `red` means, and this repo's own backlog is mostly what
+    happens when one fact lives in two places.
+    """
+    return [
+        r for r in newest_per_workflow(runs)
+        if (r.get("conclusion") or "").lower() in BAD_CONCLUSIONS
+    ]
+
+
 def judge(runs, workflow_count):
     """`(verdict, detail, url)` for one repository's default branch.
 
@@ -164,10 +190,7 @@ def judge(runs, workflow_count):
     """
     judged = newest_per_workflow(runs)
 
-    bad = [
-        r for r in judged
-        if (r.get("conclusion") or "").lower() in BAD_CONCLUSIONS
-    ]
+    bad = failing_runs(runs)
     if bad:
         names = ", ".join(sorted({r.get("name") or "?" for r in bad}))
         return (
@@ -221,12 +244,22 @@ def judge(runs, workflow_count):
     return "ok", f"{len(judged)} workflow(s) passed on this commit", ""
 
 
-#: The three verdicts that make this exit 2. `running`, `no_ci` and `ok`
+#: The four verdicts that make this exit 2. `running`, `no_ci` and `ok`
 #: are deliberately absent: none of them is a thing for a cycle to go and do.
-RAISING = ("red", "no_image", "not_built")
+#: `blocked` *is* here, and that is the one difference from
+#: `tools.agentic_health`, where the same verdict deliberately does not raise.
+#: There, the fix was a payment nobody could make in a pull request and the
+#: owner had already decided to wait. Here the fix is one command -- `gh run rerun`
+#: -- so a cycle has something to go and do, and the label is what tells it to
+#: do that instead of debugging code that never ran.
+RAISING = ("red", "blocked", "no_image", "not_built")
 
 _HEADINGS = {
     "red": "RED — a workflow failed on the default branch",
+    "blocked": (
+        "BLOCKED BEFORE IT STARTED — GitHub refused to run it; "
+        "re-run it, do not debug it"
+    ),
     "no_image": "NO IMAGE — the run was skipped, so the merge produced nothing",
     "not_built": "NOT BUILT — a run was expected on this commit and never appeared",
     "running": "still building",
@@ -285,6 +318,51 @@ def format_report(results, swept, errors, caveat_repos):
     return "\n".join(lines)
 
 
+def _blocked_or_red(repo, runs, detail, errors, run=None):
+    """Re-read a `red` verdict as `blocked` when no failing run ever started.
+
+    A run GitHub refused to start concludes `failure` like any other, so the
+    verdict function above cannot tell the two apart -- it judges the payload
+    it was handed, and that payload says `failure` in both cases. The
+    difference is only visible one call deeper, in whether any job on the run
+    executed a single step, which is what `tools.agentic_health.start_failure`
+    already reads. It is imported rather than reimplemented.
+
+    **Every failing run has to have been refused, not just one.** A branch
+    where one workflow was refused and another genuinely failed is a broken
+    branch, and calling it `blocked` would tell a cycle to re-run something
+    that will fail again for a real reason. So a single started failure holds
+    the `red` verdict for the whole repository.
+
+    An unreadable answer leaves `red` standing and files an error. That is the
+    safe direction: `red` costs a cycle a look, `blocked` costs it a re-run,
+    and neither is silence -- both raise.
+    """
+    failed = failing_runs(runs)
+    if not failed:
+        return "red", detail
+    reasons = []
+    for entry in failed:
+        run_id = (entry or {}).get("id")
+        if not run_id:
+            errors.append(
+                f"{repo}: a failing run came back with no id, so whether it "
+                "ever started could not be read"
+            )
+            return "red", detail
+        start, err = start_failure(repo, run_id, run=run)
+        if err or start is None:
+            errors.append(
+                f"{repo}: could not read whether run {run_id} ever started "
+                f"-- {err or 'no detail'}"
+            )
+            return "red", detail
+        if start.get("started"):
+            return "red", detail
+        reasons.append(f"{entry.get('name') or '?'}: {start.get('reason')}")
+    return "blocked", "; ".join(reasons)
+
+
 def main(argv=None, run=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -324,6 +402,8 @@ def main(argv=None, run=None):
             if count_err:
                 errors.append(f"{repo}: could not read the workflow count — {count_err}")
         verdict, detail, url = judge(runs, count)
+        if verdict == "red":
+            verdict, detail = _blocked_or_red(repo, runs, detail, errors, run=run)
         if verdict == "not_built":
             caveat_repos.append(repo)
         results.append(

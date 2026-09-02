@@ -5,13 +5,28 @@ import json
 from tools import main_build
 
 
-def run(name, conclusion="success", status="completed", url=None):
+def run(name, conclusion="success", status="completed", url=None, run_id=None):
     return {
+        "id": run_id if run_id is not None else abs(hash(name)) % 10**8,
         "name": name,
         "status": status,
         "conclusion": conclusion,
         "url": url or f"https://example.invalid/{name}",
     }
+
+
+#: A job that executed steps -- a run that really failed.
+STARTED_JOBS = {"jobs": [{"id": 1, "conclusion": "failure", "steps": [
+    {"name": "test", "conclusion": "failure"}]}]}
+
+#: A job with no steps at all -- what GitHub leaves behind when it refuses
+#: to start a run. `tools.agentic_health.start_failure` keys on exactly this.
+REFUSED_JOBS = {"jobs": [{"id": 1, "conclusion": "failure", "steps": []}]}
+
+REFUSED_ANNOTATION = [{
+    "annotation_level": "failure",
+    "message": "The job was not started because recent account payments have failed",
+}]
 
 
 class TestJudge:
@@ -191,7 +206,9 @@ class TestHeadOfDefaultBranch:
 
 
 class TestMain:
-    def _fake(self, runs_payload, workflows="1"):
+    def _fake(self, runs_payload, workflows="1", jobs=None):
+        jobs = jobs if jobs is not None else STARTED_JOBS
+
         def fake(args):
             joined = " ".join(args)
             if args[:2] == ["repo", "list"]:
@@ -202,6 +219,10 @@ class TestMain:
                 return 0, "abc123\n", ""
             if "actions/runs?head_sha" in joined:
                 return 0, json.dumps(runs_payload), ""
+            if "/jobs" in joined:
+                return 0, json.dumps(jobs), ""
+            if "check-runs" in joined and "annotations" in joined:
+                return 0, json.dumps(REFUSED_ANNOTATION), ""
             if "actions/workflows" in joined:
                 return 0, f"{workflows}\n", ""
             return 0, "main\n", ""
@@ -236,3 +257,101 @@ class TestMain:
         code = main_build.main([], run=lambda args: (1, "", "boom"))
         assert code == 1
         assert "COULD NOT LIST THE ORG" in capsys.readouterr().out
+
+
+class TestBlockedBeforeItStarted:
+    """A run GitHub refused to start is not a broken branch.
+
+    All five branches this tool raised on its first sweep were this shape,
+    and the RED heading told a cycle to go and debug five builds that had
+    never executed a line.
+    """
+
+    def _fake(self, runs_payload, jobs_by_run, annotation=REFUSED_ANNOTATION):
+        def fake(args):
+            joined = " ".join(args)
+            if args[:2] == ["repo", "list"]:
+                return 0, json.dumps(
+                    [{"nameWithOwner": "o/r", "isArchived": False}]
+                ), ""
+            if "commits/HEAD" in joined:
+                return 0, "abc123\n", ""
+            if "actions/runs?head_sha" in joined:
+                return 0, json.dumps(runs_payload), ""
+            if "check-runs" in joined and "annotations" in joined:
+                return 0, json.dumps(annotation), ""
+            for run_id, payload in jobs_by_run.items():
+                if f"actions/runs/{run_id}/jobs" in joined:
+                    return 0, json.dumps(payload), ""
+            if "actions/workflows" in joined:
+                return 0, "1\n", ""
+            return 0, "main\n", ""
+
+        return fake
+
+    def test_a_refused_run_is_blocked_not_red(self, capsys):
+        code = main_build.main([], run=self._fake(
+            [run("build", "failure", run_id=7)], {7: REFUSED_JOBS}
+        ))
+        out = capsys.readouterr().out
+        assert "BLOCKED BEFORE IT STARTED" in out
+        assert "RED —" not in out
+        assert "recent account payments have failed" in out
+        # It still raises: the fix is `gh run rerun`, which is a thing to do.
+        assert code == 2
+
+    def test_a_run_that_executed_steps_stays_red(self, capsys):
+        code = main_build.main([], run=self._fake(
+            [run("build", "failure", run_id=7)], {7: STARTED_JOBS}
+        ))
+        out = capsys.readouterr().out
+        assert "RED —" in out
+        assert "BLOCKED BEFORE IT STARTED" not in out
+        assert code == 2
+
+    def test_one_real_failure_beside_a_refusal_stays_red(self, capsys):
+        # The guard worth keeping. Calling this branch `blocked` would tell a
+        # cycle to re-run a build that is going to fail again for a real reason.
+        code = main_build.main([], run=self._fake(
+            [run("build", "failure", run_id=7),
+             run("Deploy", "failure", run_id=8)],
+            {7: REFUSED_JOBS, 8: STARTED_JOBS},
+        ))
+        out = capsys.readouterr().out
+        assert "RED —" in out
+        assert "BLOCKED BEFORE IT STARTED" not in out
+        assert code == 2
+
+    def test_an_unreadable_job_list_leaves_red_standing(self, capsys):
+        def fake(args):
+            joined = " ".join(args)
+            if args[:2] == ["repo", "list"]:
+                return 0, json.dumps(
+                    [{"nameWithOwner": "o/r", "isArchived": False}]
+                ), ""
+            if "commits/HEAD" in joined:
+                return 0, "abc123\n", ""
+            if "actions/runs?head_sha" in joined:
+                return 0, json.dumps([run("build", "failure", run_id=7)]), ""
+            if "/jobs" in joined:
+                return 1, "", "boom"
+            return 0, "1\n", ""
+
+        code = main_build.main([], run=fake)
+        out = capsys.readouterr().out
+        assert "RED —" in out
+        assert "could not read whether run 7 ever started" in out
+        assert code == 2
+
+
+class TestFailingRuns:
+    def test_it_is_the_same_selection_judge_makes(self):
+        runs = [run("Tests"), run("Build", "failure"), run("Scan", "timed_out")]
+        names = {r["name"] for r in main_build.failing_runs(runs)}
+        assert names == {"Build", "Scan"}
+        assert main_build.judge(runs, workflow_count=3)[0] == "red"
+
+    def test_a_re_run_that_went_green_is_not_failing(self):
+        # GitHub lists newest first; the stale failure must not be selected.
+        runs = [run("build", "success", run_id=2), run("build", "failure", run_id=1)]
+        assert main_build.failing_runs(runs) == []
