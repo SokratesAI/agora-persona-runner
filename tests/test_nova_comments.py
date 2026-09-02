@@ -352,6 +352,7 @@ def test_a_comment_is_written_to_the_comments_file():
     assert parse_comments(content)[0] == {
         "cycle": 63,
         "project": None,
+        "entry": None,
         "stamp": "2026-08-09 22:40",
         "text": "keep it up",
         "reply": "",
@@ -779,7 +780,7 @@ def _broken_writer(name, replacement):
 def test_a_comment_that_lands_inside_the_frontmatter_is_not_written():
     """The 2026-08-13 damage exactly: text spliced into the frontmatter, where
     the app's parser cannot see it and neither can the next cycle."""
-    def splices_into_the_frontmatter(markdown, cycle, text, stamp, project=None):
+    def splices_into_the_frontmatter(markdown, cycle, text, stamp, project=None, entry=None):
         return markdown.replace(
             "type: log", f"type: log\n### Cycle {cycle} · {stamp}\n\n{text}", 1)
 
@@ -793,7 +794,7 @@ def test_a_comment_that_lands_inside_the_frontmatter_is_not_written():
 
 
 def test_a_comment_that_eats_an_existing_one_is_not_written():
-    def drops_a_bystander(markdown, cycle, text, stamp, project=None):
+    def drops_a_bystander(markdown, cycle, text, stamp, project=None, entry=None):
         good = insert_comment(markdown, cycle, text, stamp)
         return good.replace("great research, keep it up!", "")
 
@@ -810,7 +811,7 @@ def test_a_comment_that_eats_an_existing_one_is_not_written():
 def test_a_comment_filed_under_acknowledged_is_not_written():
     """Landing under the wrong heading is silent: it reads as already dealt
     with, so no cycle ever answers it."""
-    def files_it_as_done(markdown, cycle, text, stamp, project=None):
+    def files_it_as_done(markdown, cycle, text, stamp, project=None, entry=None):
         return markdown.replace(
             ACKNOWLEDGED_HEADING,
             f"{ACKNOWLEDGED_HEADING}\n\n### Cycle {cycle} · {stamp}\n\n{text}\n", 1)
@@ -827,7 +828,7 @@ def test_a_comment_filed_under_acknowledged_is_not_written():
 def test_a_comment_stored_with_the_text_altered_is_not_written():
     """His words are the whole point of the file -- `clean_comment_text` is
     the only thing allowed to touch them, and it runs before this."""
-    def rewraps_it(markdown, cycle, text, stamp, project=None):
+    def rewraps_it(markdown, cycle, text, stamp, project=None, entry=None):
         return insert_comment(markdown, cycle, text.replace("\n", " "), stamp)
 
     with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
@@ -857,7 +858,7 @@ def test_an_ordinary_comment_still_goes_through_untouched():
 def test_a_needs_edvard_reply_is_checked_the_same_way():
     """`None` is a real key here, not a missing one -- an exempt set that
     mishandled it would let the whole check pass vacuously."""
-    def splices_into_the_frontmatter(markdown, cycle, text, stamp, project=None):
+    def splices_into_the_frontmatter(markdown, cycle, text, stamp, project=None, entry=None):
         return markdown.replace("type: log", f"type: log\n{text}", 1)
 
     with patch.object(nova_comments, "vault_read_path_rev", return_value=(EMPTY, REV)), \
@@ -871,7 +872,7 @@ def test_a_needs_edvard_reply_is_checked_the_same_way():
 def test_a_reply_that_damages_the_comment_it_answers_is_not_written():
     """The reply worker runs on its own thread, minutes after he has closed
     the app -- a bad write here is seen by nobody."""
-    def eats_his_text(markdown, cycle, stamp, reply, reply_stamp, project=None):
+    def eats_his_text(markdown, cycle, stamp, reply, reply_stamp, project=None, entry=None):
         return markdown.replace("great research, keep it up!",
                                 f"#### Nova · {reply_stamp}\n\n{reply}")
 
@@ -887,7 +888,7 @@ def test_a_reply_that_damages_the_comment_it_answers_is_not_written():
 
 
 def test_a_reply_landing_on_the_wrong_comment_is_not_written():
-    def answers_the_wrong_one(markdown, cycle, stamp, reply, reply_stamp, project=None):
+    def answers_the_wrong_one(markdown, cycle, stamp, reply, reply_stamp, project=None, entry=None):
         return insert_reply(markdown, 60, "2026-08-09 18:50", reply, reply_stamp)
 
     with patch.object(nova_comments, "vault_read_path_rev",
@@ -920,7 +921,7 @@ def test_a_duplicated_document_is_refused():
     frontmatter, at the point where the `contract:` line quotes the
     literal `## Acknowledged`. Both existing halves of `verify_write` are
     blind to it: `frontmatter()` reads the first block, which was intact,
-    and `comment_index()` is keyed on `(cycle, project, stamp)`, so a doubled
+    and `comment_index()` is keyed on `(cycle, project, entry, stamp)`, so a doubled
     comment comes back under the key it already had.
     """
     good = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
@@ -947,7 +948,7 @@ def test_the_first_comment_ever_may_create_the_sections():
     the count rule has to let through.
     """
     built = insert_comment("", 63, "keep it up", "2026-08-09 22:40")
-    nova_comments.verify_write("", built, exempt={(63, None, "2026-08-09 22:40")})
+    nova_comments.verify_write("", built, exempt={(63, None, None, "2026-08-09 22:40")})
 
 
 def test_an_ordinary_reply_still_passes_the_count_rule():
@@ -955,4 +956,4 @@ def test_an_ordinary_reply_still_passes_the_count_rule():
     good = insert_comment(EMPTY, 63, "keep it up", "2026-08-09 22:40")
     replied = insert_reply(good, 63, "2026-08-09 22:40", "thank you",
                            "2026-08-09 22:45")
-    nova_comments.verify_write(good, replied, exempt={(63, None, "2026-08-09 22:40")})
+    nova_comments.verify_write(good, replied, exempt={(63, None, None, "2026-08-09 22:40")})

@@ -71,8 +71,8 @@ class AckError(Exception):
     """Refusing to write. The message is for a human, so it says what to do."""
 
 
-def _block_bounds(lines, start, end, cycle, stamp, project=None):
-    """(first, last) line indexes of the comment `(cycle, project, stamp)` within [start, end).
+def _block_bounds(lines, start, end, cycle, stamp, project=None, entry=None):
+    """(first, last) line indexes of the comment `(cycle, project, entry, stamp)` within [start, end).
 
     `first` is its `###` heading; `last` is one past its final non-blank
     line, so trailing blanks stay behind as the gap before whatever came
@@ -88,10 +88,11 @@ def _block_bounds(lines, start, end, cycle, stamp, project=None):
             break
         if not heading:
             continue
-        found_cycle, found_project, found_stamp = heading
+        found_cycle, found_project, found_entry, found_stamp = heading
         if (
             found_cycle == cycle
             and same_project(found_project, project)
+            and (found_entry or "") == (entry or "")
             and found_stamp == stamp
         ):
             first = i
@@ -105,8 +106,8 @@ def _block_bounds(lines, start, end, cycle, stamp, project=None):
     return first, last
 
 
-def acknowledge(markdown, cycle, stamp, note, note_stamp, project=None):
-    """Markdown with `(cycle, project, stamp)` moved to the top of `## Acknowledged`.
+def acknowledge(markdown, cycle, stamp, note, note_stamp, project=None, entry=None):
+    """Markdown with `(cycle, project, entry, stamp)` moved to the top of `## Acknowledged`.
 
     `cycle` is an int, or None for a reply to the Needs Edvard block, or  (not-prose: quoting a literal)
     None with `project` set for a comment on a project thread (idea #92
@@ -130,9 +131,10 @@ def acknowledge(markdown, cycle, stamp, note, note_stamp, project=None):
     if ack_at is None:
         raise AckError(f"no real {ACKNOWLEDGED_HEADING!r} heading in this file")
 
-    found = _block_bounds(lines, *new_bounds, cycle=cycle, stamp=stamp, project=project)
+    found = _block_bounds(lines, *new_bounds, cycle=cycle, stamp=stamp,
+                          project=project, entry=entry)
     if found is None:
-        label = _label(cycle, project)
+        label = _label(cycle, project, entry)
         raise AckError(
             f"no comment on {label} at {stamp!r} under {NEW_HEADING} -- "
             "check the heading in the file; nothing written"
@@ -159,18 +161,20 @@ def acknowledge(markdown, cycle, stamp, note, note_stamp, project=None):
         at += 1
     out = "\n".join(rest[:at] + block + [""] + rest[at:])
 
-    _verify(markdown, out, before, cycle, stamp, note, project)
+    _verify(markdown, out, before, cycle, stamp, note, project, entry)
     return out
 
 
-def _label(cycle, project=None):
+def _label(cycle, project=None, entry=None):
     """How this comment's heading names its target."""
     if project:
         return f"Project {project}"
+    if entry:
+        return f"Entry {entry}"
     return "Needs Edvard" if cycle is None else f"Cycle {cycle}"
 
 
-def _verify(original, updated, before, cycle, stamp, note, project=None):
+def _verify(original, updated, before, cycle, stamp, note, project=None, entry=None):
     """Refuse the write unless exactly the intended change happened.
 
     The frontmatter and the bystanders are `nova_comments.verify_write`,
@@ -184,7 +188,7 @@ def _verify(original, updated, before, cycle, stamp, note, project=None):
     must not create or destroy one, so the set of keys is required to be
     conserved exactly, which is stricter than the two writers can be.
     """
-    target = (cycle, project, stamp)
+    target = (cycle, project, entry, stamp)
     try:
         _, after = verify_write(original, updated, exempt={target})
     except WriteRefused as refused:
@@ -226,6 +230,10 @@ def main(argv=None):
         "--needs", action="store_true", help="a reply to the Needs Edvard block"
     )
     target.add_argument("--project", help="the project the comment's thread is on")
+    target.add_argument(
+        "--entry",
+        help="the 'YYYY-MM-DD HH:MM' key of a journal entry with no cycle number",
+    )
     parser.add_argument("--stamp", required=True, help="the comment's stamp, verbatim")
     parser.add_argument("--note", default="", help="one line on what you did")
     parser.add_argument("--dry-run", action="store_true", help="check, write nothing")
@@ -237,11 +245,12 @@ def main(argv=None):
     try:
         updated = acknowledge(
             original,
-            None if (args.needs or args.project) else args.cycle,
+            None if (args.needs or args.project or args.entry) else args.cycle,
             args.stamp.strip(),
             args.note.strip(),
             format_stamp(),
             project=args.project,
+            entry=args.entry,
         )
     except AckError as error:
         print(f"refusing: {error}", file=sys.stderr)
@@ -252,7 +261,7 @@ def main(argv=None):
         return 0
     with open(args.path, "w", encoding="utf-8") as handle:
         handle.write(updated)
-    label = _label(None if args.needs else args.cycle, args.project)
+    label = _label(None if args.needs else args.cycle, args.project, args.entry)
     print(f"moved {label} · {args.stamp} to {ACKNOWLEDGED_HEADING}")
     return 0
 

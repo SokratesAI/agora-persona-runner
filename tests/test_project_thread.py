@@ -65,7 +65,7 @@ The pool page is good.
 
 def test_a_project_name_with_a_hyphen_is_not_split_at_the_hyphen():
     assert match_heading("### Project k3s-sentinel · 2026-08-28 10:40") == (
-        None, "k3s-sentinel", "2026-08-28 10:40"
+        None, "k3s-sentinel", None, "2026-08-28 10:40"
     )
 
 
@@ -102,8 +102,8 @@ def test_the_index_keeps_two_same_minute_threads_apart():
         None, "about Nova", "2026-08-28 11:00", project="Nova",
     )
     index = comment_index(same_minute)
-    assert index[(None, "Agora", "2026-08-28 11:00")]["text"] == "about Agora"
-    assert index[(None, "Nova", "2026-08-28 11:00")]["text"] == "about Nova"
+    assert index[(None, "Agora", None, "2026-08-28 11:00")]["text"] == "about Agora"
+    assert index[(None, "Nova", None, "2026-08-28 11:00")]["text"] == "about Nova"
 
 
 COLLIDING = """# Comments
@@ -134,8 +134,8 @@ def test_a_reply_lands_on_the_project_it_names_not_on_the_needs_block():
     out = insert_reply(COLLIDING, None, "2026-08-28 09:10", "answered",
                        "2026-08-28 09:20", project="Agora")
     by_key = comment_index(out)
-    assert by_key[(None, "Agora", "2026-08-28 09:10")]["reply"] == "answered"
-    assert by_key[(None, None, "2026-08-28 09:10")]["reply"] == ""
+    assert by_key[(None, "Agora", None, "2026-08-28 09:10")]["reply"] == "answered"
+    assert by_key[(None, None, None, "2026-08-28 09:10")]["reply"] == ""
 
 
 def test_an_unwritten_project_has_an_empty_thread_rather_than_an_error():

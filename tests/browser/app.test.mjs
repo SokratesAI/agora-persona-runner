@@ -2342,10 +2342,18 @@ describe("commenting on a cycle", () => {
     assert.equal(w.getComputedStyle(foot).justifyContent, "flex-end", "bottom *right*");
   });
 
-  test("an entry with no cycle number gets none", () => {
-    // There is nothing to key a comment to, so a box there would swallow it.
+  test("an entry with neither a cycle number nor a time gets none", () => {
+    /* A card with no cycle number does get a box now -- it keys on the
+     * entry's own date and time (issues.md 2026-09-02). This one is the
+     * remaining case: the fixture's orphan carries a date and no time, so
+     * there is still nothing to key a comment to, and a box there would
+     * swallow it. The precondition is asserted rather than assumed, because
+     * a fixture that grew a time would turn this into a test of nothing. */
     const orphan = cards(window).find((c) => !/^Cycle /.test(c.querySelector("h2").textContent));
     assert.ok(orphan, "the fixture must contain an entry with no cycle");
+    const entry = payload.journal.entries.find((e) => e.cycle === null);
+    assert.ok(entry && entry.date && !entry.time,
+      "the fixture's orphan must have a date and no time, or this guards nothing");
     assert.equal(bubble(orphan), null);
   });
 
@@ -14471,5 +14479,96 @@ describe("the drawer, after review", () => {
     click(window, window.document.querySelector(".step-sheet .step-tool"));
     await tick();
     assert.deepEqual(asked, ["/api/conversations/step?id=c-ask&tool=t"]);
+  });
+});
+
+describe("commenting on a journal entry that has no cycle number", () => {
+  /* the owner, issues.md 2026-09-02: "The retrospective needs my input, but I
+   * have no ability to give it as those do not have a comment section. Please
+   * make them and other special journals have a comment section like the rest
+   * of the journals."
+   *
+   * A retrospective is written by its own heartbeat and carries no cycle
+   * number, so it was the one journal card with no chat bubble on it. The
+   * thread is keyed on the entry's own date and time instead. */
+  const special = (over) => Object.assign({
+    cycle: null,
+    date: "2026-09-02",
+    time: "07:09",
+    title: "Retrospective",
+    kind: "cycle",
+    writtenDate: "2026-09-02",
+    writtenTime: "07:09",
+    ask: "", askSpans: [], briefSpans: [{ kind: "text", text: "the week in review" }],
+    pr: "", prSpans: [], board: "", boardSpans: [],
+    outcome: "", outcomeDetail: "", emoji: "",
+    blocks: [{ type: "p", spans: [{ kind: "text", text: "the week in review" }] }],
+  }, over || {});
+
+  /* `journal` is served as a function of the query string, because the feed
+   * pages -- so a plain object here answers the first window and nothing
+   * after it. */
+  const withEntry = (over) => () => ({
+    entries: [special(over)].concat(payload.journal.entries),
+    status: payload.journal.status,
+  });
+
+  const cardFor = (w, title) =>
+    cards(w).find((c) => c.querySelector("h2").textContent === title);
+
+  test("the retrospective card gets a chat bubble", async () => {
+    const window = await loadSite("/", { journal: withEntry() });
+    const card = cardFor(window, "Retrospective");
+    assert.ok(card, "the retrospective is on the feed");
+    assert.ok(card.querySelector(".comment-toggle"), "it has a chat bubble");
+  });
+
+  test("what it sends names the entry, not a cycle", async () => {
+    const window = await loadSite("/", { journal: withEntry() });
+    const card = cardFor(window, "Retrospective");
+    click(window, card.querySelector(".comment-toggle"));
+    card.querySelector(".comment-text").value = "why did the box fall over";
+    click(window, card.querySelector(".comment-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    const sent = window.posted.filter((p) => p.url === "/api/comment");
+    assert.equal(sent.length, 1, "exactly one comment was posted");
+    assert.deepEqual(sent[0].body, {
+      target: "entry",
+      entry: "2026-09-02 07:09",
+      text: "why did the box fall over",
+    });
+  });
+
+  test("an existing thread is painted on the card it belongs to", async () => {
+    const window = await loadSite("/", {
+      journal: withEntry(),
+      comments: Object.assign({}, payload.comments, {
+        byEntry: {
+          "2026-09-02 07:09": [
+            { cycle: null, project: null, entry: "2026-09-02 07:09",
+              stamp: "2026-09-02 08:15", text: "why did the box fall over",
+              replies: [], acknowledged: false },
+          ],
+        },
+      }),
+    });
+    const card = cardFor(window, "Retrospective");
+    click(window, card.querySelector(".comment-toggle"));
+    assert.match(card.querySelector(".comment-drawer").textContent,
+      /why did the box fall over/);
+    /* And it lands on that card alone -- a key built wrongly would put one
+     * comment under every no-cycle entry at once. */
+    const elsewhere = cards(window).filter((c) => c !== card)
+      .some((c) => /why did the box fall over/.test(c.textContent));
+    assert.equal(elsewhere, false, "no other card claims the thread");
+  });
+
+  test("an entry with no time on its heading gets no box rather than a broken one", async () => {
+    /* The key is the date and the time together. Half of one is not a key,
+     * and a box with nowhere to file what he types is worse than no box. */
+    const window = await loadSite("/", { journal: withEntry({ time: "" }) });
+    const card = cardFor(window, "Retrospective");
+    assert.ok(card, "the card is still drawn");
+    assert.equal(card.querySelector(".comment-toggle"), null);
   });
 });
