@@ -1,5 +1,6 @@
 """Tests for `tools.open_prs`."""
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -200,3 +201,119 @@ def test_the_check_is_in_preflight():
 
     assert "open_prs" in preflight.CHECKS
     assert preflight.SUBJECT["open_prs"][0] == "off-box"
+
+
+# ---------------------------------------------------------------- superseded
+
+
+def _pr(**kw):
+    """An open pull request that would otherwise judge as `ready`."""
+    pr = {
+        "number": 7,
+        "title": "Node 20 -> 24",
+        "createdAt": "2026-08-31T03:26:59Z",
+        "isDraft": False,
+        "url": "https://example/7",
+        "statusCheckRollup": [{"name": "test", "conclusion": "SUCCESS"}],
+        "files": [{"path": "Dockerfile"}],
+        "headRefOid": "headsha",
+        "baseRefName": "main",
+    }
+    pr.update(kw)
+    return pr
+
+
+def _blobs(mapping, missing=()):
+    """A `run` that answers `gh api .../contents/<path>?ref=<ref>`."""
+    calls = []
+
+    def run(args):
+        calls.append(args)
+        target = args[1]
+        path, ref = target.split("/contents/")[1].split("?ref=")
+        if (path, ref) in missing:
+            return 1, "", "gh: Not Found (HTTP 404)"
+        return 0, mapping[(path, ref)] + "\n", ""
+
+    run.calls = calls
+    return run
+
+
+def test_superseded_when_every_changed_file_matches_the_base():
+    run = _blobs({("Dockerfile", "headsha"): "aaa", ("Dockerfile", "main"): "aaa"})
+    already, why = open_prs.is_superseded("o/r", _pr(), run=run)
+    assert already is True
+    assert "already identical on main" in why
+
+
+def test_not_superseded_when_a_changed_file_differs():
+    run = _blobs({("Dockerfile", "headsha"): "aaa", ("Dockerfile", "main"): "bbb"})
+    already, _ = open_prs.is_superseded("o/r", _pr(), run=run)
+    assert already is False
+
+
+def test_a_file_the_pr_adds_is_not_superseded():
+    # Absent on the base, present at the head: the real "this adds
+    # something" case, and the one a naive 404-tolerant compare would
+    # call identical.
+    run = _blobs(
+        {("Dockerfile", "headsha"): "aaa"}, missing=(("Dockerfile", "main"),)
+    )
+    already, _ = open_prs.is_superseded("o/r", _pr(), run=run)
+    assert already is False
+
+
+def test_a_deletion_already_on_the_base_is_superseded():
+    run = _blobs({}, missing=(("Dockerfile", "headsha"), ("Dockerfile", "main")))
+    already, _ = open_prs.is_superseded("o/r", _pr(), run=run)
+    assert already is True
+
+
+def test_an_unreadable_blob_is_none_rather_than_superseded():
+    def run(args):
+        return 1, "", "gh: 500 Internal Server Error"
+
+    already, why = open_prs.is_superseded("o/r", _pr(), run=run)
+    assert already is None
+    assert "500" in why
+
+
+def test_too_many_files_is_not_judged():
+    pr = _pr(files=[{"path": f"f{n}"} for n in range(open_prs.SUPERSEDED_MAX_FILES + 1)])
+
+    def run(args):  # pragma: no cover - must never be called
+        raise AssertionError("asked the API about an over-large pull request")
+
+    already, why = open_prs.is_superseded("o/r", pr, run=run)
+    assert already is None
+    assert str(open_prs.SUPERSEDED_MAX_FILES) in why
+
+
+def test_a_directory_reply_is_unreadable_not_a_match():
+    # `-q .sha` on a directory prints nothing. Two empty strings compare
+    # equal, which would report a superseded pull request from no data.
+    def run(args):
+        return 0, "\n", ""
+
+    already, _ = open_prs.is_superseded("o/r", _pr(), run=run)
+    assert already is None
+
+
+def test_superseded_does_not_raise_and_ready_does():
+    matching = {("Dockerfile", "headsha"): "aaa", ("Dockerfile", "main"): "aaa"}
+    differing = {("Dockerfile", "headsha"): "aaa", ("Dockerfile", "main"): "bbb"}
+
+    def make(blobs):
+        def run(args):
+            if args[0] == "pr":
+                return 0, json.dumps([_pr()]), ""
+            if args[0] == "repo":
+                return 0, json.dumps([{"nameWithOwner": "o/r", "isArchived": False}]), ""
+            path, ref = args[1].split("/contents/")[1].split("?ref=")
+            return 0, blobs[(path, ref)] + "\n", ""
+
+        return run
+
+    now = datetime(2026, 9, 2, tzinfo=timezone.utc)
+    assert open_prs.main([], now=now, run=make(matching)) == 0
+    assert open_prs.main([], now=now, run=make(differing)) == 2

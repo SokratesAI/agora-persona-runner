@@ -17,7 +17,7 @@ check-run on a repository that declares six workflows
 and three green and unmerged, two of them open for thirty-six days
 (`agent-runtime#1`, `vault#2`, `whatsapp-bridge#7`).
 
-**Four verdicts, and only two of them raise.**
+**Five verdicts, and only two of them raise.**
 
 `NO CI RUN` is the `#566` shape: the pull request has no check-runs *and*
 its repository has at least one workflow, so a run was expected and never
@@ -48,6 +48,25 @@ evening by a cycle that never merged it, and at 0.5 days old it sat
 inside the window. It is exactly the shape this check is for and it will
 raise tonight. A tighter window chosen so the example landed would have
 been a number picked to flatter the tool.
+
+**`SUPERSEDED` is what `READY, UNMERGED` was getting wrong.** A pull
+request whose every changed file is already byte-identical on its base
+branch has nothing left to merge, and until Cycle 807 it read as a green
+pull request nobody had merged -- which is a thing to go and do. Two of
+the three rows in that bucket on 2026-09-02 were this: `whatsapp-bridge#7`
+bumped three Node pins that #11 had already landed on `main` the day
+before, and `whatsapp-bridge#4` had been narrowed by its own second commit
+to a logging change `main` then implemented better. The reason neither was
+visible is mechanical rather than careless: a pull request's diff, and
+`compare/base...head`, are both **three-dot** -- computed from the merge
+base -- so they go on reporting the same additions forever after somebody
+lands identical content by another route. `is_superseded` asks the other
+question, file by file: is the blob at the head sha the same as the blob
+at the base branch. It is asked only of a pull request that would
+otherwise raise `ready`, costs two API calls per changed file, and is
+bounded at `SUPERSEDED_MAX_FILES`. When it cannot be asked the answer is
+`None` and the row stays `ready` with the reason appended -- an unanswered
+question must never read as "this is fine".
 
 **Deliberately held is a verdict, not a finding.** A draft, or a title
 carrying the word `HELD`, is printed and never raises. Both conventions
@@ -108,7 +127,11 @@ def open_prs_for(repo, run=None):
     code, out, err = (run or _gh)(
         [
             "pr", "list", "-R", repo, "--state", "open", "--limit", "100",
-            "--json", "number,title,createdAt,isDraft,statusCheckRollup,url",
+            "--json",
+            # `files`, `headRefOid` and `baseRefName` are here for
+            # `is_superseded`, which needs the changed paths and the two
+            # refs to compare them at.
+            "number,title,createdAt,isDraft,statusCheckRollup,url,files,headRefOid,baseRefName",
         ]
     )
     if code != 0:
@@ -167,6 +190,77 @@ def is_held(pr):
     return HELD_MARKER in (pr.get("title") or "")
 
 
+#: The most files a pull request may change and still be asked whether it
+#: is superseded. The question costs two `gh api` calls per file, so it is
+#: bounded rather than skipped: a 400-file pull request is not a thing this
+#: loop opens, and answering "not judged" on one is honest.
+SUPERSEDED_MAX_FILES = 20
+
+#: What `blob_sha` returns for a path that does not exist at a ref. A real
+#: blob sha is 40 hex characters, so this can never collide with one, and
+#: two absences comparing equal is the answer we want: a pull request that
+#: deletes a file `main` has already deleted has nothing left to merge.
+ABSENT = "<absent>"
+
+
+def blob_sha(repo, path, ref, run=None):
+    """`(sha, error)` — the git blob sha of one path at one ref.
+
+    `ABSENT` when the path is not there. That is not an error: a file the
+    pull request adds is legitimately missing from the base branch, and a
+    file it deletes is legitimately missing from the head.
+    """
+    code, out, err = (run or _gh)(
+        ["api", f"repos/{repo}/contents/{path}?ref={ref}", "-q", ".sha"]
+    )
+    if code != 0:
+        blob = (err or out or "").strip()
+        if "404" in blob or "Not Found" in blob:
+            return ABSENT, None
+        return None, blob.splitlines()[0] if blob else f"gh exited {code}"
+    sha = out.strip()
+    # A directory answers with a list, so `-q .sha` prints nothing. Treat
+    # that as unreadable rather than as a match: an empty string compared
+    # against an empty string is the false "identical" this whole check
+    # exists to stop reporting.
+    return (sha, None) if sha else (None, f"no blob sha for {path} at {ref}")
+
+
+def is_superseded(repo, pr, run=None):
+    """`(bool_or_None, detail)` — are the pull request's changes already on its base?
+
+    Asked file by file rather than through the compare API, because both
+    the pull request diff and `compare/base...head` are three-dot: they
+    are computed from the merge base, so they keep reporting the same
+    additions after somebody lands identical content on `main` by another
+    route. That is exactly what happened to `whatsapp-bridge#7`, which
+    read as `READY, UNMERGED — every check passed and nobody merged it`
+    for two days while every one of its three pins was already on `main`
+    from #11. Comparing the blob at head against the blob at base asks the
+    only question that matters — would merging this change anything —
+    and `None` means it could not be asked.
+    """
+    files = [f.get("path") for f in (pr.get("files") or []) if f.get("path")]
+    if not files:
+        return None, "the pull request lists no changed files"
+    if len(files) > SUPERSEDED_MAX_FILES:
+        return None, f"{len(files)} changed file(s), over the {SUPERSEDED_MAX_FILES} this asks about"
+    head = pr.get("headRefOid")
+    base = pr.get("baseRefName")
+    if not head or not base:
+        return None, "the pull request carries no head sha or base branch"
+    for path in files:
+        at_head, err = blob_sha(repo, path, head, run=run)
+        if err:
+            return None, err
+        at_base, err = blob_sha(repo, path, base, run=run)
+        if err:
+            return None, err
+        if at_head != at_base:
+            return False, ""
+    return True, f"all {len(files)} changed file(s) are already identical on {base}"
+
+
 def judge(pr, now, workflow_count, max_age_days=DEFAULT_MAX_AGE_DAYS):
     """`(verdict, detail)` for one pull request.
 
@@ -214,6 +308,7 @@ _HEADINGS = {
     "no_run": "NO CI RUN — a check-run was expected and never appeared",
     "failing": "FAILING — a check-run did not pass",
     "ready": "READY, UNMERGED — every check passed and nobody merged it",
+    "superseded": "SUPERSEDED — every changed file is already identical on the base branch",
     "pending": "still running, inside the window",
     "held": "deliberately held — draft, or the title says HELD",
     "ok": "open and healthy, inside the window",
@@ -242,7 +337,7 @@ def format_report(results, swept, errors, caveat_repos, max_age_days):
         for row in rows:
             lines.append(f"COULD NOT JUDGE — {row['repo']}#{row['number']}: {row['detail']}")
 
-    for verdict in ("pending", "held", "ok"):
+    for verdict in ("superseded", "pending", "held", "ok"):
         rows = by_verdict.get(verdict) or []
         if not rows:
             continue
@@ -307,6 +402,17 @@ def main(argv=None, now=None, run=None):
             verdict, detail = judge(
                 pr, now, workflow_counts.get(repo), max_age_days=args.max_age_days
             )
+            if verdict == "ready":
+                # Only `ready` is asked. A failing or still-running pull
+                # request has a different thing wrong with it, and a held
+                # one was parked on purpose -- re-judging either would
+                # spend API calls to change nothing. This is also the only
+                # verdict where the answer turns a finding into a no-op.
+                already, why = is_superseded(repo, pr, run=run)
+                if already:
+                    verdict, detail = "superseded", why
+                elif already is None:
+                    detail = f"{detail}; not judged as superseded — {why}"
             if verdict == "no_run" and repo not in caveat_repos:
                 caveat_repos.append(repo)
             results.append(
