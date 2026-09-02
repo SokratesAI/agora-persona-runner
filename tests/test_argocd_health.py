@@ -285,3 +285,88 @@ def test_jobs_are_read_once_something_is_unhealthy():
 
     assert argocd_health.main([], runner=runner, now=NOW) == 2
     assert asked == ["applications", "jobs"]
+
+
+# --- the summary line survives the preflight collapse ----------------
+#
+# `preflight` reports a check that exits 0 as one line, and it picks the
+# last line carrying a digit. So a STALE JOB FAILURE — the entire reason
+# this check does not raise — has to ride on *that* line or it is
+# invisible on a normal morning. Cycle 810 swept clean here and still
+# wrote "sokratesai-infra reports Degraded and I do not know why or since
+# when" into the handoff. These pin the line, not the paragraph.
+
+
+def _stale(name="sokratesai-infra", since="2026-08-22T01:30:00Z"):
+    return report_for(
+        [app(name, health="Degraded", since=since, cronjobs=[("agents", "rss")])],
+        [job("rss-1", "rss", "2026-08-20T08:00:00Z", failed=True),
+         job("rss-2", "rss", "2026-08-26T08:00:00Z", succeeded=True)],
+    )
+
+
+def test_the_held_application_is_named_on_the_line_preflight_keeps():
+    from tools.preflight import summary_line
+
+    lines, status = _stale()
+    assert status == 0
+    kept = summary_line("\n".join(lines))
+    assert "sokratesai-infra" in kept
+    assert "Degraded" in kept
+
+
+def test_the_kept_line_carries_how_long_it_has_been_held():
+    # "since when" is the half of the question the handoff could not
+    # answer, so the age has to be on the kept line and not only beside
+    # the STALE JOB FAILURE heading five lines up.
+    from tools.preflight import summary_line
+
+    lines, _ = _stale(since="2026-08-22T01:30:00Z")
+    assert "5d" in summary_line("\n".join(lines))
+
+
+def test_the_kept_line_says_how_many_jobs_hold_it():
+    from tools.preflight import summary_line
+
+    lines, _ = _stale()
+    assert "1 Job(s)" in summary_line("\n".join(lines))
+
+
+def test_a_clean_sweep_does_not_claim_anything_is_held():
+    # The complement, and it is the one that would rot: a sentence that
+    # printed on every run regardless is the footnote problem again.
+    from tools.preflight import summary_line
+
+    lines, status = report_for([app("a"), app("b")], [])
+    assert status == 0
+    kept = summary_line("\n".join(lines))
+    assert "Read 2 ArgoCD Application(s)" in kept
+    assert "held" not in kept.lower()
+    assert not any("not raised" in l for l in lines)
+
+
+def test_a_live_failure_is_not_reported_as_held_and_not_raised():
+    # A raised app must never appear in the "deliberately not raised"
+    # list — that would read as handled while the exit code says act.
+    lines, status = report_for(
+        [app("infra", health="Degraded", cronjobs=[("agents", "rss")])],
+        [job("rss-1", "rss", "2026-08-20T08:00:00Z", succeeded=True),
+         job("rss-2", "rss", "2026-08-26T08:00:00Z", failed=True)],
+    )
+    assert status == 2
+    assert not any("not raised: infra" in l for l in lines)
+
+
+def test_two_held_applications_are_both_named():
+    lines, status = report_for(
+        [app("infra", health="Degraded", cronjobs=[("agents", "rss")]),
+         app("other", health="Degraded", cronjobs=[("agents", "gen")])],
+        [job("rss-1", "rss", "2026-08-20T08:00:00Z", failed=True),
+         job("rss-2", "rss", "2026-08-26T08:00:00Z", succeeded=True),
+         job("gen-1", "gen", "2026-08-20T08:00:00Z", failed=True),
+         job("gen-2", "gen", "2026-08-26T08:00:00Z", succeeded=True)],
+    )
+    assert status == 0
+    kept = [l for l in lines if "not raised:" in l]
+    assert len(kept) == 1
+    assert "infra" in kept[0] and "other" in kept[0]
