@@ -5164,6 +5164,39 @@ def test_the_asks_filter_does_not_decide_which_are_still_open():
     )
 
 
+def test_the_asks_filter_drops_a_card_a_later_cycle_resolved():
+    """The owner, `issues.md` 2026-09-02: *"When a later cycle resolves the
+    same problem a 'needs input' block was raised about, auto-close that
+    block instead of requiring me to comment on it just to clear it."*
+
+    The one thing this page subtracts that is not a fact about the card
+    itself. It is safe here, unlike a comment, because the resolution is in
+    the journal too and cannot go stale against a second cache.
+    """
+    payload = _with_asks()
+    payload["entries"].insert(
+        0,
+        {"cycle": 5, "title": "Cycle 5", "body": "Settled it.", "ask": "",
+         "resolvesAsks": [3]},
+    )
+    page = nova_site.journal_page(payload, asks=True)
+    assert [entry["cycle"] for entry in page["entries"]] == [1]
+    assert page["total"] == 1
+
+
+def test_the_asks_filter_keeps_a_card_nothing_resolved():
+    """The mirror. Without it, a filter that returned nothing at all would
+    pass the test above."""
+    payload = _with_asks()
+    payload["entries"].insert(
+        0,
+        {"cycle": 5, "title": "Cycle 5", "body": "Settled something else.",
+         "ask": "", "resolvesAsks": [999]},
+    )
+    page = nova_site.journal_page(payload, asks=True)
+    assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+
+
 def test_the_asks_window_gets_its_own_etag():
     """The base etag is the journal build, identical for both, so without
     its own window key the ask filter and an unwindowed read are answered

@@ -153,6 +153,7 @@ from agora_runner.nova_journal import (
     parse_digest,
     parse_journal,
     render_blocks,
+    resolved_ask_cycles,
     with_start_times,
 )
 from agora_runner.nova_replies import (
@@ -1857,6 +1858,14 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
     keep the filter claiming he had not replied until the *journal* cache
     next rebuilt. The client holds both payloads and intersects them.
 
+    **A card a later cycle declared resolved is dropped**, the one
+    exception, and it is the same call `open_asks` makes: that fact lives in
+    the journal like everything else here, so applying it costs no second
+    payload and cannot go stale against one. The owner asked for exactly
+    this (`issues.md` 2026-09-02) -- an ask a later cycle already settled
+    was staying on this page until he commented on a card about finished
+    work.
+
     Like `cycle`, it ignores `offset` and `limit` -- the whole point is to
     see all of them at once, and there are eight, not eight hundred.
     """
@@ -1885,9 +1894,12 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
         # `cycle is not None` for the reason `open_asks` skips those
         # entries: an entry with no cycle number has no card of its own to
         # reply on, so an ask written into one has nowhere to be answered.
+        closed = resolved_ask_cycles(entries)
         picked = [
             entry for entry in entries
-            if entry.get("ask") and entry.get("cycle") is not None
+            if entry.get("ask")
+            and entry.get("cycle") is not None
+            and entry["cycle"] not in closed
         ]
         return {
             "entries": [_rendered(entry) for entry in picked],
