@@ -162,18 +162,28 @@ class TestHeadOfDefaultBranch:
 
         def fake(args):
             seen.append(args)
-            if "commits/HEAD" in " ".join(args):
-                return 0, "abc123\n", ""
-            return 0, "trunk\n", ""
+            return 0, "abc123\n", ""
 
-        sha, branch, err = head = main_build.head_of_default_branch("o/r", run=fake)
+        sha, err = main_build.head_of_default_branch("o/r", run=fake)
         assert err is None
         assert sha == "abc123"
-        assert branch == "trunk"
         assert "repos/o/r/commits/HEAD" in " ".join(seen[0])
 
+    def test_it_costs_one_call_per_repo(self):
+        # The first version spent a second call on `.default_branch` so the
+        # report could print the word `main`. That is 25 REST calls a sweep
+        # for a word the commit sha already identifies.
+        seen = []
+
+        def fake(args):
+            seen.append(args)
+            return 0, "abc123\n", ""
+
+        main_build.head_of_default_branch("o/r", run=fake)
+        assert len(seen) == 1
+
     def test_an_empty_sha_is_an_error(self):
-        sha, branch, err = main_build.head_of_default_branch(
+        sha, err = main_build.head_of_default_branch(
             "o/r", run=lambda args: (0, "\n", "")
         )
         assert sha is None

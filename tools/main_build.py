@@ -83,27 +83,26 @@ def _gh(args):
 
 
 def head_of_default_branch(repo, run=None):
-    """`(sha, branch, error)` for the default branch's newest commit.
+    """`(sha, error)` for the default branch's newest commit.
 
     `commits/HEAD` resolves the default branch server-side, so this does
     not have to know whether a repo calls it `main` or something else --
     and asking for runs by `head_sha` afterwards means the branch name is
-    never needed as a query parameter either.
+    never needed as a query parameter either. My first version spent a
+    second call per repository on `.default_branch` purely so the report
+    could print the word `main`; that is 25 REST calls on every sweep,
+    forever, for a word, and the commit sha already names the thing.
     """
     code, out, err = (run or _gh)(
         ["api", f"repos/{repo}/commits/HEAD", "--jq", ".sha"]
     )
     if code != 0:
         blob = (err or out or "").strip()
-        return None, None, blob.splitlines()[0] if blob else f"gh exited {code}"
+        return None, blob.splitlines()[0] if blob else f"gh exited {code}"
     sha = out.strip()
     if not sha:
-        return None, None, "the default branch HEAD came back empty"
-    code, out, err = (run or _gh)(
-        ["api", f"repos/{repo}", "--jq", ".default_branch"]
-    )
-    branch = out.strip() if code == 0 else None
-    return sha, branch or None, None
+        return None, "the default branch HEAD came back empty"
+    return sha, None
 
 
 def runs_for_commit(repo, sha, run=None):
@@ -249,8 +248,7 @@ def format_report(results, swept, errors, caveat_repos):
             continue
         lines.append(f"{_HEADINGS[verdict]} — {len(rows)}")
         for row in sorted(rows, key=lambda r: r["repo"]):
-            branch = row["branch"] or "the default branch"
-            lines.append(f"  {row['repo']}  {branch} at {row['sha'][:7]}")
+            lines.append(f"  {row['repo']}  default branch at {row['sha'][:7]}")
             lines.append(f"      {row['detail']}")
             if row["url"]:
                 lines.append(f"      {row['url']}")
@@ -304,11 +302,11 @@ def main(argv=None, run=None):
     results = []
     caveat_repos = []
     for repo in repos:
-        sha, branch, err = head_of_default_branch(repo, run=run)
+        sha, err = head_of_default_branch(repo, run=run)
         if err:
             errors.append(f"{repo}: could not read the default branch HEAD — {err}")
             results.append(
-                {"repo": repo, "sha": "", "branch": None, "url": "",
+                {"repo": repo, "sha": "", "url": "",
                  "verdict": "unreadable", "detail": err}
             )
             continue
@@ -316,7 +314,7 @@ def main(argv=None, run=None):
         if err:
             errors.append(f"{repo}: could not read the runs on {sha[:7]} — {err}")
             results.append(
-                {"repo": repo, "sha": sha, "branch": branch, "url": "",
+                {"repo": repo, "sha": sha, "url": "",
                  "verdict": "unreadable", "detail": err}
             )
             continue
@@ -329,7 +327,7 @@ def main(argv=None, run=None):
         if verdict == "not_built":
             caveat_repos.append(repo)
         results.append(
-            {"repo": repo, "sha": sha, "branch": branch, "url": url,
+            {"repo": repo, "sha": sha, "url": url,
              "verdict": verdict, "detail": detail}
         )
 
