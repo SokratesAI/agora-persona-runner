@@ -45,7 +45,7 @@ wgengine.NewUserspaceEngine(tun "tailscale0") error: tstun.New("tailscale0"): pe
 wgengine.NewUserspaceEngine(tun "userspace-networking") ...
 ```
 
-The running process carried **no `--tun` flag at all** — `/volume1/@appstore/Tailscale/bin/tailscaled --state=... --socket=... --port=41641`, read out of `/proc`. So the start script's condition was false and the script was never the problem. tailscaled asks for `tailscale0` on every single start, is denied opening `/dev/net/tun` because the node is mode `0600` and the package does not run as root, and **falls back to userspace-networking silently**. Every restart reproduced it, which is why restarting could never fix it.
+The running process carried **no `--tun` flag at all** — `/volume1/@appstore/Tailscale/bin/tailscaled --state=... --socket=... --port=41641`, read out of `/proc`. So the start script's condition was false and the script was never the problem. tailscaled asks for `tailscale0` on every single start, is denied opening `/dev/net/tun` at mode `0600`, and **falls back to userspace-networking silently**. I did not read the daemon's uid, so "it is not running as root" is an inference from the denial and the chmod that cleared it, not something I measured. Every restart reproduced it, which is why restarting could never fix it.
 
 The package's own `ensure_tun_created()` contains the fix — `chmod 0755 /dev/net/tun` — on the branch that `mknod`s a missing node. This node is dated Aug 13 2025 and predates the package, so that branch never ran and the chmod never happened.
 
