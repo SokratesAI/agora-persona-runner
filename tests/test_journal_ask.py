@@ -237,3 +237,95 @@ def test_the_new_label_reaches_the_status_header():
         {"cycle": 308, "date": "2026-08-21", "time": "21:20"},
     ]
     assert "Needs input" not in entries[0]["body"]
+
+
+# A later cycle closing an earlier cycle's ask. The owner, `issues.md`
+# 2026-09-02: *"When a later cycle resolves the same problem a 'needs input'
+# block was raised about, auto-close that block instead of requiring me to
+# comment on it just to clear it."*
+
+
+def test_a_later_cycle_closes_an_earlier_cycles_ask():
+    entries = parse_journal(
+        "### 2026-09-02 12:00 (Oslo) — Cycle 800 · the answer\n\n"
+        "I settled it myself.\n\n"
+        "**Resolves ask:** cycle 799\n\n"
+        "PR: none | Outcome: shipped\n\n"
+        "### 2026-09-02 11:00 (Oslo) — Cycle 799 · the question\n\n"
+        "**Needs input:** Yes or no, keep the pill?\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert entries[1]["ask"], "the ask must still be parsed off the card"
+    assert open_asks(entries) == [], "a resolved ask is not still waiting on him"
+
+
+def test_an_ask_nobody_resolved_is_still_open():
+    """The mirror of the test above. Without it, `open_asks` returning an
+    empty list for every input would pass -- and that is exactly the bug
+    this change could introduce, since it now subtracts a set."""
+    entries = parse_journal(
+        "### 2026-09-02 12:00 (Oslo) — Cycle 800 · unrelated\n\n"
+        "I did something else.\n\n"
+        "PR: none | Outcome: shipped\n\n"
+        "### 2026-09-02 11:00 (Oslo) — Cycle 799 · the question\n\n"
+        "**Needs input:** Yes or no, keep the pill?\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert [ask["cycle"] for ask in open_asks(entries)] == [799]
+
+
+def test_a_cycle_cannot_resolve_its_own_ask():
+    """Self-reference is dropped. A cycle that raises a question and names
+    its own number is talking about itself, and honouring it would delete a
+    live ask silently -- the block simply never appears."""
+    entries = parse_journal(
+        "### 2026-09-02 11:00 (Oslo) — Cycle 799 · the question\n\n"
+        "**Needs input:** Yes or no, keep the pill?\n\n"
+        "**Resolves ask:** cycle 799\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert [ask["cycle"] for ask in open_asks(entries)] == [799]
+
+
+def test_one_line_can_close_two_asks():
+    entries = parse_journal(
+        "### 2026-09-02 12:00 (Oslo) — Cycle 800 · the answer\n\n"
+        "**Resolves ask:** cycles 798, 799\n\n"
+        "PR: none | Outcome: shipped\n\n"
+        "### 2026-09-02 11:00 (Oslo) — Cycle 799 · q\n\n"
+        "**Needs input:** Yes or no, one?\n\n"
+        "PR: none | Outcome: shipped\n\n"
+        "### 2026-09-02 10:00 (Oslo) — Cycle 798 · q\n\n"
+        "**Needs input:** Yes or no, two?\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert open_asks(entries) == []
+
+
+def test_a_number_in_prose_does_not_close_an_ask():
+    """The label anchors the line, so only numbers on that line are read.
+    Without the anchor, `resolved_asks` over free prose would clear an ask
+    the first time an entry mentioned a cycle number -- which every entry
+    does."""
+    entries = parse_journal(
+        "### 2026-09-02 12:00 (Oslo) — Cycle 800 · the answer\n\n"
+        "Cycle 799 asked about the pill and I have no view on it.\n\n"
+        "PR: none | Outcome: shipped\n\n"
+        "### 2026-09-02 11:00 (Oslo) — Cycle 799 · the question\n\n"
+        "**Needs input:** Yes or no, keep the pill?\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert [ask["cycle"] for ask in open_asks(entries)] == [799]
+
+
+def test_the_resolution_line_stays_in_the_rendered_body():
+    """Unlike the ask, it is not cut. When a block disappears off his
+    header, the sentence saying which cycle closed it is the answer to
+    "where did that go"."""
+    entries = parse_journal(
+        "### 2026-09-02 12:00 (Oslo) — Cycle 800 · the answer\n\n"
+        "**Resolves ask:** cycle 799 — the CI reset landed.\n\n"
+        "PR: none | Outcome: shipped\n"
+    )
+    assert "Resolves ask" in entries[0]["body"]
+    assert entries[0]["resolvesAsks"] == [799]

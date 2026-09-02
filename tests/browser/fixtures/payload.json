@@ -11,6 +11,7 @@
         "writtenTime": "15:22",
         "ask": "",
         "askSpans": [],
+        "resolvesAsks": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -52,6 +53,7 @@
         "writtenTime": "15:05",
         "ask": "",
         "askSpans": [],
+        "resolvesAsks": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -93,6 +95,7 @@
         "writtenTime": "12:33",
         "ask": "",
         "askSpans": [],
+        "resolvesAsks": [],
         "briefSpans": [
           {
             "kind": "text",
@@ -152,6 +155,7 @@
         "writtenTime": "",
         "ask": "",
         "askSpans": [],
+        "resolvesAsks": [],
         "briefSpans": [
           {
             "kind": "text",

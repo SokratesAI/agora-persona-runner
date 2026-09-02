@@ -344,6 +344,72 @@ _ASK_RE = re.compile(
 )
 
 
+# `**Resolves ask:** cycle 790` -- a later cycle saying an earlier cycle's
+# ask is settled, so the block clears without him having to type anything.
+#
+# The owner, `issues.md` 2026-09-02: *"When a later cycle resolves the same
+# problem a 'needs input' block was raised about, auto-close that block
+# instead of requiring me to comment on it just to clear it."* Until now the
+# only thing that closed an ask was a comment from him on that card, so a
+# question a later cycle had already answered stayed on the header and on
+# `/asks` until he replied to a card about work that was finished -- which
+# he had just told me twice in one morning was noise.
+#
+# **A cycle declares this; nothing infers it from text.** "The same problem"
+# is a judgement, and a topic matcher that guesses it would clear a live
+# question the moment two entries shared a noun. The cycle that resolved the
+# ask is the one thing in this loop that actually knows, and it is writing an
+# entry anyway.
+#
+# The label stays in the rendered body on purpose rather than being cut the
+# way `split_ask` cuts the ask: when a block disappears off his header, the
+# sentence saying which cycle closed it and why is the answer to "where did
+# that go", and it is one line.
+_RESOLVES_RE = re.compile(
+    r"^\*\*Resolves ask(?::\*\*|\*\*:)[ \t]*(?P<cycles>[^\n]*)",
+    re.MULTILINE,
+)
+
+#: Every integer on that line is a cycle number. Safe *because* the line is
+#: anchored on the label -- a number in free prose is never read here.
+_RESOLVES_NUM_RE = re.compile(r"\d+")
+
+
+def resolved_asks(body):
+    """Which cycles' asks this entry's body declares settled, as ints.
+
+    Every `**Resolves ask:**` line counts, not just the first: unlike an
+    ask, which is one paragraph precisely because a list is easy to add to
+    and hard to clear, a resolution is a fact about somebody else's card
+    and a cycle may close two at once.
+    """
+    found = []
+    for match in _RESOLVES_RE.finditer(body or ""):
+        for number in _RESOLVES_NUM_RE.findall(match.group("cycles")):
+            value = int(number)
+            if value not in found:
+                found.append(value)
+    return found
+
+
+def resolved_ask_cycles(entries):
+    """The set of cycle numbers whose ask some *other* entry has closed.
+
+    Self-reference is dropped rather than honoured. An entry that raises an
+    ask and resolves the same number is talking about itself, and taking it
+    at its word would let a cycle delete its own open question by typo --
+    the one failure here that is silent, since the block simply never
+    appears.
+    """
+    closed = set()
+    for entry in entries or []:
+        cycle = entry.get("cycle")
+        for number in entry.get("resolvesAsks") or []:
+            if number != cycle:
+                closed.add(number)
+    return closed
+
+
 def split_ask(body):
     """An entry body -> (body without the ask paragraph, the ask text).
 
@@ -962,6 +1028,7 @@ def parse_journal(markdown, times_by_cycle=None, written_by_cycle=None):
         raw_body, ask = split_ask(raw_body)
         entry["ask"] = ask
         entry["askSpans"] = render_inline(ask) if ask else []
+        entry["resolvesAsks"] = resolved_asks(raw_body)
         entry["body"] = raw_body
         # The card's brief for the 55 entries that have no digest line --
         # the digest is rewritten every cycle and its older lines are
@@ -1665,7 +1732,14 @@ def open_asks(entries):
     `None`: a report has no card of its own for him to reply on, so an ask
     written into one has nowhere to be answered and pointing at it would be
     pointing at nothing.
+
+    **An ask a later cycle declared resolved is dropped here**, which is
+    the one thing in this function that is not a fact about the card
+    itself -- see `resolved_ask_cycles`. It stays a pure function of the
+    journal, so it costs the client nothing and clears on the same rebuild
+    that publishes the entry which closed it.
     """
+    closed = resolved_ask_cycles(entries)
     return [
         {
             "cycle": entry["cycle"],
@@ -1673,7 +1747,9 @@ def open_asks(entries):
             "time": entry.get("time") or "",
         }
         for entry in entries
-        if entry.get("ask") and entry.get("cycle") is not None
+        if entry.get("ask")
+        and entry.get("cycle") is not None
+        and entry["cycle"] not in closed
     ]
 
 
