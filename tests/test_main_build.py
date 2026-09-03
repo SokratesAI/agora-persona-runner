@@ -355,3 +355,284 @@ class TestFailingRuns:
         # GitHub lists newest first; the stale failure must not be selected.
         runs = [run("build", "success", run_id=2), run("build", "failure", run_id=1)]
         assert main_build.failing_runs(runs) == []
+
+
+WORKFLOW = """
+name: build
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@v7
+  vault-drift:
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: SokratesAI/agora-persona-runner
+          path: ..
+      - run: python -m tools.sync_contract . ..
+  named:
+    name: pretty name
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: SokratesAI/other
+"""
+
+
+class TestComparedRepos:
+    """Which repositories a job checks out besides its own.
+
+    Read off the workflow rather than kept in a list here, so a third
+    comparison added tomorrow is found without editing this module.
+    """
+
+    def _parsed(self):
+        import yaml
+
+        return yaml.safe_load(WORKFLOW)
+
+    def test_it_finds_the_other_repo_a_job_checks_out(self):
+        assert main_build.compared_repos(
+            self._parsed(), "vault-drift", "SokratesAI/agora-claude-bridge"
+        ) == ["SokratesAI/agora-persona-runner"]
+
+    def test_a_job_that_only_checks_out_itself_compares_nothing(self):
+        assert main_build.compared_repos(
+            self._parsed(), "test", "SokratesAI/agora-claude-bridge"
+        ) == []
+
+    def test_the_repo_being_judged_is_not_its_own_comparison(self):
+        # The same workflow read from the runner side: the `repository:` it
+        # names IS this repo, so nothing about it is perishable.
+        assert main_build.compared_repos(
+            self._parsed(), "vault-drift", "SokratesAI/agora-persona-runner"
+        ) == []
+
+    def test_it_matches_a_jobs_display_name_not_only_its_key(self):
+        # GitHub reports the job's `name:` when it has one, so keying on the
+        # mapping key alone would never match the job that actually failed.
+        assert main_build.compared_repos(
+            self._parsed(), "pretty name", "SokratesAI/agora-claude-bridge"
+        ) == ["SokratesAI/other"]
+
+    def test_an_unknown_job_name_compares_nothing(self):
+        assert main_build.compared_repos(self._parsed(), "nope", "o/r") == []
+
+    def test_a_repository_named_by_an_expression_is_skipped(self):
+        # The live `build-push` job checks out `${{ env.CONFIG_REPO }}` to
+        # commit the new digest to it. Passing that string to the GitHub API
+        # is a guaranteed error on every red run in this org, and the repo it
+        # names is not a comparison in the first place.
+        import yaml
+
+        parsed = yaml.safe_load(
+            "jobs:\n"
+            "  build-push:\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v7\n"
+            "        with:\n"
+            "          repository: ${{ env.CONFIG_REPO }}\n"
+        )
+        assert main_build.compared_repos(parsed, "build-push", "o/r") == []
+
+
+class TestFailingJobs:
+    def test_it_keeps_only_the_jobs_that_did_not_pass(self):
+        payload = json.dumps([
+            {"id": 1, "name": "test", "conclusion": "success"},
+            {"id": 2, "name": "vault-drift", "conclusion": "failure"},
+        ])
+        jobs, err = main_build.failing_jobs(
+            "o/r", 7, run=lambda args: (0, payload, "")
+        )
+        assert err is None
+        assert [j["name"] for j in jobs] == ["vault-drift"]
+
+    def test_it_asks_for_the_jobs_of_that_run(self):
+        seen = []
+
+        def fake(args):
+            seen.append(args)
+            return 0, "[]", ""
+
+        main_build.failing_jobs("o/r", 7, run=fake)
+        assert "repos/o/r/actions/runs/7/jobs" in " ".join(seen[0])
+
+    def test_a_gh_failure_is_an_error_not_an_empty_list(self):
+        jobs, err = main_build.failing_jobs(
+            "o/r", 7, run=lambda args: (1, "", "boom")
+        )
+        assert jobs is None
+        assert "boom" in err
+
+
+class TestWorkflowAt:
+    def test_it_decodes_and_parses_the_file(self):
+        import base64
+
+        blob = base64.b64encode(WORKFLOW.encode()).decode()
+        parsed, err = main_build.workflow_at(
+            "o/r", "abc123", ".github/workflows/build.yaml",
+            run=lambda args: (0, blob, ""),
+        )
+        assert err is None
+        assert "vault-drift" in parsed["jobs"]
+
+    def test_it_reads_the_file_at_that_commit_not_at_head(self):
+        seen = []
+
+        def fake(args):
+            seen.append(args)
+            return 0, "", ""
+
+        main_build.workflow_at("o/r", "abc123", "wf.yaml", run=fake)
+        assert "ref=abc123" in " ".join(seen[0])
+
+    def test_a_run_with_no_workflow_path_is_an_error(self):
+        parsed, err = main_build.workflow_at("o/r", "abc123", None)
+        assert parsed is None
+        assert "no workflow path" in err
+
+    def test_unparseable_yaml_is_an_error(self):
+        import base64
+
+        blob = base64.b64encode(b"a: [1,\n  b: 2\n").decode()
+        parsed, err = main_build.workflow_at(
+            "o/r", "abc123", "wf.yaml", run=lambda args: (0, blob, "")
+        )
+        assert parsed is None
+        assert "did not parse" in err
+
+
+class TestPerishableNotes:
+    """A red that compared against another repo's moving default branch.
+
+    `agora-claude-bridge` sat red on `main` for four and a half hours on
+    2026-09-03 for exactly this reason and nothing said so.
+    """
+
+    def _fake(self, moved_at, job_name="vault-drift"):
+        import base64
+
+        blob = base64.b64encode(WORKFLOW.encode()).decode()
+
+        def fake(args):
+            joined = " ".join(args)
+            if "/jobs" in joined:
+                return 0, json.dumps(
+                    [{"id": 55, "name": job_name, "conclusion": "failure"}]
+                ), ""
+            if "contents/" in joined:
+                return 0, blob, ""
+            if "commits/HEAD" in joined:
+                return 0, moved_at, ""
+            return 0, "", ""
+
+        return fake
+
+    def _runs(self):
+        entry = run("build", "failure", run_id=99)
+        entry["path"] = ".github/workflows/build.yaml"
+        entry["started"] = "2026-09-03T05:44:25Z"
+        return [entry]
+
+    def test_a_comparison_repo_that_moved_since_the_run_is_flagged(self):
+        errors = []
+        notes = main_build.perishable_notes(
+            "SokratesAI/agora-claude-bridge", "abc123", self._runs(), errors,
+            run=self._fake("2026-09-03T05:55:00Z"),
+        )
+        assert errors == []
+        assert len(notes) == 1
+        assert notes[0].startswith("PERISHABLE")
+        assert "gh run rerun 99" in notes[0]
+        assert "--job 55" in notes[0]
+
+    def test_a_comparison_repo_that_has_not_moved_says_the_red_is_real(self):
+        errors = []
+        notes = main_build.perishable_notes(
+            "SokratesAI/agora-claude-bridge", "abc123", self._runs(), errors,
+            run=self._fake("2026-09-03T05:40:00Z"),
+        )
+        assert errors == []
+        assert len(notes) == 1
+        assert "PERISHABLE" not in notes[0]
+        assert "not moved" in notes[0]
+
+    def test_a_failing_job_that_compares_nothing_gets_no_note(self):
+        errors = []
+        notes = main_build.perishable_notes(
+            "SokratesAI/agora-claude-bridge", "abc123", self._runs(), errors,
+            run=self._fake("2026-09-03T05:55:00Z", job_name="test"),
+        )
+        assert notes == []
+        assert errors == []
+
+    def test_unreadable_jobs_are_an_error_not_a_silent_clean_note(self):
+        errors = []
+        notes = main_build.perishable_notes(
+            "o/r", "abc123", self._runs(), errors,
+            run=lambda args: (1, "", "boom"),
+        )
+        assert notes == []
+        assert errors and "boom" in errors[0]
+
+    def test_the_note_reaches_the_report(self):
+        row = {
+            "repo": "o/r", "sha": "abc1234", "url": "", "verdict": "red",
+            "detail": "1 workflow(s) failed", "notes": ["PERISHABLE — go re-run it"],
+        }
+        out = main_build.format_report([row], 1, [], [])
+        assert "PERISHABLE — go re-run it" in out
+
+
+class TestTheNoteIsWiredIntoMain:
+    """`main` must actually ask for the notes and print them.
+
+    Without this the whole feature can be disconnected in one line and
+    every other test here still passes -- which is what the mutation check
+    found: replacing the `perishable_notes` call in `main` with `[]`
+    SURVIVED.
+    """
+
+    def _fake(self):
+        import base64
+
+        blob = base64.b64encode(WORKFLOW.encode()).decode()
+        entry = run("build", "failure", run_id=99)
+        entry["path"] = ".github/workflows/build.yaml"
+        entry["started"] = "2026-09-03T05:44:25Z"
+
+        def fake(args):
+            joined = " ".join(args)
+            if args[:2] == ["repo", "list"]:
+                return 0, json.dumps(
+                    [{"nameWithOwner": "SokratesAI/agora-claude-bridge",
+                      "isArchived": False}]
+                ), ""
+            if "commits/HEAD" in joined and "committer" in joined:
+                return 0, "2026-09-03T05:55:00Z\n", ""
+            if "commits/HEAD" in joined:
+                return 0, "abc123\n", ""
+            if "actions/runs?head_sha" in joined:
+                return 0, json.dumps([entry]), ""
+            if "/jobs" in joined and "conclusion: .conclusion" in joined:
+                return 0, json.dumps(
+                    [{"id": 55, "name": "vault-drift", "conclusion": "failure"}]
+                ), ""
+            if "/jobs" in joined:
+                return 0, json.dumps(STARTED_JOBS), ""
+            if "contents/" in joined:
+                return 0, blob, ""
+            return 0, "1\n", ""
+
+        return fake
+
+    def test_a_red_row_carries_the_rerun_command(self, capsys):
+        code = main_build.main([], run=self._fake())
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "RED" in out
+        assert "PERISHABLE" in out
+        assert "gh run rerun 99 --repo SokratesAI/agora-claude-bridge --job 55" in out
