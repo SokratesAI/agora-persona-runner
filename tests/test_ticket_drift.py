@@ -27,6 +27,18 @@ PATH = "projects/sokrates/projects/nova/issues.md"
 REV = "42-92a53ba0c59e7fa01057780c6af5e45e"
 
 
+def _no_stamp(monkeypatch):
+    """Stub the stamp out for a test that is about something else.
+
+    `run` stamps every board it finds current, so a test that does not
+    care would otherwise reach CouchDB -- which `tests/conftest.py`
+    refuses, correctly. Returning False means "the stamp already said
+    this", which prints nothing.
+    """
+    monkeypatch.setattr(ticket_drift.ticket_docs, "stamp_source_rev",
+                        lambda path, rev: False)
+
+
 def _stored(monkeypatch, render):
     """Point `render_from_couch` at whatever this test wants stored."""
     monkeypatch.setattr(
@@ -106,6 +118,7 @@ def test_sync_verifies_by_reading_back_not_by_the_write_answer(monkeypatch):
 
 def test_sync_makes_a_drifted_board_current(monkeypatch):
     monkeypatch.setattr(ticket_drift.ticket_docs, "ensure_database", lambda: (True, 201))
+    _no_stamp(monkeypatch)
     written = {}
     stamped = {}
 
@@ -152,6 +165,7 @@ def test_a_database_that_cannot_be_created_stops_the_sync(monkeypatch):
 
 
 def test_the_exit_code_is_the_worst_board_not_the_last(monkeypatch):
+    _no_stamp(monkeypatch)
     current = ticket_store.to_markdown(ticket_store.to_records(BOARD))
     monkeypatch.setattr(ticket_drift, "read_vault", lambda path: (BOARD, REV))
     _stored(monkeypatch,
@@ -161,6 +175,7 @@ def test_the_exit_code_is_the_worst_board_not_the_last(monkeypatch):
 
 
 def test_the_fix_line_is_printed_only_when_something_drifted(monkeypatch, capsys):
+    _no_stamp(monkeypatch)
     monkeypatch.setattr(ticket_drift, "read_vault", lambda path: (BOARD, REV))
     _stored(monkeypatch, ticket_store.to_markdown(ticket_store.to_records(BOARD)))
     assert ticket_drift.run([PATH], do_sync=False) == 0
@@ -242,3 +257,120 @@ def test_a_vault_client_that_will_not_run_is_unreadable_not_a_traceback(monkeypa
 
     monkeypatch.setattr(ticket_drift.board_put.subprocess, "run", boom)
     assert ticket_drift.read_vault(PATH) == (None, None)
+
+
+def _sweep(monkeypatch, *, stored_render, source, source_rev, stamp):
+    """One `run` over one board. Returns `(exit code, printed lines, stamps)`.
+
+    `stamp` is whatever `ticket_docs.stamp_source_rev` should do; the
+    calls it received come back so a test can assert the sweep did not
+    stamp when it must not.
+    """
+    calls = []
+
+    def stamp_source_rev(path, rev):
+        calls.append((path, rev))
+        return stamp(path, rev) if callable(stamp) else stamp
+
+    _stored(monkeypatch, stored_render)
+    monkeypatch.setattr(ticket_drift, "read_vault",
+                        lambda path: (source, source_rev))
+    monkeypatch.setattr(ticket_drift.ticket_docs, "stamp_source_rev",
+                        stamp_source_rev)
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a: printed.append(" ".join(map(str, a))))
+    code = ticket_drift.run([PATH], False)
+    return code, "\n".join(printed), calls
+
+
+RENDERED = ticket_store.to_markdown(ticket_store.to_records(BOARD))
+
+
+def test_a_clean_board_records_the_revision_it_matched(monkeypatch):
+    """The hole: `--sync` only runs on a board that drifted.
+
+    So a board that is *correct* had no way to say which revision it was
+    built from, and `ticket_docs.currency` answered `unknown` for it
+    forever. Measured live 2026-09-03 on `issues.md`, which is the 537KB
+    board and the only fetch worth removing.
+    """
+    code, out, calls = _sweep(monkeypatch, stored_render=RENDERED, source=BOARD,
+                              source_rev=REV, stamp=True)
+    assert code == 0
+    assert calls == [(PATH, REV)]
+    assert f"stamped {REV}" in out
+
+
+def test_a_stamp_that_was_already_right_is_not_announced(monkeypatch):
+    # This runs every cycle in `preflight`. A line per board per morning
+    # saying nothing changed is how a report stops being read.
+    code, out, calls = _sweep(monkeypatch, stored_render=RENDERED, source=BOARD,
+                              source_rev=REV, stamp=False)
+    assert code == 0
+    assert calls == [(PATH, REV)]
+    assert "stamped" not in out
+
+
+def test_a_drifted_board_is_not_stamped(monkeypatch):
+    """The one that would break everything downstream.
+
+    A stamp says "these documents were built from that revision". On a
+    board that does not match the markdown that is false, and it is the
+    exact false CURRENT the whole three-way verdict exists to make
+    impossible -- a reader would then skip the fetch and serve a stale
+    board with nothing reporting it.
+    """
+    moved = BOARD.replace("  - Answered, Cycle 820.\n",
+                          "  - Answered, Cycle 820.\n  - And a later reply.\n")
+    code, out, calls = _sweep(monkeypatch, stored_render=RENDERED, source=moved,
+                              source_rev=REV, stamp=True)
+    assert code == 2
+    assert calls == []
+    assert "DRIFTED" in out
+
+
+def test_a_stamp_that_fails_raises_the_sweep_and_says_so(monkeypatch):
+    """The board is current; the instrument is not. Those are different.
+
+    Exit 1 rather than 0 because a currency check that could not be
+    written is a check that will answer `unknown` -- and this sweep is the
+    only thing that would ever have noticed.
+    """
+    def boom(path, rev):
+        raise RuntimeError("stamping x: 409 conflict")
+
+    code, out, calls = _sweep(monkeypatch, stored_render=RENDERED, source=BOARD,
+                              source_rev=REV, stamp=boom)
+    assert code == 1
+    assert "CANNOT STAMP" in out
+    assert "409" in out
+    # Still reported as current, because it is.
+    assert "CURRENT" in out
+
+
+def test_a_vault_read_with_no_revision_stamps_nothing_and_stays_clean(monkeypatch):
+    # Nothing is wrong with the board, so this is not a finding -- but the
+    # line has to say why the verdict will not move, or the next cycle
+    # re-measures it from scratch the way I just did.
+    code, out, calls = _sweep(monkeypatch, stored_render=RENDERED, source=BOARD,
+                              source_rev=None, stamp=True)
+    assert code == 0
+    assert calls == []
+    assert "not stamped" in out
+
+
+def test_the_check_only_ever_writes_the_stamp(monkeypatch):
+    """`run` without `--sync` must not rewrite a ticket. Ever.
+
+    The tool's contract is that `--sync` is the one command that changes
+    the store, and this change bends it. `stamp_source_rev` is the only
+    writer it is allowed to reach, so `write_board` is fenced off here
+    rather than trusted.
+    """
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the check rewrote the board")
+
+    monkeypatch.setattr(ticket_drift.ticket_docs, "write_board", forbidden)
+    code, _, _ = _sweep(monkeypatch, stored_render=RENDERED, source=BOARD,
+                        source_rev=REV, stamp=True)
+    assert code == 0

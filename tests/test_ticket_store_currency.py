@@ -209,3 +209,134 @@ def test_a_write_that_knows_no_revision_tombstones_the_stamp(monkeypatch):
     assert [doc["_id"] for doc in tombstones] == [
         ticket_docs.source_rev_doc_id(BOARD)]
     assert tombstones[0]["_rev"] == "3-old"
+
+
+def _stamp_store(monkeypatch, held):
+    """`stamp_source_rev` against a store holding exactly `held`.
+
+    Returns the list of `(method, doc_id, body)` it issued, so a test can
+    assert on what was written *and* on what was not -- the second half is
+    the point, since a stamp that rewrote a ticket would be a repair tool
+    corrupting the thing it repairs.
+    """
+    calls = []
+
+    def req(method, path, body=None, timeout=60):
+        doc_id = urllib.parse.unquote(path.split("/", 1)[1]) if "/" in path else ""
+        calls.append((method, doc_id, body))
+        if method == "GET":
+            if doc_id in held:
+                return 200, held[doc_id]
+            return 404, {"error": "not_found"}
+        if method == "PUT":
+            return 201, {"ok": True, "id": doc_id, "rev": "9-new"}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(ticket_docs, "_req", req)
+    return calls
+
+
+def test_an_unstamped_board_can_be_stamped_after_the_fact(monkeypatch):
+    """The hole this closes: a board that never drifts never gets written.
+
+    Every other stamping path is a write, and `--sync` only runs on a
+    board that has drifted. Measured live 2026-09-03, `issues.md` matched
+    the markdown on all 170 rows and carried no stamp at all -- so the one
+    board worth not fetching was the one whose currency nothing could
+    prove.
+    """
+    calls = _stamp_store(monkeypatch, {})
+    assert ticket_docs.stamp_source_rev(BOARD, "7-abc") is True
+    written = [call for call in calls if call[0] == "PUT"]
+    assert len(written) == 1
+    assert written[0][1] == ticket_docs.source_rev_doc_id(BOARD)
+    assert written[0][2] == {"_id": ticket_docs.source_rev_doc_id(BOARD),
+                             "type": "source", "board": BOARD,
+                             "sourceRev": "7-abc"}
+
+
+def test_stamping_touches_nothing_but_the_stamp(monkeypatch):
+    # A checking tool that writes has to write exactly one thing. Every
+    # request it makes names the `rev:` document and no other id.
+    calls = _stamp_store(monkeypatch, {})
+    ticket_docs.stamp_source_rev(BOARD, "7-abc")
+    assert {call[1] for call in calls} == {ticket_docs.source_rev_doc_id(BOARD)}
+
+
+def test_re_stamping_carries_the_stored_revision(monkeypatch):
+    # Without `_rev` CouchDB answers 409 and the stamp never moves, which
+    # is the same false-STALE-forever failure `write_board` already hit.
+    held = {ticket_docs.source_rev_doc_id(BOARD): {
+        "_id": ticket_docs.source_rev_doc_id(BOARD), "_rev": "3-old",
+        "type": "source", "board": BOARD, "sourceRev": "7-abc"}}
+    calls = _stamp_store(monkeypatch, held)
+    assert ticket_docs.stamp_source_rev(BOARD, "8-def") is True
+    written = [call for call in calls if call[0] == "PUT"][0][2]
+    assert written["_rev"] == "3-old"
+    assert written["sourceRev"] == "8-def"
+
+
+def test_a_stamp_that_already_says_this_writes_nothing(monkeypatch):
+    # This runs on every clean board every cycle in `preflight`. A write
+    # per sweep would add a revision to a document that never changed.
+    held = {ticket_docs.source_rev_doc_id(BOARD): {
+        "_id": ticket_docs.source_rev_doc_id(BOARD), "_rev": "3-old",
+        "type": "source", "board": BOARD, "sourceRev": "7-abc"}}
+    calls = _stamp_store(monkeypatch, held)
+    assert ticket_docs.stamp_source_rev(BOARD, "7-abc") is False
+    assert [call for call in calls if call[0] == "PUT"] == []
+
+
+def test_stamping_nothing_is_refused_rather_than_clearing(monkeypatch):
+    """`to_documents` clears on purpose; this must not.
+
+    A caller with no revision there is a writer that genuinely cannot know
+    one, and leaving a stale claim of currency behind would be worse than
+    UNKNOWN. Here the caller has just *compared* the two, so an empty
+    revision is a bug in the caller -- and silently clearing would delete
+    a good stamp on the strength of it.
+    """
+    calls = _stamp_store(monkeypatch, {
+        ticket_docs.source_rev_doc_id(BOARD): {
+            "_id": ticket_docs.source_rev_doc_id(BOARD), "_rev": "3-old",
+            "type": "source", "board": BOARD, "sourceRev": "7-abc"}})
+    for empty in (None, ""):
+        try:
+            ticket_docs.stamp_source_rev(BOARD, empty)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{empty!r} was accepted as a revision")
+    assert calls == []
+
+
+def test_a_stamp_the_store_refuses_is_raised_not_swallowed(monkeypatch):
+    # The caller turns this into `CANNOT STAMP` and exit 1. Returning True
+    # here would report a currency instrument as wired when it is dark.
+    def req(method, path, body=None, timeout=60):
+        if method == "GET":
+            return 404, {"error": "not_found"}
+        return 409, {"error": "conflict"}
+
+    monkeypatch.setattr(ticket_docs, "_req", req)
+    try:
+        ticket_docs.stamp_source_rev(BOARD, "7-abc")
+    except RuntimeError as exc:
+        assert "409" in str(exc)
+    else:
+        raise AssertionError("a refused write reported success")
+
+
+def test_a_stamp_written_here_is_what_a_full_write_would_produce(monkeypatch):
+    """Field for field, so `write_board` reads it back as unchanged.
+
+    `write_board` skips a document whose payload already matches what
+    `to_documents` produces. An extra field here -- a timestamp, a source
+    name -- would make every board write rewrite the stamp forever, which
+    is the write amplification the separate document exists to avoid.
+    """
+    calls = _stamp_store(monkeypatch, {})
+    ticket_docs.stamp_source_rev(BOARD, "7-abc")
+    written = [call for call in calls if call[0] == "PUT"][0][2]
+    from_writer = _of_type(_docs("7-abc"), "source")[0]
+    assert written == from_writer
