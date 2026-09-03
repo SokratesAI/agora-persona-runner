@@ -11,11 +11,15 @@ NOW = datetime.datetime(2026, 8, 29, 8, 0, tzinfo=datetime.timezone.utc)
 
 
 def _pod(namespace="agents", name="p", phase="Running", containers=(), limits=None,
-         conditions=()):
+         conditions=(), node="server1"):
     return {
         "namespace": namespace, "name": name, "phase": phase,
         "containers": list(containers), "conditions": list(conditions),
         "limits": dict(limits or {}),
+        # Defaults to the node NODES declares, because every headroom test
+        # below is about the box this pod stands on. Pass another name to
+        # put a Pod on a different node, or "" to leave it unscheduled.
+        "node": node,
     }
 
 
@@ -308,8 +312,8 @@ def _pod_with_limit(mib, name="big"):
     return _pod(name=name, limits={"c": f"{mib}Mi"})
 
 
-def _budget_pod(name, limits=None, containers=1, phase="Running"):
-    pod = _pod(name=name, phase=phase, limits=limits or {})
+def _budget_pod(name, limits=None, containers=1, phase="Running", node="server1"):
+    pod = _pod(name=name, phase=phase, limits=limits or {}, node=node)
     pod["container_count"] = containers
     return pod
 
@@ -879,3 +883,94 @@ def test_the_named_share_stays_silent_about_residency_when_rss_is_unread():
     line = "\n".join(wh.name_the_host_share(series[wh.CADVISOR_SERIES], None, None))
     assert "/system.slice/k3s.service 2325Mi." in line
     assert "resident" not in line
+
+
+TWO_NODES = {"server1": 7931600 / 1024, "server2": 7931600 / 1024}
+
+
+def test_a_pods_node_is_read_off_the_spec():
+    """The field the whole per-node split rests on, straight from kubectl."""
+    body = {"items": [
+        {"metadata": {"namespace": "agents", "name": "here"},
+         "spec": {"nodeName": "server2", "containers": [{"name": "c"}]},
+         "status": {"phase": "Running"}},
+        {"metadata": {"namespace": "agents", "name": "unplaced"},
+         "spec": {"containers": [{"name": "c"}]},
+         "status": {"phase": "Pending"}},
+    ]}
+    def runner(args, **kwargs):
+        return mock.Mock(returncode=0, stdout=json.dumps(body), stderr="")
+
+    pods, why = wh.read_pods(runner=runner)
+    assert why is None
+    assert [p["node"] for p in pods] == ["server2", ""]
+
+
+def test_another_nodes_pods_do_not_count_against_this_ones_budget():
+    """The defect server2 created on 2026-09-03, in one assertion.
+
+    Four 1Gi containers on server1 and four on server2. Server1's own
+    budget is 4096Mi of 7746Mi and fits; the cluster-wide sum is 8192Mi and
+    does not. Before the split this raised MEMORY OVERCOMMITTED on server1
+    for memory promised on the other box.
+    """
+    pods = ([_budget_pod(f"a{i}", {"c": "1Gi"}) for i in range(4)]
+            + [_budget_pod(f"b{i}", {"c": "1Gi"}, node="server2") for i in range(4)])
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods)
+    assert judged is True
+    assert actionable is False
+    text = " ".join(lines)
+    assert "MEMORY OVERCOMMITTED" not in text
+    assert "BUDGET  server1: declared limits sum to 4096Mi" in text
+
+
+def test_the_largest_container_to_fit_is_the_largest_on_this_node():
+    """2048Mi on the other box cannot be what this box has to be able to start."""
+    pods = [_pod_with_limit(64, name="small"),
+            _pod_with_limit(2048, name="elsewhere")]
+    pods[1]["node"] = "server2"
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=451752), TWO_NODES, pods)
+    assert actionable is False, "441Mi available still fits the 64Mi container here"
+    assert "NODE OUT OF MEMORY" not in " ".join(lines)
+
+
+def test_every_other_node_gets_its_own_budget_line():
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _budget_pod("b", {"c": "512Mi"}, node="server2")]
+    lines, _, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods)
+    text = " ".join(lines)
+    assert "BUDGET  server2: declared limits sum to 512Mi of 7746Mi" in text
+    assert "server2 is judged on its declared budget only" in text
+
+
+def test_an_overcommitted_other_node_raises_too():
+    """A node I am not standing on is still a node that can be oversubscribed."""
+    pods = [_budget_pod("a", {"c": "1Gi"})] + [
+        _budget_pod(f"b{i}", {"c": "1Gi"}, node="server2") for i in range(8)]
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods)
+    assert actionable is True
+    assert "MEMORY OVERCOMMITTED — server2 is 7746Mi" in " ".join(lines)
+
+
+def test_an_unscheduled_pod_counts_against_nobody_and_is_named():
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _budget_pod("waiting", {"c": "4Gi"}, node="")]
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods)
+    text = " ".join(lines)
+    assert actionable is False, "4Gi on no node is on nobody's budget"
+    assert "BUDGET  server1: declared limits sum to 1024Mi" in text
+    assert "1 Pod(s) are on no node yet (waiting)" in text
+
+
+def test_a_single_node_cluster_prints_no_other_node_section():
+    """The shape before 2026-09-03, which must not grow a caveat it does not need."""
+    lines, _, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), NODES, [_budget_pod("a", {"c": "1Gi"})])
+    text = " ".join(lines)
+    assert "judged on its declared budget only" not in text
+    assert "on no node yet" not in text
