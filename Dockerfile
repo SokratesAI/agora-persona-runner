@@ -21,7 +21,12 @@ RUN curl -fsSL \
     | tar -xz -C /usr/local --strip-components=1 "gh_${GH_CLI_VERSION}_linux_amd64/bin/gh"
 
 WORKDIR /app
-# No requirements.txt -- agora_runner is stdlib-only at runtime.
+# agora_runner stopped being stdlib-only when tools_kubectl_test.py (#660)
+# started parsing manifests with `import yaml`. PR that broke this shipped
+# without noticing the image had no pip install step at all -- the container
+# crashed on startup with ModuleNotFoundError, taking down the heartbeat.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 COPY agora_runner/ agora_runner/
 # Two entrypoints out of one image: run.py is the runner (poll loop,
 # heartbeats, /invoke), run_nova_site.py is Nova's site. They deploy as
