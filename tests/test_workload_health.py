@@ -299,6 +299,17 @@ SwapFree:        1500000 kB
 NODES = {"server1": 7931600 / 1024}
 
 
+def _stats(available_mib=4096, swap_total_mib=2048, swap_free_mib=1024, why=None):
+    """A stand-in for `read_node_memory_stats`, so a test needs no cluster."""
+    def read(node):
+        if why:
+            return None, why
+        return ({"available_mib": available_mib,
+                 "swap_total_mib": swap_total_mib,
+                 "swap_free_mib": swap_free_mib}, None)
+    return read
+
+
 def _meminfo(**overrides):
     fields = {}
     for line in MEMINFO.splitlines():
@@ -796,6 +807,12 @@ def test_main_asks_cadvisor_about_the_node_that_matched_this_meminfo():
             return type("P", (), {"returncode": 0, "stdout": "a b 1m 100Mi", "stderr": ""})()
         if args[:3] == ["kubectl", "get", "--raw"]:
             raw.append(args[3])
+            if args[3].endswith("/stats/summary"):
+                summary = {"node": {"memory": {"availableBytes": 1 << 30},
+                                    "swap": {"swapAvailableBytes": 0,
+                                             "swapUsageBytes": 0}}}
+                return type("P", (), {"returncode": 0,
+                                      "stdout": json.dumps(summary), "stderr": ""})()
             return type("P", (), {"returncode": 0, "stdout": CADVISOR, "stderr": ""})()
         if "pods" in args:
             body = {"items": [{"metadata": {"namespace": "agents", "name": "p"},
@@ -812,7 +829,12 @@ def test_main_asks_cadvisor_about_the_node_that_matched_this_meminfo():
 
     with mock.patch.object(wh, "read_meminfo", lambda *a, **k: (meminfo, None)):
         assert wh.main([], runner=runner, now=NOW) == 0
-    assert raw == ["/api/v1/nodes/server1/proxy/metrics/cadvisor"]
+    cadvisor = [r for r in raw if r.endswith("/metrics/cadvisor")]
+    assert cadvisor == ["/api/v1/nodes/server1/proxy/metrics/cadvisor"]
+    # The other node is asked for its own headroom, and only the other
+    # node -- this host's comes from the /proc/meminfo above it.
+    assert [r for r in raw if r.endswith("/stats/summary")] == [
+        "/api/v1/nodes/elsewhere/proxy/stats/summary"]
 
 
 def test_a_negative_remainder_is_named_as_skew_not_printed_as_a_quantity():
@@ -917,7 +939,7 @@ def test_another_nodes_pods_do_not_count_against_this_ones_budget():
     pods = ([_budget_pod(f"a{i}", {"c": "1Gi"}) for i in range(4)]
             + [_budget_pod(f"b{i}", {"c": "1Gi"}, node="server2") for i in range(4)])
     lines, actionable, judged = wh.memory_headroom(
-        _meminfo(MemAvailable=1934336), TWO_NODES, pods)
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods, stats=_stats())
     assert judged is True
     assert actionable is False
     text = " ".join(lines)
@@ -931,7 +953,7 @@ def test_the_largest_container_to_fit_is_the_largest_on_this_node():
             _pod_with_limit(2048, name="elsewhere")]
     pods[1]["node"] = "server2"
     lines, actionable, _ = wh.memory_headroom(
-        _meminfo(MemAvailable=451752), TWO_NODES, pods)
+        _meminfo(MemAvailable=451752), TWO_NODES, pods, stats=_stats())
     assert actionable is False, "441Mi available still fits the 64Mi container here"
     assert "NODE OUT OF MEMORY" not in " ".join(lines)
 
@@ -940,10 +962,10 @@ def test_every_other_node_gets_its_own_budget_line():
     pods = [_budget_pod("a", {"c": "1Gi"}),
             _budget_pod("b", {"c": "512Mi"}, node="server2")]
     lines, _, _ = wh.memory_headroom(
-        _meminfo(MemAvailable=1934336), TWO_NODES, pods)
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods, stats=_stats())
     text = " ".join(lines)
     assert "BUDGET  server2: declared limits sum to 512Mi of 7746Mi" in text
-    assert "server2 is judged on its declared budget only" in text
+    assert "MEMORY  server2: 4096Mi of 7746Mi available" in text
 
 
 def test_an_overcommitted_other_node_raises_too():
@@ -951,7 +973,7 @@ def test_an_overcommitted_other_node_raises_too():
     pods = [_budget_pod("a", {"c": "1Gi"})] + [
         _budget_pod(f"b{i}", {"c": "1Gi"}, node="server2") for i in range(8)]
     lines, actionable, _ = wh.memory_headroom(
-        _meminfo(MemAvailable=1934336), TWO_NODES, pods)
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods, stats=_stats())
     assert actionable is True
     assert "MEMORY OVERCOMMITTED — server2 is 7746Mi" in " ".join(lines)
 
@@ -960,7 +982,7 @@ def test_an_unscheduled_pod_counts_against_nobody_and_is_named():
     pods = [_budget_pod("a", {"c": "1Gi"}),
             _budget_pod("waiting", {"c": "4Gi"}, node="")]
     lines, actionable, _ = wh.memory_headroom(
-        _meminfo(MemAvailable=1934336), TWO_NODES, pods)
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods, stats=_stats())
     text = " ".join(lines)
     assert actionable is False, "4Gi on no node is on nobody's budget"
     assert "BUDGET  server1: declared limits sum to 1024Mi" in text
@@ -972,5 +994,141 @@ def test_a_single_node_cluster_prints_no_other_node_section():
     lines, _, _ = wh.memory_headroom(
         _meminfo(MemAvailable=1934336), NODES, [_budget_pod("a", {"c": "1Gi"})])
     text = " ".join(lines)
-    assert "judged on its declared budget only" not in text
+    assert "MEMORY  server2" not in text
     assert "on no node yet" not in text
+
+
+def test_another_nodes_headroom_is_read_from_its_own_kubelet():
+    """The half Cycle 860 left as "not judged", answered.
+
+    /proc/meminfo in a pod is one host's, so server2's real headroom could
+    only ever be a caveat here. The kubelet publishes it per node.
+    """
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _budget_pod("b", {"c": "512Mi"}, node="server2")]
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods,
+        stats=_stats(available_mib=4096))
+    text = " ".join(lines)
+    assert judged is True
+    assert actionable is False
+    assert "MEMORY  server2: 4096Mi of 7746Mi available (52.9%), above the largest" in text
+    assert "not judged for this node" not in text
+
+
+def test_another_node_below_its_own_largest_limit_raises():
+    """server1 having room says nothing about whether server2 can start its own."""
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _budget_pod("big", {"c": "2Gi"}, node="server2")]
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods,
+        stats=_stats(available_mib=512))
+    assert judged is True
+    assert actionable is True
+    assert "NODE OUT OF MEMORY — server2 has 512Mi available" in " ".join(lines)
+
+
+def test_another_node_with_no_swap_says_what_that_costs_without_raising():
+    """server2 has no swap at all. That is Hetzner's default, not an incident."""
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _budget_pod("b", {"c": "512Mi"}, node="server2")]
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods,
+        stats=_stats(swap_total_mib=0, swap_free_mib=0))
+    assert actionable is False
+    assert "SWAP    server2: none configured" in " ".join(lines)
+    assert "a memory spike here is a kill rather than a slowdown" in " ".join(lines)
+
+
+def test_another_nodes_swap_nearly_gone_raises_too():
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _budget_pod("b", {"c": "512Mi"}, node="server2")]
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods,
+        stats=_stats(swap_total_mib=2048, swap_free_mib=100))
+    assert actionable is True
+    assert "SWAP EXHAUSTED — server2" in " ".join(lines)
+
+
+def test_an_unreadable_kubelet_is_not_a_clean_node():
+    """A partial sweep must never read as a whole one -- exit 1, not exit 0."""
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _budget_pod("b", {"c": "512Mi"}, node="server2")]
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods,
+        stats=_stats(why="403 Forbidden"))
+    text = " ".join(lines)
+    assert judged is False, "unreadable is not clean"
+    assert actionable is False, "unreadable is not an incident either"
+    assert "CANNOT JUDGE server2's headroom — 403 Forbidden" in text
+    assert "BUDGET  server2: declared limits sum to 512Mi" in text, (
+        "the half that needs only kubectl still stands")
+
+
+def test_a_kubelet_that_publishes_no_swap_block_is_not_a_node_without_swap():
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _budget_pod("b", {"c": "512Mi"}, node="server2")]
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods,
+        stats=_stats(swap_total_mib=None, swap_free_mib=None))
+    text = " ".join(lines)
+    assert actionable is False
+    assert "SWAP    server2: not judged — the kubelet publishes no swap" in text
+    assert "SWAP    server2: none configured" not in text
+
+
+def test_read_node_memory_stats_sums_the_swap_total():
+    """The kubelet publishes free and used; the total is their sum, not a field."""
+    body = {"node": {"nodeName": "server1",
+                     "memory": {"availableBytes": 3214393344},
+                     "swap": {"swapAvailableBytes": 1616375808,
+                              "swapUsageBytes": 531103744}}}
+
+    def runner(args, **kwargs):
+        assert args == ["kubectl", "get", "--raw",
+                        "/api/v1/nodes/server1/proxy/stats/summary"]
+        return mock.Mock(returncode=0, stdout=json.dumps(body), stderr="")
+
+    figures, why = wh.read_node_memory_stats("server1", runner=runner)
+    assert why is None
+    assert round(figures["available_mib"]) == 3065
+    assert round(figures["swap_total_mib"]) == 2048
+    assert round(figures["swap_free_mib"]) == 1541
+
+
+def test_read_node_memory_stats_without_availablebytes_is_unreadable():
+    body = {"node": {"nodeName": "server2", "memory": {"workingSetBytes": 1}}}
+
+    def runner(args, **kwargs):
+        return mock.Mock(returncode=0, stdout=json.dumps(body), stderr="")
+
+    figures, why = wh.read_node_memory_stats("server2", runner=runner)
+    assert figures is None
+    assert "availableBytes" in why
+
+
+def test_read_node_memory_stats_reports_a_refusal_rather_than_zero():
+    def runner(args, **kwargs):
+        return mock.Mock(returncode=1, stdout="", stderr="Error: forbidden")
+
+    figures, why = wh.read_node_memory_stats("server2", runner=runner)
+    assert figures is None
+    assert "forbidden" in why
+
+
+def test_a_kubelet_with_no_swap_block_at_all_is_unread_not_zero():
+    """No swap accounting and no swap are opposite facts behind one absence."""
+    body = {"node": {"nodeName": "server2",
+                     "memory": {"availableBytes": 1 << 30}}}
+
+    def runner(args, **kwargs):
+        return mock.Mock(returncode=0, stdout=json.dumps(body), stderr="")
+
+    figures, why = wh.read_node_memory_stats("server2", runner=runner)
+    assert why is None, "the node's headroom is still readable"
+    assert figures["swap_total_mib"] is None
+    assert figures["swap_free_mib"] is None
+    line, actionable = wh.swap_line("server2", figures["swap_total_mib"],
+                                    figures["swap_free_mib"])
+    assert actionable is False
+    assert "not judged" in line and "none configured, so" not in line

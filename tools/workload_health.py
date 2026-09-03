@@ -554,6 +554,64 @@ _CADVISOR_LINE = re.compile(
 _CADVISOR_LABEL = re.compile(r'(?P<key>[A-Za-z_][A-Za-z0-9_]*)="(?P<value>[^"]*)"')
 
 
+#: The kubelet's own summary of the node it runs on. `/proc/meminfo` answers
+#: the same questions and only ever for the node *this* pod stands on, which
+#: is what left every other node's headroom and swap unjudged when server2
+#: joined on 2026-09-03. This endpoint carries `availableBytes` -- the
+#: kubelet's MemAvailable, the one field that says what can still be
+#: allocated -- and a swap block, per node, for every node the API server
+#: lists. Same `nodes/proxy` grant `read_node_cgroup_series` already uses.
+NODE_STATS_PATH = "/api/v1/nodes/{node}/proxy/stats/summary"
+
+
+def read_node_memory_stats(node, runner=subprocess.run):
+    """{available_mib, swap_total_mib, swap_free_mib} for `node`, or (None, why).
+
+    Swap total is not published: the kubelet reports what is left and what is
+    used, so the total is their sum. Measured 2026-09-03 against server1 --
+    1616375808 + 531103744 bytes, which is 2048Mi, the same SwapTotal
+    `/proc/meminfo` reports on that host. server2 answers 0 and 0, which is a
+    node with no swap at all rather than a node whose swap is full.
+
+    A node that answers without `availableBytes` is unreadable rather than
+    zero, for the same reason a missing `MemAvailable` is: the caller must be
+    able to tell "nothing left" from "no instrument", and they have opposite
+    fixes.
+    """
+    path = NODE_STATS_PATH.format(node=node)
+    try:
+        proc = runner(["kubectl", "get", "--raw", path],
+                      capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl get --raw {path} failed: {exc}"
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        return None, f"kubectl get --raw {path} failed: {detail}"
+    try:
+        body = json.loads(proc.stdout)
+    except ValueError as exc:
+        return None, f"{path} did not answer JSON: {exc}"
+
+    memory = (body.get("node") or {}).get("memory") or {}
+    available = memory.get("availableBytes")
+    if available is None:
+        return None, f"{path} carries no availableBytes for {node}"
+    swap = (body.get("node") or {}).get("swap") or {}
+    swap_free = swap.get("swapAvailableBytes")
+    swap_used = swap.get("swapUsageBytes")
+    if swap_free is None or swap_used is None:
+        # A kubelet built without swap accounting says nothing here. That is
+        # not the same as a node with no swap, so it is carried as None and
+        # `swap_line` prints a caveat instead of "none configured".
+        swap_free = swap_total = None
+    else:
+        swap_total = (swap_free + swap_used) / 1024 / 1024
+        swap_free = swap_free / 1024 / 1024
+    return ({"available_mib": available / 1024 / 1024,
+             "swap_total_mib": swap_total,
+             "swap_free_mib": swap_free}, None)
+
+
 def matching_host(meminfo, nodes):
     """The node whose capacity equals this `/proc/meminfo`, or None.
 
@@ -915,33 +973,110 @@ def budget_line(host, ceiling, limited, unlimited, total):
             f"{total:.0f}Mi ({share:.0f}%) across {limited} container(s).{unbounded}"), False
 
 
-def other_node_budgets(nodes, host, pods):
-    """The same budget question, asked of every node this pod is not standing on.
+def available_line(node, available_mib, total_mib, biggest, where):
+    """"Can this node still start the largest container configured on it?"
 
-    Half of `memory_headroom` needs `/proc/meminfo` -- what is still
-    allocatable, and how much swap is left -- and `/proc` here is only ever
-    the node the bridge pod happens to be scheduled on. The other half needs
-    nothing but kubectl: a node's capacity and the limits declared on the
-    Pods placed there. So the budget travels to every node and the headroom
-    does not, and this says which is which rather than letting one node's
-    reading stand in for a cluster.
+    Pulled out of `memory_headroom` in Cycle 861. Until then this judgement
+    existed only for the node the bridge pod happened to be standing on,
+    because `/proc/meminfo` is the only host it can see -- so the same
+    question about server2 was answered "not judged" rather than answered.
+    The kubelet publishes `availableBytes` for every node, so the rule
+    travels; only the reading did not.
 
-    Returns (lines, actionable). Before Cycle 860 this printed nothing at
-    all: server2 joined on 2026-09-03 carrying prometheus, grafana and
-    newspaper, and every memory line in this report was about server1 while
-    naming no other node.
+    Returns (line, actionable).
     """
-    lines, actionable = [], False
+    if biggest is None:
+        return (f"MEMORY  {node}: {available_mib:.0f}Mi of {total_mib:.0f}Mi available. "
+                "No container here sets a memory limit, so there is no configured "
+                "size to judge that against."), False
+    if available_mib < biggest:
+        return (f"NODE OUT OF MEMORY — {node} has {available_mib:.0f}Mi available of "
+                f"{total_mib:.0f}Mi ({available_mib / total_mib * 100:.1f}%), which is "
+                f"less than the largest container limit configured on it "
+                f"({biggest:.0f}Mi, {where}). "
+                "The next time that workload rolls, the host cannot fit it."), True
+    return (f"MEMORY  {node}: {available_mib:.0f}Mi of {total_mib:.0f}Mi available "
+            f"({available_mib / total_mib * 100:.1f}%), above the largest configured "
+            f"container limit ({biggest:.0f}Mi, {where})."), False
+
+
+def swap_line(node, swap_total_mib, swap_free_mib):
+    """What is left of `node`'s overflow, and what it means when there is none.
+
+    A node with no swap at all is not a finding -- it is how Hetzner ships a
+    box, and a check that goes permanently red on an ordinary configuration
+    stops being read. It is worth *saying*, though, and it was not said until
+    Cycle 861: server1 has 2GB of swap and server2 has none, so an identical
+    memory spike is a slowdown on one box and a kill on the other, and the
+    report named neither.
+
+    `swap_total_mib` of None means the kubelet published no swap block at
+    all, which is a missing instrument rather than a node without swap.
+
+    Returns (line, actionable).
+    """
+    if swap_total_mib is None:
+        return (f"SWAP    {node}: not judged — the kubelet publishes no swap "
+                "figures for this node, which is not the same as none configured."), False
+    if swap_total_mib <= 0:
+        return (f"SWAP    {node}: none configured, so there is no overflow to judge — "
+                "a memory spike here is a kill rather than a slowdown."), False
+    if swap_free_mib < swap_total_mib * SWAP_NEARLY_GONE:
+        return (f"SWAP EXHAUSTED — {node} has {swap_free_mib:.0f}Mi free of "
+                f"{swap_total_mib:.0f}Mi ({swap_free_mib / swap_total_mib * 100:.1f}%). "
+                "Swap is the overflow that turns a memory spike into a slowdown; "
+                "with it gone the next spike is a kill."), True
+    return (f"SWAP    {node}: {swap_free_mib:.0f}Mi free of {swap_total_mib:.0f}Mi "
+            f"({swap_free_mib / swap_total_mib * 100:.1f}%)."), False
+
+
+def other_node_budgets(nodes, host, pods, stats=None):
+    """Every node this pod is not standing on, judged the same way as the one it is.
+
+    Cycle 860 gave each of these a budget line -- capacity against the limits
+    declared on the Pods placed there -- and stopped, because the other half
+    of `memory_headroom` read `/proc/meminfo`, which in a pod is only ever the
+    node that pod is scheduled on. So the report said server2's real headroom
+    and its swap were "not judged", which is honest and is not an answer, and
+    "is there room on server2" -- the question the owner's note actually asks --
+    could not be answered from this loop at all.
+
+    The kubelet answers it, for every node, over the `nodes/proxy` grant this
+    module already uses for cAdvisor. `stats` is that reader, injected so a
+    test can hand this a node's figures without a cluster; the default is the
+    real one, resolved here rather than in the signature, because a default
+    argument binds the function object at import and a monkeypatch of the
+    module attribute would then never be seen.
+
+    Returns (lines, actionable, judged). A node whose kubelet could not be
+    read is `judged=False` -- a partial sweep must never read as a clean one,
+    which is the same contract every check in `preflight` keeps.
+    """
+    read_stats = stats or read_node_memory_stats
+    lines, actionable, judged = [], False, True
     for node in sorted(n for n in nodes if n != host):
         ceiling, limited, unlimited = declared_ceiling(pods_on(pods, node))
         line, raised = budget_line(node, ceiling, limited, unlimited, nodes[node])
         actionable = actionable or raised
         lines.append(line)
-        lines.append(
-            f"  {node} is judged on its declared budget only. What is still "
-            f"allocatable there, and its swap, come from {MEMINFO}, which is this "
-            "pod's own host -- so they are not judged for this node rather than "
-            "being clean.")
+
+        figures, why = read_stats(node)
+        if figures is None:
+            judged = False
+            lines.append(
+                f"  CANNOT JUDGE {node}'s headroom — {why}. Its declared budget "
+                "above still stands; what is actually allocatable there, and its "
+                "swap, were not read, which is no instrument rather than clean.")
+            continue
+        biggest, where = largest_limit(pods_on(pods, node))
+        line, raised = available_line(
+            node, figures["available_mib"], nodes[node], biggest, where)
+        actionable = actionable or raised
+        lines.append("  " + line)
+        line, raised = swap_line(
+            node, figures["swap_total_mib"], figures["swap_free_mib"])
+        actionable = actionable or raised
+        lines.append("  " + line)
     stray = [pod["name"] for pod in pods
              if pod.get("phase") in ("Running", "Pending") and not pod.get("node")]
     if stray:
@@ -949,10 +1084,10 @@ def other_node_budgets(nodes, host, pods):
             f"  {len(stray)} Pod(s) are on no node yet ({', '.join(sorted(stray)[:3])}"
             f"{', ...' if len(stray) > 3 else ''}), so they count against nobody's "
             "budget above. That is the scheduler's state, not a gap in this read.")
-    return lines, actionable
+    return lines, actionable, judged
 
 
-def memory_headroom(meminfo, nodes, pods):
+def memory_headroom(meminfo, nodes, pods, stats=None):
     """Can this host still start the largest container it is configured to run?
 
     `pods` is the whole cluster and it is scoped here, not by the caller:
@@ -1000,48 +1135,25 @@ def memory_headroom(meminfo, nodes, pods):
     available_mib = available / 1024
 
     actionable = False
-    if biggest is None:
-        lines.append(
-            f"MEMORY  {host}: {available_mib:.0f}Mi of {total:.0f}Mi available. "
-            "No container here sets a memory limit, so there is no configured "
-            "size to judge that against.")
-    elif available_mib < biggest:
-        actionable = True
-        lines.append(
-            f"NODE OUT OF MEMORY — {host} has {available_mib:.0f}Mi available of "
-            f"{total:.0f}Mi ({available_mib / total * 100:.1f}%), which is less than the "
-            f"largest container limit configured on it ({biggest:.0f}Mi, {where}). "
-            "The next time that workload rolls, the host cannot fit it.")
-    else:
-        lines.append(
-            f"MEMORY  {host}: {available_mib:.0f}Mi of {total:.0f}Mi available "
-            f"({available_mib / total * 100:.1f}%), above the largest configured "
-            f"container limit ({biggest:.0f}Mi, {where}).")
+    line, raised = available_line(host, available_mib, total, biggest, where)
+    actionable = actionable or raised
+    lines.append(line)
 
     ceiling, limited, unlimited = declared_ceiling(here)
     line, raised = budget_line(host, ceiling, limited, unlimited, total)
     actionable = actionable or raised
     lines.append(line)
 
-    swap_total = meminfo.get("SwapTotal", 0) / 1024
-    swap_free = meminfo.get("SwapFree", 0) / 1024
-    if swap_total <= 0:
-        lines.append(f"SWAP    {host}: none configured, so there is no overflow to judge.")
-    elif swap_free < swap_total * SWAP_NEARLY_GONE:
-        actionable = True
-        lines.append(
-            f"SWAP EXHAUSTED — {host} has {swap_free:.0f}Mi free of {swap_total:.0f}Mi "
-            f"({swap_free / swap_total * 100:.1f}%). Swap is the overflow that turns a "
-            "memory spike into a slowdown; with it gone the next spike is a kill.")
-    else:
-        lines.append(
-            f"SWAP    {host}: {swap_free:.0f}Mi free of {swap_total:.0f}Mi "
-            f"({swap_free / swap_total * 100:.1f}%).")
+    line, raised = swap_line(host, meminfo.get("SwapTotal", 0) / 1024,
+                             meminfo.get("SwapFree", 0) / 1024)
+    actionable = actionable or raised
+    lines.append(line)
 
-    other_lines, other_actionable = other_node_budgets(nodes, host, pods)
+    other_lines, other_actionable, other_judged = other_node_budgets(
+        nodes, host, pods, stats=stats)
     lines.extend(other_lines)
     actionable = actionable or other_actionable
-    return lines, actionable, True
+    return lines, actionable, other_judged
 
 
 def report(pods, deployments, now, headroom=None):
@@ -1176,11 +1288,22 @@ def main(argv=None, runner=subprocess.run, now=None):
     if why:
         print(f"COULD NOT READ  {why}")
         return 1
-    headroom = memory_headroom(meminfo, nodes, pods)
+    # The stats reader takes `main`'s runner, not its own default: a test that
+    # injects a fake kubectl here must not have one call escape to the real
+    # cluster, which is exactly what happened the first time this was wired.
+    headroom = memory_headroom(
+        meminfo, nodes, pods,
+        stats=lambda node: read_node_memory_stats(node, runner=runner))
     # Deliberately after `headroom`: if the reading could not be attributed to
     # a host, every number below it is about the wrong machine and printing a
     # breakdown of it would be worse than printing nothing.
-    if headroom[2]:
+    #
+    # The gate is the host's own attribution, not `headroom[2]`. Since Cycle
+    # 861 that third value also carries whether *every other* node could be
+    # read, and an unreadable kubelet on server2 says nothing about whether
+    # this host's /proc/meminfo breakdown is sound -- suppressing the
+    # breakdown for it would be one failure hiding a working instrument.
+    if matching_host(meminfo, nodes) is not None:
         working_set, _ = read_pod_working_set(runner)
         series, cgroups_why = read_node_cgroup_series(
             matching_host(meminfo, nodes), runner)
