@@ -250,25 +250,25 @@ jobs:
         run: |
           set -euo pipefail
           docker pull -q "$IMAGE"
-          smoke() {
-            name="$1"
-            shift
-            cid=$(docker run -d "$IMAGE" "$@")
+          entrypoints=$(docker run --rm --entrypoint sh "$IMAGE" -c 'ls /app/run*.py 2>/dev/null' || true)
+          if [ -z "$entrypoints" ]; then
+            echo "::error::the image ships no /app/run*.py, so this step would start nothing and pass. Either the COPY changed or the entrypoints were renamed."
+            exit 1
+          fi
+          for ep in $entrypoints; do
+            echo "--- starting $ep ---"
+            cid=$(docker run -d --entrypoint python "$IMAGE" "$ep")
             sleep 20
-            running=$(docker inspect -f '{{.State.Running}}' "$cid")
-            if [ "$running" != "true" ]; then
+            if [ "$(docker inspect -f '{{.State.Running}}' "$cid")" != "true" ]; then
               code=$(docker inspect -f '{{.State.ExitCode}}' "$cid")
-              echo "::error::$name exited with code $code inside the built image. This digest is NOT being deployed. Logs follow."
+              echo "::error::$ep exited with code $code inside the built image. This digest is NOT being deployed. Logs follow."
               docker logs "$cid" 2>&1 || true
               docker rm -f "$cid" >/dev/null 2>&1 || true
               exit 1
             fi
-            echo "--- $name is up after 20s ---"
             docker logs "$cid" 2>&1 | head -30
             docker rm -f "$cid" >/dev/null 2>&1 || true
-          }
-          smoke runner python run.py
-          smoke nova-site python run_nova_site.py
+          done
 
       - name: Generate installation token scoped to the config repo only
         id: app-token

@@ -100,21 +100,40 @@ def test_the_image_is_started_before_its_digest_is_deployed():
     )
 
 
-def test_both_entrypoints_are_smoke_tested():
-    """One image, two Deployments, and only one of them was visible.
+def test_the_smoke_test_can_find_something_to_start():
+    """The step discovers entrypoints from the image rather than naming them.
 
-    nova-site kept serving off its previous pod all through the outage, which
-    is why the status page stayed green while the heartbeat was dead. Both
-    commands the two Deployments run have to be exercised, or half the image
-    ships unverified.
+    It has to: `tools/sync_contract.py` compares the whole `build-push` job
+    between this repo and agora-claude-bridge, and those two images ship
+    different entrypoints -- so a hardcoded list makes one pipeline ship under
+    rules the other does not. Discovery also means a third entrypoint added
+    later is smoke-tested by existing.
+
+    What discovery costs is that it can silently find nothing. This asserts the
+    other side of that: the image really does put the files the glob looks for
+    where it looks for them, read out of the Dockerfile rather than restated
+    here. If a COPY moves, this goes red on the same commit instead of the
+    smoke test quietly starting zero containers and passing.
     """
-    runs = "\n".join(s.get("run", "") for s in _build_push_steps())
-    for entrypoint in ("run.py", "run_nova_site.py"):
-        assert entrypoint in runs, (
-            f"{entrypoint} is never started in build-push -- one image serves "
-            "both the runner and Nova's site, and an entrypoint nobody runs "
-            "is an entrypoint nobody has checked"
-        )
+    import re as _re
+
+    dockerfile = WORKFLOW.parent.parent.parent / "Dockerfile"
+    body = dockerfile.read_text()
+
+    workdir = _re.findall(r"^WORKDIR\s+(\S+)", body, _re.M)
+    assert workdir and workdir[-1] == "/app", (
+        f"the smoke-test step globs /app/run*.py but the image's WORKDIR is "
+        f"{workdir[-1] if workdir else 'unset'!r}"
+    )
+
+    copied = []
+    for line in body.splitlines():
+        if line.startswith("COPY "):
+            copied += [w for w in line.split()[1:-1] if w.startswith("run") and w.endswith(".py")]
+    assert copied, (
+        "no run*.py is COPYed into the image, so `ls /app/run*.py` in the "
+        "smoke-test step finds nothing to start"
+    )
 
 
 def test_the_smoke_test_fails_the_job_rather_than_warning():
