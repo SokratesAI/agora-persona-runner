@@ -47,6 +47,7 @@ not be read from the vault or from CouchDB, 0 = every board matches.
 """
 
 import argparse
+import subprocess
 import sys
 
 # See tests/test_tools_run_as_scripts.py.
@@ -70,8 +71,19 @@ def read_vault(path):
     taking the `print` newline back off the end of the document, so it is
     imported rather than written a second time -- two copies of one vault
     read is the duplication this repo keeps filing against itself.
+
+    **The `except` is not decoration and it is not inherited.** The reader
+    this replaced caught `OSError` and `subprocess.SubprocessError` itself
+    and returned nothing, so a vault client that was missing or timed out
+    came out as `CANNOT READ` and exit 1. `vault_get` does not catch
+    those, so without this the morning sweep would raise a traceback out
+    of `preflight` instead of reporting a board it could not read -- and
+    an unreadable board must never read as a clean one.
     """
-    return board_put.vault_get(path)
+    try:
+        return board_put.vault_get(path)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
 
 
 def first_difference(left, right):

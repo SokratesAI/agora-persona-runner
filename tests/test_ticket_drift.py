@@ -227,3 +227,18 @@ def test_a_vault_miss_is_read_as_unreadable_not_as_an_empty_board(monkeypatch):
     monkeypatch.setattr(ticket_drift.board_put.subprocess, "run",
                         lambda *a, **k: Done())
     assert ticket_drift.read_vault(PATH) == (None, None)
+
+
+def test_a_vault_client_that_will_not_run_is_unreadable_not_a_traceback(monkeypatch):
+    """The reader this delegates to does not catch a failed subprocess.
+
+    `read_vault` used to run `vault_tool.py` itself and swallow `OSError`,
+    so a missing or hung vault client came out as `CANNOT READ` and exit
+    1. Raising here instead would take the whole morning sweep down with a
+    traceback, and a check that did not run must never read as clean.
+    """
+    def boom(*args, **kwargs):
+        raise OSError("no vault client on this pod")
+
+    monkeypatch.setattr(ticket_drift.board_put.subprocess, "run", boom)
+    assert ticket_drift.read_vault(PATH) == (None, None)
