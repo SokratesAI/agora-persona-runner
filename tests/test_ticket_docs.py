@@ -432,6 +432,32 @@ def test_read_rows_raises_rather_than_reporting_an_empty_board(monkeypatch):
         ticket_docs.read_rows(PATH)
 
 
+def test_read_head_joins_the_layout_text_back_into_markdown(monkeypatch):
+    """The head comes back as the file's own text, newlines and all.
+
+    `nova_boards.capture_entries` reads it line by line and folds an
+    unindented continuation into the bullet above it, so a reader that
+    joined on spaces would turn two captures into one and a reader that
+    dropped the blank lines would move the frontmatter boundary.
+    """
+    monkeypatch.setattr(
+        ticket_docs, "_read_view",
+        lambda ddoc, view, path, what: [["---", "type: board", "---", "", "- a thing"]])
+    assert ticket_docs.read_head(PATH) == "---\ntype: board\n---\n\n- a thing"
+
+
+def test_a_board_with_no_head_is_not_a_board_with_no_layout(monkeypatch):
+    """Opposite findings, and returning `""` for both is what makes the
+    page fall back silently and permanently."""
+    monkeypatch.setattr(ticket_docs, "_read_view",
+                        lambda ddoc, view, path, what: [[]])
+    assert ticket_docs.read_head(PATH) == ""
+    monkeypatch.setattr(ticket_docs, "_read_view",
+                        lambda ddoc, view, path, what: [])
+    with pytest.raises(KeyError):
+        ticket_docs.read_head(PATH)
+
+
 def test_an_unchanged_design_document_is_not_rewritten(monkeypatch):
     """Rewriting it invalidates the index, so this is the load-bearing half.
 
@@ -443,6 +469,7 @@ def test_an_unchanged_design_document_is_not_rewritten(monkeypatch):
     held = {
         ticket_docs.ROWS_DDOC_ID: dict(ticket_docs.rows_design_document(), _rev="7-abc"),
         ticket_docs.DETAILS_DDOC_ID: dict(ticket_docs.details_design_document(), _rev="3-def"),
+        ticket_docs.HEAD_DDOC_ID: dict(ticket_docs.head_design_document(), _rev="2-fed"),
     }
     calls = []
 
@@ -457,9 +484,9 @@ def test_an_unchanged_design_document_is_not_rewritten(monkeypatch):
 
     monkeypatch.setattr(ticket_docs, "_req", fake_req)
     assert ticket_docs.ensure_views() == "unchanged"
-    # Both projections, both left alone. Asserting the method alone would
-    # pass if only one of the two were ever checked.
-    assert [method for method, _ in calls] == ["GET", "GET"]
+    # All three projections, all left alone. Asserting the method alone
+    # would pass if only one of them were ever checked.
+    assert [method for method, _ in calls] == ["GET", "GET", "GET"]
     assert len(calls) == len(held)
 
 
@@ -471,6 +498,9 @@ def test_a_changed_map_function_is_written_with_the_held_revision(monkeypatch):
         ticket_docs.DETAILS_DDOC_ID: {
             "_id": ticket_docs.DETAILS_DDOC_ID, "_rev": "3-def",
             "views": {ticket_docs.DETAILS_VIEW: {"map": "function (doc) {}"}}},
+        ticket_docs.HEAD_DDOC_ID: {
+            "_id": ticket_docs.HEAD_DDOC_ID, "_rev": "2-fed",
+            "views": {ticket_docs.HEAD_VIEW: {"map": "function (doc) {}"}}},
     }
     sent = {}
 
@@ -494,6 +524,12 @@ def test_a_changed_map_function_is_written_with_the_held_revision(monkeypatch):
     assert sent[ticket_docs.DETAILS_DDOC_ID]["_rev"] == "3-def"
     assert (sent[ticket_docs.DETAILS_DDOC_ID]["views"][ticket_docs.DETAILS_VIEW]["map"]
             == ticket_docs._details_map_js())
+    # And the head projection, for the same reason again: it reads the
+    # board document rather than a ticket, so it changes for reasons
+    # neither of the other two share.
+    assert sent[ticket_docs.HEAD_DDOC_ID]["_rev"] == "2-fed"
+    assert (sent[ticket_docs.HEAD_DDOC_ID]["views"][ticket_docs.HEAD_VIEW]["map"]
+            == ticket_docs._head_map_js())
 
 
 def test_a_missing_design_document_is_created_without_a_revision(monkeypatch):

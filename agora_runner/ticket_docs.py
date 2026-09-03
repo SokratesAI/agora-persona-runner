@@ -437,6 +437,58 @@ def details_design_document():
     }
 
 
+HEAD_DDOC_ID = "_design/head"
+HEAD_VIEW = "by_board"
+
+
+def _head_map_js():
+    """The head view's map function -- the file's text above its first row.
+
+    This one reads the **board** document rather than a ticket, because
+    the head is not a ticket: `ticket_store.to_records` files every line
+    that is neither a row nor a write-up as a `("text", line)` block in
+    the layout, so the owner's unboarded capture bullets live in the
+    layout's opening run of text blocks and nowhere else.
+
+    **It stops at the first non-text block and applies no other rule.**
+    Where the captures actually end is `nova_boards.capture_entries`'
+    answer -- it breaks at the first markdown heading -- and re-spelling
+    that boundary in JavaScript would be a second definition of "what is
+    a capture" that nothing compares against. So this emits a superset,
+    every line above the board table, and the parser that already owns
+    the question narrows it.
+
+    **No test in this suite executes this function and none can**: it is
+    JavaScript, CouchDB is the only thing that runs it, and there is no
+    CouchDB under the suite. Changing `doc.type === 'board'` to
+    `'ticket'` leaves every test green -- measured, not assumed. The
+    control is the live read: `read_head` against all four boards,
+    compared to `nova_boards._captures` over the markdown, which agreed
+    on 2026-09-03 and disagreed on 4 of 4 when a bullet was injected into
+    the head. That is the check to re-run when this map changes.
+    """
+    return (
+        "function (doc) {\n"
+        "  if (doc.type === 'board' && doc.layout) {\n"
+        "    var head = [];\n"
+        "    for (var i = 0; i < doc.layout.length; i++) {\n"
+        "      if (doc.layout[i][0] !== 'text') { break; }\n"
+        "      head.push(doc.layout[i][1]);\n"
+        "    }\n"
+        "    emit([doc.board], head);\n"
+        "  }\n"
+        "}"
+    )
+
+
+def head_design_document():
+    return {
+        "_id": HEAD_DDOC_ID,
+        "language": "javascript",
+        "views": {HEAD_VIEW: {"map": _head_map_js()}},
+    }
+
+
 def _ensure_design_document(doc_id, wanted):
     """Put one design document unless it is already exactly this. What it did.
 
@@ -502,8 +554,41 @@ def read_details(path):
     }
 
 
+def read_head(path):
+    """One board's text above its first row, as markdown -- no rows, no bodies.
+
+    The third reader of this migration, and the one that closes it: the
+    owner's unboarded capture bullets were the last thing on the board
+    page still parsed out of the markdown fetch -- 537KB for his
+    `issues.md` and 665KB for his `ideas.md` -- after `read_rows` and
+    `read_details` moved.
+
+    It reads the layout document through a view rather than fetching the
+    document, and that distinction is the whole point of the view being
+    worth a third design document: `issues.md`'s layout is 112,132 bytes
+    because it names every row and every write-up in order, while the
+    head it carries is 452. Reading the document to get the head back
+    would trade a 537KB fetch for a 112KB one.
+
+    Measured live 2026-09-03 across all four boards: 452B, 8,811B,
+    49,271B and 38,550B of head against 537KB, 665KB, 120KB and 54KB of
+    markdown, each read in under 0.1s. The two big ones are his; the two
+    large heads are mine, because my own board files carry a long
+    preamble above the table that his do not.
+
+    Raises rather than returning `""` when the board has no layout
+    document at all: an empty head and a missing board are opposite
+    findings, and a reader that returns the same thing for both hands the
+    page a silent, permanent fallback.
+    """
+    values = _read_view(HEAD_DDOC_ID, HEAD_VIEW, path, "head")
+    if not values:
+        raise KeyError(f"no board document for {path} -- the head lives on the layout")
+    return "\n".join(values[0])
+
+
 def ensure_views():
-    """Put both projection design documents. Returns what it did.
+    """Put the three projection design documents. Returns what it did.
 
     **An unchanged design document is not rewritten**, and that is not a
     tidiness: writing a design document invalidates its index, so a PUT on
@@ -516,6 +601,7 @@ def ensure_views():
     outcomes = [
         _ensure_design_document(ROWS_DDOC_ID, rows_design_document()),
         _ensure_design_document(DETAILS_DDOC_ID, details_design_document()),
+        _ensure_design_document(HEAD_DDOC_ID, head_design_document()),
     ]
     # "written" if either one moved, so the answer stays "did this call
     # invalidate an index", which is the only thing a caller has ever

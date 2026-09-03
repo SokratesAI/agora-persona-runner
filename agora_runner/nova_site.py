@@ -173,6 +173,11 @@ from agora_runner.nova_boards import (
     # `nova_boards` owns that answer, and a second copy would disagree with
     # it the first time a status is added.
     _CLOSED_STATUS_KEYS,
+    # The one parser for "what is a capture", imported rather than
+    # respelled: `_captures_from_store` has to reach exactly the same
+    # answer off the store's head text as `parse_board` reaches off the
+    # markdown, and two spellings of that rule would disagree silently.
+    _captures as captures_in,
     rank_projects,
     STATUS_LABELS,
     board_projects,
@@ -249,7 +254,7 @@ from agora_runner.nova_sources import (
     retro_ledger_json,
 )
 from agora_runner import ticket_docs
-from agora_runner.ticket_docs import read_details, read_rows
+from agora_runner.ticket_docs import read_details, read_head, read_rows
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
 
@@ -777,6 +782,53 @@ def _details_from_store(name, parsed):
     return stored
 
 
+def _captures_from_store(name, parsed):
+    """His unboarded capture bullets out of `nova_tickets`, or the parsed ones.
+
+    The third and last reader of the one-document-per-ticket migration,
+    built to the same rule as `_rows_from_store` and `_details_from_store`
+    above: the store's answer is used only when it matches the markdown
+    exactly, and the markdown is drawn on any disagreement and on any
+    failure to read at all. `parsed` and the return value are both the
+    `(captures, captureReplies)` pair, kept together because they are
+    parallel lists and a reader that took one from each side could put my
+    answer under his next bullet.
+
+    A capture is the strongest signal a cycle gets and it is the owner
+    typing directly, so the same asymmetry the other two readers make
+    applies harder here: a stale capture is worse than a slow one.
+
+    **This is the call that lets the markdown fetch go.** The rows and the
+    write-ups moved first and neither saved a byte, because the captures
+    were still parsed out of the same half-megabyte the page had already
+    fetched.
+    Dropping the fetch is its own slice and is not done here -- what is
+    done is that nothing on the board page is left that only the markdown
+    can answer.
+    """
+    path = BOARD_PATHS[name]["edvard"]
+    try:
+        head = read_head(path)
+    except Exception as problem:
+        # One decision for every failure mode, exactly as the two readers
+        # above do it: draw the file. A narrower except would let a new
+        # CouchDB error take his captures off the page, and they are the
+        # one thing on it that nothing else in this loop displays.
+        log(f"nova-site {name} captures unreadable from the ticket store: {problem}")
+        return parsed
+    stored = captures_in(head)
+    if stored != parsed:
+        # Said out loud rather than absorbed, the same reason the other
+        # two say it: a fallback nothing reports is how the page goes on
+        # looking right forever while the store quietly stops agreeing.
+        log(
+            f"nova-site {name} captures disagree with the ticket store: "
+            f"{len(parsed[0])} parsed against {len(stored[0])} stored; drawing the file"
+        )
+        return parsed
+    return stored
+
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -820,6 +872,14 @@ def board_payload(name):
     # document, so this needed a projection to read them back rather than
     # anything new written -- `ticket_docs.read_details`.
     board["details"] = _details_from_store(name, board["details"])
+    # **And his unboarded captures, which is the last thing on this page
+    # that the markdown alone could answer.** They are not tickets, so
+    # there was nothing to read them back off until now: `to_records`
+    # files every line that is neither a row nor a write-up as a text
+    # block in the layout, so the bullets above `## Board` are the
+    # layout's opening run of text -- `ticket_docs.read_head`.
+    board["captures"], board["captureReplies"] = _captures_from_store(
+        name, (board["captures"], board["captureReplies"]))
     # Which rows he asked a question on and nobody answered. Stamped onto
     # the row here rather than worked out again by whoever needs it,
     # because two things already rank these rows with `nova_next.rank` --

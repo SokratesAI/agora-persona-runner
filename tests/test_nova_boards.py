@@ -862,6 +862,108 @@ def test_board_payload_actually_asks_the_store_for_his_write_ups(board_md, notes
     assert payload["details"], "the write-ups still have to reach the page"
 
 
+# --- And his unboarded captures come out of it too ------------------------
+#
+# The third and last reader. Same three answers, pinned separately for the
+# same reason as the other two: with no CouchDB under the suite
+# `read_head` raises, the parsed captures come back, and a payload built
+# without the call is byte-identical to one built with it.
+
+
+def _head(*bullets):
+    """A board file's text above its first row, as the store renders it."""
+    return "---\ntype: board\n---\n\n" + "\n".join(bullets) + "\n"
+
+
+def test_his_captures_come_from_the_ticket_store_when_it_agrees():
+    parsed = (["a thing he typed"], [[]])
+    with patch.object(nova_site, "read_head",
+                      return_value=_head("- a thing he typed")):
+        got = nova_site._captures_from_store("issues", parsed)
+    # Not `is parsed`, which is what the fallback returns: equal *and* a
+    # different object is the only shape that says the store's answer is
+    # the one on the page.
+    assert got == parsed
+    assert got is not parsed
+
+
+def test_a_store_missing_a_capture_draws_the_file_and_says_so():
+    """The failure this guards, and it is the worst one on the page: a
+    capture is the owner typing directly and `prompt.md` ranks it above
+    every board row, so one silently missing is work that never gets
+    picked."""
+    parsed = (["the first", "the second"], [[], []])
+    said = []
+    with patch.object(nova_site, "read_head", return_value=_head("- the first")), \
+            patch.object(nova_site, "log", said.append):
+        got = nova_site._captures_from_store("issues", parsed)
+    assert got is parsed
+    assert said and "disagree" in said[0]
+
+
+def test_a_stored_reply_that_stopped_tracking_the_file_draws_the_file():
+    """`captures` and `captureReplies` are parallel lists and the page
+    draws one under the other, so a store that agrees on his bullets and
+    disagrees on the answers under them is still the wrong page."""
+    parsed = (["his question"], [["Cycle 900 — the new answer"]])
+    said = []
+    with patch.object(nova_site, "read_head", return_value=_head(
+            "- his question", "  - Cycle 900 — the old answer")), \
+            patch.object(nova_site, "log", said.append):
+        got = nova_site._captures_from_store("issues", parsed)
+    assert got is parsed
+    assert said and "disagree" in said[0]
+
+
+def test_a_store_that_cannot_be_read_for_captures_draws_the_file():
+    said = []
+    with patch.object(nova_site, "read_head", side_effect=RuntimeError("boom")), \
+            patch.object(nova_site, "log", said.append):
+        got = nova_site._captures_from_store("ideas", parsed := (["one"], [[]]))
+    assert got is parsed
+    assert said and "unreadable" in said[0]
+
+
+def test_board_payload_actually_asks_the_store_for_his_captures(board_md, notes_md):
+    """The wiring, not the helper -- deleting the call is a mutation
+    nothing above this can see, exactly as it was for the rows and the
+    write-ups."""
+    asked = []
+
+    def only_the_store(name, parsed):
+        asked.append(name)
+        return parsed
+
+    with _serve(board_md, notes_md), \
+            patch.object(nova_site, "_captures_from_store", only_the_store):
+        payload = nova_site.board_payload("issues")
+    assert asked == ["issues"]
+    assert payload["captures"], "his captures still have to reach the page"
+
+
+def test_the_stored_head_reaches_the_page_and_not_just_the_helper(board_md, notes_md):
+    """The one test that can tell a wired reader from an unwired one at the
+    payload level, and it works by handing the store something the file
+    does not contain.
+
+    Equality is the whole contract, so on the live path the two sides are
+    identical and a payload built from either looks the same. Feeding a
+    head whose bullets are not in `board_sample.md` breaks the tie: the
+    helper must report the disagreement and the page must show *his*
+    file, never the store's version of it.
+    """
+    said = []
+    with _serve(board_md, notes_md), \
+            patch.object(nova_site, "read_head",
+                         return_value=_head("- a capture he never wrote")), \
+            patch.object(nova_site, "log", said.append):
+        payload = nova_site.board_payload("issues")
+    texts = [capture["text"] for capture in payload["captures"]]
+    assert "a capture he never wrote" not in texts
+    assert any("Small pickings on Nova ui" in text for text in texts)
+    assert any("captures disagree" in line for line in said)
+
+
 # --- unanswered_comment_bodies_from_details: one rule, two doors ----------
 
 
