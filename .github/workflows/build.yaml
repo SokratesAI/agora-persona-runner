@@ -239,7 +239,7 @@ jobs:
       #
       # Both entrypoints are checked because one image serves two Deployments.
       # nova-site is what made the outage invisible: its old pod kept serving
-      # on the previous good image, so the status page Edvard would have
+      # on the previous good image, so the status page the owner would have
       # checked was still green while the heartbeat was dead.
       #
       # A failure here leaves the image pushed to GHCR but unreferenced, which
