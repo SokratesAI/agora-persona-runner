@@ -232,14 +232,34 @@ def claims_ledger_json():
     return vault_read_path(CLAIMS_PATH) or ""
 
 
-def board_markdown(name):
-    """`(edvard, nova, nova_archive)` markdown for one board.
+def edvard_board_markdown(name):
+    """The owner's own board file for `name`, raw.
 
-    Three reads rather than one because they are three files: two by two
-    authors, which is why the page shows them as two tabs, plus the
-    archive that `tools/roll_captures.py` moves my older captures into.
-    All fetched together so the payload is built from one consistent
-    moment rather than from whichever the client asked for first.
+    Split out of the three-file read this used to be, because it is now
+    the expensive half and the only one that can be skipped:
+    `nova_site.board_payload` reads his rows, write-ups and captures out
+    of `nova_tickets` whenever the store can prove it is current, and
+    `issues.md` is 537KB. The two files below are mine, are small, and
+    have no ticket documents behind them, so they are fetched on every
+    build and this one is fetched only on the fallback path.
+
+    Keeping them as two calls rather than one call with a flag is what
+    makes that readable at the call site: the fast path simply never
+    names this function.
+
+    A missing file comes back as `""` and parses to an empty board.
+    """
+    return vault_read_path(BOARD_PATHS[name]["edvard"]) or ""
+
+
+def nova_board_markdown(name):
+    """`(nova, nova_archive)` markdown for one board -- my side of the page.
+
+    Two reads rather than one because they are two files: the live one
+    and the archive that `tools/roll_captures.py` moves my older captures
+    into. Fetched together so my half of the payload is built from one
+    consistent moment rather than from whichever the client asked for
+    first.
 
     **The archive is returned separately rather than concatenated**,
     which is where this differs from `digest_markdown` above. That one
@@ -258,7 +278,6 @@ def board_markdown(name):
     """
     paths = BOARD_PATHS[name]
     return (
-        vault_read_path(paths["edvard"]) or "",
         vault_read_path(paths["nova"]) or "",
         vault_read_path(paths["nova_archive"]) or "",
     )

@@ -4292,8 +4292,10 @@ def test_a_capture_is_in_the_board_on_the_very_next_request():
     """The bug, stated as the behaviour the owner expects."""
     nova_site.reset_cache()
     live = {"text": "---\n---\n\n- an older capture\n- \n\n## Board\n"}
-    with patch.object(nova_site, "board_markdown",
-                      side_effect=lambda name: (live["text"], "", "")):
+    with patch.object(nova_site, "edvard_board_markdown",
+                      side_effect=lambda name: live["text"]), \
+            patch.object(nova_site, "nova_board_markdown",
+                         side_effect=lambda name: ("", "")):
         assert _board_captures() == ["an older capture"]
 
         def _write(target, text, priority="", one_item=False):
@@ -4313,8 +4315,10 @@ def test_capturing_an_idea_does_not_invalidate_the_issues_board():
     """The invalidation is keyed on the target, not a blanket cache drop:
     a cache cleared on every write is the 3.5s cold journal load back."""
     nova_site.reset_cache()
-    with patch.object(nova_site, "board_markdown",
-                      side_effect=lambda name: ("---\n---\n\n- x\n- \n\n## Board\n", "", "")):
+    with patch.object(nova_site, "edvard_board_markdown",
+                      side_effect=lambda name: "---\n---\n\n- x\n- \n\n## Board\n"), \
+            patch.object(nova_site, "nova_board_markdown",
+                         side_effect=lambda name: ("", "")):
         _board_captures("issues")
         with patch.object(nova_site, "capture", return_value=(True, "ok")):
             _post("/api/capture", {"target": "ideas", "text": "y"})
@@ -4326,8 +4330,10 @@ def test_a_failed_capture_leaves_the_cache_alone():
     """Nothing was written, so making the next reader pay a cold build
     buys nothing."""
     nova_site.reset_cache()
-    with patch.object(nova_site, "board_markdown",
-                      side_effect=lambda name: ("---\n---\n\n- x\n- \n\n## Board\n", "", "")):
+    with patch.object(nova_site, "edvard_board_markdown",
+                      side_effect=lambda name: "---\n---\n\n- x\n- \n\n## Board\n"), \
+            patch.object(nova_site, "nova_board_markdown",
+                         side_effect=lambda name: ("", "")):
         _board_captures("issues")
         with patch.object(nova_site, "capture", return_value=(False, "nope")):
             _post("/api/capture", {"target": "issues", "text": "y"})
@@ -5314,7 +5320,8 @@ def test_the_payloads_capture_address_still_resolves_when_answered():
         "## Board\n\n| # | Issue | Status | Updated | Priority |\n"
         "|---|---|---|---|---|\n"
     )
-    with patch.object(nova_site, "board_markdown", return_value=(markdown, "", "")):
+    with patch.object(nova_site, "edvard_board_markdown", return_value=markdown), \
+            patch.object(nova_site, "nova_board_markdown", return_value=("", "")):
         payload = nova_site.board_payload("issues")
     capture = payload["captures"][0]
     assert capture["text"] == "when i edit not boarded yet ideas, i can't save"
