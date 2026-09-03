@@ -308,4 +308,108 @@ def push_markdown(path, source):
     if not is_board(path):
         return None
     ensure_database()
+    # The row index lives beside the tickets it projects, so a store that
+    # has documents in it always has the view over them -- a reader that
+    # had to remember to build its own index would be a second thing to
+    # keep current. It is a no-op unless the map function changed.
+    ensure_views()
     return write_board(path, ticket_store.to_records(source))
+
+
+# The fields a *list* of rows needs: his board table, the ranking in
+# `nova_next.rank`, and the chips on the site's board page. Everything
+# else a ticket carries -- `cells`, `detailHeading`, `details` -- is the
+# write-up, and the write-up is the bulk. Measured on `ideas.md`,
+# 2026-09-03: the 241 ticket documents are 760KB read whole and 101KB read
+# as rows, and the vault document they came from is 656KB.
+#
+# It is one tuple rather than a list here and a list in the JavaScript
+# below, because the map function is generated from this. A hand-written
+# map would be a second copy of the field names, going stale the first
+# time `ticket_store` renames one -- and it would fail silently, because a
+# CouchDB view emitting `undefined` is a row with a missing key, not an
+# error.
+ROW_FIELDS = (
+    "number", "title", "status", "statusKey", "updated",
+    "priority", "priorityKey", "project", "where", "done",
+)
+
+ROWS_DDOC_ID = "_design/rows"
+ROWS_VIEW = "by_board"
+
+
+def _rows_map_js():
+    """The view's map function, generated from `ROW_FIELDS`.
+
+    Keyed `[board, number]` so one board is a key range rather than a scan
+    of every board, the same reason `_existing` uses `startkey`/`endkey`.
+    """
+    projection = ", ".join(f"{field}: t.{field}" for field in ROW_FIELDS)
+    return (
+        "function (doc) {\n"
+        "  if (doc.type === 'ticket' && doc.ticket) {\n"
+        "    var t = doc.ticket;\n"
+        f"    emit([doc.board, doc.number], {{{projection}}});\n"
+        "  }\n"
+        "}"
+    )
+
+
+def rows_design_document():
+    return {
+        "_id": ROWS_DDOC_ID,
+        "language": "javascript",
+        "views": {ROWS_VIEW: {"map": _rows_map_js()}},
+    }
+
+
+def ensure_views():
+    """Put the row-projection design document. Returns what it did.
+
+    **An unchanged design document is not rewritten**, and that is not a
+    tidiness: writing a design document invalidates its index, so a PUT on
+    every board write would rebuild 410 rows every time a status changed.
+    That is precisely the write amplification `write_board` exists to end,
+    moved one layer down where nothing would have measured it. The first
+    query after a real change costs the rebuild -- 2.8s against 241
+    documents, measured 2026-09-03 -- and every one after it is 0.1s.
+    """
+    wanted = rows_design_document()
+    status, held = _req("GET", f"{TICKET_DB}/{urllib.parse.quote(ROWS_DDOC_ID, safe='')}")
+    if status == 200:
+        if held.get("views") == wanted["views"]:
+            return "unchanged"
+        wanted["_rev"] = held["_rev"]
+    elif status != 404:
+        raise RuntimeError(f"reading {ROWS_DDOC_ID}: {status} {json.dumps(held)[:200]}")
+    status, body = _req(
+        "PUT", f"{TICKET_DB}/{urllib.parse.quote(ROWS_DDOC_ID, safe='')}", wanted)
+    if status not in (200, 201):
+        raise RuntimeError(f"writing {ROWS_DDOC_ID}: {status} {json.dumps(body)[:200]}")
+    return "written"
+
+
+def read_rows(path):
+    """One board's tickets as rows only -- no write-ups, no layout.
+
+    The read the board *list* actually needs. `read_board` above is the
+    read that renders the file and it has to carry every byte of his
+    prose; a list of 241 rows does not, and the difference is 760KB
+    against 101KB on `ideas.md`.
+
+    Ordered highest number first, the same as `from_documents`, so a
+    caller comparing the two sides is comparing like with like.
+    """
+    query = urllib.parse.urlencode({
+        "startkey": json.dumps([path]),
+        "endkey": json.dumps([path, {}]),
+    })
+    status, body = _req(
+        "GET",
+        f"{TICKET_DB}/{urllib.parse.quote(ROWS_DDOC_ID, safe='')}"
+        f"/_view/{ROWS_VIEW}?{query}")
+    if status != 200:
+        raise RuntimeError(f"reading rows of {path}: {status} {json.dumps(body)[:200]}")
+    rows = [row["value"] for row in body.get("rows", [])]
+    rows.sort(key=lambda row: row["number"], reverse=True)
+    return rows

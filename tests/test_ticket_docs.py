@@ -15,6 +15,8 @@ drift the moment either is edited.
 """
 
 import json
+import re
+import urllib.parse
 
 import pytest
 
@@ -259,6 +261,8 @@ def _refuse(method, path, body=None, timeout=60):
 def test_push_markdown_writes_a_board_it_recognises(monkeypatch):
     seen = {}
     monkeypatch.setattr(ticket_docs, "ensure_database", lambda: (True, 201))
+    monkeypatch.setattr(ticket_docs, "ensure_views", lambda: "unchanged")
+
     def fake_write(path, records):
         seen["call"] = (path, records)
         return {"written": 1}
@@ -279,3 +283,149 @@ def test_is_board_is_case_insensitive_the_way_vault_paths_are():
     assert ticket_docs.is_board(ticket_docs.BOARDS[0].upper())
     assert not ticket_docs.is_board("projects/sokrates/projects/nova/notes.md")
     assert not ticket_docs.is_board(None)
+
+
+# --- the row index: a board list without the write-ups ---
+
+
+def _row_index_docs(records):
+    """`{doc id: document}` the way the store holds them, via JSON."""
+    return {doc["_id"]: doc
+            for doc in _through_json(ticket_docs.to_documents(PATH, records))}
+
+
+def test_every_row_field_is_actually_on_a_ticket():
+    """The drift guard the view itself cannot give.
+
+    A CouchDB map emitting `t.somethingElse` yields `undefined`, which
+    comes back as a row with a missing key rather than as an error. So the
+    day `ticket_store` renames a field, the view would quietly serve nulls
+    and every test that only reads the view would still pass. This asserts
+    against the real fixture instead.
+    """
+    records = ticket_store.to_records(BOARD)
+    assert records["tickets"], "the fixture must carry tickets for this to mean anything"
+    for ticket in records["tickets"]:
+        missing = [field for field in ticket_docs.ROW_FIELDS if field not in ticket]
+        assert not missing, f"ticket {ticket['number']} carries no {missing}"
+
+
+def test_the_map_function_is_generated_from_the_field_list():
+    js = ticket_docs._rows_map_js()
+    for field in ticket_docs.ROW_FIELDS:
+        assert f"{field}: t.{field}" in js
+    # And nothing else: a field emitted but not declared is a copy of the
+    # truth this generation exists to prevent.
+    assert len(re.findall(r"\w+: t\.\w+", js)) == len(ticket_docs.ROW_FIELDS)
+
+
+def test_a_row_carries_the_list_fields_and_none_of_the_write_up():
+    """What the view emits, applied in Python to the same documents.
+
+    The whole point of the index is that a list read does not ship the
+    prose, so the assertion that matters is the *absence* of `details`.
+    """
+    records = ticket_store.to_records(BOARD)
+    for doc in _row_index_docs(records).values():
+        if doc.get("type") != "ticket":
+            continue
+        row = {field: doc["ticket"][field] for field in ticket_docs.ROW_FIELDS}
+        assert set(row) == set(ticket_docs.ROW_FIELDS)
+        assert "details" not in row and "cells" not in row
+        assert row["number"] == doc["number"]
+
+
+def test_read_rows_asks_for_one_board_and_orders_it_newest_first(monkeypatch):
+    seen = {}
+
+    def fake_req(method, path, body=None, timeout=60):
+        seen["method"], seen["path"] = method, path
+        return 200, {"rows": [
+            {"value": {"number": 4, "title": "older"}},
+            {"value": {"number": 17, "title": "newer"}},
+        ]}
+
+    monkeypatch.setattr(ticket_docs, "_req", fake_req)
+    rows = ticket_docs.read_rows(PATH)
+    assert [row["number"] for row in rows] == [17, 4]
+    assert seen["method"] == "GET"
+    # A key range over one board, not a scan of every board in the store.
+    assert "_design/rows/_view/by_board" in urllib.parse.unquote(seen["path"])
+    query = urllib.parse.parse_qs(seen["path"].split("?", 1)[1])
+    assert json.loads(query["startkey"][0]) == [PATH]
+    assert json.loads(query["endkey"][0])[0] == PATH
+
+
+def test_read_rows_raises_rather_than_reporting_an_empty_board(monkeypatch):
+    monkeypatch.setattr(ticket_docs, "_req",
+                        lambda *a, **k: (500, {"error": "boom"}))
+    with pytest.raises(RuntimeError):
+        ticket_docs.read_rows(PATH)
+
+
+def test_an_unchanged_design_document_is_not_rewritten(monkeypatch):
+    """Rewriting it invalidates the index, so this is the load-bearing half.
+
+    `push_markdown` calls `ensure_views` on every board write. If that PUT
+    fired each time, a one-ticket status change would rebuild the whole
+    index -- the write amplification the store exists to end, moved one
+    layer down.
+    """
+    held = dict(ticket_docs.rows_design_document(), _rev="7-abc")
+    calls = []
+
+    def fake_req(method, path, body=None, timeout=60):
+        calls.append(method)
+        return (200, held) if method == "GET" else (201, {"ok": True})
+
+    monkeypatch.setattr(ticket_docs, "_req", fake_req)
+    assert ticket_docs.ensure_views() == "unchanged"
+    assert calls == ["GET"]
+
+
+def test_a_changed_map_function_is_written_with_the_held_revision(monkeypatch):
+    stale = {"_id": ticket_docs.ROWS_DDOC_ID, "_rev": "7-abc",
+             "views": {ticket_docs.ROWS_VIEW: {"map": "function (doc) {}"}}}
+    sent = {}
+
+    def fake_req(method, path, body=None, timeout=60):
+        if method == "GET":
+            return 200, stale
+        sent["body"] = body
+        return 201, {"ok": True}
+
+    monkeypatch.setattr(ticket_docs, "_req", fake_req)
+    assert ticket_docs.ensure_views() == "written"
+    assert sent["body"]["_rev"] == "7-abc"
+    assert sent["body"]["views"][ticket_docs.ROWS_VIEW]["map"] == ticket_docs._rows_map_js()
+
+
+def test_a_missing_design_document_is_created_without_a_revision(monkeypatch):
+    sent = {}
+
+    def fake_req(method, path, body=None, timeout=60):
+        if method == "GET":
+            return 404, {"error": "not_found"}
+        sent["body"] = body
+        return 201, {"ok": True}
+
+    monkeypatch.setattr(ticket_docs, "_req", fake_req)
+    assert ticket_docs.ensure_views() == "written"
+    assert "_rev" not in sent["body"]
+
+
+def test_a_board_write_builds_the_view_beside_the_tickets(monkeypatch):
+    """A store with documents in it always has the index over them."""
+    order = []
+    monkeypatch.setattr(ticket_docs, "ensure_database",
+                        lambda: order.append("db") or (True, 201))
+    monkeypatch.setattr(ticket_docs, "ensure_views",
+                        lambda: order.append("views") or "unchanged")
+    monkeypatch.setattr(ticket_docs, "write_board",
+                        lambda path, records: order.append("write") or {"written": 1})
+    ticket_docs.push_markdown(ticket_docs.BOARDS[0], BOARD)
+    assert order == ["db", "views", "write"]
+    # And a write that is not a board still touches nothing at all.
+    order.clear()
+    assert ticket_docs.push_markdown("projects/somewhere/else.md", BOARD) is None
+    assert order == []
