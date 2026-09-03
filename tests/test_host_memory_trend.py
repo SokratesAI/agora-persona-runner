@@ -945,14 +945,27 @@ def sweep_runner(pods=None, log=SWEEP_LOG, logs_rc=0, nodes=("server1",),
     `pods` rows are `(name, phase, creationTimestamp)` and optionally a fourth
     element naming the node the Pod ran on; it defaults to the first entry of
     `nodes`, which keeps a one-node cluster the simple case it used to be.
+    A fifth element names the Job that owns the Pod, the way Kubernetes stamps
+    it into `ownerReferences`; it defaults to the Pod name minus its random
+    suffix, which is what a non-indexed Job produces. Pass it explicitly for an
+    indexed Job, whose Pods are `<job>-<index>-<hash>` and whose owner is
+    therefore *not* the name minus one segment. `False` means no owner at all.
     `logs` maps a Pod name to its own log when a test needs the two Pods of one
     run to say different things.
     """
     if pods is None:
         pods = [("host-process-memory-29803110-t79dw", "Succeeded",
                  "2026-08-31T14:30:00Z")]
+
+    def owner_refs(row):
+        owner = row[4] if len(row) > 4 else row[0].rsplit("-", 1)[0]
+        if owner is False:
+            return []
+        return [{"kind": "Job", "name": owner}]
+
     body = {"items": [
-        {"metadata": {"name": row[0], "creationTimestamp": row[2]},
+        {"metadata": {"name": row[0], "creationTimestamp": row[2],
+                      "ownerReferences": owner_refs(row)},
          "spec": {"nodeName": row[3] if len(row) > 3 else nodes[0]},
          "status": {"phase": row[1]}} for row in pods]}
     node_body = {"items": [{"metadata": {"name": n}} for n in nodes]}
@@ -1228,3 +1241,93 @@ def test_one_unreadable_pod_does_not_discard_the_node_that_did_report():
     lines = hmt.name_swap_holders(report)
     assert any(line.startswith("  UNREADABLE  host-process-memory-29803110-bbbbb")
                for line in lines)
+
+
+def test_the_two_pods_of_an_indexed_job_are_one_run_not_two():
+    # The live failure, and the one the tests above could not see: they name
+    # their Pods `<job>-<hash>`, which is what a *non-indexed* Job produces.
+    # The real sweep is `completions: 2`, so Kubernetes names its Pods
+    # `<job>-<index>-<hash>` and both carry the same Job in ownerReferences.
+    # Grouping on the name minus one segment split one run into `...-0` and
+    # `...-1`, `max()` took the later, and the sweep read one node again --
+    # Cycle 863's own finding re-created one line below where it was fixed.
+    run = sweep_runner(
+        pods=[("host-process-memory-29807910-0-gqjkh", "Succeeded",
+               "2026-08-31T14:30:00Z", "server1",
+               "host-process-memory-29807910"),
+              ("host-process-memory-29807910-1-w7dfs", "Succeeded",
+               "2026-08-31T14:30:00Z", "server2",
+               "host-process-memory-29807910")],
+        nodes=("server1", "server2"),
+        logs={"host-process-memory-29807910-0-gqjkh": SWEEP_LOG,
+              "host-process-memory-29807910-1-w7dfs": SWEEP_LOG_NO_SWAP})
+    report, why = hmt.read_swap_holders(runner=run, now=NOW)
+    assert why is None
+    assert [pod["pod"] for pod in report["pods"]] == [
+        "host-process-memory-29807910-0-gqjkh",
+        "host-process-memory-29807910-1-w7dfs"]
+    assert report["nodes"] == ["server1", "server2"]
+    assert report["unswept"] == []
+    lines = hmt.name_swap_holders(report)
+    assert not any(line.startswith("  NOT SWEPT") for line in lines)
+
+
+def test_an_older_indexed_run_is_not_mixed_into_the_newest_one():
+    # Two indexed runs half an hour apart. Keying on the owning Job is what
+    # keeps them apart; keying on the Pod name would give four runs of one.
+    run = sweep_runner(
+        pods=[("host-process-memory-29807880-0-aaaaa", "Succeeded",
+               "2026-08-31T13:30:00Z", "server1",
+               "host-process-memory-29807880"),
+              ("host-process-memory-29807880-1-bbbbb", "Succeeded",
+               "2026-08-31T13:30:00Z", "server2",
+               "host-process-memory-29807880"),
+              ("host-process-memory-29807910-0-ccccc", "Succeeded",
+               "2026-08-31T14:30:00Z", "server1",
+               "host-process-memory-29807910"),
+              ("host-process-memory-29807910-1-ddddd", "Succeeded",
+               "2026-08-31T14:30:00Z", "server2",
+               "host-process-memory-29807910")],
+        nodes=("server1", "server2"),
+        logs={"host-process-memory-29807910-0-ccccc": SWEEP_LOG,
+              "host-process-memory-29807910-1-ddddd": SWEEP_LOG_NO_SWAP})
+    report, why = hmt.read_swap_holders(runner=run, now=NOW)
+    assert why is None
+    assert [pod["pod"] for pod in report["pods"]] == [
+        "host-process-memory-29807910-0-ccccc",
+        "host-process-memory-29807910-1-ddddd"]
+    assert report["age_hours"] == pytest.approx(0.5)
+
+
+def test_a_pod_with_no_job_owner_is_named_rather_than_guessed_back():
+    # Guessing an owner off the name is what was wrong here in the first place,
+    # and every wrong guess under-sweeps in silence. Say so instead. Kubernetes
+    # always stamps a Job Pod's owner, so this is a state I have not seen -- the
+    # point is only that the unseen state cannot come out as a clean sweep.
+    run = sweep_runner(
+        pods=[("host-process-memory-29807910-0-gqjkh", "Succeeded",
+               "2026-08-31T14:30:00Z", "server1",
+               "host-process-memory-29807910"),
+              ("host-process-memory-29807910-1-w7dfs", "Succeeded",
+               "2026-08-31T14:30:00Z", "server2", False)],
+        nodes=("server1", "server2"),
+        logs={"host-process-memory-29807910-0-gqjkh": SWEEP_LOG})
+    report, why = hmt.read_swap_holders(runner=run, now=NOW)
+    assert why is None
+    assert report["nodes"] == ["server1"]
+    assert report["unswept"] == ["server2"]
+    lines = hmt.name_swap_holders(report)
+    assert any("UNREADABLE  host-process-memory-29807910-1-w7dfs: no "
+               "ownerReferences" in line for line in lines)
+
+
+def test_no_pod_can_be_assigned_to_a_run_and_the_reason_is_not_a_reaped_sweep():
+    run = sweep_runner(
+        pods=[("host-process-memory-29807910-0-gqjkh", "Succeeded",
+               "2026-08-31T14:30:00Z", "server1", False)],
+        nodes=("server1",))
+    report, why = hmt.read_swap_holders(runner=run, now=NOW)
+    assert report is None
+    assert "could be assigned to a run" in why
+    assert "no ownerReferences" in why
+    assert "reaped" not in why

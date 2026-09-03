@@ -587,10 +587,15 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
     except json.JSONDecodeError as exc:
         return None, f"kubectl get pods -n {namespace} returned no JSON: {exc}"
 
-    # Group by the Job that owns the Pod, not by Pod: one run is now several
-    # Pods, and taking the single newest would put this straight back to reading
-    # one node. `host-process-memory-29807850-j4cd8` -> `...-29807850`.
+    # Group by the Job that owns the Pod, not by Pod, and take the Job's name
+    # off the Pod's own `ownerReferences` rather than off its name. An indexed
+    # Job (`completions: 2`) names its Pods `<job>-<index>-<hash>`, so stripping
+    # one trailing `-<hash>` leaves `<job>-0` and `<job>-1` -- the two Pods of
+    # one run filed as two different runs, `max()` taking the later, and the
+    # sweep reading one node again, which is the exact failure this grouping
+    # exists to end.
     runs = {}
+    ownerless = []
     for item in body.get("items") or []:
         meta = item.get("metadata") or {}
         name = meta.get("name") or ""
@@ -601,18 +606,30 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
         at = _parse_at(meta.get("creationTimestamp"))
         if at is None:
             continue
-        owner = name.rsplit("-", 1)[0]
+        refs = meta.get("ownerReferences") or []
+        owner = (refs[0].get("name") if refs else None) or None
+        if owner is None:
+            # Never guess one back off the Pod name: every guess that is wrong
+            # under-sweeps silently, which is worse than saying so. The caller
+            # prints this beside the reports it did read.
+            ownerless.append(f"{name}: no ownerReferences, so which run it "
+                             "belongs to is unknown and it was not read")
+            continue
         entry = runs.setdefault(owner, {"at": at, "pods": []})
         entry["at"] = max(entry["at"], at)
         entry["pods"].append({"pod": name,
                               "node": (item.get("spec") or {}).get("nodeName")})
     if not runs:
-        return None, (f"no completed {job} Pod is left in {namespace}, so the "
-                      "one sweep that can name these processes has either not "
-                      "run or has been reaped")
+        why = (f"no completed {job} Pod is left in {namespace}, so the "
+               "one sweep that can name these processes has either not "
+               "run or has been reaped")
+        if ownerless:
+            why = (f"no completed {job} Pod in {namespace} could be assigned "
+                   "to a run: " + "; ".join(ownerless))
+        return None, why
     newest = max(runs.values(), key=lambda run: run["at"])
 
-    reports, unreadable, rows = [], [], []
+    reports, unreadable, rows = [], list(ownerless), []
     for pod in sorted(newest["pods"], key=lambda pod: pod["pod"]):
         try:
             proc = runner(["kubectl", "logs", "-n", namespace, pod["pod"]],
