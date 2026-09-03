@@ -317,3 +317,61 @@ def test_superseded_does_not_raise_and_ready_does():
     now = datetime(2026, 9, 2, tzinfo=timezone.utc)
     assert open_prs.main([], now=now, run=make(matching)) == 0
     assert open_prs.main([], now=now, run=make(differing)) == 2
+
+
+def _live(number, minutes, verdict="pending", title="a change"):
+    return {"repo": "SokratesAI/agora-persona-runner", "number": number,
+            "title": title, "verdict": verdict, "detail": "d",
+            "url": f"https://github.com/SokratesAI/agora-persona-runner/pull/{number}",
+            "age": minutes / (24.0 * 60.0)}
+
+
+def test_a_pull_request_opened_inside_the_claim_window_is_printed_above_the_findings():
+    # The live failure: #700 was in Cycle 866's own preflight run, under
+    # `still running, inside the window`, and that cycle spent its hour
+    # re-fixing what #700 had fixed five minutes earlier.
+    report = open_prs.format_report(
+        [_live(700, 5, title="Group the swap sweep's Pods by the Job label")],
+        swept=1, errors=[], caveat_repos=[], max_age_days=1.0)
+    # Sliced to the section itself: the title also appears further down under
+    # `still running`, so asserting it against the whole report would pass on a
+    # section that printed no title at all -- which is the one thing it is for.
+    section = report.split("\n")[:3]
+    assert section[0].startswith("ANOTHER CYCLE MAY BE ON THESE — 1 pull request(s)")
+    assert section[1] == ("  SokratesAI/agora-persona-runner#700  Group the "
+                          "swap sweep's Pods by the Job label")
+    assert "opened 5 minute(s) ago" in section[2]
+
+
+def test_an_older_pull_request_is_not_called_a_live_cycle():
+    report = open_prs.format_report(
+        [_live(699, 90)], swept=1, errors=[], caveat_repos=[], max_age_days=1.0)
+    assert "ANOTHER CYCLE MAY BE ON THESE" not in report
+
+
+def test_the_window_is_the_claim_ledgers_own_45_minutes():
+    assert open_prs.LIVE_CYCLE_DAYS == pytest.approx(45.0 / (24.0 * 60.0))
+    assert [row["number"] for row in open_prs.live_cycle_rows(
+        [_live(1, 44), _live(2, 46)])] == [1]
+
+
+def test_a_healthy_pull_request_is_listed_too_because_that_is_where_it_hides():
+    # `ok` and `pending` are the two headings that read as "nothing to act
+    # on", which is exactly where a live cycle's pull request lands.
+    report = open_prs.format_report(
+        [_live(1, 3, verdict="ok"), _live(2, 3, verdict="held")],
+        swept=1, errors=[], caveat_repos=[], max_age_days=1.0)
+    assert report.startswith("ANOTHER CYCLE MAY BE ON THESE — 2 pull request(s)")
+
+
+def test_a_live_pull_request_does_not_by_itself_raise():
+    # Every 18 minutes there is one. A section that turns the check red on an
+    # ordinary morning is a section that stops being read.
+    report = open_prs.format_report(
+        [_live(1, 3)], swept=1, errors=[], caveat_repos=[], max_age_days=1.0)
+    assert "Nothing to act on." in report
+
+
+def test_a_pull_request_with_no_age_is_not_guessed_into_the_window():
+    rows = [dict(_live(1, 3), age=None)]
+    assert open_prs.live_cycle_rows(rows) == []

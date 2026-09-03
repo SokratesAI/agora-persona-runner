@@ -304,6 +304,36 @@ def judge(pr, now, workflow_count, max_age_days=DEFAULT_MAX_AGE_DAYS):
 #: deliberately absent: neither is a thing for a cycle to go and do.
 RAISING = ("no_run", "failing", "ready")
 
+#: Forty-five minutes, in days, because that is what `tools.claim` calls a
+#: live cycle: a claim goes stale after 45 minutes because that is the hard
+#: turn cap, so a pull request younger than this was opened by a cycle that
+#: is very likely still running. Not a threshold I picked -- it is the same
+#: number the claim ledger already uses to decide the same question.
+LIVE_CYCLE_DAYS = 45.0 / (24.0 * 60.0)
+
+
+def live_cycle_rows(results, max_age_days=LIVE_CYCLE_DAYS):
+    """Open pull requests young enough that another cycle is probably still on them.
+
+    This is not a verdict and it does not raise -- it cuts across all of them,
+    because the pull request that matters here is usually `pending` or `ok`,
+    which is to say filed under a heading whose whole purpose is "nothing to
+    act on". That is exactly how it goes unread.
+
+    Cycle 866 spent its hour re-fixing an indexed-Job grouping bug that #700
+    had fixed five minutes earlier, and #700 was printed in that cycle's own
+    preflight run, before it claimed anything, under `still running, inside
+    the window`. The claim ledger did not catch it either: claiming is
+    voluntary and #700's cycle took no claim on the handoff slug, so the
+    `take` returned 0 and said nothing. A title is the only signal that says
+    what another cycle is doing, and nothing was putting titles in front of me.
+    """
+    return sorted(
+        (row for row in results
+         if row.get("age") is not None and row["age"] <= max_age_days),
+        key=lambda row: row["age"],
+    )
+
 _HEADINGS = {
     "no_run": "NO CI RUN — a check-run was expected and never appeared",
     "failing": "FAILING — a check-run did not pass",
@@ -321,6 +351,20 @@ def format_report(results, swept, errors, caveat_repos, max_age_days):
     by_verdict = {}
     for row in results:
         by_verdict.setdefault(row["verdict"], []).append(row)
+
+    live = live_cycle_rows(results)
+    if live:
+        # First, above the findings, because a cycle reads this list before it
+        # picks its work and every other section is about work already done.
+        lines.append(
+            f"ANOTHER CYCLE MAY BE ON THESE — {len(live)} pull request(s) opened "
+            "in the last 45 minutes, which is the claim window. Read the titles "
+            "before you pick; a claim does not stop a cycle that took none."
+        )
+        for row in live:
+            lines.append(f"  {row['repo']}#{row['number']}  {row['title']}")
+            lines.append(f"      opened {row['age'] * 24 * 60:.0f} minute(s) ago"
+                         f" — {row['url']}")
 
     for verdict in RAISING:
         rows = by_verdict.get(verdict) or []
