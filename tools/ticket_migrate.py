@@ -53,6 +53,29 @@ VAULT_TOOL = "/app/bridge/vault_tool.py"
 BOARDS = ticket_docs.BOARDS
 
 
+def strip_the_print_newline(stdout):
+    """`vault_tool.py get` prints the document, so its stdout is one byte long.
+
+    Line 1359 of the bridge's vault client is `print(content)`, and `print`
+    appends a newline the vault does not hold. Every tool that reads a board
+    through that subprocess therefore sees the document plus one `\n`.
+
+    That was invisible while both sides of the ticket store came through it:
+    `ticket_migrate` stored the one-byte-longer text and `ticket_drift`
+    compared against the same one-byte-longer text, so they agreed. The
+    write-through added in runner#672 reads the markdown in-process, where
+    no `print` is involved, so it stores what the vault actually holds --
+    and from the first board the app writes, this comparison reports one
+    byte of drift that is not drift, every morning, forever.
+
+    Removing exactly one trailing newline is lossless rather than a
+    heuristic: `print` always adds exactly one, so this is its inverse and
+    not a guess about how the owner's file ends. A document that genuinely
+    ends in four blank lines still round-trips with four.
+    """
+    return stdout[:-1] if stdout.endswith("\n") else stdout
+
+
 def _read(path):
     """The vault document at `path`, or `None`."""
     try:
@@ -65,7 +88,7 @@ def _read(path):
     if done.returncode != 0 or done.stdout.strip() == "[not found]":
         print(f"CANNOT READ  {path} — {(done.stderr or done.stdout).strip()[:200]}")
         return None
-    return done.stdout
+    return strip_the_print_newline(done.stdout)
 
 
 def _classify(source, rendered):

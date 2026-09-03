@@ -44,6 +44,7 @@ import pathlib as _pathlib  # noqa: E402
 sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import ticket_docs, ticket_store  # noqa: E402
+from tools import ticket_migrate  # noqa: E402
 from tools.ticket_migrate import BOARDS, VAULT_TOOL  # noqa: E402
 
 
@@ -57,7 +58,9 @@ def read_vault(path):
         return None
     if done.returncode != 0 or done.stdout.strip() == "[not found]":
         return None
-    return done.stdout
+    # See `ticket_migrate.strip_the_print_newline`: the subprocess prints the
+    # document, so its stdout is the document plus the newline `print` added.
+    return ticket_migrate.strip_the_print_newline(done.stdout)
 
 
 def first_difference(left, right):

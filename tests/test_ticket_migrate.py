@@ -69,3 +69,21 @@ def test_a_couch_error_is_reported_as_unreadable_not_as_damage(monkeypatch, reco
     monkeypatch.setattr(ticket_migrate.ticket_docs, "ensure_database", lambda: (True, 201))
     monkeypatch.setattr(ticket_migrate.ticket_docs, "write_board", boom)
     assert ticket_migrate.store(PATH, BOARD, records) == 1
+
+
+def test_the_newline_print_added_is_removed_again():
+    """`vault_tool.py get` is `print(content)`, so its stdout is one byte long.
+
+    The write-through (runner#672) reads the markdown in-process and stores
+    what the vault actually holds. If this comparison kept `print`'s newline
+    it would report one byte of drift, on every board the app writes, every
+    morning, forever -- a check that fires daily on a difference that is not
+    one is a check I learn to ignore.
+    """
+    assert ticket_migrate.strip_the_print_newline("a board\n") == "a board"
+    # Exactly one, not "strip the trailing whitespace" -- his ideas.md ends
+    # in forty blank lines and every one of them is his.
+    assert ticket_migrate.strip_the_print_newline("a board\n\n\n\n") == "a board\n\n\n"
+    # And nothing to remove when there is nothing to remove.
+    assert ticket_migrate.strip_the_print_newline("a board") == "a board"
+    assert ticket_migrate.strip_the_print_newline("") == ""
