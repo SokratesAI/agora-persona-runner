@@ -301,6 +301,28 @@ def _check_prompt_sweeps_every_namespace() -> Optional[str]:
     return None
 
 
+def _check_oom_history_sweeps_every_node() -> Optional[str]:
+    """A cluster-wide check must not name one node as its default.
+
+    The node-level twin of `pod-sweep-narrowed-to-one-namespace`. The check
+    reads the argparse default rather than grepping for the string `server1`,
+    because the docstring legitimately talks about server1 and a text match
+    would fire on the prose that explains the fix.
+    """
+    import inspect
+
+    from tools import oom_history
+
+    source = inspect.getsource(oom_history.main)
+    if '"--node", default=None' not in source.replace("'", '"'):
+        return ("tools.oom_history's --node has a default again -- it was `server1`, and a "
+                "kill on server2 read exactly like no kill at all once that node joined")
+    if "read_node_names" not in source:
+        return ("tools.oom_history no longer asks the API server for the node list, so it is "
+                "back to judging whichever nodes somebody wrote down")
+    return None
+
+
 def _check_prompt_does_not_hardcode_the_shared_checkout() -> Optional[str]:
     body = read_vault("projects/sokrates/projects/agora/nova/resources/prompt.md")
     bad = [line.strip() for line in body.splitlines()
@@ -820,6 +842,16 @@ CORPUS = [
         failure=("The opening pod check said `-n agents`, so `whatsapp-bridge` crash-looped in "
                  "`infra` for 37 hours with 314 restarts while every cycle read a clean list."),
         check=_check_prompt_sweeps_every_namespace,
+    ),
+    Regression(
+        slug="oom-history-named-one-node",
+        cycle="857",
+        date="2026-09-03",
+        surface="drove the code",
+        failure=("`tools.oom_history` defaulted to `--node server1`. server2 joined the "
+                 "cluster on 2026-09-03 and a kill on it produced output identical to no "
+                 "kill anywhere, from a check whose summary said it had swept."),
+        check=_check_oom_history_sweeps_every_node,
     ),
     Regression(
         slug="hardcoded-shared-checkout",
