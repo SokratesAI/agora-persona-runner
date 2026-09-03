@@ -128,6 +128,7 @@ from agora_runner.nova_capture import (
     comment_on_row,
     convert_capture,
     promote_capture,
+    archive_row,
     edit_row,
     remove_row,
     set_priority,
@@ -4534,6 +4535,58 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         stale = "is not a row" in message
         self._send_json(409 if stale else 502, {"ok": False, "message": message})
 
+    def _post_board_archive(self, payload):
+        """`/api/board/archive` -- his capture of 2026-09-03.
+
+        *"We should be able to archive issues and ideas... Add a archive
+        button next to the delete when in edit mode."*
+
+        A third route beside edit and delete rather than a flag on either,
+        for the reason `_post_board_amend` already gives about those two:
+        the three do different things to the row and a caller that meant
+        one of them must not be able to get another by leaving a field
+        out. It sets `⚫ Outdated`, which `agora_runner.nova_capture.archive_row`
+        explains is a status that already existed and had no way to be
+        reached from the page.
+
+        A number that is not an open row on that board is a 409, the same
+        call the edit and delete route makes: nothing failed, the row
+        moved or is already closed, and the page should re-read.
+        """
+        target = payload.get("target")
+        number = payload.get("number")
+        if target not in BOARD_PATHS:
+            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
+            return
+        # `True` is an int in Python and would address row 1.
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            self._send_json(400, {"error": "number must be a positive integer"})
+            return
+
+        try:
+            ok, message = archive_row(target, number)
+        except Exception as e:
+            log(f"nova-site board archive failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            invalidate("board:" + target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Archive #{number} on {target} · {'ok' if ok else message}",
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        if ok:
+            self._send_json(200, {"ok": True, "message": message})
+            return
+        stale = "is not a row" in message
+        self._send_json(409 if stale else 502, {"ok": False, "message": message})
+
     def _post_comment(self, payload):
         """`/api/comment` -- the owner replying to one cycle (ideas.md #44).
 
@@ -4751,7 +4804,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/convert", "/api/capture/promote", "/api/comment",
             "/api/board/priority", "/api/board/project",
             "/api/project/priority",
-            "/api/board/edit", "/api/board/delete",
+            "/api/board/edit", "/api/board/delete", "/api/board/archive",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
             "/api/conversations/send", "/api/conversations/new",
@@ -4842,6 +4895,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path in ("/api/board/edit", "/api/board/delete"):
             self._post_board_amend(payload, delete=path.endswith("delete"))
+            return
+        if path == "/api/board/archive":
+            self._post_board_archive(payload)
             return
         if path == "/api/board/comment":
             self._post_board_comment(payload)
