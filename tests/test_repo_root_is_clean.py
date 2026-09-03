@@ -26,6 +26,7 @@ ALLOWED = {
     "README.md",
     "package.json",
     "pytest.ini",
+    "requirements.txt",
     "run.py",
     "run_nova_site.py",
     "tsconfig.json",
