@@ -39,10 +39,21 @@ would be backwards. It exits **4** instead -- distinct from the vault's
 own codes, and loud -- because a caller that reads 0 as "everything is
 current" would be wrong, and `ticket_drift --sync` is the repair.
 
-**It reads the same local file the vault write sent**, not the document
-back out of the vault, so `strip_the_print_newline` has nothing to do
-here: there is no `print` in this path. That subtlety cost runner#673 and
-is worth not re-introducing.
+**A `put` pushes the same local file the vault write sent**, not the
+document back out of the vault, so `strip_the_print_newline` has nothing
+to do there: there is no `print` in that path. That subtlety cost
+runner#673 and is worth not re-introducing.
+
+**`--append` is the other half of the bypass, and it is not optional.**
+`prompt.md` step 6 tells every cycle to append its capture notes to
+`nova/resources/issues.md` and `.../ideas.md` -- two of the four boards --
+with `vault_tool.py append`, which is the same separate process going
+around the same store. Measured this cycle: one capture note, and
+`ticket_drift` reported that board stale by 868 bytes immediately after.
+So `--append <marker>` runs the append and then pushes. It has to re-read
+the document, because the local file is a fragment and the store needs
+the whole board, and *that* read does come back through `print` -- so it
+is the one path here that subtracts the newline.
 """
 
 import argparse
@@ -55,7 +66,7 @@ import pathlib as _pathlib  # noqa: E402
 sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import ticket_docs  # noqa: E402
-from tools.ticket_migrate import VAULT_TOOL  # noqa: E402
+from tools.ticket_migrate import VAULT_TOOL, strip_the_print_newline  # noqa: E402
 
 
 def vault_put(path, local_file, if_rev_file=None):
@@ -80,6 +91,33 @@ def vault_put(path, local_file, if_rev_file=None):
     return subprocess.run(command, capture_output=True, text=True, timeout=180)
 
 
+def vault_append(path, local_file, marker):
+    """Shell out to the bridge's `append`. Returns its `CompletedProcess`.
+
+    The marker is passed straight through and is required by this tool's
+    own argument parser, because `vault_tool.py append` writes to two
+    different ends of the document depending on whether it gets one and
+    says nothing about which it chose.
+    """
+    command = [sys.executable, VAULT_TOOL, "append", path, local_file, marker]
+    return subprocess.run(command, capture_output=True, text=True, timeout=180)
+
+
+def vault_get(path):
+    """The board as the vault holds it, or `None`.
+
+    Only `--append` needs this: the local file it sent was a fragment, and
+    the store holds whole boards. `vault_tool.py get` ends in `print`, so
+    its stdout is the document plus one newline and that byte has to come
+    back off -- storing it is exactly the false drift runner#673 fixed.
+    """
+    done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
+                          capture_output=True, text=True, timeout=180)
+    if done.returncode != 0 or done.stdout.strip() == "[not found]":
+        return None
+    return strip_the_print_newline(done.stdout)
+
+
 def push(path, source):
     """Update the ticket documents for one board. Returns `(ok, message)`."""
     try:
@@ -97,6 +135,12 @@ def main(argv=None):
     parser.add_argument("path", help="the board's vault path")
     parser.add_argument("file", help="the edited board markdown on disk")
     parser.add_argument("--if-rev-file", help="the rev file from the paired get")
+    parser.add_argument(
+        "--append",
+        metavar="MARKER",
+        help="append FILE under this heading instead of replacing the board "
+             "(step 6's capture notes); the marker is not optional",
+    )
     args = parser.parse_args(argv)
 
     # A non-board path has no ticket documents, so this command would be a
@@ -112,13 +156,23 @@ def main(argv=None):
         )
         return 1
 
+    if args.append and args.if_rev_file:
+        # `append` takes no revision, so honouring one would be a promise
+        # this cannot keep.
+        print("REFUSED: --append and --if-rev-file are different writes; "
+              "vault_tool.py append has no compare-and-swap.", file=sys.stderr)
+        return 1
+
     try:
         source = open(args.file, encoding="utf-8").read()
     except OSError as exc:
         print(f"REFUSED: cannot read {args.file} -- {exc}", file=sys.stderr)
         return 1
 
-    done = vault_put(args.path, args.file, args.if_rev_file)
+    if args.append:
+        done = vault_append(args.path, args.file, args.append)
+    else:
+        done = vault_put(args.path, args.file, args.if_rev_file)
     sys.stdout.write(done.stdout or "")
     sys.stderr.write(done.stderr or "")
     if done.returncode != 0:
@@ -130,6 +184,15 @@ def main(argv=None):
             file=sys.stderr,
         )
         return done.returncode
+
+    if args.append:
+        # The whole board, after the insert -- not the fragment just sent.
+        source = vault_get(args.path)
+        if source is None:
+            print("STORE NOT UPDATED -- the append landed, but the board could "
+                  "not be read back. Repair with: "
+                  "python3 -m tools.ticket_drift --sync", file=sys.stderr)
+            return 4
 
     ok, message = push(args.path, source)
     if not ok:

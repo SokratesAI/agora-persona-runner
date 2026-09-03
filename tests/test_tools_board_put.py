@@ -1,6 +1,6 @@
 """`tools.board_put` -- the vault write leads and the ticket store follows.
 
-Three properties, and each one is a way this could have made the drift it
+Four properties, and each one is a way this could have made the drift it
 exists to close worse.
 
 **The store is never written when the vault write did not land.** A lost
@@ -14,6 +14,11 @@ success either.** Exit 4 says the board landed and the store did not.
 **A path that is not a board is refused rather than quietly put.** A
 command that silently did nothing for the ticket store would teach a
 cycle that every vault write goes through here.
+
+**An `--append` pushes the whole board, not the fragment it sent.** Step
+6's capture note is three lines; the store holds boards. That read comes
+back through `print`, so it is also the one path here that has to subtract
+runner#673's newline.
 """
 
 import subprocess
@@ -113,3 +118,52 @@ def test_every_board_is_accepted(monkeypatch, board_file):
     _pushed(monkeypatch, SUMMARY)
     for board in board_put.ticket_docs.BOARDS:
         assert board_put.main([board, board_file]) == 0
+
+
+MINE = "projects/sokrates/projects/agora/nova/resources/issues.md"
+
+
+def test_append_pushes_the_whole_board_not_the_fragment(monkeypatch, board_file):
+    """Step 6's capture note is a fragment; the store holds whole boards."""
+    runner = _run(0, stdout="written: issues.md\n")
+    monkeypatch.setattr(board_put.subprocess, "run", runner)
+    monkeypatch.setattr(board_put, "vault_get", lambda path: "# Issues\n\n- a note\n")
+    seen = _pushed(monkeypatch, SUMMARY)
+    assert board_put.main([MINE, board_file, "--append", "## Entries"]) == 0
+    assert seen == [(MINE, "# Issues\n\n- a note\n")]
+    # An append, with the marker passed through -- not a put.
+    assert runner.calls[0][2:6] == ["append", MINE, board_file, "## Entries"]
+
+
+def test_append_that_cannot_be_read_back_is_exit_4(monkeypatch, board_file):
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    monkeypatch.setattr(board_put, "vault_get", lambda path: None)
+    seen = _pushed(monkeypatch, SUMMARY)
+    assert board_put.main([MINE, board_file, "--append", "## Entries"]) == 4
+    assert seen == []
+
+
+def test_append_with_a_rev_file_is_refused(monkeypatch, board_file):
+    runner = _run(0)
+    monkeypatch.setattr(board_put.subprocess, "run", runner)
+    seen = _pushed(monkeypatch, SUMMARY)
+    assert board_put.main(
+        [MINE, board_file, "--append", "## Entries", "--if-rev-file", "/tmp/x"]) == 1
+    assert runner.calls == []
+    assert seen == []
+
+
+def test_the_read_back_subtracts_the_newline_vault_tool_prints(monkeypatch):
+    """runner#673's byte, on the one path here that goes through `print`.
+
+    Storing it would report a byte of drift that is not drift, on that
+    board, every morning forever.
+    """
+    monkeypatch.setattr(board_put.subprocess, "run",
+                        _run(0, stdout="# Issues\n\n- a note\n\n"))
+    assert board_put.vault_get(MINE) == "# Issues\n\n- a note\n"
+
+
+def test_a_board_the_vault_does_not_hold_reads_as_absent(monkeypatch):
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0, stdout="[not found]\n"))
+    assert board_put.vault_get(MINE) is None
