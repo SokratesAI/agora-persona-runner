@@ -440,7 +440,12 @@ def _capture_board_help(captures):
         board = "notes" if capture["board"] == "note" else capture["board"] + "s"
         out.append(f"     --index {capture['index']}  ({board})  ->  {capture['text'][:70]}")
     out.append("  The caller owns the compare-and-swap: vault_tool.py get --rev-file, "
-               "then put --if-rev-file, in ONE Bash call.")
+               "then `python3 -m tools.board_put <vault path> <file> --if-rev-file`, "
+               "in ONE Bash call.")
+    out.append("  board_put, not vault_tool.py put: it writes the vault first and "
+               "then updates that board's CouchDB ticket documents, which a bare "
+               "put cannot do from another process. Exit 4 means the board landed "
+               "and the store did not -- run ticket_drift --sync.")
     return out
 
 
