@@ -158,3 +158,59 @@ def test_the_smoke_test_fails_the_job_rather_than_warning():
         "for a container that dies a millisecond later, so the step must fail "
         "the job on its own judgement"
     )
+
+
+def test_the_build_reuses_its_own_layers_so_an_unchanged_image_keeps_its_digest():
+    """A digest that changes when nothing changed redeploys for nothing.
+
+    The manifest-commit step below `Build and push` already has a
+    `git diff --staged --quiet` branch that skips the commit when the digest
+    is unchanged. Measured Cycle 844: it had never been taken. 79 of the last
+    150 merges to main touched no file this image ships, and all 150 produced
+    a distinct digest, because every layer above the base was rebuilt from
+    scratch. That committed a digest to -config and rolled both Deployments
+    this image serves, 26 to 35 times a day.
+
+    So the cache is the thing that makes the existing guard able to fire, and
+    it is what this test pins.
+    """
+    step = _build_and_push_step()
+    with_ = step.get("with", {})
+    assert with_.get("cache-from") == "type=gha", (
+        "the build must restore its own layers, or the digest cannot reproduce"
+    )
+    assert with_.get("cache-to") == "type=gha,mode=max", (
+        "mode=max, because the layers worth reusing are the intermediate "
+        "apt/curl/pip ones, not just the final one"
+    )
+    assert with_.get("provenance") is False, (
+        "a provenance attestation makes the pushed object an index whose "
+        "digest embeds this build's timestamps, which is non-reproducible "
+        "however well the layers cache"
+    )
+
+
+def test_the_cache_is_exportable_at_all():
+    """`cache-to` is refused outright by the default docker driver.
+
+    Without a buildx setup step the cache options parse fine, the workflow
+    looks correct, and the export fails at run time -- so this asserts the
+    driver that makes the test above mean anything.
+    """
+    steps = _workflow()["jobs"]["build-push"]["steps"]
+    uses = [s.get("uses", "") for s in steps if isinstance(s, dict)]
+    buildx = [u for u in uses if u.startswith("docker/setup-buildx-action@")]
+    assert buildx, (
+        "no docker/setup-buildx-action step: cache-to type=gha is refused by "
+        f"the docker driver. Steps use: {uses}"
+    )
+    assert uses.index(buildx[0]) < uses.index(
+        next(u for u in uses if u.startswith("docker/build-push-action@"))
+    ), "the driver has to be set up before the build that uses it"
+
+
+def _build_and_push_step():
+    for step in _workflow()["jobs"]["build-push"]["steps"]:
+        if isinstance(step, dict) and step.get("name") == "Build and push":
+            return step
+    raise AssertionError("build-push has no step named 'Build and push'")

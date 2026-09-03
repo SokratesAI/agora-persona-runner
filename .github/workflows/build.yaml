@@ -177,6 +177,9 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,prefix=sha-
+      # The container driver, because the docker driver cannot export a
+      # cache at all -- `cache-to` below is refused outright without this.
+      - uses: docker/setup-buildx-action@v3
       - name: Build and push
         id: build
         uses: docker/build-push-action@v7
@@ -185,6 +188,35 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Restore this repo's own layers instead of rebuilding all of them,
+          # so an image whose contents did not change keeps its digest.
+          #
+          # Measured Cycle 844: 79 of the last 150 merges to main changed no
+          # file this image ships, and all 150 still produced a *distinct*
+          # digest. Two consecutive pushes share their first four layer
+          # digests (the `python:3.12-slim` base, identical by definition) and
+          # differ on all nine of ours, because `apt-get`, the two `curl`
+          # downloads, `pip install` and `COPY` were each rebuilt from scratch
+          # and bake fresh mtimes into the layer tar. So the "no manifest
+          # change, skipping commit" branch further down has never once been
+          # taken: every merge committed a new digest to -config and rolled
+          # BOTH Deployments this one image serves -- 26 to 35 rolls a day
+          # over 2026-08-28..09-03, about half of them shipping byte-identical
+          # application code.
+          #
+          # BuildKit keys a COPY on file *content*, so a merge touching only
+          # `tools/`, `tests/` or `src/` -- none of which this image ships --
+          # now hits cache on all nine layers, reproduces the digest, and
+          # deploys nothing. A cold or evicted cache degrades to exactly
+          # today's behaviour: a new digest and a roll, which is safe.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # The container driver would otherwise attach a provenance
+          # attestation, which turns the pushed object into an index whose
+          # digest embeds this build's own timestamps -- non-reproducible for
+          # the same reason the layers were, and a different manifest shape
+          # than the one every digest in -config today names.
+          provenance: false
 
       # Commits the new image digest to this service's paired config repo, which
       # ArgoCD's SCM Provider generator auto-deploys — no platform-config PR, no
