@@ -234,6 +234,7 @@ from agora_runner.nova_push import store_subscription, vapid_key
 from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_runtimes import attach_runtimes
+from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_sources import (
     claims_ledger_json,
     board_markdown,
@@ -246,6 +247,7 @@ from agora_runner.nova_sources import (
     goal_history_json,
     retro_ledger_json,
 )
+from agora_runner.ticket_docs import read_rows
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
 
@@ -661,6 +663,43 @@ def _split_details(bodies):
     return prose, comments
 
 
+
+def _rows_from_store(name, parsed):
+    """His board's rows out of `nova_tickets`, or the parsed ones.
+
+    Returns `parsed` unchanged whenever the store does not answer with
+    exactly the same rows in the same order. That is deliberately strict:
+    a row-projection view that has drifted is not a smaller answer to fall
+    back from, it is a different board, and the page has no way to tell.
+    `tools.ticket_drift` is what reports the drift; this only decides
+    which of the two the owner is shown, and it shows the file.
+
+    The comparison is the whole value of reading the store at all today.
+    The rows carry ten fields and the markdown carries those ten plus the
+    bodies, so agreeing here means the store reproduces the list exactly
+    -- measured on every payload build rather than once a cycle.
+    """
+    path = BOARD_PATHS[name]["edvard"]
+    try:
+        rows = read_rows(path)
+    except Exception as problem:
+        # Every failure mode is the same decision: draw the file. A
+        # narrower except would let a new CouchDB error empty his board,
+        # which is the one outcome this function exists to prevent.
+        log(f"nova-site {name} rows unreadable from the ticket store: {problem}")
+        return parsed
+    if rows != parsed:
+        # Said out loud rather than absorbed. A fallback nothing reports
+        # is the failure this loop keeps filing against itself: the page
+        # would look right forever while the store the migration is
+        # supposed to end up on quietly stopped agreeing with the file.
+        log(
+            f"nova-site {name} rows disagree with the ticket store: "
+            f"{len(parsed)} parsed against {len(rows)} stored; drawing the file"
+        )
+        return parsed
+    return rows
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -673,6 +712,24 @@ def board_payload(name):
     """
     edvard_markdown, nova_markdown, nova_archive_markdown = board_markdown(name)
     board = parse_board(edvard_markdown)
+    # **His rows come out of the ticket store, not out of the markdown.**
+    # This is the first reader of the one-document-per-ticket migration
+    # the owner approved -- until now the store was written on every board
+    # write and read by nothing, so a drift in it was invisible to
+    # everything except `tools.ticket_drift` running once a cycle.
+    #
+    # Only the rows move. The write-ups, his captures and my own two files
+    # are still parsed out of the markdown this call has already fetched,
+    # so this saves no fetch today and is not meant to: what it buys is
+    # that the list the page draws is the store's answer, checked against
+    # the markdown on every build by the assertion below rather than once
+    # a cycle by a tool.
+    #
+    # `parse_board` stays the fallback and stays the source of truth. A
+    # store that is unreachable, behind, or missing a row must not empty
+    # his board -- the markdown is the file he edits and it is always
+    # right.
+    board["items"] = _rows_from_store(name, board["items"])
     # Which rows he asked a question on and nobody answered. Stamped onto
     # the row here rather than worked out again by whoever needs it,
     # because two things already rank these rows with `nova_next.rank` --

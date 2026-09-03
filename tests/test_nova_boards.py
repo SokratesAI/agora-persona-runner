@@ -723,3 +723,74 @@ def test_a_comment_that_merely_discusses_relaying_is_not_one():
     assert not is_relayed(prose + " a comment posted on Edvard's behalf "
                                   "should rank below one he typed.")
 
+
+
+# --- His rows come out of the ticket store now ---------------------------
+#
+# The first reader of the one-document-per-ticket migration. Until this,
+# `nova_tickets` was written on every board write and read by nothing, so
+# a drift in it could only be found by `tools.ticket_drift` running once a
+# cycle. These pin the three answers `_rows_from_store` can give, because
+# every other test in this file exercises the fallback by accident --
+# there is no CouchDB under them, so `read_rows` raises and the parsed
+# rows come back looking exactly like a working switch.
+
+
+def test_his_rows_come_from_the_ticket_store_when_it_agrees():
+    parsed = [{"number": 9, "title": "b"}, {"number": 4, "title": "a"}]
+    stored = [{"number": 9, "title": "b"}, {"number": 4, "title": "a"}]
+    with patch.object(nova_site, "read_rows", return_value=stored):
+        got = nova_site._rows_from_store("issues", parsed)
+    # Identity, not equality: equality is what the function already
+    # checked, so asserting it again would pass on the fallback too and
+    # this test would never fail if the switch were reverted.
+    assert got is stored
+
+
+def test_a_store_that_disagrees_draws_the_file_and_says_so():
+    """His file is the source of truth and a silent fallback is the bug.
+
+    A row-projection view that has drifted is not a smaller answer to
+    degrade to, it is a different board, and the page cannot tell. So the
+    file wins -- and it is said out loud, because a fallback nobody is
+    told about is the invisible failure this loop keeps filing.
+    """
+    parsed = [{"number": 9, "title": "b"}, {"number": 4, "title": "a"}]
+    stored = [{"number": 4, "title": "a"}, {"number": 9, "title": "b"}]
+    said = []
+    with patch.object(nova_site, "read_rows", return_value=stored), \
+            patch.object(nova_site, "log", said.append):
+        got = nova_site._rows_from_store("issues", parsed)
+    assert got is parsed
+    assert said and "disagree" in said[0]
+
+
+def test_an_unreachable_store_draws_the_file_and_says_so():
+    said = []
+    with patch.object(nova_site, "read_rows", side_effect=RuntimeError("boom")), \
+            patch.object(nova_site, "log", said.append):
+        got = nova_site._rows_from_store("ideas", parsed := [{"number": 1}])
+    assert got is parsed
+    assert said and "unreadable" in said[0]
+
+
+def test_board_payload_actually_asks_the_store_for_his_rows(board_md, notes_md):
+    """The wiring, not the helper.
+
+    Every test above this one passes whether or not `board_payload` calls
+    `_rows_from_store` at all: there is no CouchDB under them, so the
+    helper returns the parsed rows and the payload looks identical either
+    way. Deleting the call is a mutation the rest of the file cannot see,
+    and it survived until this test existed.
+    """
+    asked = []
+
+    def only_the_store(name, parsed):
+        asked.append(name)
+        return parsed
+
+    with _serve(board_md, notes_md), \
+            patch.object(nova_site, "_rows_from_store", only_the_store):
+        payload = nova_site.board_payload("issues")
+    assert asked == ["issues"]
+    assert payload["items"], "the rows still have to reach the page"
