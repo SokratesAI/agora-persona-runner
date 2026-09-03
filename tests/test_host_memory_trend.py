@@ -938,21 +938,35 @@ class FakeProc:
         self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
 
 
-def sweep_runner(pods=None, log=SWEEP_LOG, logs_rc=0):
-    """A `subprocess.run` that answers the two calls `read_swap_holders` makes."""
+def sweep_runner(pods=None, log=SWEEP_LOG, logs_rc=0, nodes=("server1",),
+                 nodes_rc=0, logs=None):
+    """A `subprocess.run` that answers the three calls `read_swap_holders` makes.
+
+    `pods` rows are `(name, phase, creationTimestamp)` and optionally a fourth
+    element naming the node the Pod ran on; it defaults to the first entry of
+    `nodes`, which keeps a one-node cluster the simple case it used to be.
+    `logs` maps a Pod name to its own log when a test needs the two Pods of one
+    run to say different things.
+    """
     if pods is None:
         pods = [("host-process-memory-29803110-t79dw", "Succeeded",
                  "2026-08-31T14:30:00Z")]
     body = {"items": [
-        {"metadata": {"name": n, "creationTimestamp": at},
-         "status": {"phase": p}} for n, p, at in pods]}
+        {"metadata": {"name": row[0], "creationTimestamp": row[2]},
+         "spec": {"nodeName": row[3] if len(row) > 3 else nodes[0]},
+         "status": {"phase": row[1]}} for row in pods]}
+    node_body = {"items": [{"metadata": {"name": n}} for n in nodes]}
     seen = []
 
     def run(argv, **kwargs):
         seen.append(argv)
+        if argv[1] == "get" and argv[2] == "nodes":
+            return FakeProc(stdout=json.dumps(node_body), returncode=nodes_rc,
+                            stderr="" if nodes_rc == 0 else "no nodes for you")
         if argv[1] == "get":
             return FakeProc(stdout=json.dumps(body))
-        return FakeProc(stdout=log, returncode=logs_rc,
+        return FakeProc(stdout=(logs or {}).get(argv[-1], log),
+                        returncode=logs_rc,
                         stderr="" if logs_rc == 0 else "not found")
 
     run.seen = seen
@@ -969,8 +983,9 @@ def test_the_sweep_report_is_read_off_the_newest_completed_pod():
     ])
     report, why = hmt.read_swap_holders(runner=run, now=NOW)
     assert why is None
-    assert report["pod"] == "host-process-memory-29803110-t79dw"
-    assert run.seen[-1][-1] == "host-process-memory-29803110-t79dw"
+    assert [pod["pod"] for pod in report["pods"]] == ["host-process-memory-29803110-t79dw"]
+    assert ["kubectl", "logs", "-n", "infra",
+            "host-process-memory-29803110-t79dw"] in run.seen
     assert report["age_hours"] == pytest.approx(0.5)
     assert report["total_swap_mib"] == 1634.0
 
@@ -981,7 +996,7 @@ def test_a_running_pod_is_not_read_because_half_a_top_n_is_not_a_top_n():
         ("host-process-memory-29803110-t79dw", "Running", "2026-08-31T14:59:00Z"),
     ])
     report, _ = hmt.read_swap_holders(runner=run, now=NOW)
-    assert report["pod"] == "host-process-memory-29803000-old"
+    assert [pod["pod"] for pod in report["pods"]] == ["host-process-memory-29803000-old"]
 
 
 def test_only_the_swap_section_is_parsed_so_the_rss_table_is_not_counted_twice():
@@ -1005,7 +1020,7 @@ def test_a_report_whose_format_moved_says_so_rather_than_reporting_nothing():
         runner=sweep_runner(log="HOST PROCESS MEMORY -- 0 read\nTOP 20 BY SWAP\n"),
         now=NOW)
     assert report is None
-    assert "format has moved" in why
+    assert "did not say it found none" in why
 
 
 def test_a_failed_logs_call_carries_its_own_reason_through():
@@ -1020,13 +1035,13 @@ def test_the_named_processes_are_split_by_the_same_three_buckets_as_the_remainde
     # 407 + 350 + 60 outside k3s.service and outside every Pod.
     assert "817Mi of that is outside k3s.service" in lines[1]
     assert lines[0].startswith("SWAP HOLDERS")
-    assert "946Mi swapped of 1634Mi on the box (58%)" in lines[0]
+    assert "946Mi swapped of 1634Mi on them (58%)" in lines[0]
 
 
 def test_the_biggest_holder_is_named_first_and_the_rest_are_summed():
     report, _ = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
     lines = hmt.name_swap_holders(report, top=2)
-    assert "407Mi swapped, 68Mi resident — claude.exe (pid 3848650, unowned)" in lines[2]
+    assert ("407Mi swapped, 68Mi resident — claude.exe on server1 (pid 3848650, unowned)") in lines[2]
     assert "350Mi swapped" in lines[3]
     # 115 + 60 + 10 + 4 left over, and the log that holds them is named.
     assert "the other 4 named process(es) hold 189Mi" in lines[-1]
@@ -1096,7 +1111,7 @@ def test_the_age_is_printed_beside_a_named_holder_when_the_sweep_supplied_one():
     report, _ = hmt.read_swap_holders(
         runner=sweep_runner(log=SWEEP_LOG_WITH_AGE), now=NOW)
     lines = hmt.name_swap_holders(report, top=2)
-    assert ("282Mi swapped, 49Mi resident — claude.exe "
+    assert ("282Mi swapped, 49Mi resident — claude.exe on server1 "
             "(pid 1410665, unowned, 0.4d old)") in lines[2]
 
 
@@ -1108,7 +1123,108 @@ def test_an_ageless_sweep_prints_no_age_rather_than_a_placeholder():
     # fails it, because an ageless sweep then prints "None d old".
     report, _ = hmt.read_swap_holders(runner=sweep_runner(), now=NOW)
     lines = hmt.name_swap_holders(report, top=1)
-    assert ("407Mi swapped, 68Mi resident — claude.exe "
+    assert ("407Mi swapped, 68Mi resident — claude.exe on server1 "
             "(pid 3848650, unowned)") in lines[2]
     assert "None" not in lines[2]
     assert "d old" not in lines[2]
+
+
+#: A real, complete report from a box with no swap at all -- copied from
+#: `kubectl logs -n infra host-process-memory-29807850-j4cd8`, trimmed. server2
+#: has no swap, so its honest answer is an empty top-N list and the sweep says
+#: so in words. Reading that as a broken parser is what sent Cycle 863 looking
+#: for a format change that had not happened.
+SWEEP_LOG_NO_SWAP = """HOST PROCESS MEMORY on server2 -- 193 process(es) read, 1 exited mid-sweep
+  total    rss   1719Mi  swap      0Mi
+  cgroup paths below are read through this container's own cgroup namespace and may be relativized -- context, not a verdict.
+SWAP BY CGROUP -- 0 bucket(s) holding 0Mi; cgroup strings in full.
+  swap      0Mi   0.0%  in the other 0 bucket(s)
+TOP 20 BY SWAP
+  none -- every process read reported zero swap
+TOP 20 BY RSS
+    32737 grafana              rss    325Mi  swap      0Mi  age   0.0d  /../../kubepods-burstable-pod8a091491.slice
+"""
+
+
+def test_a_swapless_box_is_a_result_not_a_format_this_reader_cannot_parse():
+    report, why = hmt.read_swap_holders(
+        runner=sweep_runner(log=SWEEP_LOG_NO_SWAP, nodes=("server2",)), now=NOW)
+    assert why is None
+    assert report["rows"] == []
+    assert report["total_swap_mib"] == 0.0
+
+
+def test_every_pod_of_the_newest_run_is_read_so_one_node_cannot_stand_for_two():
+    run = sweep_runner(
+        pods=[("host-process-memory-29803110-aaaaa", "Succeeded",
+               "2026-08-31T14:30:00Z", "server1"),
+              ("host-process-memory-29803110-bbbbb", "Succeeded",
+               "2026-08-31T14:30:00Z", "server2"),
+              ("host-process-memory-29803000-old", "Succeeded",
+               "2026-08-31T13:30:00Z", "server1")],
+        nodes=("server1", "server2"),
+        logs={"host-process-memory-29803110-aaaaa": SWEEP_LOG,
+              "host-process-memory-29803110-bbbbb": SWEEP_LOG_NO_SWAP})
+    report, why = hmt.read_swap_holders(runner=run, now=NOW)
+    assert why is None
+    assert report["nodes"] == ["server1", "server2"]
+    assert report["unswept"] == []
+    # The older run is a different Job and is not mixed in with the newest one.
+    assert [pod["pod"] for pod in report["pods"]] == [
+        "host-process-memory-29803110-aaaaa",
+        "host-process-memory-29803110-bbbbb"]
+    assert all(row["node"] == "server1" for row in report["rows"])
+    assert report["total_swap_mib"] == 1634.0
+
+
+def test_a_node_the_run_never_reached_is_named_rather_than_left_out():
+    # The live failure: every retained sweep ran on server2, so server1's swap
+    # holders were unnamed and the output said nothing about it at all.
+    report, _ = hmt.read_swap_holders(
+        runner=sweep_runner(log=SWEEP_LOG_NO_SWAP,
+                            nodes=("server1", "server2"),
+                            pods=[("host-process-memory-29803110-t79dw",
+                                   "Succeeded", "2026-08-31T14:30:00Z",
+                                   "server2")]),
+        now=NOW)
+    assert report["unswept"] == ["server1"]
+    lines = hmt.name_swap_holders(report)
+    assert any(line.startswith("  NOT SWEPT  server1") for line in lines)
+    assert "1 node(s) (server2)" in lines[0]
+
+
+def test_the_pods_own_node_name_outranks_the_one_printed_in_the_log():
+    # An older image prints no node in its header. The scheduler's answer is on
+    # the Pod either way, so a rollback of the manifest does not blind this.
+    report, _ = hmt.read_swap_holders(
+        runner=sweep_runner(log=SWEEP_LOG, nodes=("server1",)), now=NOW)
+    assert report["nodes"] == ["server1"]
+    assert report["rows"][0]["node"] == "server1"
+
+
+def test_an_unreadable_node_list_says_it_cannot_say_what_was_missed():
+    report, why = hmt.read_swap_holders(
+        runner=sweep_runner(nodes_rc=1, nodes=("server1", "server2")), now=NOW)
+    assert why is None
+    assert report["unswept"] == []
+    lines = hmt.name_swap_holders(report)
+    assert any("CANNOT SAY which nodes were missed" in line for line in lines)
+    assert not any(line.startswith("  NOT SWEPT") for line in lines)
+
+
+def test_one_unreadable_pod_does_not_discard_the_node_that_did_report():
+    run = sweep_runner(
+        pods=[("host-process-memory-29803110-aaaaa", "Succeeded",
+               "2026-08-31T14:30:00Z", "server1"),
+              ("host-process-memory-29803110-bbbbb", "Succeeded",
+               "2026-08-31T14:30:00Z", "server2")],
+        nodes=("server1", "server2"),
+        logs={"host-process-memory-29803110-aaaaa": SWEEP_LOG,
+              "host-process-memory-29803110-bbbbb": "nothing like a report"})
+    report, why = hmt.read_swap_holders(runner=run, now=NOW)
+    assert why is None
+    assert report["nodes"] == ["server1"]
+    assert report["unswept"] == ["server2"]
+    lines = hmt.name_swap_holders(report)
+    assert any(line.startswith("  UNREADABLE  host-process-memory-29803110-bbbbb")
+               for line in lines)
