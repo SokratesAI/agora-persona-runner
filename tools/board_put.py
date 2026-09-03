@@ -39,6 +39,19 @@ would be backwards. It exits **4** instead -- distinct from the vault's
 own codes, and loud -- because a caller that reads 0 as "everything is
 current" would be wrong, and `ticket_drift --sync` is the repair.
 
+**It stamps the revision the markdown now has, and that is new.**
+`ticket_docs.currency` (runner#679) answers `current`, `stale` or
+`unknown` by comparing the revision the store was built from against the
+one the vault holds -- and a writer that passes no revision *clears* the
+stamp, deliberately, so an unknown answer can never read as a current
+one. The in-process writer stamps; this one did not, so every board write
+a cycle made left the verdict at `unknown` for the rest of the day, and
+the signal the migration's next slice turns on could not be observed.
+It costs one read of the whole document after the write, because
+`vault_tool.py` has no `rev` subcommand -- and that read is also the
+guard: if the vault moved in between, the revision belongs to text the
+store is not holding, so nothing is stamped and it says so.
+
 **A `put` pushes the same local file the vault write sent**, not the
 document back out of the vault, so `strip_the_print_newline` has nothing
 to do there: there is no `print` in that path. That subtlety cost
@@ -57,7 +70,9 @@ is the one path here that subtracts the newline.
 """
 
 import argparse
+import os
 import subprocess
+import tempfile
 import sys
 
 # Repo root on sys.path so `python3 tools/board_put.py` works and not only
@@ -104,24 +119,47 @@ def vault_append(path, local_file, marker):
 
 
 def vault_get(path):
-    """The board as the vault holds it, or `None`.
+    """`(board text, its revision)` as the vault holds it, or `(None, None)`.
 
-    Only `--append` needs this: the local file it sent was a fragment, and
+    `--append` needs the text: the local file it sent was a fragment, and
     the store holds whole boards. `vault_tool.py get` ends in `print`, so
     its stdout is the document plus one newline and that byte has to come
     back off -- storing it is exactly the false drift runner#673 fixed.
+
+    Every path needs the revision now -- see `main`. `--rev-file` is the
+    only way this program reports one; there is no `rev` subcommand, so
+    the whole document comes back either way and the read costs the same
+    as it always did.
     """
-    done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
-                          capture_output=True, text=True, timeout=180)
-    if done.returncode != 0 or done.stdout.strip() == "[not found]":
-        return None
-    return strip_the_print_newline(done.stdout)
+    handle, rev_file = tempfile.mkstemp(prefix="board-put-rev.")
+    os.close(handle)
+    try:
+        done = subprocess.run(
+            [sys.executable, VAULT_TOOL, "get", path, "--rev-file", rev_file],
+            capture_output=True, text=True, timeout=180)
+        if done.returncode != 0 or done.stdout.strip() == "[not found]":
+            return None, None
+        try:
+            rev = open(rev_file, encoding="utf-8").read().strip()
+        except OSError:
+            rev = ""
+        # `[absent]` is what the rev file carries for a path that does not
+        # exist, and it is not a revision. An older bridge may write
+        # nothing at all. Both mean "no stamp", which is the honest answer.
+        if not rev or rev.startswith("["):
+            rev = None
+        return strip_the_print_newline(done.stdout), rev
+    finally:
+        try:
+            os.unlink(rev_file)
+        except OSError:
+            pass
 
 
-def push(path, source):
+def push(path, source, source_rev=None):
     """Update the ticket documents for one board. Returns `(ok, message)`."""
     try:
-        summary = ticket_docs.push_markdown(path, source)
+        summary = ticket_docs.push_markdown(path, source, source_rev=source_rev)
     except Exception as exc:  # noqa: BLE001 -- the message is the report
         return False, f"{type(exc).__name__}: {exc}"
     return True, (
@@ -185,16 +223,41 @@ def main(argv=None):
         )
         return done.returncode
 
+    # The revision the markdown has *now*, so the store can be asked
+    # whether it is still current without fetching the file to compare
+    # against -- `ticket_docs.currency`. Until this, nothing on the bridge
+    # pod stamped one: `push_markdown` was called with no rev, which
+    # *clears* any stamp already there, so the verdict read `unknown`
+    # after every board write a cycle made. The in-process writer in
+    # `agora_runner.vault` has stamped since runner#679 and this is the
+    # other writer.
+    #
+    # It costs one extra read of the whole document on the replace path,
+    # because `vault_tool.py` has no `rev` subcommand and `--rev-file`
+    # only reports alongside a `get`. That read is also the guard below,
+    # so it is not spent only on the rev.
+    stored, source_rev = vault_get(args.path)
     if args.append:
         # The whole board, after the insert -- not the fragment just sent.
-        source = vault_get(args.path)
-        if source is None:
+        if stored is None:
             print("STORE NOT UPDATED -- the append landed, but the board could "
                   "not be read back. Repair with: "
                   "python3 -m tools.ticket_drift --sync", file=sys.stderr)
             return 4
+        source = stored
+    elif stored != source:
+        # Somebody wrote between the put and this read, so the revision
+        # belongs to text the store is not about to hold. Stamping it
+        # would claim a currency the store cannot prove, which is the one
+        # failure the three-way verdict exists to make impossible: an
+        # unknown answer must never be able to read as a current one.
+        print("NOT STAMPED -- the vault moved between the write and the "
+              "read-back, so the store carries no source revision and "
+              "`currency` will answer unknown. The board itself is fine.",
+              file=sys.stderr)
+        source_rev = None
 
-    ok, message = push(args.path, source)
+    ok, message = push(args.path, source, source_rev=source_rev)
     if not ok:
         print(
             f"STORE NOT UPDATED -- the board landed in the vault, but the "
