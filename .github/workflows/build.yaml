@@ -75,9 +75,16 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      # pyyaml is test-only: tests/test_build_workflow.py parses this file
-      # structurally rather than grepping it.
-      - run: pip install pytest pyyaml
+      # pyyaml stopped being test-only on 2026-09-02: agora_runner imports it
+      # at runtime and requirements.txt is what the image installs. Installing
+      # that file rather than naming its contents here is the point -- the
+      # ten-hour outage of 2026-09-02 happened because this line had pyyaml
+      # and the image did not, so 5,794 tests passed against an environment
+      # strictly richer than production.
+      # tests/test_shipped_imports_are_installable.py is the check that
+      # compares the two; pytest is the only thing here that is genuinely
+      # test-only.
+      - run: pip install pytest -r requirements.txt
       - run: python -m compileall agora_runner run.py
       - run: pytest tests/ -q
       # The site's own JavaScript, run in a DOM rather than read. app.js has
