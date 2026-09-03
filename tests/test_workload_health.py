@@ -11,11 +11,14 @@ NOW = datetime.datetime(2026, 8, 29, 8, 0, tzinfo=datetime.timezone.utc)
 
 
 def _pod(namespace="agents", name="p", phase="Running", containers=(), limits=None,
-         conditions=(), node="server1"):
+         conditions=(), node="server1", deletion=""):
     return {
         "namespace": namespace, "name": name, "phase": phase,
         "containers": list(containers), "conditions": list(conditions),
         "limits": dict(limits or {}),
+        # Empty unless the test is about a Terminating Pod. It is a
+        # deadline, not a start time -- see wh.KILL_MARGIN.
+        "deletion": deletion,
         # Defaults to the node NODES declares, because every headroom test
         # below is about the box this pod stands on. Pass another name to
         # put a Pod on a different node, or "" to leave it unscheduled.
@@ -1132,3 +1135,67 @@ def test_a_kubelet_with_no_swap_block_at_all_is_unread_not_zero():
                                     figures["swap_free_mib"])
     assert actionable is False
     assert "not judged" in line and "none configured, so" not in line
+
+
+# --- Terminating: Sokrates reported a runner Pod "stuck in Terminating for
+# --- ~20min" on 2026-09-03. It had 28 minutes of its own grace left.
+
+def test_a_pod_draining_inside_its_own_deadline_does_not_raise():
+    """The report that started this: 20 minutes into a 48-minute drain."""
+    pods = [_pod(name="agora-persona-runner-x",
+                 deletion="2026-08-29T08:28:00Z",
+                 containers=[_container()])]
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 0
+    body = "\n".join(lines)
+    assert "DRAINING" in body
+    assert "TERMINATING PAST ITS OWN DEADLINE" not in body
+    assert "28m left" in body
+
+
+def test_a_pod_past_its_own_deadline_raises():
+    pods = [_pod(name="wedged", deletion="2026-08-29T07:30:00Z",
+                 containers=[_container()])]
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 2
+    body = "\n".join(lines)
+    assert "TERMINATING PAST ITS OWN DEADLINE" in body
+    assert "agents/wedged on server1" in body
+
+
+def test_the_kill_margin_is_real_and_covers_the_status_write():
+    """One minute past the deadline is the status write, not a wedged Pod."""
+    pods = [_pod(name="justover", deletion="2026-08-29T07:59:00Z",
+                 containers=[_container()])]
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 0
+    assert "DRAINING" in "\n".join(lines)
+
+
+def test_a_terminating_pod_with_no_readable_deadline_is_the_loud_case():
+    pods = [_pod(name="nodate", deletion="not a timestamp",
+                 containers=[_container()])]
+    lines, status = wh.report(pods, [], NOW)
+    assert status == 2
+    assert "no readable deadline" in "\n".join(lines)
+
+
+def test_a_pod_that_is_not_being_deleted_is_in_neither_list():
+    past, draining = wh.terminating([_pod(containers=[_container()])], NOW)
+    assert past == []
+    assert draining == []
+
+
+def test_read_pods_carries_the_deletion_deadline_off_the_object():
+    body = {"items": [{
+        "metadata": {"namespace": "agents", "name": "p",
+                     "deletionTimestamp": "2026-08-29T08:28:00Z",
+                     "deletionGracePeriodSeconds": 2880},
+        "spec": {"containers": [{"name": "c"}], "nodeName": "server1"},
+        "status": {"phase": "Running", "containerStatuses": []},
+    }]}
+    runner = mock.Mock(return_value=mock.Mock(
+        returncode=0, stdout=json.dumps(body), stderr=""))
+    pods, why = wh.read_pods(runner)
+    assert why is None
+    assert pods[0]["deletion"] == "2026-08-29T08:28:00Z"
