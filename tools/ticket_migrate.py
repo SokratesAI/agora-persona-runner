@@ -11,7 +11,17 @@ it read.
 
 **A pass here is the precondition for the rest of the migration and
 nothing more.** It says a ticket survives the trip out of the markdown
-and back; it says nothing about CouchDB, which this does not touch.
+and back; it says nothing about CouchDB, which the default run does not
+touch.
+
+`--write` is slice 2 and it does touch CouchDB: it writes one document
+per ticket into the `nova_tickets` database (its own database, never the
+vault's -- see `agora_runner.ticket_docs`), reads every one of them back,
+renders the board file from what came back, and compares that with the
+markdown it started from. **The markdown is still the source of truth and
+nothing reads a board out of CouchDB yet**; what `--write` proves is that
+it could. A read-back that does not reproduce the file exits 2 the same
+way a failed round-trip does.
 
 Exit contract, the same one the `preflight` checks share: **2 means a
 file did not survive the round-trip**, 1 means a file could not be read
@@ -31,7 +41,7 @@ import sys
 import pathlib as _pathlib  # noqa: E402
 sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner import ticket_store  # noqa: E402
+from agora_runner import ticket_docs, ticket_store  # noqa: E402
 
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -103,10 +113,55 @@ def check(path, source):
     return (0 if padding_only else 2), records
 
 
+def store(path, source, records):
+    """Write one board into CouchDB and render it back out. Returns a status.
+
+    The verification is deliberately end to end rather than a count of
+    documents written: a bulk write that reports `ok` for 108 documents
+    and drops a field inside one of them is a clean-looking write of a
+    board that no longer renders. Comparing the rendered read-back with
+    the markdown that produced it is the one check that cannot pass
+    while a ticket is damaged.
+    """
+    ok, detail = ticket_docs.ensure_database()
+    if not ok:
+        print(f"CANNOT WRITE {path} — {ticket_docs.TICKET_DB}: {detail}")
+        return 1
+    try:
+        summary = ticket_docs.write_board(path, records)
+        rendered = ticket_docs.render_from_couch(path)
+    except RuntimeError as exc:
+        print(f"CANNOT WRITE {path} — {exc}")
+        return 1
+    if summary["failures"]:
+        print(f"WRITE FAILED {path} — {len(summary['failures'])} document(s) refused: "
+              f"{summary['failures'][:3]}")
+        return 2
+    if rendered == source:
+        print(f"STORED       {path} — {summary['written']} document(s) written, "
+              f"{summary['deleted']} tombstoned, and the file renders back "
+              f"byte-identical from CouchDB")
+        return 0
+    differing, padding_only = _classify(source, rendered)
+    verdict = "STORE PADDING" if padding_only else "STORE LOST CONTENT"
+    print(f"{verdict} {path} — {summary['written']} document(s) written, "
+          f"{len(differing)} line(s) differ on the read-back")
+    for index, old, new in differing[:20]:
+        print(f"  line {index}")
+        print(f"    file  {old[:300]!r}")
+        print(f"    couch {new[:300]!r}")
+    if len(differing) > 20:
+        print(f"  ... and {len(differing) - 20} more")
+    return 0 if padding_only else 2
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--records", help="write the records as JSON to this path")
     parser.add_argument("--board", action="append", help="a vault path; repeatable")
+    parser.add_argument("--write", action="store_true",
+                        help=f"also store each board in the {ticket_docs.TICKET_DB} "
+                             "database, one document per ticket, and read it back")
     args = parser.parse_args(argv)
 
     boards = args.board or list(BOARDS)
@@ -120,14 +175,21 @@ def main(argv=None):
         result, records = check(path, source)
         status = max(status, result)
         everything[path] = records
+        if args.write:
+            status = max(status, store(path, source, records))
     if args.records and everything:
         with open(args.records, "w") as handle:
             json.dump(everything, handle, ensure_ascii=False, indent=1)
         print(f"Wrote records for {len(everything)} board(s) to {args.records}")
     total = sum(len(r["tickets"]) for r in everything.values())
+    stored = (f"Each is also stored in {ticket_docs.TICKET_DB} as one document per "
+              f"ticket; the markdown is still the source of truth and nothing reads "
+              f"a board from CouchDB yet."
+              if args.write else
+              "A round trip proves a ticket survives the markdown, not that anything "
+              "has moved to a per-ticket store yet — pass --write for that.")
     print(f"Swept {len(everything)} of {len(boards)} board(s), {total} ticket(s). "
-          f"A round trip proves a ticket survives the markdown, not that anything "
-          f"has moved to a per-ticket store yet.")
+          + stored)
     return status
 
 
