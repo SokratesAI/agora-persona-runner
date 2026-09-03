@@ -51,10 +51,18 @@ def _summary(volumes=(), nodefs=True, imagefs=True, node_available=NODE_AVAILABL
     return {"node": node, "pods": pods}
 
 
-def _runner(nodes=("server1",), summaries=None, node_list_rc=0):
+def _runner(nodes=("server1",), summaries=None, node_list_rc=0, claims=(), pods=()):
     summaries = summaries or {}
 
     def run(argv, capture_output=False, text=False):
+        if argv[:3] == ["kubectl", "get", "pvc"]:
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps({"items": list(claims)}), ""
+            )
+        if argv[:3] == ["kubectl", "get", "pods"]:
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps({"items": list(pods)}), ""
+            )
         if argv[:3] == ["kubectl", "get", "nodes"]:
             body = {"items": [{"metadata": {"name": name}} for name in nodes]}
             return subprocess.CompletedProcess(
@@ -254,3 +262,93 @@ def test_a_volume_with_no_pvcref_is_not_a_claim():
     ]
     volumes = disk_health.pvc_volumes(summary)
     assert [v["claim"] for v in volumes] == ["real"]
+
+
+def _done(stdout, returncode=0, stderr=""):
+    return subprocess.CompletedProcess(
+        args=["kubectl"], returncode=returncode, stdout=stdout, stderr=stderr
+    )
+
+
+def _claim(namespace, name, tracking=None, phase="Bound", storage="10Gi"):
+    metadata = {
+        "namespace": namespace,
+        "name": name,
+        "creationTimestamp": "2026-02-23T12:54:28Z",
+    }
+    if tracking:
+        metadata["annotations"] = {"argocd.argoproj.io/tracking-id": tracking}
+    return {
+        "metadata": metadata,
+        "spec": {"resources": {"requests": {"storage": storage}}},
+        "status": {"phase": phase},
+    }
+
+
+def test_read_mounted_claims_reads_pod_volumes_not_workload_templates():
+    pods = {
+        "items": [
+            {
+                "metadata": {"namespace": "agents"},
+                "spec": {
+                    "volumes": [
+                        {"name": "tmp", "emptyDir": {}},
+                        {
+                            "name": "data",
+                            "persistentVolumeClaim": {"claimName": "marcus-data"},
+                        },
+                    ]
+                },
+            }
+        ]
+    }
+
+    def runner(argv, **kwargs):
+        assert argv[:3] == ["kubectl", "get", "pods"]
+        return _done(json.dumps(pods))
+
+    assert disk_health.read_mounted_claims(runner=runner) == {("agents", "marcus-data")}
+
+
+def test_unmounted_claims_separates_owned_from_orphaned():
+    claims = [
+        _claim("agents", "marcus-data"),
+        _claim("infra", "ollama-models", tracking="sokratesai-deployments:/x"),
+        _claim("infra", "nats-js-nats-0"),
+    ]
+    found = disk_health.unmounted_claims(claims, {("agents", "marcus-data")})
+    assert [(c["metadata"]["name"], owner) for c, owner in found] == [
+        ("ollama-models", "sokratesai-deployments"),
+        ("nats-js-nats-0", None),
+    ]
+
+
+def test_only_an_untracked_unmounted_claim_raises():
+    lines = []
+    findings = disk_health.report_unmounted(
+        [
+            (_claim("infra", "ollama-models"), "sokratesai-deployments"),
+            (_claim("infra", "nats-js-nats-0"), None),
+        ],
+        out=lines.append,
+    )
+    assert findings == 1
+    parked = [line for line in lines if "PARKED" in line]
+    orphaned = [line for line in lines if "ORPHANED" in line]
+    assert len(parked) == 1 and "ollama-models" in parked[0]
+    assert len(orphaned) == 1 and "nats-js-nats-0" in orphaned[0]
+    # The parked line must say who owns it — that is the whole reason it does
+    # not raise, and a reader has to be able to check the claim.
+    assert "sokratesai-deployments" in parked[0]
+
+
+def test_an_unreadable_claim_list_is_never_clean():
+    def runner(argv, **kwargs):
+        if argv[:3] == ["kubectl", "get", "pvc"]:
+            return _done("", returncode=1, stderr="Forbidden")
+        return _done(json.dumps({"items": []}))
+
+    lines = []
+    status = disk_health.main(["--node", "server1"], runner=runner, out=lines.append)
+    assert status == 1
+    assert any("CANNOT READ the claim list" in line for line in lines)

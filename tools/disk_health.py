@@ -51,10 +51,29 @@ it could judge has room, naming what it swept and what it could not cap.
 
 Two scopes it prints for itself. This is current state, not a trend: a disk
 at 76% that is filling by 2GiB a day and one that has been flat for a month
-read identically here, and only a stored series separates them. And it reads
-each *node's* kubelet, so a Bound claim that no running Pod mounts appears in
-no node's stats at all and is invisible to this — `kubectl get pvc -A` is the
-list of what exists, this is the list of what is mounted.
+read identically here, and only a stored series separates them. And the
+per-node half reads each *node's* kubelet, so it sees only what is mounted.
+
+**That second gap is now closed from the other side, and closing it found
+two.** Cycle 871 went looking for a workload to move onto server2 and
+walked into `infra/nats-js-nats-0` — a 10Gi claim created 2026-02-23,
+pinned to server1, carrying no `argocd.argoproj.io/tracking-id`, for a
+`nats` StatefulSet that does not exist in the cluster — and
+`agents/ollama-models`, Pending since 2026-07-09 and likewise tracked by
+nothing. Both were found by hand, by listing claims and reading them one
+at a time, and the tool that is supposed to answer "what is on server1's
+disk" said in words that it could not see them.
+
+So `unmounted_claims()` asks the API server instead of the kubelet: every
+claim that exists, minus every claim a Pod mounts. **The verdict is
+deliberately two-sided, because an unmounted claim is usually fine.**
+`infra/ollama-models` is unmounted because its Deployment is parked at
+`replicas: 0` — that is a decision somebody made, ArgoCD tracks the claim,
+and a check that reddens on it every morning is one nobody reads. Only a
+claim that is mounted by nothing **and** tracked by no ArgoCD Application
+raises: no workload uses it and no repository would recreate it, so it is
+an object that exists purely by accident and holds a directory on a node's
+disk. That is a closeable finding rather than a standing one.
 """
 
 import argparse
@@ -183,6 +202,103 @@ def _gib(value):
     return "?" if not value else "%.1fGiB" % (value / GIB)
 
 
+def read_claims(runner=subprocess.run):
+    """Every PersistentVolumeClaim the API server knows about."""
+    done = runner(
+        ["kubectl", "get", "pvc", "--all-namespaces", "-o", "json"],
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode != 0:
+        raise OSError((done.stderr or "").strip() or "kubectl get pvc failed")
+    try:
+        return json.loads(done.stdout).get("items") or []
+    except ValueError as exc:
+        raise OSError("the claim list did not parse: %s" % exc)
+
+
+def read_mounted_claims(runner=subprocess.run):
+    """`{(namespace, claim)}` for every claim some Pod currently mounts.
+
+    Pods rather than workloads on purpose: a Deployment parked at
+    `replicas: 0` still names its claim in a template that nothing is
+    running, and the question here is what is actually in use.
+    """
+    done = runner(
+        ["kubectl", "get", "pods", "--all-namespaces", "-o", "json"],
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode != 0:
+        raise OSError((done.stderr or "").strip() or "kubectl get pods failed")
+    try:
+        items = json.loads(done.stdout).get("items") or []
+    except ValueError as exc:
+        raise OSError("the pod list did not parse: %s" % exc)
+    mounted = set()
+    for pod in items:
+        namespace = (pod.get("metadata") or {}).get("namespace")
+        for volume in (pod.get("spec") or {}).get("volumes") or []:
+            claim = (volume.get("persistentVolumeClaim") or {}).get("claimName")
+            if claim:
+                mounted.add((namespace, claim))
+    return mounted
+
+
+def tracked_by(claim):
+    """The ArgoCD Application that owns this claim, or None if nothing does.
+
+    ArgoCD stamps `argocd.argoproj.io/tracking-id` on everything it applies,
+    so its absence is the difference between "a repository would recreate
+    this" and "deleting it deletes it".
+    """
+    annotations = (claim.get("metadata") or {}).get("annotations") or {}
+    tracking = annotations.get("argocd.argoproj.io/tracking-id")
+    if not tracking:
+        return None
+    return tracking.split(":", 1)[0] or None
+
+
+def unmounted_claims(claims, mounted):
+    """The claims no Pod mounts, newest-agnostic, in `kubectl` order.
+
+    Each is `(claim, owner)` where `owner` is the ArgoCD Application that
+    tracks it or None. The caller decides which of those raises.
+    """
+    found = []
+    for claim in claims:
+        metadata = claim.get("metadata") or {}
+        key = (metadata.get("namespace"), metadata.get("name"))
+        if key in mounted:
+            continue
+        found.append((claim, tracked_by(claim)))
+    return found
+
+
+def report_unmounted(unmounted, out=print):
+    """Print the unmounted claims. Returns the number that raise."""
+    findings = 0
+    for claim, owner in unmounted:
+        metadata = claim.get("metadata") or {}
+        name = "%s/%s" % (metadata.get("namespace"), metadata.get("name"))
+        requested = (
+            ((claim.get("spec") or {}).get("resources") or {}).get("requests") or {}
+        ).get("storage", "?")
+        phase = (claim.get("status") or {}).get("phase", "?")
+        created = metadata.get("creationTimestamp", "?")
+        if owner:
+            out(
+                "  PARKED     %s (%s, %s) — no Pod mounts it, but %s tracks it, so this is a decision rather than litter"
+                % (name, requested, phase, owner)
+            )
+            continue
+        findings += 1
+        out(
+            "  ORPHANED   %s (%s, %s, created %s) — no Pod mounts it and no ArgoCD Application tracks it, so nothing uses it and nothing would recreate it"
+            % (name, requested, phase, created)
+        )
+    return findings
+
 def report(node, filesystems, volumes, out=print):
     """Print one node's verdict. Returns the number of findings on it."""
     findings = 0
@@ -293,6 +409,24 @@ def main(argv=None, runner=subprocess.run, out=print):
                 uncapped += 1
         findings += report(node, filesystems, volumes, out=out)
 
+    out("== claims no Pod mounts")
+    orphaned = 0
+    claims_read = None
+    try:
+        claims = read_claims(runner=runner)
+        mounted = read_mounted_claims(runner=runner)
+    except (OSError, ValueError) as exc:
+        unreadable.append("the claim list")
+        out("  CANNOT READ the claim list — %s" % exc)
+    else:
+        claims_read = len(claims)
+        unmounted = unmounted_claims(claims, mounted)
+        if not unmounted:
+            out("  ok         every claim that exists is mounted by a running Pod")
+        else:
+            orphaned = report_unmounted(unmounted, out=out)
+        findings += orphaned
+
     out("")
     # The caveats go first and the sweep line last, because `tools.preflight`
     # collapses this to "the last line carrying a digit". The reviewer measured
@@ -311,7 +445,7 @@ def main(argv=None, runner=subprocess.run, out=print):
         "NOT JUDGED  whether a disk is filling. This is current state; a flat disk and one that was ten points emptier yesterday read the same here."
     )
     out(
-        "NOT JUDGED  a Bound claim that no running Pod mounts. This reads each node's kubelet, and an unmounted volume is in no node's stats at all."
+        "NOT JUDGED  how much disk an unmounted claim actually holds. It is in no node's kubelet stats at all, so the section above says that it exists and not what it costs."
     )
     if unreadable:
         out(
@@ -319,8 +453,15 @@ def main(argv=None, runner=subprocess.run, out=print):
             % (len(unreadable), len(nodes))
         )
     out(
-        "Swept %d node(s): %s. %d claim(s) report a size of their own; %d report the node's disk instead."
-        % (len(nodes), ", ".join(nodes), capped, uncapped)
+        "Swept %d node(s): %s. %d claim(s) report a size of their own; %d report the node's disk instead. %s claim(s) exist cluster-wide, %d of them mounted by nothing and owned by nothing."
+        % (
+            len(nodes),
+            ", ".join(nodes),
+            capped,
+            uncapped,
+            "?" if claims_read is None else claims_read,
+            orphaned,
+        )
     )
     if unreadable:
         out(
