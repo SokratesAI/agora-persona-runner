@@ -24,12 +24,36 @@ GLOBAL_KILL = """\
 NOW = datetime(2026, 9, 2, 16, 30, tzinfo=timezone.utc)
 
 
-def lines(events, hours=24, pod_names=None, now=NOW):
+def lines(events, hours=24, pod_names=None, now=NOW, node="server1"):
     got = []
     status = oom_history.report(
-        oom_history.within(events, hours, now=now), hours,
+        node, oom_history.within(events, hours, now=now), hours,
         pod_names or {}, "swept.", out=got.append)
     return status, "\n".join(got)
+
+
+NODES = '{"items": [{"metadata": {"name": "server1"}}, {"metadata": {"name": "server2"}}]}'
+
+
+def cluster(kern, pods='{"items": []}', nodes=NODES):
+    """A fake kubectl. `kern` maps a node name to its kern.log, or to an OSError."""
+    def runner(cmd, **kwargs):
+        if "nodes" in cmd:
+            if isinstance(nodes, int):
+                # A body that parses, so the guard under test is the exit
+                # status and not json.loads choking on an empty string --
+                # kubectl really does print a list on some refusals.
+                return subprocess.CompletedProcess(cmd, nodes, NODES, "Forbidden")
+            return subprocess.CompletedProcess(cmd, 0, nodes, "")
+        if "pods" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, pods, "")
+        raw = [part for part in cmd if part.startswith("/api/v1/nodes/")][0]
+        node = raw.split("/")[4]
+        body = kern[node]
+        if body is None:
+            return subprocess.CompletedProcess(cmd, 1, "", "Error from server (Forbidden)")
+        return subprocess.CompletedProcess(cmd, 0, body, "")
+    return runner
 
 
 def test_victims_group_under_their_own_event_and_a_repeated_pid_counts_once():
@@ -68,20 +92,20 @@ def test_a_cgroup_limit_kill_raises():
 def test_a_global_kill_prints_and_does_not_raise():
     status, text = lines(oom_history.parse_events(GLOBAL_KILL))
     assert status == 0
-    assert "NODE RAN OUT" in text
+    assert "server1 RAN OUT" in text
     assert "CGROUP LIMIT OOM" not in text
 
 
 def test_a_global_kill_beside_a_limit_kill_does_not_hide_it():
     status, text = lines(oom_history.parse_events(GLOBAL_KILL + BRIDGE_KILL))
     assert status == 2
-    assert "CGROUP LIMIT OOM" in text and "NODE RAN OUT" in text
+    assert "CGROUP LIMIT OOM on server1" in text and "server1 RAN OUT" in text
 
 
 def test_a_kill_older_than_the_window_is_not_reported():
     status, text = lines(oom_history.parse_events(BRIDGE_KILL), hours=1)
     assert status == 0
-    assert "No OOM kill in the window." in text
+    assert "no OOM kill on server1 in the window." in text
 
 
 def test_a_live_pod_is_named_and_a_dead_one_is_left_as_its_uid():
@@ -102,10 +126,7 @@ def test_the_victims_rss_is_printed_so_a_kill_says_what_asked_for_the_memory():
 def test_an_unreadable_kernel_log_is_not_a_clean_window():
     # The pod list answers, so the only thing that can produce a 1 here is the
     # kernel log's own failure -- an empty log read as "no kills" would exit 0.
-    def half(cmd, **kwargs):
-        if "pods" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, '{"items": []}', "")
-        return subprocess.CompletedProcess(cmd, 1, "", "Error from server (Forbidden)")
+    half = cluster({"server1": None, "server2": None})
 
     got = []
     assert oom_history.main([], runner=half, out=got.append) == 1
@@ -118,6 +139,8 @@ def test_an_unreadable_pod_list_is_not_a_clean_window():
     # be caught by its exit status. A body that parses is what makes this test
     # about the guard rather than about json.loads failing on an empty string.
     def half(cmd, **kwargs):
+        if "nodes" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, NODES, "")
         if "pods" in cmd:
             return subprocess.CompletedProcess(cmd, 1, '{"items": []}', "Forbidden")
         return subprocess.CompletedProcess(cmd, 0, GLOBAL_KILL, "")
@@ -128,11 +151,78 @@ def test_an_unreadable_pod_list_is_not_a_clean_window():
 
 
 def test_a_kernel_log_with_no_oom_event_is_clean_and_says_so():
-    def quiet(cmd, **kwargs):
-        if "pods" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, '{"items": []}', "")
-        return subprocess.CompletedProcess(cmd, 0, "2026-09-02T09:00:00.000000+00:00 x\n", "")
+    quiet = cluster({
+        "server1": "2026-09-02T09:00:00.000000+00:00 x\n",
+        "server2": "2026-09-02T09:00:00.000000+00:00 x\n",
+    })
 
     got = []
     assert oom_history.main([], runner=quiet, out=got.append) == 0
     assert "no OOM event at all" in "\n".join(got)
+
+
+def test_a_kill_on_the_second_node_is_found_and_raises():
+    # The bug this replaced: `--node server1` was the default, so a kill on
+    # server2 produced byte-identical output to no kill anywhere.
+    runner = cluster({"server1": "", "server2": BRIDGE_KILL})
+    got = []
+    assert oom_history.main([], runner=runner, out=got.append, now=NOW) == 2
+    text = "\n".join(got)
+    assert "CGROUP LIMIT OOM on server2" in text
+    assert "MainThread" in text
+
+
+def test_every_node_the_api_server_lists_is_swept_and_named():
+    runner = cluster({"server1": "", "server2": ""})
+    got = []
+    assert oom_history.main([], runner=runner, out=got.append, now=NOW) == 0
+    text = "\n".join(got)
+    assert "Swept 2 node(s): server1, server2." in text
+
+
+def test_a_node_that_cannot_be_read_makes_the_sweep_partial_not_clean():
+    # server1 is clean and server2 is refused. The old shape would have exited
+    # 0 on server1 alone; the summary has to say which half is missing.
+    runner = cluster({"server1": "", "server2": None})
+    got = []
+    assert oom_history.main([], runner=runner, out=got.append, now=NOW) == 1
+    text = "\n".join(got)
+    assert "Could not read server2" in text
+    assert "partial" in text
+
+
+def test_a_real_kill_outranks_an_unreadable_node():
+    runner = cluster({"server1": BRIDGE_KILL, "server2": None})
+    got = []
+    assert oom_history.main([], runner=runner, out=got.append, now=NOW) == 2
+    assert "Could not read server2" in "\n".join(got)
+
+
+def test_an_unreadable_node_list_is_not_a_clean_sweep():
+    runner = cluster({"server1": "", "server2": ""}, nodes=1)
+    got = []
+    assert oom_history.main([], runner=runner, out=got.append, now=NOW) == 1
+    assert "UNREADABLE" in got[0]
+    assert "Forbidden" in got[0]
+
+
+def test_an_empty_node_list_is_not_a_cluster():
+    runner = cluster({"server1": ""}, nodes='{"items": []}')
+    got = []
+    assert oom_history.main([], runner=runner, out=got.append, now=NOW) == 1
+    assert "listed no nodes" in got[0]
+
+
+def test_node_restricts_the_sweep_to_one_node_without_listing_them():
+    asked = []
+
+    def runner(cmd, **kwargs):
+        asked.append(cmd)
+        if "pods" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, '{"items": []}', "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    got = []
+    assert oom_history.main(["--node", "server2"], runner=runner, out=got.append, now=NOW) == 0
+    assert not any("nodes" in cmd and "get" in cmd and "-o" in cmd for cmd in asked)
+    assert "Swept 1 node(s): server2." in "\n".join(got)
