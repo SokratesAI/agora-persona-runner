@@ -160,22 +160,40 @@ def ensure_database():
 
 
 def _existing(path):
-    """`{doc_id: _rev}` for everything already stored for one board."""
+    """`{doc_id: the stored document}` for everything already held for one board.
+
+    This used to return `{doc_id: _rev}`, which was all a full rewrite
+    needed. `write_board` now sends only the documents whose content
+    actually changed, so it needs the stored content to compare against,
+    and `include_docs` costs one flag on a request that was already being
+    made.
+    """
     prefix = f"ticket:{path.lower()}:"
     query = urllib.parse.urlencode({
         "startkey": json.dumps(prefix),
         "endkey": json.dumps(prefix + _ID_MAX),
+        "include_docs": "true",
     })
     status, body = _req("GET", f"{TICKET_DB}/_all_docs?{query}")
     if status != 200:
         raise RuntimeError(f"listing {path}: {status} {json.dumps(body)[:200]}")
-    revs = {row["id"]: row["value"]["rev"] for row in body.get("rows", [])}
+    stored = {row["id"]: row["doc"] for row in body.get("rows", []) if row.get("doc")}
     status, body = _req("GET", f"{TICKET_DB}/{urllib.parse.quote(layout_doc_id(path), safe='')}")
     if status == 200:
-        revs[body["_id"]] = body["_rev"]
+        stored[body["_id"]] = body
     elif status != 404:
         raise RuntimeError(f"reading the layout of {path}: {status}")
-    return revs
+    return stored
+
+
+def _payload(doc):
+    """A stored document without its revision, so it compares to a fresh one.
+
+    `_rev` is the only field CouchDB adds, and it changes on every write
+    by definition -- comparing it would make every document differ from
+    itself and the skip below would never fire once.
+    """
+    return {key: value for key, value in doc.items() if key != "_rev"}
 
 
 def write_board(path, records):
@@ -185,14 +203,30 @@ def write_board(path, records):
     a second run updates rather than conflicting, and an id that is stored
     but no longer produced is tombstoned -- a ticket he deleted from the
     markdown must not survive here as a row the read-back would render.
+
+    **A document whose content has not changed is not sent**, which is the
+    whole reason the store exists. Slice 2 rewrote all 445 documents on
+    every call, so keeping the store current would have cost the same
+    write amplification as the 1.15 MB markdown document it is meant to
+    replace -- just spread across 445 revisions instead of one. A status
+    change touches one ticket, so it should write one document, and the
+    `unchanged` count in the summary is what says whether that held.
     """
     docs = to_documents(path, records)
-    revs = _existing(path)
-    written = [dict(doc, **({"_rev": revs[doc["_id"]]} if doc["_id"] in revs else {}))
-               for doc in docs]
+    stored = _existing(path)
+    written = []
+    unchanged = 0
+    for doc in docs:
+        held = stored.get(doc["_id"])
+        if held is not None and _payload(held) == doc:
+            unchanged += 1
+            continue
+        written.append(dict(doc, **({"_rev": held["_rev"]} if held else {})))
     produced = {doc["_id"] for doc in docs}
-    tombstones = [{"_id": doc_id, "_rev": rev, "_deleted": True}
-                  for doc_id, rev in revs.items() if doc_id not in produced]
+    tombstones = [{"_id": doc_id, "_rev": held["_rev"], "_deleted": True}
+                  for doc_id, held in stored.items() if doc_id not in produced]
+    if not written and not tombstones:
+        return {"written": 0, "deleted": 0, "unchanged": unchanged, "failures": []}
     status, body = _req("POST", f"{TICKET_DB}/_bulk_docs",
                         {"docs": written + tombstones})
     if status not in (200, 201):
@@ -201,6 +235,7 @@ def write_board(path, records):
     return {
         "written": len(written),
         "deleted": len(tombstones),
+        "unchanged": unchanged,
         "failures": failures,
     }
 
@@ -228,3 +263,49 @@ def read_board(path):
 def render_from_couch(path):
     """The board file, rendered from what is stored in CouchDB."""
     return ticket_store.to_markdown(read_board(path))
+
+
+# The four board files. These are the only vault paths this store holds, and
+# a write to anything else must never reach `nova_tickets`.
+#
+# It lives here rather than in `tools.ticket_migrate`, where slice 2 first
+# wrote it, because `agora_runner` may not import from `tools` -- and the
+# write-through below is in `agora_runner`. The migration imports it from
+# here now, so there is still exactly one copy.
+BOARDS = (
+    "projects/sokrates/projects/nova/issues.md",
+    "projects/sokrates/projects/nova/ideas.md",
+    "projects/sokrates/projects/agora/nova/resources/issues.md",
+    "projects/sokrates/projects/agora/nova/resources/ideas.md",
+)
+
+_BOARD_KEYS = frozenset(board.lower() for board in BOARDS)
+
+
+def is_board(path):
+    """Is `path` one of the four board files?
+
+    Lowercased on both sides because vault paths are: `_vault_put_raw`
+    normalises the `_id` and the stored `path` field to lowercase, so a
+    caller writing mixed case reaches the same document and has to reach
+    the same tickets.
+    """
+    return (path or "").lower() in _BOARD_KEYS
+
+
+def push_markdown(path, source):
+    """Update the stored documents for one board from its new markdown.
+
+    Returns the `write_board` summary, or `None` when `path` is not a
+    board -- which is every other write in the vault, so the common case
+    is one set membership test and no request at all.
+
+    This is the write side of the migration. Slice 2 loaded the tickets
+    and slice 3 watched them go stale; the markdown is still the source of
+    truth and every writer still writes markdown, so the store can only
+    stay current by following the markdown write that just happened.
+    """
+    if not is_board(path):
+        return None
+    ensure_database()
+    return write_board(path, ticket_store.to_records(source))

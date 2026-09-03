@@ -95,10 +95,19 @@ def test_a_ticket_that_left_the_markdown_is_tombstoned(monkeypatch):
         raise AssertionError(f"unexpected {method} {path}")
 
     monkeypatch.setattr(ticket_docs, "_req", fake_req)
+    # Stored contents that do not match what this board now produces, so
+    # every id here is genuinely due a write and the skip cannot hide the
+    # tombstone this test is about.
     monkeypatch.setattr(ticket_docs, "_existing", lambda path: {
-        ticket_docs.ticket_doc_id(PATH, 3): "1-aaa",
-        ticket_docs.ticket_doc_id(PATH, 99): "1-gone",
-        ticket_docs.layout_doc_id(PATH): "1-bbb",
+        ticket_docs.ticket_doc_id(PATH, 3): {
+            "_id": ticket_docs.ticket_doc_id(PATH, 3), "_rev": "1-aaa",
+            "type": "ticket", "board": PATH, "number": 3, "ticket": {"stale": True}},
+        ticket_docs.ticket_doc_id(PATH, 99): {
+            "_id": ticket_docs.ticket_doc_id(PATH, 99), "_rev": "1-gone",
+            "type": "ticket", "board": PATH, "number": 99, "ticket": {}},
+        ticket_docs.layout_doc_id(PATH): {
+            "_id": ticket_docs.layout_doc_id(PATH), "_rev": "1-bbb",
+            "type": "board", "board": PATH, "layout": [], "tickets": 0},
     })
 
     summary = ticket_docs.write_board(PATH, ticket_store.to_records(BOARD))
@@ -162,3 +171,111 @@ def test_read_board_reassembles_what_write_board_sent(monkeypatch):
 
     monkeypatch.setattr(ticket_docs, "_req", fake_req)
     assert ticket_docs.render_from_couch(PATH) == BOARD
+
+
+def _bulk_recorder(monkeypatch, stored):
+    """Stub `_existing` with `stored` and capture what `_bulk_docs` is sent."""
+    calls = {}
+
+    def fake_req(method, path, body=None, timeout=60):
+        if method == "POST":
+            calls["body"] = body
+            return 201, [{"ok": True} for _ in body["docs"]]
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(ticket_docs, "_req", fake_req)
+    monkeypatch.setattr(ticket_docs, "_existing", lambda path: stored)
+    return calls
+
+
+def test_a_second_write_of_an_unchanged_board_sends_nothing(monkeypatch):
+    """The point of the store: writing the same board again costs no revisions.
+
+    Slice 2 sent all 445 documents every time, so keeping the store in
+    step with the markdown would have cost the same write amplification as
+    the 1.15 MB single document it replaces.
+    """
+    records = ticket_store.to_records(BOARD)
+    stored = {doc["_id"]: dict(doc, _rev="1-held") for doc in _through_json(
+        ticket_docs.to_documents(PATH, records))}
+    calls = _bulk_recorder(monkeypatch, stored)
+
+    summary = ticket_docs.write_board(PATH, records)
+
+    assert summary == {"written": 0, "deleted": 0,
+                       "unchanged": len(stored), "failures": []}
+    # Not "it sent an empty list" -- it made no request at all.
+    assert "body" not in calls
+
+
+def test_changing_one_ticket_writes_one_document(monkeypatch):
+    records = ticket_store.to_records(BOARD)
+    stored = {doc["_id"]: dict(doc, _rev="1-held") for doc in _through_json(
+        ticket_docs.to_documents(PATH, records))}
+    moved = records["tickets"][0]
+    stale = ticket_docs.ticket_doc_id(PATH, moved["number"])
+    stored[stale] = dict(stored[stale], ticket=dict(moved, status="something else"))
+    calls = _bulk_recorder(monkeypatch, stored)
+
+    summary = ticket_docs.write_board(PATH, records)
+
+    assert summary["written"] == 1
+    assert summary["unchanged"] == len(stored) - 1
+    sent = calls["body"]["docs"]
+    assert [doc["_id"] for doc in sent] == [stale]
+    # It carries the stored revision, so the update does not conflict.
+    assert sent[0]["_rev"] == "1-held"
+
+
+def test_a_ticket_missing_from_the_store_is_written(monkeypatch):
+    """An unchanged-skip must not swallow a document that is not there."""
+    records = ticket_store.to_records(BOARD)
+    stored = {doc["_id"]: dict(doc, _rev="1-held") for doc in _through_json(
+        ticket_docs.to_documents(PATH, records))}
+    absent = ticket_docs.ticket_doc_id(PATH, records["tickets"][0]["number"])
+    del stored[absent]
+    calls = _bulk_recorder(monkeypatch, stored)
+
+    summary = ticket_docs.write_board(PATH, records)
+
+    assert summary["written"] == 1
+    sent = calls["body"]["docs"]
+    assert [doc["_id"] for doc in sent] == [absent]
+    assert "_rev" not in sent[0]
+
+
+def test_push_markdown_ignores_a_path_that_is_not_a_board(monkeypatch):
+    """Every other vault write must reach this store's network layer never."""
+    monkeypatch.setattr(ticket_docs, "_req", _refuse)
+    assert ticket_docs.push_markdown(
+        "projects/sokrates/projects/agora/nova/journal/900-cycle-900.md",
+        BOARD) is None
+
+
+def _refuse(method, path, body=None, timeout=60):
+    raise AssertionError(f"a non-board write reached CouchDB: {method} {path}")
+
+
+def test_push_markdown_writes_a_board_it_recognises(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ticket_docs, "ensure_database", lambda: (True, 201))
+    def fake_write(path, records):
+        seen["call"] = (path, records)
+        return {"written": 1}
+
+    monkeypatch.setattr(ticket_docs, "write_board", fake_write)
+
+    board = ticket_docs.BOARDS[0]
+    assert ticket_docs.push_markdown(board, BOARD) == {"written": 1}
+    assert seen["call"][0] == board
+    assert seen["call"][1] == ticket_store.to_records(BOARD)
+
+
+def test_is_board_is_case_insensitive_the_way_vault_paths_are():
+    # `_vault_put_raw` lowercases the id and the stored path, so a mixed
+    # case write lands on the same document and has to reach the same
+    # tickets. PATH itself is spelled `Issues.md` for exactly this reason.
+    assert ticket_docs.is_board(PATH)
+    assert ticket_docs.is_board(ticket_docs.BOARDS[0].upper())
+    assert not ticket_docs.is_board("projects/sokrates/projects/nova/notes.md")
+    assert not ticket_docs.is_board(None)
