@@ -401,8 +401,109 @@ def rows_design_document():
     }
 
 
+DETAIL_FIELDS = ("number", "detailHeading", "details")
+
+DETAILS_DDOC_ID = "_design/details"
+DETAILS_VIEW = "by_board"
+
+
+def _details_map_js():
+    """The write-up view's map function.
+
+    Keyed `[board, number]` like the row view, for the same reason: one
+    board is a key range. **Only a ticket that actually carries a
+    write-up is emitted** -- `to_records` sets `details` on a ticket that
+    has a `# Details` span and on no other, so a board of 241 rows
+    with 241 write-ups gives a view of 241 and a board of 170 with 165
+    gives 165 -- measured live 2026-09-03 -- and the reader does not have
+    to filter empties back out.
+    """
+    projection = ", ".join(f"{field}: t.{field}" for field in DETAIL_FIELDS)
+    return (
+        "function (doc) {\n"
+        "  if (doc.type === 'ticket' && doc.ticket && doc.ticket.details) {\n"
+        "    var t = doc.ticket;\n"
+        f"    emit([doc.board, doc.number], {{{projection}}});\n"
+        "  }\n"
+        "}"
+    )
+
+
+def details_design_document():
+    return {
+        "_id": DETAILS_DDOC_ID,
+        "language": "javascript",
+        "views": {DETAILS_VIEW: {"map": _details_map_js()}},
+    }
+
+
+def _ensure_design_document(doc_id, wanted):
+    """Put one design document unless it is already exactly this. What it did.
+
+    Factored out of `ensure_views` when the write-up view arrived rather
+    than copied, because the unchanged-check is the load-bearing half and
+    a second hand-written copy of it is the shape this loop keeps filing
+    against itself. Writing a design document invalidates its index, so a
+    PUT on every board write would rebuild the whole projection every time
+    a status changed -- the write amplification `write_board` exists to
+    end, moved one layer down where nothing would have measured it.
+    """
+    quoted = urllib.parse.quote(doc_id, safe="")
+    status, held = _req("GET", f"{TICKET_DB}/{quoted}")
+    if status == 200:
+        if held.get("views") == wanted["views"]:
+            return "unchanged"
+        wanted = dict(wanted, _rev=held["_rev"])
+    elif status != 404:
+        raise RuntimeError(f"reading {doc_id}: {status} {json.dumps(held)[:200]}")
+    status, body = _req("PUT", f"{TICKET_DB}/{quoted}", wanted)
+    if status not in (200, 201):
+        raise RuntimeError(f"writing {doc_id}: {status} {json.dumps(body)[:200]}")
+    return "written"
+
+
+def _read_view(ddoc_id, view, path, what):
+    """One board's rows out of one view, in the view's own key order."""
+    query = urllib.parse.urlencode({
+        "startkey": json.dumps([path]),
+        "endkey": json.dumps([path, {}]),
+    })
+    status, body = _req(
+        "GET",
+        f"{TICKET_DB}/{urllib.parse.quote(ddoc_id, safe='')}"
+        f"/_view/{view}?{query}")
+    if status != 200:
+        raise RuntimeError(f"reading {what} of {path}: {status} {json.dumps(body)[:200]}")
+    return [row["value"] for row in body.get("rows", [])]
+
+
+def read_details(path):
+    """One board's write-ups as `{number: body}` -- no rows, no layout.
+
+    The read the board *page* needs for its `# Details` half, and the
+    second reader of this migration after `read_rows`. `read_board` is the
+    read that renders the file and has to carry every byte of it; this
+    carries the write-ups alone, which is 101KB of `ideas.md`'s 760KB.
+
+    **The body is stripped, and that is a contract with the page, not
+    tidiness.** `nova_boards.parse_board` strips each write-up before it
+    hands it over (`details[number] = "...".join(...).strip()`) while
+    `ticket_store.to_records` stores it verbatim so the round-trip back to
+    markdown is byte-exact. Both are right for their own job, and the
+    difference is exactly one strip -- so it belongs here, in the reader
+    that has to agree with the parser, rather than in the writer that has
+    to agree with the file. Without it every board whose first write-up is
+    preceded by a blank line compares unequal and the page falls back to
+    the markdown forever, which is a silent no-op rather than a failure.
+    """
+    return {
+        row["number"]: (row.get("details") or "").strip()
+        for row in _read_view(DETAILS_DDOC_ID, DETAILS_VIEW, path, "write-ups")
+    }
+
+
 def ensure_views():
-    """Put the row-projection design document. Returns what it did.
+    """Put both projection design documents. Returns what it did.
 
     **An unchanged design document is not rewritten**, and that is not a
     tidiness: writing a design document invalidates its index, so a PUT on
@@ -412,19 +513,16 @@ def ensure_views():
     query after a real change costs the rebuild -- 2.8s against 241
     documents, measured 2026-09-03 -- and every one after it is 0.1s.
     """
-    wanted = rows_design_document()
-    status, held = _req("GET", f"{TICKET_DB}/{urllib.parse.quote(ROWS_DDOC_ID, safe='')}")
-    if status == 200:
-        if held.get("views") == wanted["views"]:
-            return "unchanged"
-        wanted["_rev"] = held["_rev"]
-    elif status != 404:
-        raise RuntimeError(f"reading {ROWS_DDOC_ID}: {status} {json.dumps(held)[:200]}")
-    status, body = _req(
-        "PUT", f"{TICKET_DB}/{urllib.parse.quote(ROWS_DDOC_ID, safe='')}", wanted)
-    if status not in (200, 201):
-        raise RuntimeError(f"writing {ROWS_DDOC_ID}: {status} {json.dumps(body)[:200]}")
-    return "written"
+    outcomes = [
+        _ensure_design_document(ROWS_DDOC_ID, rows_design_document()),
+        _ensure_design_document(DETAILS_DDOC_ID, details_design_document()),
+    ]
+    # "written" if either one moved, so the answer stays "did this call
+    # invalidate an index", which is the only thing a caller has ever
+    # asked it. The two projections live in separate design documents on
+    # purpose: they change for different reasons, and one document would
+    # mean a change to the write-up view rebuilding the row index too.
+    return "written" if "written" in outcomes else "unchanged"
 
 
 def read_rows(path):
@@ -457,17 +555,7 @@ def read_rows(path):
     absorb quietly, so those go last, highest number first, and
     `tools.ticket_drift` is what reports them.
     """
-    query = urllib.parse.urlencode({
-        "startkey": json.dumps([path]),
-        "endkey": json.dumps([path, {}]),
-    })
-    status, body = _req(
-        "GET",
-        f"{TICKET_DB}/{urllib.parse.quote(ROWS_DDOC_ID, safe='')}"
-        f"/_view/{ROWS_VIEW}?{query}")
-    if status != 200:
-        raise RuntimeError(f"reading rows of {path}: {status} {json.dumps(body)[:200]}")
-    rows = [row["value"] for row in body.get("rows", [])]
+    rows = _read_view(ROWS_DDOC_ID, ROWS_VIEW, path, "rows")
     order = {number: position for position, number in enumerate(row_order(path))}
     rows.sort(key=lambda row: (
         order.get(row["number"], len(order)),
