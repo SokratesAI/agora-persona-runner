@@ -219,6 +219,10 @@ def read_pods(runner=subprocess.run):
             # `limits` only records the ones that did, so the two counts
             # together are what say a limit is missing rather than zero.
             "container_count": len(spec.get("containers") or []),
+            # Which node it is actually on. Empty for a Pod the scheduler has
+            # not placed yet, and that is a real state rather than a gap --
+            # an unscheduled Pod is on nobody's budget.
+            "node": spec.get("nodeName") or "",
         })
     return pods, None
 
@@ -810,8 +814,31 @@ def name_the_swap(node_swap):
     return [line]
 
 
+def pods_on(pods, host):
+    """The Pods the scheduler actually placed on `host`.
+
+    Every caller below asks a question about one box -- what is the largest
+    container it must be able to start, what have its containers collectively
+    been promised -- and `read_pods` returns the whole cluster. That was the
+    same list until 2026-09-03, when server2 joined: from then on the sums
+    below counted workloads on the other node against this node's capacity,
+    and the number stayed plausible while being wrong. Measured Cycle 860,
+    the morning after the join: limits summed to 9002Mi cluster-wide against
+    server1's 7746Mi (116%), where server1's own share was 7850Mi (101%) and
+    server2 held the other 1152Mi.
+
+    A Pod with no `node` is on nobody's list on purpose -- the scheduler has
+    not placed it, so no node has promised it anything yet.
+    """
+    return [pod for pod in pods if pod.get("node") == host]
+
+
 def largest_limit(pods):
-    """The biggest single container memory limit anywhere, as (MiB, where)."""
+    """The biggest single container memory limit among the Pods given, as (MiB, where).
+
+    Scope is the caller's: hand it `pods_on(pods, host)` to ask what this
+    node must be able to start, which is the only question it is asked here.
+    """
     biggest, where = None, ""
     for pod in pods:
         for container, quantity in (pod.get("limits") or {}).items():
@@ -863,8 +890,75 @@ def declared_ceiling(pods):
     return total, with_limit, without_limit
 
 
+def budget_line(host, ceiling, limited, unlimited, total):
+    """One node's declared memory budget against its own capacity.
+
+    Returns (line, actionable). Shared by the node this pod stands on and
+    every other node, because the question and the arithmetic are identical
+    -- only where the capacity came from differs, and that is the caller's.
+    """
+    if limited == 0:
+        return (f"BUDGET  {host}: no running container sets a memory limit, so there "
+                "is no declared budget to compare against the box."), False
+    share = ceiling / total * 100 if total else 0.0
+    unbounded = (
+        f" {unlimited} more running container(s) set no limit at all, so this "
+        "sum is the least the host can be asked for, not the most."
+        if unlimited else
+        " Every running container sets one, so this sum is the whole of it.")
+    if ceiling > total:
+        return (f"MEMORY OVERCOMMITTED — {host} is {total:.0f}Mi and the memory limits "
+                f"declared on it sum to {ceiling:.0f}Mi ({share:.0f}%) across {limited} "
+                f"container(s). Nothing stops them all claiming it at once; the "
+                f"scheduler only ever guarded the requests.{unbounded}"), True
+    return (f"BUDGET  {host}: declared limits sum to {ceiling:.0f}Mi of "
+            f"{total:.0f}Mi ({share:.0f}%) across {limited} container(s).{unbounded}"), False
+
+
+def other_node_budgets(nodes, host, pods):
+    """The same budget question, asked of every node this pod is not standing on.
+
+    Half of `memory_headroom` needs `/proc/meminfo` -- what is still
+    allocatable, and how much swap is left -- and `/proc` here is only ever
+    the node the bridge pod happens to be scheduled on. The other half needs
+    nothing but kubectl: a node's capacity and the limits declared on the
+    Pods placed there. So the budget travels to every node and the headroom
+    does not, and this says which is which rather than letting one node's
+    reading stand in for a cluster.
+
+    Returns (lines, actionable). Before Cycle 860 this printed nothing at
+    all: server2 joined on 2026-09-03 carrying prometheus, grafana and
+    newspaper, and every memory line in this report was about server1 while
+    naming no other node.
+    """
+    lines, actionable = [], False
+    for node in sorted(n for n in nodes if n != host):
+        ceiling, limited, unlimited = declared_ceiling(pods_on(pods, node))
+        line, raised = budget_line(node, ceiling, limited, unlimited, nodes[node])
+        actionable = actionable or raised
+        lines.append(line)
+        lines.append(
+            f"  {node} is judged on its declared budget only. What is still "
+            f"allocatable there, and its swap, come from {MEMINFO}, which is this "
+            "pod's own host -- so they are not judged for this node rather than "
+            "being clean.")
+    stray = [pod["name"] for pod in pods
+             if pod.get("phase") in ("Running", "Pending") and not pod.get("node")]
+    if stray:
+        lines.append(
+            f"  {len(stray)} Pod(s) are on no node yet ({', '.join(sorted(stray)[:3])}"
+            f"{', ...' if len(stray) > 3 else ''}), so they count against nobody's "
+            "budget above. That is the scheduler's state, not a gap in this read.")
+    return lines, actionable
+
+
 def memory_headroom(meminfo, nodes, pods):
     """Can this host still start the largest container it is configured to run?
+
+    `pods` is the whole cluster and it is scoped here, not by the caller:
+    every sum below is about one box. See `pods_on` for what that was
+    getting wrong from 2026-09-03 onward. Every node the API server lists
+    gets a budget line, so a one-node reading can never read as a sweep.
 
     Returns (lines, actionable, judged). `judged` is False either when the
     reading cannot be attributed to a host or when the host matched and
@@ -893,7 +987,8 @@ def memory_headroom(meminfo, nodes, pods):
             "headroom number below would be about the wrong machine.")
         return lines, False, False
 
-    biggest, where = largest_limit(pods)
+    here = pods_on(pods, host)
+    biggest, where = largest_limit(here)
     if available is None:
         # A different failure from an unattributable reading, and it does not
         # get to borrow that sentence: the host matched, one field is absent.
@@ -923,29 +1018,10 @@ def memory_headroom(meminfo, nodes, pods):
             f"({available_mib / total * 100:.1f}%), above the largest configured "
             f"container limit ({biggest:.0f}Mi, {where}).")
 
-    ceiling, limited, unlimited = declared_ceiling(pods)
-    if limited == 0:
-        lines.append(
-            f"BUDGET  {host}: no running container sets a memory limit, so there "
-            "is no declared budget to compare against the box.")
-    else:
-        share = ceiling / total * 100 if total else 0.0
-        unbounded = (
-            f" {unlimited} more running container(s) set no limit at all, so this "
-            "sum is the least the host can be asked for, not the most."
-            if unlimited else
-            " Every running container sets one, so this sum is the whole of it.")
-        if ceiling > total:
-            actionable = True
-            lines.append(
-                f"MEMORY OVERCOMMITTED — {host} is {total:.0f}Mi and the memory limits "
-                f"declared on it sum to {ceiling:.0f}Mi ({share:.0f}%) across {limited} "
-                f"container(s). Nothing stops them all claiming it at once; the "
-                f"scheduler only ever guarded the requests.{unbounded}")
-        else:
-            lines.append(
-                f"BUDGET  {host}: declared limits sum to {ceiling:.0f}Mi of "
-                f"{total:.0f}Mi ({share:.0f}%) across {limited} container(s).{unbounded}")
+    ceiling, limited, unlimited = declared_ceiling(here)
+    line, raised = budget_line(host, ceiling, limited, unlimited, total)
+    actionable = actionable or raised
+    lines.append(line)
 
     swap_total = meminfo.get("SwapTotal", 0) / 1024
     swap_free = meminfo.get("SwapFree", 0) / 1024
@@ -961,6 +1037,10 @@ def memory_headroom(meminfo, nodes, pods):
         lines.append(
             f"SWAP    {host}: {swap_free:.0f}Mi free of {swap_total:.0f}Mi "
             f"({swap_free / swap_total * 100:.1f}%).")
+
+    other_lines, other_actionable = other_node_budgets(nodes, host, pods)
+    lines.extend(other_lines)
+    actionable = actionable or other_actionable
     return lines, actionable, True
 
 
