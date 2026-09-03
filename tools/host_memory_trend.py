@@ -589,7 +589,17 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
 
     # Group by the Job that owns the Pod, not by Pod: one run is now several
     # Pods, and taking the single newest would put this straight back to reading
-    # one node. `host-process-memory-29807850-j4cd8` -> `...-29807850`.
+    # one node.
+    #
+    # The owner is read off the Pod's own `batch.kubernetes.io/job-name` label,
+    # which is Kubernetes' answer rather than mine. Splitting the name was the
+    # first version and it was wrong the moment the manifest went parallel: an
+    # Indexed Job names its Pods `<job>-<index>-<random>`, so stripping one
+    # trailing segment left `host-process-memory-29807910-0` and
+    # `host-process-memory-29807910-1` as two separate runs, the newest of the
+    # two won, and the reader was back to one node while reporting that it had
+    # swept. Measured live on 2026-09-04: both Pods of the 00:30 run completed,
+    # server1's report was in its log, and this printed `NOT SWEPT server1`.
     runs = {}
     for item in body.get("items") or []:
         meta = item.get("metadata") or {}
@@ -601,7 +611,10 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
         at = _parse_at(meta.get("creationTimestamp"))
         if at is None:
             continue
-        owner = name.rsplit("-", 1)[0]
+        labels = meta.get("labels") or {}
+        owner = (labels.get("batch.kubernetes.io/job-name")
+                 or labels.get("job-name")
+                 or name.rsplit("-", 1)[0])
         entry = runs.setdefault(owner, {"at": at, "pods": []})
         entry["at"] = max(entry["at"], at)
         entry["pods"].append({"pod": name,
