@@ -116,9 +116,34 @@ def from_documents(docs):
     return {"tickets": tickets, "layout": layout}
 
 
+def credentials():
+    """`(url, user, password)` for the ticket database, from either pod.
+
+    The two pods spell the same CouchDB three different ways: the runner
+    exports `COUCHDB_*`, which is what `config` reads, and the bridge pod
+    -- the one a cycle's `Bash` runs in -- exports `CDB_BASE`, `CDB_USER`
+    and `CDB_PASS` instead. `prompt.md` writes that split down as a rule
+    to remember (`cycle_health` must run in the runner pod or it reads an
+    empty journal and certifies a healthy loop from a blind instrument).
+
+    This falls back rather than restating the rule, so a check on this
+    database answers from wherever it is run. It is deliberately scoped to
+    the ticket store and not fixed in `config`: `CDB_NOVA_DB` is also set
+    on the bridge pod, and mapping that one across would switch the vault
+    client's routing there as a side effect of a credential change.
+    """
+    return (
+        os.environ.get("COUCHDB_URL") or os.environ.get("CDB_BASE") or COUCHDB_URL,
+        os.environ.get("COUCHDB_USER") or os.environ.get("CDB_USER") or COUCHDB_USER,
+        os.environ.get("COUCHDB_PASSWORD") or os.environ.get("CDB_PASS")
+        or COUCHDB_PASSWORD,
+    )
+
+
 def _req(method, path, body=None, timeout=60):
-    auth = base64.b64encode(f"{COUCHDB_USER}:{COUCHDB_PASSWORD}".encode()).decode()
-    return http_json(method, f"{COUCHDB_URL}/{path}", body,
+    url, user, password = credentials()
+    auth = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return http_json(method, f"{url}/{path}", body,
                      {"Authorization": f"Basic {auth}"}, timeout=timeout)
 
 
