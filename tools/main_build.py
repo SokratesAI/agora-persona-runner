@@ -56,15 +56,36 @@ Actions came back on 2026-09-01 turned all five green immediately.
 
 `RUNNING` never raises: a merge four minutes old is not a finding.
 
+**A `RED` row now says when its answer may simply have gone stale.** Every
+other conclusion here is a fact about one commit forever. A job that checks
+out *another* repository's default branch is not: it compared two moving
+things, so when the other one moves, the recorded answer stops describing
+anything that exists. `SokratesAI/agora-claude-bridge` sat red on `main`
+from 07:46 to 10:06 Oslo on 2026-09-03 for exactly that reason -- its
+`vault-drift` job compares the two build pipelines, and the other half of
+the paired change merged into the runner at 07:47, **three minutes** after
+the bridge did. So the two repos disagreed for three minutes and the red
+outlived that by two hours and twenty; re-running the one job went green
+with nothing changed anywhere. Two cycles saw the red and neither acted,
+because "1 workflow(s) failed" is not something to go and do.
+A red row now names the failing *job*, the repository it compares against,
+whether that repository has moved since the run started, and the exact
+`gh run rerun` command. It never re-judges: whether the two still disagree
+is only knowable by running the comparison again, so the verdict stays `RED`
+and still raises.
+
 Exit status, matching `tools.open_prs` and `tools.security_alerts`: 0
 when nothing needs a hand, 2 when a branch needs one, 1 when something
 was unreadable. "I could not check" never reads as "nothing here".
 """
 
 import argparse
+import base64
 import json
 import subprocess
 import sys
+
+import yaml
 
 from tools.agentic_health import start_failure
 from tools.open_prs import has_workflows
@@ -125,7 +146,8 @@ def runs_for_commit(repo, sha, run=None):
             f"repos/{repo}/actions/runs?head_sha={sha}&per_page={RUNS_PAGE}",
             "--jq",
             "[.workflow_runs[] | {id: .id, name: .name, status: .status, "
-            "conclusion: .conclusion, url: .html_url}]",
+            "conclusion: .conclusion, url: .html_url, path: .path, "
+            "started: (.run_started_at // .created_at)}]",
         ]
     )
     if code != 0:
@@ -172,6 +194,184 @@ def failing_runs(runs):
         r for r in newest_per_workflow(runs)
         if (r.get("conclusion") or "").lower() in BAD_CONCLUSIONS
     ]
+
+
+def failing_jobs(repo, run_id, run=None):
+    """`(jobs, error)` -- the jobs of one run that did not pass.
+
+    `failing_runs` above names the workflow; a re-run is per *job*, so the
+    id GitHub wants is one level deeper than anything this module read
+    before.
+    """
+    code, out, err = (run or _gh)(
+        [
+            "api",
+            f"repos/{repo}/actions/runs/{run_id}/jobs?per_page={RUNS_PAGE}",
+            "--jq",
+            "[.jobs[] | {id: .id, name: .name, conclusion: .conclusion}]",
+        ]
+    )
+    if code != 0:
+        blob = (err or out or "").strip()
+        return None, blob.splitlines()[0] if blob else f"gh exited {code}"
+    try:
+        payload = json.loads(out or "[]")
+    except ValueError:
+        return None, "gh returned something that is not JSON"
+    if not isinstance(payload, list):
+        return None, "gh returned a JSON object where a list of jobs was expected"
+    return [
+        j for j in payload
+        if (j or {}).get("conclusion", "").lower() in BAD_CONCLUSIONS
+    ], None
+
+
+def workflow_at(repo, sha, path, run=None):
+    """`(parsed workflow, error)` -- one workflow file as it was at `sha`."""
+    if not path:
+        return None, "the run came back with no workflow path"
+    code, out, err = (run or _gh)(
+        ["api", f"repos/{repo}/contents/{path}?ref={sha}", "--jq", ".content"]
+    )
+    if code != 0:
+        blob = (err or out or "").strip()
+        return None, blob.splitlines()[0] if blob else f"gh exited {code}"
+    try:
+        body = base64.b64decode(out or "").decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        return None, f"the workflow file did not decode -- {exc}"
+    try:
+        parsed = yaml.safe_load(body)
+    except yaml.YAMLError as exc:
+        return None, f"the workflow file did not parse -- {exc}"
+    if not isinstance(parsed, dict):
+        return None, "the workflow file is not a mapping"
+    return parsed, None
+
+
+def compared_repos(workflow, job_name, self_repo):
+    """Every *other* repository a named job checks out.
+
+    This is what makes a conclusion perishable, and it is read off the
+    workflow rather than kept in a list here. A list of "the jobs that
+    compare repos" would be a second copy of a fact the workflow already
+    states, and it would go stale the first time somebody adds a third
+    comparison -- which is the failure this repo's backlog is mostly made
+    of. `actions/checkout` with a `repository:` that is not this one is the
+    whole signal, because a checkout with no `ref:` takes that repo's
+    default branch, which moves.
+
+    **A `repository:` written as an expression is skipped**, and the one in
+    this org is why rather than a hypothetical: the `build-push` job checks
+    out `${{ env.CONFIG_REPO }}` so it can *commit the new digest to it*,
+    which is a write target and not a comparison at all. Its value is not
+    resolvable from the file, so guessing at one would put a wrong repo name
+    in front of a cycle. Skipping it cannot hide a finding -- the verdict is
+    already `red` and already raising; only an advisory line is lost.
+    """
+    found = set()
+    for key, body in ((workflow or {}).get("jobs") or {}).items():
+        if not isinstance(body, dict):
+            continue
+        if (body.get("name") or key) != job_name:
+            continue
+        for step in body.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            if not str(step.get("uses") or "").startswith("actions/checkout"):
+                continue
+            target = str((step.get("with") or {}).get("repository") or "").strip()
+            if "${{" in target:
+                continue
+            if target and target.lower() != (self_repo or "").lower():
+                found.add(target)
+    return sorted(found)
+
+
+def head_committed_at(repo, run=None):
+    """`(iso timestamp, error)` for the default branch's newest commit."""
+    code, out, err = (run or _gh)(
+        ["api", f"repos/{repo}/commits/HEAD", "--jq", ".commit.committer.date"]
+    )
+    if code != 0:
+        blob = (err or out or "").strip()
+        return None, blob.splitlines()[0] if blob else f"gh exited {code}"
+    stamp = out.strip()
+    return (stamp, None) if stamp else (None, "the commit date came back empty")
+
+
+def perishable_notes(repo, sha, runs, errors, run=None):
+    """Lines naming a red whose comparison may simply have gone stale.
+
+    Every other conclusion this module reads is a fact about one commit
+    forever. A job that checks out *another* repository's default branch is
+    not: it compared two moving things, so the moment the other one moves,
+    the answer it recorded stops describing anything that exists. That is
+    how `SokratesAI/agora-claude-bridge` sat red on `main` for two hours and
+    twenty minutes on 2026-09-03 -- its `vault-drift` job compares the two
+    build pipelines, the other half of the paired change merged into the
+    runner three minutes after the bridge did, and re-running that one job
+    went green with nothing changed anywhere.
+
+    **It never re-judges, and that is deliberate.** Whether the two repos
+    still disagree is only knowable by running the comparison again, so this
+    prints the re-run command and leaves the verdict `red`, which still
+    raises. The split `_blocked_or_red` makes is available there because
+    "did any job execute a step" is readable from the payload; "would this
+    comparison still fail" is not readable from anything.
+    """
+    notes = []
+    for entry in failing_runs(runs):
+        run_id = (entry or {}).get("id")
+        if not run_id:
+            continue
+        jobs, err = failing_jobs(repo, run_id, run=run)
+        if err:
+            errors.append(
+                f"{repo}: could not read the failing jobs of run {run_id} -- {err}"
+            )
+            continue
+        workflow, err = workflow_at(repo, sha, entry.get("path"), run=run)
+        if err:
+            errors.append(
+                f"{repo}: could not read {entry.get('path') or 'the workflow'} "
+                f"at {sha[:7]} -- {err}"
+            )
+            continue
+        for job in jobs or []:
+            name = (job or {}).get("name") or "?"
+            for other in compared_repos(workflow, name, repo):
+                moved, err = head_committed_at(other, run=run)
+                if err:
+                    errors.append(
+                        f"{repo}: could not read {other}'s default branch HEAD "
+                        f"-- {err}"
+                    )
+                    continue
+                started = (entry or {}).get("started") or ""
+                if not started:
+                    errors.append(
+                        f"{repo}: run {run_id} came back with no start time, so "
+                        f"whether {other} moved since it ran is not judgeable"
+                    )
+                    continue
+                # Both stamps are GitHub's UTC ISO-8601 with a `Z`, so a
+                # lexical compare is a chronological one. Parsing them would
+                # be one more thing to get wrong for no extra truth.
+                if moved <= started:
+                    notes.append(
+                        f"`{name}` compares against {other}'s default branch, "
+                        f"which has not moved since this run started -- so the "
+                        f"disagreement is real, not stale."
+                    )
+                    continue
+                notes.append(
+                    f"PERISHABLE — `{name}` compares against {other}'s default "
+                    f"branch, which has moved since this run started "
+                    f"({started} -> {moved}). Re-run it before debugging it: "
+                    f"gh run rerun {run_id} --repo {repo} --job {job.get('id')}"
+                )
+    return notes
 
 
 def judge(runs, workflow_count):
@@ -283,6 +483,8 @@ def format_report(results, swept, errors, caveat_repos):
         for row in sorted(rows, key=lambda r: r["repo"]):
             lines.append(f"  {row['repo']}  default branch at {row['sha'][:7]}")
             lines.append(f"      {row['detail']}")
+            for note in row.get("notes") or []:
+                lines.append(f"      {note}")
             if row["url"]:
                 lines.append(f"      {row['url']}")
 
@@ -402,13 +604,16 @@ def main(argv=None, run=None):
             if count_err:
                 errors.append(f"{repo}: could not read the workflow count — {count_err}")
         verdict, detail, url = judge(runs, count)
+        notes = []
         if verdict == "red":
             verdict, detail = _blocked_or_red(repo, runs, detail, errors, run=run)
+        if verdict == "red":
+            notes = perishable_notes(repo, sha, runs, errors, run=run)
         if verdict == "not_built":
             caveat_repos.append(repo)
         results.append(
             {"repo": repo, "sha": sha, "url": url,
-             "verdict": verdict, "detail": detail}
+             "verdict": verdict, "detail": detail, "notes": notes}
         )
 
     print(format_report(results, len(repos), errors, caveat_repos))
