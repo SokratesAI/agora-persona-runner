@@ -46,12 +46,11 @@ from agora_runner import ticket_docs, ticket_store  # noqa: E402
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
-BOARDS = (
-    "projects/sokrates/projects/nova/issues.md",
-    "projects/sokrates/projects/nova/ideas.md",
-    "projects/sokrates/projects/agora/nova/resources/issues.md",
-    "projects/sokrates/projects/agora/nova/resources/ideas.md",
-)
+# Defined in `agora_runner.ticket_docs`, next to the store itself, because
+# the write-through in `agora_runner.vault` needs the same list and
+# `agora_runner` may not import from `tools`. Re-exported here so the two
+# tools that already import it from this module keep working.
+BOARDS = ticket_docs.BOARDS
 
 
 def _read(path):
