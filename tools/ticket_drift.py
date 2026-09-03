@@ -42,8 +42,18 @@ and `tools.board_put` had put there. Measured live before the fix: both
 `ideas.md` boards said `current` and both `issues.md` boards said
 `unknown`, and the difference was which of them had last been repaired.
 
+**A board that matches gets stamped, and that is a write in a checking
+tool.** `--sync` only ever runs on a board that has drifted, so a board
+that never drifts had no way to record which revision it was built from
+-- measured 2026-09-03, `issues.md` matched on all 170 rows, carried no
+stamp, and `ticket_docs.currency` therefore answered `unknown` forever.
+The comparison above is the strongest evidence available that the store
+reproduces a given revision of the file, so writing it down here is the
+one place it can be done from. See `stamp` below.
+
 Exit codes are the sweep's: 2 = a board has drifted, 1 = a board could
-not be read from the vault or from CouchDB, 0 = every board matches.
+not be read from the vault or from CouchDB, or its stamp could not be
+written, 0 = every board matches.
 """
 
 import argparse
@@ -156,6 +166,39 @@ def sync(path, source, source_rev=None):
     return compare(path, source)
 
 
+def stamp(path, source_rev):
+    """Write down that this board's store matches the markdown at `source_rev`.
+
+    `(ok, note)` -- `note` is appended to the board's line, or empty when
+    there was nothing to say.
+
+    **This is a write, in the tool whose job is to check.** It is here
+    rather than in `--sync` because `--sync` only ever runs on a board that
+    has *drifted*, and a board that never drifts is precisely the one whose
+    currency nothing can prove: measured 2026-09-03, `issues.md` matched
+    the markdown on all 170 rows and carried no stamp at all, so
+    `ticket_docs.currency` answered `unknown` and the reader that is
+    supposed to stop fetching 537KB had nothing to go on. The stamp is one
+    document under 200 bytes and it records the comparison this function's
+    caller just made -- nothing else in the store is touched.
+
+    A failed stamp raises the sweep to 1 and says so. The board really is
+    current, so this is not drift; what failed is the instrument that lets
+    a reader find that out without the fetch, and an instrument that did
+    not run must never read as one that came back clean.
+    """
+    if not source_rev:
+        # The vault read answered with no revision. Nothing to stamp and
+        # nothing wrong with the board -- say it rather than stamping a
+        # falsehood or staying silent about why the verdict will not move.
+        return True, "\n  not stamped — the vault read carried no revision"
+    try:
+        moved = ticket_docs.stamp_source_rev(path, source_rev)
+    except Exception as exc:  # noqa: BLE001 -- see the docstring
+        return False, f"\n  CANNOT STAMP — {str(exc)[:200]}"
+    return True, f"\n  stamped {source_rev}" if moved else ""
+
+
 def run(boards, do_sync):
     """Check (and optionally re-sync) every board. Returns the exit code."""
     worst = 0
@@ -170,6 +213,11 @@ def run(boards, do_sync):
         if status == 2 and do_sync:
             status, detail = sync(path, source, source_rev)
             detail = detail.replace("CURRENT    ", "RE-SYNCED  ", 1)
+        if status == 0:
+            stamped, note = stamp(path, source_rev)
+            worst = max(worst, 0 if stamped else 1)
+            if note:
+                detail += note
         if status == 2:
             drifted.append(path)
         worst = max(worst, status)

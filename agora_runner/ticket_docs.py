@@ -676,6 +676,63 @@ STALE = "stale"
 UNKNOWN = "unknown"
 
 
+def stamp_source_rev(path, source_rev):
+    """Record that this board's documents were built from `source_rev`.
+
+    Returns True when the stamp moved, False when it already said this.
+
+    **This exists because a board that never drifts never gets stamped.**
+    Every writer that knows a revision stamps it on the way past --
+    `write_board` through `to_documents`, and `tools.board_put` after
+    reading the document back. `tools.ticket_drift --sync` does too, since
+    runner#685. But all of those are *writes*, and the store's whole
+    purpose is that his board mostly does not change: `issues.md` is the
+    537KB one and the one worth not fetching, and measured 2026-09-03 it
+    carried no stamp at all while its 170 rows matched the file field for
+    field. So the fast path was dark on exactly the board it was built
+    for, and would have stayed dark until somebody happened to write a
+    row.
+
+    The caller that closes that is `tools.ticket_drift`, which renders the
+    board out of CouchDB and diffs it against the markdown every cycle in
+    `tools.preflight`. That comparison is total -- layout and every ticket
+    -- so an equal render means these documents reproduce that revision of
+    the file exactly, which is a stronger measurement than the one a write
+    stamps on the way past. Writing it down is the only part that was
+    missing.
+
+    It writes the one `rev:` document and nothing else, so a stamp can
+    never disturb a ticket. It refuses an empty revision rather than
+    clearing the stamp: `to_documents` clears on purpose, because a caller
+    that does not know the rev must not leave a claim of currency behind,
+    and this caller has no such case -- a stamp with nothing to stamp is a
+    bug in the caller, not a verdict.
+    """
+    if not source_rev:
+        raise ValueError(
+            f"stamping {path} needs a revision; see currency() on why an "
+            "unknown answer must never be written as a current one")
+    doc_id = source_rev_doc_id(path)
+    quoted = urllib.parse.quote(doc_id, safe="")
+    status, body = _req("GET", f"{TICKET_DB}/{quoted}")
+    if status == 200:
+        if body.get("sourceRev") == source_rev:
+            return False
+        held = body["_rev"]
+    elif status == 404:
+        held = None
+    else:
+        raise RuntimeError(f"reading the source revision of {path}: {status}")
+    doc = {"_id": doc_id, "type": "source", "board": path, "sourceRev": source_rev}
+    if held:
+        doc["_rev"] = held
+    status, body = _req("PUT", f"{TICKET_DB}/{quoted}", doc)
+    if status not in (201, 202):
+        raise RuntimeError(
+            f"stamping {path}: {status} {json.dumps(body)[:200]}")
+    return True
+
+
 def stored_source_rev(path):
     """The markdown `_rev` this board's documents were built from, or None.
 
