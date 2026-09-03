@@ -946,13 +946,17 @@ def sweep_runner(pods=None, log=SWEEP_LOG, logs_rc=0, nodes=("server1",),
     element naming the node the Pod ran on; it defaults to the first entry of
     `nodes`, which keeps a one-node cluster the simple case it used to be.
     `logs` maps a Pod name to its own log when a test needs the two Pods of one
-    run to say different things.
+    run to say different things. An optional fifth element is the Pod's
+    `batch.kubernetes.io/job-name` label, which is how a real cluster says which
+    run a Pod belongs to.
     """
     if pods is None:
         pods = [("host-process-memory-29803110-t79dw", "Succeeded",
                  "2026-08-31T14:30:00Z")]
     body = {"items": [
-        {"metadata": {"name": row[0], "creationTimestamp": row[2]},
+        {"metadata": {"name": row[0], "creationTimestamp": row[2],
+                      "labels": ({"batch.kubernetes.io/job-name": row[4]}
+                                 if len(row) > 4 else {})},
          "spec": {"nodeName": row[3] if len(row) > 3 else nodes[0]},
          "status": {"phase": row[1]}} for row in pods]}
     node_body = {"items": [{"metadata": {"name": n}} for n in nodes]}
@@ -1174,6 +1178,33 @@ def test_every_pod_of_the_newest_run_is_read_so_one_node_cannot_stand_for_two():
         "host-process-memory-29803110-aaaaa",
         "host-process-memory-29803110-bbbbb"]
     assert all(row["node"] == "server1" for row in report["rows"])
+    assert report["total_swap_mib"] == 1634.0
+
+
+def test_the_two_pods_of_an_indexed_job_are_one_run_not_two():
+    """The live failure on 2026-09-04, and the names are the real ones.
+
+    A parallel Job with `completionMode: Indexed` names its Pods
+    `<job>-<index>-<random>`, so grouping by `name.rsplit("-", 1)[0]` split one
+    run into `...-29807910-0` and `...-29807910-1`, took the newer of the two,
+    and read one node while reporting that it had swept both. The label is
+    Kubernetes' own answer and does not have that shape problem.
+    """
+    job = "host-process-memory-29807910"
+    run = sweep_runner(
+        pods=[(f"{job}-0-gqjkh", "Succeeded", "2026-09-04T00:30:00Z",
+               "server2", job),
+              (f"{job}-1-w7dfs", "Succeeded", "2026-09-04T00:30:00Z",
+               "server1", job)],
+        nodes=("server1", "server2"),
+        logs={f"{job}-0-gqjkh": SWEEP_LOG_NO_SWAP,
+              f"{job}-1-w7dfs": SWEEP_LOG})
+    report, why = hmt.read_swap_holders(
+        runner=run, now=datetime(2026, 9, 4, 0, 31, tzinfo=timezone.utc))
+    assert why is None
+    # Order follows the Pod-name sort, so index 0 (server2) comes first.
+    assert sorted(report["nodes"]) == ["server1", "server2"]
+    assert report["unswept"] == []
     assert report["total_swap_mib"] == 1634.0
 
 
