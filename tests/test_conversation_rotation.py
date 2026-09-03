@@ -475,3 +475,72 @@ def test_backfill_logs_a_refused_patch_rather_than_only_a_lower_total():
          patch.object(rotation, "log", side_effect=lines.append):
         rotation._backfill_folder([_cycle(1)], "f-gone")
     assert any("HTTP 400" in line and "c-1" in line for line in lines), lines
+
+
+def _rotation_with(fake_internal, fake_get=None):
+    """One rotation against a stubbed Agora, returning the conversation id
+    the run was told to use."""
+    heartbeat = {"id": "hb1", "name": "Agora Evolve v1", "conversationId": "c-old",
+                 "rotateConversationEachRun": True}
+    get = fake_get or (lambda path: (200, {"conversations": []}))
+    with patch.object(rotation, "agora_get", side_effect=get), \
+         patch.object(rotation, "agora_internal", side_effect=fake_internal):
+        return rotation.rotate_cycle_conversation(heartbeat, PARTICIPANTS)
+
+
+def test_rotate_runs_in_the_new_conversation_when_pointing_the_heartbeat_fails():
+    """The heartbeat pointer decides where the NEXT run goes. This run
+    already has a conversation created, numbered and tagged for it, so
+    falling back to `c-old` would make it read the previous cycle's number
+    off a name that already has a journal entry under it -- see the
+    2026-09-03 19:30Z incident in the module."""
+    def fake_internal(method, path, payload=None):
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        if path == "/heartbeats/hb1":
+            return 500, {"error": "boom"}
+        return 200, {}
+
+    assert _rotation_with(fake_internal) == "c-new"
+
+
+def test_rotate_runs_in_the_new_conversation_when_a_later_call_raises():
+    """The failure actually observed: the create and the tag landed, and a
+    later call died on `Remote end closed connection without response`
+    while Agora was rolling."""
+    def fake_internal(method, path, payload=None):
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        if path == "/heartbeats/hb1":
+            raise RuntimeError("Remote end closed connection without response")
+        return 200, {}
+
+    assert _rotation_with(fake_internal) == "c-new"
+
+
+def test_rotate_keeps_the_old_conversation_when_the_new_one_could_not_be_tagged():
+    """An untagged conversation is invisible to every later rotation, so
+    its number would be handed out again -- a worse duplicate than the one
+    above. The module's own comment on the split patches says the same:
+    unfiled is cosmetic, untagged is not."""
+    def fake_internal(method, path, payload=None):
+        if method == "POST" and path == "/conversations":
+            return 201, {"conversation": {"id": "c-new"}}
+        if method == "PATCH" and path == "/conversations/c-new" and "tags" in (payload or {}):
+            return 500, {"error": "boom"}
+        return 200, {}
+
+    assert _rotation_with(fake_internal) == "c-old"
+
+
+def test_rotate_still_keeps_the_old_conversation_when_the_listing_itself_raises():
+    """Nothing was created, so there is nothing to run in but `c-old`.
+    Guards the precondition of the two tests above: they only mean
+    something if the no-conversation path still falls back."""
+    def fake_get(path):
+        raise RuntimeError("network exploded")
+
+    def fake_internal(method, path, payload=None):
+        raise AssertionError("nothing should be created after the listing dies")
+
+    assert _rotation_with(fake_internal, fake_get) == "c-old"

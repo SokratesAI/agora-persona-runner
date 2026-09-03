@@ -57,6 +57,26 @@ def rotate_cycle_conversation(heartbeat, participants):
         return heartbeat["conversationId"]
 
     tag = cycle_tag(heartbeat["id"])
+    # Set as soon as this run has a new conversation that is created, named
+    # with its own cycle number, and tagged -- i.e. findable by every later
+    # rotation. Everything after that point (filing, pointing the heartbeat,
+    # pruning, backfilling) is about the *next* run or is cosmetic, so a
+    # failure there must not send this run back into the previous cycle's
+    # transcript.
+    #
+    # It used to. Measured 2026-09-03 19:30Z: Cycle 854 merged a PR to
+    # `agora`, that rolled the Agora Deployment, and the 19:30 rotation
+    # created and tagged `Nova — Cycle 855` and then hit
+    # `Remote end closed connection without response` on a later call. The
+    # blanket `return heartbeat["conversationId"]` put that run into Cycle
+    # 854's conversation, so it read its own number as 854 -- a number with
+    # a journal entry already in it -- while 855 sat empty and the counter
+    # doc had already spent it, so no later cycle can ever be 855 either.
+    # That is the mismatch the owner rated Immediately on 2026-08-20 ("They
+    # need to be the same number"), arriving through a different door:
+    # cycle_number is correct and was handed the wrong conversation.
+    usable_id = None
+    cycle_n = None
     try:
         status, listing = agora_get("/conversations")
         existing = [
@@ -97,10 +117,17 @@ def rotate_cycle_conversation(heartbeat, participants):
         # Carry the full persona list forward (create only bootstraps
         # the one curator) and tag it so future rotations/pruning can
         # find it.
-        agora_internal("PATCH", f"/conversations/{new_id}", {
+        tag_status, _ = agora_internal("PATCH", f"/conversations/{new_id}", {
             "personas": [dict(p) for p in participants],
             "tags": [tag],
         })
+        if tag_status not in (200, 201):
+            log(f"rotate_cycle_conversation: could not tag new conversation (HTTP {tag_status}), keeping existing conversation")
+            return heartbeat["conversationId"]
+        # From here the new conversation is real, numbered and findable, so
+        # it is the one this run belongs in whatever else fails below. See
+        # `usable_id` at the top of this function.
+        usable_id = new_id
 
         # Filing goes in its OWN patch, deliberately, even though bundling it
         # with the one above would save a round trip. Agora refuses the whole
@@ -121,8 +148,8 @@ def rotate_cycle_conversation(heartbeat, participants):
             "conversationId": new_id,
         })
         if point_status not in (200, 201):
-            log(f"rotate_cycle_conversation: failed to point heartbeat at new conversation (HTTP {point_status})")
-            return heartbeat["conversationId"]
+            log(f"rotate_cycle_conversation: failed to point heartbeat at new conversation (HTTP {point_status}), running in it anyway")
+            return usable_id
 
         _prune_old_cycles(existing, heartbeat.get("conversationRetention") or DEFAULT_RETENTION)
         if folder_id:
@@ -130,6 +157,9 @@ def rotate_cycle_conversation(heartbeat, participants):
         log(f"rotate_cycle_conversation: {heartbeat['name']} now on {new_id} (Cycle {cycle_n})")
         return new_id
     except Exception as e:
+        if usable_id:
+            log(f"rotate_cycle_conversation failed after Cycle {cycle_n} was created, running in it anyway: {e}")
+            return usable_id
         log(f"rotate_cycle_conversation failed, keeping existing conversation: {e}")
         return heartbeat["conversationId"]
 
