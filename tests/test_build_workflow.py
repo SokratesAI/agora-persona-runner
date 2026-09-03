@@ -52,3 +52,69 @@ def test_in_flight_builds_are_never_cancelled():
     # Killing a run partway through update-manifest is the failure the
     # concurrency group exists to prevent, not an optimisation to add later.
     assert _workflow()["concurrency"]["cancel-in-progress"] is False
+
+
+def _build_push_step_names():
+    return [step.get("name") for step in _workflow()["jobs"]["build-push"]["steps"]]
+
+
+def _smoke_step():
+    for step in _workflow()["jobs"]["build-push"]["steps"]:
+        if (step.get("name") or "").startswith("Smoke-test"):
+            return step
+    return None
+
+
+def test_the_built_image_is_actually_started_before_it_is_deployed():
+    """Nothing in this pipeline ran the image it ships until 2026-09-03.
+
+    On 2026-09-02 an image that crashed on `import yaml` was built, pushed,
+    had its digest committed to the config repo and was deployed by ArgoCD,
+    with `test` green throughout -- the suite runs on a GitHub runner that has
+    pyyaml installed for its own reasons, so it could not see the difference.
+    The deployment is single-replica with strategy Recreate and no fallback,
+    and Nova's heartbeat runs in it, so the loop was down for ten hours.
+    """
+    step = _smoke_step()
+    assert step is not None, "build-push no longer starts the image before deploying it"
+    assert "docker run" in step["run"], "the smoke step must actually run the image, not inspect it"
+    assert "${{ steps.build.outputs.digest }}" in step["run"], (
+        "the smoke test must run the digest that is about to be deployed, not a rebuild of it"
+    )
+
+
+def test_the_smoke_test_runs_before_the_digest_is_committed():
+    """Order is the whole value. What deploys is the line committed to the
+    config repo, so a smoke test after that step would find the breakage on a
+    cluster that had already taken it."""
+    names = _build_push_step_names()
+    smoke = next(i for i, name in enumerate(names) if (name or "").startswith("Smoke-test"))
+    commit = next(i for i, name in enumerate(names) if (name or "").startswith("Update image digest"))
+    assert smoke < commit, (
+        f"the smoke test runs at step {smoke} and the digest is committed at step {commit}; "
+        "a smoke test after the commit tests an image that is already deploying"
+    )
+
+
+def test_the_smoke_test_refuses_to_pass_on_an_empty_sweep():
+    """A negative result only counts if a positive one was possible. If the
+    package ever stops being importable by name, walking it finds nothing and
+    every check inside the sweep passes vacuously."""
+    step = _smoke_step()
+    assert step is not None
+    assert "found < 40" in step["run"], (
+        "the smoke test must fail when it finds implausibly few modules, or an empty "
+        "sweep reads as a clean one"
+    )
+
+
+def test_the_test_job_installs_the_image_s_own_requirements():
+    """The environment the suite runs in must be built from the same file the
+    image installs, so the two cannot silently diverge again."""
+    steps = _workflow()["jobs"]["test"]["steps"]
+    installs = [step.get("run", "") for step in steps if "pip install" in (step.get("run") or "")]
+    assert installs, "the test job no longer installs anything"
+    assert any("-r requirements.txt" in run for run in installs), (
+        "the test job names its packages instead of installing requirements.txt; that is how "
+        "pyyaml came to be present in CI and absent from the image"
+    )
