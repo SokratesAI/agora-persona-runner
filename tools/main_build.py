@@ -61,11 +61,13 @@ other conclusion here is a fact about one commit forever. A job that checks
 out *another* repository's default branch is not: it compared two moving
 things, so when the other one moves, the recorded answer stops describing
 anything that exists. `SokratesAI/agora-claude-bridge` sat red on `main`
-from 05:44 to 10:06 on 2026-09-03 for exactly that reason -- its
-`vault-drift` job compares the two build pipelines, the other half of the
-paired change landed in the runner minutes later, and re-running that one
-job went green with nothing changed anywhere. Two cycles saw the red and
-neither acted, because "1 workflow(s) failed" is not something to go and do.
+from 07:46 to 10:06 Oslo on 2026-09-03 for exactly that reason -- its
+`vault-drift` job compares the two build pipelines, and the other half of
+the paired change merged into the runner at 07:47, **three minutes** after
+the bridge did. So the two repos disagreed for three minutes and the red
+outlived that by two hours and twenty; re-running the one job went green
+with nothing changed anywhere. Two cycles saw the red and neither acted,
+because "1 workflow(s) failed" is not something to go and do.
 A red row now names the failing *job*, the repository it compares against,
 whether that repository has moved since the run started, and the exact
 `gh run rerun` command. It never re-judges: whether the two still disagree
@@ -305,11 +307,11 @@ def perishable_notes(repo, sha, runs, errors, run=None):
     forever. A job that checks out *another* repository's default branch is
     not: it compared two moving things, so the moment the other one moves,
     the answer it recorded stops describing anything that exists. That is
-    how `SokratesAI/agora-claude-bridge` sat red on `main` for four and a
-    half hours on 2026-09-03 -- its `vault-drift` job compares the two build
-    pipelines, the other half of the paired change landed in the runner
-    minutes later, and re-running that one job went green with nothing
-    changed anywhere.
+    how `SokratesAI/agora-claude-bridge` sat red on `main` for two hours and
+    twenty minutes on 2026-09-03 -- its `vault-drift` job compares the two
+    build pipelines, the other half of the paired change merged into the
+    runner three minutes after the bridge did, and re-running that one job
+    went green with nothing changed anywhere.
 
     **It never re-judges, and that is deliberate.** Whether the two repos
     still disagree is only knowable by running the comparison again, so this
