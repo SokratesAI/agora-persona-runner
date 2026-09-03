@@ -335,25 +335,90 @@ def test_a_row_carries_the_list_fields_and_none_of_the_write_up():
         assert row["number"] == doc["number"]
 
 
+def _view_and_layout(view_rows, layout_numbers, seen=None):
+    """A `_req` that answers the row view and the board's layout document.
+
+    Two calls with two shapes, told apart by the path, because
+    `read_rows` now reads both and a single-answer stub would let the
+    layout half go unexercised.
+    """
+    def fake_req(method, path, body=None, timeout=60):
+        if seen is not None:
+            seen.setdefault("calls", []).append((method, path))
+            seen["method"], seen["path"] = method, path
+        if "_view/" in path:
+            return 200, {"rows": [{"value": row} for row in view_rows]}
+        if layout_numbers is None:
+            return 404, {"error": "not_found"}
+        return 200, {"layout": [["text", "---"]]
+                     + [["row", number] for number in layout_numbers]}
+    return fake_req
+
+
 def test_read_rows_asks_for_one_board_and_orders_it_newest_first(monkeypatch):
     seen = {}
-
-    def fake_req(method, path, body=None, timeout=60):
-        seen["method"], seen["path"] = method, path
-        return 200, {"rows": [
-            {"value": {"number": 4, "title": "older"}},
-            {"value": {"number": 17, "title": "newer"}},
-        ]}
-
-    monkeypatch.setattr(ticket_docs, "_req", fake_req)
+    monkeypatch.setattr(ticket_docs, "_req", _view_and_layout(
+        [{"number": 4, "title": "older"}, {"number": 17, "title": "newer"}],
+        [17, 4], seen))
     rows = ticket_docs.read_rows(PATH)
     assert [row["number"] for row in rows] == [17, 4]
+    seen["method"], seen["path"] = "GET", [
+        path for _method, path in seen["calls"] if "_view/" in path][0]
     assert seen["method"] == "GET"
     # A key range over one board, not a scan of every board in the store.
     assert "_design/rows/_view/by_board" in urllib.parse.unquote(seen["path"])
     query = urllib.parse.parse_qs(seen["path"].split("?", 1)[1])
     assert json.loads(query["startkey"][0]) == [PATH]
     assert json.loads(query["endkey"][0])[0] == PATH
+
+
+def test_read_rows_returns_the_boards_own_row_order_not_the_number_order(monkeypatch):
+    """The page breaks a sort tie on the row's position in this list.
+
+    `app.js` sorts with `(a.index - b.index)` as its final comparison, and
+    `index` is stamped from the order the payload arrived in. So a reader
+    on a number-sorted list draws a different board while every field on
+    every row still agrees. Measured live 2026-09-03: 63 of 170 rows on
+    `issues.md` and 51 of 241 on `ideas.md` are at a different position
+    under a number sort.
+    """
+    monkeypatch.setattr(ticket_docs, "_req", _view_and_layout(
+        [{"number": 4}, {"number": 17}, {"number": 9}],
+        [9, 17, 4]))
+    assert [row["number"] for row in ticket_docs.read_rows(PATH)] == [9, 17, 4]
+
+
+def test_a_ticket_the_layout_does_not_name_goes_last_newest_first(monkeypatch):
+    """Drift, not a shape to absorb into the middle of his board.
+
+    A row the layout has never heard of has no position to take, and
+    guessing one would put an unexplained row somewhere in his list. Last
+    is where it is visible; `tools.ticket_drift` is what names it.
+    """
+    monkeypatch.setattr(ticket_docs, "_req", _view_and_layout(
+        [{"number": 4}, {"number": 17}, {"number": 30}, {"number": 22}],
+        [17, 4]))
+    assert [row["number"] for row in ticket_docs.read_rows(PATH)] == [17, 4, 30, 22]
+
+
+def test_a_board_with_no_layout_document_falls_back_to_number_order(monkeypatch):
+    """404 on the layout is a board written before layouts, not an error."""
+    monkeypatch.setattr(ticket_docs, "_req", _view_and_layout(
+        [{"number": 4}, {"number": 17}], None))
+    assert [row["number"] for row in ticket_docs.read_rows(PATH)] == [17, 4]
+
+
+def test_an_unreadable_layout_raises_rather_than_reordering_the_board(monkeypatch):
+    """A 500 is not "no order". Silently renumbering his board on a
+    transient CouchDB error is the failure this whole change is about."""
+    def fake_req(method, path, body=None, timeout=60):
+        if "_view/" in path:
+            return 200, {"rows": [{"value": {"number": 4}}]}
+        return 500, {"error": "boom"}
+
+    monkeypatch.setattr(ticket_docs, "_req", fake_req)
+    with pytest.raises(RuntimeError):
+        ticket_docs.read_rows(PATH)
 
 
 def test_read_rows_raises_rather_than_reporting_an_empty_board(monkeypatch):

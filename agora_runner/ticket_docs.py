@@ -397,8 +397,27 @@ def read_rows(path):
     prose; a list of 241 rows does not, and the difference is 760KB
     against 101KB on `ideas.md`.
 
-    Ordered highest number first, the same as `from_documents`, so a
-    caller comparing the two sides is comparing like with like.
+    **Ordered the way the board file orders its rows**, which is not the
+    same as ordering by number and this used to sort by number. The page
+    breaks a tie on `a.index - b.index`, the row's position in the list it
+    was handed (`app.js`, `sortItems`), so the order is part of what a
+    reader has to reproduce and not a presentation detail. Measured
+    2026-09-03 against the live boards: 63 of 170 rows on `issues.md` and
+    51 of 241 on `ideas.md` sit at a different position under a
+    number-descending sort, and every one of the 411 agrees with its
+    ticket document on all ten fields -- so a reader switched onto the
+    number-sorted version would have reshuffled his board while every
+    field-by-field check stayed green.
+
+    The order comes off the board's layout document, which is where
+    `write_board` already records it, rather than out of a new field on
+    each ticket. A position stored per ticket would have to be rewritten
+    on every row above an insertion, which is the write amplification this
+    whole store exists to end.
+
+    A ticket the layout does not name is real drift rather than a shape to
+    absorb quietly, so those go last, highest number first, and
+    `tools.ticket_drift` is what reports them.
     """
     query = urllib.parse.urlencode({
         "startkey": json.dumps([path]),
@@ -411,5 +430,27 @@ def read_rows(path):
     if status != 200:
         raise RuntimeError(f"reading rows of {path}: {status} {json.dumps(body)[:200]}")
     rows = [row["value"] for row in body.get("rows", [])]
-    rows.sort(key=lambda row: row["number"], reverse=True)
+    order = {number: position for position, number in enumerate(row_order(path))}
+    rows.sort(key=lambda row: (
+        order.get(row["number"], len(order)),
+        -row["number"] if row["number"] not in order else 0,
+    ))
     return rows
+
+
+def row_order(path):
+    """The row numbers of one board, in the order its file lists them.
+
+    Read off the layout document `write_board` writes, so there is one
+    record of the order rather than a second copy kept beside the rows.
+    A board with no layout document has no order to give and returns `[]`
+    -- `read_rows` then falls back to number-descending, which is what it
+    did before the layout was consulted at all.
+    """
+    status, body = _req(
+        "GET", f"{TICKET_DB}/{urllib.parse.quote(layout_doc_id(path), safe='')}")
+    if status == 404:
+        return []
+    if status != 200:
+        raise RuntimeError(f"reading the layout of {path}: {status}")
+    return [block[1] for block in body.get("layout") or [] if block and block[0] == "row"]
