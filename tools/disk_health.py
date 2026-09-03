@@ -9,7 +9,7 @@ and measuring it gave an answer I was not expecting:
 here.** Every PersistentVolumeClaim in this cluster is `local-path`, which
 provisions a plain directory on the node's disk with no quota on it. So
 the kubelet reports the *node filesystem's* numbers for each volume — on
-2026-09-04 all seven bound claims on server1 read 57.9GB used of 80.3GB,
+2026-09-04 all seven bound claims on server1 read 53.9GiB used of 74.8GiB,
 identical to each other and identical to the node, while their requested
 sizes are 1Gi, 1Gi, 1Gi, 1Gi, 5Gi, 5Gi and 10Gi. Marcus cannot fill "its"
 1Gi. What it can do is fill server1's root disk, and the same disk is
@@ -19,7 +19,7 @@ is every stateful workload on the node stopping at the same moment.
 
 Nothing here read that. All 42 preflight checks and both memory checks
 watch memory, and `tools.host_memory_trend` watches swap; on 2026-09-04
-server1 was at 72.1% of its disk with 19.1GB left and no instrument
+server1 was at 76% of its disk with 17.8GiB left and no instrument
 anywhere would have said so at 95%.
 
     python3 -m tools.disk_health
@@ -49,16 +49,20 @@ above its own eviction threshold**, 1 means a node's kubelet or the node
 list was unreadable — which never reads as clean — and 0 means everything
 it could judge has room, naming what it swept and what it could not cap.
 
-Scope it prints for itself: this is current state, not a trend. A disk at
-72% that is filling by 2GB a day and one that has been flat for a month
-read identically here, and the second measurement is the one that would
-say which — that needs a stored series, and there is not one yet.
+Two scopes it prints for itself. This is current state, not a trend: a disk
+at 76% that is filling by 2GiB a day and one that has been flat for a month
+read identically here, and only a stored series separates them. And it reads
+each *node's* kubelet, so a Bound claim that no running Pod mounts appears in
+no node's stats at all and is invisible to this — `kubectl get pvc -A` is the
+list of what exists, this is the list of what is mounted.
 """
 
 import argparse
 import json
 import subprocess
 import sys
+
+from tools import oom_history
 
 #: The kubelet's own default eviction thresholds, as fractions of capacity
 #: that must remain *available*. These are k3s/kubelet defaults, not a
@@ -73,21 +77,10 @@ MARGIN_PCT = 5.0
 GIB = 1024.0**3
 
 
-def read_node_names(runner=subprocess.run):
-    """Every node in the cluster, in the order the API server lists them."""
-    done = runner(
-        ["kubectl", "get", "nodes", "-o", "json"], capture_output=True, text=True
-    )
-    if done.returncode != 0:
-        raise OSError((done.stderr or "").strip() or "kubectl get nodes failed")
-    names = [
-        item.get("metadata", {}).get("name")
-        for item in json.loads(done.stdout).get("items", [])
-    ]
-    names = [name for name in names if name]
-    if not names:
-        raise OSError("the API server listed no nodes, which is not a cluster")
-    return names
+#: `tools.oom_history` already owns this, and it is the function that had to be
+#: fixed once when server2 joined and a hardcoded `server1` went silently wrong.
+#: A second copy here is a second place to find that fix next time.
+read_node_names = oom_history.read_node_names
 
 
 def read_summary(node, runner=subprocess.run):
@@ -247,6 +240,10 @@ def report(node, filesystems, volumes, out=print):
             _gib(volume.get("capacityBytes")),
             free,
         )
+        # The kubelet publishes no eviction threshold for a volume's own fill
+        # level, so this borrows nodefs's. That one IS a number I picked, and
+        # nothing here today exercises it — every claim in this cluster is
+        # uncapped.
         if free < raises_at("nodefs"):
             findings += 1
             out("  FILLING    %s" % line)
@@ -297,10 +294,10 @@ def main(argv=None, runner=subprocess.run, out=print):
         findings += report(node, filesystems, volumes, out=out)
 
     out("")
-    out(
-        "Swept %d node(s): %s. %d claim(s) report a size of their own; %d report the node's disk instead."
-        % (len(nodes), ", ".join(nodes), capped, uncapped)
-    )
+    # The caveats go first and the sweep line last, because `tools.preflight`
+    # collapses this to "the last line carrying a digit". The reviewer measured
+    # the other order: the trend disclaimer is the same sentence on every run,
+    # so the roster row could never vary with the result.
     out(
         "Raises when a filesystem has less than %.1f%% free — that is the kubelet's own eviction point plus %.1f%%."
         % (raises_at("nodefs"), MARGIN_PCT)
@@ -311,15 +308,33 @@ def main(argv=None, runner=subprocess.run, out=print):
             % uncapped
         )
     out(
-        "NOT JUDGED  whether a disk is filling. This is current state; a flat 72% and a 72% that was 60% yesterday read the same here."
+        "NOT JUDGED  whether a disk is filling. This is current state; a flat disk and one that was ten points emptier yesterday read the same here."
+    )
+    out(
+        "NOT JUDGED  a Bound claim that no running Pod mounts. This reads each node's kubelet, and an unmounted volume is in no node's stats at all."
+    )
+    if unreadable:
+        out(
+            "CANNOT READ %d of %d node(s), so the counts below cover only the rest."
+            % (len(unreadable), len(nodes))
+        )
+    out(
+        "Swept %d node(s): %s. %d claim(s) report a size of their own; %d report the node's disk instead."
+        % (len(nodes), ", ".join(nodes), capped, uncapped)
     )
     if unreadable:
         out(
             "CANNOT READ %d node(s): %s — the sweep is partial, so a clean line above does not cover them."
             % (len(unreadable), ", ".join(unreadable))
         )
-        return 1
-    return 2 if findings else 0
+    # A real finding outranks a partial sweep, the same call `tools.oom_history`
+    # makes. The reviewer caught the other order: a node at 2% free, read fine,
+    # alongside one unreachable node collapsed to `UNREADABLE` in preflight's
+    # roster — the word for "nothing could be judged" printed over something
+    # that had been.
+    if findings:
+        return 2
+    return 1 if unreadable else 0
 
 
 if __name__ == "__main__":

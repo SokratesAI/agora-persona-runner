@@ -174,10 +174,54 @@ def test_a_filesystem_block_with_no_available_bytes_says_which_half_is_missing()
 
 
 def test_the_margin_sits_above_the_kubelets_own_eviction_point():
-    """The threshold is derived from the cluster's behaviour, not invented here."""
-    assert disk_health.MARGIN_PCT > 0
-    for kind, evicts_at in disk_health.EVICTION_PCT.items():
-        assert disk_health.raises_at(kind) == evicts_at + disk_health.MARGIN_PCT
+    """The threshold is the kubelet's number plus a margin, checked against
+    the literal values rather than against `raises_at`'s own arithmetic —
+    the first version of this test restated the implementation line and could
+    not fail.
+    """
+    assert disk_health.EVICTION_PCT == {"nodefs": 10.0, "imagefs": 15.0}
+    assert disk_health.raises_at("nodefs") == 15.0
+    assert disk_health.raises_at("imagefs") == 20.0
+
+
+def test_a_real_finding_outranks_a_node_the_sweep_could_not_read():
+    """Exit 2, not 1, when one node is critical and another is unreachable.
+
+    preflight collapses 1 to `UNREADABLE`, the word for "nothing could be
+    judged" — printing it over a node that WAS judged and is at 2% free is the
+    less urgent answer winning.
+    """
+    two_pct = int(NODE_CAPACITY * 0.02)
+    code, text = _lines(
+        nodes=("server1", "server2"),
+        summaries={"server1": _summary(node_available=two_pct)},
+    )
+    assert "FILLING    server1 nodefs" in text
+    assert "CANNOT READ server2" in text
+    assert code == 2
+
+
+def test_the_last_line_carrying_a_digit_varies_with_the_result():
+    """preflight's roster row is the last digit-bearing line, so it must move.
+
+    The first version ended on a fixed disclaimer sentence, which meant the
+    collapsed row said the same thing whatever the sweep found.
+    """
+    def last_number_line(text):
+        return [ln for ln in text.splitlines() if any(c.isdigit() for c in ln)][-1]
+
+    _, one = _lines(summaries={"server1": _summary()})
+    _, two = _lines(
+        nodes=("server1", "server2"),
+        summaries={
+            "server1": _summary(
+                volumes=[("agents", "m", "p", NODE_CAPACITY, NODE_AVAILABLE)]
+            ),
+            "server2": _summary(),
+        },
+    )
+    assert last_number_line(one) != last_number_line(two)
+    assert last_number_line(two).startswith("Swept 2 node(s)")
 
 
 def test_is_capped_compares_against_every_filesystem_the_node_reports():
