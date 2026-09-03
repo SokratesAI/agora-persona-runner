@@ -10997,7 +10997,33 @@ describe("an opened board row offers a visible way into the editor", () => {
     assert.ok(editor, "the button did not open the editor");
     assert.ok(editor.querySelector(".item-edit-input"), "no title box in the editor");
     const labels = [...editor.querySelectorAll("button")].map((b) => b.textContent);
-    assert.deepEqual(labels, ["Save", "Cancel", "Delete"]);
+    assert.deepEqual(labels, ["Save", "Cancel", "Archive", "Delete"]);
+  });
+
+  /* His capture, 2026-09-03: *"Add a archive button next to the delete when
+   * in edit mode."* Archive sits beside Delete and must never be Delete: it
+   * posts its own route and leaves the row in his file. */
+  test("archive posts to its own route and does not ask first", async () => {
+    const window = await loadSite("/issues#57");
+    const row = window.document.getElementById("item-57");
+    click(window, row.querySelector(".item-actions button"));
+    const editor = row.querySelector(".item-edit");
+    const archive = [...editor.querySelectorAll("button")]
+      .find((b) => b.textContent === "Archive");
+    assert.ok(archive, "no Archive button in the editor");
+    const posted = [];
+    window.fetch = async (url, opts) => {
+      posted.push({ url, body: JSON.parse(opts.body) });
+      return { ok: true, json: async () => ({ ok: true, message: "#57 archived on issues" }) };
+    };
+    let confirmed = false;
+    window.confirm = () => { confirmed = true; return true; };
+    click(window, archive);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(confirmed, false, "Archive asked for a confirmation; only Delete should");
+    assert.ok(posted.length, "Archive posted nothing");
+    assert.equal(posted[0].url, "/api/board/archive");
+    assert.deepEqual(posted[0].body, { target: "issues", number: 57 });
   });
 
   test("a closed row shows no edit control", async () => {
