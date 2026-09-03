@@ -13541,6 +13541,120 @@ describe("the project page", () => {
     assert.equal(window.document.querySelector(".project-prio"), null);
   });
 
+  /* The portfolio standing on the index -- idea #228's project-manager
+   * pass. The index listed names and ratings and nothing about how any
+   * project was going, so "which project needs me" cost one tap per
+   * project. These hold the rendering to the server's numbers: the point
+   * of `projectSummary` is that the index and the project page cannot
+   * disagree, and a page that computed its own percentage would pass a
+   * test written against the page's own arithmetic. */
+  const STANDING = {
+    ...RATED,
+    name: null,
+    asked: "",
+    projectSummary: {
+      marcus: {
+        total: 10, done: 4, dropped: 0, open: 6, blocked: 2, percentDone: 40,
+        priorities: [
+          { key: "immediate", label: "🔴 Immediately", count: 2 },
+          { key: "low", label: "⚪ Low", count: 3 },
+          { key: "", label: "Unrated", count: 1 },
+        ],
+      },
+      nova: {
+        total: 4, done: 3, dropped: 1, open: 1, blocked: 0, percentDone: 75,
+        priorities: [{ key: "", label: "Unrated", count: 1 }],
+      },
+      agora: {
+        total: 0, done: 0, dropped: 0, open: 0, blocked: 0, percentDone: 0,
+        priorities: [],
+      },
+    },
+  };
+
+  const standings = (window) =>
+    [...window.document.querySelectorAll(".project-standing")];
+
+  test("the index shows where each project stands, in the server's order", async () => {
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const rows = standings(window);
+    assert.deepEqual(
+      rows.map((r) => r.querySelector(".project-standing-name").textContent),
+      ["Marcus", "Nova"],
+      "the standings are not the projects the server ranked, in its order");
+    // Agora has no rows under it. A 0% bar on a project with nothing filed
+    // says "this project has failed" when the truth is "nothing here yet".
+    assert.equal(rows.length, 2);
+    assert.equal(
+      rows[0].querySelector(".project-standing-counts").textContent,
+      "40% · 6 open · 2 on you");
+    // No "on you" clause when nothing is blocked -- an "0 on you" is a
+    // sentence that reads as bad news about nothing.
+    assert.equal(
+      rows[1].querySelector(".project-standing-counts").textContent,
+      "75% · 1 open");
+  });
+
+  test("the bar is the server's percentage, not one the page worked out", async () => {
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const rows = standings(window);
+    assert.equal(rows[0].querySelector(".project-standing-fill").style.width, "40%");
+    assert.equal(rows[1].querySelector(".project-standing-fill").style.width, "75%");
+    // Named for a screen reader: an unnamed bar is a decoration.
+    assert.equal(rows[0].querySelector(".project-standing-track")
+      .getAttribute("aria-label"), "Marcus — 40% · 6 open · 2 on you");
+  });
+
+  test("the worst open rating is named, and unrated is not a severity", async () => {
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const rows = standings(window);
+    // Marcus carries the project's own rating and, separately, the worst
+    // rating among its open rows. Two different facts, both chips.
+    const chips = [...rows[0].querySelectorAll(".chip")].map((c) => c.textContent);
+    assert.deepEqual(chips, ["🔴 Immediately", "🔴 Immediately · 2"]);
+    // Nova's only open row is unrated. "Unrated" is not the worst thing
+    // under a project, so nothing is drawn -- and Nova is unrated as a
+    // project too, so this row must carry no chip at all.
+    assert.deepEqual(
+      [...rows[1].querySelectorAll(".chip")].map((c) => c.textContent), []);
+  });
+
+  test("one project spelled two ways is one standing", async () => {
+    const window = await loadSite("/projects", {
+      project: () => ({
+        ...STANDING,
+        projects: ["Nova", "nova"],
+        projectSummary: { nova: STANDING.projectSummary.nova },
+      }),
+    });
+    const rows = standings(window);
+    assert.deepEqual(
+      rows.map((r) => r.querySelector(".project-standing-name").textContent),
+      ["Nova"],
+      "the second spelling drew the same numbers a second time");
+  });
+
+  test("a project page still draws the pills and no standings", async () => {
+    const window = await loadSite("/project/Nova", {
+      project: () => ({ ...STANDING, name: "Nova", asked: "Nova" }),
+    });
+    assert.ok(window.document.querySelector(".project-pill"),
+      "the project page lost its navigation");
+    // The page has its own, larger summary for the project it is showing;
+    // a second list of every project's numbers under it is the index.
+    assert.equal(standings(window).length, 0);
+  });
+
+  test("an index with no standings at all still says what to do", async () => {
+    const window = await loadSite("/projects", {
+      project: () => ({ ...STANDING, projectSummary: {} }),
+    });
+    assert.equal(standings(window).length, 0);
+    assert.ok([...window.document.querySelectorAll(".empty")]
+      .some((p) => p.textContent === "Pick a project."),
+      "an index with no numbers to show said nothing at all");
+  });
+
   /* The summary strip -- idea #228, the burndown half.
    *
    * His idea asks for *"a backlog, roadmap and maybe a burndown chart"* and

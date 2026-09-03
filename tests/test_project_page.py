@@ -657,3 +657,76 @@ def test_roadmap_is_empty_when_the_roadmap_document_is_missing(monkeypatch):
     assert nova_site.project_payload("Nova")["roadmap"] == {
         "items": [], "unattributed": 0,
     }
+
+
+class TestIndexStandings:
+    """Where every project stands, on the index -- idea #228's PM pass.
+
+    His idea asks for someone to *"pretend to be a project manager and
+    really think 'what do i need'"*, and the index answered "what projects
+    exist" and nothing else: the standing lived only on the page you had
+    to open, one tap per project. `projectSummary` is that standing for all
+    of them.
+
+    The assertion that matters is the third one. This is a **regroup**, not
+    a second measurement -- the whole reason it is computed off the same
+    two board payloads is that the index and the project page must not be
+    able to disagree -- so it is asserted as *equality with the page*,
+    which is a test a second implementation would fail. Counting the rows
+    here by hand would pass against two different definitions of "open".
+    """
+
+    def test_every_project_gets_a_standing_keyed_lowercase(self):
+        payload = nova_site.project_payload()
+        assert set(payload["projectSummary"]) == {
+            "nova", "agora", "sokrates post"}
+
+    def test_the_index_standing_is_the_project_pages_own_numbers(self):
+        """Same rows, same summary -- not a second count of the same board."""
+        index = nova_site.project_payload()["projectSummary"]
+        for name in ("Nova", "Agora", "Sokrates Post"):
+            page = nova_site.project_payload(name)["summary"]
+            assert index[name.lower()] == page, name
+
+    def test_the_two_spellings_of_one_project_share_one_standing(self):
+        """`Nova` and `nova` are one project everywhere else on this page.
+
+        `projectPriority` is keyed lowercase and `/project/nova` matches
+        case-insensitively, so a standing that split them would report the
+        same project twice with each half's rows missing from the other.
+        Four rows carry a Nova spelling here -- three `Nova`, one `nova` --
+        and the standing has to count all four.
+        """
+        summary = nova_site.project_payload()["projectSummary"]["nova"]
+        assert summary["total"] == 4
+        assert summary["done"] == 1
+        assert summary["open"] == 3
+        assert summary["blocked"] == 1
+
+    def test_a_row_with_no_project_is_in_no_project(self, monkeypatch):
+        """An empty `Project` cell is not a twelfth bucket.
+
+        324 rows had an empty cell before Cycle 800 filled them, and the
+        dashboard was showing all of them as Nova. A blank key here would
+        put that bucket back, unnamed, on the index.
+
+        The unprojected row is added here rather than assumed: every row in
+        this module's fixture carries a project, so asserting against that
+        fixture would pass whether or not the skip exists.
+        """
+        stray = _row(99, "Stray", "⚪ Backlog", "backlog", "")
+        payloads = {
+            "issues": {"items": ISSUES + [stray]},
+            "ideas": {"items": IDEAS},
+        }
+        monkeypatch.setattr(nova_site, "board_payload", lambda n: payloads[n])
+        payload = nova_site.project_payload()
+        assert "" not in payload["projectSummary"]
+        # And it is counted nowhere else either -- a stray row quietly
+        # joining the biggest project is the failure this replaced.
+        assert payload["projectSummary"]["nova"]["total"] == 4
+
+    def test_a_standing_is_sent_with_a_single_project_too(self):
+        """The pills and the index list are drawn on the project page too."""
+        payload = nova_site.project_payload("Agora")
+        assert payload["projectSummary"]["agora"]["open"] == 1

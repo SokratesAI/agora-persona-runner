@@ -8571,6 +8571,104 @@
     return wrap;
   }
 
+  /* The portfolio, not the list -- idea #228's project-manager pass.
+   *
+   * The index has drawn a name and a rating chip per project since it
+   * shipped. That answers "what projects are there" and nothing else, so
+   * the question the page is actually opened with -- which project needs
+   * me -- costs one tap per project, eleven of them, on a phone. His idea
+   * asks for exactly this: *"The current project page is good, but not
+   * great. It needs someone to pretend to be a project manager and really
+   * think 'what do i need' and 'how do i want it?'"*
+   *
+   * So the standing every project page already shows is drawn here for
+   * all of them at once, off `projectSummary`, which is the server
+   * regrouping rows it had already built rather than measuring anything
+   * new -- the number on this list and the number on the project page are
+   * the same number by construction.
+   *
+   * The pills above stay exactly as they are. They are the navigation and
+   * this is the reading; putting the counts inside the pills would have
+   * made an eleven-item scannable strip into eleven sentences.
+   *
+   * Two calls worth knowing, both reversible in a sentence. The worst
+   * *open* rating under a project is shown whatever it is, rather than
+   * only when it is red -- "the worst thing here is Low" is a real answer
+   * and a threshold I picked would be one nobody agreed to. And the order
+   * is the server's, which is by the rating he set on the project, not by
+   * how far along each is: a sort by progress would put the projects he
+   * cares least about at the top on the day they finish.
+   */
+  function renderProjectStandings(payload) {
+    var projects = (payload && payload.projects) || [];
+    var summaries = (payload && payload.projectSummary) || {};
+    var rated = (payload && payload.projectPriority) || {};
+    var list = el("ul", "project-standing-rows");
+    var seen = {};
+    for (var i = 0; i < projects.length; i++) {
+      var name = projects[i];
+      var key = name.toLowerCase();
+      // `Nova` and `nova` are two spellings in his cells and one project
+      // everywhere else on this page -- the rating is keyed lowercase and
+      // `/project/nova` already shows the rows of both -- so a second
+      // standing under the second spelling is the same numbers twice.
+      if (seen[key]) continue;
+      seen[key] = true;
+      var summary = summaries[key];
+      if (!summary || !summary.total) continue;
+      list.appendChild(projectStandingRow(name, summary, rated[key]));
+    }
+    if (!list.childNodes.length) return null;
+    var box = el("section", "project-standings");
+    box.appendChild(list);
+    return box;
+  }
+
+  function projectStandingRow(name, summary, rating) {
+    var li = el("li", "project-standing");
+    var head = el("div", "project-standing-head");
+    var link = el("a", "project-standing-name", name);
+    link.setAttribute("href", "/project/" + encodeURIComponent(name));
+    head.appendChild(link);
+    // The project's own rating, the one he sets on its page. Only when
+    // there is one -- an unconditional chip draws an empty coloured pill
+    // on every unrated project, the call `renderProjectIndex` already
+    // makes one function up.
+    if (rating && rating.priority) {
+      head.appendChild(el(
+        "span", "chip prio prio-" + rating.priorityKey, rating.priority));
+    }
+    var counts = summary.percentDone + "% · " + summary.open + " open";
+    if (summary.blocked) counts += " · " + summary.blocked + " on you";
+    head.appendChild(el("span", "project-standing-counts", counts));
+    li.appendChild(head);
+    var track = el("div", "project-standing-track");
+    var fill = el("div", "project-standing-fill");
+    fill.style.width = summary.percentDone + "%";
+    track.appendChild(fill);
+    // Named for a screen reader, the same as the bar on the project page:
+    // a progress bar with no accessible name is a decoration.
+    track.setAttribute("role", "img");
+    track.setAttribute("aria-label", name + " — " + counts);
+    li.appendChild(track);
+    // The worst rating among the *open* rows -- "is there anything red
+    // under this project", which is the question the four status columns
+    // on the page below cannot answer. `priorities` is already in
+    // `PRIORITY_ORDER`, worst first, with unrated appended last under an
+    // empty key; an unrated row is not a severity, so it is skipped rather
+    // than shown as the worst thing here.
+    var worst = null;
+    var entries = summary.priorities || [];
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].key) { worst = entries[i]; break; }
+    }
+    if (worst) {
+      li.appendChild(el("span", "chip prio prio-" + worst.key,
+        worst.label + " · " + worst.count));
+    }
+    return li;
+  }
+
   /* The rating of one project, as something the owner can change --
    * his capture, 2026-09-01: *"Each project should also be able to be
    * assigned a priority, making one project and its tasks more important
@@ -9031,7 +9129,11 @@
     feed.appendChild(renderProjectIndex(payload));
 
     if (!asked) {
-      feed.appendChild(el("p", "empty", "Pick a project."));
+      // The index is where he decides which project to open, so it shows
+      // where each one stands rather than telling him to pick one blind.
+      var standings = renderProjectStandings(payload);
+      if (standings) feed.appendChild(standings);
+      else feed.appendChild(el("p", "empty", "Pick a project."));
       return;
     }
     // Asked for a name no row carries. Said plainly rather than 404'd:

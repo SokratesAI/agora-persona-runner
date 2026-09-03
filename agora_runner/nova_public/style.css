@@ -4272,6 +4272,34 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   border-radius: 999px;
   padding: 2px 8px;
 }
+/* The portfolio standing, on the index -- idea #228's project-manager
+   pass. Deliberately not styled as another row of pills: the pills above
+   are a strip to scan and this is a list to read, so each entry is a full
+   row with its own bar. The bar borrows `--accent` on `--line` from
+   `.project-summary-track` above rather than inventing a second progress
+   colour, because the two bars mean exactly the same thing and a reader
+   who sees them on two pages should not have to work that out. */
+.project-standings { margin: 4px 0 16px; }
+.project-standing-rows { list-style: none; margin: 0; padding: 0; }
+.project-standing { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.project-standing:last-child { border-bottom: 0; }
+.project-standing-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.project-standing-name { font-weight: 600; text-decoration: none; color: inherit; }
+.project-standing-counts { color: var(--dim); font-size: 0.85rem; margin-left: auto; }
+.project-standing-track {
+  margin-top: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+.project-standing-fill { height: 100%; background: var(--accent); }
+/* The worst-open-rating chip only -- it is the direct child, sitting under
+   the bar. The project's own rating chip lives inside the head row, which
+   is baseline-aligned, and a top margin there would knock it off the
+   baseline it is aligned to. */
+.project-standing > .chip { display: inline-block; margin-top: 6px; }
+
 /* The ordered "what's next" list -- idea #228's backlog half. Numbered
    with our own span rather than the `<ol>` marker, because the fold below
    restarts at 1 and the position has to keep counting across it. */
