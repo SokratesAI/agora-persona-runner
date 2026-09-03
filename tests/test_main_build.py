@@ -636,3 +636,32 @@ class TestTheNoteIsWiredIntoMain:
         assert "RED" in out
         assert "PERISHABLE" in out
         assert "gh run rerun 99 --repo SokratesAI/agora-claude-bridge --job 55" in out
+
+
+class TestARunWithNoStartTime:
+    def test_it_is_an_error_not_a_claim_that_the_other_repo_moved(self):
+        # An empty start time compares as older than every real timestamp,
+        # so the naive version reports every such run as perishable.
+        import base64
+
+        blob = base64.b64encode(WORKFLOW.encode()).decode()
+        entry = run("build", "failure", run_id=99)
+        entry["path"] = ".github/workflows/build.yaml"
+        entry["started"] = None
+
+        def fake(args):
+            joined = " ".join(args)
+            if "/jobs" in joined:
+                return 0, json.dumps(
+                    [{"id": 55, "name": "vault-drift", "conclusion": "failure"}]
+                ), ""
+            if "contents/" in joined:
+                return 0, blob, ""
+            return 0, "2026-09-03T05:55:00Z\n", ""
+
+        errors = []
+        notes = main_build.perishable_notes(
+            "SokratesAI/agora-claude-bridge", "abc123", [entry], errors, run=fake
+        )
+        assert notes == []
+        assert errors and "no start time" in errors[0]

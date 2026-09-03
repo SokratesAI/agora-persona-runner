@@ -347,6 +347,15 @@ def perishable_notes(repo, sha, runs, errors, run=None):
                     )
                     continue
                 started = (entry or {}).get("started") or ""
+                if not started:
+                    errors.append(
+                        f"{repo}: run {run_id} came back with no start time, so "
+                        f"whether {other} moved since it ran is not judgeable"
+                    )
+                    continue
+                # Both stamps are GitHub's UTC ISO-8601 with a `Z`, so a
+                # lexical compare is a chronological one. Parsing them would
+                # be one more thing to get wrong for no extra truth.
                 if moved <= started:
                     notes.append(
                         f"`{name}` compares against {other}'s default branch, "
