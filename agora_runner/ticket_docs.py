@@ -65,6 +65,20 @@ def layout_doc_id(path):
     return f"board:{path.lower()}"
 
 
+def source_rev_doc_id(path):
+    """The id of the one document that holds nothing but a revision.
+
+    It is separate from the layout document, and that is the whole reason
+    it exists rather than a field on it. Measured 2026-09-03: his
+    `issues.md` layout is **112,132 bytes**, and a stamp living on it
+    would rewrite all of that on every board write, because the rev moves
+    on every write by definition. A status change would then cost a
+    112KB revision in the store built to stop a status change costing a
+    656KB revision in the vault. This document is under 200 bytes.
+    """
+    return f"rev:{path.lower()}"
+
+
 def to_documents(path, records, source_rev=None):
     """`{tickets, layout}` -> the CouchDB documents for one board.
 
@@ -99,8 +113,17 @@ def to_documents(path, records, source_rev=None):
         # `ticket_store.to_markdown` unpacks it either way.
         "layout": [list(block) for block in records["layout"]],
         "tickets": len(records["tickets"]),
-        "sourceRev": source_rev,
     })
+    # Omitted entirely when the caller does not know the rev, so
+    # `write_board` tombstones any stamp already stored -- see the
+    # docstring: an unknown answer must never be able to read as current.
+    if source_rev:
+        docs.append({
+            "_id": source_rev_doc_id(path),
+            "type": "source",
+            "board": path,
+            "sourceRev": source_rev,
+        })
     return docs
 
 
@@ -114,6 +137,8 @@ def from_documents(docs):
     layout = None
     tickets = []
     for doc in docs:
+        # `type: "source"` carries the markdown revision and nothing the
+        # render needs; it is skipped rather than raised on.
         if doc.get("type") == "board":
             layout = [tuple(block) for block in doc.get("layout") or []]
         elif doc.get("type") == "ticket":
@@ -188,11 +213,13 @@ def _existing(path):
     if status != 200:
         raise RuntimeError(f"listing {path}: {status} {json.dumps(body)[:200]}")
     stored = {row["id"]: row["doc"] for row in body.get("rows", []) if row.get("doc")}
-    status, body = _req("GET", f"{TICKET_DB}/{urllib.parse.quote(layout_doc_id(path), safe='')}")
-    if status == 200:
-        stored[body["_id"]] = body
-    elif status != 404:
-        raise RuntimeError(f"reading the layout of {path}: {status}")
+    for doc_id, what in ((layout_doc_id(path), "layout"),
+                         (source_rev_doc_id(path), "source revision")):
+        status, body = _req("GET", f"{TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}")
+        if status == 200:
+            stored[body["_id"]] = body
+        elif status != 404:
+            raise RuntimeError(f"reading the {what} of {path}: {status}")
     return stored
 
 
@@ -485,11 +512,11 @@ def stored_source_rev(path):
     the same thing to `currency`: the store cannot prove it is current.
     """
     status, body = _req(
-        "GET", f"{TICKET_DB}/{urllib.parse.quote(layout_doc_id(path), safe='')}")
+        "GET", f"{TICKET_DB}/{urllib.parse.quote(source_rev_doc_id(path), safe='')}")
     if status == 404:
         return None
     if status != 200:
-        raise RuntimeError(f"reading the layout of {path}: {status}")
+        raise RuntimeError(f"reading the source revision of {path}: {status}")
     return body.get("sourceRev")
 
 

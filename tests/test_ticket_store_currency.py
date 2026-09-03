@@ -11,6 +11,7 @@ the stamp goes on the board document when a writer knows the rev, and
 
 import os
 import sys
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -35,34 +36,55 @@ MARKDOWN = "\n".join([
 ])
 
 
-def _board_doc(source_rev):
+def _docs(source_rev):
     records = ticket_store.to_records(MARKDOWN)
-    docs = ticket_docs.to_documents(BOARD, records, source_rev=source_rev)
-    board = [doc for doc in docs if doc["type"] == "board"]
-    assert len(board) == 1, "one layout document per board"
-    return board[0]
+    return ticket_docs.to_documents(BOARD, records, source_rev=source_rev)
 
 
-def test_the_board_document_carries_the_revision_it_was_built_from():
-    assert _board_doc("7-abc")["sourceRev"] == "7-abc"
+def _of_type(docs, kind):
+    return [doc for doc in docs if doc["type"] == kind]
+
+
+def test_the_revision_is_its_own_document():
+    stamps = _of_type(_docs("7-abc"), "source")
+    assert len(stamps) == 1
+    assert stamps[0]["_id"] == f"rev:{BOARD}"
+    assert stamps[0]["sourceRev"] == "7-abc"
 
 
 def test_a_writer_that_does_not_know_the_revision_stamps_nothing():
     # The bridge pod's `tools.board_*` writes the file in another process
-    # and cannot know the rev. It must leave no stamp rather than an old
-    # one, so the verdict is UNKNOWN and never a false CURRENT.
-    assert _board_doc(None)["sourceRev"] is None
+    # and cannot know the rev. Emitting no document at all is what makes
+    # `write_board` tombstone a stamp already stored, so the verdict is
+    # UNKNOWN and never a false CURRENT.
+    assert _of_type(_docs(None), "source") == []
 
 
-def test_the_stamp_is_the_only_field_added():
-    # The board document is compared field by field against what is stored
-    # to decide whether to write it (`write_board`), so an extra field
-    # would rewrite every layout document once and then never again --
-    # this pins that there is exactly one.
-    with_rev = _board_doc("7-abc")
-    without = _board_doc(None)
-    assert set(with_rev) == set(without)
-    assert {key for key in with_rev if with_rev[key] != without[key]} == {"sourceRev"}
+def test_the_stamp_never_touches_the_layout_document():
+    # The whole reason it is a separate document. His `issues.md` layout is
+    # 112KB and the rev moves on every write by definition, so a field on
+    # the layout would make a status change cost a 112KB revision in the
+    # store built to stop it costing a 656KB one in the vault.
+    with_rev = _of_type(_docs("7-abc"), "board")
+    without = _of_type(_docs(None), "board")
+    assert with_rev == without
+    assert "sourceRev" not in with_rev[0]
+
+
+def test_the_stamp_document_is_small():
+    # It exists to be cheap to rewrite; a layout or a ticket list leaking
+    # into it would defeat the split above.
+    import json
+    assert len(json.dumps(_of_type(_docs("7-abc"), "source")[0])) < 200
+
+
+def test_the_render_ignores_the_stamp():
+    # `from_documents` -> `to_markdown` is what renders his file, and a
+    # third document type must not reach it as a ticket or a layout.
+    records = ticket_store.to_records(MARKDOWN)
+    assert ticket_store.to_markdown(
+        ticket_docs.from_documents(_docs("7-abc"))) == ticket_store.to_markdown(
+            records)
 
 
 def _currency(monkeypatch, stored, live):
@@ -109,3 +131,81 @@ def test_two_boards_that_happen_to_share_a_revision_string(monkeypatch):
     other = "projects/sokrates/projects/nova/ideas.md"
     assert ticket_docs.currency(other, "7-abc")[0] == ticket_docs.UNKNOWN
     assert seen == {BOARD: 1, other: 1}
+
+
+def _fake_store(monkeypatch, held):
+    """`write_board` against a store holding exactly `held`. Returns the sends."""
+    sent = []
+
+    def req(method, path, body=None, timeout=60):
+        if method == "GET" and "_all_docs" in path:
+            return 200, {"rows": [{"id": doc["_id"], "doc": doc}
+                                  for doc in held.values()
+                                  if doc["_id"].startswith("ticket:")]}
+        if method == "GET":
+            doc_id = urllib.parse.unquote(path.split("/", 1)[1])
+            if doc_id in held:
+                return 200, held[doc_id]
+            return 404, {"error": "not_found"}
+        if method == "POST" and path.endswith("_bulk_docs"):
+            sent.extend(body["docs"])
+            return 201, [{"ok": True} for _ in body["docs"]]
+        raise AssertionError(f"unexpected {method} {path}")
+
+    monkeypatch.setattr(ticket_docs, "_req", req)
+    return sent
+
+
+def test_the_stamp_is_updated_rather_than_conflicted_with(monkeypatch):
+    """It carries the stored `_rev`, so the second write is an update.
+
+    This is the mutation that survived the first version of these tests:
+    `write_board` only knew about the `ticket:` documents and the layout,
+    so a stamp already in the store was sent back with no `_rev`, CouchDB
+    answered `conflict` inside `_bulk_docs`, and the failure landed in the
+    summary's `failures` list where nothing looks. `currency` would then
+    have reported STALE forever after the very first write -- the exact
+    false negative this whole change exists to avoid.
+    """
+    held = {
+        ticket_docs.source_rev_doc_id(BOARD): {
+            "_id": ticket_docs.source_rev_doc_id(BOARD), "_rev": "3-old",
+            "type": "source", "board": BOARD, "sourceRev": "7-abc"},
+    }
+    sent = _fake_store(monkeypatch, held)
+    records = ticket_store.to_records(MARKDOWN)
+    ticket_docs.write_board(BOARD, records, source_rev="8-def")
+    stamps = [doc for doc in sent if doc.get("type") == "source"]
+    assert len(stamps) == 1
+    assert stamps[0]["sourceRev"] == "8-def"
+    assert stamps[0]["_rev"] == "3-old"
+
+
+def test_an_unchanged_stamp_is_not_rewritten(monkeypatch):
+    # Same rev in and out means nothing to write -- otherwise every
+    # payload build would add a revision to a document that never changed.
+    held = {
+        ticket_docs.source_rev_doc_id(BOARD): {
+            "_id": ticket_docs.source_rev_doc_id(BOARD), "_rev": "3-old",
+            "type": "source", "board": BOARD, "sourceRev": "7-abc"},
+    }
+    sent = _fake_store(monkeypatch, held)
+    ticket_docs.write_board(BOARD, ticket_store.to_records(MARKDOWN),
+                            source_rev="7-abc")
+    assert [doc for doc in sent if doc.get("type") == "source"] == []
+
+
+def test_a_write_that_knows_no_revision_tombstones_the_stamp(monkeypatch):
+    # The clearing half. A stamp left behind beside newer content would
+    # claim a currency the store cannot prove.
+    held = {
+        ticket_docs.source_rev_doc_id(BOARD): {
+            "_id": ticket_docs.source_rev_doc_id(BOARD), "_rev": "3-old",
+            "type": "source", "board": BOARD, "sourceRev": "7-abc"},
+    }
+    sent = _fake_store(monkeypatch, held)
+    ticket_docs.write_board(BOARD, ticket_store.to_records(MARKDOWN))
+    tombstones = [doc for doc in sent if doc.get("_deleted")]
+    assert [doc["_id"] for doc in tombstones] == [
+        ticket_docs.source_rev_doc_id(BOARD)]
+    assert tombstones[0]["_rev"] == "3-old"
