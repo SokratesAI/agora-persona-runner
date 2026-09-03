@@ -243,7 +243,8 @@ from agora_runner.nova_runtimes import attach_runtimes
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_sources import (
     claims_ledger_json,
-    board_markdown,
+    edvard_board_markdown,
+    nova_board_markdown,
     catalog_markdown,
     comments_markdown,
     cost_ledger_json,
@@ -829,6 +830,70 @@ def _captures_from_store(name, parsed):
     return stored
 
 
+def _board_from_store(name):
+    """His whole board out of `nova_tickets`, or `None` to fetch the file.
+
+    The last slice of the one-document-per-ticket migration, and the
+    first one that saves anything: the three readers above each proved
+    the store agreed with the markdown by *fetching the markdown*, so
+    every one of them made the page correct and none of them made it
+    cheaper. `issues.md` is 537KB and the board page is the most-opened
+    page on the site.
+
+    What replaces the per-build comparison is `ticket_docs.currency`,
+    which answers the same question off a 207-byte revision document
+    instead of the file. It is only trusted here because it has been
+    watched: `runner#679` wired the verdict in beside the field-by-field
+    comparison and logged both, `runner#685` fixed the repair command
+    that was deleting the stamp, `runner#686` made a board found
+    identical stamp its own revision, and both of his boards have since
+    been measured answering `current` live. `tools.ticket_drift` still
+    renders each board out of CouchDB and diffs it against the markdown
+    once a cycle, so the strong check did not go away -- it moved off the
+    request path and into preflight, where its verdict is written down.
+
+    `None` on anything short of a proven-current, fully readable board,
+    and the caller then does exactly what it always did. Three ways to
+    get it: the revision cannot confirm the store (`stale`, `unknown`, or
+    a check that could not run), a projection fails to read, or the store
+    answers with **no rows at all**. That last one is the failure mode
+    the revision cannot see -- the stamp is its own document, so a lost
+    or half-written layout document leaves the stamp current and the
+    board empty -- and neither of his boards has ever been empty, so
+    paying one fetch to find out is the right trade.
+    """
+    path = BOARD_PATHS[name]["edvard"]
+    verdict, why = _store_currency(path)
+    if verdict != ticket_docs.CURRENT:
+        # Not an error and usually not even a problem -- a board written
+        # from a process that could not learn the revision stamps
+        # nothing, and `unknown` is the honest answer to that. Logged
+        # because the fetch it costs is the whole point of this slice.
+        log(f"nova-site {name} fetching the markdown: "
+            f"revision says {verdict}: {why}")
+        return None
+    try:
+        rows = read_rows(path)
+        details = read_details(path)
+        captures, capture_replies = captures_in(read_head(path))
+    except Exception as problem:  # noqa: BLE001
+        # One decision for every failure mode, the same one the three
+        # readers above make: draw the file. A narrower except would let
+        # a new CouchDB error empty his board.
+        log(f"nova-site {name} unreadable from the ticket store: {problem}")
+        return None
+    if not rows:
+        log(f"nova-site {name} has no rows in the ticket store though its "
+            f"revision says current; fetching the markdown")
+        return None
+    return {
+        "items": rows,
+        "details": details,
+        "captures": captures,
+        "captureReplies": capture_replies,
+    }
+
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -839,47 +904,40 @@ def board_payload(name):
     ~60KB of that -- which is precisely why they never go out with the
     list. See `board_page`.
     """
-    edvard_markdown, nova_markdown, nova_archive_markdown = board_markdown(name)
-    board = parse_board(edvard_markdown)
-    # **His rows come out of the ticket store, not out of the markdown.**
-    # This is the first reader of the one-document-per-ticket migration
-    # the owner approved -- until now the store was written on every board
-    # write and read by nothing, so a drift in it was invisible to
-    # everything except `tools.ticket_drift` running once a cycle.
-    #
-    # Only the rows move. The write-ups, his captures and my own two files
-    # are still parsed out of the markdown this call has already fetched,
-    # so this saves no fetch today and is not meant to: what it buys is
-    # that the list the page draws is the store's answer, checked against
-    # the markdown on every build by the assertion below rather than once
-    # a cycle by a tool.
-    #
-    # `parse_board` stays the fallback and stays the source of truth. A
-    # store that is unreachable, behind, or missing a row must not empty
-    # his board -- the markdown is the file he edits and it is always
-    # right.
-    board["items"] = _rows_from_store(name, board["items"])
-    # The write-up and the conversation appended under it, told apart
-    # here rather than on the page: `render_blocks` flattens both into the
-    # same list of paragraphs, and once that has happened nothing
-    # downstream can tell his question from my answer from the problem
-    # statement above them both. His capture, 2026-08-26: *"boarded issues
-    # does not have those nice colored comments like there are now in the
-    # 'not boarded yet' box"*.
-    # **His write-ups come out of the ticket store too**, checked against
-    # the markdown on every build the same way the rows are. `to_records`
-    # already stores each `# Details` body verbatim on its own ticket
-    # document, so this needed a projection to read them back rather than
-    # anything new written -- `ticket_docs.read_details`.
-    board["details"] = _details_from_store(name, board["details"])
-    # **And his unboarded captures, which is the last thing on this page
-    # that the markdown alone could answer.** They are not tickets, so
-    # there was nothing to read them back off until now: `to_records`
-    # files every line that is neither a row nor a write-up as a text
-    # block in the layout, so the bullets above `## Board` are the
-    # layout's opening run of text -- `ticket_docs.read_head`.
-    board["captures"], board["captureReplies"] = _captures_from_store(
-        name, (board["captures"], board["captureReplies"]))
+    # **His half of the page comes out of the ticket store when the store
+    # can prove it is current, and his file is not fetched at all.** That
+    # is the whole of what this migration was for; everything before it
+    # made the page correct off the store while still paying for the
+    # markdown to check it. `_board_from_store` says what "prove" means
+    # and returns `None` on anything less, which drops straight through
+    # to the code that has always been here.
+    board = _board_from_store(name)
+    if board is None:
+        # **The fallback, and it is still the source of truth.** A store
+        # that is unreachable, behind, or missing a row must not empty his
+        # board -- the markdown is the file he edits and it is always
+        # right. On this path the three readers below each take the
+        # store's answer *only when it matches the file field by field*,
+        # and say so out loud when it does not, which is what proved the
+        # store trustworthy enough for the fast path above to exist.
+        board = parse_board(edvard_board_markdown(name))
+        board["items"] = _rows_from_store(name, board["items"])
+        # The write-up and the conversation appended under it, told apart
+        # further down rather than on the page: `render_blocks` flattens
+        # both into the same list of paragraphs, and once that has
+        # happened nothing downstream can tell his question from my
+        # answer from the problem statement above them both. His capture,
+        # 2026-08-26: *"boarded issues does not have those nice colored
+        # comments like there are now in the 'not boarded yet' box"*.
+        board["details"] = _details_from_store(name, board["details"])
+        # His unboarded captures. They are not tickets, so there was
+        # nothing to read them back off until `to_records` started filing
+        # every line that is neither a row nor a write-up as a text block
+        # in the layout -- the bullets above `## Board` are the layout's
+        # opening run of text, and `ticket_docs.read_head` returns it.
+        board["captures"], board["captureReplies"] = _captures_from_store(
+            name, (board["captures"], board["captureReplies"]))
+    nova_markdown, nova_archive_markdown = nova_board_markdown(name)
     # Which rows he asked a question on and nobody answered. Stamped onto
     # the row here rather than worked out again by whoever needs it,
     # because two things already rank these rows with `nova_next.rank` --
@@ -1514,8 +1572,8 @@ def next_up_payload():
     that a claim taken mid-cycle shows up while he is looking at it.
     """
     return next_payload(
-        board_markdown("issues")[0],
-        board_markdown("ideas")[0],
+        edvard_board_markdown("issues"),
+        edvard_board_markdown("ideas"),
         claims_ledger_json(),
         datetime.now(OSLO),
     )

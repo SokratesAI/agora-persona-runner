@@ -1049,3 +1049,168 @@ def test_the_waiting_flag_follows_the_store_not_the_markdown(board_md, notes_md)
     assert not unanswered_comment_bodies(board_md), "fixture must flag nothing"
     flagged = {i["number"] for i in payload["items"] if i.get("waiting")}
     assert flagged == {57}
+
+
+# --- And now his file is not fetched at all ------------------------------
+#
+# The last slice of the migration, and the first one that saves anything.
+# The three readers above each proved the store agreed with the markdown
+# *by fetching the markdown*, so every one of them made the page correct
+# and none of them made it cheaper; `issues.md` is 537KB.
+#
+# What replaces the per-build comparison is `ticket_docs.currency`, which
+# answers off a 207-byte revision document. These pin the four answers
+# `_board_from_store` can give, and -- the one that matters -- that the
+# fast path really does skip the fetch. Every other test in this file
+# takes the fallback by accident: there is no CouchDB under them, so
+# `_store_currency` cannot run and reports `unknown`.
+
+
+def _store(rows=None, details=None, head="", verdict=None):
+    """Patch the store the fast path reads, and its currency verdict."""
+    from agora_runner import ticket_docs
+    return (
+        patch.object(nova_site, "_store_currency",
+                     return_value=(verdict or ticket_docs.CURRENT, "stamped")),
+        patch.object(nova_site, "read_rows", return_value=rows or []),
+        patch.object(nova_site, "read_details", return_value=details or {}),
+        patch.object(nova_site, "read_head", return_value=head),
+    )
+
+
+def _reads(board_md, notes_md):
+    """`(context, seen)` -- `_serve`, plus every path it was asked for."""
+    seen = []
+
+    def read(path):
+        seen.append(path)
+        if path.endswith("-archive.md"):
+            return ""
+        return notes_md if "/nova/resources/" in path else board_md
+
+    return patch.object(nova_sources, "vault_read_path", side_effect=read), seen
+
+
+def test_a_current_store_serves_the_board_without_fetching_his_file(
+        board_md, notes_md):
+    """The point of the whole migration, stated as the saved read.
+
+    Asserting the rows came back would pass on the fallback too -- the
+    fixture and the store answer alike here. What only the fast path can
+    produce is his path never appearing in the reads.
+    """
+    parsed = parse_board(board_md)
+    currency, rows, details, head = _store(
+        rows=parsed["items"], details=parsed["details"])
+    serve, seen = _reads(board_md, notes_md)
+    with serve, currency, rows, details, head:
+        payload = nova_site.board_payload("issues")
+
+    assert BOARD_PATHS["issues"]["edvard"] not in seen
+    # My own two files are still fetched on every build: they are small
+    # and nothing in `nova_tickets` answers for them.
+    assert BOARD_PATHS["issues"]["nova"] in seen
+    assert BOARD_PATHS["issues"]["nova_archive"] in seen
+    assert [item["number"] for item in payload["items"]] == \
+        [item["number"] for item in parsed["items"]]
+
+
+def test_a_revision_that_cannot_confirm_the_store_fetches_his_file(
+        board_md, notes_md):
+    """`stale` and `unknown` are verdicts, not errors, and both fetch.
+
+    A board written from a process that could not learn the revision
+    stamps nothing, so `unknown` is the normal state after a cycle writes
+    from the bridge pod -- the page has to stay correct through it.
+    """
+    from agora_runner import ticket_docs
+
+    parsed = parse_board(board_md)
+    for verdict in (ticket_docs.STALE, ticket_docs.UNKNOWN):
+        nova_site.reset_cache()
+        # The store is handed a full, agreeing answer on purpose: a store
+        # that could not answer would fetch the file for its own reason
+        # and this test would pass with the verdict ignored entirely.
+        currency, rows, details, head = _store(
+            rows=parsed["items"], details=parsed["details"], verdict=verdict)
+        serve, seen = _reads(board_md, notes_md)
+        said = []
+        with serve, currency, rows, details, head, \
+                patch.object(nova_site, "log", said.append):
+            payload = nova_site.board_payload("issues")
+
+        assert BOARD_PATHS["issues"]["edvard"] in seen, verdict
+        assert payload["items"], "the file still has to reach the page"
+        assert any("fetching the markdown" in line and verdict in line
+                   for line in said), verdict
+
+
+def test_an_unreadable_projection_falls_back_even_when_current(
+        board_md, notes_md):
+    """The revision says current and CouchDB then refuses one of the three.
+
+    One decision for every failure mode, the same one the three readers
+    make: draw the file. The verdict is not a promise that the store will
+    answer -- it is only a promise about which text it was built from.
+    """
+    parsed = parse_board(board_md)
+    currency, rows, _, head = _store(rows=parsed["items"])
+    serve, seen = _reads(board_md, notes_md)
+    said = []
+    with serve, currency, rows, head, \
+            patch.object(nova_site, "read_details",
+                         side_effect=RuntimeError("boom")), \
+            patch.object(nova_site, "log", said.append):
+        payload = nova_site.board_payload("issues")
+
+    assert BOARD_PATHS["issues"]["edvard"] in seen
+    assert payload["items"]
+    assert any("unreadable" in line for line in said)
+
+
+def test_a_current_but_empty_store_draws_the_file(board_md, notes_md):
+    """The failure the revision cannot see, and the reason for the guard.
+
+    The stamp is its own document, so a lost or half-written layout
+    document leaves the revision current and the board empty. Neither of
+    his boards has ever had nought rows, so one fetch is the right price
+    for finding out.
+    """
+    currency, rows, details, head = _store(rows=[])
+    serve, seen = _reads(board_md, notes_md)
+    said = []
+    with serve, currency, rows, details, head, \
+            patch.object(nova_site, "log", said.append):
+        payload = nova_site.board_payload("issues")
+
+    assert BOARD_PATHS["issues"]["edvard"] in seen
+    assert payload["items"], "his board must not come back empty"
+    assert any("no rows" in line for line in said)
+
+
+def test_board_payload_asks_the_store_before_it_fetches(board_md, notes_md):
+    """The wiring, not the helper.
+
+    Deleting the `_board_from_store` call leaves every test above green:
+    they all describe what the fallback does, and the fallback is what a
+    deleted call produces. This one fails on it.
+    """
+    parsed = parse_board(board_md)
+    asked = []
+
+    def from_store(name):
+        asked.append(name)
+        return {
+            "items": parsed["items"],
+            "details": parsed["details"],
+            "captures": parsed["captures"],
+            "captureReplies": parsed["captureReplies"],
+        }
+
+    serve, seen = _reads(board_md, notes_md)
+    with serve, patch.object(nova_site, "_board_from_store", from_store):
+        payload = nova_site.board_payload("issues")
+
+    assert asked == ["issues"]
+    assert BOARD_PATHS["issues"]["edvard"] not in seen
+    assert payload["items"]

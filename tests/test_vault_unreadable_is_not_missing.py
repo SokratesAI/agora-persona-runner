@@ -120,11 +120,15 @@ def test_a_site_reader_no_longer_turns_an_outage_into_an_empty_page(
 
 
 def test_the_boards_page_stops_short_too(couch):
-    """`board_markdown` reads three files. Any one of them unreadable has
-    to stop the page, not silently drop a tab to empty."""
+    """The boards page reads three files across two functions. Any one of
+    them unreadable has to stop the page, not silently drop a tab to
+    empty."""
     couch({nova_sources.BOARD_PATHS["issues"]["edvard"]: (500, {})})
     with pytest.raises(vault.VaultUnreadableDocument):
-        nova_sources.board_markdown("issues")
+        nova_sources.edvard_board_markdown("issues")
+    couch({nova_sources.BOARD_PATHS["issues"]["nova_archive"]: (500, {})})
+    with pytest.raises(vault.VaultUnreadableDocument):
+        nova_sources.nova_board_markdown("issues")
 
 
 def test_a_heartbeats_vault_context_survives_an_unreadable_file(couch):
