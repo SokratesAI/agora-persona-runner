@@ -249,7 +249,7 @@ from agora_runner.nova_sources import (
     retro_ledger_json,
 )
 from agora_runner import ticket_docs
-from agora_runner.ticket_docs import read_rows
+from agora_runner.ticket_docs import read_details, read_rows
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
 
@@ -733,6 +733,50 @@ def _rows_from_store(name, parsed):
             f"revision says {verdict}: {why}")
     return rows
 
+
+def _details_from_store(name, parsed):
+    """His board's write-ups out of `nova_tickets`, or the parsed ones.
+
+    The second reader of the one-document-per-ticket migration, built to
+    the same rule as `_rows_from_store` above: the store's answer is used
+    only when it matches the markdown exactly, and the markdown is drawn
+    on any disagreement, any missing write-up and any failure to read at
+    all. A write-up is his prose about his own problem -- a truncated or
+    stale one is worse than a slow one.
+
+    Why the whole dict is compared rather than the numbers: the row view
+    carries ten short fields and a body carries kilobytes, so the failure
+    mode this catches is not a missing row but a body that stopped
+    tracking edits to the file. Only an exact match tells them apart.
+
+    This still saves no fetch, and that is the same deliberate position
+    the rows landed in. His unboarded captures and the unanswered-comment
+    flags are parsed out of the same markdown this call has already
+    fetched, so they are the remaining slices; the markdown fetch may go
+    when the last of them moves and the revision verdict has been seen to
+    agree with these comparisons, not before.
+    """
+    path = BOARD_PATHS[name]["edvard"]
+    try:
+        stored = read_details(path)
+    except Exception as problem:
+        # One decision for every failure mode, exactly as the rows do it:
+        # draw the file. A narrower except would let a new CouchDB error
+        # blank out his write-ups.
+        log(f"nova-site {name} write-ups unreadable from the ticket store: {problem}")
+        return parsed
+    if stored != parsed:
+        # Said out loud rather than absorbed. A fallback nothing reports
+        # is how the page would go on looking right forever while the
+        # store this migration ends up on quietly stopped agreeing.
+        log(
+            f"nova-site {name} write-ups disagree with the ticket store: "
+            f"{len(parsed)} parsed against {len(stored)} stored; drawing the file"
+        )
+        return parsed
+    return stored
+
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -791,6 +835,12 @@ def board_payload(name):
     # statement above them both. His capture, 2026-08-26: *"boarded issues
     # does not have those nice colored comments like there are now in the
     # 'not boarded yet' box"*.
+    # **His write-ups come out of the ticket store too**, checked against
+    # the markdown on every build the same way the rows are. `to_records`
+    # already stores each `# Details` body verbatim on its own ticket
+    # document, so this needed a projection to read them back rather than
+    # anything new written -- `ticket_docs.read_details`.
+    board["details"] = _details_from_store(name, board["details"])
     details, detail_comments = _split_details(board["details"])
     # My own two files get parsed as a board as well as a note stream --
     # issue #97, the half of it the owner kept: *"making your board like

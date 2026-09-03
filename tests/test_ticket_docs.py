@@ -440,33 +440,60 @@ def test_an_unchanged_design_document_is_not_rewritten(monkeypatch):
     index -- the write amplification the store exists to end, moved one
     layer down.
     """
-    held = dict(ticket_docs.rows_design_document(), _rev="7-abc")
+    held = {
+        ticket_docs.ROWS_DDOC_ID: dict(ticket_docs.rows_design_document(), _rev="7-abc"),
+        ticket_docs.DETAILS_DDOC_ID: dict(ticket_docs.details_design_document(), _rev="3-def"),
+    }
     calls = []
 
     def fake_req(method, path, body=None, timeout=60):
-        calls.append(method)
-        return (200, held) if method == "GET" else (201, {"ok": True})
+        calls.append((method, path))
+        if method != "GET":
+            return 201, {"ok": True}
+        for doc_id, doc in held.items():
+            if urllib.parse.quote(doc_id, safe="") in path:
+                return 200, doc
+        raise AssertionError(f"unexpected GET {path}")
 
     monkeypatch.setattr(ticket_docs, "_req", fake_req)
     assert ticket_docs.ensure_views() == "unchanged"
-    assert calls == ["GET"]
+    # Both projections, both left alone. Asserting the method alone would
+    # pass if only one of the two were ever checked.
+    assert [method for method, _ in calls] == ["GET", "GET"]
+    assert len(calls) == len(held)
 
 
 def test_a_changed_map_function_is_written_with_the_held_revision(monkeypatch):
-    stale = {"_id": ticket_docs.ROWS_DDOC_ID, "_rev": "7-abc",
-             "views": {ticket_docs.ROWS_VIEW: {"map": "function (doc) {}"}}}
+    stale = {
+        ticket_docs.ROWS_DDOC_ID: {
+            "_id": ticket_docs.ROWS_DDOC_ID, "_rev": "7-abc",
+            "views": {ticket_docs.ROWS_VIEW: {"map": "function (doc) {}"}}},
+        ticket_docs.DETAILS_DDOC_ID: {
+            "_id": ticket_docs.DETAILS_DDOC_ID, "_rev": "3-def",
+            "views": {ticket_docs.DETAILS_VIEW: {"map": "function (doc) {}"}}},
+    }
     sent = {}
 
     def fake_req(method, path, body=None, timeout=60):
-        if method == "GET":
-            return 200, stale
-        sent["body"] = body
-        return 201, {"ok": True}
+        for doc_id, doc in stale.items():
+            if urllib.parse.quote(doc_id, safe="") in path:
+                if method == "GET":
+                    return 200, doc
+                sent[doc_id] = body
+                return 201, {"ok": True}
+        raise AssertionError(f"unexpected {method} {path}")
 
     monkeypatch.setattr(ticket_docs, "_req", fake_req)
     assert ticket_docs.ensure_views() == "written"
-    assert sent["body"]["_rev"] == "7-abc"
-    assert sent["body"]["views"][ticket_docs.ROWS_VIEW]["map"] == ticket_docs._rows_map_js()
+    assert sent[ticket_docs.ROWS_DDOC_ID]["_rev"] == "7-abc"
+    assert (sent[ticket_docs.ROWS_DDOC_ID]["views"][ticket_docs.ROWS_VIEW]["map"]
+            == ticket_docs._rows_map_js())
+    # The write-up projection is a separate document with its own
+    # revision, which is the reason it is one: a shared document would
+    # rebuild the row index whenever this map changed.
+    assert sent[ticket_docs.DETAILS_DDOC_ID]["_rev"] == "3-def"
+    assert (sent[ticket_docs.DETAILS_DDOC_ID]["views"][ticket_docs.DETAILS_VIEW]["map"]
+            == ticket_docs._details_map_js())
 
 
 def test_a_missing_design_document_is_created_without_a_revision(monkeypatch):
@@ -499,3 +526,61 @@ def test_a_board_write_builds_the_view_beside_the_tickets(monkeypatch):
     order.clear()
     assert ticket_docs.push_markdown("projects/somewhere/else.md", BOARD) is None
     assert order == []
+
+
+def _details_view_reply(values):
+    def fake_req(method, path, body=None, timeout=60):
+        assert method == "GET"
+        assert urllib.parse.quote(ticket_docs.DETAILS_DDOC_ID, safe="") in path
+        assert f"/_view/{ticket_docs.DETAILS_VIEW}" in path
+        return 200, {"rows": [{"value": value} for value in values]}
+    return fake_req
+
+
+def test_read_details_returns_the_write_up_bodies_by_number(monkeypatch):
+    monkeypatch.setattr(ticket_docs, "_req", _details_view_reply([
+        {"number": 7, "detailHeading": "## #7 — a thing", "details": "the body"},
+        {"number": 3, "detailHeading": "## #3 — another", "details": "second body"},
+    ]))
+    assert ticket_docs.read_details(PATH) == {7: "the body", 3: "second body"}
+
+
+def test_read_details_strips_the_body_the_way_the_parser_does(monkeypatch):
+    """The one line that decides whether the page can use this at all.
+
+    `nova_boards.parse_board` strips each write-up and `to_records`
+    stores it verbatim, so a reader that hands the body over unstripped
+    compares unequal against the markdown on any board whose write-up is
+    surrounded by blank lines -- which is all of them -- and the page
+    falls back forever with nothing failing anywhere.
+    """
+    monkeypatch.setattr(ticket_docs, "_req", _details_view_reply([
+        {"number": 7, "details": "\n\nthe body\n\n"},
+    ]))
+    assert ticket_docs.read_details(PATH) == {7: "the body"}
+
+
+def test_read_details_treats_a_missing_body_as_empty(monkeypatch):
+    """The view only emits a ticket that has a body, so this is defence
+    against a document written before the field existed rather than a
+    normal path -- and `None.strip()` would be a 500 on his board page."""
+    monkeypatch.setattr(ticket_docs, "_req", _details_view_reply([
+        {"number": 7, "details": None},
+    ]))
+    assert ticket_docs.read_details(PATH) == {7: ""}
+
+
+def test_the_write_up_view_skips_a_ticket_with_no_write_up():
+    """Asserted on the emitted map function, because there is no CouchDB
+    in the suite to run it. A row with no `# Details` span has no
+    `details` key at all, and emitting it would put an empty body in the
+    dict the page compares against the parser's, which does not list it."""
+    assert "doc.ticket.details" in ticket_docs._details_map_js()
+    assert "t.details" in ticket_docs._details_map_js()
+
+
+def test_read_details_raises_when_the_view_does_not_answer(monkeypatch):
+    monkeypatch.setattr(ticket_docs, "_req",
+                        lambda *a, **k: (500, {"error": "boom"}))
+    with pytest.raises(RuntimeError):
+        ticket_docs.read_details(PATH)

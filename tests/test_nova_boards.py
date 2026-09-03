@@ -794,3 +794,69 @@ def test_board_payload_actually_asks_the_store_for_his_rows(board_md, notes_md):
         payload = nova_site.board_payload("issues")
     assert asked == ["issues"]
     assert payload["items"], "the rows still have to reach the page"
+
+
+# --- And his write-ups come out of it too --------------------------------
+#
+# The second reader. Same three answers, same reason they need pinning
+# separately: with no CouchDB under the suite `read_details` raises and
+# the parsed bodies come back looking exactly like a working switch.
+
+
+def test_his_write_ups_come_from_the_ticket_store_when_it_agrees():
+    parsed = {9: "nine's write-up", 4: "four's"}
+    stored = {9: "nine's write-up", 4: "four's"}
+    with patch.object(nova_site, "read_details", return_value=stored):
+        got = nova_site._details_from_store("issues", parsed)
+    # Identity again, for the same reason: equality is what the function
+    # itself checked, so asserting it would pass on the fallback.
+    assert got is stored
+
+
+def test_a_store_missing_a_write_up_draws_the_file_and_says_so():
+    """The failure this actually guards. A body is kilobytes of his prose
+    about his own problem, so a store that has one of them and not the
+    other is not a smaller answer -- it is a page with a blank write-up
+    on a row that has one, and nothing on the page could tell."""
+    parsed = {9: "nine's write-up", 4: "four's"}
+    said = []
+    with patch.object(nova_site, "read_details", return_value={9: "nine's write-up"}), \
+            patch.object(nova_site, "log", said.append):
+        got = nova_site._details_from_store("issues", parsed)
+    assert got is parsed
+    assert said and "disagree" in said[0]
+
+
+def test_a_write_up_that_stopped_tracking_the_file_draws_the_file():
+    parsed = {9: "the edited write-up"}
+    said = []
+    with patch.object(nova_site, "read_details", return_value={9: "the old one"}), \
+            patch.object(nova_site, "log", said.append):
+        got = nova_site._details_from_store("issues", parsed)
+    assert got is parsed
+    assert said and "disagree" in said[0]
+
+
+def test_a_store_that_cannot_be_read_for_write_ups_draws_the_file():
+    said = []
+    with patch.object(nova_site, "read_details", side_effect=RuntimeError("boom")), \
+            patch.object(nova_site, "log", said.append):
+        got = nova_site._details_from_store("ideas", parsed := {1: "body"})
+    assert got is parsed
+    assert said and "unreadable" in said[0]
+
+
+def test_board_payload_actually_asks_the_store_for_his_write_ups(board_md, notes_md):
+    """The wiring, not the helper -- deleting the call is a mutation
+    nothing above this can see, exactly as it was for the rows."""
+    asked = []
+
+    def only_the_store(name, parsed):
+        asked.append(name)
+        return parsed
+
+    with _serve(board_md, notes_md), \
+            patch.object(nova_site, "_details_from_store", only_the_store):
+        payload = nova_site.board_payload("issues")
+    assert asked == ["issues"]
+    assert payload["details"], "the write-ups still have to reach the page"
