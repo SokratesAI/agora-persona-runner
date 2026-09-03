@@ -210,26 +210,7 @@ jobs:
       # reaching GHCR is harmless; what deploys is the line committed below,
       # so failing here leaves the running pods on the last good digest.
       - name: Smoke-test the pushed image before anything deploys it
-        run: |
-          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
-          docker pull -q "$IMAGE"
-          docker run --rm --network none --entrypoint python "$IMAGE" -c '
-          import importlib, pkgutil, sys
-          import agora_runner
-          broken = []
-          found = 0
-          for module in pkgutil.walk_packages(agora_runner.__path__, "agora_runner."):
-              found += 1
-              try:
-                  importlib.import_module(module.name)
-              except Exception as exc:
-                  broken.append("  %s: %s: %s" % (module.name, type(exc).__name__, exc))
-          if found < 40:
-              sys.exit("only %d module(s) found in the image -- the sweep is not looking at the code" % found)
-          if broken:
-              sys.exit("the image cannot import what it ships:\n" + "\n".join(broken))
-          print("smoke test: %d module(s) imported in the image" % found)
-          '
+        run: bash .github/smoke-test.sh "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
 
       # Commits the new image digest to this service's paired config repo, which
       # ArgoCD's SCM Provider generator auto-deploys — no platform-config PR, no

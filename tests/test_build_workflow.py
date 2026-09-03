@@ -29,6 +29,7 @@ from pathlib import Path
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build.yaml"
+SMOKE_SCRIPT = Path(__file__).resolve().parent.parent / ".github" / "smoke-test.sh"
 
 
 def _workflow():
@@ -77,9 +78,16 @@ def test_the_built_image_is_actually_started_before_it_is_deployed():
     """
     step = _smoke_step()
     assert step is not None, "build-push no longer starts the image before deploying it"
-    assert "docker run" in step["run"], "the smoke step must actually run the image, not inspect it"
+    assert "smoke-test.sh" in step["run"], "the smoke step no longer invokes the smoke test"
     assert "${{ steps.build.outputs.digest }}" in step["run"], (
         "the smoke test must run the digest that is about to be deployed, not a rebuild of it"
+    )
+    # The step is one line calling a script, and the script is where the work
+    # is, because tools/sync_contract.py compares this job as parsed YAML
+    # against agora-claude-bridge's copy and refuses a difference. A step that
+    # named `agora_runner` inline would be that difference.
+    assert "docker run" in SMOKE_SCRIPT.read_text(), (
+        "the smoke script must actually run the image, not inspect it"
     )
 
 
@@ -100,9 +108,11 @@ def test_the_smoke_test_refuses_to_pass_on_an_empty_sweep():
     """A negative result only counts if a positive one was possible. If the
     package ever stops being importable by name, walking it finds nothing and
     every check inside the sweep passes vacuously."""
-    step = _smoke_step()
-    assert step is not None
-    assert "found < 40" in step["run"], (
+    script = SMOKE_SCRIPT.read_text()
+    assert "if not packages:" in script, (
+        "the smoke script must fail when it finds no package at all in the image"
+    )
+    assert "found < 10" in script, (
         "the smoke test must fail when it finds implausibly few modules, or an empty "
         "sweep reads as a clean one"
     )
@@ -117,4 +127,15 @@ def test_the_test_job_installs_the_image_s_own_requirements():
     assert any("-r requirements.txt" in run for run in installs), (
         "the test job names its packages instead of installing requirements.txt; that is how "
         "pyyaml came to be present in CI and absent from the image"
+    )
+
+
+def test_the_smoke_script_is_executable_and_takes_the_image_as_its_argument():
+    """The workflow calls it with `bash`, so the mode bit is not load-bearing
+    there -- it is here so running it by hand does the same thing CI does."""
+    assert SMOKE_SCRIPT.exists(), "the smoke script the workflow calls does not exist"
+    script = SMOKE_SCRIPT.read_text()
+    assert "${1:?" in script, "the script must refuse to run with no image argument"
+    assert "--network none" in script, (
+        "the smoke test must run with no network, so it can never reach production"
     )
