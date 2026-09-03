@@ -60,10 +60,11 @@ can look comfortably scheduled and still OOMKill the persona runner
 and `argocd_health` make, and for the same reason: a manifest ArgoCD has
 not synced is not what is running.
 
-**Three verdicts, kept separate on purpose.** A container that died for a
-reason (`OOMKilled`, `Error`), a Pod that is not Ready now, and a
-Deployment with no available replica are three different problems with
-three different fixes, and merging them into one red number is the failure
+**Four verdicts, kept separate on purpose.** A container that died for a
+reason (`OOMKilled`, `Error`), a Pod that is not Ready now, a Deployment
+with no available replica, and a Pod still Terminating past the instant
+Kubernetes promised it would be gone are four different problems with four
+different fixes, and merging them into one red number is the failure
 `agentic_health` had to learn one layer down.
 
 **The one judgement it makes, and it is the whole reason this is usable.**
@@ -127,6 +128,16 @@ import zoneinfo
 #: so a Deployment is not called broken in the seconds between the old Pod
 #: exiting and the new one passing its first probe.
 START_MARGIN = datetime.timedelta(minutes=5)
+
+#: Margin past a Pod's own deletion deadline before it is called stuck.
+#: `metadata.deletionTimestamp` is the *deadline*, not the moment the
+#: delete was asked for -- the API server sets it to now plus the grace
+#: period -- so once it is in the past the kubelet has already sent
+#: SIGKILL and the only thing still owed is the status write. This bounds
+#: that write, so it has to exceed the kubelet's own housekeeping period
+#: (`--sync-frequency`, 1 minute by default) rather than be a number I
+#: liked the look of. Two of those.
+KILL_MARGIN = datetime.timedelta(minutes=2)
 
 #: A container that exits 0 because its work is done is not a failure.
 BENIGN_TERMINATION = {"Completed"}
@@ -223,6 +234,9 @@ def read_pods(runner=subprocess.run):
             # not placed yet, and that is a real state rather than a gap --
             # an unscheduled Pod is on nobody's budget.
             "node": spec.get("nodeName") or "",
+            # Set only while the Pod is Terminating, and it is a deadline
+            # rather than a start time -- see KILL_MARGIN.
+            "deletion": meta.get("deletionTimestamp") or "",
         })
     return pods, None
 
@@ -438,6 +452,43 @@ def unavailable(deployments, now):
             continue
         (rolling if row["down"] <= budget else past).append(row)
     return past, rolling
+
+
+def terminating(pods, now):
+    """Pods being deleted, split by whether their own deadline has passed.
+
+    Returns (past_deadline, draining). `deletionTimestamp` is the instant
+    Kubernetes promised the Pod would be gone, so this needs no table of
+    which workloads are slow: `agora-persona-runner` drains a running cycle
+    for 48 minutes and is quiet for all of them, and a `coredns` Pod on a
+    30-second grace is loud two and a half minutes in. That split is the
+    whole point -- Sokrates reported a runner Pod "stuck in Terminating for
+    ~20min, not responding to SIGTERM" on 2026-09-03, and that Pod was
+    working exactly as designed with 28 minutes still to go.
+
+    Past the deadline the kubelet has already sent SIGKILL, so what is left
+    is not a slow shutdown: it is a kubelet that cannot be reached, a
+    finalizer nobody will clear, or a node that is gone.
+    """
+    past, draining = [], []
+    for pod in pods:
+        if not pod.get("deletion"):
+            continue
+        deadline = _parse(pod["deletion"])
+        row = dict(pod, deadline=deadline, over=None, left=None)
+        if deadline is None:
+            # A Pod that is demonstrably being deleted and carries no
+            # readable deadline is the loud case: there is no clock that
+            # would let it be called normal.
+            past.append(row)
+            continue
+        if now > deadline + KILL_MARGIN:
+            row["over"] = now - deadline
+            past.append(row)
+        else:
+            row["left"] = deadline - now
+            draining.append(row)
+    return past, draining
 
 
 def _mib(quantity):
@@ -1242,6 +1293,27 @@ def report(pods, deployments, now, headroom=None):
             lines.append(
                 f"  {h['namespace']}/{h['pod']} [{h['container']}] — {h['restarts']} restart(s)")
 
+    overdue, draining = terminating(pods, now)
+    if overdue:
+        actionable = True
+        lines.append(
+            f"TERMINATING PAST ITS OWN DEADLINE — {len(overdue)} Pod(s) are still here "
+            "after the instant Kubernetes promised they would be gone. The kubelet has "
+            "already sent SIGKILL by then, so this is a kubelet that cannot be reached, "
+            "a finalizer, or a dead node — not a slow shutdown.")
+        for t in sorted(overdue, key=lambda t: -(t["over"].total_seconds() if t["over"] else 0)):
+            over = f"{_duration(t['over'].total_seconds())} past" if t["over"] else "no readable deadline"
+            lines.append(f"  {t['namespace']}/{t['name']} on {t['node'] or 'no node'} — {over}")
+    if draining:
+        lines.append(
+            f"DRAINING — {len(draining)} Pod(s) are Terminating inside their own grace. "
+            "Deliberately not raised: a cycle takes up to 48 minutes to finish and the "
+            "old Pod is meant to stay until it does.")
+        for t in sorted(draining, key=lambda t: -(t["left"].total_seconds())):
+            lines.append(
+                f"  {t['namespace']}/{t['name']} on {t['node'] or 'no node'} — "
+                f"{_duration(t['left'].total_seconds())} left")
+
     if headroom is not None:
         head_lines, head_actionable, judged = headroom
         lines.extend(head_lines)
@@ -1258,6 +1330,10 @@ def report(pods, deployments, now, headroom=None):
         "An unavailable Deployment is judged against its own terminationGracePeriodSeconds "
         f"plus {int(START_MARGIN.total_seconds() // 60)}m, because a Recreate rollout is "
         "unavailable by design for exactly that long.")
+    lines.append(
+        "A Terminating Pod is judged against its own deletionTimestamp, which is the "
+        f"deadline rather than the start, plus {int(KILL_MARGIN.total_seconds() // 60)}m "
+        "for the status write.")
     return lines, (2 if actionable else 0)
 
 
