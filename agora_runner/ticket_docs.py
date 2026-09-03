@@ -65,12 +65,35 @@ def layout_doc_id(path):
     return f"board:{path.lower()}"
 
 
-def to_documents(path, records):
+def source_rev_doc_id(path):
+    """The id of the one document that holds nothing but a revision.
+
+    It is separate from the layout document, and that is the whole reason
+    it exists rather than a field on it. Measured 2026-09-03: his
+    `issues.md` layout is **112,132 bytes**, and a stamp living on it
+    would rewrite all of that on every board write, because the rev moves
+    on every write by definition. A status change would then cost a
+    112KB revision in the store built to stop a status change costing a
+    656KB revision in the vault. This document is under 200 bytes.
+    """
+    return f"rev:{path.lower()}"
+
+
+def to_documents(path, records, source_rev=None):
     """`{tickets, layout}` -> the CouchDB documents for one board.
 
     One `type: "ticket"` document per ticket and one `type: "board"`
     document carrying the layout. The layout is what makes the render
     total, so it belongs to the board rather than to any ticket.
+
+    `source_rev` is the `_rev` the markdown had when these documents were
+    built, stamped on the board document so a reader can ask whether the
+    store is still current without fetching the markdown to compare
+    against -- see `currency`. **A caller that does not know the rev
+    stamps nothing, and that clears any stamp already there**, which is
+    the safe direction: an unknown answer can never be mistaken for a
+    current one, and keeping the old stamp beside newer content would
+    claim currency the store cannot prove.
     """
     docs = [
         {
@@ -91,6 +114,16 @@ def to_documents(path, records):
         "layout": [list(block) for block in records["layout"]],
         "tickets": len(records["tickets"]),
     })
+    # Omitted entirely when the caller does not know the rev, so
+    # `write_board` tombstones any stamp already stored -- see the
+    # docstring: an unknown answer must never be able to read as current.
+    if source_rev:
+        docs.append({
+            "_id": source_rev_doc_id(path),
+            "type": "source",
+            "board": path,
+            "sourceRev": source_rev,
+        })
     return docs
 
 
@@ -104,6 +137,8 @@ def from_documents(docs):
     layout = None
     tickets = []
     for doc in docs:
+        # `type: "source"` carries the markdown revision and nothing the
+        # render needs; it is skipped rather than raised on.
         if doc.get("type") == "board":
             layout = [tuple(block) for block in doc.get("layout") or []]
         elif doc.get("type") == "ticket":
@@ -178,11 +213,13 @@ def _existing(path):
     if status != 200:
         raise RuntimeError(f"listing {path}: {status} {json.dumps(body)[:200]}")
     stored = {row["id"]: row["doc"] for row in body.get("rows", []) if row.get("doc")}
-    status, body = _req("GET", f"{TICKET_DB}/{urllib.parse.quote(layout_doc_id(path), safe='')}")
-    if status == 200:
-        stored[body["_id"]] = body
-    elif status != 404:
-        raise RuntimeError(f"reading the layout of {path}: {status}")
+    for doc_id, what in ((layout_doc_id(path), "layout"),
+                         (source_rev_doc_id(path), "source revision")):
+        status, body = _req("GET", f"{TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}")
+        if status == 200:
+            stored[body["_id"]] = body
+        elif status != 404:
+            raise RuntimeError(f"reading the {what} of {path}: {status}")
     return stored
 
 
@@ -196,7 +233,7 @@ def _payload(doc):
     return {key: value for key, value in doc.items() if key != "_rev"}
 
 
-def write_board(path, records):
+def write_board(path, records, source_rev=None):
     """Write one board's tickets as documents. Returns a summary dict.
 
     Every document is sent with the `_rev` already stored under its id, so
@@ -212,7 +249,7 @@ def write_board(path, records):
     change touches one ticket, so it should write one document, and the
     `unchanged` count in the summary is what says whether that held.
     """
-    docs = to_documents(path, records)
+    docs = to_documents(path, records, source_rev=source_rev)
     stored = _existing(path)
     written = []
     unchanged = 0
@@ -293,7 +330,7 @@ def is_board(path):
     return (path or "").lower() in _BOARD_KEYS
 
 
-def push_markdown(path, source):
+def push_markdown(path, source, source_rev=None):
     """Update the stored documents for one board from its new markdown.
 
     Returns the `write_board` summary, or `None` when `path` is not a
@@ -313,7 +350,8 @@ def push_markdown(path, source):
     # had to remember to build its own index would be a second thing to
     # keep current. It is a no-op unless the map function changed.
     ensure_views()
-    return write_board(path, ticket_store.to_records(source))
+    return write_board(path, ticket_store.to_records(source),
+                       source_rev=source_rev)
 
 
 # The fields a *list* of rows needs: his board table, the ranking in
@@ -454,3 +492,62 @@ def row_order(path):
     if status != 200:
         raise RuntimeError(f"reading the layout of {path}: {status}")
     return [block[1] for block in body.get("layout") or [] if block and block[0] == "row"]
+
+
+# `currency` verdicts. Three, not two, and the third is the point: a store
+# that cannot say whether it is current must never be read as one that
+# said yes.
+CURRENT = "current"
+STALE = "stale"
+UNKNOWN = "unknown"
+
+
+def stored_source_rev(path):
+    """The markdown `_rev` this board's documents were built from, or None.
+
+    None covers three different situations on purpose -- no board
+    document, a board document written before this field existed, and a
+    write whose caller did not know the rev (`tools.board_*`, which writes
+    the file from the bridge pod in a separate process). All three mean
+    the same thing to `currency`: the store cannot prove it is current.
+    """
+    status, body = _req(
+        "GET", f"{TICKET_DB}/{urllib.parse.quote(source_rev_doc_id(path), safe='')}")
+    if status == 404:
+        return None
+    if status != 200:
+        raise RuntimeError(f"reading the source revision of {path}: {status}")
+    return body.get("sourceRev")
+
+
+def currency(path, live_rev):
+    """Is this board's store current with the markdown at `live_rev`?
+
+    Returns `(verdict, detail)`. This is the check that has to exist
+    before any reader may stop fetching the markdown, and it is why the
+    stamp exists at all.
+
+    Today `nova_site._rows_from_store` proves the store agrees with the
+    file by fetching the file and comparing 411 rows field by field, which
+    is the strongest check available and also the reason the migration
+    saves nothing yet: the fetch it would remove is the fetch the check
+    depends on. A revision is the one thing that answers "has his file
+    moved since these documents were built" without reading the file --
+    every writer goes through CouchDB and every write moves the `_rev`, so
+    a matching rev covers the writers this module has never heard of as
+    well as the ones it hooks.
+
+    `UNKNOWN` is a verdict and not a failure. A board written by
+    `tools.board_put` from the bridge pod carries no stamp, because that
+    path writes the file in a different process against a client with no
+    route to this one -- so a reader gets "cannot say", falls back to the
+    markdown, and is exactly as correct as it is today.
+    """
+    stored = stored_source_rev(path)
+    if not stored:
+        return UNKNOWN, "the board document carries no source revision"
+    if not live_rev:
+        return UNKNOWN, "no live revision to compare against"
+    if stored == live_rev:
+        return CURRENT, f"built from {stored}"
+    return STALE, f"built from {stored}, the file is at {live_rev}"

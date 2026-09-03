@@ -263,16 +263,20 @@ def test_push_markdown_writes_a_board_it_recognises(monkeypatch):
     monkeypatch.setattr(ticket_docs, "ensure_database", lambda: (True, 201))
     monkeypatch.setattr(ticket_docs, "ensure_views", lambda: "unchanged")
 
-    def fake_write(path, records):
-        seen["call"] = (path, records)
+    def fake_write(path, records, source_rev=None):
+        seen["call"] = (path, records, source_rev)
         return {"written": 1}
 
     monkeypatch.setattr(ticket_docs, "write_board", fake_write)
 
     board = ticket_docs.BOARDS[0]
-    assert ticket_docs.push_markdown(board, BOARD) == {"written": 1}
+    assert ticket_docs.push_markdown(board, BOARD, source_rev="9-abc") == {
+        "written": 1}
     assert seen["call"][0] == board
     assert seen["call"][1] == ticket_store.to_records(BOARD)
+    # Passed straight through: the store carries the string and never
+    # reads a revision itself -- that is the vault client's business.
+    assert seen["call"][2] == "9-abc"
 
 
 def test_is_board_is_case_insensitive_the_way_vault_paths_are():
@@ -487,7 +491,8 @@ def test_a_board_write_builds_the_view_beside_the_tickets(monkeypatch):
     monkeypatch.setattr(ticket_docs, "ensure_views",
                         lambda: order.append("views") or "unchanged")
     monkeypatch.setattr(ticket_docs, "write_board",
-                        lambda path, records: order.append("write") or {"written": 1})
+                        lambda path, records, source_rev=None:
+                        order.append("write") or {"written": 1})
     ticket_docs.push_markdown(ticket_docs.BOARDS[0], BOARD)
     assert order == ["db", "views", "write"]
     # And a write that is not a board still touches nothing at all.

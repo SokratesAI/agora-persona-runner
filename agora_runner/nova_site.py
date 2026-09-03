@@ -225,7 +225,8 @@ from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
                                      dumps as dumps_demos, load as load_demos,
                                      lookup as lookup_demo, mark_opened,
                                      opened_by_a_person)
-from agora_runner.vault import vault_read_path, vault_read_path_rev, vault_write_path
+from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_rev,
+                                vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
 from agora_runner.nova_next import next_payload, rank
@@ -247,6 +248,7 @@ from agora_runner.nova_sources import (
     goal_history_json,
     retro_ledger_json,
 )
+from agora_runner import ticket_docs
 from agora_runner.ticket_docs import read_rows
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
@@ -664,6 +666,21 @@ def _split_details(bodies):
 
 
 
+def _store_currency(path):
+    """`(verdict, detail)` on whether the store is current with the file.
+
+    Wrapped rather than called inline because the verdict is advisory
+    today: it is logged beside the field-by-field comparison and decides
+    nothing, so an unreachable ticket database must not turn into a failed
+    board page. `ticket_docs.UNKNOWN` is exactly the right answer to "the
+    check itself would not run".
+    """
+    try:
+        return ticket_docs.currency(path, vault_doc_rev(path))
+    except Exception as problem:  # noqa: BLE001 -- see the docstring
+        return ticket_docs.UNKNOWN, f"the check could not run: {problem}"
+
+
 def _rows_from_store(name, parsed):
     """His board's rows out of `nova_tickets`, or the parsed ones.
 
@@ -688,6 +705,14 @@ def _rows_from_store(name, parsed):
         # which is the one outcome this function exists to prevent.
         log(f"nova-site {name} rows unreadable from the ticket store: {problem}")
         return parsed
+    # Said in the same line either way: whether the store *claims* to be
+    # current, by revision, and whether it *is*, by comparing every field.
+    # The two answers are what the next slice of this migration turns on.
+    # A reader that stops fetching the markdown loses the field-by-field
+    # check with the fetch, so the revision has to be trustworthy first --
+    # and the only way to find out is to log both while the strong check
+    # is still running and see whether they ever disagree.
+    verdict, why = _store_currency(path)
     if rows != parsed:
         # Said out loud rather than absorbed. A fallback nothing reports
         # is the failure this loop keeps filing against itself: the page
@@ -695,9 +720,17 @@ def _rows_from_store(name, parsed):
         # supposed to end up on quietly stopped agreeing with the file.
         log(
             f"nova-site {name} rows disagree with the ticket store: "
-            f"{len(parsed)} parsed against {len(rows)} stored; drawing the file"
+            f"{len(parsed)} parsed against {len(rows)} stored; drawing the file "
+            f"(revision says {verdict}: {why})"
         )
         return parsed
+    if verdict != ticket_docs.CURRENT:
+        # Not a fallback and not an error -- the rows agree, so the page is
+        # right. It is the *revision* that could not confirm it, which is
+        # the one thing standing between this migration and dropping the
+        # markdown fetch, so it is worth a line rather than silence.
+        log(f"nova-site {name} rows agree with the ticket store but its "
+            f"revision says {verdict}: {why}")
     return rows
 
 def board_payload(name):

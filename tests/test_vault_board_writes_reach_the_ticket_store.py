@@ -24,8 +24,11 @@ NOT_A_BOARD = "projects/sokrates/projects/agora/nova/resources/claims.json"
 @pytest.fixture
 def pushes(monkeypatch):
     seen = []
-    monkeypatch.setattr(ticket_docs, "push_markdown",
-                        lambda path, content: seen.append((path, content)))
+    monkeypatch.setattr(
+        ticket_docs, "push_markdown",
+        lambda path, content, source_rev=None: seen.append(
+            (path, content, source_rev)))
+    monkeypatch.setattr(vault, "vault_doc_rev", lambda path: "9-newrev")
     return seen
 
 
@@ -38,7 +41,9 @@ def _put_returns(monkeypatch, result):
 def test_a_successful_board_write_pushes_the_new_markdown(monkeypatch, pushes):
     _put_returns(monkeypatch, "written")
     assert vault.vault_write_path(BOARD, "# board\n") == "written"
-    assert pushes == [(BOARD, "# board\n")]
+    # The revision the file now has goes with the content, so the store
+    # can be asked whether it is current without fetching the file again.
+    assert pushes == [(BOARD, "# board\n", "9-newrev")]
 
 
 def test_a_failed_board_write_pushes_nothing(monkeypatch, pushes):
@@ -59,18 +64,38 @@ def test_an_ordinary_vault_write_pushes_nothing(monkeypatch, pushes):
 
 def test_a_store_failure_does_not_fail_the_board_write(monkeypatch):
     """The markdown is the source of truth and it has already landed."""
-    def explode(path, content):
+    def explode(path, content, source_rev=None):
         raise RuntimeError("nova_tickets is unreachable")
 
     monkeypatch.setattr(ticket_docs, "push_markdown", explode)
+    monkeypatch.setattr(vault, "vault_doc_rev", lambda path: "9-newrev")
     _put_returns(monkeypatch, "written")
     assert vault.vault_write_path(BOARD, "# board\n") == "written"
 
 
 def test_the_failure_is_reported_rather_than_swallowed(monkeypatch):
-    def explode(path, content):
+    def explode(path, content, source_rev=None):
         raise RuntimeError("nova_tickets is unreachable")
 
     monkeypatch.setattr(ticket_docs, "push_markdown", explode)
+    monkeypatch.setattr(vault, "vault_doc_rev", lambda path: "9-newrev")
     detail = vault._push_ticket_documents(BOARD, "# board\n")
     assert detail == "FAILED(nova_tickets is unreachable)"
+
+
+def test_a_revision_lookup_that_fails_still_pushes(monkeypatch, pushes):
+    """An unstamped store is one UNKNOWN verdict; a skipped push is drift.
+
+    The rev is read after the PUT landed, so it is a second call that can
+    fail on its own. Losing the push with it would trade a check that says
+    "cannot say" for a store that is actually behind -- the worse of the
+    two by far, since the field-by-field comparison in
+    `nova_site._rows_from_store` is what the page relies on today.
+    """
+    def explode(path):
+        raise vault.VaultUnreadableDocument("couchdb said 503")
+
+    monkeypatch.setattr(vault, "vault_doc_rev", explode)
+    _put_returns(monkeypatch, "written")
+    assert vault.vault_write_path(BOARD, "# board\n") == "written"
+    assert pushes == [(BOARD, "# board\n", None)]
