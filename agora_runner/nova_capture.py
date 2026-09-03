@@ -63,8 +63,11 @@ from agora_runner.nova_boards import (
     delete_row,
     _frontmatter_end,
     extract_row,
+    OUTDATED_STATUS,
+    STATUS_LABELS,
     set_row_priority,
     set_row_project,
+    set_row_status,
     set_row_title,
     split_capture_done,
     split_capture_priority,
@@ -769,6 +772,59 @@ def edit_row(target, number, title):
     """
     return _amend_board(
         target, number, lambda md: set_row_title(md, number, title), "edited")
+
+
+def archive_row(target, number, dated=None):
+    """Close one boarded row as `⚫ Outdated`. Returns (ok, message).
+
+    The owner, `issues.md` capture 2026-09-03: *"We should be able to
+    archive issues and ideas. Some of the written issues and ideas do not
+    have a definition of done, like issue 162. So you should be able to
+    just archive it when you feel its just cluttering and does not create
+    value. I should also be able to archive them. Add a archive button
+    next to the delete when in edit mode."*
+
+    **This adds a button, not a status.** `⚫ Outdated` has existed since
+    Cycle 202 and already means exactly what he is asking for -- the row
+    is finished with and was never built -- and `_CLOSED_STATUS_KEYS`
+    already drops it out of the ranking `top_board_rows` prints, which is
+    the clutter he is describing. What did not exist was any way to reach
+    it from the app: a cycle could set it from a shell, he could not set
+    it at all. Inventing a sixth status here would have given the same
+    state two spellings, which is the drift the comment over
+    `OUTDATED_STATUS` is written to prevent.
+
+    **Archive is not delete and the two routes stay separate.** A deleted
+    row's text is copied into `resources/deleted-rows.md` because the row
+    is gone; an archived row keeps its number, its title and its write-up
+    in his file, and comes back with one status change. That is why this
+    one does not ask for a confirmation on the page and Delete does.
+
+    `set_row_status` clears the rating on the way through -- a chip on a
+    row nobody will build is the same noise as a chip on a shipped one --
+    and refuses anything that is not an open row in `## Board`, which is
+    the `None` this turns into a 409 rather than a 502.
+    """
+    stamp = dated or datetime.now(OSLO).strftime("%m-%d")
+    closed = {}
+
+    def mutate(markdown):
+        # `set_row_status` will happily rewrite a `✅ Done` row, and it
+        # should -- a cycle correcting a status needs that. From this
+        # button it would be a lie about history: `⚫ Outdated` means
+        # "never built", and a shipped row is not that. Refused here
+        # rather than in `set_row_status` so the other callers keep it.
+        row = extract_row(markdown, number) or ""
+        for label in (STATUS_LABELS["done"], OUTDATED_STATUS):
+            if label in row:
+                closed["label"] = label
+                return None
+        return set_row_status(markdown, number, OUTDATED_STATUS, updated=stamp)
+
+    ok, message = _amend_board(target, number, mutate, "archived")
+    if not ok and "label" in closed:
+        return False, f"#{number} is already {closed['label']} on {target}"
+    return ok, message
 
 
 def set_project_priority(project, priority, dated=None):

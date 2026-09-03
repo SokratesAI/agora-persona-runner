@@ -4820,14 +4820,17 @@
     var status = el("span", "item-edit-status");
     var save = el("button", "capture-act", "Save");
     var cancel = el("button", "capture-act", "Cancel");
+    var archive = el("button", "capture-act", "Archive");
     var del = el("button", "capture-act is-danger", "Delete");
     save.type = "button";
     cancel.type = "button";
+    archive.type = "button";
     del.type = "button";
 
     function busy(on, label) {
       save.disabled = on;
       cancel.disabled = on;
+      archive.disabled = on;
       del.disabled = on;
       status.className = "item-edit-status";
       status.textContent = on ? label : "";
@@ -4875,10 +4878,17 @@
       busy(true, "deleting…");
       send("/api/board/delete", { target: board, number: item.number });
     });
+    // No confirm, unlike Delete: this leaves the row, its number and its
+    // write-up in his file and is undone by setting the status back.
+    archive.addEventListener("click", function () {
+      busy(true, "archiving…");
+      send("/api/board/archive", { target: board, number: item.number });
+    });
 
     actions.appendChild(status);
     actions.appendChild(save);
     actions.appendChild(cancel);
+    actions.appendChild(archive);
     actions.appendChild(del);
     panel.appendChild(box);
     // Between the title and the buttons, because it belongs to the row

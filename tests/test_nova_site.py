@@ -38,7 +38,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_capture, nova_comments, nova_journal, nova_replies, nova_site, nova_sources, vault
+from agora_runner import nova_boards, nova_capture, nova_comments, nova_journal, nova_replies, nova_site, nova_sources, vault
 from agora_runner.config import OSLO
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
 from agora_runner.vault import VaultFiles
@@ -5554,3 +5554,104 @@ def test_the_model_route_answers_the_thread_the_query_names():
     assert seen["id"] == "c-7"
     assert json.loads(body)["model"] == "claude-cli:claude-sonnet-5"
 
+
+
+# --- POST /api/board/archive: his capture of 2026-09-03 ---
+# *"We should be able to archive issues and ideas... Add a archive button
+# next to the delete when in edit mode."* A third route beside edit and
+# delete, and the same two boundaries as both: `target` keys into a dict
+# of literal paths, and the request cannot be ambiguous about which of the
+# three things it means.
+
+def test_archiving_a_boarded_row_reaches_the_vault_through_the_real_request_path():
+    with patch.object(
+            nova_site, "archive_row", return_value=(True, "#162 archived on issues")) as ar:
+        status, _, body = _post(
+            "/api/board/archive", {"target": "issues", "number": 162, "title": "surprise"})
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    # A stray `title` is ignored here for the same reason it is on delete:
+    # nothing a client leaves in the payload can turn one route into another.
+    ar.assert_called_once_with("issues", 162)
+
+
+def test_archive_never_deletes_and_delete_never_archives():
+    """The dangerous confusion, and the reason these are separate routes.
+
+    Delete copies the row out to `deleted-rows.md` and removes it; archive
+    leaves every character of it in his file. Pressing one must never run
+    the other.
+    """
+    with patch.object(nova_site, "archive_row", return_value=(True, "ok")) as ar, \
+            patch.object(nova_site, "remove_row", return_value=(True, "ok")) as rm:
+        _post("/api/board/archive", {"target": "ideas", "number": 5})
+        rm.assert_not_called()
+        ar.assert_called_once()
+        ar.reset_mock()
+        _post("/api/board/delete", {"target": "ideas", "number": 5})
+        ar.assert_not_called()
+        rm.assert_called_once()
+
+
+def test_board_archive_refuses_a_target_that_is_not_one_of_his_two_boards():
+    for target in ["notes", "projects/sokrates/projects/nova/issues", "../secrets", 7]:
+        with patch.object(nova_site, "archive_row") as ar:
+            status, _, _ = _post("/api/board/archive", {"target": target, "number": 1})
+        assert status == 400, target
+        ar.assert_not_called()
+
+
+def test_board_archive_refuses_a_number_that_is_not_a_positive_int():
+    # `True` is an int in Python and would archive row 1.
+    for number in [True, 0, -1, "84", 8.4, None]:
+        with patch.object(nova_site, "archive_row") as ar:
+            status, _, _ = _post("/api/board/archive", {"target": "issues", "number": number})
+        assert status == 400, number
+        ar.assert_not_called()
+
+
+def test_archiving_a_row_that_is_already_closed_is_a_409_through_the_real_module():
+    """The same pinning `test_a_stale_row_is_a_409...` does for delete, and
+    it matters more here: `set_row_status` returns `None` for a row that is
+    already `✅ Done` as well as for one that does not exist, so the common
+    case of pressing Archive twice must read as "re-read the page", not as
+    "the vault failed".
+    """
+    board = ("---\n---\n\n## Board\n\n| # | Item | Status | Updated | Priority |\n"
+             "|---|---|---|---|---|\n"
+             "| [[#57 — A row\\|57]] | A row | ✅ Done | 08-11 | |\n")
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(board, "3-abc")), \
+            patch.object(nova_capture, "vault_write_path") as write:
+        status, _, body = _post("/api/board/archive", {"target": "issues", "number": 57})
+    write.assert_not_called()
+    assert status == 502, "a refusal that is not staleness must not read as staleness"
+    payload = json.loads(body)
+    assert payload["ok"] is False
+    # And it says which state it is in, rather than "is not a row" -- the
+    # row is right there on his board and the page would be lying.
+    assert "already" in payload["message"], payload
+
+
+def test_archiving_writes_the_outdated_status_and_todays_date_into_his_row():
+    """End to end through the real `archive_row`: what lands in the file.
+
+    It asserts the status cell the app's `chip-outdated` class and
+    `top_board_rows`' closed-row filter both key on, rather than any word
+    of my own -- inventing a sixth status would give one state two
+    spellings and drop the row out of neither.
+    """
+    board = ("---\n---\n\n## Board\n\n| # | Item | Status | Updated | Priority |\n"
+             "|---|---|---|---|---|\n"
+             "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 | 🟠 High |\n")
+    written = {}
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(board, "3-abc")), \
+            patch.object(nova_capture, "vault_write_path",
+                         side_effect=lambda p, t, if_rev=None: written.update(
+                             path=p, text=t) or "written"):
+        status, _, _ = _post("/api/board/archive", {"target": "issues", "number": 57})
+    assert status == 200
+    row = [ln for ln in written["text"].split("\n") if "#57" in ln][0]
+    assert nova_boards.OUTDATED_STATUS in row, row
+    # Still his row: the number, the title and the wiki-link all survive.
+    assert "A row" in row and "[[#57" in row
+    assert written["path"] == nova_boards.BOARD_PATHS["issues"]["edvard"]
