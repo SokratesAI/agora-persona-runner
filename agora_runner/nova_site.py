@@ -179,7 +179,7 @@ from agora_runner.nova_boards import (
     canonical_priority,
     is_relayed,
     parse_board,
-    unanswered_comment_bodies,
+    unanswered_comment_bodies_from_details,
     parse_notes,
     priority_key,
     split_capture_done,
@@ -807,27 +807,6 @@ def board_payload(name):
     # his board -- the markdown is the file he edits and it is always
     # right.
     board["items"] = _rows_from_store(name, board["items"])
-    # Which rows he asked a question on and nobody answered. Stamped onto
-    # the row here rather than worked out again by whoever needs it,
-    # because two things already rank these rows with `nova_next.rank` --
-    # `tools.top_board_rows`, which reads the markdown and computes this,
-    # and `_project_backlog`, which reads this payload and until now could
-    # not. `rank` looks the flag up with `.get`, so its absence removed the
-    # raise silently: the project page's "What's next" list put a row he is
-    # waiting on an answer to wherever its rating fell, while the ranking I
-    # actually pick work from put it first. Same function on the markdown
-    # this call has already read, so there is one definition of waiting and
-    # no second fetch.
-    waiting_bodies = unanswered_comment_bodies(edvard_markdown)
-    for item in board["items"]:
-        if item["number"] in waiting_bodies:
-            item["waiting"] = True
-            # A comment Sokrates relayed on his behalf is still owed a
-            # reply and still does not jump the queue -- his own ask,
-            # 2026-08-29. Carried rather than dropped because `rank` reads
-            # both keys together and a `waiting` with no `relayed` beside
-            # it would raise the relays this loop was told not to raise.
-            item["relayed"] = is_relayed(waiting_bodies[item["number"]])
     # The write-up and the conversation appended under it, told apart
     # here rather than on the page: `render_blocks` flattens both into the
     # same list of paragraphs, and once that has happened nothing
@@ -841,6 +820,34 @@ def board_payload(name):
     # document, so this needed a projection to read them back rather than
     # anything new written -- `ticket_docs.read_details`.
     board["details"] = _details_from_store(name, board["details"])
+    # Which rows he asked a question on and nobody answered. Stamped onto
+    # the row here rather than worked out again by whoever needs it,
+    # because two things already rank these rows with `nova_next.rank` --
+    # `tools.top_board_rows`, which reads the markdown and computes this,
+    # and `_project_backlog`, which reads this payload and until now could
+    # not. `rank` looks the flag up with `.get`, so its absence removed the
+    # raise silently: the project page's "What's next" list put a row he is
+    # waiting on an answer to wherever its rating fell, while the ranking I
+    # actually pick work from put it first.
+    #
+    # **Read off the write-ups, not off the file a second time.** The
+    # bodies below come out of the ticket store, checked against the
+    # markdown on every build; the flag is derived from exactly those
+    # bodies, so the store's answer and the flag can never disagree. It
+    # used to re-parse `edvard_markdown` here, which was a second
+    # definition of waiting over a second copy of the same text -- and a
+    # disagreement between them would have moved the raise on the project
+    # page without failing anything.
+    waiting_bodies = unanswered_comment_bodies_from_details(board["details"])
+    for item in board["items"]:
+        if item["number"] in waiting_bodies:
+            item["waiting"] = True
+            # A comment Sokrates relayed on his behalf is still owed a
+            # reply and still does not jump the queue -- his own ask,
+            # 2026-08-29. Carried rather than dropped because `rank` reads
+            # both keys together and a `waiting` with no `relayed` beside
+            # it would raise the relays this loop was told not to raise.
+            item["relayed"] = is_relayed(waiting_bodies[item["number"]])
     details, detail_comments = _split_details(board["details"])
     # My own two files get parsed as a board as well as a note stream --
     # issue #97, the half of it the owner kept: *"making your board like

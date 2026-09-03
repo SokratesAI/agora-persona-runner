@@ -947,14 +947,42 @@ def unanswered_comment_bodies(markdown):
     nothing else, and a long comment's first line is very often just the
     opening clause -- which is exactly when two of them look identical.
     """
-    bodies = {}
     lines = (markdown or "").split("\n")
+    details = {}
     for number, span in _detail_spans(markdown or "").items():
         _, body_start, end = span
-        block = "\n".join(lines[body_start:end])
-        found = list(_COMMENT_NOTE_RE.finditer(block))
+        details[number] = "\n".join(lines[body_start:end])
+    return unanswered_comment_bodies_from_details(details)
+
+
+def unanswered_comment_bodies_from_details(details):
+    """The same answer, from `{number: write-up body}` instead of the file.
+
+    This is where the rule actually lives now; the function above is the
+    markdown-shaped door onto it. The split exists because the write-ups
+    stopped being something the board page parses: `board_payload` reads
+    them out of the ticket store, checked against the file, and then had
+    to parse the whole markdown a second time to work out which rows are
+    waiting -- from the same bytes it had just been handed.
+
+    Two definitions of "waiting" over two copies of the same text is the
+    drift this migration exists to end, and it would have been silent:
+    a store body and a parsed body that disagreed would put the flag on
+    one row on the project page and a different row in the ranking, with
+    every existing check still green.
+
+    Safe on either shape because the span is the same one. `parse_board`
+    builds `details[number]` from exactly the lines `_detail_spans`
+    reports, `.strip()`ped; the marker is inside the body and the match
+    is sliced from the marker, so leading blank lines cannot move the
+    answer. Passing stripped bodies and unstripped blocks gives the same
+    dict.
+    """
+    bodies = {}
+    for number, body in (details or {}).items():
+        found = list(_COMMENT_NOTE_RE.finditer(body or ""))
         if found and found[-1].group(1) == "Edvard":
-            bodies[number] = block[found[-1].start():].strip()
+            bodies[number] = (body or "")[found[-1].start():].strip()
     return bodies
 
 

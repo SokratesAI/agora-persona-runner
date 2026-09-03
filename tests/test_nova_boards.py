@@ -860,3 +860,90 @@ def test_board_payload_actually_asks_the_store_for_his_write_ups(board_md, notes
         payload = nova_site.board_payload("issues")
     assert asked == ["issues"]
     assert payload["details"], "the write-ups still have to reach the page"
+
+
+# --- unanswered_comment_bodies_from_details: one rule, two doors ----------
+
+
+def test_details_door_agrees_with_the_markdown_door():
+    """The split must not have moved the answer.
+
+    `parse_board` strips each write-up and `_detail_spans` does not, so
+    the two doors are handed textually different bodies for the same row.
+    If the strip could move the match this would be a silent reshuffle of
+    which rows the project page raises, with every other test still green.
+    """
+    from agora_runner.nova_boards import (
+        parse_board,
+        unanswered_comment_bodies,
+        unanswered_comment_bodies_from_details,
+    )
+
+    markdown = _UC_BOARD.format(
+        body="**Edvard, 08-26:** so is this actually done?"
+    )
+    from_markdown = unanswered_comment_bodies(markdown)
+    # The precondition, asserted rather than assumed: a door that returns
+    # nothing agrees with the other door for free.
+    assert from_markdown, "fixture must produce a waiting row"
+    from_details = unanswered_comment_bodies_from_details(
+        parse_board(markdown)["details"]
+    )
+    assert from_details == from_markdown
+
+
+def test_details_door_reads_the_body_it_is_handed():
+    """It must answer off its argument, not off any file.
+
+    This is the whole point of the split: `board_payload` hands it the
+    ticket store's bodies, so a body that exists only in the store has to
+    be able to set the flag.
+    """
+    from agora_runner.nova_boards import unanswered_comment_bodies_from_details
+
+    bodies = unanswered_comment_bodies_from_details(
+        {7: "the problem\n\n**Edvard, 08-26:** and this bit?"}
+    )
+    assert bodies == {7: "**Edvard, 08-26:** and this bit?"}
+
+
+def test_details_door_ignores_a_row_i_answered_last():
+    from agora_runner.nova_boards import unanswered_comment_bodies_from_details
+
+    assert (
+        unanswered_comment_bodies_from_details(
+            {
+                7: "the problem\n\n"
+                "**Edvard, 08-26:** and this bit?\n\n"
+                "**Nova, 08-27:** done, here is how."
+            }
+        )
+        == {}
+    )
+
+
+def test_the_waiting_flag_follows_the_store_not_the_markdown(board_md, notes_md):
+    """The wiring, and the only mutation the rest of the suite cannot see.
+
+    With no CouchDB under these tests `_details_from_store` falls back to
+    the parsed markdown, so the store's bodies and the file's bodies are
+    the same object and re-parsing the file gives an identical answer --
+    which means reverting `board_payload` to
+    `unanswered_comment_bodies(edvard_markdown)` passes everything else.
+    Caught by handing the store a comment the markdown does not contain:
+    if the flag is derived from the file, row 57 comes back unflagged.
+    """
+    def store_says(name, parsed):
+        return {**parsed, 57: "the write-up\n\n**Edvard, 09-03:** and this?"}
+
+    with _serve(board_md, notes_md), \
+            patch.object(nova_site, "_details_from_store", store_says):
+        payload = nova_site.board_payload("issues")
+
+    # The precondition: the file itself flags nothing, so a pass here
+    # cannot come from the markdown.
+    from agora_runner.nova_boards import unanswered_comment_bodies
+
+    assert not unanswered_comment_bodies(board_md), "fixture must flag nothing"
+    flagged = {i["number"] for i in payload["items"] if i.get("waiting")}
+    assert flagged == {57}
