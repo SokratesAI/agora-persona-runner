@@ -617,6 +617,46 @@ def vault_read_path(path):
     return vault_read_path_rev(path)[0]
 
 
+def vault_doc_rev(path):
+    """The live `_rev` of one vault document, without reading its body.
+
+    `vault_read_path_rev` answers the same question and pays the whole
+    file for it, because it is the read a *writer* does immediately before
+    its conditional PUT and it needs the text anyway. This is the read a
+    *checker* does: `_all_docs?keys=[id]` returns the row's rev and
+    nothing else. Measured against `projects/sokrates/projects/nova/ideas.md`
+    on 2026-09-03: **207 bytes, against 1,831 for the parent document and
+    656KB once `vault_assemble` has pulled its content chunks** -- and it
+    is that assembly, not the parent read, that this avoids.
+
+    Returns None when no document exists at that path, and raises when the
+    database will not answer -- the same three-way split
+    `vault_read_path_rev` makes, and for the same reason: "this file is
+    absent" and "CouchDB refused" are different facts and folding them
+    into one None is what `VaultUnreadableDocument` exists to stop.
+
+    A tombstone has a revision and this returns it, exactly as
+    `vault_read_path_rev` does. Nothing here reads the `deleted` flag,
+    because a caller comparing two revs is asking whether the document has
+    moved since, and a deletion is a move.
+    """
+    doc_id = path.lower()
+    query = urllib.parse.urlencode({"keys": json.dumps([doc_id])})
+    status, body = couch_req("GET", f"{db_for(doc_id)}/_all_docs?{query}")
+    if status != 200:
+        raise VaultUnreadableDocument(
+            f"{doc_id}: CouchDB answered HTTP {status} to a revision lookup — "
+            "refusing to report this as a missing file"
+        )
+    for row in body.get("rows", []):
+        if row.get("error"):
+            continue
+        rev = (row.get("value") or {}).get("rev")
+        if rev:
+            return rev
+    return None
+
+
 def vault_read_path_rev(path):
     """`(content, rev)` — the text, and the revision it was read at.
 
@@ -979,7 +1019,20 @@ def _push_ticket_documents(path, content):
     if not ticket_docs.is_board(path):
         return None
     try:
-        return ticket_docs.push_markdown(path, content)
+        # The rev the markdown *now* has, read after the PUT landed, so the
+        # store can be asked whether it is current without fetching the
+        # file again -- `ticket_docs.currency`. It is read here rather than
+        # in `push_markdown` because revisions are the vault client's
+        # business and the store deliberately knows nothing about the
+        # vault's databases; the store just carries the string.
+        # A rev lookup that fails must not cost the push: an unstamped
+        # store is one `currency` verdict of UNKNOWN, a store that never
+        # got the write is real drift.
+        try:
+            source_rev = vault_doc_rev(path)
+        except Exception:  # noqa: BLE001 -- see the comment above
+            source_rev = None
+        return ticket_docs.push_markdown(path, content, source_rev=source_rev)
     except Exception as error:  # noqa: BLE001 -- see the docstring
         return f"FAILED({error})"
 
