@@ -18,7 +18,7 @@ from tools import cronjob_health
 
 
 def cronjob(name, schedule="*/5 * * * *", suspend=False,
-            scheduled="", succeeded="", namespace="agents"):
+            scheduled="", succeeded="", namespace="agents", timezone="Etc/UTC"):
     status = {}
     if scheduled:
         status["lastScheduleTime"] = scheduled
@@ -26,7 +26,7 @@ def cronjob(name, schedule="*/5 * * * *", suspend=False,
         status["lastSuccessfulTime"] = succeeded
     return {
         "metadata": {"name": name, "namespace": namespace},
-        "spec": {"schedule": schedule, "suspend": suspend},
+        "spec": {"schedule": schedule, "suspend": suspend, "timeZone": timezone},
         "status": status,
     }
 
@@ -157,16 +157,31 @@ def test_never_succeeded_is_its_own_verdict():
 
 # --- what it refuses to raise ---------------------------------------
 
-def test_a_suspended_cronjob_prints_and_does_not_raise():
+def test_a_suspended_cronjob_is_not_judged_rather_than_passed():
     # This loop's kubectl is read-only, so no pull request re-enables a
-    # CronJob. Raising would put the check red on its first run and every
-    # run after it, which is the same as having no check.
+    # CronJob and nothing here marks a suspension deliberate. Raising would
+    # put the check red on its first run and every run after it, which is
+    # the same as having no check — so it declines to judge instead, in
+    # `preflight`'s own caveat form.
     lines, status = report_for([
         cronjob("heartbeat-liveness", suspend=True,
                 scheduled="2026-05-01T18:05:00Z", succeeded=""),
     ])
     assert status == 0
-    assert any("SUSPENDED  agents/heartbeat-liveness" in line for line in lines)
+    assert any("NOT JUDGED  agents/heartbeat-liveness" in line for line in lines)
+
+
+def test_a_suspend_is_written_in_the_form_preflight_pulls_out_as_a_caveat():
+    # Buried at the tail of a summary sentence in a row marked `ok`, a
+    # suspension is invisible in the only report a cycle reads every
+    # morning. `preflight` prints a line as a caveat when a stem from
+    # CAVEAT_STEMS opens a shouted head, so this asserts against
+    # `preflight`'s own predicate rather than against the literal.
+    from tools import preflight
+    lines, _ = report_for([cronjob("heartbeat-liveness", suspend=True)])
+    line = next(l for l in lines if "heartbeat-liveness" in l and l.startswith("NOT"))
+    head = preflight.SHOUTED_HEAD.match(line)
+    assert head and any(stem in head.group(0) for stem in preflight.CAVEAT_STEMS)
 
 
 def test_a_suspended_cronjob_rides_on_the_line_preflight_keeps():
@@ -175,7 +190,7 @@ def test_a_suspended_cronjob_rides_on_the_line_preflight_keeps():
     # name has to be on the summary or it vanishes from the only report a
     # cycle reads every morning.
     lines, _ = report_for([cronjob("heartbeat-liveness", suspend=True)])
-    swept = next(l for l in lines if "Judged 1 CronJob(s)" in l)
+    swept = next(l for l in lines if "Judged 1 CronJob(s)" in l)  # noqa: E501
     assert "agents/heartbeat-liveness" in swept
 
 
@@ -228,6 +243,54 @@ def test_kubectl_returning_something_that_is_not_json_is_status_one():
     rows, why = cronjob_health.read_cronjobs(fake_kubectl(stdout="<html>502</html>"))
     assert rows is None
     assert "not JSON" in why
+
+
+# --- the CronJob's own timeZone, not this process's ------------------
+
+def test_an_oslo_schedule_is_matched_in_oslo_and_not_in_utc():
+    # `newspaper-generator` is `0 0 * * *` on Europe/Oslo, which fires at
+    # 22:00Z in summer. Matched against a UTC clock the walk looks for
+    # midnight UTC and finds a different day's firing.
+    # A two-hour window that straddles midnight Oslo and contains no
+    # midnight UTC at all. One firing in the CronJob's own zone, none in
+    # this process's — so the two readings cannot agree by coincidence.
+    succeeded = cronjob_health._as_datetime("2026-07-01T21:00:00Z")
+    scheduled = cronjob_health._as_datetime("2026-07-01T23:00:00Z")
+    assert cronjob_health.slots_behind(
+        "0 0 * * *", succeeded, scheduled, "Europe/Oslo") == (1, False)
+    assert cronjob_health.slots_behind(
+        "0 0 * * *", succeeded, scheduled, "Etc/UTC") == (0, False)
+
+
+def test_a_healthy_oslo_job_across_the_dst_change_is_not_reported_behind():
+    # Oslo goes CEST -> CET on 2026-10-25. A daily midnight job that
+    # succeeded every single day in this window measures 7 slots behind if
+    # the cron is matched against UTC, which is well past the grace.
+    lines, status = report_for([
+        cronjob("newspaper-generator", "0 0 * * *", namespace="agents",
+                timezone="Europe/Oslo",
+                succeeded="2026-10-27T23:00:05Z", scheduled="2026-10-27T23:00:00Z"),
+    ])
+    assert status == 0
+    assert any("0 slot(s) behind" in line for line in lines)
+
+
+def test_an_unknown_timezone_costs_the_sweep_its_clean_verdict():
+    lines, status = report_for([
+        cronjob("nonsense", "0 0 * * *", timezone="Mars/Olympus_Mons",
+                scheduled="2026-09-03T19:50:00Z", succeeded="2026-09-02T19:45:00Z"),
+    ])
+    assert status == 1
+    assert any("CANNOT JUDGE  agents/nonsense" in line for line in lines)
+
+
+def test_an_absent_timezone_is_utc_which_is_what_kubernetes_does():
+    lines, status = report_for([
+        cronjob("no-zone", "0 0 * * *", timezone="",
+                succeeded="2026-07-01T00:00:05Z", scheduled="2026-07-03T00:00:00Z"),
+    ])
+    assert status == 2
+    assert any("2 consecutive run(s)" in line for line in lines)
 
 
 # --- it is in the morning sweep -------------------------------------

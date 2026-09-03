@@ -33,16 +33,25 @@ minute has not succeeded yet and never could have, so a CronJob is always
 allowed to be exactly one slot behind. Two is the first number that cannot be
 explained by a run still in flight.
 
-**`SUSPENDED` is a separate verdict and it deliberately does not raise.**
-That is `heartbeat_health`'s OFF-versus-OVERDUE split, and the reason it
-lands the other way here is that this loop's kubectl is read-only: no pull
-request re-enables a CronJob, so raising would put this check red on its
-first run and every run afterwards, which is the same as off. It always
-prints, so a suspend can never be mistaken for a clean sweep -- and the
-summary line says how many were suspended, because that is the line
-`preflight` keeps when it collapses a check that exited 0.
-`agents/heartbeat-liveness` has been suspended since 2026-05-01 and has
-never succeeded; that is the shape this rule exists for.
+**A suspended CronJob is not judged, and that is not the same as passing.**
+`heartbeat_health` raises on a heartbeat that is switched off unless its own
+name says the switch was deliberate, and `argocd_health` counts ArgoCD's
+`Suspended` health as unhealthy -- so the honest description of this is that
+it does *neither*, for one reason: this loop's kubectl is read-only, no pull
+request re-enables a CronJob, and there is no annotation anywhere in this
+cluster marking a suspension as intended. Raising would put the check red on
+its first run and every run after, which is the same as off, and there is
+today no marker to make an exception against.
+
+What it does instead is refuse to call it clean. The line opens
+`NOT JUDGED`, which is `preflight`'s own caveat form -- a stem in
+`CAVEAT_STEMS` behind a shouted head -- so a suspension is pulled out and
+printed under the collapsed row rather than buried in the tail of a summary
+sentence in a row marked `ok`. The names ride on the summary line as well,
+because that is the line the collapse keeps. `agents/heartbeat-liveness` has
+been suspended since 2026-05-01 and has never succeeded; that is the shape
+this rule exists for, and the moment anything in this cluster marks a
+suspension deliberate, this should raise on the ones that are not.
 
 **`NEVER SCHEDULED` and `NEVER SUCCEEDED` are separate from `BEHIND`**, the
 same call `schedule_health` makes on NEVER FIRED versus OVERDUE. A CronJob
@@ -66,6 +75,7 @@ import datetime
 import json
 import subprocess
 import sys
+import zoneinfo
 
 from tools.schedule_health import cron_matches
 
@@ -119,6 +129,7 @@ def read_cronjobs(runner=subprocess.run):
             "namespace": meta.get("namespace") or "?",
             "name": meta.get("name") or "?",
             "schedule": (spec.get("schedule") or "").strip(),
+            "timezone": (spec.get("timeZone") or "").strip(),
             "suspended": bool(spec.get("suspend")),
             "scheduled": status.get("lastScheduleTime") or "",
             "succeeded": status.get("lastSuccessfulTime") or "",
@@ -139,23 +150,40 @@ def _as_datetime(text):
     return at
 
 
-def slots_behind(schedule, succeeded, scheduled):
+def slots_behind(schedule, succeeded, scheduled, timezone=""):
     """Firings of `schedule` after `succeeded` and up to `scheduled`.
 
-    Returns (count, capped) or raises `ValueError` on a schedule that cannot
-    be parsed -- an unreadable schedule must cost the whole check its clean
+    Returns (count, capped) or raises `ValueError` on a schedule or a zone
+    that cannot be read -- either must cost the whole check its clean
     verdict, never one CronJob its judgement.
+
+    **`timezone` is `spec.timeZone` and reading it is not optional.** Three
+    of this cluster's twelve CronJobs declare `Europe/Oslo`, and the cron
+    fields are Kubernetes' to interpret in *that* zone, not in UTC. Matching
+    them against a UTC clock is wrong by the offset all year and wrong by a
+    whole extra firing across a DST transition: `0 0 * * *` on `Europe/Oslo`
+    over the October 2026 changeover measures 7 slots behind for a job that
+    succeeded on every one of those days. An empty value is UTC, which is
+    what Kubernetes itself does.
 
     `succeeded` is exclusive and `scheduled` inclusive, so a CronJob whose
     newest scheduled run is the one that succeeded measures 0. `capped` says
     the walk stopped at `MAX_SLOTS` and the real number is at least that.
     """
+    if timezone:
+        try:
+            zone = zoneinfo.ZoneInfo(timezone)
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timeZone {timezone!r}: {exc}") from exc
+    else:
+        zone = datetime.timezone.utc
+
     start = succeeded.replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
     end = scheduled.replace(second=0, microsecond=0)
     count = 0
     moment = start
     while moment <= end:
-        if cron_matches(schedule, moment.astimezone(datetime.timezone.utc)):
+        if cron_matches(schedule, moment.astimezone(zone)):
             count += 1
             if count >= MAX_SLOTS:
                 return count, True
@@ -166,13 +194,13 @@ def slots_behind(schedule, succeeded, scheduled):
 def judge(row):
     """One CronJob's verdict, as (verdict, detail) or raising `ValueError`.
 
-    `verdict` is one of `ok`, `SUSPENDED`, `NEVER SCHEDULED`,
+    `verdict` is one of `ok`, `NOT JUDGED`, `NEVER SCHEDULED`,
     `NEVER SUCCEEDED`, `BEHIND`. Only the last three raise; the caller owns
     that decision so the rule stays in one place.
     """
     if row["suspended"]:
         since = row["succeeded"] or row["scheduled"] or "never run"
-        return "SUSPENDED", f"suspended in the live cluster; last success {since}"
+        return "NOT JUDGED", f"suspended in the live cluster; last success {since}"
 
     scheduled = _as_datetime(row["scheduled"])
     if scheduled is None:
@@ -185,7 +213,8 @@ def judge(row):
         return "NEVER SUCCEEDED", (
             f"scheduled since {row['scheduled']} and no run has ever finished")
 
-    count, capped = slots_behind(row["schedule"], succeeded, scheduled)
+    count, capped = slots_behind(
+        row["schedule"], succeeded, scheduled, row.get("timezone", ""))
     if count <= GRACE_SLOTS:
         return "ok", f"{count} slot(s) behind, last success {row['succeeded']}"
     at_least = "at least " if capped else ""
@@ -212,9 +241,9 @@ def report(rows):
             continue
         if verdict == "ok":
             lines.append(f"ok      {who} ({row['schedule']}): {detail}")
-        elif verdict == "SUSPENDED":
+        elif verdict == "NOT JUDGED":
             suspended.append(who)
-            lines.append(f"SUSPENDED  {who} ({row['schedule']}): {detail}")
+            lines.append(f"NOT JUDGED  {who} ({row['schedule']}): {detail}")
         else:
             actionable = True
             lines.append(f"{verdict}  {who} ({row['schedule']}): {detail}")
@@ -236,9 +265,9 @@ def report(rows):
     lines.append(swept)
     if suspended:
         lines.append(
-            "A suspended CronJob is not raised — this loop's kubectl is "
-            "read-only, so no pull request re-enables one and every cycle "
-            "would re-derive it.")
+            "A suspended CronJob is not judged rather than passed — this "
+            "loop's kubectl is read-only, so no pull request re-enables one, "
+            "and nothing in this cluster marks a suspension deliberate.")
     if actionable:
         return lines, 2
     return lines, (1 if unreadable else 0)
