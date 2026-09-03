@@ -219,9 +219,15 @@ SUBJECT = {
     "ticket_drift":      ("on-box",  "the ticket store, in CouchDB here"),
     "running_images":    ("on-box",  "containers running in this cluster"),
     "workload_health":   ("on-box",  "workloads in this cluster"),
-    "host_memory_trend": ("on-box",  "server1's own memory"),
-    "memory_headroom":   ("on-box",  "server1's own memory"),
-    "oom_history":       ("on-box",  "the node's own kernel log"),
+    #: These two read this pod's own /proc, so their subject is whichever node
+    #: the bridge pod is scheduled on -- server1 today. server2 joined on
+    #: 2026-09-03 and neither of them can see it. `oom_history` below was the
+    #: same shape and is fixed; these two need a different mechanism than a
+    #: node argument, and that is my own issue rather than a thing to paper
+    #: over by renaming the label.
+    "host_memory_trend": ("on-box",  "the bridge pod's own node's memory"),
+    "memory_headroom":   ("on-box",  "the bridge pod's own node's memory"),
+    "oom_history":       ("on-box",  "every node's own kernel log"),
     "ci_health":         ("off-box", "GitHub's minute meter"),
     "open_prs":          ("off-box", "open pull requests on GitHub"),
     "main_build":        ("off-box", "the default branch build on GitHub"),
