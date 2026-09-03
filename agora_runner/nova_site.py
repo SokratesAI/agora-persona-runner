@@ -1208,6 +1208,44 @@ def _project_summary(items):
     }
 
 
+def _project_summaries(boards):
+    """Where every project stands, for the index -- idea #228's PM pass.
+
+    The index has listed a name and a rating chip since it shipped, and
+    that answers "what projects are there" and nothing else. His idea asks
+    for someone to *"pretend to be a project manager and really think
+    'what do i need'"*, and the question a portfolio page is actually
+    opened with is which project needs attention -- which today costs
+    eleven taps, one per project, because the standing lives only on the
+    page you have to open.
+
+    So this is the same `_project_summary` the project page already draws,
+    computed for every project off the two board payloads the index has
+    already built. **It is a regroup and not a second measurement**: the
+    rows counted here are the rows `project_payload` matches for the page,
+    so the index and the page cannot disagree -- `test_project_page`
+    asserts that equality rather than asserting two shapes separately.
+
+    Keyed lowercase, the same way `projectPriority` is and for the same
+    reason: `Nova` and `nova` are two spellings in his cells and one
+    project, and `/project/nova` already shows the rows of both. A row
+    with an empty `Project` cell is in no project and is counted in none
+    of these -- it is not a twelfth bucket.
+    """
+    grouped = {}
+    for board in ("issues", "ideas"):
+        for item in (boards.get(board) or {}).get("items") or []:
+            key = (item.get("project") or "").strip().lower()
+            if not key:
+                continue
+            # The row itself, not a copy: `_project_summary` only reads
+            # `statusKey` and `priorityKey` off it, and the items here
+            # belong to the board cache that the Issues and Ideas pages
+            # serve from.
+            grouped.setdefault(key, []).append(item)
+    return {key: _project_summary(rows) for key, rows in grouped.items()}
+
+
 def _project_backlog(rows):
     """The project's open rows, in the order a cycle would take them.
 
@@ -1395,6 +1433,11 @@ def project_payload(name=None):
     known = rank_projects(known, meta)
     result = {
         "projects": known,
+        # Where each of them stands, so the index answers "which project
+        # needs me" without opening eleven pages. Sent on the index build
+        # and on a single-project build alike: it costs one pass over rows
+        # already in memory, and the page draws the index list too.
+        "projectSummary": _project_summaries(boards),
         "projectPriority": {
             name.lower(): {
                 "priority": (meta.get(name.lower()) or {}).get("priority") or "",
