@@ -4294,7 +4294,11 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   overflow: hidden;
 }
 .project-standing-fill { height: 100%; background: var(--accent); }
-.project-standing .chip { margin-top: 6px; }
+/* The worst-open-rating chip only -- it is the direct child, sitting under
+   the bar. The project's own rating chip lives inside the head row, which
+   is baseline-aligned, and a top margin there would knock it off the
+   baseline it is aligned to. */
+.project-standing > .chip { display: inline-block; margin-top: 6px; }
 
 /* The ordered "what's next" list -- idea #228's backlog half. Numbered
    with our own span rather than the `<ol>` marker, because the fold below
