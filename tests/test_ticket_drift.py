@@ -22,6 +22,9 @@ from tests.test_ticket_store import BOARD
 
 
 PATH = "projects/sokrates/projects/nova/issues.md"
+# The revision the markdown was read at. `sync` stamps it on the store so
+# `ticket_docs.currency` can answer without fetching the file again.
+REV = "42-92a53ba0c59e7fa01057780c6af5e45e"
 
 
 def _stored(monkeypatch, render):
@@ -82,7 +85,7 @@ def test_a_store_that_cannot_be_read_is_one_not_two(monkeypatch):
 
 
 def test_a_vault_miss_is_not_a_board_that_matches(monkeypatch):
-    monkeypatch.setattr(ticket_drift, "read_vault", lambda path: None)
+    monkeypatch.setattr(ticket_drift, "read_vault", lambda path: (None, None))
     _stored(monkeypatch, "never reached")
     out = ticket_drift.run([PATH], do_sync=False)
     assert out == 1
@@ -93,7 +96,7 @@ def test_sync_verifies_by_reading_back_not_by_the_write_answer(monkeypatch):
     monkeypatch.setattr(ticket_drift.ticket_docs, "ensure_database", lambda: (True, 201))
     monkeypatch.setattr(
         ticket_drift.ticket_docs, "write_board",
-        lambda path, records: {"written": 4, "deleted": 0, "failures": []})
+        lambda path, records, source_rev=None: {"written": 4, "deleted": 0, "failures": []})
     # The write claimed success and the store is still wrong.
     _stored(monkeypatch, "---\ntype: board\n---\n")
     status, detail = ticket_drift.sync(PATH, BOARD)
@@ -104,19 +107,26 @@ def test_sync_verifies_by_reading_back_not_by_the_write_answer(monkeypatch):
 def test_sync_makes_a_drifted_board_current(monkeypatch):
     monkeypatch.setattr(ticket_drift.ticket_docs, "ensure_database", lambda: (True, 201))
     written = {}
+    stamped = {}
 
-    def write_board(path, records):
+    def write_board(path, records, source_rev=None):
         written[path] = records
+        stamped[path] = source_rev
         return {"written": 4, "deleted": 0, "failures": []}
 
     monkeypatch.setattr(ticket_drift.ticket_docs, "write_board", write_board)
     _stored(monkeypatch,
             lambda path: ticket_store.to_markdown(written[path]) if path in written
             else "---\ntype: board\n---\n")
-    monkeypatch.setattr(ticket_drift, "read_vault", lambda path: BOARD)
+    monkeypatch.setattr(ticket_drift, "read_vault", lambda path: (BOARD, REV))
     out = ticket_drift.run([PATH], do_sync=True)
     assert out == 0
     assert written, "sync must actually have written the board"
+    # The read-time revision reaches the write. Without it `to_documents`
+    # omits the source-revision document, `write_board` tombstones it, and
+    # `currency` answers `unknown` for the rest of that board's life --
+    # the repair un-doing the thing it repairs.
+    assert stamped[PATH] == REV
 
 
 def test_a_rejected_document_is_not_a_successful_sync(monkeypatch):
@@ -143,7 +153,7 @@ def test_a_database_that_cannot_be_created_stops_the_sync(monkeypatch):
 
 def test_the_exit_code_is_the_worst_board_not_the_last(monkeypatch):
     current = ticket_store.to_markdown(ticket_store.to_records(BOARD))
-    monkeypatch.setattr(ticket_drift, "read_vault", lambda path: BOARD)
+    monkeypatch.setattr(ticket_drift, "read_vault", lambda path: (BOARD, REV))
     _stored(monkeypatch,
             lambda path: current if path == "second" else "---\ntype: board\n---\n")
     out = ticket_drift.run(["first", "second"], do_sync=False)
@@ -151,7 +161,7 @@ def test_the_exit_code_is_the_worst_board_not_the_last(monkeypatch):
 
 
 def test_the_fix_line_is_printed_only_when_something_drifted(monkeypatch, capsys):
-    monkeypatch.setattr(ticket_drift, "read_vault", lambda path: BOARD)
+    monkeypatch.setattr(ticket_drift, "read_vault", lambda path: (BOARD, REV))
     _stored(monkeypatch, ticket_store.to_markdown(ticket_store.to_records(BOARD)))
     assert ticket_drift.run([PATH], do_sync=False) == 0
     assert "--sync" not in capsys.readouterr().out
@@ -214,5 +224,21 @@ def test_a_vault_miss_is_read_as_unreadable_not_as_an_empty_board(monkeypatch):
         stdout = "[not found]\n"
         stderr = ""
 
-    monkeypatch.setattr(ticket_drift.subprocess, "run", lambda *a, **k: Done())
-    assert ticket_drift.read_vault(PATH) is None
+    monkeypatch.setattr(ticket_drift.board_put.subprocess, "run",
+                        lambda *a, **k: Done())
+    assert ticket_drift.read_vault(PATH) == (None, None)
+
+
+def test_a_vault_client_that_will_not_run_is_unreadable_not_a_traceback(monkeypatch):
+    """The reader this delegates to does not catch a failed subprocess.
+
+    `read_vault` used to run `vault_tool.py` itself and swallow `OSError`,
+    so a missing or hung vault client came out as `CANNOT READ` and exit
+    1. Raising here instead would take the whole morning sweep down with a
+    traceback, and a check that did not run must never read as clean.
+    """
+    def boom(*args, **kwargs):
+        raise OSError("no vault client on this pod")
+
+    monkeypatch.setattr(ticket_drift.board_put.subprocess, "run", boom)
+    assert ticket_drift.read_vault(PATH) == (None, None)
