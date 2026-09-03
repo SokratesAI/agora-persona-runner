@@ -171,6 +171,23 @@ SWAP_HOLDER_ROW = re.compile(
 SWAP_HOLDER_TOTAL = re.compile(
     r"^\s*total\s+rss\s+(\d+)Mi\s+swap\s+(\d+)Mi\s*$")
 
+#: The report's first line, which names the node it swept. The node half is
+#: optional because it was not always there: the sweep is a per-node instrument
+#: by construction -- `hostPID` gives it the process list of the one box it was
+#: scheduled on -- and while this cluster had one node that was the same thing as
+#: naming it. server2 joined on 2026-09-03 and the scheduler put all three
+#: retained reports there, so the instrument for server1's full swap was reading a
+#: box with no swap at all and nothing in the log said so. platform-config prints
+#: `spec.nodeName` in this line now; a report without it is read as an unnamed node
+#: rather than dropped, because that rollback must not blind this reader.
+SWAP_HOLDER_HEADER = re.compile(r"^HOST PROCESS MEMORY(?:\s+on\s+(\S+))?\s+--")
+
+#: The sweep's own words for "there is nothing to list". A `TOP n BY SWAP`
+#: section with no rows under it is two entirely different findings depending on
+#: whether this line is there, and reading them as one is what made a correct
+#: report about a swapless box print as `its report format has moved`.
+SWAP_HOLDER_NONE = "none -- every process read reported zero swap"
+
 
 #: The ledger, on the pod's persistent volume. `$NOVA_WORKSPACE` is
 #: deliberately not used: it points at a per-cycle worktree when cycles run
@@ -467,19 +484,95 @@ def holder_scope(cgroup):
     return "unowned"
 
 
+def _parse_sweep(text):
+    """One sweep report -> `(parsed, why)`.
+
+    `parsed` carries the node the sweep names, its rows and its own total. A
+    report that says every process reported zero swap parses to zero rows and
+    is a *result*; only a report with neither rows nor that line is a format
+    this reader no longer understands, and the two are returned differently.
+    """
+    node, total_swap, rows, in_swap, said_none = None, None, [], False, False
+    for line in text.splitlines():
+        head = SWAP_HOLDER_HEADER.match(line)
+        if head:
+            node = head.group(1)
+            continue
+        total = SWAP_HOLDER_TOTAL.match(line)
+        if total:
+            total_swap = float(total.group(2))
+            continue
+        if line.startswith("TOP") and "BY SWAP" in line:
+            in_swap = True
+            continue
+        if line.startswith("TOP") and "BY SWAP" not in line:
+            in_swap = False
+            continue
+        if not in_swap:
+            continue
+        if SWAP_HOLDER_NONE in line:
+            said_none = True
+            continue
+        row = SWAP_HOLDER_ROW.match(line)
+        if row:
+            rows.append({"pid": int(row.group(1)), "comm": row.group(2).strip(),
+                         "rss_mib": float(row.group(3)),
+                         "swap_mib": float(row.group(4)),
+                         "age_days": (float(row.group(5))
+                                      if row.group(5) is not None else None),
+                         "cgroup": row.group(6), "node": node})
+    if not rows and not said_none:
+        return None, "carried no parseable 'TOP n BY SWAP' rows and did not say it found none"
+    for row in rows:
+        row["node"] = node
+    return {"node": node, "rows": rows, "total_swap_mib": total_swap}, None
+
+
+def read_node_names(runner=subprocess.run):
+    """Every node the API server lists, or `(None, why)`.
+
+    Only used to name the nodes this run did *not* reach. An unreadable node
+    list is not a reason to withhold the reports that were read, so the caller
+    treats it as "cannot say what is missing" rather than as a failure.
+    """
+    try:
+        proc = runner(["kubectl", "get", "nodes", "-o", "json"],
+                      capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl get nodes failed: {exc}"
+    if proc.returncode != 0:
+        return None, (f"kubectl get nodes failed: "
+                      f"{proc.stderr.strip() or proc.stdout.strip()}")
+    try:
+        body = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return None, f"kubectl get nodes returned no JSON: {exc}"
+    names = [((item.get("metadata") or {}).get("name") or "")
+             for item in body.get("items") or []]
+    names = [name for name in names if name]
+    if not names:
+        return None, "kubectl get nodes listed no nodes"
+    return sorted(names), None
+
+
 def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
                       job=SWAP_HOLDER_JOB, now=None):
-    """The newest hostPID sweep's report, or `(None, why)`.
+    """The newest hostPID sweep's reports, one per node, or `(None, why)`.
 
-    Two calls: the Pod list, to find the newest completed run of the sweep,
-    and its log. A Pod that is still running is skipped rather than read --
-    its log is half a report, and half a report of a top-N list is not the
-    top N.
+    The sweep is per-node by construction: `hostPID` gives it the process list
+    of the box it was scheduled on and nothing else. While this cluster had one
+    node, reading the single newest Pod was the same thing as sweeping the
+    cluster. It stopped being the same thing on 2026-09-03 -- and the failure
+    was silent, because a report from server2 is a well-formed report. So this
+    reads **every** Pod of the newest run, keyed on the Job that owns them, and
+    the caller names the nodes that run did not reach.
 
-    An absent sweep is a missing instrument and says so. Three Pods are
-    retained, so at twice an hour this goes blind about ninety minutes after
-    the CronJob stops running, which is exactly the window in which somebody
-    should be told the instrument died rather than shown nothing.
+    A Pod that is still running is skipped rather than read -- its log is half a
+    report, and half a report of a top-N list is not the top N. An absent sweep
+    is a missing instrument and says so. Three runs are retained, so at twice an
+    hour this goes blind about ninety minutes after the CronJob stops running,
+    which is exactly the window in which somebody should be told the instrument
+    died rather than shown nothing.
     """
     try:
         proc = runner(["kubectl", "get", "pods", "-n", namespace, "-o", "json"],
@@ -494,7 +587,10 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
     except json.JSONDecodeError as exc:
         return None, f"kubectl get pods -n {namespace} returned no JSON: {exc}"
 
-    best, best_at = None, None
+    # Group by the Job that owns the Pod, not by Pod: one run is now several
+    # Pods, and taking the single newest would put this straight back to reading
+    # one node. `host-process-memory-29807850-j4cd8` -> `...-29807850`.
+    runs = {}
     for item in body.get("items") or []:
         meta = item.get("metadata") or {}
         name = meta.get("name") or ""
@@ -505,59 +601,72 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
         at = _parse_at(meta.get("creationTimestamp"))
         if at is None:
             continue
-        if best_at is None or at > best_at:
-            best, best_at = name, at
-    if best is None:
+        owner = name.rsplit("-", 1)[0]
+        entry = runs.setdefault(owner, {"at": at, "pods": []})
+        entry["at"] = max(entry["at"], at)
+        entry["pods"].append({"pod": name,
+                              "node": (item.get("spec") or {}).get("nodeName")})
+    if not runs:
         return None, (f"no completed {job} Pod is left in {namespace}, so the "
                       "one sweep that can name these processes has either not "
                       "run or has been reaped")
+    newest = max(runs.values(), key=lambda run: run["at"])
 
-    try:
-        proc = runner(["kubectl", "logs", "-n", namespace, best],
-                      capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"kubectl logs {best} failed: {exc}"
-    if proc.returncode != 0:
-        return None, (f"kubectl logs {best} failed: "
-                      f"{proc.stderr.strip() or proc.stdout.strip()}")
+    reports, unreadable, rows = [], [], []
+    for pod in sorted(newest["pods"], key=lambda pod: pod["pod"]):
+        try:
+            proc = runner(["kubectl", "logs", "-n", namespace, pod["pod"]],
+                          capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            unreadable.append(f"{pod['pod']}: {exc}")
+            continue
+        if proc.returncode != 0:
+            unreadable.append(f"{pod['pod']}: "
+                              f"{proc.stderr.strip() or proc.stdout.strip()}")
+            continue
+        parsed, why = _parse_sweep(proc.stdout)
+        if parsed is None:
+            unreadable.append(f"{pod['pod']} {why}")
+            continue
+        # The Pod's own `spec.nodeName` is the scheduler's answer and outranks
+        # the one printed in the log, which an older image does not print at all.
+        node = pod["node"] or parsed["node"]
+        parsed["node"] = node
+        for row in parsed["rows"]:
+            row["node"] = node
+        parsed["pod"] = pod["pod"]
+        reports.append(parsed)
+        rows.extend(parsed["rows"])
+    if not reports:
+        return None, ("the newest sweep's Pod log(s) could not be read: "
+                      + "; ".join(unreadable))
 
-    total_swap, rows, in_swap = None, [], False
-    for line in proc.stdout.splitlines():
-        total = SWAP_HOLDER_TOTAL.match(line)
-        if total:
-            total_swap = float(total.group(2))
-            continue
-        if line.startswith("TOP") and "BY SWAP" in line:
-            in_swap = True
-            continue
-        if line.startswith("TOP") and "BY SWAP" not in line:
-            in_swap = False
-            continue
-        if not in_swap:
-            continue
-        row = SWAP_HOLDER_ROW.match(line)
-        if row:
-            rows.append({"pid": int(row.group(1)), "comm": row.group(2).strip(),
-                         "rss_mib": float(row.group(3)),
-                         "swap_mib": float(row.group(4)),
-                         "age_days": (float(row.group(5))
-                                      if row.group(5) is not None else None),
-                         "cgroup": row.group(6)})
-    if not rows:
-        return None, (f"{best} carried no parseable 'TOP n BY SWAP' rows, so "
-                      "its report format has moved and this reader has not")
+    nodes = [report["node"] for report in reports if report["node"]]
+    all_nodes, nodes_why = read_node_names(runner=runner)
+    unswept = ([name for name in all_nodes if name not in nodes]
+               if all_nodes else [])
+    totals = [report["total_swap_mib"] for report in reports
+              if report["total_swap_mib"] is not None]
     now = now or datetime.now(timezone.utc)
-    return {"pod": best, "at": best_at, "rows": rows, "total_swap_mib": total_swap,
-            "age_hours": (now - best_at).total_seconds() / 3600.0}, None
+    return {"pods": reports, "at": newest["at"], "rows": rows,
+            "total_swap_mib": (sum(totals) if totals else None),
+            "nodes": nodes, "unswept": unswept, "nodes_why": nodes_why,
+            "unreadable": unreadable,
+            "age_hours": (now - newest["at"]).total_seconds() / 3600.0}, None
 
 
 def name_swap_holders(report, top=SWAP_HOLDER_TOP):
-    """Who holds the swap, by name, from the sweep's own report.
+    """Who holds the swap, by name and by node, from the sweep's own reports.
 
     This is the half of issue #131 that no slope can supply. `attribute_swap`
     says the unowned remainder is 1,495Mi and whether it is growing; it cannot
     say that six `claude.exe` children hold 87% of the box's swap, which is the
     fact that turns the row into something the owner can act on.
+
+    Every line names its node, and a node the run did not reach is named too.
+    Before that, a report from the wrong box read exactly like a report from the
+    right one -- server2 has no swap, so its true and complete answer is an empty
+    list, which is also what "nothing is swapped on server1" would look like.
 
     Like `attribute_swap`, it does not raise. `judge` already raises on free
     swap falling and this is the same event named better, not a second one.
@@ -572,10 +681,12 @@ def name_swap_holders(report, top=SWAP_HOLDER_TOP):
     named = sum(by_scope.values())
     total = report["total_swap_mib"]
 
-    head = (f"SWAP HOLDERS  {len(rows)} process(es) named by {report['pod']}, "
+    swept = ", ".join(report["nodes"]) or "an unnamed node"
+    head = (f"SWAP HOLDERS  {len(rows)} process(es) named across "
+            f"{len(report['pods'])} node(s) ({swept}), "
             f"read {report['age_hours']:.1f}h ago, hold {named:.0f}Mi swapped")
     if total:
-        head += f" of {total:.0f}Mi on the box ({100.0 * named / total:.0f}%)"
+        head += f" of {total:.0f}Mi on them ({100.0 * named / total:.0f}%)"
     lines = [head + "."]
     lines.append(f"  {by_scope['unowned']:.0f}Mi of that is outside k3s.service and "
                  "outside every Pod — the same processes unowned_swap_mib counts, "
@@ -586,14 +697,25 @@ def name_swap_holders(report, top=SWAP_HOLDER_TOP):
         # issue #131. It is printed only when the sweep supplied it.
         age = ("" if row.get("age_days") is None
                else f", {row['age_days']:.1f}d old")
+        node = row.get("node") or "unnamed node"
         lines.append(f"  {row['swap_mib']:.0f}Mi swapped, {row['rss_mib']:.0f}Mi "
-                     f"resident — {row['comm']} (pid {row['pid']}, "
+                     f"resident — {row['comm']} on {node} (pid {row['pid']}, "
                      f"{holder_scope(row['cgroup'])}{age})")
     if len(rows) > top:
         rest = sum(r["swap_mib"] for r in rows[top:])
+        pods = " ".join(report_pod["pod"] for report_pod in report["pods"])
         lines.append(f"  the other {len(rows) - top} named process(es) hold "
                      f"{rest:.0f}Mi between them; `kubectl logs -n "
-                     f"{SWAP_HOLDER_NAMESPACE} {report['pod']}` has all of it.")
+                     f"{SWAP_HOLDER_NAMESPACE} {pods}` has all of it.")
+    for missing in report["unswept"]:
+        # Not a caveat on the numbers above: those are true of the nodes they
+        # name. This is a node whose swap holders nobody measured at all.
+        lines.append(f"  NOT SWEPT  {missing} — the newest run left no report "
+                     "there, so its swap holders are unnamed.")
+    if report.get("nodes_why"):
+        lines.append(f"  CANNOT SAY which nodes were missed — {report['nodes_why']}")
+    for why in report["unreadable"]:
+        lines.append(f"  UNREADABLE  {why}")
     return lines
 
 
