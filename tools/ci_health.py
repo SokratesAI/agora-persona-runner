@@ -501,7 +501,13 @@ def recent_private_rate(repos, used_private, org, now,
                         window_hours=RECENT_WINDOW_HOURS,
                         nested_hours=NESTED_WINDOW_HOURS,
                         allowance=INCLUDED_PRIVATE_MINUTES, run=subprocess.run):
-    """`(lines, minutes_per_day_or_None)` — private-minute burn over the newest window.
+    """`(lines, minutes_per_day_or_None, spread_or_None)` — burn over the newest window.
+
+    `spread` is the `(low, high)` rates the whole window and its nested half
+    disagree between, or `None` when they agree. `burn_forecast` prints a
+    range rather than a single figure whenever it is set — see `_stationarity`
+    for why handing it only `rate` published a number this function had just
+    said not to quote.
 
     `burn_forecast` below divides the month's private minutes by the days
     elapsed, and **that average cannot see a change in what a merge costs.**
@@ -567,7 +573,7 @@ def recent_private_rate(repos, used_private, org, now,
     """
     if not repos:
         return ["        NOT JUDGED  no private repo spent a minute this month, so there "
-                "is no recent window to measure."], None
+                "is no recent window to measure."], None, None
 
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     window_start = now - timedelta(hours=window_hours)
@@ -646,7 +652,7 @@ def recent_private_rate(repos, used_private, org, now,
             lines.append("        NOT JUDGED  no workflow run was counted this month on any "
                          "repo whose minutes could be paired with it, so minutes per run is "
                          "undefined and the recent window cannot be priced.")
-        return lines, None
+        return lines, None, None
 
     minutes_per_run = priced_minutes / month_runs
     window_days = window_hours / 24.0
@@ -656,9 +662,11 @@ def recent_private_rate(repos, used_private, org, now,
         f"{minutes_per_run:.2f} measured private minute(s) per run "
         f"({priced_minutes:.0f} minute(s) over {month_runs} run(s) this month) — "
         f"{rate:.1f} private minute(s)/day.")
-    lines.extend(_stationarity(rate, nested_runs, minutes_per_run,
-                               window_hours, nested_hours, used_private, allowance))
-    return lines, rate
+    steady_lines, spread = _stationarity(rate, nested_runs, minutes_per_run,
+                                         window_hours, nested_hours,
+                                         used_private, allowance)
+    lines.extend(steady_lines)
+    return lines, rate, spread
 
 
 def _stationarity(rate, nested_runs, minutes_per_run,
@@ -670,10 +678,24 @@ def _stationarity(rate, nested_runs, minutes_per_run,
     See `recent_private_rate` for why this reports a disagreement instead of
     resolving it.
 
-    It never touches the exit status. `rate` is unchanged and `burn_forecast`
-    still judges on it, so a burn that was already over the allowance stays
-    over and one that was not does not become a finding for having moved.
-    What this changes is what the report claims to know.
+    It never touches the exit status: the second element of the pair is the
+    `(low, high)` pair of rates the two windows disagree between, and
+    `burn_forecast` judges on the *higher* of them, so a burn that was already
+    over the allowance stays over and one that was not does not become a
+    finding for having moved. `None` means the windows agree and there is one
+    rate to quote.
+
+    **Returning the spread is the half Cycle 893 left off, and it cost a wrong
+    date in front of the owner twice.** These lines end on "find the cause
+    before quoting either number" and then handed `burn_forecast` the whole
+    window's rate anyway, which printed it twice as a single figure — so the
+    report disowned a number three lines above the place it published it, and
+    the published one is the one a reader takes away. Measured 2026-09-05
+    01:39: the newest 24h read 182.1 minutes a day and "spends them in 9.2
+    day(s)", while the newest 12h of the same repos read 75.7 a day. The gap
+    was the volume-move night plus the pre-fold three-workflow layout, both of
+    which had already ended. The honest answer was 9.2 to 22.1 days, which
+    these lines had already computed and thrown away.
     """
     nested_days = nested_hours / 24.0
     nested_rate = nested_runs / nested_days * minutes_per_run
@@ -681,7 +703,7 @@ def _stationarity(rate, nested_runs, minutes_per_run,
     # floor of one run keeps an empty nested window from having a zero bar.
     noise = max(math.sqrt(nested_runs), 1.0) / nested_days * minutes_per_run
     if abs(nested_rate - rate) <= 2 * noise:
-        return []
+        return [], None
     remaining = allowance - used_private
     lines = [
         f"        NOT STEADY  the newest {nested_hours:.0f}h ran {nested_runs} run(s), "
@@ -699,7 +721,7 @@ def _stationarity(rate, nested_runs, minutes_per_run,
         lines.append(
             f"        so the {remaining:.0f} minute(s) left last somewhere between "
             f"{lo:.1f} and {hi:.1f} day(s), not the single figure below.")
-    return lines
+    return lines, (min(nested_rate, rate), max(nested_rate, rate))
 
 
 def _month_position(now):
@@ -711,7 +733,7 @@ def _month_position(now):
 
 def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
                   min_elapsed_days=MIN_ELAPSED_DAYS, recent_rate=None,
-                  window_hours=RECENT_WINDOW_HOURS):
+                  window_hours=RECENT_WINDOW_HOURS, recent_spread=None):
     """`(lines, over)` — is this month's private-minute burn on track to overrun?
 
     The owner, `issues.md` 2026-09-01, the morning the meter reset: *"We have
@@ -750,6 +772,14 @@ def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
     The month-to-date rate is never *replaced* by the recent one. A quiet day
     does not undo minutes already on the meter, so a recent rate below budget
     while the average is over is still over — the allowance is cumulative.
+
+    **`recent_spread` is what stops this printing a number the report above it
+    has already disowned.** `recent_private_rate` sets it to `(low, high)`
+    whenever the window it measured was not one steady rate; when it is set,
+    every line here that would have quoted a single recent figure quotes the
+    range instead, and `over_recent` is judged on `high` — the conservative
+    end, so an alarm that was going to fire still fires. When it is `None` the
+    windows agreed and nothing about the output changes.
     """
     days_in_month, elapsed = _month_position(now)
     remaining_days = days_in_month - elapsed
@@ -773,12 +803,16 @@ def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
         # its own measurement over its own hours -- so the refusal above does
         # not silence it. This is the one branch where the recent rate is the
         # *only* rate there is.
-        if recent_rate is not None and used_private + recent_rate * remaining_days > allowance:
+        fastest = max(recent_spread) if recent_spread else recent_rate
+        if fastest is not None and used_private + fastest * remaining_days > allowance:
+            left = allowance - used_private
+            slowest = min(recent_spread) if recent_spread else fastest
+            spent_in = (f"{left / fastest:.1f} day(s)" if not recent_spread else
+                        f"between {left / fastest:.1f} and {left / slowest:.1f} day(s)")
             lines.append(
                 f"        OVERSUBSCRIBED AT THE CURRENT RATE — the month-to-date average is "
                 f"not forecastable yet, but the newest {window_hours:.0f}h alone spends the "
-                f"remaining {allowance - used_private:.0f} minute(s) in "
-                f"{(allowance - used_private) / recent_rate:.1f} day(s) against "
+                f"remaining {left:.0f} minute(s) in {spent_in} against "
                 f"{remaining_days:.1f} day(s) of month left.")
             return lines, True
         return lines, False
@@ -791,18 +825,36 @@ def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
     over_recent = False
     if recent_rate is not None:
         remaining_budget = allowance - used_private
-        recent_projected = used_private + recent_rate * remaining_days
-        lines.append(
-            f"        at the newest-{window_hours:.0f}h rate of {recent_rate:.1f}/day the "
-            f"month lands at {recent_projected:.0f} against the {allowance:.0f} included.")
+        low, high = recent_spread if recent_spread else (recent_rate, recent_rate)
+        recent_projected = used_private + high * remaining_days
+        if recent_spread:
+            lines.append(
+                f"        at the newest-{window_hours:.0f}h rate the month lands somewhere "
+                f"between {used_private + low * remaining_days:.0f} and "
+                f"{recent_projected:.0f} against the {allowance:.0f} included — a range and "
+                f"not a figure, because that window was not one steady rate.")
+        else:
+            lines.append(
+                f"        at the newest-{window_hours:.0f}h rate of {recent_rate:.1f}/day the "
+                f"month lands at {recent_projected:.0f} against the {allowance:.0f} included.")
         if recent_projected > allowance:
             over_recent = True
-            burns_out = remaining_budget / recent_rate if recent_rate > 0 else float("inf")
-            lines.append(
-                f"        OVERSUBSCRIBED AT THE CURRENT RATE — {remaining_budget:.0f} minute(s) "
-                f"left, and the newest {window_hours:.0f}h spends them in {burns_out:.1f} day(s) "
-                f"against {remaining_days:.1f} day(s) of month remaining. This is what merging "
-                f"costs today, not what it averaged.")
+            if recent_spread:
+                soonest = remaining_budget / high if high > 0 else float("inf")
+                latest = remaining_budget / low if low > 0 else float("inf")
+                lines.append(
+                    f"        OVERSUBSCRIBED AT THE CURRENT RATE — {remaining_budget:.0f} "
+                    f"minute(s) left, spent somewhere between {soonest:.1f} and "
+                    f"{latest:.1f} day(s) from now against {remaining_days:.1f} day(s) of "
+                    f"month remaining. The two halves of that window disagree, so this "
+                    f"raises on the faster of them and quotes both.")
+            else:
+                burns_out = remaining_budget / recent_rate if recent_rate > 0 else float("inf")
+                lines.append(
+                    f"        OVERSUBSCRIBED AT THE CURRENT RATE — {remaining_budget:.0f} minute(s) "
+                    f"left, and the newest {window_hours:.0f}h spends them in {burns_out:.1f} day(s) "
+                    f"against {remaining_days:.1f} day(s) of month remaining. This is what merging "
+                    f"costs today, not what it averaged.")
 
     if projected > allowance:
         lines.append(
@@ -936,10 +988,12 @@ def billing_meter(org, run=subprocess.run, now=None):
     if partial:
         lines.append(f"        partial: {partial}")
 
-    recent_lines, recent_rate = recent_private_rate(
+    recent_lines, recent_rate, recent_spread = recent_private_rate(
         per_repo, minutes["private"], org, now, run=run)
     lines.extend(recent_lines)
-    forecast_lines, over = burn_forecast(minutes["private"], now, recent_rate=recent_rate)
+    forecast_lines, over = burn_forecast(minutes["private"], now,
+                                         recent_rate=recent_rate,
+                                         recent_spread=recent_spread)
     lines.extend(forecast_lines)
     return lines, over
 

@@ -902,7 +902,7 @@ def test_the_recent_rate_is_priced_from_the_meter_not_from_one_minute_per_run():
         repos=[{"name": "platform-config", "private": True}],
         runs={"SokratesAI/platform-config": (600, 200)},
         now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
-    lines, rate = ci_health.recent_private_rate(
+    lines, rate, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert abs(rate - 100.0) < 1e-9
@@ -941,7 +941,7 @@ def test_a_repo_that_cannot_be_counted_is_named_rather_than_counted_as_zero():
         usage=[usage_item("platform-config", 300.0)],
         repos=[{"name": "platform-config", "private": True}],
         runs={}, fail="/actions/runs?")
-    lines, rate = ci_health.recent_private_rate(
+    lines, rate, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert rate is None
@@ -985,7 +985,7 @@ def test_no_runs_this_month_refuses_to_price_the_window():
         repos=[{"name": "platform-config", "private": True}],
         runs={"SokratesAI/platform-config": (0, 0)},
         now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
-    lines, rate = ci_health.recent_private_rate(
+    lines, rate, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert rate is None
@@ -1035,7 +1035,7 @@ def test_an_uncounted_repo_does_not_inflate_the_price_per_run():
                 cmd, 0, stdout=json.dumps({"total_count": total}), stderr="")
         raise AssertionError(path)
 
-    lines, rate = ci_health.recent_private_rate(
+    lines, rate, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0, "operator": 700.0}, 1000.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     text = "\n".join(lines)
@@ -1063,7 +1063,7 @@ def test_a_repo_counted_for_the_month_but_not_the_window_refuses_to_rate():
                 cmd, 0, stdout=json.dumps({"total_count": 400}), stderr="")
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: refused")
 
-    lines, rate = ci_health.recent_private_rate(
+    lines, rate, _spread = ci_health.recent_private_rate(
         {"platform-config": 200.0}, 200.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert rate is None, rate
@@ -1094,7 +1094,7 @@ def test_a_burn_that_changed_inside_the_window_is_named_rather_than_averaged():
         repos=[{"name": "platform-config", "private": True}],
         runs={"SokratesAI/platform-config": (600, 200, 50)},
         now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
-    lines, rate = ci_health.recent_private_rate(
+    lines, rate, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     text = "\n".join(lines)
@@ -1115,7 +1115,7 @@ def test_the_disagreement_is_quoted_as_a_range_of_days_not_a_single_figure():
         repos=[{"name": "platform-config", "private": True}],
         runs={"SokratesAI/platform-config": (600, 200, 50)},
         now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
-    lines, _ = ci_health.recent_private_rate(
+    lines, _, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     text = "\n".join(lines)
@@ -1131,7 +1131,7 @@ def test_a_steady_burn_says_nothing_at_all():
         repos=[{"name": "platform-config", "private": True}],
         runs={"SokratesAI/platform-config": (600, 200, 100)},
         now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
-    lines, rate = ci_health.recent_private_rate(
+    lines, rate, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert abs(rate - 100.0) < 1e-9
@@ -1150,7 +1150,7 @@ def test_a_quiet_nested_window_is_too_noisy_to_call_and_stays_silent():
         repos=[{"name": "platform-config", "private": True}],
         runs={"SokratesAI/platform-config": (600, 8, 6)},
         now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
-    lines, _ = ci_health.recent_private_rate(
+    lines, _, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert "NOT STEADY" not in "\n".join(lines)
@@ -1165,7 +1165,7 @@ def test_an_empty_nested_window_still_has_a_bar_of_one_run():
         repos=[{"name": "platform-config", "private": True}],
         runs={"SokratesAI/platform-config": (600, 200, 0)},
         now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
-    lines, _ = ci_health.recent_private_rate(
+    lines, _, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     text = "\n".join(lines)
@@ -1185,7 +1185,7 @@ def test_an_empty_nested_window_under_an_empty_wide_one_says_nothing():
         repos=[{"name": "platform-config", "private": True}],
         runs={"SokratesAI/platform-config": (600, 1, 0)},
         now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
-    lines, _ = ci_health.recent_private_rate(
+    lines, _, _spread = ci_health.recent_private_rate(
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert "NOT STEADY" not in "\n".join(lines)
@@ -1282,3 +1282,87 @@ def test_the_meter_samples_only_the_biggest_private_spender():
     assert "whatsapp-bridge" not in text.split("FLOOR")[1], text
     sampled = [p for p in seen if "/actions/runs?" in p and "created=" not in p]
     assert sampled == ["/repos/SokratesAI/platform-config/actions/runs?per_page=20"], sampled
+
+
+# --- the spread reaches the forecast ------------------------------------
+# Cycle 934. `_stationarity` has named a not-steady window since Cycle 893 and
+# ended its own lines on "find the cause before quoting either number" — and
+# then `recent_private_rate` handed `burn_forecast` the whole window's rate
+# anyway, which published it twice as a single figure. Measured live at 01:39
+# on 2026-09-05: "NOT STEADY ... 75.7/day against the 182.1/day above ... so
+# the 1675 minute(s) left last somewhere between 9.2 and 22.1 day(s)", three
+# lines above "spends them in 9.2 day(s)". The report disowned a number and
+# then printed it, and the printed one is the one a reader takes away.
+
+def test_a_not_steady_window_reaches_the_forecast_as_a_range():
+    lines, over = ci_health.burn_forecast(
+        300.0, datetime(2026, 9, 10, 12, tzinfo=timezone.utc),
+        recent_rate=100.0, recent_spread=(50.0, 100.0))
+    text = "\n".join(lines)
+    assert over is True
+    # Judged on the faster half, so an alarm that was going to fire still does.
+    assert "OVERSUBSCRIBED AT THE CURRENT RATE" in text
+    # 1700 left at 100/day is 17 days; at 50/day it is 34. Both, never one.
+    assert "between 17.0 and 34.0 day(s) from now" in text
+    assert "spends them in 17.0 day(s)" not in text
+    assert "at the newest-24h rate of 100.0/day" not in text
+
+
+def test_a_steady_window_still_gets_a_single_figure():
+    # Two-sided against the test above: without this, a forecaster that
+    # printed a range unconditionally would pass, and the common case — the
+    # windows agreeing — would have lost a number it can defend.
+    lines, over = ci_health.burn_forecast(
+        300.0, datetime(2026, 9, 10, 12, tzinfo=timezone.utc),
+        recent_rate=100.0, recent_spread=None)
+    text = "\n".join(lines)
+    assert over is True
+    assert "at the newest-24h rate of 100.0/day" in text
+    assert "spends them in 17.0 day(s)" in text
+    assert "somewhere between" not in text
+
+
+def test_the_spread_raises_on_the_faster_half_not_the_slower():
+    # The half that matters. At 20/day the remaining 1,700 minutes outlast the
+    # month and nothing raises; at 100/day they do not. A forecaster that took
+    # the slower end — or the midpoint — would go quiet on exactly the window
+    # that changed underneath it.
+    _, slow_only = ci_health.burn_forecast(
+        300.0, datetime(2026, 9, 10, 12, tzinfo=timezone.utc),
+        recent_rate=20.0, recent_spread=None)
+    assert slow_only is False
+    _, over = ci_health.burn_forecast(
+        300.0, datetime(2026, 9, 10, 12, tzinfo=timezone.utc),
+        recent_rate=20.0, recent_spread=(20.0, 100.0))
+    assert over is True
+
+
+def test_recent_private_rate_hands_the_spread_out():
+    # The seam itself: the range `_stationarity` computes has to leave the
+    # function, or the fix above is wired to nothing. 600 runs this month for
+    # 300 minutes is 0.5 minutes a run; 200 in 24h reads 100/day and 50 in the
+    # newest 12h reads 50/day.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 200, 50)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    _, rate, spread = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    assert abs(rate - 100.0) < 1e-9
+    assert spread is not None
+    low, high = spread
+    assert abs(low - 50.0) < 1e-9 and abs(high - 100.0) < 1e-9
+
+
+def test_a_steady_window_hands_out_no_spread():
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 200, 100)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    _, _, spread = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    assert spread is None
