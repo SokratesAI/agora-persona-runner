@@ -10,6 +10,11 @@ import pytest
 from agora_runner.nova_journal import parse_digest
 from tools.roll_digest import ARCHIVE_TITLE, plan, verify
 
+# The `Needs Edvard` section says nothing, and has to  (not-prose: quoting a literal):
+# `roll_digest._check_live`
+# refuses a live digest with an ask in it, because runner#236 deleted the page
+# that rendered one. This fixture carried a real question until 2026-09-04 --
+# it predates the section's removal, which is why nothing had noticed.
 LIVE = """---
 type: log
 ---
@@ -18,7 +23,7 @@ type: log
 
 ## Needs Edvard
 
-Should the node be replaced?
+**Nothing.**
 
 ## Next cycle
 

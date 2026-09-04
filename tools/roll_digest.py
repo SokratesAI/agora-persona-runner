@@ -46,8 +46,12 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.md_sections import split_at_heading
-from agora_runner.nova_journal import parse_digest, split_digest_entries
+from agora_runner.md_sections import outline, split_at_heading
+from agora_runner.nova_journal import (
+    is_empty_needs,
+    parse_digest,
+    split_digest_entries,
+)
 from tools import rolling
 from tools.doc_integrity import duplicate_headings
 from tools.rolling import RollError, RollSpec, dedup, join_paragraphs
@@ -94,6 +98,29 @@ ARCHIVE_FRONTMATTER = (
 )
 
 
+# The two spellings the section has ever had. The owner renamed it on
+# 2026-08-21 and `nova_needs.MARKER_ALIASES` keeps the old one readable for
+# the revisions written before that, so a stale digest is caught too.
+_NEEDS_HEADINGS = ("Needs input", "Needs Edvard")
+
+
+def _live_ask(live):
+    """`(heading, body)` for a Needs-input section with something in it.
+
+    `outline` rather than a substring search, for the reason
+    `split_at_heading` exists: this file's own frontmatter quotes its
+    headings back at the reader, and a `## Needs input` inside a
+    `maintenance:` line is not a section. `is_empty_needs` is the same
+    emptiness test the page used when the box still existed -- emphasis
+    stripped, so `**Nothing.**` counts as empty and a real question does
+    not.
+    """
+    for level, heading, body in outline(live, max_level=2):
+        if level == 2 and heading in _NEEDS_HEADINGS and not is_empty_needs(body):
+            return heading, body.strip()
+    return None
+
+
 def _check_live(live):
     """Refuse a live digest that is structurally wrong, before any roll.
 
@@ -125,6 +152,21 @@ def _check_live(live):
     duplicated heading and the fix is deleting the stale copy. Nothing is
     lost by refusing either way; the digest was written before this runs
     and the roll is idempotent.
+
+    **The second check is about a section that renders nowhere.** The
+    `## Needs input` box was deleted from the page on 2026-08-16 at the
+    owner's ask -- runner#229 took the page half and #236 the server half
+    -- and `prompt.md` step 7 has said "this section is gone, do not write
+    one" ever since. Cycle 921 wrote two questions into it anyway, at
+    19:21 on 2026-09-04, and I found them there two hours later: one of
+    them asks whether a repo may go public, which is what decides whether
+    this loop can keep merging when the CI allowance runs out. Measured
+    against the live site the same cycle -- `/api/digest` returns
+    `nextCycle`, `lines`, `version`, `totalLines` and no key for that
+    section at all, so the text reaches no page. Markdown that nothing
+    parses is invisible in exactly the way an unwritten ask is, and the
+    only thing that had ever caught it was a cycle reading the file by
+    eye. Same instrument, same moment, same reason as the duplicate above.
     """
     duplicates = duplicate_headings(live)
     if duplicates:
@@ -134,6 +176,20 @@ def _check_live(live):
             f"{found}. A second copy of a section is in this file; the site "
             "renders the last of each and hides it, Obsidian shows both. "
             "Delete the stale copy before rolling."
+        )
+
+    ask = _live_ask(live)
+    if ask:
+        heading, body = ask
+        raise RollError(
+            f"refusing to roll: the live digest's `## {heading}` section holds "
+            "an ask, and no renderer reads it -- runner#236 deleted the server "
+            "half that fed that box, so `/api/digest` carries no key for it and "
+            "the owner's page cannot show it. Move the question onto your own "
+            "journal entry as one paragraph opening `**Needs input:**` (the site "
+            "renders that as a yellow block on the card, with the comment drawer "
+            "open), then set this section to `**Nothing.**`. What is in it now: "
+            f"{body[:160]!r}"
         )
 
 
