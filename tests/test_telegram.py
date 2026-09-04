@@ -230,3 +230,70 @@ def test_dry_run_prints_the_message_and_sends_nothing(capsys, monkeypatch):
 def test_dry_run_still_refuses_a_message_that_cannot_be_sent(capsys):
     assert telegram.main(["send", "   ", "--dry-run"]) == 2
     assert "empty" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ send-photo
+#
+# He asked on Telegram whether the bot could send him a generated image. It
+# could not: there was no photo path at all. These cover the two things that
+# would lose a picture quietly -- bytes mangled on the way into the envelope,
+# and a refusal that reads as a send.
+
+
+def test_send_photo_puts_the_exact_bytes_in_the_envelope():
+    import base64
+
+    opener = opener_returning(200, {"ok": True, "message_id": 3})
+    blob = b"\x89PNG\r\n\x1a\n\x00\xff binary"
+
+    code, line = telegram.send_photo(blob, caption="a house", opener=opener)
+
+    assert code == 0 and "byte(s) of image" in line
+    body = json.loads(opener.seen[0].data.decode())
+    assert base64.b64decode(body["photo_base64"]) == blob
+    assert body["caption"] == "a house"
+    assert opener.seen[0].full_url.endswith("/send-photo")
+
+
+def test_send_photo_omits_an_absent_caption():
+    opener = opener_returning(200, {"ok": True})
+    telegram.send_photo(b"bytes", caption=None, opener=opener)
+    assert "caption" not in json.loads(opener.seen[0].data.decode())
+
+
+def test_send_photo_refuses_an_oversized_image_without_uploading_it():
+    opener = opener_returning(200, {"ok": True})
+    code, line = telegram.send_photo(b"x" * (telegram.MAX_PHOTO_BYTES + 1), opener=opener)
+    assert code == 2 and "over Telegram's" in line
+    assert opener.seen == [], "it must refuse before spending the upload"
+
+
+def test_send_photo_refuses_an_empty_image():
+    opener = opener_returning(200, {"ok": True})
+    assert telegram.send_photo(b"", opener=opener)[0] == 2
+    assert opener.seen == []
+
+
+def test_send_photo_names_a_bridge_too_old_to_have_the_endpoint():
+    code, line = telegram.send_photo(b"bytes", opener=opener_returning(404, {}))
+    assert code == 2 and "predates it" in line
+
+
+def test_send_photo_never_reads_a_refusal_as_a_send():
+    for status in (502, 503):
+        code, line = telegram.send_photo(b"bytes", opener=opener_returning(status, {}))
+        assert code == 2, status
+        assert "nothing was sent" in line
+
+
+def test_send_photo_separates_unreachable_from_refused():
+    def unreachable(request, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    code, line = telegram.send_photo(b"bytes", opener=unreachable)
+    assert code == 1 and "could not reach" in line
+
+
+def test_check_photo_passes_an_image_at_exactly_the_limit():
+    """The refusal is `>`, not `>=` -- a legal image must not be refused."""
+    assert telegram.check_photo(b"x" * telegram.MAX_PHOTO_BYTES) is None

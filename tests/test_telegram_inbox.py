@@ -131,3 +131,79 @@ def test_it_is_registered_in_preflight():
 
     assert "telegram_inbox" in preflight.CHECKS
     assert "telegram_inbox" in preflight.SUBJECT
+
+
+# ---------------------------------------------------------------- images
+#
+# A photo he sends is an ordinary inbox row carrying a `media` object beside
+# its text. The failure worth guarding is a captionless photo: its text is the
+# empty string, so a report that only prints text says a message arrived and
+# shows nothing at all.
+
+
+def test_a_captionless_photo_is_named_in_the_report():
+    lines = telegram_inbox.format_messages(
+        [{"id": 9, "at": "2026-09-04T16:00:00Z", "text": "",
+          "media": {"name": "9.jpg", "bytes": 5120, "kind": "photo"}}]
+    )
+    body = "\n".join(lines)
+    assert "[image: 9.jpg, 5120 byte(s)]" in body
+    assert "--fetch-media" in body
+
+
+def test_a_text_message_report_is_unchanged():
+    lines = telegram_inbox.format_messages(
+        [{"id": 9, "at": "2026-09-04T16:00:00Z", "text": "hello\nthere"}]
+    )
+    assert lines == ["  #9  2026-09-04T16:00:00Z", "      hello", "      there"]
+
+
+def test_fetch_media_writes_the_bytes_and_prints_the_path(tmp_path):
+    seen = []
+
+    def opener(request, timeout=None):
+        seen.append(request.full_url)
+        return _Blob(b"\x89PNG-body")
+
+    code, lines = telegram_inbox.fetch_media(
+        [{"id": 9, "media": {"name": "9.png", "bytes": 9}},
+         {"id": 10, "text": "no picture here"}],
+        opener=opener, directory=str(tmp_path),
+    )
+
+    assert code == 0
+    assert seen == ["http://telegram-bridge.infra.svc.cluster.local:8080/inbox/media/9.png"]
+    written = tmp_path / "telegram-9.png"
+    assert written.read_bytes() == b"\x89PNG-body"
+    assert str(written) in "\n".join(lines)
+
+
+def test_fetch_media_with_no_images_says_so_and_is_not_a_failure(tmp_path):
+    code, lines = telegram_inbox.fetch_media(
+        [{"id": 10, "text": "just words"}], directory=str(tmp_path)
+    )
+    assert code == 0 and "no images" in lines[0]
+
+
+def test_a_failed_fetch_is_exit_1_and_names_the_image(tmp_path):
+    """A picture that did not arrive must never read as a picture with nothing in it."""
+    def opener(request, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    code, lines = telegram_inbox.fetch_media(
+        [{"id": 9, "media": {"name": "9.png", "bytes": 9}}],
+        opener=opener, directory=str(tmp_path),
+    )
+    assert code == 1
+    assert "could not fetch 9.png" in "\n".join(lines)
+    assert not list(tmp_path.iterdir())
+
+
+class _Blob(io.BytesIO):
+    """A urlopen answer carrying raw bytes rather than JSON."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False

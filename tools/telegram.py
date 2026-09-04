@@ -12,6 +12,7 @@ hand-rolled the same curl, which is what he asked to stop doing:
     python3 -m tools.telegram send --file /tmp/alert.txt
     printf '%s' "$body" | python3 -m tools.telegram send -
     python3 -m tools.telegram send --file /tmp/alert.txt --dry-run
+    python3 -m tools.telegram send-photo /tmp/house.png --caption 'a house'
 
 This was `tools.whatsapp` until 2026-09-04, when the owner asked for the
 WhatsApp deployment shut down and replaced with a Telegram one. The CLI,
@@ -50,7 +51,9 @@ on purpose, so there is no argument to pass.
 """
 
 import argparse
+import base64
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -70,6 +73,11 @@ DEFAULT_URL = "http://telegram-bridge.infra.svc.cluster.local:8080"
 # the tail is throttled rather than sent. I have not measured that limit myself;
 # what I can defend is that the number is unchanged and no caller has hit it.
 MAX_TEXT_BYTES = 64 * 1024 - 512  # headroom for the JSON envelope
+
+#: sendPhoto's own documented ceiling for an uploaded photo. The bridge refuses
+#: over this too; refusing here as well means a caller finds out before it has
+#: base64-encoded ten megabytes and pushed them across the cluster.
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
 
 #: How long a message to his phone should be, in characters. A guideline,
 #: which is his word for it and the second half of one conversation.
@@ -147,6 +155,61 @@ def over_guideline(text, limit: int = GUIDELINE_CHARS):
             f"in the journal, and to send it anyway when it matters"
         )
     return None
+
+
+def read_photo(path):
+    """The image bytes, or a raised OSError naming the file.
+
+    No format check: Telegram decides what it will accept, and a local
+    allowlist here would refuse something it would have taken. What is
+    checked is the one thing a caller can do nothing about afterwards --
+    the size, because the failure is a 400 after the upload.
+    """
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def check_photo(blob):
+    """None if the image is sendable, else why it is not."""
+    if not blob:
+        return "refusing to send an empty image"
+    if len(blob) > MAX_PHOTO_BYTES:
+        return ("image is %d bytes, over Telegram's %d-byte photo limit"
+                % (len(blob), MAX_PHOTO_BYTES))
+    return None
+
+
+def send_photo(blob, caption=None, filename="image.png", url=DEFAULT_URL,
+               opener=urllib.request.urlopen, timeout=60):
+    """(exit status, line). 0 sent, 2 the bridge refused, 1 unreachable.
+
+    The same three-way exit contract as `send`, and the same reason for it:
+    unreachable is an instrument failure and must never read as a clean send.
+    The timeout is longer because this one carries a payload.
+    """
+    refusal = check_photo(blob)
+    if refusal:
+        return 2, refusal
+    payload = {"photo_base64": base64.b64encode(blob).decode(), "filename": filename}
+    if caption:
+        payload["caption"] = caption
+    try:
+        status, body = _post(url, "/send-photo", payload, opener, timeout)
+    except Exception as err:  # URLError, socket timeout, anything below it
+        return 1, "could not reach the Telegram bridge at %s: %s" % (url, err)
+    if status == 200:
+        return 0, "sent, %d byte(s) of image" % len(blob)
+    if status == 404:
+        # The endpoint is younger than the deployed ConfigMap. Say which half
+        # is behind rather than reporting a generic refusal.
+        return 2, ("the bridge at %s has no /send-photo endpoint — its ConfigMap "
+                   "predates it" % url)
+    if status == 503:
+        return 2, "the bridge is up but cannot send yet — nothing was sent"
+    if status == 502:
+        return 2, "the bridge is configured and Telegram refused the send — nothing was sent"
+    detail = body.get("error") or "no error field in the response"
+    return 2, "the bridge refused with HTTP %s: %s" % (status, detail)
 
 
 def _post(url, path, payload, opener, timeout):
@@ -233,6 +296,12 @@ def build_parser():
     send_cmd.add_argument("--file", help="read the message from this file instead")
     send_cmd.add_argument("--dry-run", action="store_true", help="print what would be sent and send nothing")
 
+    photo_cmd = sub.add_parser("send-photo", help="send the owner an image")
+    photo_cmd.add_argument("path", help="the image file to send")
+    photo_cmd.add_argument("--caption", help="text under the picture")
+    photo_cmd.add_argument("--dry-run", action="store_true",
+                           help="print what would be sent and send nothing")
+
     sub.add_parser("status", help="can the bridge actually send?")
     return parser
 
@@ -241,6 +310,26 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "status":
         code, line = status_of(args.url, timeout=args.timeout)
+        print(line)
+        return code
+
+    if args.command == "send-photo":
+        try:
+            blob = read_photo(args.path)
+        except OSError as err:
+            print(str(err))
+            return 2
+        if args.dry_run:
+            refusal = check_photo(blob)
+            if refusal:
+                print(refusal)
+                return 2
+            print("would send %d byte(s) from %s to %s/send-photo%s"
+                  % (len(blob), args.path, args.url,
+                     ", captioned %r" % args.caption if args.caption else ""))
+            return 0
+        code, line = send_photo(blob, args.caption, os.path.basename(args.path),
+                                args.url, timeout=max(args.timeout, 60.0))
         print(line)
         return code
 
