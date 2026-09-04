@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner import nova_site
+from agora_runner import nova_demos, nova_site
 from agora_runner.nova_demos import (
     DemoError,
     PORT_MAX,
@@ -1441,3 +1441,93 @@ def test_a_row_already_marked_costs_no_write_at_all():
     finally:
         nova_site._demo_opened_marked.discard("roadmap")
     assert writes == []
+
+
+# ---------------------------------------------------------------------------
+# `/api/demos` -- what a start page outside this pod is allowed to see.
+
+
+def _reg(*rows):
+    return {"demos": list(rows)}
+
+
+def _row(slug, **kw):
+    row = {"slug": slug, "host": "10.42.0.9", "port": 5173,
+           "started_at": "2026-09-04T07:00:00"}
+    row.update(kw)
+    return row
+
+
+def test_public_rows_drops_a_demo_nothing_is_listening_on():
+    """The registry row outlives the dev server, so the row is not the answer.
+
+    This is the one thing the route has to get right: `tools.demo start`
+    writes the row before it spawns anything, a bridge-pod roll kills every
+    dev server and leaves every row, and a card linking to a dead demo is
+    worse than no card at all.
+    """
+    reg = _reg(_row("alive"), _row("dead", port=5174))
+    rows = nova_demos.public_rows(
+        reg, lambda host, port: port == 5173)
+    assert [r["slug"] for r in rows] == ["alive"]
+
+
+def test_public_rows_would_be_empty_if_the_filter_were_the_only_thing_working():
+    """The complement of the test above, which alone proves nothing.
+
+    A `public_rows` that dropped every row would pass the test above. This
+    one fails on that implementation, so the pair pins the behaviour rather
+    than one half of it.
+    """
+    reg = _reg(_row("alive"), _row("dead", port=5174))
+    rows = nova_demos.public_rows(reg, lambda host, port: True)
+    assert [r["slug"] for r in rows] == ["alive", "dead"]
+
+
+def test_public_rows_publishes_no_pod_internals():
+    """A start page gets a card, never a pod IP, a port, a pid or a path."""
+    reg = _reg(_row("thing", pid=4242, dir="/data/workspace/demos/thing"))
+    row, = nova_demos.public_rows(reg, lambda host, port: True)
+    assert set(row) == {"slug", "title", "url", "started_at", "opened"}
+    assert row["url"] == "https://nova-demos.tailc83eb3.ts.net/demo/thing/"
+    blob = json.dumps(row)
+    for secret in ("10.42.0.9", "5173", "4242", "/data/workspace"):
+        assert secret not in blob
+
+
+def test_public_rows_skips_a_row_with_no_address_rather_than_probing_it():
+    """A half-written row must not become `reachable(None, None)`."""
+    probed = []
+
+    def probe(host, port):
+        probed.append((host, port))
+        return True
+
+    reg = _reg({"slug": "half", "started_at": "2026-09-04T07:00:00"})
+    assert nova_demos.public_rows(reg, probe) == []
+    assert probed == []
+
+
+def test_demos_payload_reports_a_broken_registry_instead_of_raising():
+    """The hub asks this on every page load; a 500 there is a blank page."""
+    with patch.object(nova_site, "_demo_registry", lambda: "{not json"):
+        payload = nova_site.demos_payload()
+    assert payload["demos"] == []
+    assert payload["error"]
+
+
+def test_demo_listening_reports_a_refused_connection_rather_than_raising():
+    """A dead dev server refuses; that has to read as False, not as a 500."""
+    with patch.object(nova_site.socket, "create_connection",
+                      side_effect=ConnectionRefusedError):
+        assert nova_site.demo_listening("10.42.0.9", 5173) is False
+    with patch.object(nova_site.socket, "create_connection",
+                      side_effect=TimeoutError):
+        assert nova_site.demo_listening("10.42.0.9", 5173) is False
+
+
+def test_demo_listening_never_reaches_the_network_for_an_unusable_port():
+    """A row whose `port` is not a number must not become a DNS lookup."""
+    with patch.object(nova_site.socket, "create_connection") as conn:
+        assert nova_site.demo_listening("10.42.0.9", "not-a-port") is False
+    assert conn.call_count == 0

@@ -629,3 +629,45 @@ def mark_opened(registry, slug, now=None):
         return False
     entry[OPENED_AT] = (now or datetime.now()).isoformat(timespec="seconds")
     return True
+
+
+def public_rows(registry, reachable):
+    """The demos a start page may link to, newest first.
+
+    Built Cycle 894 for the hub's Demos card. The owner's capture asked that
+    "new demos and new urls should be displayed immediately", and the hub
+    already gets the *urls* half for free by reading Ingresses from the API
+    server. Demos are not Ingresses -- they are rows in this registry, in a
+    CouchDB document only this loop can read -- so the hub has no way to see
+    one. This is the shape the site hands out instead.
+
+    **A row is not a running demo, and that distinction is the whole
+    function.** `register` writes the row before the dev server is up and
+    `verdict` can only judge a row from inside the pod that started it, so a
+    reader outside that pod has exactly one honest signal: whether anything
+    is listening on the address the row names. `reachable(host, port)` is
+    that probe, injected rather than called here so a test can hand it both
+    answers -- with the socket wired in, a test of "a dead demo is not
+    listed" would pass against a function that never filtered anything,
+    because nothing is listening on 10.42.x.x from a test runner either.
+
+    Nothing internal leaves: no pid, no directory, no pod IP, no port. The
+    caller gets what a card needs and the public URL, because a start page
+    that knows a demo's port would be a second copy of `PUBLIC_BASE`.
+    """
+    rows = []
+    for entry in entries(registry):
+        slug = entry.get("slug") or ""
+        host, port = entry.get("host"), entry.get("port")
+        if not SLUG_RE.match(slug) or not host or not port:
+            continue
+        if not reachable(host, port):
+            continue
+        rows.append({
+            "slug": slug,
+            "title": slug.replace("-", " ").capitalize(),
+            "url": f"{PUBLIC_BASE}/{slug}/",
+            "started_at": entry.get("started_at") or "",
+            "opened": bool(entry.get(OPENED_AT)),
+        })
+    return rows
