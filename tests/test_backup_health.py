@@ -317,13 +317,17 @@ def test_judge_coverage_splits_declared_acknowledged_unjudged_and_unprotected():
             "agents/agora-data",
             "agents/marcus-data",
             "infra/ollama-models",
-            "infra/whatsapp-bridge-auth",
+            # deliberately not a real claim: a volume nothing has ever declared is
+            # the case this split exists for, and naming a live one here means the
+            # test starts failing the day that volume gets a backup -- which is what
+            # happened when `infra/whatsapp-bridge-auth` stood here.
+            "infra/not-in-any-registry",
         ]
     )
     assert covered == [("agents/marcus-data", "marcus")]
     assert [claim for claim, _ in unjudged] == ["agents/agora-data"]
     assert [claim for claim, _ in acknowledged] == ["infra/ollama-models"]
-    assert uncovered == ["infra/whatsapp-bridge-auth"]
+    assert uncovered == ["infra/not-in-any-registry"]
 
 
 def test_a_volume_whose_freshness_is_not_judged_does_not_join_the_green_count():
@@ -341,10 +345,10 @@ def test_every_declared_backup_names_a_claim_and_every_acknowledgement_gives_a_r
 
 def test_format_coverage_raises_on_an_unprotected_volume_and_names_it():
     report, status = format_coverage(
-        ["infra/whatsapp-bridge-auth", "agents/marcus-data"], None
+        ["infra/not-in-any-registry", "agents/marcus-data"], None
     )
     assert status == 2
-    assert "NOT BACKED UP — infra/whatsapp-bridge-auth" in report
+    assert "NOT BACKED UP — infra/not-in-any-registry" in report
     assert "1 unprotected" in report
 
 
