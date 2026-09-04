@@ -632,11 +632,19 @@ def test_the_report_is_in_repo_order_not_in_whichever_gh_answered_first():
 # public one are separate numbers, and only the private one is measured
 # against the 2,000 included minutes.
 
-def billing_gh(usage=None, repos=None, fail=None):
-    """A fake `subprocess.run` for the two `gh api` calls `billing_meter` makes."""
+def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None):
+    """A fake `subprocess.run` for the `gh api` calls `billing_meter` makes.
+
+    `runs` is `{"owner/repo": (month_total, recent_total)}` for the two
+    `/actions/runs?created=>=` counts `recent_private_rate` asks for. The
+    month window starts on the 1st and the recent one is `now - 24h`, so the
+    two are told apart by the date in the query rather than by call order.
+    """
     def runner(cmd, **kwargs):
         assert cmd[:2] == ["gh", "api"], cmd
         path = cmd[2]
+        if seen is not None:
+            seen.append(path)
         if fail is not None and fail in path:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: refused")
         if "/settings/billing/usage" in path:
@@ -644,6 +652,13 @@ def billing_gh(usage=None, repos=None, fail=None):
                 cmd, 0, stdout=json.dumps({"usageItems": usage or []}), stderr="")
         if "/repos?" in path:
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(repos or []), stderr="")
+        if "/actions/runs?" in path:
+            full = path.split("/repos/", 1)[1].split("/actions/", 1)[0]
+            month_total, recent_total = (runs or {}).get(full, (0, 0))
+            is_month = "-01T00%3A00%3A00Z" in path or "-01T00:00:00Z" in path
+            total = month_total if is_month else recent_total
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"total_count": total}), stderr="")
         raise AssertionError(f"unexpected call {path}")
     return runner
 
@@ -819,3 +834,111 @@ def test_a_runner_sku_with_no_published_multiplier_is_named():
     text = "\n".join(lines)
     assert "NOT JUDGED  runner SKU `Actions Quantum`" in text
     assert "10 on private repo(s)" in text
+
+
+# --- recent_private_rate ------------------------------------------------
+# Cycle 893. `burn_forecast` divided the month's private minutes by the days
+# elapsed, and a month-to-date average cannot see what a merge costs *today*.
+# Measured 2026-09-04: `platform-config` ran 199 workflow runs in 24 hours
+# against a flat budget of 67 private minutes a day for the whole org, while
+# the month-to-date rate this tool printed read 80.7. The average was
+# understating the live burn by a factor of two and a half, and it dilutes
+# further every day the month runs. These pin the second rate.
+
+def test_the_recent_rate_is_priced_from_the_meter_not_from_one_minute_per_run():
+    # 300 minutes over 600 month-to-date runs is 0.5 minutes a run, measured.
+    # 200 runs in the newest 24h is therefore 100 minutes a day -- and the
+    # assumption this replaces, one minute per run, would have said 200.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 200)})
+    lines, rate = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    assert abs(rate - 100.0) < 1e-9
+    text = "\n".join(lines)
+    assert "0.50 measured private minute(s) per run" in text
+    assert "100.0 private minute(s)/day" in text
+
+
+def test_a_hot_recent_window_raises_while_the_month_average_is_still_comfortable():
+    # The failure this exists for. Half the month gone and only 400 of 2,000
+    # spent, so the month-to-date rate lands at 800 and reads "within budget"
+    # -- while the newest day is spending 120/day, which eats the remaining
+    # 1,600 minutes in 13 days against the 20 days of month left.
+    lines, over = ci_health.burn_forecast(
+        400.0, datetime(2026, 9, 11, 0, tzinfo=timezone.utc), recent_rate=120.0)
+    text = "\n".join(lines)
+    assert "within budget" in text, text
+    assert "OVERSUBSCRIBED AT THE CURRENT RATE" in text, text
+    assert over is True
+
+
+def test_a_cool_recent_window_does_not_clear_a_month_that_is_already_over():
+    # The mirror, and the direction that would cost: minutes already on the
+    # meter are spent. A quiet day cannot un-spend them, so the cumulative
+    # verdict still raises.
+    lines, over = ci_health.burn_forecast(
+        1900.0, datetime(2026, 9, 11, 0, tzinfo=timezone.utc), recent_rate=1.0)
+    assert over is True
+    assert "OVERSUBSCRIBED" in "\n".join(lines)
+
+
+def test_a_repo_that_cannot_be_counted_is_named_rather_than_counted_as_zero():
+    # A 404 read as zero runs understates the burn with no symptom at all,
+    # which is the one direction that costs here.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={}, fail="/actions/runs?")
+    lines, rate = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    assert rate is None
+    text = "\n".join(lines)
+    assert "NOT JUDGED" in text
+    assert "platform-config" in text
+
+
+def test_the_meter_asks_for_the_owner_qualified_repo():
+    # The billing API names a repo bare. `/repos/platform-config/actions/runs`
+    # is a 404, so the owner has to be put back on before the count is asked
+    # for -- and a 404 counted as zero is exactly the silent understatement
+    # the test above is about.
+    seen = []
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 200)}, seen=seen)
+    ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    asked = [p for p in seen if "/actions/runs?" in p]
+    assert len(asked) == 2, seen
+    assert all(p.startswith("/repos/SokratesAI/platform-config/actions/runs?") for p in asked), asked
+
+
+def test_no_runs_this_month_refuses_to_price_the_window():
+    # Minutes per run is undefined at zero runs. Refusing is the same call
+    # `burn_forecast` makes on a part-day: an undefined ratio is not a rate.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (0, 0)})
+    lines, rate = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    assert rate is None
+    assert "minutes per run is undefined" in "\n".join(lines)
+
+
+def test_the_recent_window_still_speaks_before_the_month_is_forecastable():
+    # The first two days of the month are exactly when the average refuses and
+    # the recent window is the only measurement there is.
+    lines, over = ci_health.burn_forecast(
+        100.0, datetime(2026, 9, 2, 0, tzinfo=timezone.utc), recent_rate=200.0)
+    text = "\n".join(lines)
+    assert "NOT FORECASTING" in text, text
+    assert "OVERSUBSCRIBED AT THE CURRENT RATE" in text, text
+    assert over is True
