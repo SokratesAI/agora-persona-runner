@@ -50,6 +50,11 @@ _STAMP = re.compile(
 )
 _BULLET = re.compile(r"^-\s+(?P<text>\S.*)$")
 _LEAD = re.compile(r"^\*\*(?P<lead>[^*]+?)\*\*\s*(?P<rest>.*)$")
+#: `[the hub](https://hub.tailc83eb3.ts.net/)` and a bare `https://...`.
+#: Both, because a cycle writing a bullet reaches for whichever is natural
+#: and the reader wants a tap target either way.
+_MD_LINK = re.compile(r"\[(?P<label>[^\]]+)\]\((?P<href>[^)\s]+)\)")
+_BARE_URL = re.compile(r"https?://[^\s<>\"'\]\)]+")
 
 
 def _strip_frontmatter(markdown):
@@ -84,12 +89,17 @@ def parse_recap(markdown, now=None):
         text = match.group("text").strip()
         lead_match = _LEAD.match(text)
         if lead_match:
-            bullets.append({
-                "lead": lead_match.group("lead").strip(),
-                "text": lead_match.group("rest").strip(),
-            })
+            lead = lead_match.group("lead").strip()
+            rest = lead_match.group("rest").strip()
         else:
-            bullets.append({"lead": "", "text": text})
+            lead = ""
+            rest = text
+        bullets.append({
+            "lead": lead,
+            "text": _plain(rest),
+            "leadParts": link_parts(lead),
+            "parts": link_parts(rest),
+        })
 
     when = _parse_stamp(written)
     if when is not None:
@@ -110,6 +120,70 @@ def parse_recap(markdown, now=None):
         "stale": age_hours is None or age_hours > STALE_AFTER_HOURS,
         "staleAfterHours": STALE_AFTER_HOURS,
     }
+
+
+def link_parts(text):
+    """A bullet split into runs of plain text and runs that are a link.
+
+    His capture, 2026-09-04 12:29: *"the bullet that mentions the tailnet
+    start page has been created, i immediately want to check it out but
+    I'm left without a url or any clickable link so i have to search for
+    it ... You can look at this board as a 'news board' or your place to
+    market to me what you have created for me to check it out and give
+    feedback."*
+
+    The split happens here rather than in the page for the same reason
+    the bullet count does: one definition, one test. Each part is
+    `{"text": ..., "href": ...}` and `href` is `""` for the plain runs,
+    so the renderer is a loop with one `if` in it and never sees markdown.
+
+    Two spellings are understood because a cycle writing a bullet will
+    reach for whichever is natural in the sentence: `[the hub](url)` and
+    a bare `https://...`. Nothing else is markdown here -- bold already
+    has its own meaning in this file (the lead) and inventing more syntax
+    for a six-line document is not worth the parser.
+    """
+    parts = []
+    cursor = 0
+    for match in _MD_LINK.finditer(text or ""):
+        _append_plain(parts, text[cursor:match.start()])
+        parts.append({"text": match.group("label"), "href": match.group("href")})
+        cursor = match.end()
+    _append_plain(parts, (text or "")[cursor:])
+    return [p for p in parts if p["text"]]
+
+
+def _append_plain(parts, chunk):
+    """The plain run between two markdown links, with bare URLs linked.
+
+    A bare URL is turned into a link and keeps its own text -- he asked to
+    be able to tap it, not for me to invent a label for it.
+    """
+    cursor = 0
+    for match in _BARE_URL.finditer(chunk or ""):
+        before = chunk[cursor:match.start()]
+        if before:
+            parts.append({"text": before, "href": ""})
+        url = match.group(0)
+        # A URL at the end of a sentence takes the full stop with it
+        # otherwise, and the link then 404s on a character he cannot see.
+        trailing = ""
+        while url and url[-1] in ".,;:!?":
+            trailing = url[-1] + trailing
+            url = url[:-1]
+        if url:
+            parts.append({"text": url, "href": url})
+        if trailing:
+            parts.append({"text": trailing, "href": ""})
+        cursor = match.end()
+    tail = (chunk or "")[cursor:]
+    if tail:
+        parts.append({"text": tail, "href": ""})
+
+
+def _plain(text):
+    """The bullet as it reads with no markup, for anything that wants a string."""
+    return "".join(part["text"] for part in link_parts(text))
 
 
 def _parse_stamp(written):

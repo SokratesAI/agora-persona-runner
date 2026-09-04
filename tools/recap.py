@@ -18,6 +18,25 @@ does, and stamp and store the result, which is `--put`.
 The stamp is written here rather than typed, for the reason the card
 prints it at all: a recap whose "as of" is hand-typed is a recap whose
 "as of" can be wrong, and the whole job of that line is to be right.
+
+**Put a link on anything he could go and look at.** His capture
+2026-09-04 12:29, on the first card: *"the bullet that mentions the
+tailnet start page has been created, i immediately want to check it out
+but I'm left without a url or any clickable link so i have to search for
+it ... You can look at this board as a 'news board' or your place to
+market to me what you have created for me to check it out and give
+feedback. Thats what a product manager would want. Easy service
+discovery for your users."* `[the hub](https://hub.tailc83eb3.ts.net/)`
+and a bare `https://...` both render as tap targets; a page on this site
+is a path, `[the Galaxy page](/galaxy)`.
+
+`--put` counts them and names the bullets that carry none. It does not
+refuse: "this bullet describes something he could go and open" is a
+judgement about the sentence, not a property of it, and a linter that
+guessed would push a cycle into inventing a link to satisfy it. This is
+the strength `lint_entry` settled on for absolute claims and for the
+same reason -- put the thing in front of the cycle and let the cycle
+decide.
 """
 
 import argparse
@@ -137,6 +156,33 @@ def render(bullets, now=None, cycles=""):
     return "\n".join(lines) + "\n"
 
 
+def link_report(bullets):
+    """One line per bullet with nothing to tap, plus the count.
+
+    Advisory only -- see the module docstring for why this does not
+    refuse. It reuses `nova_recap.link_parts` rather than re-spelling the
+    rule, so what this counts and what the page draws cannot drift.
+    """
+    from agora_runner.nova_recap import link_parts
+
+    linked = []
+    bare = []
+    for bullet in bullets:
+        if any(part["href"] for part in link_parts(bullet)):
+            linked.append(bullet)
+        else:
+            bare.append(bullet)
+    lines = [f"recap: {len(linked)} of {len(bullets)} bullet(s) carry a link."]
+    for bullet in bare:
+        lines.append(f"  no link: {bullet[:90]}")
+    if bare:
+        lines.append(
+            "  He asked for this card to be service discovery, not just a summary "
+            "-- if one of those names something he could open, give him the URL."
+        )
+    return lines
+
+
 def read_bullets(path):
     raw = [l.strip() for l in open(path, encoding="utf-8").read().splitlines()]
     bullets = [l[2:].strip() if l.startswith("- ") else l for l in raw if l]
@@ -157,6 +203,8 @@ def main(argv=None):
 
     if args.put:
         bullets = read_bullets(args.put)
+        for line in link_report(bullets):
+            print(line)
         body = render(bullets, cycles=args.cycles)
         tmp = "/tmp/recap.md"
         with open(tmp, "w", encoding="utf-8") as handle:

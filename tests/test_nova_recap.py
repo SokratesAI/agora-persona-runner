@@ -98,3 +98,51 @@ def test_the_page_counts_server_side():
 
 def test_the_path_is_under_nova_resources():
     assert RECAP_PATH.endswith("/nova/resources/recap.md")
+
+
+def test_a_markdown_link_becomes_a_part_the_page_can_draw():
+    """His capture 2026-09-04 12:29: the card named the tailnet start page
+    and gave him no way to open it. The split happens here so the page is
+    a loop with one `if` in it and never parses markdown."""
+    payload = parse_recap(
+        "- **Hub.** Your start page is at [hub](https://hub.tailc83eb3.ts.net/) now.\n",
+        now=_at(12),
+    )
+    bullet = payload["bullets"][0]
+    assert bullet["parts"] == [
+        {"text": "Your start page is at ", "href": ""},
+        {"text": "hub", "href": "https://hub.tailc83eb3.ts.net/"},
+        {"text": " now.", "href": ""},
+    ]
+    # The plain reading of the same sentence keeps the label and drops the
+    # markup -- anything that wants one string gets a readable one.
+    assert bullet["text"] == "Your start page is at hub now."
+
+
+def test_a_bare_url_is_linked_and_keeps_the_full_stop_out_of_it():
+    """A URL at the end of a sentence takes the period with it otherwise,
+    and the link then 404s on a character he cannot see."""
+    payload = parse_recap("- Open https://hub.tailc83eb3.ts.net/.\n", now=_at(12))
+    assert payload["bullets"][0]["parts"] == [
+        {"text": "Open ", "href": ""},
+        {"text": "https://hub.tailc83eb3.ts.net/", "href": "https://hub.tailc83eb3.ts.net/"},
+        {"text": ".", "href": ""},
+    ]
+
+
+def test_a_link_in_the_lead_is_split_too():
+    payload = parse_recap("- **[Galaxy](/galaxy)** is live.\n", now=_at(12))
+    bullet = payload["bullets"][0]
+    assert bullet["leadParts"] == [{"text": "Galaxy", "href": "/galaxy"}]
+    assert bullet["lead"] == "[Galaxy](/galaxy)"
+    assert bullet["parts"] == [{"text": "is live.", "href": ""}]
+
+
+def test_a_bullet_with_no_link_has_one_plain_part():
+    """The negative half. Without this the link tests would pass against a
+    parser that wrapped every bullet in an anchor."""
+    payload = parse_recap("- Nothing to open here.\n", now=_at(12))
+    assert payload["bullets"][0]["parts"] == [
+        {"text": "Nothing to open here.", "href": ""},
+    ]
+    assert all(not part["href"] for part in payload["bullets"][0]["parts"])
