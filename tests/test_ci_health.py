@@ -632,7 +632,8 @@ def test_the_report_is_in_repo_order_not_in_whichever_gh_answered_first():
 # public one are separate numbers, and only the private one is measured
 # against the 2,000 included minutes.
 
-def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None):
+def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None,
+               sample_runs=None, sample_jobs=None):
     """A fake `subprocess.run` for the `gh api` calls `billing_meter` makes.
 
     `runs` is `{"owner/repo": (month_total, recent_total)}` for the
@@ -663,6 +664,19 @@ def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None
                 cmd, 0, stdout=json.dumps({"usageItems": usage or []}), stderr="")
         if "/repos?" in path:
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(repos or []), stderr="")
+        # `floor_share`'s sample is the one runs query with no date filter on
+        # it, and it asks for bare ids rather than a `total_count`. Keying on
+        # `created=` rather than on `per_page` is deliberate: the page size is
+        # a tunable and the date filter is what the two calls actually differ
+        # by, so a change to FLOOR_SAMPLE_RUNS cannot silently reroute a
+        # window query into this branch.
+        if "/actions/runs?" in path and "created=" not in path:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(sample_runs or []), stderr="")
+        if "/actions/runs/" in path and "/jobs" in path:
+            run_id = int(path.split("/actions/runs/", 1)[1].split("/", 1)[0])
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps((sample_jobs or {}).get(run_id, [])), stderr="")
         if "/actions/runs?" in path:
             full = path.split("/repos/", 1)[1].split("/actions/", 1)[0]
             counts = (runs or {}).get(full, (0, 0))
@@ -1175,3 +1189,96 @@ def test_an_empty_nested_window_under_an_empty_wide_one_says_nothing():
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert "NOT STEADY" not in "\n".join(lines)
+
+
+# --- floor_share -------------------------------------------------------------
+#
+# The owner asked why the bill is what it is, and the per-repo minute count
+# above cannot answer that. These pin the one thing that does: whether the
+# bill is compute or the whole minute GitHub rounds every private job up to.
+
+
+def _job(seconds, conclusion="success", start="2026-09-04T12:00:00Z"):
+    began = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    return {"conclusion": conclusion,
+            "started_at": start,
+            "completed_at": (began + timedelta(seconds=seconds)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")}
+
+
+def test_short_jobs_report_the_bill_as_the_floor_and_name_the_real_lever():
+    # platform-config on 2026-09-04: 161 jobs, median 26s, not one over a
+    # minute. The bill is the job count and nothing else.
+    run = billing_gh(sample_runs=[1, 2, 3],
+                     sample_jobs={1: [_job(26)], 2: [_job(30)], 3: [_job(34)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "3 job(s) billed 3 minute(s) for 1.5 minute(s) of compute" in text, text
+    assert "50% of that is the whole minute" in text, text
+    assert "not one of the 3 ran past a minute" in text, text
+    assert "shortening one saves nothing" in text, text
+    assert "1.0 per run" in text, text
+
+
+def test_long_jobs_flip_the_verdict_so_the_check_is_not_fixed_in_advance():
+    # The failure this guards is the one `stalled_runs` was built around: a
+    # check whose answer is the same whatever the world is doing measures
+    # nothing. A repo whose jobs run for minutes has to get the opposite
+    # sentence, or the one above is decoration rather than a finding.
+    run = billing_gh(sample_runs=[1, 2],
+                     sample_jobs={1: [_job(240)], 2: [_job(300)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/agora", run=run))
+    assert "2 of 2 job(s) ran past a minute" in text, text
+    assert "shortening one can move this bill" in text, text
+    assert "saves nothing" not in text, text
+
+
+def test_a_skipped_job_is_not_billed_a_minute():
+    # A job an `if:` skips never starts a runner and GitHub charges nothing
+    # for it. Counting it would overstate the bill and, worse, would hide the
+    # saving from any future cycle that skips one on purpose.
+    run = billing_gh(sample_runs=[1],
+                     sample_jobs={1: [_job(20), _job(0, conclusion="skipped")]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "1 job(s) billed 1 minute(s)" in text, text
+
+
+def test_a_run_whose_jobs_cannot_be_read_is_named_rather_than_counted_as_zero():
+    # Same call as the meter's: an unreadable row silently counted as zero
+    # understates the burn, which is the direction that costs.
+    def run(cmd, **kwargs):
+        if "/jobs" in cmd[2] and "/runs/2/" in cmd[2]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: refused")
+        return billing_gh(sample_runs=[1, 2],
+                          sample_jobs={1: [_job(20)]})(cmd, **kwargs)
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "1 of 2 sampled run(s) would not give up their jobs" in text, text
+    assert "a floor, not the total" in text, text
+
+
+def test_a_repo_with_no_runs_refuses_rather_than_reporting_a_clean_bill():
+    run = billing_gh(sample_runs=[])
+    text = "\n".join(ci_health.floor_share("SokratesAI/vault", run=run))
+    assert "NOT JUDGED" in text, text
+    assert "no run in the API to sample" in text, text
+
+
+def test_the_meter_samples_only_the_biggest_private_spender():
+    # One `gh` call per sampled run is a real cost inside `preflight`. Sampling
+    # every private repo would multiply that by however many spent a minute,
+    # and the explanation is only ever wanted for the repo that dominates.
+    seen = []
+    run = billing_gh(
+        usage=[usage_item("platform-config", 277.0), usage_item("whatsapp-bridge", 18.0)],
+        repos=[{"name": "platform-config", "private": True},
+               {"name": "whatsapp-bridge", "private": True}],
+        runs={"SokratesAI/platform-config": (200, 100),
+              "SokratesAI/whatsapp-bridge": (10, 2)},
+        sample_runs=[1], sample_jobs={1: [_job(26)]}, seen=seen,
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, _over = ci_health.billing_meter(
+        "SokratesAI", run=run, now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    text = "\n".join(lines)
+    assert "FLOOR   SokratesAI/platform-config" in text, text
+    assert "whatsapp-bridge" not in text.split("FLOOR")[1], text
+    sampled = [p for p in seen if "/actions/runs?" in p and "created=" not in p]
+    assert sampled == ["/repos/SokratesAI/platform-config/actions/runs?per_page=20"], sampled
