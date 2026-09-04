@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -172,6 +172,14 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
    * a mark off the header. */
   const replayPaths = replayed === true ? ["/api/journal"] : (replayed || []);
   const serve = (url) => {
+    /* The twelve-hour recap card. Routed before the fall-through, for the
+     * reason six tests found the hard way: anything this stub does not
+     * recognise is handed to the `journal` handler, so an unrouted
+     * `/api/recap` reads as a journal request and every "what did the page
+     * ask the server for" assertion sees it as the last one. */
+    if (url.includes("/api/recap")) {
+      return res(recap || null, recapStatus);
+    }
     if (url.includes("/api/comments")) {
       return failComments
         ? Promise.reject(new Error("comments are down"))
@@ -5716,6 +5724,119 @@ describe("an ask nobody answered is named in the header", () => {
     assert.ok(asked.length, "the page fetched no journal at all");
     assert.ok(asked.every((url) => url.includes("asks=1")),
       "expected /api/journal?asks=1, got " + asked.join(", "));
+  });
+
+  const RECAP = {
+    bullets: [
+      { lead: "Telegram works both ways.", text: "You can write back to the bot now." },
+      { lead: "", text: "A plain bullet." },
+    ],
+    writtenLabel: "11:00", cycles: "871-901", ageHours: 1, stale: false, staleAfterHours: 3, total: 2,
+  };
+
+  test("the recap card sits above the feed and says when it was written", async () => {
+    const window = await loadSite("/", { recap: RECAP });
+    const card = window.document.querySelector("#feed .recap");
+    assert.ok(card, "no recap card on the journal feed");
+    assert.equal(window.document.querySelector("#feed").firstElementChild, card,
+      "the recap card is not the first thing in the feed");
+    assert.equal(card.querySelectorAll(".recap-item").length, 2);
+    assert.match(card.querySelector(".recap-stamp").textContent, /as of 11:00/);
+    assert.equal(card.querySelector(".recap-note"), null,
+      "a fresh recap should not carry the stale note");
+  });
+
+  test("a stale recap says so rather than passing as current", async () => {
+    const window = await loadSite("/", {
+      recap: Object.assign({}, RECAP, { stale: true, ageHours: 9 }),
+    });
+    const card = window.document.querySelector("#feed .recap");
+    assert.ok(card.querySelector(".recap-stamp.stale"), "the stamp is not marked stale");
+    assert.match(card.querySelector(".recap-note").textContent, /more than 3 hours ago/);
+  });
+
+  test("no recap, no card -- an empty box is a thing to read", async () => {
+    const window = await loadSite("/", { recap: { bullets: [], total: 0 } });
+    assert.equal(window.document.querySelector("#feed .recap"), null);
+  });
+
+  test("a bullet's link is a real tap target", async () => {
+    /* His capture 2026-09-04 12:29: the card named the tailnet start page
+     * and gave him nothing to tap, so he had to go and search for it. */
+    const window = await loadSite("/", {
+      recap: Object.assign({}, RECAP, {
+        bullets: [{
+          lead: "", text: "Your start page is at hub now.",
+          parts: [
+            { text: "Your start page is at ", href: "" },
+            { text: "hub", href: "https://hub.tailc83eb3.ts.net/" },
+            { text: " now.", href: "" },
+          ],
+        }],
+        total: 1,
+      }),
+    });
+    const link = window.document.querySelector("#feed .recap .recap-link");
+    assert.ok(link, "the bullet named a page and offered no way to open it");
+    assert.equal(link.getAttribute("href"), "https://hub.tailc83eb3.ts.net/");
+    assert.equal(link.textContent, "hub");
+    assert.equal(link.target, "_blank", "an off-site link took him off the page he was reading");
+    assert.match(link.rel, /noopener/);
+    // The sentence around the link survives intact -- a card that drops
+    // its own words to gain a link is a worse card.
+    assert.match(window.document.querySelector("#feed .recap-item").textContent,
+      /Your start page is at hub now\./);
+  });
+
+  test("a link to this site navigates in place", async () => {
+    const window = await loadSite("/", {
+      recap: Object.assign({}, RECAP, {
+        bullets: [{
+          lead: "", text: "See the galaxy.",
+          parts: [{ text: "See the ", href: "" }, { text: "galaxy", href: "/galaxy" }, { text: ".", href: "" }],
+        }],
+        total: 1,
+      }),
+    });
+    const link = window.document.querySelector("#feed .recap .recap-link");
+    assert.equal(link.getAttribute("href"), "/galaxy");
+    assert.notEqual(link.target, "_blank", "an internal page opened in a second tab");
+  });
+
+  test("a lead can carry the link too", async () => {
+    const window = await loadSite("/", {
+      recap: Object.assign({}, RECAP, {
+        bullets: [{
+          lead: "Hub.", text: "Installable.",
+          leadParts: [{ text: "Hub.", href: "https://hub.tailc83eb3.ts.net/" }],
+          parts: [{ text: "Installable.", href: "" }],
+        }],
+        total: 1,
+      }),
+    });
+    const link = window.document.querySelector("#feed .recap .recap-lead .recap-link");
+    assert.ok(link, "the bolded lead swallowed its link");
+    assert.equal(link.getAttribute("href"), "https://hub.tailc83eb3.ts.net/");
+  });
+
+  test("a payload with no parts still draws its sentence", async () => {
+    /* The site and its payload roll separately, and a cached `/api/recap`
+     * from before this shipped has `text` and no `parts`. Losing the links
+     * for one page load is a small thing; losing the bullets is the card. */
+    const window = await loadSite("/", { recap: RECAP });
+    assert.match(window.document.querySelector("#feed .recap").textContent,
+      /You can write back to the bot now\./);
+    assert.equal(window.document.querySelector("#feed .recap .recap-link"), null);
+  });
+
+  test("the recap is not drawn on the asks view", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([260, 247]),
+      comments: { byCycle: {}, needs: [] },
+      recap: RECAP,
+    });
+    assert.equal(window.document.querySelector("#feed .recap"), null,
+      "a twelve-hour summary is not an answer to the question /asks is asking");
   });
 
   test("the filtered view shows a card per unanswered ask", async () => {
@@ -11315,6 +11436,33 @@ describe("searching the journal", () => {
     // whole journal being searched and not the page being filtered.
     assert.equal(cards(window).length, 3);
     assert.equal(window.document.querySelector("button.more"), null);
+  });
+
+  test("the twelve-hour card gets out of the way of a search", async () => {
+    /* His capture 2026-09-04 12:29: *"it should go away when i use the
+     * search tool on journals."* A summary of the last twelve hours
+     * pinned above three hits for "ingress" is answering a question he
+     * did not ask, and on a phone it is the first screenful. */
+    const window = await loadSite("/", {
+      journal: searchable().serve,
+      recap: {
+        bullets: [{ lead: "", text: "A plain bullet." }],
+        writtenLabel: "11:00", cycles: "871-901", ageHours: 1,
+        stale: false, staleAfterHours: 3, total: 1,
+      },
+    });
+    assert.ok(window.document.querySelector("#feed .recap"),
+      "the card should be there before he searches");
+
+    await search(window, "ingress");
+    assert.equal(window.document.querySelector("#feed .recap"), null,
+      "the recap card stayed pinned over the search results");
+
+    // And it comes back when he clears the box: hiding it is about the
+    // search, not a one-way switch for the rest of the session.
+    await search(window, "");
+    assert.ok(window.document.querySelector("#feed .recap"),
+      "the card never came back after the search was cleared");
   });
 
   test("the count names the query the answer was built from", async () => {
