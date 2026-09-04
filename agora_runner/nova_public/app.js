@@ -3454,6 +3454,49 @@
    * A recap that is missing draws nothing at all rather than an empty
    * card. He asked for a glance, and an empty box is a thing to read.
    */
+  /* Fetched on its own rather than inside `fetchAll`, and that is the
+   * design rather than a convenience.
+   *
+   * It was in `fetchAll` first, and two poll tests caught what that costs:
+   * a journal request that never resolves is a real state the page is
+   * built to survive, and `Promise.all` turned it into a recap that never
+   * resolves either -- so the poll never finished and never re-armed its
+   * timer. The recap is not part of the journal round trip. It changes
+   * when a cycle rewrites one vault document, not every thirty seconds,
+   * so re-fetching it on every poll would be waste even if it were safe.
+   *
+   * Fetched once per page load and cached in `recapPayload`; a failure
+   * leaves the card absent, which is the same outcome as no recap having
+   * been written yet. */
+  var recapPayload = null;
+  var recapPending = false;
+  var recapWanted = false;
+
+  function ensureRecap() {
+    if (recapPayload || recapPending) return;
+    recapPending = true;
+    fetch("/api/recap", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (payload) {
+        recapPending = false;
+        recapPayload = payload;
+        placeRecap();
+      })
+      .catch(function () { recapPending = false; });
+  }
+
+  /* Put the card at the top of whatever the feed currently holds. Called
+   * from `render` (the card is already cached) and from the fetch landing
+   * after a render (it was not). Both guarded by `recapWanted`, which the
+   * render sets, so a fetch that lands after a tap onto `/asks` or a
+   * single cycle does not paint a twelve-hour summary over it. */
+  function placeRecap() {
+    if (!recapWanted || !recapPayload) return;
+    if (feed.querySelector(".recap")) return;
+    var card = renderRecap(recapPayload);
+    if (card) feed.insertBefore(card, feed.firstChild);
+  }
+
   function renderRecap(recap) {
     if (!recap || !recap.bullets || !recap.bullets.length) return null;
     var card = el("section", "recap");
@@ -3490,7 +3533,7 @@
     return card;
   }
 
-  function render(journal, digest, comments, recap) {
+  function render(journal, digest, comments) {
     /* Drop an answer to a query he has already typed past.
      *
      * `load()` guards against having navigated to a different *view* and
@@ -3623,9 +3666,10 @@
     });
 
     feed.textContent = "";
-    if (!filtered && wanted === null) {
-      var recapCard = renderRecap(recap);
-      if (recapCard) feed.appendChild(recapCard);
+    recapWanted = !filtered && wanted === null;
+    if (recapWanted) {
+      ensureRecap();
+      placeRecap();
     }
     /* The comments read is tolerated on purpose -- the journal is the page,
      * and a comments failure should cost the bubbles, not the feed. But
@@ -4119,15 +4163,6 @@
       // unaffected: the etag moves the moment the payload does, including
       // for the reply worker's own `replyWaitingSeconds`.
       fetchVersioned("/api/comments", "comments").catch(function () { return null; }),
-      /* The twelve-hour recap card (his 🔴 Immediately capture, 2026-09-04).
-       * Tolerated exactly like the digest and the comments: the journal is
-       * the page, and a recap that does not load should cost the card at
-       * the top, not the feed under it. Not `fetchVersioned` -- this one is
-       * served by `_send_cached_json`, which carries no `version` field for
-       * the conditional path to key off. It is six bullets. */
-      fetch("/api/recap", { cache: "no-store" })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .catch(function () { return null; }),
     ]);
   }
 
@@ -11681,7 +11716,7 @@
         // Same guard, other direction: a board fetch started before a tap
         // on Journal must not land after this one.
         if (route(window.location.pathname).view !== "journal") return;
-        render(results[0], results[1], results[2], results[3]);
+        render(results[0], results[1], results[2]);
       })
       .catch(function (err) {
         feed.textContent = "";
@@ -11825,7 +11860,7 @@
            * card under his thumb where it was. */
           var before = document.body.scrollHeight;
           var top = window.scrollY;
-          render(journal, results[1], results[2], results[3]);
+          render(journal, results[1], results[2]);
           if (top > 0) window.scrollTo(0, top + (document.body.scrollHeight - before));
         }
       })
