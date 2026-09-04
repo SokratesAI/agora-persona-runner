@@ -234,6 +234,33 @@ NAS_BACKUPS = (
             "runs in agents, where the nas-ssh-key and the egress policy are."
         ),
     ),
+    NasBackup(
+        name="telegram-bridge-state-backup",
+        covers="infra/telegram-bridge-state",
+        prefix="infra_telegram-bridge-state-",
+        schedule="four times a day at :40 Oslo",
+        # Six hours between runs plus two, the same derivation as the WhatsApp
+        # session above: one skipped run reads as stale.
+        stale_after_hours=8,
+        # 816 bytes on the 2026-09-04 15:34 first run, of which 801 were
+        # inbox.jsonl. That part is legitimately empty on a bridge Edvard has not
+        # written to since the last ack, so a floor derived from the 816 would
+        # fail a volume that is perfectly fine. This one only has to be above the
+        # gzip floor of an empty directory; what judges the contents is the
+        # CronJob's own REQUIRE_FILES=owner_chat_id, which refuses to ship an
+        # archive that has lost the chat id.
+        min_bytes=120,
+        subject=(
+            "the Telegram bridge's state -- the owner chat id every alert is "
+            "sent to, and everything he has written back that no cycle has read"
+        ),
+        fix=(
+            "Read the CronJob's pods: kubectl logs -n agents "
+            "job/telegram-bridge-state-backup-<n>. The volume is on server2 and "
+            "the job runs in agents, where the nas-ssh-key and the egress policy "
+            "are; a node move needs the CronJob's nodeSelector moved with it."
+        ),
+    ),
 )
 
 #: How far the NAS's own clock may sit from this one before every age below is a
