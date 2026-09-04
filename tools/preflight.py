@@ -426,6 +426,26 @@ def is_caveat(line):
 #: never less data.
 REPRINT_HOURS = 24.0
 
+#: Checks the repeat collapse above may never touch, however unchanged they are.
+#:
+#: The collapse is built for a *standing* finding -- a fact about the cluster
+#: that I cannot close from this loop and that will still be true tomorrow.
+#: `telegram_inbox` is not that. Its non-zero exit means the owner has typed
+#: something to me and is waiting for an answer, and "unchanged since the last
+#: sweep" is the worst possible reason to stop printing it: an unanswered
+#: message is unchanged *precisely because nobody has dealt with it yet*.
+#:
+#: On 2026-09-04 the owner wrote at 14:25 Oslo. Cycles 913 and 914 both swept,
+#: both read `telegram_inbox ACT` with `UNCHANGED since ... full text printed
+#: 0.4h ago` under it, and neither opened it. It was answered at 17:10, two and
+#: three quarter hours later. Nothing was broken -- the collapse did exactly
+#: what it was written to do, to the one check where doing it is the failure.
+#:
+#: Keep this set small and keep the bar explicit: a check belongs here only if
+#: its finding is a person waiting on a reply. Everything else -- an alert, a
+#: full disk, a stale pin -- is a fact, and a fact can be read once a day.
+NEVER_COLLAPSE = frozenset({"telegram_inbox"})
+
 #: Where the "have I already printed this" record lives. Not in the checkout:
 #: concurrent cycles each get their own `git worktree`, so a per-tree file
 #: would make every cycle the first one. Not in `/data/workspace` either --
@@ -699,7 +719,8 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
         # Same reasoning as the caveat de-duplication a few lines up.
         if code != 0 and output.strip() == summary_line(output):
             continue
-        if code != 0 and state is not None and not verbose:
+        exempt = name in NEVER_COLLAPSE
+        if code != 0 and state is not None and not verbose and not exempt:
             collapse, note, entry = repeat_verdict(name, code, output, state, now)
             if keep is not None:
                 keep[name] = entry
@@ -708,7 +729,13 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
                 repeated.append(name)
                 continue
         elif state is not None and keep is not None:
-            keep[name] = repeat_verdict(name, code, output, state, now)[2]
+            entry = repeat_verdict(name, code, output, state, now)[2]
+            # An exempt check prints in full on every sweep, so its record has
+            # to say it was printed now. Otherwise its `printed_at` freezes at
+            # whenever it last went through the branch above, and taking it
+            # back out of NEVER_COLLAPSE would collapse it on the very next
+            # sweep against a clock that had stopped months earlier.
+            keep[name] = {**entry, "printed_at": now} if exempt else entry
         if code != 0 or verbose:
             noisy.append((name, code, output))
 

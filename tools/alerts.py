@@ -293,7 +293,7 @@ def paging(found: dict) -> tuple[bool, bool, str]:
 
 
 def _fit(head: str, reasons: list[str]) -> str:
-    """The page, built to fit `notify.MAX_CHARS` rather than hoping it does.
+    """The page, built to fit `notify.GUIDELINE_CHARS` rather than hoping it does.
 
     He asked on 2026-09-04 for short Telegram messages, and `tools.telegram`
     refuses anything longer. A refusal is the right answer for a cycle
@@ -310,7 +310,7 @@ def _fit(head: str, reasons: list[str]) -> str:
     """
     from tools import telegram
 
-    budget = telegram.MAX_CHARS
+    budget = telegram.GUIDELINE_CHARS
     kept: list[str] = []
     for index, reason in enumerate(reasons):
         # Counting this one, which is the number dropped if it does not fit.

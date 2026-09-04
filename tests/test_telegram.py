@@ -97,38 +97,54 @@ def test_an_oversize_message_is_refused_with_its_own_length():
     assert str(len(body)) in line
 
 
-def test_a_message_just_under_the_limit_is_sent():
-    """The complement of the test above: the cap refuses only what is over it.
-
-    Sized against MAX_CHARS rather than MAX_TEXT_BYTES since 2026-09-04: the
-    character cap he asked for is 232 times tighter, so it is the binding one
-    and a body just under the byte ceiling is now correctly refused.
-    """
+def test_a_message_just_under_the_guideline_is_sent_with_nothing_said():
     opener = opener_returning(200, {"status": "sent"})
-    code, _ = telegram.send("x" * telegram.MAX_CHARS, opener=opener)
+    code, line = telegram.send("x" * telegram.GUIDELINE_CHARS, opener=opener)
     assert code == 0
     assert len(opener.seen) == 1
+    assert "guideline" not in line
 
 
-# --- "messages to telegram must be shorter" (him, on Telegram, 2026-09-04) ---
+# --- "not a hard cap at 280 please, more like a guideline" (him, 2026-09-04) ---
 
-def test_a_message_over_the_character_cap_never_reaches_the_wire():
+def test_a_message_over_the_guideline_still_reaches_the_wire():
+    """The correction. Cycle 915 refused this and he said not to.
+
+    The thing being protected is not brevity, it is him hearing something
+    that mattered: a length rule that can stop a message is a rule that can
+    make a cycle stay quiet.
+    """
     opener = opener_returning(200, {"status": "sent"})
-    code, line = telegram.send("x" * (telegram.MAX_CHARS + 1), opener=opener)
+    code, line = telegram.send("x" * (telegram.GUIDELINE_CHARS + 1), opener=opener)
+    assert code == 0
+    assert len(opener.seen) == 1
+    assert "guideline" in line
+
+
+def test_the_sender_is_told_by_how_much_it_went_over():
+    # The guideline has to still guide, and the only pressure left is that
+    # the author is handed the measurement on the way past.
+    opener = opener_returning(200, {"status": "sent"})
+    _, line = telegram.send("x" * (telegram.GUIDELINE_CHARS + 40), opener=opener)
+    assert str(telegram.GUIDELINE_CHARS + 40) in line
+    assert "40 over" in line
+
+
+def test_the_bare_send_cli_says_it_too(capsys):
+    """This CLI is what the module docstring tells a cycle to type."""
+    code = telegram.main(["send", "x" * (telegram.GUIDELINE_CHARS + 1), "--dry-run"])
+    assert code == 0
+    assert "guideline" in capsys.readouterr().out
+
+
+def test_the_byte_ceiling_still_refuses():
+    # The two numbers are different kinds of thing: his taste advises, the
+    # bridge's own ceiling still refuses, and softening one must not soften
+    # the other.
+    opener = opener_returning(200, {"status": "sent"})
+    code, _ = telegram.send("x" * (telegram.MAX_TEXT_BYTES + 1), opener=opener)
     assert code == 2
     assert opener.seen == []
-    assert str(telegram.MAX_CHARS) in line
-
-
-def test_the_bare_send_cli_is_capped_too(capsys):
-    """The hole a cap in `tools.notify` alone would have left.
-
-    This CLI is what the module docstring tells a cycle to type, and it is
-    the path the message he complained about went out on.
-    """
-    code = telegram.main(["send", "x" * (telegram.MAX_CHARS + 1), "--dry-run"])
-    assert code == 2
-    assert "characters" in capsys.readouterr().out
 
 
 def test_his_own_example_of_enough_is_short_enough():
@@ -136,7 +152,7 @@ def test_his_own_example_of_enough_is_short_enough():
         "Yes - done, and it was the nameapace cap that was holding it, "
         "not an oversight"
     )
-    assert telegram.too_long(example) is None
+    assert telegram.over_guideline(example) is None
 
 
 def test_the_payload_is_the_bridges_own_shape_and_carries_no_prefix():

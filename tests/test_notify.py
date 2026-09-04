@@ -259,54 +259,53 @@ def test_his_own_example_of_enough_is_short_enough():
         "Yes - done, and it was the nameapace cap that was holding it, "
         "not an oversight"
     )
-    assert notify.too_long(example) is None
+    assert notify.over_guideline(example) is None
 
 
-def test_a_long_message_is_refused_and_says_both_numbers():
-    refusal = notify.too_long("x" * (notify.MAX_CHARS + 1))
-    assert refusal is not None
-    assert str(notify.MAX_CHARS + 1) in refusal
-    assert str(notify.MAX_CHARS) in refusal
+def test_a_long_message_gets_a_note_that_says_both_numbers():
+    note = notify.over_guideline("x" * (notify.GUIDELINE_CHARS + 1))
+    assert note is not None
+    assert str(notify.GUIDELINE_CHARS + 1) in note
+    assert str(notify.GUIDELINE_CHARS) in note
 
 
-def test_the_limit_is_measured_on_the_stripped_text():
-    padded = "x" * notify.MAX_CHARS + "\n\n   "
-    assert notify.too_long(padded) is None
+def test_the_guideline_is_measured_on_the_stripped_text():
+    padded = "x" * notify.GUIDELINE_CHARS + "\n\n   "
+    assert notify.over_guideline(padded) is None
 
 
-def test_a_long_message_never_reaches_the_bridge(tmp_path):
+def test_a_long_message_still_reaches_the_bridge(tmp_path):
+    # His correction at 17:21 on 2026-09-04. The policy layer holds a message
+    # for quiet hours and for dedupe; it does not hold one for being long.
     send = FakeSend()
-    status, line = notify.notify(
-        "x" * (notify.MAX_CHARS + 1),
+    status, _ = notify.notify(
+        "x" * (notify.GUIDELINE_CHARS + 1),
         key="wall-of-text",
         now=at(12),
         state_path=str(tmp_path / "s.json"),
         send=send,
     )
-    assert status == 2
-    assert send.calls == []
-    assert "characters" in line
+    assert status == 0
+    assert len(send.calls) == 1
 
 
-def test_a_long_message_is_refused_before_the_quiet_hours_gate(tmp_path):
-    # Order matters: a caller told "held, he is asleep" would try again at
-    # 07:00 with the same wall of text, which is not the fix.
+def test_length_is_not_a_reason_to_hold_and_quiet_hours_still_is(tmp_path):
     status, line = notify.notify(
-        "x" * (notify.MAX_CHARS + 1),
+        "x" * (notify.GUIDELINE_CHARS + 1),
         key="wall-of-text",
         now=at(3),
         state_path=str(tmp_path / "s.json"),
         send=FakeSend(),
     )
-    assert status == 2
-    assert "quiet hours" not in line
+    assert status == notify.HELD
+    assert "quiet hours" in line
 
 
-def test_a_long_message_is_refused_in_dry_run_too(tmp_path, capsys, monkeypatch):
+def test_a_long_message_is_not_refused_in_dry_run_either(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(notify, "oslo_now", lambda: at(12))
     code = notify.main([
-        "--key", "wall", "--text", "x" * (notify.MAX_CHARS + 1),
+        "--key", "wall", "--text", "x" * (notify.GUIDELINE_CHARS + 1),
         "--dry-run", "--state", str(tmp_path / "s.json"),
     ])
-    assert code == 2
-    assert "characters" in capsys.readouterr().out
+    assert code == 0
+    assert "would send" in capsys.readouterr().out

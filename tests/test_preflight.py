@@ -517,6 +517,60 @@ def test_verbose_prints_a_collapsed_finding_in_full():
     assert "===== workload_health" in text and "UNCHANGED" not in text
 
 
+# A message from the owner waiting in the Telegram bridge, in the shape
+# `tools.telegram_inbox` prints it: the summary line, then the message itself.
+WAITING = ("1 message(s) waiting for an answer.\n"
+           "  2026-09-04 14:25 Oslo  #699740089  keep the telegram messages short\n")
+
+
+def test_a_waiting_telegram_message_is_never_collapsed():
+    # The whole point of the exemption. An unanswered message is unchanged
+    # BECAUSE nobody has dealt with it, so "unchanged" is the one reason that
+    # must not stop it printing -- the owner waited two and three quarter hours on
+    # 2026-09-04 for exactly this.
+    first = {}
+    render_with([("telegram_inbox", 2, WAITING, 0.2)],
+                state={}, now=1000.0, keep=first)
+    code, text = render_with([("telegram_inbox", 2, WAITING, 0.2)],
+                             state=first, now=1000.0 + HOUR, keep={})
+    assert code == 2
+    assert "===== telegram_inbox" in text
+    assert "keep the telegram messages short" in text
+    assert "UNCHANGED" not in text
+    assert "standing finding" not in text
+
+
+def test_the_exemption_is_by_name_and_nothing_else():
+    # The guard has to be able to fail: the same output under a check that is
+    # not exempt collapses on the second sweep, so the test above is measuring
+    # NEVER_COLLAPSE rather than something incidental about this text.
+    first = {}
+    render_with([("workload_health", 2, WAITING, 0.2)],
+                state={}, now=1000.0, keep=first)
+    _, text = render_with([("workload_health", 2, WAITING, 0.2)],
+                          state=first, now=1000.0 + HOUR, keep={})
+    assert "UNCHANGED since" in text and "===== workload_health" not in text
+
+
+def test_an_exempt_check_records_that_it_printed_now():
+    # It prints in full every sweep, so its record has to say so. A frozen
+    # printed_at would collapse it on the first sweep after anyone took it
+    # back out of NEVER_COLLAPSE.
+    first = {}
+    render_with([("telegram_inbox", 2, WAITING, 0.2)],
+                state={}, now=1000.0, keep=first)
+    keep = {}
+    render_with([("telegram_inbox", 2, WAITING, 0.2)],
+                state=first, now=1000.0 + HOUR, keep=keep)
+    assert keep["telegram_inbox"]["printed_at"] == 1000.0 + HOUR
+
+
+def test_telegram_inbox_is_the_check_that_is_exempt():
+    # Named here rather than left implicit: the set is meant to hold checks
+    # whose finding is a person waiting on a reply, and today that is one.
+    assert preflight.NEVER_COLLAPSE == frozenset({"telegram_inbox"})
+
+
 def test_a_clean_check_is_never_touched_by_any_of_this():
     _, text = render_with([("doc_integrity", 0, "Whole. Swept 11 document(s)\n", 0.4)],
                           state={}, now=1000.0, keep={})

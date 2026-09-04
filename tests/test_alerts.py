@@ -300,7 +300,7 @@ def test_a_twelve_alert_page_still_fits_the_notify_budget():
     assert worth is True
     # Against the constant, not a copy of it: raising the cap must widen this
     # test rather than break it.
-    assert notify_tool.too_long(text) is None
+    assert notify_tool.over_guideline(text) is None
 
 
 def test_a_dropped_alert_is_counted_rather_than_omitted():
@@ -324,6 +324,6 @@ def test_one_over_long_reason_is_cut_rather_than_dropped():
     from tools import notify as notify_tool
 
     text = alerts._fit("Cluster alert", ["y" * 900])
-    assert notify_tool.too_long(text) is None
+    assert notify_tool.over_guideline(text) is None
     assert text.startswith("Cluster alert:\n- yyy")
     assert text.endswith("…")
