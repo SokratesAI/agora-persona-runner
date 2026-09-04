@@ -97,6 +97,7 @@ cause is GitHub's as when it is ours.
 import argparse
 import calendar
 import concurrent.futures
+import math
 import json
 import subprocess
 import sys
@@ -144,6 +145,12 @@ MIN_ELAPSED_DAYS = 2.0
 #: nothing for the hours the owner is asleep and a great deal in the morning,
 #: so anything shorter measures the time of day rather than the habit.
 RECENT_WINDOW_HOURS = 24.0
+
+#: A window nested inside `RECENT_WINDOW_HOURS`, used only to ask whether the
+#: burn is steady across the day -- never as a rate to forecast from, for the
+#: reason written above it. Half the window is the widest slice that can still
+#: show a change made partway through it.
+NESTED_WINDOW_HOURS = 12.0
 
 
 def actions_status(opener=urllib.request.urlopen):
@@ -491,7 +498,9 @@ def blocked_repo(repo, run=subprocess.run, sample=5):
 
 
 def recent_private_rate(repos, used_private, org, now,
-                        window_hours=RECENT_WINDOW_HOURS, run=subprocess.run):
+                        window_hours=RECENT_WINDOW_HOURS,
+                        nested_hours=NESTED_WINDOW_HOURS,
+                        allowance=INCLUDED_PRIVATE_MINUTES, run=subprocess.run):
     """`(lines, minutes_per_day_or_None)` — private-minute burn over the newest window.
 
     `burn_forecast` below divides the month's private minutes by the days
@@ -523,8 +532,38 @@ def recent_private_rate(repos, used_private, org, now,
     guessing at one -- the same refusal `burn_forecast` makes on a part-day.
 
     `repos` is the private-spender mapping `billing_meter` already built, so
-    this costs two API calls per repo that actually spent a minute this month
-    and nothing at all for the rest of the org.
+    this costs three API calls per repo that actually spent a minute this
+    month and nothing at all for the rest of the org.
+
+    **One window cannot tell a steady burn from one that changed inside it,
+    and on 2026-09-04 that cost a wrong date in front of the owner.** The fold
+    described above landed at 03:43 UTC. Fifteen hours later this printed
+    "newest 24h: 199 run(s) ... 203.9 private minute(s)/day" and `burn_forecast`
+    turned it into "spends them in 8.3 day(s)" -- but two thirds of those runs
+    were spent before the fold, at three workflows per event instead of one.
+    Counted over the newest 12 hours, all of it after the fold, the same repos
+    ran 100 runs a day. The honest answer was about fourteen days, not eight.
+    Cycle 917 caught it by hand and wrote "re-measure from the post-fix window
+    before quoting a date" into the handoff, which is a human standing in for
+    an instrument; Cycle 921 (this) put it in the instrument.
+
+    So a second, nested count over `nested_hours` runs beside the first. It is
+    **not** a rate to forecast from -- the paragraph on `RECENT_WINDOW_HOURS`
+    says why a sub-day window measures the time of day -- and this deliberately
+    does not pick a winner between the two, because counts alone cannot
+    separate "the cost of a merge changed" from "the owner is asleep". What it
+    can say is that the two disagree by more than counting noise, and that a
+    single days-to-exhaustion figure is therefore a range rather than a
+    measurement. Naming the disagreement is the finding; diagnosing it is a
+    cycle's job.
+
+    **The threshold is derived rather than chosen.** Run counts are counting
+    statistics, so the noise on the nested count is its Poisson standard
+    deviation, `sqrt(n)`, converted to a rate; the windows are called apart
+    when they differ by more than twice that. A quiet nested window therefore
+    has a wide bar and stays silent, which is right -- with four runs in it
+    there is nothing to conclude. The floor of one run is there because
+    `sqrt(0)` is zero, and a bar of zero calls every window apart.
     """
     if not repos:
         return ["        NOT JUDGED  no private repo spent a minute this month, so there "
@@ -532,8 +571,10 @@ def recent_private_rate(repos, used_private, org, now,
 
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     window_start = now - timedelta(hours=window_hours)
+    nested_start = now - timedelta(hours=nested_hours)
     month_runs = 0
     recent_runs = 0
+    nested_runs = 0
     priced_minutes = 0.0
     unread = []
     unpaired = []
@@ -543,7 +584,8 @@ def recent_private_rate(repos, used_private, org, now,
         # caller. A bare name sent to `/repos/{r}/actions/runs` 404s, and a
         # 404 counted as zero runs would understate the burn silently.
         full = repo if "/" in repo else f"{org}/{repo}"
-        for since, bucket in ((month_start, "month"), (window_start, "recent")):
+        for since, bucket in ((month_start, "month"), (window_start, "recent"),
+                              (nested_start, "nested")):
             payload, why = _gh_json(
                 [f"/repos/{full}/actions/runs?per_page=1&created=%3E%3D{since:%Y-%m-%dT%H:%M:%SZ}"],
                 run)
@@ -568,8 +610,10 @@ def recent_private_rate(repos, used_private, org, now,
                     priced_minutes += repos[repo]
                 elif repos[repo] > 0:
                     unpaired.append(f"{full} ({repos[repo]:.0f} minute(s), no run record left)")
-            else:
+            elif bucket == "recent":
                 recent_runs += payload["total_count"]
+            else:
+                nested_runs += payload["total_count"]
 
     lines = []
     if unread:
@@ -612,7 +656,50 @@ def recent_private_rate(repos, used_private, org, now,
         f"{minutes_per_run:.2f} measured private minute(s) per run "
         f"({priced_minutes:.0f} minute(s) over {month_runs} run(s) this month) — "
         f"{rate:.1f} private minute(s)/day.")
+    lines.extend(_stationarity(rate, nested_runs, minutes_per_run,
+                               window_hours, nested_hours, used_private, allowance))
     return lines, rate
+
+
+def _stationarity(rate, nested_runs, minutes_per_run,
+                  window_hours, nested_hours, used_private, allowance):
+    """Lines saying whether the burn held steady across `window_hours`.
+
+    Empty when the nested window agrees with the whole one inside counting
+    noise, which is the common case and the one nobody needs a line about.
+    See `recent_private_rate` for why this reports a disagreement instead of
+    resolving it.
+
+    It never touches the exit status. `rate` is unchanged and `burn_forecast`
+    still judges on it, so a burn that was already over the allowance stays
+    over and one that was not does not become a finding for having moved.
+    What this changes is what the report claims to know.
+    """
+    nested_days = nested_hours / 24.0
+    nested_rate = nested_runs / nested_days * minutes_per_run
+    # Poisson noise on the nested count, in the same units as the rate. The
+    # floor of one run keeps an empty nested window from having a zero bar.
+    noise = max(math.sqrt(nested_runs), 1.0) / nested_days * minutes_per_run
+    if abs(nested_rate - rate) <= 2 * noise:
+        return []
+    remaining = allowance - used_private
+    lines = [
+        f"        NOT STEADY  the newest {nested_hours:.0f}h ran {nested_runs} run(s), "
+        f"which is {nested_rate:.1f} private minute(s)/day against the "
+        f"{rate:.1f}/day above — a gap wider than the ±{2 * noise:.1f}/day of counting "
+        f"noise on {nested_runs} run(s), so the {window_hours:.0f}h figure above is "
+        f"not one steady rate.",
+        "        Counts cannot say whether that is a change in what a merge costs or "
+        "just the hour of day, so this names the gap rather than picking a rate. "
+        "Find the cause before quoting either number.",
+    ]
+    if remaining > 0 and min(nested_rate, rate) > 0:
+        lo = remaining / max(nested_rate, rate)
+        hi = remaining / min(nested_rate, rate)
+        lines.append(
+            f"        so the {remaining:.0f} minute(s) left last somewhere between "
+            f"{lo:.1f} and {hi:.1f} day(s), not the single figure below.")
+    return lines
 
 
 def _month_position(now):
