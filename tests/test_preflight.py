@@ -671,3 +671,34 @@ def test_the_checks_that_watch_this_box_are_labelled_on_box():
         assert preflight.SUBJECT[name][0] == "on-box", name
     for name in ("nas_health", "security_alerts", "ci_health", "eol_watch"):
         assert preflight.SUBJECT[name][0] == "off-box", name
+
+
+def test_alerts_is_the_check_that_runs_with_notify():
+    # The pager only exists if something invokes it. This is the one place
+    # that does, and a check that quietly lost its flag would page nobody
+    # while every other instrument still said the cluster was fine.
+    from tools import preflight as pf
+
+    assert pf.CHECK_ARGS["alerts"] == ["--notify"]
+    assert "alerts" in pf.CHECKS
+
+
+def test_a_check_with_no_extra_arguments_is_run_bare(monkeypatch):
+    from tools import preflight as pf
+
+    seen = {}
+
+    class Done:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return Done()
+
+    monkeypatch.setattr(pf.subprocess, "run", fake_run)
+    pf.run_check("alerts")
+    assert seen["cmd"][-1] == "--notify"
+    pf.run_check("disk_health")
+    assert seen["cmd"][-1] == "tools.disk_health"

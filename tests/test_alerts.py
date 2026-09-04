@@ -223,3 +223,56 @@ def test_report_renders_a_reading_it_was_handed_without_querying(monkeypatch):
     status, lines = alerts.report("http://p", _found(firing=[_alert("NodeDiskCritical", "high")]))
     assert status == 2
     assert any("FIRING" in line for line in lines)
+
+
+def test_a_target_that_goes_down_pages_once_not_twice():
+    # The real lifecycle of one machine going down: collect() reports the
+    # unhealthy target immediately, and TargetDown's `for: 10m` makes the same
+    # outage appear a second time as a firing alert one cycle later. Two keys
+    # for one incident means the six-hour dedupe never sees the repeat.
+    target = {"scrapePool": "kubelet", "scrapeUrl": "http://n2/metrics",
+              "lastError": "connection refused", "health": "down"}
+    just_down = _found(unhealthy=[target])
+    ten_minutes_later = _found(unhealthy=[target], firing=[_alert("TargetDown", "high")])
+    assert alerts._page_key(just_down) == alerts._page_key(ten_minutes_later)
+    # and the message does not say it twice either
+    assert alerts.paging(ten_minutes_later)[2].count("TargetDown") == 0
+
+
+def test_targetdown_still_pages_when_no_target_is_reported_unhealthy():
+    # The suppression is only ever a de-duplication of one fact. With nothing
+    # in `unhealthy` there is nothing to duplicate, and the alert must stand.
+    found = _found(firing=[_alert("TargetDown", "high")])
+    worth, urgent, text = alerts.paging(found)
+    assert worth is True and urgent is True and "TargetDown" in text
+
+
+def test_notify_is_called_with_the_paging_verdict(monkeypatch, capsys):
+    # The wire-up itself: alerts --notify must hand tools.notify the key,
+    # the urgency and the text that `paging`/`_page_key` produced.
+    from tools import notify as notify_tool
+
+    found = _found(firing=[_alert("NodeDiskCritical", "high")])
+    monkeypatch.setattr(alerts, "collect", lambda base: found)
+    seen = {}
+
+    def fake(text, key, urgent):
+        seen.update(text=text, key=key, urgent=urgent)
+        return 0, "sent, 40 character(s)"
+
+    monkeypatch.setattr(notify_tool, "notify", lambda text, key, urgent: fake(text, key, urgent))
+    code = alerts.main(["--notify"])
+    assert code == 2
+    assert seen["key"] == alerts._page_key(found)
+    assert seen["urgent"] is True
+    assert "NodeDiskCritical" in seen["text"]
+    assert "telegram: sent" in capsys.readouterr().out
+
+
+def test_without_the_flag_nothing_is_sent(monkeypatch):
+    from tools import notify as notify_tool
+
+    monkeypatch.setattr(alerts, "collect", lambda base: _found(firing=[_alert("NodeDiskCritical", "high")]))
+    monkeypatch.setattr(notify_tool, "notify",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("sent without --notify")))
+    assert alerts.main([]) == 2

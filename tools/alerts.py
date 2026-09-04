@@ -222,6 +222,26 @@ def report(base: str = PROMETHEUS, found: dict | None = None) -> tuple[int, list
     return status, lines
 
 
+def _distinct_firing(found: dict) -> list[dict]:
+    """Firing alerts, minus the ones that only restate a target already reported down.
+
+    `TargetDown` is the alert form of `up == 0`, and `collect` already reports
+    the same outage as an unhealthy target the moment it starts -- ten minutes
+    before the rule's `for:` elapses. So one machine going down produces the
+    target line first and then, at the next cycle, the target line *and* the
+    alert. Left alone that is two different page keys for one incident, and the
+    six-hour dedupe never sees the second one coming: he gets paged twice,
+    twenty minutes apart, for one server. It is also two lines in one message
+    saying the same thing.
+    """
+    if not found.get("unhealthy"):
+        return list(found.get("firing", []))
+    return [
+        a for a in found.get("firing", [])
+        if (dict(a.get("labels") or {})).get("alertname") != "TargetDown"
+    ]
+
+
 def paging(found: dict) -> tuple[bool, bool, str]:
     """(worth telling him, may wake him, the message) from a `collect` result.
 
@@ -255,7 +275,7 @@ def paging(found: dict) -> tuple[bool, bool, str]:
         urgent = True
     for pool in found["missing"]:
         reasons.append(f"Scrape job '{pool}' discovered no targets, so nothing watches it.")
-    for alert in found["firing"]:
+    for alert in _distinct_firing(found):
         labels = dict(alert.get("labels") or {})
         severity = labels.get("severity", "")
         if severity in URGENT_SEVERITIES:
@@ -303,7 +323,7 @@ def _page_key(found: dict) -> str:
     therefore be a new message every eighteen minutes.
     """
     names = sorted(
-        (dict(a.get("labels") or {})).get("alertname", "?") for a in found.get("firing", [])
+        (dict(a.get("labels") or {})).get("alertname", "?") for a in _distinct_firing(found)
     )
     downs = sorted(str(t.get("scrapeUrl")) for t in found.get("unhealthy", []))
     missing = sorted(found.get("missing", []))

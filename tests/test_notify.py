@@ -180,3 +180,30 @@ def test_cli_dry_run_sends_nothing_and_reports_the_verdict(tmp_path, capsys, mon
     assert called == []
     assert code in (0, notify.HELD)
     assert "would send" in capsys.readouterr().out or code == notify.HELD
+
+
+def test_the_send_client_is_resolved_at_call_time_not_at_import(monkeypatch, tmp_path):
+    # A `send=telegram.send` default argument binds once, at import, so this
+    # monkeypatch would be invisible and the real bridge would be called from
+    # a test run. The assertion is that the patched client is the one used.
+    called = []
+    monkeypatch.setattr(notify.telegram, "send", lambda text, url=None: called.append(text) or (0, "sent"))
+    status, _ = notify.notify(
+        "x", "k", urgent=True, state_path=str(tmp_path / "s.json"), now=at(3),
+    )
+    assert status == 0
+    assert called == ["x"]
+
+
+def test_an_unknown_hour_still_records_and_still_dedupes(tmp_path):
+    # The branch nobody would test: no Oslo clock, urgent, so it sends. If it
+    # recorded nothing, the same outage would page every eighteen minutes for
+    # ever -- worse than the routine case, and silent.
+    state_path = tmp_path / "s.json"
+    send = FakeSend()
+    assert notify.notify("down", "k", urgent=True, state_path=str(state_path),
+                         now=None, send=send)[0] == 0
+    status, line = notify.notify("down", "k", urgent=True, state_path=str(state_path),
+                                 now=None, send=send)
+    assert status == notify.HELD
+    assert len(send.calls) == 1

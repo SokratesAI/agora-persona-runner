@@ -55,7 +55,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Repo root on sys.path so `python3 tools/notify.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
@@ -123,8 +123,10 @@ def save_state(path: str, state: dict) -> str | None:
 
 def recently_sent(state: dict, key: str, now: datetime, dedupe_hours: float):
     """The last-sent datetime when `key` is still inside its window, else None."""
-    if now is None:
-        return None
+    # A missing clock must not disable the dedupe: without this the unknown-hour
+    # branch of `decide` sends every urgent message and never suppresses a
+    # repeat, which is one page every eighteen minutes for one outage.
+    now = now if now is not None else datetime.now(timezone.utc)
     stamp = state.get(key, {}).get("last_sent")
     if not stamp:
         return None
@@ -176,10 +178,18 @@ def notify(
     state_path=DEFAULT_STATE,
     dedupe_hours=DEFAULT_DEDUPE_HOURS,
     now=None,
-    send=telegram.send,
+    send=None,
     url=telegram.DEFAULT_URL,
 ):
-    """(exit status, line). 0 sent, 3 held, 2 refused, 1 unreachable."""
+    """(exit status, line). 0 sent, 3 held, 2 refused, 1 unreachable.
+
+    `send` defaults to None rather than to `telegram.send` because a default
+    argument is bound once, at import, so a test that replaces
+    `telegram.send` afterwards would be replacing something this function
+    never looks at again -- the test passes, the real client runs, and the
+    owner gets a message from a test run.
+    """
+    send = telegram.send if send is None else send
     refusal = telegram.check_text(text)
     if refusal:
         return 2, refusal
@@ -194,8 +204,13 @@ def notify(
     if status != 0:
         return status, sent_line
 
-    if when is not None:
-        state[key] = {"last_sent": when.isoformat(), "urgent": bool(urgent)}
+    stamp = when if when is not None else datetime.now(timezone.utc)
+    if stamp is not None:
+        # Recorded even when the Oslo clock could not be read. Without this the
+        # unknown-hour branch sends every urgent message and remembers none of
+        # them, so one outage pages him every eighteen minutes forever -- the
+        # opposite of what the dedupe is for, in the one case nobody would test.
+        state[key] = {"last_sent": stamp.isoformat(), "urgent": bool(urgent)}
         problem = save_state(state_path, state)
         if problem:
             # Said out loud rather than swallowed: without the write, the next
