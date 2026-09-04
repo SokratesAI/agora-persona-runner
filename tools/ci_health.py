@@ -100,7 +100,7 @@ import concurrent.futures
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 
@@ -138,6 +138,12 @@ INCLUDED_PRIVATE_MINUTES = 2000.0
 #: A forecast needs this many days of the billing month behind it. See
 #: `burn_forecast` for why refusing is the whole point of the number.
 MIN_ELAPSED_DAYS = 2.0
+
+#: How far back the second, recent-window rate looks. A day is the shortest
+#: window that still averages over a whole sleep cycle -- this loop merges
+#: nothing for the hours the owner is asleep and a great deal in the morning,
+#: so anything shorter measures the time of day rather than the habit.
+RECENT_WINDOW_HOURS = 24.0
 
 
 def actions_status(opener=urllib.request.urlopen):
@@ -484,6 +490,131 @@ def blocked_repo(repo, run=subprocess.run, sample=5):
              f"{cause}")], None
 
 
+def recent_private_rate(repos, used_private, org, now,
+                        window_hours=RECENT_WINDOW_HOURS, run=subprocess.run):
+    """`(lines, minutes_per_day_or_None)` — private-minute burn over the newest window.
+
+    `burn_forecast` below divides the month's private minutes by the days
+    elapsed, and **that average cannot see a change in what a merge costs.**
+    Cycle 885 folded `platform-config`'s two jobs into one on the morning of
+    2026-09-04, halving the billed minutes per merged pull request; the
+    month-to-date rate keeps quoting the pre-fold number for the rest of
+    September, diluting more slowly the longer the month runs. The failure is
+    symmetric and the direction that costs is the other one: measured the same
+    morning, `platform-config` alone ran 199 workflow runs in 24 hours against
+    a flat budget of 67 private minutes a day for the whole org, while the
+    month-to-date rate read 80.7. **The average was understating the live burn
+    by a factor of two and a half.**
+
+    So this measures the newest `window_hours` instead. GitHub's billing API
+    answers month-to-date only -- there is no per-day series in it -- so the
+    time distribution comes from run *counts*, which `/actions/runs` returns
+    as `total_count` for a `created=>=` filter in one call per repo per
+    window.
+
+    **The conversion from runs to minutes is measured, never assumed.** A run
+    is not a minute by definition; it is a minute on this org today because
+    GitHub bills whole minutes per job and these jobs take about thirty
+    seconds. Rather than hardcode that, this divides the meter's own
+    month-to-date private minutes by the month-to-date run count on the same
+    repos, so the ratio is re-derived every time and a repo that grows a
+    second job or a five-minute suite moves it. If the month-to-date run count
+    is zero the ratio is undefined and this refuses to rate rather than
+    guessing at one -- the same refusal `burn_forecast` makes on a part-day.
+
+    `repos` is the private-spender mapping `billing_meter` already built, so
+    this costs two API calls per repo that actually spent a minute this month
+    and nothing at all for the rest of the org.
+    """
+    if not repos:
+        return ["        NOT JUDGED  no private repo spent a minute this month, so there "
+                "is no recent window to measure."], None
+
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    window_start = now - timedelta(hours=window_hours)
+    month_runs = 0
+    recent_runs = 0
+    priced_minutes = 0.0
+    unread = []
+    unpaired = []
+    for repo in sorted(repos):
+        # The billing API names a repo bare -- `platform-config`, not
+        # `SokratesAI/platform-config` -- so the owner has to come from the
+        # caller. A bare name sent to `/repos/{r}/actions/runs` 404s, and a
+        # 404 counted as zero runs would understate the burn silently.
+        full = repo if "/" in repo else f"{org}/{repo}"
+        for since, bucket in ((month_start, "month"), (window_start, "recent")):
+            payload, why = _gh_json(
+                [f"/repos/{full}/actions/runs?per_page=1&created=%3E%3D{since:%Y-%m-%dT%H:%M:%SZ}"],
+                run)
+            # `payload` is whatever the endpoint sent. An error body is a
+            # list or a string as readily as a dict, and `.get` on one of
+            # those is an AttributeError that would take the whole check down
+            # rather than reporting a repo it could not count.
+            if not isinstance(payload, dict) or not isinstance(payload.get("total_count"), int):
+                unread.append(f"{full} ({why or 'no total_count in the response'})")
+                break
+            if bucket == "month":
+                month_runs += payload["total_count"]
+                # Only a repo whose runs were actually counted may contribute
+                # its minutes to the price. The meter knows what every repo
+                # spent; the runs API may not still hold the runs that spent
+                # it -- GitHub expires run records, so a repo can carry real
+                # minutes and answer zero. Dividing those minutes by another
+                # repo's runs inflates minutes-per-run, which inflates the
+                # recent rate. Pairing minutes with runs one repo at a time
+                # keeps the ratio a ratio of one population.
+                if payload["total_count"] > 0:
+                    priced_minutes += repos[repo]
+                elif repos[repo] > 0:
+                    unpaired.append(f"{full} ({repos[repo]:.0f} minute(s), no run record left)")
+            else:
+                recent_runs += payload["total_count"]
+
+    lines = []
+    if unread:
+        lines.append(f"        NOT JUDGED  {len(unread)} private repo(s) could not be counted: "
+                     f"{', '.join(sorted(set(unread)))}")
+    if unpaired:
+        # This one is printed and does NOT stop the rating. A repo whose runs
+        # have aged out of the API spent its minutes in the past, which is
+        # what the month-to-date rate already accounts for; it says nothing
+        # about the newest 24 hours and excluding it is the honest pairing.
+        lines.append(f"        left out of the price  {len(unpaired)} repo(s) whose minutes "
+                     f"have no run record to pair with: {', '.join(sorted(set(unpaired)))}")
+    # **A partial count refuses rather than reporting low, and that is the
+    # opposite of what the first draft of this did.** The rate here gates an
+    # exit status. If the busiest repo's month call lands and its recent call
+    # does not, its runs are in the denominator and its activity is not, and
+    # the rate comes out at or near zero -- which prints `within budget` and
+    # exits 0 in exactly the spiking-repo case this exists to catch. "Low" is
+    # only the safe direction for a number nobody acts on. Everywhere else in
+    # this file missing information overstates risk (an unpriced runner SKU is
+    # counted and named, an unreadable repo never reads as clean), so a window
+    # that could not be swept whole is not a window.
+    if unread or month_runs <= 0 or priced_minutes <= 0:
+        if unread:
+            lines.append("        NOT JUDGED  the recent window is not rated at all, because "
+                         "a repo missing from one of its two counts drags the rate toward "
+                         "zero rather than shrinking it proportionally, and this rate raises "
+                         "the check. The month-to-date rate below is unaffected.")
+        else:
+            lines.append("        NOT JUDGED  no workflow run was counted this month on any "
+                         "repo whose minutes could be paired with it, so minutes per run is "
+                         "undefined and the recent window cannot be priced.")
+        return lines, None
+
+    minutes_per_run = priced_minutes / month_runs
+    window_days = window_hours / 24.0
+    rate = recent_runs / window_days * minutes_per_run
+    lines.append(
+        f"        newest {window_hours:.0f}h: {recent_runs} run(s) at "
+        f"{minutes_per_run:.2f} measured private minute(s) per run "
+        f"({priced_minutes:.0f} minute(s) over {month_runs} run(s) this month) — "
+        f"{rate:.1f} private minute(s)/day.")
+    return lines, rate
+
+
 def _month_position(now):
     """`(days_in_month, days_elapsed)` — elapsed counts the part-day we are in."""
     days_in_month = calendar.monthrange(now.year, now.month)[1]
@@ -492,7 +623,8 @@ def _month_position(now):
 
 
 def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
-                  min_elapsed_days=MIN_ELAPSED_DAYS):
+                  min_elapsed_days=MIN_ELAPSED_DAYS, recent_rate=None,
+                  window_hours=RECENT_WINDOW_HOURS):
     """`(lines, over)` — is this month's private-minute burn on track to overrun?
 
     The owner, `issues.md` 2026-09-01, the morning the meter reset: *"We have
@@ -517,6 +649,20 @@ def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
     `tools.host_memory_trend` makes until its ledger is six hours deep.
 
     `over` is only ever True on a real projection, never on the refusal.
+
+    **Two rates, judged separately, and `over` is either of them.**
+    `recent_rate` comes from `recent_private_rate` above and is the newest
+    `window_hours` of burn; the month-to-date average here is the whole month
+    so far. They answer different questions and merging them into one number
+    would lose exactly the information that matters — the average says whether
+    the month is on track given everything already spent, and the recent rate
+    says whether what I am doing *now* fits. Measured 2026-09-04 they were
+    80.7 and roughly 200 minutes a day, and a cycle reading only the first
+    would have concluded the fold that morning had solved it.
+
+    The month-to-date rate is never *replaced* by the recent one. A quiet day
+    does not undo minutes already on the meter, so a recent rate below budget
+    while the average is over is still over — the allowance is cumulative.
     """
     days_in_month, elapsed = _month_position(now)
     remaining_days = days_in_month - elapsed
@@ -536,6 +682,18 @@ def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
             f"{min_elapsed_days:.0f}-day floor. A rate divided out of a part-day is an "
             f"extrapolation from one morning, not a habit. This line becomes a forecast "
             f"on its own.")
+        # The recent window is not an extrapolation from a part-month -- it is
+        # its own measurement over its own hours -- so the refusal above does
+        # not silence it. This is the one branch where the recent rate is the
+        # *only* rate there is.
+        if recent_rate is not None and used_private + recent_rate * remaining_days > allowance:
+            lines.append(
+                f"        OVERSUBSCRIBED AT THE CURRENT RATE — the month-to-date average is "
+                f"not forecastable yet, but the newest {window_hours:.0f}h alone spends the "
+                f"remaining {allowance - used_private:.0f} minute(s) in "
+                f"{(allowance - used_private) / recent_rate:.1f} day(s) against "
+                f"{remaining_days:.1f} day(s) of month left.")
+            return lines, True
         return lines, False
 
     rate = used_private / elapsed
@@ -543,6 +701,22 @@ def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
     lines.append(
         f"        rate {rate:.1f} private minute(s)/day, which lands at {projected:.0f} "
         f"for the month against the {allowance:.0f} included.")
+    over_recent = False
+    if recent_rate is not None:
+        remaining_budget = allowance - used_private
+        recent_projected = used_private + recent_rate * remaining_days
+        lines.append(
+            f"        at the newest-{window_hours:.0f}h rate of {recent_rate:.1f}/day the "
+            f"month lands at {recent_projected:.0f} against the {allowance:.0f} included.")
+        if recent_projected > allowance:
+            over_recent = True
+            burns_out = remaining_budget / recent_rate if recent_rate > 0 else float("inf")
+            lines.append(
+                f"        OVERSUBSCRIBED AT THE CURRENT RATE — {remaining_budget:.0f} minute(s) "
+                f"left, and the newest {window_hours:.0f}h spends them in {burns_out:.1f} day(s) "
+                f"against {remaining_days:.1f} day(s) of month remaining. This is what merging "
+                f"costs today, not what it averaged.")
+
     if projected > allowance:
         lines.append(
             f"        OVERSUBSCRIBED — at this rate the allowance runs out with "
@@ -552,7 +726,7 @@ def burn_forecast(used_private, now, allowance=INCLUDED_PRIVATE_MINUTES,
     lines.append(
         f"        within budget — {projected / allowance * 100:.0f}% of the allowance at "
         f"this rate, with {allowance - projected:.0f} minute(s) of headroom.")
-    return lines, False
+    return lines, over_recent
 
 
 def billing_meter(org, run=subprocess.run, now=None):
@@ -672,7 +846,10 @@ def billing_meter(org, run=subprocess.run, now=None):
     if partial:
         lines.append(f"        partial: {partial}")
 
-    forecast_lines, over = burn_forecast(minutes["private"], now)
+    recent_lines, recent_rate = recent_private_rate(
+        per_repo, minutes["private"], org, now, run=run)
+    lines.extend(recent_lines)
+    forecast_lines, over = burn_forecast(minutes["private"], now, recent_rate=recent_rate)
     lines.extend(forecast_lines)
     return lines, over
 
