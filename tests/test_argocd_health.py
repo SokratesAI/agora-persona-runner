@@ -1,10 +1,12 @@
 """`tools.argocd_health` — the verdicts, and the one judgement it makes.
 
-The tests that matter here are the ones about *not* raising: an
-Application held `Degraded` by a Job that a later run of the same CronJob
-succeeded past is the live case this tool was written for
-(`sokratesai-infra`, Degraded three days, nine such Jobs), and calling it
-actionable would make every cycle re-derive it.
+The test that matters most here is that an unhealthy Application always
+raises. Cycle 513 wrote the opposite — a `Degraded` was excused when every
+failing Job under its CronJobs had been succeeded past — and Cycle 933
+measured that a Job under a CronJob is not an immediate child of the
+Application and so cannot hold it `Degraded` at all. The live case
+(`sokratesai-infra`, Degraded seven days) was four SealedSecrets refusing
+to write their Secret, and the old quiet verdict hid them.
 """
 
 import datetime
@@ -19,7 +21,7 @@ from tools import argocd_health
 NOW = datetime.datetime(2026, 8, 27, 1, 30, tzinfo=datetime.timezone.utc)
 
 
-def app(name, sync="Synced", health="Healthy", since="", cronjobs=()):
+def app(name, sync="Synced", health="Healthy", since="", cronjobs=(), sealed=()):
     return {
         "metadata": {"name": name, "namespace": "argocd"},
         "status": {
@@ -28,8 +30,19 @@ def app(name, sync="Synced", health="Healthy", since="", cronjobs=()):
             "resources": [
                 {"kind": "CronJob", "namespace": ns, "name": cj}
                 for ns, cj in cronjobs
+            ] + [
+                {"kind": "SealedSecret", "namespace": ns, "name": nm}
+                for ns, nm in sealed
             ],
         },
+    }
+
+
+def sealed_secret(name, namespace="infra", synced="True", message=""):
+    return {
+        "metadata": {"name": name, "namespace": namespace},
+        "status": {"conditions": [
+            {"type": "Synced", "status": synced, "message": message}]},
     }
 
 
@@ -45,25 +58,35 @@ def job(name, cronjob, created, failed=False, succeeded=False, namespace="agents
     }
 
 
-def fake_kubectl(apps=(), jobs=(), fail_on=None, stdout=None):
+def _which(args):
+    for kind in ("applications", "jobs", "sealedsecrets"):
+        if kind in args:
+            return kind
+    raise AssertionError(f"unexpected kubectl call: {args}")
+
+
+def fake_kubectl(apps=(), jobs=(), sealed=(), fail_on=None, stdout=None):
     """A `subprocess.run` that answers the two queries the tool makes."""
     def runner(args, **kwargs):
-        which = "applications" if "applications" in args else "jobs"
+        which = _which(args)
         if fail_on == which:
             return subprocess.CompletedProcess(args, 1, "", "Error from server (Forbidden)")
         if stdout is not None and which == stdout[0]:
             return subprocess.CompletedProcess(args, 0, stdout[1], "")
-        items = apps if which == "applications" else jobs
+        items = {"applications": apps, "jobs": jobs, "sealedsecrets": sealed}[which]
         return subprocess.CompletedProcess(args, 0, json.dumps({"items": list(items)}), "")
     return runner
 
 
-def report_for(apps, jobs):
-    parsed, why = argocd_health.read_applications(fake_kubectl(apps=apps, jobs=jobs))
+def report_for(apps, jobs, sealed=()):
+    runner = fake_kubectl(apps=apps, jobs=jobs, sealed=sealed)
+    parsed, why = argocd_health.read_applications(runner)
     assert why is None
-    by_owner, why = argocd_health.read_jobs(fake_kubectl(apps=apps, jobs=jobs))
+    by_owner, why = argocd_health.read_jobs(runner)
     assert why is None
-    return argocd_health.report(parsed, by_owner, NOW)
+    broken, why = argocd_health.read_sealed_secrets(runner)
+    assert why is None
+    return argocd_health.report(parsed, by_owner, NOW, broken)
 
 
 # --- the clean case -------------------------------------------------
@@ -108,17 +131,23 @@ def test_missing_and_unknown_count_as_unhealthy():
         assert status == 2, health
 
 
-# --- the judgement: stale job failures ------------------------------
+# --- the judgement: a stale job failure is history, not a cause ------
 
-def test_a_failure_a_later_run_succeeded_past_does_not_raise_the_status():
+def test_a_failure_a_later_run_succeeded_past_is_history_and_still_raises():
+    # It used to exit 0 here. A Job owned by a CronJob is created by a
+    # controller and is in no application source, so ArgoCD never
+    # aggregates it into App health — excusing a Degraded with one is
+    # excusing it with something that cannot have caused it.
     lines, status = report_for(
         [app("infra", health="Degraded", cronjobs=[("agents", "rss")])],
         [job("rss-1", "rss", "2026-08-24T08:00:00Z", failed=True),
          job("rss-2", "rss", "2026-08-26T08:00:00Z", succeeded=True)],
     )
-    assert status == 0
-    assert any(l.startswith("STALE JOB FAILURE  infra") for l in lines)
-    assert any("rss-1 failed 2026-08-24T08:00:00Z" in l for l in lines)
+    assert status == 2
+    assert any(l.startswith("UNHEALTHY  infra") for l in lines)
+    assert any("history, not the cause" in l and "1 failed Job(s)" in l
+               for l in lines)
+    assert not any("STALE JOB FAILURE" in l for l in lines)
 
 
 def test_a_failure_with_nothing_newer_that_worked_does_raise_it():
@@ -150,7 +179,63 @@ def test_degraded_with_no_failing_job_at_all_says_it_cannot_explain_it():
         [job("rss-1", "rss", "2026-08-26T08:00:00Z", succeeded=True)],
     )
     assert status == 2
-    assert any("nothing in its tracked resources explains it" in l for l in lines)
+    assert any("no immediate child of it is measurably unhealthy" in l
+               for l in lines)
+
+
+# --- the cause it can actually name ----------------------------------
+
+def test_a_sealed_secret_that_cannot_write_its_secret_is_named():
+    # The live case: sokratesai-infra, Degraded seven days, four
+    # SealedSecrets refusing to overwrite a Secret they do not own.
+    lines, status = report_for(
+        [app("infra", health="Degraded", sealed=[("infra", "repo-read-token")],
+             cronjobs=[("agents", "rss")])],
+        [job("rss-1", "rss", "2026-08-24T08:00:00Z", failed=True),
+         job("rss-2", "rss", "2026-08-26T08:00:00Z", succeeded=True)],
+        [sealed_secret("repo-read-token", synced="False",
+                       message='failed update: Resource "repo-read-token" '
+                               "already exists and is not managed by SealedSecret")],
+    )
+    assert status == 2
+    assert any("SealedSecret infra/repo-read-token is not healthy" in l
+               and "already exists" in l for l in lines)
+    # Named cause, so it must not also claim it cannot explain itself.
+    assert not any("no immediate child" in l for l in lines)
+
+
+def test_a_synced_sealed_secret_is_not_offered_as_a_cause():
+    # The complement. Without it the check would "name a cause" on every
+    # Degraded app that happens to own a SealedSecret.
+    lines, status = report_for(
+        [app("infra", health="Degraded", sealed=[("infra", "repo-read-token")])],
+        [],
+        [sealed_secret("repo-read-token", synced="True")],
+    )
+    assert status == 2
+    assert not any("SealedSecret" in l for l in lines)
+    assert any("no immediate child of it is measurably unhealthy" in l
+               for l in lines)
+
+
+def test_a_broken_sealed_secret_belonging_to_another_app_is_not_borrowed():
+    # The cause has to be one of *this* Application's immediate children.
+    lines, _ = report_for(
+        [app("infra", health="Degraded")],
+        [],
+        [sealed_secret("repo-read-token", synced="False", message="nope")],
+    )
+    assert not any("repo-read-token" in l for l in lines)
+
+
+def test_a_sealed_secret_with_no_conditions_yet_is_not_a_finding():
+    # The controller writes conditions on its first pass; an unreconciled
+    # SealedSecret is young, not broken.
+    runner = fake_kubectl(sealed=[{"metadata": {"name": "s", "namespace": "infra"},
+                                   "status": {}}])
+    broken, why = argocd_health.read_sealed_secrets(runner)
+    assert why is None
+    assert broken == {}
 
 
 def test_success_is_compared_by_timestamp_not_by_name():
@@ -263,7 +348,7 @@ def test_jobs_are_not_read_at_all_when_every_application_is_healthy():
     asked = []
 
     def runner(args, **kwargs):
-        which = "applications" if "applications" in args else "jobs"
+        which = _which(args)
         asked.append(which)
         items = [app("x")] if which == "applications" else []
         return subprocess.CompletedProcess(
@@ -273,31 +358,40 @@ def test_jobs_are_not_read_at_all_when_every_application_is_healthy():
     assert asked == ["applications"]
 
 
-def test_jobs_are_read_once_something_is_unhealthy():
+def test_jobs_and_sealed_secrets_are_read_once_something_is_unhealthy():
     asked = []
 
     def runner(args, **kwargs):
-        which = "applications" if "applications" in args else "jobs"
+        which = _which(args)
         asked.append(which)
         items = [app("x", health="Degraded")] if which == "applications" else []
         return subprocess.CompletedProcess(
             args, 0, json.dumps({"items": items}), "")
 
     assert argocd_health.main([], runner=runner, now=NOW) == 2
-    assert asked == ["applications", "jobs"]
+    assert asked == ["applications", "jobs", "sealedsecrets"]
+
+
+def test_kubectl_refused_on_sealed_secrets_is_status_one(capsys):
+    # Never clean: a refusal here means the one cause this can name was
+    # not looked for.
+    runner = fake_kubectl(apps=[app("x", health="Degraded")],
+                          fail_on="sealedsecrets")
+    assert argocd_health.main([], runner=runner, now=NOW) == 1
+    assert "COULD NOT READ" in capsys.readouterr().out
 
 
 # --- the summary line survives the preflight collapse ----------------
 #
-# `preflight` reports a check that exits 0 as one line, and it picks the
-# last line carrying a digit. So a STALE JOB FAILURE — the entire reason
-# this check does not raise — has to ride on *that* line or it is
-# invisible on a normal morning. Cycle 810 swept clean here and still
-# wrote "sokratesai-infra reports Degraded and I do not know why or since
-# when" into the handoff. These pin the line, not the paragraph.
+# `preflight` reports a check as one line, and it picks the last line
+# carrying a digit. An Application that is unhealthy with no cause this
+# check can name has to ride on *that* line or it is invisible on a
+# normal morning. Cycle 810 swept clean here and still wrote
+# "sokratesai-infra reports Degraded and I do not know why or since when"
+# into the handoff. These pin the line, not the paragraph.
 
 
-def _stale(name="sokratesai-infra", since="2026-08-22T01:30:00Z"):
+def _unexplained(name="sokratesai-infra", since="2026-08-22T01:30:00Z"):
     return report_for(
         [app(name, health="Degraded", since=since, cronjobs=[("agents", "rss")])],
         [job("rss-1", "rss", "2026-08-20T08:00:00Z", failed=True),
@@ -305,31 +399,36 @@ def _stale(name="sokratesai-infra", since="2026-08-22T01:30:00Z"):
     )
 
 
-def test_the_held_application_is_named_on_the_line_preflight_keeps():
+def test_the_unexplained_application_is_named_on_the_line_preflight_keeps():
     from tools.preflight import summary_line
 
-    lines, status = _stale()
-    assert status == 0
+    lines, status = _unexplained()
+    assert status == 2
     kept = summary_line("\n".join(lines))
     assert "sokratesai-infra" in kept
     assert "Degraded" in kept
 
 
-def test_the_kept_line_carries_how_long_it_has_been_held():
+def test_the_kept_line_carries_how_long_it_has_been_unhealthy():
     # "since when" is the half of the question the handoff could not
     # answer, so the age has to be on the kept line and not only beside
-    # the STALE JOB FAILURE heading five lines up.
+    # the UNHEALTHY heading five lines up.
     from tools.preflight import summary_line
 
-    lines, _ = _stale(since="2026-08-22T01:30:00Z")
+    lines, _ = _unexplained(since="2026-08-22T01:30:00Z")
     assert "5d" in summary_line("\n".join(lines))
 
 
-def test_the_kept_line_says_how_many_jobs_hold_it():
+def test_an_application_with_a_named_cause_is_not_called_unexplained():
     from tools.preflight import summary_line
 
-    lines, _ = _stale()
-    assert "1 Job(s)" in summary_line("\n".join(lines))
+    lines, _ = report_for(
+        [app("infra", health="Degraded", sealed=[("infra", "tok")])],
+        [],
+        [sealed_secret("tok", synced="False", message="cannot write")],
+    )
+    assert not any("no immediate child this check can name" in l for l in lines)
+    assert "infra" not in summary_line("\n".join(lines)).split("cause:")[-1]
 
 
 def test_a_clean_sweep_does_not_claim_anything_is_held():
@@ -341,23 +440,11 @@ def test_a_clean_sweep_does_not_claim_anything_is_held():
     assert status == 0
     kept = summary_line("\n".join(lines))
     assert "Read 2 ArgoCD Application(s)" in kept
-    assert "held" not in kept.lower()
-    assert not any("not raised" in l for l in lines)
+    assert "no immediate child" not in kept
+    assert not any("An unexplained Degraded raises" in l for l in lines)
 
 
-def test_a_live_failure_is_not_reported_as_held_and_not_raised():
-    # A raised app must never appear in the "deliberately not raised"
-    # list — that would read as handled while the exit code says act.
-    lines, status = report_for(
-        [app("infra", health="Degraded", cronjobs=[("agents", "rss")])],
-        [job("rss-1", "rss", "2026-08-20T08:00:00Z", succeeded=True),
-         job("rss-2", "rss", "2026-08-26T08:00:00Z", failed=True)],
-    )
-    assert status == 2
-    assert not any("not raised: infra" in l for l in lines)
-
-
-def test_two_held_applications_are_both_named():
+def test_two_unexplained_applications_are_both_named():
     lines, status = report_for(
         [app("infra", health="Degraded", cronjobs=[("agents", "rss")]),
          app("other", health="Degraded", cronjobs=[("agents", "gen")])],
@@ -366,7 +453,7 @@ def test_two_held_applications_are_both_named():
          job("gen-1", "gen", "2026-08-20T08:00:00Z", failed=True),
          job("gen-2", "gen", "2026-08-26T08:00:00Z", succeeded=True)],
     )
-    assert status == 0
-    kept = [l for l in lines if "not raised:" in l]
+    assert status == 2
+    kept = [l for l in lines if "no immediate child this check can name" in l]
     assert len(kept) == 1
     assert "infra" in kept[0] and "other" in kept[0]
