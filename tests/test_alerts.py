@@ -276,3 +276,54 @@ def test_without_the_flag_nothing_is_sent(monkeypatch):
     monkeypatch.setattr(notify_tool, "notify",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("sent without --notify")))
     assert alerts.main([]) == 2
+
+
+# --- the page has to fit his phone (Telegram, 2026-09-04) ---------------
+
+def _many(count):
+    return [
+        {
+            "labels": {"alertname": f"Alert{i}", "severity": "warning", "node": f"server{i}"},
+            "annotations": {"summary": "a node stopped answering the kubelet"},
+            "activeAt": "2026-09-04T12:00:00Z",
+        }
+        for i in range(count)
+    ]
+
+
+def test_a_twelve_alert_page_still_fits_the_notify_budget():
+    from tools import notify as notify_tool
+
+    found = {"unreadable": None, "no_rules": False, "active": True,
+             "unhealthy": [], "missing": [], "firing": _many(12)}
+    worth, _urgent, text = alerts.paging(found)
+    assert worth is True
+    # Against the constant, not a copy of it: raising the cap must widen this
+    # test rather than break it.
+    assert notify_tool.too_long(text) is None
+
+
+def test_a_dropped_alert_is_counted_rather_than_omitted():
+    found = {"unreadable": None, "no_rules": False, "active": True,
+             "unhealthy": [], "missing": [], "firing": _many(12)}
+    _worth, _urgent, text = alerts.paging(found)
+    assert "more, see tools.alerts" in text
+    kept = text.count("\n- Alert")
+    assert f"+{12 - kept} more" in text
+
+
+def test_a_short_page_is_not_trimmed_and_carries_no_counter():
+    found = {"unreadable": None, "no_rules": False, "active": True,
+             "unhealthy": [], "missing": [], "firing": _many(1)}
+    _worth, _urgent, text = alerts.paging(found)
+    assert "more, see tools.alerts" not in text
+    assert "Alert0" in text
+
+
+def test_one_over_long_reason_is_cut_rather_than_dropped():
+    from tools import notify as notify_tool
+
+    text = alerts._fit("Cluster alert", ["y" * 900])
+    assert notify_tool.too_long(text) is None
+    assert text.startswith("Cluster alert:\n- yyy")
+    assert text.endswith("…")
