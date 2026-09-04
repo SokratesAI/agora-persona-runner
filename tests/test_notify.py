@@ -55,10 +55,30 @@ def test_routine_message_at_night_is_held():
     assert "quiet hours" in line
 
 
-def test_urgent_message_at_night_goes_through():
+def test_urgent_message_at_night_is_held_too():
+    # His answer on Telegram, 2026-09-04: quiet hours fully respected. The
+    # override this module shipped with was my call and he reversed it, so
+    # the one class I built the breakthrough for -- a dead server -- waits.
+    assert notify.QUIET_HOURS_BREAKTHROUGH is False
+    send, line = notify.decide("k", True, at(2), {})
+    assert send is False
+    assert "quiet hours" in line
+
+
+def test_the_breakthrough_switch_still_works_when_it_is_on(monkeypatch):
+    # He scoped the answer to "for now ... as we are not hosting production
+    # code", so this path is off rather than deleted. Tested at both settings
+    # so flipping one constant back cannot land on code nothing has run.
+    monkeypatch.setattr(notify, "QUIET_HOURS_BREAKTHROUGH", True)
     send, line = notify.decide("k", True, at(2), {})
     assert send is True
     assert "urgent" in line
+
+
+def test_routine_message_at_night_is_held_even_with_the_breakthrough_on(monkeypatch):
+    # The switch governs urgency, never the window itself.
+    monkeypatch.setattr(notify, "QUIET_HOURS_BREAKTHROUGH", True)
+    assert notify.decide("k", False, at(2), {})[0] is False
 
 
 def test_routine_message_in_the_daytime_goes_through():
@@ -99,9 +119,15 @@ def test_an_unparseable_stamp_does_not_block_the_send():
     assert send is True
 
 
-def test_an_unknown_hour_holds_routine_and_sends_urgent():
-    # The two halves of one decision: without a clock we cannot rule quiet
-    # hours out, so routine waits and an emergency does not.
+def test_an_unknown_hour_holds_everything():
+    # Without a clock quiet hours cannot be ruled out, and nothing breaks
+    # through them, so both halves wait.
+    assert notify.decide("k", False, None, {})[0] is False
+    assert notify.decide("k", True, None, {})[0] is False
+
+
+def test_an_unknown_hour_still_sends_urgent_with_the_breakthrough_on(monkeypatch):
+    monkeypatch.setattr(notify, "QUIET_HOURS_BREAKTHROUGH", True)
     assert notify.decide("k", False, None, {})[0] is False
     assert notify.decide("k", True, None, {})[0] is True
 
@@ -113,11 +139,11 @@ def test_notify_sends_and_records_the_key(tmp_path):
     send = FakeSend()
     status, line = notify.notify(
         "the box is down", "nas-down", urgent=True,
-        state_path=str(state_path), now=at(3), send=send,
+        state_path=str(state_path), now=at(10), send=send,
     )
     assert status == 0
     assert send.calls and send.calls[0][0] == "the box is down"
-    assert json.loads(state_path.read_text())["nas-down"]["last_sent"] == at(3).isoformat()
+    assert json.loads(state_path.read_text())["nas-down"]["last_sent"] == at(10).isoformat()
 
 
 def test_a_held_message_never_reaches_the_bridge(tmp_path):
@@ -144,7 +170,7 @@ def test_a_failed_send_does_not_record_the_key(tmp_path):
     state_path = tmp_path / "s.json"
     send = FakeSend((1, "could not reach the Telegram bridge"))
     status, line = notify.notify(
-        "x", "k", urgent=True, state_path=str(state_path), now=at(3), send=send,
+        "x", "k", urgent=True, state_path=str(state_path), now=at(10), send=send,
     )
     assert status == 1
     assert not state_path.exists()
@@ -153,7 +179,7 @@ def test_a_failed_send_does_not_record_the_key(tmp_path):
 def test_an_empty_message_is_refused_before_any_decision(tmp_path):
     send = FakeSend()
     status, line = notify.notify(
-        "   ", "k", urgent=True, state_path=str(tmp_path / "s.json"), now=at(3), send=send,
+        "   ", "k", urgent=True, state_path=str(tmp_path / "s.json"), now=at(10), send=send,
     )
     assert status == 2
     assert send.calls == []
@@ -189,16 +215,18 @@ def test_the_send_client_is_resolved_at_call_time_not_at_import(monkeypatch, tmp
     called = []
     monkeypatch.setattr(notify.telegram, "send", lambda text, url=None: called.append(text) or (0, "sent"))
     status, _ = notify.notify(
-        "x", "k", urgent=True, state_path=str(tmp_path / "s.json"), now=at(3),
+        "x", "k", urgent=True, state_path=str(tmp_path / "s.json"), now=at(10),
     )
     assert status == 0
     assert called == ["x"]
 
 
-def test_an_unknown_hour_still_records_and_still_dedupes(tmp_path):
+def test_an_unknown_hour_still_records_and_still_dedupes(tmp_path, monkeypatch):
     # The branch nobody would test: no Oslo clock, urgent, so it sends. If it
     # recorded nothing, the same outage would page every eighteen minutes for
-    # ever -- worse than the routine case, and silent.
+    # ever -- worse than the routine case, and silent. Only reachable with the
+    # breakthrough on, which is why it is set here rather than assumed.
+    monkeypatch.setattr(notify, "QUIET_HOURS_BREAKTHROUGH", True)
     state_path = tmp_path / "s.json"
     send = FakeSend()
     assert notify.notify("down", "k", urgent=True, state_path=str(state_path),
@@ -207,3 +235,18 @@ def test_an_unknown_hour_still_records_and_still_dedupes(tmp_path):
                                  now=None, send=send)
     assert status == notify.HELD
     assert len(send.calls) == 1
+
+
+def test_no_urgent_message_reaches_the_bridge_at_night(tmp_path):
+    # The end-to-end half of his answer: not just a False from `decide`, but
+    # nothing handed to the transport, and no dedupe state written -- so the
+    # first cycle after 07:00 still sends it if the alert is still firing.
+    state_path = tmp_path / "s.json"
+    send = FakeSend()
+    status, line = notify.notify(
+        "the box is down", "nas-down", urgent=True,
+        state_path=str(state_path), now=at(3), send=send,
+    )
+    assert status == notify.HELD
+    assert send.calls == []
+    assert not state_path.exists()
