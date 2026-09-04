@@ -167,6 +167,58 @@ def pvc_volumes(summary):
     return volumes
 
 
+def shares_one_filesystem(filesystems):
+    """Are nodefs and imagefs the same disk?
+
+    k3s puts the image store on the root filesystem, so the kubelet publishes
+    two blocks describing one disk. Their free percentages are then identical
+    and reporting them as two verdicts says the same thing twice. Compared on
+    capacity AND availability rather than on a path, because the kubelet
+    publishes no mount point for either.
+    """
+    nodefs = filesystems.get("nodefs")
+    imagefs = filesystems.get("imagefs")
+    if not nodefs or not imagefs:
+        return False
+    for key in ("capacityBytes", "availableBytes"):
+        if nodefs.get(key) is None or nodefs.get(key) != imagefs.get(key):
+            return False
+    return True
+
+
+def usage_breakdown(summary, filesystems):
+    """What a node's used bytes are made of, for the parts the kubelet names.
+
+    Only the image store and each Pod's ephemeral storage are attributable
+    from these stats. What is left is named rather than dropped, and it is not
+    "the host": a `local-path` volume's contents live on the node filesystem
+    and appear in no per-Pod counter, so they are inside the remainder too.
+    Measuring those needs a hostPath Job (Cycle 869 ran one).
+
+    Returns None when there is nothing to decompose — no nodefs usedBytes, or
+    an image store on a different disk, where its bytes are not part of this
+    disk's used total at all.
+    """
+    nodefs = filesystems.get("nodefs")
+    if not nodefs or not nodefs.get("usedBytes"):
+        return None
+    if not shares_one_filesystem(filesystems):
+        return None
+    used = nodefs["usedBytes"]
+    images = (filesystems.get("imagefs") or {}).get("usedBytes") or 0
+    ephemeral = 0
+    for pod in summary.get("pods") or []:
+        pod_used = (pod.get("ephemeral-storage") or {}).get("usedBytes")
+        if pod_used:
+            ephemeral += pod_used
+    return {
+        "used": used,
+        "images": images,
+        "ephemeral": ephemeral,
+        "rest": used - images - ephemeral,
+    }
+
+
 def available_pct(filesystem):
     """Percent of capacity still free, or None when the kubelet did not say."""
     capacity = filesystem.get("capacityBytes")
@@ -200,6 +252,16 @@ def is_capped(volume, filesystems):
 
 def _gib(value):
     return "?" if not value else "%.1fGiB" % (value / GIB)
+
+
+def _measured_gib(value):
+    """Like `_gib`, but 0 is an answer rather than a missing field.
+
+    `_gib`'s "?" means the kubelet published nothing. Every figure in the
+    breakdown is computed, so 0 there means measured-and-zero — an idle node
+    reporting no ephemeral storage is not a node that failed to report.
+    """
+    return "%.1fGiB" % (value / GIB)
 
 
 def read_claims(runner=subprocess.run):
@@ -299,9 +361,10 @@ def report_unmounted(unmounted, out=print):
         )
     return findings
 
-def report(node, filesystems, volumes, out=print):
+def report(node, filesystems, volumes, out=print, breakdown=None):
     """Print one node's verdict. Returns the number of findings on it."""
     findings = 0
+    shared = shares_one_filesystem(filesystems)
     for kind in ("nodefs", "imagefs"):
         filesystem = filesystems.get(kind)
         if filesystem is None:
@@ -317,6 +380,9 @@ def report(node, filesystems, volumes, out=print):
                 % (node, kind)
             )
             continue
+        same = " — the same disk as nodefs, not a second one" if (
+            shared and kind == "imagefs"
+        ) else ""
         line = "%s %s: %s free of %s (%.1f%%), used %s" % (
             node,
             kind,
@@ -324,7 +390,7 @@ def report(node, filesystems, volumes, out=print):
             _gib(filesystem.get("capacityBytes")),
             free,
             _gib(filesystem.get("usedBytes")),
-        )
+        ) + same
         if free < raises_at(kind):
             findings += 1
             out(
@@ -333,6 +399,29 @@ def report(node, filesystems, volumes, out=print):
             )
         else:
             out("  ok         %s" % line)
+
+    if breakdown:
+        head = "  MADE OF    %s: %s of container images, %s of Pod ephemeral storage" % (
+            node,
+            _measured_gib(breakdown["images"]),
+            _measured_gib(breakdown["ephemeral"]),
+        )
+        if breakdown["rest"] < 0:
+            # The kubelet samples node.fs, runtime.imageFs and each Pod's
+            # ephemeral-storage seconds apart, and the writable-layer bytes it
+            # counts under imageFs can overlap a Pod's own. So the two named
+            # parts can sum past the disk's used total, and the remainder is
+            # then arithmetic rather than a measurement. Printing "-3.0GiB of
+            # something" would be a disk figure that is simply not true.
+            out(
+                "%s — which is %s MORE than the %s this disk reports used, so there is no remainder to name. These three figures are sampled seconds apart and the image store's writable layers can be counted twice."
+                % (head, _measured_gib(-breakdown["rest"]), _measured_gib(breakdown["used"]))
+            )
+        else:
+            out(
+                "%s, %s neither — local-path volume contents and whatever the host itself stores, which these stats cannot separate. Of %s used."
+                % (head, _measured_gib(breakdown["rest"]), _measured_gib(breakdown["used"]))
+            )
 
     for volume in volumes:
         name = "%s/%s (%s)" % (volume["namespace"], volume["claim"], volume["pod"])
@@ -407,7 +496,13 @@ def main(argv=None, runner=subprocess.run, out=print):
                 capped += 1
             elif state is False:
                 uncapped += 1
-        findings += report(node, filesystems, volumes, out=out)
+        findings += report(
+            node,
+            filesystems,
+            volumes,
+            out=out,
+            breakdown=usage_breakdown(summary, filesystems),
+        )
 
     out("== claims no Pod mounts")
     orphaned = 0
