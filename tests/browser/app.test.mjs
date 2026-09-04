@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -185,6 +185,14 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // Friday, so "nothing supplied" has to mean the empty page rather
       // than a body no live server has ever sent.
       return res(retro || { scoreKeys: [], range: [1, 10], retros: [] }, retroStatus);
+    }
+    if (url.includes("/api/galaxy")) {
+      // No fixture default beyond the empty-but-readable shape: a loop
+      // with nothing claimed really does answer this, and "nothing
+      // supplied" must mean that rather than an unreadable ledger --
+      // those are the two answers this payload exists to tell apart.
+      return res(galaxy || { readable: true, active: [], recent: [], ttlMinutes: 45 },
+                 galaxyStatus);
     }
     if (url.includes("/api/next")) {
       // Defaults to the empty shape rather than to nothing, because the
@@ -4452,7 +4460,11 @@ describe("the sidebar", () => {
     // groups became collapsible folds later the same day and this list is
     // unchanged by that -- `querySelectorAll` reads the DOM, not the layout,
     // so a link inside a closed `<details>` is still found here.
-    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/retro", "/costs", "/catalog", "/diag"]);
+    // `/galaxy` joined The loop on 2026-09-04, on his idea asking for a
+    // visualisation of what my Claude sessions are doing. It sits above
+    // Retro because it is the one page on this site that is about right
+    // now rather than about what already happened.
+    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/galaxy", "/retro", "/costs", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -14874,5 +14886,88 @@ describe("the model picker on a thread", () => {
     const pick = window.document.querySelector("#feed .model-pick");
     assert.ok(pick, "the conversation page drew no picker");
     assert.equal(pick.value, "anthropic:claude-opus-5");
+  });
+});
+
+
+/* `/galaxy` -- his idea, ideas.md 2026-09-03: a page visualising what my
+ * Claude sessions are doing.
+ *
+ * jsdom implements no canvas, so `getContext("2d")` is null here and the
+ * drawing half returns early. That is not a hole these tests paper over --
+ * it is exactly why the page carries the same facts in a list underneath
+ * the picture, and the list is what a reader on a screen reader gets too.
+ * So what is asserted is the half that has to survive without a canvas:
+ * the sentence at the top, one row per live session carrying the note that
+ * cycle wrote, and the one distinction a blank canvas cannot make on its
+ * own -- an empty galaxy against a blind one. */
+describe("the galaxy page", () => {
+  const LIVE = {
+    readable: true,
+    ttlMinutes: 45,
+    active: [
+      { item: "capture-b6409b7965aa", cycle: 902, note: "drawing the galaxy",
+        outcome: "", state: "active", heldMinutes: 6.2 },
+      { item: "idea-63", cycle: 901, note: "", outcome: "",
+        state: "active", heldMinutes: 31.0 }
+    ],
+    recent: [
+      { item: "idea-99", cycle: 900, note: "", outcome: "merged runner#717",
+        state: "done", heldMinutes: 74.0 }
+    ]
+  };
+
+  test("a live session is a row saying what it is doing", async () => {
+    const window = await loadSite("/galaxy", { galaxy: LIVE });
+    const feed = window.document.getElementById("feed");
+    assert.match(feed.textContent, /2 sessions are working right now/);
+    const live = [...feed.querySelectorAll(".galaxy-row.is-live")];
+    assert.equal(live.length, 2);
+    assert.match(live[0].textContent, /Cycle 902/);
+    assert.match(live[0].textContent, /drawing the galaxy/);
+    assert.match(live[0].textContent, /6 min/);
+  });
+
+  /* A claim with no note is the ordinary case -- `tools.claim take` does
+   * not require one -- so the row falls back to the slug rather than to an
+   * empty line. A body on the canvas with a blank label beside it would be
+   * the same failure as a priority symbol with no word next to it. */
+  test("a claim with no note still says which row it is on", async () => {
+    const window = await loadSite("/galaxy", { galaxy: LIVE });
+    const live = [...window.document.querySelectorAll(".galaxy-row.is-live")];
+    assert.match(live[1].textContent, /idea-63/);
+  });
+
+  test("a released claim is cooling, not working", async () => {
+    const window = await loadSite("/galaxy", { galaxy: LIVE });
+    const feed = window.document.getElementById("feed");
+    assert.match(feed.textContent, /Cooling/);
+    const cooled = [...feed.querySelectorAll(".galaxy-row:not(.is-live)")];
+    assert.equal(cooled.length, 1);
+    assert.match(cooled[0].textContent, /merged runner#717/);
+  });
+
+  /* The distinction the whole payload exists for. Both of these draw no
+   * bodies, and only the words can say which one the reader is looking at. */
+  test("an empty galaxy and a blind one do not say the same thing", async () => {
+    const empty = await loadSite("/galaxy");
+    assert.match(empty.document.getElementById("feed").textContent,
+                 /No session is holding a row this minute/);
+
+    const blind = await loadSite("/galaxy", {
+      galaxy: { readable: false, active: [], recent: [], ttlMinutes: 45 }
+    });
+    assert.match(blind.document.getElementById("feed").textContent,
+                 /could not read the claims ledger/);
+  });
+
+  /* The canvas is opaque to a screen reader, so the label on it has to
+   * carry the same sentence the sighted reader gets. */
+  test("the canvas names what it is drawing", async () => {
+    const window = await loadSite("/galaxy", { galaxy: LIVE });
+    const canvas = window.document.querySelector(".galaxy-canvas");
+    assert.ok(canvas, "no canvas on the galaxy page");
+    assert.equal(canvas.getAttribute("role"), "img");
+    assert.match(canvas.getAttribute("aria-label"), /2 sessions are working/);
   });
 });
