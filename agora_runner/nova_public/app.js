@@ -3437,6 +3437,102 @@
     return card;
   }
 
+  /* The recap card, pinned above the feed.
+   *
+   * The owner, capture 2026-09-04, 🔴 Immediately: "I want a stick Journal
+   * card at the top that summarizes the last 12 hours. Keep it short as I
+   * just want this to quickly glance over what has been done. ... max 5-6
+   * bullets as many cycles work on the same problem/project."
+   *
+   * It draws what the server says and computes nothing: the bullets, the
+   * time it was written and whether that is stale all come down in the
+   * payload, because a number on the screen should have one definition
+   * and one test. Drawn only on the unfiltered, all-cycles feed -- on
+   * `/asks` and on a single-cycle page the reader has asked a narrower
+   * question and a twelve-hour summary is not an answer to it.
+   *
+   * A recap that is missing draws nothing at all rather than an empty
+   * card. He asked for a glance, and an empty box is a thing to read.
+   */
+  /* Fetched on its own rather than inside `fetchAll`, and that is the
+   * design rather than a convenience.
+   *
+   * It was in `fetchAll` first, and two poll tests caught what that costs:
+   * a journal request that never resolves is a real state the page is
+   * built to survive, and `Promise.all` turned it into a recap that never
+   * resolves either -- so the poll never finished and never re-armed its
+   * timer. The recap is not part of the journal round trip. It changes
+   * when a cycle rewrites one vault document, not every thirty seconds,
+   * so re-fetching it on every poll would be waste even if it were safe.
+   *
+   * Fetched once per page load and cached in `recapPayload`; a failure
+   * leaves the card absent, which is the same outcome as no recap having
+   * been written yet. */
+  var recapPayload = null;
+  var recapPending = false;
+  var recapWanted = false;
+
+  function ensureRecap() {
+    if (recapPayload || recapPending) return;
+    recapPending = true;
+    fetch("/api/recap", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (payload) {
+        recapPending = false;
+        recapPayload = payload;
+        placeRecap();
+      })
+      .catch(function () { recapPending = false; });
+  }
+
+  /* Put the card at the top of whatever the feed currently holds. Called
+   * from `render` (the card is already cached) and from the fetch landing
+   * after a render (it was not). Both guarded by `recapWanted`, which the
+   * render sets, so a fetch that lands after a tap onto `/asks` or a
+   * single cycle does not paint a twelve-hour summary over it. */
+  function placeRecap() {
+    if (!recapWanted || !recapPayload) return;
+    if (feed.querySelector(".recap")) return;
+    var card = renderRecap(recapPayload);
+    if (card) feed.insertBefore(card, feed.firstChild);
+  }
+
+  function renderRecap(recap) {
+    if (!recap || !recap.bullets || !recap.bullets.length) return null;
+    var card = el("section", "recap");
+    var head = el("div", "recap-head");
+    head.appendChild(el("h2", "recap-title", "Last 12 hours"));
+    var stampText = recap.writtenLabel
+      ? "as of " + recap.writtenLabel
+      : "written at an unknown time";
+    if (recap.cycles) stampText += " · cycles " + recap.cycles;
+    var stamp = el("span", "recap-stamp", stampText);
+    /* The one thing this card must never do is read as current when it is
+     * not. The stamp is always there; this only marks the case where the
+     * gap is big enough that the window it describes has moved. */
+    if (recap.stale) stamp.className = "recap-stamp stale";
+    head.appendChild(stamp);
+    card.appendChild(head);
+    var list = el("ul", "recap-list");
+    recap.bullets.forEach(function (bullet) {
+      var item = el("li", "recap-item");
+      if (bullet.lead) {
+        item.appendChild(el("strong", "recap-lead", bullet.lead));
+        if (bullet.text) item.appendChild(document.createTextNode(" " + bullet.text));
+      } else {
+        item.appendChild(document.createTextNode(bullet.text));
+      }
+      list.appendChild(item);
+    });
+    card.appendChild(list);
+    if (recap.stale) {
+      card.appendChild(el("p", "recap-note",
+        "This was written more than " + recap.staleAfterHours
+        + " hours ago, so newer cycles are not in it — the feed below is."));
+    }
+    return card;
+  }
+
   function render(journal, digest, comments) {
     /* Drop an answer to a query he has already typed past.
      *
@@ -3570,6 +3666,11 @@
     });
 
     feed.textContent = "";
+    recapWanted = !filtered && wanted === null;
+    if (recapWanted) {
+      ensureRecap();
+      placeRecap();
+    }
     /* The comments read is tolerated on purpose -- the journal is the page,
      * and a comments failure should cost the bubbles, not the feed. But
      * tolerating it silently is what made a 502 look like "nobody has
