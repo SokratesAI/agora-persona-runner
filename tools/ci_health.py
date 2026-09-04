@@ -930,6 +930,9 @@ def billing_meter(org, run=subprocess.run, now=None):
                      f"and was counted at 1x; if it is Windows or macOS the burn above is low.")
     for repo, spent in sorted(per_repo.items(), key=lambda pair: -pair[1]):
         lines.append(f"        {spent:>6.0f} private minute(s) — {repo}")
+    if per_repo:
+        biggest = max(per_repo, key=lambda name: per_repo[name])
+        lines.extend(floor_share(f"{org}/{biggest}", run=run))
     if partial:
         lines.append(f"        partial: {partial}")
 
@@ -939,6 +942,127 @@ def billing_meter(org, run=subprocess.run, now=None):
     forecast_lines, over = burn_forecast(minutes["private"], now, recent_rate=recent_rate)
     lines.extend(forecast_lines)
     return lines, over
+
+
+#: How many of the biggest private spender's newest runs `floor_share` samples.
+#: One `gh` call per run on top of one to list them, so this is a real cost
+#: inside `preflight` -- twenty is what keeps it near two seconds concurrently.
+#: It is a sample and the report says so; the thing being estimated is a
+#: ratio, and job durations on this org cluster tightly (median 26s on
+#: 2026-09-04) rather than spreading, so twenty is plenty to see the shape.
+FLOOR_SAMPLE_RUNS = 20
+
+
+def floor_share(repo, run=subprocess.run, sample=FLOOR_SAMPLE_RUNS,
+                max_workers=DEFAULT_MAX_WORKERS):
+    """`lines` — how much of a repo's bill is the per-job floor rather than compute.
+
+    The owner, comments board 2026-09-04 21:19: *"Explain to me, what repos
+    are using so much minutes and why?"* The meter above answers **what** —
+    `platform-config`, 277 of 312 private minutes this month. It has never
+    been able to answer **why**, and the why is not a bigger version of the
+    what: it is that GitHub bills a private job in whole minutes, rounded up,
+    so a job's existence costs a minute and its duration very often costs
+    nothing at all.
+
+    That distinction has already cost this loop a cycle. Cycle 924 cut the
+    secret scan off `platform-config` expecting minutes back, and got none —
+    the scan ran about eleven seconds inside a job that billed a whole minute
+    either way. The lesson was written into a handoff paragraph, which is
+    exactly where a measured fact goes to die: the next cycle to look at this
+    bill reads a per-repo minute count with nothing beside it saying that
+    shortening a step cannot move it.
+
+    So this prints the ratio. Measured against `platform-config`'s newest 24
+    hours on 2026-09-04: **161 jobs billed 161 minutes for 60 minutes of
+    compute, and not one of the 161 ran past a minute.** Roughly five eighths
+    of that bill is the floor, and the only lever on it is the number of jobs
+    — which here is two per merged pull request, one on the pull request and
+    one on the resulting `main` commit.
+
+    **The verdict can come out either way and that is the point.** A repo
+    whose jobs run four minutes each would report a floor share near zero and
+    a line saying a shorter step *does* move the bill. A check whose answer is
+    fixed in advance measures nothing (see `stalled_runs` for the version of
+    this that bit), so the `over` count is printed whatever it is, and it is
+    what picks the closing sentence.
+
+    Deliberately never raises. This explains a bill; `burn_forecast` above is
+    what decides whether the bill is a problem, and two things raising on one
+    fact reads as two findings.
+    """
+    runs, why = _gh_json(
+        [f"/repos/{repo}/actions/runs?per_page={sample}", "-q",
+         "[.workflow_runs[] | .id]"], run)
+    if runs is None:
+        return [f"        FLOOR   could not sample {repo}'s runs: {why}"]
+    if not runs:
+        return [f"        FLOOR   NOT JUDGED  {repo} has no run in the API to sample, so "
+                f"the shape of its bill cannot be measured from here."]
+
+    def jobs_of(run_id):
+        return _gh_json(
+            [f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page=100", "-q",
+             "[.jobs[] | {conclusion, started_at, completed_at}]"], run)
+
+    fetched, unreadable = [], 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for jobs, job_why in pool.map(jobs_of, runs):
+            if jobs is None:
+                unreadable += 1
+                continue
+            fetched.extend(jobs)
+
+    seconds, undated = [], 0
+    for job in fetched:
+        if not isinstance(job, dict) or job.get("conclusion") == "skipped":
+            continue
+        started, completed = job.get("started_at"), job.get("completed_at")
+        if not started or not completed:
+            undated += 1
+            continue
+        try:
+            began = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            ended = datetime.fromisoformat(completed.replace("Z", "+00:00"))
+        except ValueError:
+            undated += 1
+            continue
+        seconds.append(max(0.0, (ended - began).total_seconds()))
+
+    if not seconds:
+        return [f"        FLOOR   NOT JUDGED  none of {repo}'s newest {len(runs)} run(s) "
+                f"carried a job with both a start and an end, so nothing was measured."]
+
+    billed = sum(max(1, math.ceil(one / 60.0)) for one in seconds)
+    compute = sum(seconds) / 60.0
+    over = sum(1 for one in seconds if one > 60.0)
+    ordered = sorted(seconds)
+    median = ordered[len(ordered) // 2]
+    lines = [
+        f"        FLOOR   {repo}, newest {len(runs)} run(s): {len(seconds)} job(s) billed "
+        f"{billed} minute(s) for {compute:.1f} minute(s) of compute — "
+        f"{(1 - compute / billed) * 100:.0f}% of that is the whole minute GitHub "
+        f"rounds every private job up to.",
+    ]
+    if over:
+        lines.append(
+            f"        {over} of {len(seconds)} job(s) ran past a minute (median {median:.0f}s, "
+            f"longest {ordered[-1]:.0f}s), so a slower step here really does cost extra "
+            f"minutes and shortening one can move this bill.")
+    else:
+        lines.append(
+            f"        not one of the {len(seconds)} ran past a minute (median {median:.0f}s, "
+            f"longest {ordered[-1]:.0f}s), so no step here is long enough to bill a second "
+            f"minute and shortening one saves nothing. The only lever is the number of "
+            f"jobs — {len(seconds) / len(runs):.1f} per run, and a run per pull request "
+            f"plus a run per resulting commit.")
+    if unreadable:
+        lines.append(f"        partial: {unreadable} of {len(runs)} sampled run(s) would not "
+                     f"give up their jobs, so the counts above are a floor, not the total.")
+    if undated:
+        lines.append(f"        partial: {undated} job(s) carried no start or end and were left "
+                     f"out rather than counted as zero.")
+    return lines
 
 
 def _sweep_repo(repo, grace_minutes, run, now):
