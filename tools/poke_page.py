@@ -72,6 +72,7 @@ from tools.see_page import BrowserMissing, DEFAULT_BASE, PHONE_WIDTH, browser_ro
 PROBES = (
     "nav-reachable",
     "chat-scroll-lock",
+    "galaxy-canvas",
     "search-focus",
     "search-focus-ideas",
     "replay-header",
