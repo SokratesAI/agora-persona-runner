@@ -156,6 +156,14 @@ BACKUPS = (
 #: `ACKNOWLEDGED` on purpose: those are volumes deliberately left unprotected, this
 #: is a volume that is protected by something nothing is watching yet.
 NOT_JUDGED = {
+    "infra/whatsapp-bridge-auth": (
+        "the whatsapp-auth-backup CronJob copies it to the NAS four times a day at "
+        ":25 Oslo (platform-config/cronjobs/whatsapp-auth-backup.yaml); first run "
+        "2026-09-04 06:25 archived 1774 files, 361,678 bytes to 170,594, verified by "
+        "sha256 on both sides. Four a day rather than nightly because the session's "
+        "keys rotate, so a stale copy can fail to restore. Nothing here reads the "
+        "NAS, so this says a backup exists and not that it still runs"
+    ),
     "agents/agora-data": (
         "the agora-backup CronJob copies it to the NAS nightly at 03:40 Oslo "
         "(platform-config/cronjobs/agora-backup.yaml); first run 2026-09-04 verified "
