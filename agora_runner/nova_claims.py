@@ -255,6 +255,27 @@ def _parse_at(row):
     return parsed
 
 
+def held_minutes(row, now):
+    """How long this claim has been held, in minutes, or `None`.
+
+    Public because it is the one thing a *reader* of the ledger wants
+    that `held_by`, `finished_claims` and `summarise` all compute
+    privately and then throw away. `nova_galaxy` draws a body's orbit
+    from it, and reaching into `_parse_at` from another module to get it
+    would make this module's private half part of its interface by
+    accident.
+
+    `None` rather than an exception on a timestamp that will not parse: a
+    hand-edit is the ordinary case for a vault document, and a claim whose
+    age I cannot read is still a real claim. The caller decides what to do
+    with an unknown age; here, refusing to answer is the honest answer.
+    """
+    try:
+        return _minutes_between(_parse_at(row), now)
+    except ClaimError:
+        return None
+
+
 def find(ledger, item):
     for row in ledger["claims"]:
         if row["item"] == item:
