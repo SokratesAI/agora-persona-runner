@@ -17,15 +17,29 @@ import pytest
 from tools import cronjob_health
 
 
+#: Every case below that is not about a CronJob's age wants one old enough to
+#: judge, so the default creation stamp is months before `NOW`.
+OLD = "2026-01-01T00:00:00Z"
+
+#: The clock every report in this file is judged against, injected rather than
+#: read, so a test about age cannot drift into a test about today's date.
+NOW = cronjob_health._as_datetime("2026-09-04T19:00:00Z")
+
+
 def cronjob(name, schedule="*/5 * * * *", suspend=False,
-            scheduled="", succeeded="", namespace="agents", timezone="Etc/UTC"):
+            scheduled="", succeeded="", namespace="agents", timezone="Etc/UTC",
+            created=OLD):
     status = {}
     if scheduled:
         status["lastScheduleTime"] = scheduled
     if succeeded:
         status["lastSuccessfulTime"] = succeeded
     return {
-        "metadata": {"name": name, "namespace": namespace},
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "creationTimestamp": created,
+        },
         "spec": {"schedule": schedule, "suspend": suspend, "timeZone": timezone},
         "status": status,
     }
@@ -41,10 +55,10 @@ def fake_kubectl(items=(), returncode=0, stderr="", stdout=None):
     return runner
 
 
-def report_for(items):
+def report_for(items, now=NOW):
     rows, why = cronjob_health.read_cronjobs(fake_kubectl(items=items))
     assert why is None
-    return cronjob_health.report(rows)
+    return cronjob_health.report(rows, now=now)
 
 
 # --- the clean case -------------------------------------------------
@@ -299,3 +313,69 @@ def test_preflight_runs_it():
     from tools import preflight
     assert "cronjob_health" in preflight.CHECKS
     assert preflight.SUBJECT["cronjob_health"][0] == "on-box"
+
+
+# --- too young to judge ---------------------------------------------
+
+def test_a_cronjob_younger_than_its_first_slot_is_not_never_scheduled():
+    # Measured Cycle 920 against the live cluster: `agents/agora-backup` was
+    # created 2026-09-04T03:26:35Z on `40 3 * * *` Europe/Oslo, so its first
+    # firing was not due until the next morning — and it read `NEVER
+    # SCHEDULED`, the verdict reserved for a controller that has never heard
+    # of the schedule, for the whole of the day in between.
+    lines, status = report_for([
+        cronjob("agora-backup", "40 3 * * *", timezone="Europe/Oslo",
+                created="2026-09-04T03:26:35Z", scheduled="", succeeded=""),
+    ])
+    assert status == 0
+    assert not any("NEVER SCHEDULED" in line for line in lines)
+    assert any("NOT JUDGED  agents/agora-backup" in line for line in lines)
+    assert any("too young" in line for line in lines)
+
+
+def test_the_same_cronjob_raises_once_its_slot_has_come_and_gone():
+    # The grace is one slot, not a day. Two mornings after creation with the
+    # status still empty, the controller really has not created a Job for it
+    # and the loud verdict is the right one.
+    lines, status = report_for([
+        cronjob("agora-backup", "40 3 * * *", timezone="Europe/Oslo",
+                created="2026-09-04T03:26:35Z", scheduled="", succeeded=""),
+    ], now=cronjob_health._as_datetime("2026-09-06T19:00:00Z"))
+    assert status == 2
+    assert any("NEVER SCHEDULED  agents/agora-backup" in line for line in lines)
+
+
+def test_a_first_run_still_in_flight_is_not_never_succeeded():
+    # One slot has come round and the Job it created has not finished. That
+    # is the same in-flight case `GRACE_SLOTS` exists for on the BEHIND
+    # branch, and it must not read as broken from birth.
+    lines, status = report_for([
+        cronjob("newborn", "*/5 * * * *", created="2026-09-04T18:56:00Z",
+                scheduled="2026-09-04T19:00:00Z", succeeded=""),
+    ])
+    assert status == 0
+
+
+def test_a_cronjob_with_no_creation_stamp_is_still_judged():
+    # Without an age there is no grace to grant, and a watchdog fails loud:
+    # an unreadable creation stamp must not buy a CronJob a free pass.
+    lines, status = report_for([
+        cronjob("orphan", scheduled="", succeeded="", created=""),
+    ])
+    assert status == 2
+    assert any("NEVER SCHEDULED  agents/orphan" in line for line in lines)
+
+
+def test_a_young_cronjob_is_named_on_the_line_preflight_keeps():
+    # `preflight` collapses a check that exits 0 to its last line carrying a
+    # digit. A CronJob that was declined rather than passed has to survive
+    # that collapse, the same way a suspended one does.
+    lines, status = report_for([
+        cronjob("agora-backup", "40 3 * * *", timezone="Europe/Oslo",
+                created="2026-09-04T03:26:35Z"),
+    ])
+    assert status == 0
+    swept = [line for line in lines if "Judged 1 CronJob(s)" in line]
+    assert len(swept) == 1
+    assert "agents/agora-backup" in swept[0]
+    assert "not judged" in swept[0]

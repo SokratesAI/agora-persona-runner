@@ -61,6 +61,22 @@ from birth; one that used to work and stopped is a regression. Three
 different causes, three different first questions, so they are never merged
 into one count.
 
+**A CronJob younger than its own first slot is not judged at all**, which is
+the same call the suspend rule makes and for the same reason. Neither
+`lastScheduleTime` nor `lastSuccessfulTime` exists until a slot has come
+round, so a brand-new CronJob carries exactly the empty status of a
+controller that has never heard of it. Measured Cycle 920:
+`agents/agora-backup` was created at 05:26 Oslo on a `40 3 * * *` schedule
+and read `NEVER SCHEDULED` -- the loudest verdict here -- for the thirteen
+and a half hours between its creation and my reading it, with another nine
+to go before its first firing was even due. `preflight` exited 2 on it every
+cycle in between. The grace is `GRACE_SLOTS`, the same one slot the
+BEHIND branch already allows and for the same argument: the newest slot's
+run may still be in flight, so one is explainable and two is not. It fails
+loud rather than quiet -- a `creationTimestamp` that is missing or
+unreadable buys no grace and the old verdict stands, because an age nobody
+can read is not an excuse.
+
 Exit status, matching `tools.argocd_health`, `tools.heartbeat_health` and
 `tools.schedule_health` so a cycle can read it without parsing the text:
 **2 means a CronJob is failing on its own schedule**, 1 means something was
@@ -131,6 +147,7 @@ def read_cronjobs(runner=subprocess.run):
             "schedule": (spec.get("schedule") or "").strip(),
             "timezone": (spec.get("timeZone") or "").strip(),
             "suspended": bool(spec.get("suspend")),
+            "created": meta.get("creationTimestamp") or "",
             "scheduled": status.get("lastScheduleTime") or "",
             "succeeded": status.get("lastSuccessfulTime") or "",
         })
@@ -191,24 +208,60 @@ def slots_behind(schedule, succeeded, scheduled, timezone=""):
     return count, False
 
 
-def judge(row):
+def _slots_since_creation(row, now):
+    """Firings of this CronJob's schedule since Kubernetes created it.
+
+    `None` when `creationTimestamp` is missing or unreadable, which is the
+    loud direction to fail in: without an age there is no grace, and the
+    caller judges the empty status the way it always did.
+    """
+    created = _as_datetime(row.get("created", ""))
+    if created is None or created > now:
+        return None
+    count, _ = slots_behind(row["schedule"], created, now, row.get("timezone", ""))
+    return count
+
+
+def judge(row, now):
     """One CronJob's verdict, as (verdict, detail) or raising `ValueError`.
 
     `verdict` is one of `ok`, `NOT JUDGED`, `NEVER SCHEDULED`,
     `NEVER SUCCEEDED`, `BEHIND`. Only the last three raise; the caller owns
     that decision so the rule stays in one place.
+
+    `now` is required rather than defaulted, because a clock bound in a
+    signature is a clock a test cannot move.
     """
     if row["suspended"]:
         since = row["succeeded"] or row["scheduled"] or "never run"
         return "NOT JUDGED", f"suspended in the live cluster; last success {since}"
 
     scheduled = _as_datetime(row["scheduled"])
+    succeeded = _as_datetime(row["succeeded"])
+
+    if scheduled is None or succeeded is None:
+        # Neither stamp exists until a slot has come round, so a CronJob
+        # younger than its own first slot carries the same empty status as a
+        # controller that has never heard of it. Measured Cycle 920:
+        # `agents/agora-backup` was created 05:26 Oslo on a `40 3 * * *`
+        # schedule and read `NEVER SCHEDULED` — the loudest verdict this check
+        # has — from its creation until its first firing the next morning.
+        # That is `schedule_health`'s NEVER FIRED wearing the wrong cause, and
+        # a check that goes red on every new CronJob for a day is one that
+        # stops being read.
+        young = _slots_since_creation(row, now)
+        if young is not None and young <= GRACE_SLOTS:
+            wanted = "scheduled" if scheduled is None else "succeeded"
+            return "NOT JUDGED", (
+                f"created {row['created']} and {young} slot(s) of its own "
+                f"schedule have come round since — too young to have "
+                f"{wanted} yet, not a verdict about it")
+
     if scheduled is None:
         return "NEVER SCHEDULED", (
             "Kubernetes has never created a Job for it — the controller does "
             "not know about this schedule")
 
-    succeeded = _as_datetime(row["succeeded"])
     if succeeded is None:
         return "NEVER SUCCEEDED", (
             f"scheduled since {row['scheduled']} and no run has ever finished")
@@ -223,17 +276,20 @@ def judge(row):
         f"{row['scheduled']}, last success {row['succeeded']}")
 
 
-def report(rows):
+def report(rows, now=None):
     """The printed lines and the exit status, as (lines, status)."""
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
     lines = []
     actionable = False
     unreadable = False
     suspended = []
+    young = []
 
     for row in sorted(rows, key=lambda r: (r["namespace"], r["name"])):
         who = f"{row['namespace']}/{row['name']}"
         try:
-            verdict, detail = judge(row)
+            verdict, detail = judge(row, now)
         except ValueError as exc:
             unreadable = True
             lines.append(
@@ -242,7 +298,7 @@ def report(rows):
         if verdict == "ok":
             lines.append(f"ok      {who} ({row['schedule']}): {detail}")
         elif verdict == "NOT JUDGED":
-            suspended.append(who)
+            (suspended if row["suspended"] else young).append(who)
             lines.append(f"NOT JUDGED  {who} ({row['schedule']}): {detail}")
         else:
             actionable = True
@@ -262,6 +318,13 @@ def report(rows):
         swept += (
             f" Suspended in the live cluster and deliberately not raised: "
             f"{', '.join(suspended)}.")
+    if young:
+        # Same reason as the suspended names above: `preflight` collapses a
+        # check that exits 0 to its last line carrying a digit, and a CronJob
+        # that was declined rather than passed has to survive that collapse.
+        swept += (
+            f" Younger than {GRACE_SLOTS} slot of their own schedule and "
+            f"therefore not judged: {', '.join(young)}.")
     lines.append(swept)
     if suspended:
         lines.append(
