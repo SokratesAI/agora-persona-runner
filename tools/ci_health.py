@@ -534,7 +534,9 @@ def recent_private_rate(repos, used_private, org, now,
     window_start = now - timedelta(hours=window_hours)
     month_runs = 0
     recent_runs = 0
+    priced_minutes = 0.0
     unread = []
+    unpaired = []
     for repo in sorted(repos):
         # The billing API names a repo bare -- `platform-config`, not
         # `SokratesAI/platform-config` -- so the owner has to come from the
@@ -554,26 +556,61 @@ def recent_private_rate(repos, used_private, org, now,
                 break
             if bucket == "month":
                 month_runs += payload["total_count"]
+                # Only a repo whose runs were actually counted may contribute
+                # its minutes to the price. The meter knows what every repo
+                # spent; the runs API may not still hold the runs that spent
+                # it -- GitHub expires run records, so a repo can carry real
+                # minutes and answer zero. Dividing those minutes by another
+                # repo's runs inflates minutes-per-run, which inflates the
+                # recent rate. Pairing minutes with runs one repo at a time
+                # keeps the ratio a ratio of one population.
+                if payload["total_count"] > 0:
+                    priced_minutes += repos[repo]
+                elif repos[repo] > 0:
+                    unpaired.append(f"{full} ({repos[repo]:.0f} minute(s), no run record left)")
             else:
                 recent_runs += payload["total_count"]
 
     lines = []
     if unread:
-        lines.append(f"        NOT JUDGED  {len(unread)} private repo(s) could not be counted, "
-                     f"so the recent rate below is low by whatever they spent: "
+        lines.append(f"        NOT JUDGED  {len(unread)} private repo(s) could not be counted: "
                      f"{', '.join(sorted(set(unread)))}")
-    if month_runs <= 0:
-        lines.append("        NOT JUDGED  no workflow run was counted this month, so minutes "
-                     "per run is undefined and the recent window cannot be priced.")
+    if unpaired:
+        # This one is printed and does NOT stop the rating. A repo whose runs
+        # have aged out of the API spent its minutes in the past, which is
+        # what the month-to-date rate already accounts for; it says nothing
+        # about the newest 24 hours and excluding it is the honest pairing.
+        lines.append(f"        left out of the price  {len(unpaired)} repo(s) whose minutes "
+                     f"have no run record to pair with: {', '.join(sorted(set(unpaired)))}")
+    # **A partial count refuses rather than reporting low, and that is the
+    # opposite of what the first draft of this did.** The rate here gates an
+    # exit status. If the busiest repo's month call lands and its recent call
+    # does not, its runs are in the denominator and its activity is not, and
+    # the rate comes out at or near zero -- which prints `within budget` and
+    # exits 0 in exactly the spiking-repo case this exists to catch. "Low" is
+    # only the safe direction for a number nobody acts on. Everywhere else in
+    # this file missing information overstates risk (an unpriced runner SKU is
+    # counted and named, an unreadable repo never reads as clean), so a window
+    # that could not be swept whole is not a window.
+    if unread or month_runs <= 0 or priced_minutes <= 0:
+        if unread:
+            lines.append("        NOT JUDGED  the recent window is not rated at all, because "
+                         "a repo missing from one of its two counts drags the rate toward "
+                         "zero rather than shrinking it proportionally, and this rate raises "
+                         "the check. The month-to-date rate below is unaffected.")
+        else:
+            lines.append("        NOT JUDGED  no workflow run was counted this month on any "
+                         "repo whose minutes could be paired with it, so minutes per run is "
+                         "undefined and the recent window cannot be priced.")
         return lines, None
 
-    minutes_per_run = used_private / month_runs
+    minutes_per_run = priced_minutes / month_runs
     window_days = window_hours / 24.0
     rate = recent_runs / window_days * minutes_per_run
     lines.append(
         f"        newest {window_hours:.0f}h: {recent_runs} run(s) at "
         f"{minutes_per_run:.2f} measured private minute(s) per run "
-        f"({used_private:.0f} minute(s) over {month_runs} run(s) this month) — "
+        f"({priced_minutes:.0f} minute(s) over {month_runs} run(s) this month) — "
         f"{rate:.1f} private minute(s)/day.")
     return lines, rate
 
