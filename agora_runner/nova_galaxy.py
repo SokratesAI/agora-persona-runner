@@ -32,8 +32,7 @@ things, which is the same call `next_payload` makes for the same reason.
 from agora_runner.nova_claims import (
     CLAIM_TTL_MINUTES,
     ClaimError,
-    _minutes_between,
-    _parse_at,
+    held_minutes,
     is_stale,
     load,
 )
@@ -46,13 +45,13 @@ RECENT_LIMIT = 12
 
 
 def _row(row, now, active):
-    try:
-        held = round(_minutes_between(_parse_at(row), now), 1)
-    except ClaimError:
-        # A hand-edited `at` this module cannot read is not a reason to
-        # drop the body -- the slug and the cycle are still true, and a
-        # missing age draws as a resting body rather than as nothing.
-        held = None
+    # A hand-edited `at` this module cannot read is not a reason to drop
+    # the body -- the slug and the cycle are still true, and `held_minutes`
+    # answers `None` rather than raising, so a missing age draws as a
+    # resting body rather than as nothing.
+    held = held_minutes(row, now)
+    if held is not None:
+        held = round(held, 1)
     return {
         "item": row["item"],
         "cycle": row["cycle"],

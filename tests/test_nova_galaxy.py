@@ -99,3 +99,18 @@ def test_recent_is_capped_so_the_canvas_stays_a_report():
     # Newest kept, oldest dropped -- the cap is a drawing limit, so it has
     # to cut from the end nobody is looking at.
     assert payload["recent"][0]["item"] == "i0"
+
+
+def test_held_minutes_is_public_so_the_shaping_does_not_reach_into_privates():
+    """`nova_galaxy` needs a claim's age and no public function answered it.
+
+    Pinned as a test rather than left to the import, because the failure it
+    guards is silent: reaching into `nova_claims._parse_at` works fine and
+    makes that module's private half part of its interface by accident.
+    """
+    from agora_runner.nova_claims import held_minutes
+
+    assert held_minutes({"item": "a", "cycle": 1, "at": at(12)}, NOW) == 12.0
+    assert held_minutes({"item": "a", "cycle": 1, "at": "nope"}, NOW) is None
+    # A naive timestamp is refused the same way, not silently subtracted.
+    assert held_minutes({"item": "a", "cycle": 1, "at": "2026-09-04T10:00:00"}, NOW) is None
