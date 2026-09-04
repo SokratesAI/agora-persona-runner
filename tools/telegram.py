@@ -1,18 +1,23 @@
-"""Send the owner a WhatsApp message, as a command.
+"""Send the owner a Telegram message, as a command.
 
-The bridge is a two-endpoint HTTP service in the `infra` namespace and
-the message goes to the owner's own "Message yourself" chat, because it paired
-as a linked device on that account. Every caller so far hand-rolled the
-same curl, which is what he asked to stop doing:
+The bridge is a two-endpoint HTTP service in the `infra` namespace and the
+message goes to the owner's own chat with the bot. Every caller so far
+hand-rolled the same curl, which is what he asked to stop doing:
 
     "it is a good idea to build such a tool to make it easier for you
     and your cycles to do so."  -- the owner, ideas.md, 2026-09-01
 
-    python3 -m tools.whatsapp status
-    python3 -m tools.whatsapp send 'the newspaper job is dead again'
-    python3 -m tools.whatsapp send --file /tmp/alert.txt
-    printf '%s' "$body" | python3 -m tools.whatsapp send -
-    python3 -m tools.whatsapp send --file /tmp/alert.txt --dry-run
+    python3 -m tools.telegram status
+    python3 -m tools.telegram send 'the newspaper job is dead again'
+    python3 -m tools.telegram send --file /tmp/alert.txt
+    printf '%s' "$body" | python3 -m tools.telegram send -
+    python3 -m tools.telegram send --file /tmp/alert.txt --dry-run
+
+This was `tools.whatsapp` until 2026-09-04, when the owner asked for the
+WhatsApp deployment shut down and replaced with a Telegram one. The CLI,
+the exit codes and the reasoning below are unchanged -- only the service
+it talks to moved, which is the whole point of the bridge having had a
+two-endpoint contract.
 
 The three things a hand-rolled curl gets wrong, and why each one is here:
 
@@ -24,23 +29,24 @@ bytes without a shell in the middle, so a message with backticks, quotes
 or newlines in it arrives as written.
 
 **A refusal that looks like a success.** `curl` exits 0 on an HTTP 503,
-so the pairing-is-down case -- the one that actually happens -- prints
+so the not-configured case -- the one that actually happens -- prints
 nothing and reads as sent. Here it is exit 2, on a line that says which
 of the three refusals it was.
 
-**Which failure it was.** Unreachable, not paired, and send-failed are
+**Which failure it was.** Unreachable, not configured, and send-failed are
 different problems with different owners, and the bridge separates them
-already: 503 means WhatsApp is not connected, 502 means it is and the
-send threw. Exit 1 is reserved for "I could not reach the bridge or
-could not read its answer", so an instrument problem never reads as a
-clean send -- the same contract as the checks in `tools.preflight`.
+already: 503 means it cannot send yet (no bot token, or the owner has not
+messaged the bot), 502 means it tried and Telegram refused. Exit 1 is
+reserved for "I could not reach the bridge or could not read its answer",
+so an instrument problem never reads as a clean send -- the same contract
+as the checks in `tools.preflight`.
 
 Two things it deliberately does not do. It does not add the robot
-prefix: the server prepends `🤖 ` itself, because on a linked device a
-bot message and one the owner typed are otherwise identical, and a second
-prefix here would double it. And it does not take a recipient -- the
-service sends to `OWNER_WHATSAPP_JID` and refuses a `{to, text}` body on
-purpose, so there is no argument to pass.
+prefix: the server prepends it, because a bot message and one the owner
+typed are otherwise easy to confuse in a chat he also writes in, and a
+second prefix here would double it. And it does not take a recipient --
+the service sends to the one owner chat and refuses a `{to, text}` body
+on purpose, so there is no argument to pass.
 """
 
 import argparse
@@ -49,16 +55,20 @@ import sys
 import urllib.error
 import urllib.request
 
-# Repo root on sys.path so `python3 tools/whatsapp.py` works and not only `-m`.
+# Repo root on sys.path so `python3 tools/telegram.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-DEFAULT_URL = "http://whatsapp-bridge.infra.svc.cluster.local:8080"
+DEFAULT_URL = "http://telegram-bridge.infra.svc.cluster.local:8080"
 
-# `express.json({limit: "64kb"})` in the bridge's own server. Over it, express
-# answers 413 with an HTML body, so the caller gets a parse error instead of a
-# refusal. Refusing here names the real limit and the real length.
+# Inherited from the WhatsApp bridge, where it was express's own 64kb body
+# limit. The Telegram bridge has no body limit of its own -- it splits the text
+# into 3900-character messages -- so this ceiling is now about the far end
+# rather than the near one: 64KB is seventeen messages in a burst, and
+# Telegram's documented per-chat limit is around twenty a minute, so past this
+# the tail is throttled rather than sent. I have not measured that limit myself;
+# what I can defend is that the number is unchanged and no caller has hit it.
 MAX_TEXT_BYTES = 64 * 1024 - 512  # headroom for the JSON envelope
 
 
@@ -129,33 +139,36 @@ def send(text, url=DEFAULT_URL, opener=urllib.request.urlopen, timeout=15):
     try:
         status, body = _post(url, "/send", {"text": text.strip()}, opener, timeout)
     except Exception as err:  # URLError, socket timeout, anything below it
-        return 1, f"could not reach the WhatsApp bridge at {url}: {err}"
+        return 1, f"could not reach the Telegram bridge at {url}: {err}"
     if status == 200:
         return 0, f"sent, {len(text.strip())} character(s)"
     if status == 503:
-        return 2, "the bridge is up but WhatsApp is not connected — nothing was sent"
+        return 2, "the bridge is up but cannot send yet — nothing was sent"
     if status == 502:
-        return 2, "the bridge is connected and the send itself failed — nothing was sent"
+        return 2, "the bridge is configured and Telegram refused the send — nothing was sent"
     detail = body.get("error") or "no error field in the response"
     return 2, f"the bridge refused with HTTP {status}: {detail}"
 
 
 def status_of(url=DEFAULT_URL, opener=urllib.request.urlopen, timeout=15):
-    """(exit status, line). 0 ready to send, 2 up but unpaired, 1 unreachable.
+    """(exit status, line). 0 ready to send, 2 up but unconfigured, 1 unreachable.
 
     Reads /health rather than /healthz on purpose: /healthz is the
     readiness probe and answers 200 as soon as the HTTP server binds,
-    whether or not WhatsApp is connected, so it cannot answer the only
-    question a caller has here.
+    whether or not the bot token and the owner chat id are there, so it
+    cannot answer the only question a caller has here.
     """
     try:
         code, body = _get(url, "/health", opener, timeout)
     except Exception as err:
-        return 1, f"could not reach the WhatsApp bridge at {url}: {err}"
+        return 1, f"could not reach the Telegram bridge at {url}: {err}"
     if code == 200:
-        return 0, f"ready — WhatsApp is connected at {url}"
+        return 0, f"ready — the bridge can send at {url}"
     if code == 503:
-        return 2, f"the bridge is up at {url} and WhatsApp is not connected: {body.get('status', 'not_ready')}"
+        # The bridge answers /health with a `hint` naming which half is
+        # missing -- the token, or an owner who has not messaged the bot yet.
+        # Those have different owners, so passing it through is the point.
+        return 2, f"the bridge is up at {url} and cannot send yet: {body.get('hint', 'not ready')}"
     return 1, f"unexpected HTTP {code} from {url}/health"
 
 
@@ -170,7 +183,7 @@ def build_parser():
     send_cmd.add_argument("--file", help="read the message from this file instead")
     send_cmd.add_argument("--dry-run", action="store_true", help="print what would be sent and send nothing")
 
-    sub.add_parser("status", help="is the bridge connected to WhatsApp?")
+    sub.add_parser("status", help="can the bridge actually send?")
     return parser
 
 
