@@ -4478,6 +4478,22 @@ X that summarizes the last 12
 
 .recap-lead { color: var(--fg, inherit); }
 
+/* Underlined rather than colour alone: he reads this on a phone in
+ * daylight, and "the blue words are tappable" is a colour code the card
+ * would be asking him to already know. The 44px touch target is Apple's
+ * and Google's minimum; a link inside a sentence cannot have it in the
+ * inline direction, so the padding buys it vertically and the line-height
+ * on `.recap-item` keeps the rows from colliding. */
+.recap-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  padding: 0.35rem 0;
+}
+
+.recap-link:hover,
+.recap-link:focus-visible { text-decoration-thickness: 2px; }
+
 .recap-note {
   margin: 0.6rem 0 0;
   font-size: 0.78rem;

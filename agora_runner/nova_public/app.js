@@ -3497,6 +3497,45 @@
     if (card) feed.insertBefore(card, feed.firstChild);
   }
 
+  /* A bullet's text, with whatever it points at as a real tap target.
+   *
+   * His capture 2026-09-04 12:29, on the card built the cycle before:
+   * *"the bullet that mentions the tailnet start page has been created, i
+   * immediately want to check it out but I'm left without a url or any
+   * clickable link so i have to search for it. It should be very easy for
+   * me to click the link. You can look at this board as a 'news board' or
+   * your place to market to me what you have created."*
+   *
+   * The split into linked and unlinked runs is `nova_recap.link_parts` --
+   * server-side, one definition, one test, and this never sees markdown.
+   * `fallback` is the same sentence as one string and is what draws when
+   * an older payload has no `parts` at all: a card that renders without
+   * links is a small loss, a card that renders empty is the whole thing.
+   *
+   * An off-site link opens in a new tab because the page it leaves is the
+   * one he was reading; a path on this site navigates in place, which is
+   * what every other link here does. */
+  function paintRecapParts(host, parts, fallback) {
+    if (!parts || !parts.length) {
+      if (fallback) host.appendChild(document.createTextNode(fallback));
+      return;
+    }
+    parts.forEach(function (part) {
+      if (!part || !part.text) return;
+      if (!part.href) {
+        host.appendChild(document.createTextNode(part.text));
+        return;
+      }
+      var link = el("a", "recap-link", part.text);
+      link.href = part.href;
+      if (/^https?:/i.test(part.href)) {
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+      }
+      host.appendChild(link);
+    });
+  }
+
   function renderRecap(recap) {
     if (!recap || !recap.bullets || !recap.bullets.length) return null;
     var card = el("section", "recap");
@@ -3517,11 +3556,12 @@
     recap.bullets.forEach(function (bullet) {
       var item = el("li", "recap-item");
       if (bullet.lead) {
-        item.appendChild(el("strong", "recap-lead", bullet.lead));
-        if (bullet.text) item.appendChild(document.createTextNode(" " + bullet.text));
-      } else {
-        item.appendChild(document.createTextNode(bullet.text));
+        var lead = el("strong", "recap-lead");
+        paintRecapParts(lead, bullet.leadParts, bullet.lead);
+        item.appendChild(lead);
+        if (bullet.text) item.appendChild(document.createTextNode(" "));
       }
+      paintRecapParts(item, bullet.parts, bullet.text);
       list.appendChild(item);
     });
     card.appendChild(list);
@@ -3666,7 +3706,12 @@
     });
 
     feed.textContent = "";
-    recapWanted = !filtered && wanted === null;
+    /* `answered` and not the input box: the card goes with the results it
+     * sits above, and the box runs ahead of them by a round trip on every
+     * keystroke. His capture 2026-09-04 12:29: *"it should go away when i
+     * use the search tool on journals."* A twelve-hour summary pinned over
+     * three search hits is answering a question he did not ask. */
+    recapWanted = !filtered && wanted === null && !answered;
     if (recapWanted) {
       ensureRecap();
       placeRecap();
