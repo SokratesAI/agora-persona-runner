@@ -33,6 +33,22 @@ reverted on the next sync. Those are counted and named in the report and they do
 not raise, because raising forever on something nobody here can fix is how a
 check gets ignored.
 
+**A workload can declare a reference exempt, and the reason travels with it.**
+`agents/agora-claude-bridge` reads `claude-auth`, and restarting it on a change
+to that Secret would kill a running cycle and change nothing -- the bridge writes
+that credential to its PVC once, on first boot, and never overwrites the file. So
+the honest coverage answer there is neither "covered" nor "gap". A workload
+declares the exception on itself, one annotation per reference:
+
+    nova.sokrates.ai/reload-exempt.sec.claude-auth: written to the PVC once ...
+
+The name of the reference is in the key and the reason is the value, so the
+reason reaches this report rather than living in a table inside this file --
+a table of which workloads are excused is a second copy of the truth, and it
+goes stale exactly the way the annotation it describes does. **An exemption
+with an empty value is not honoured**: the whole point is that a reader of the
+report is told why, and a blank reason tells them nothing.
+
 **One annotation this cannot judge, and it says so rather than guessing.**
 `reloader.stakater.com/search: "true"` reloads on any ConfigMap or Secret
 carrying `reloader.stakater.com/match: "true"`, so the answer lives on the other
@@ -70,6 +86,10 @@ _AUTO = "reloader.stakater.com/auto"
 _SEARCH = "reloader.stakater.com/search"
 _CM_RELOAD = "configmap.reloader.stakater.com/reload"
 _SEC_RELOAD = "secret.reloader.stakater.com/reload"
+
+#: `<prefix><cm|sec>.<name>: <reason>` on a workload excuses that one
+#: reference. See the module docstring for why the reason is the value.
+_EXEMPT_PREFIX = "nova.sokrates.ai/reload-exempt."
 
 
 def _run(runner, args):
@@ -145,6 +165,27 @@ def covered(annotations: dict, refs: set[str]) -> tuple[set[str], bool]:
     return refs & named, True
 
 
+def exemptions(annotations: dict) -> dict[str, str]:
+    """`{ref: reason}` for every reference this workload declares exempt.
+
+    An exemption whose value is blank is dropped rather than honoured, so a
+    silent `""` cannot excuse a workload the way a written reason can.
+    """
+    out: dict[str, str] = {}
+    for key, value in (annotations or {}).items():
+        if not str(key).startswith(_EXEMPT_PREFIX):
+            continue
+        suffix = str(key)[len(_EXEMPT_PREFIX):]
+        kind, _, name = suffix.partition(".")
+        if kind not in ("cm", "sec") or not name:
+            continue
+        reason = " ".join(str(value or "").split())
+        if not reason:
+            continue
+        out[f"{kind}:{name}"] = reason
+    return out
+
+
 def read_reloader(runner=subprocess.run):
     """`(ready_replicas, None)` for the Reloader Deployment, or `(None, why)`."""
     body, why = _run(
@@ -171,7 +212,8 @@ def read_workloads(runner=subprocess.run):
         meta = item.get("metadata") or {}
         spec = ((item.get("spec") or {}).get("template") or {}).get("spec") or {}
         refs = references(spec)
-        seen, judged = covered(meta.get("annotations") or {}, refs)
+        annotations = meta.get("annotations") or {}
+        seen, judged = covered(annotations, refs)
         out.append({
             "kind": item.get("kind") or "?",
             "namespace": meta.get("namespace") or "?",
@@ -179,6 +221,7 @@ def read_workloads(runner=subprocess.run):
             "refs": refs,
             "covered": seen,
             "judged": judged,
+            "exempt": exemptions(annotations),
         })
     return out, None
 
@@ -196,6 +239,8 @@ def report(ready, workloads):
 
     owned = [w for w in workloads if w["namespace"] in OWNED]
     gaps = []
+    excused: list = []
+    stale: list = []
     for w in owned:
         if not w["refs"]:
             continue
@@ -205,9 +250,14 @@ def report(ready, workloads):
                 f"`{_SEARCH}`, whose answer lives on the ConfigMap"
             )
             continue
-        missing = sorted(w["refs"] - w["covered"])
+        exempt = w.get("exempt") or {}
+        missing = sorted(w["refs"] - w["covered"] - set(exempt))
         if missing:
             gaps.append((w, missing))
+        for ref in sorted(set(exempt) & w["refs"]):
+            excused.append((w, ref, exempt[ref]))
+        for ref in sorted(set(exempt) - w["refs"]):
+            stale.append((w, ref))
 
     for w, missing in sorted(gaps, key=lambda g: (g[0]["namespace"], g[0]["name"])):
         lines.append(
@@ -216,11 +266,35 @@ def report(ready, workloads):
             + " reaches this pod only on the next restart"
         )
 
-    fine = [w for w in owned if w["refs"] and w["judged"] and not (w["refs"] - w["covered"])]
+    for w, ref, reason in excused:
+        lines.append(
+            f"EXEMPT      {w['namespace']}/{w['name']} — {ref} will not restart "
+            f"this pod, on purpose: {reason}"
+        )
+    # A declaration naming something the workload no longer reads is worth
+    # printing and is not a gap: the reference it used to excuse is either gone
+    # or renamed, and a renamed one shows up as NO RESTART above on its own.
+    for w, ref in stale:
+        lines.append(
+            f"stale       {w['namespace']}/{w['name']} — declares {ref} exempt "
+            "and does not read it"
+        )
+
+    fine = [
+        w for w in owned
+        if w["refs"] and w["judged"]
+        and not (w["refs"] - w["covered"] - set(w.get("exempt") or {}))
+    ]
     for w in sorted(fine, key=lambda w: (w["namespace"], w["name"])):
+        excused_here = len(set(w.get("exempt") or {}) & w["refs"])
+        tail = (
+            f"{len(w['refs']) - excused_here} covered and {excused_here} exempt"
+            if excused_here
+            else "all covered"
+        )
         lines.append(
             f"ok          {w['namespace']}/{w['name']} — "
-            f"{len(w['refs'])} reference(s), all covered"
+            f"{len(w['refs'])} reference(s), {tail}"
         )
 
     # A Secret several workloads read is the case that actually bites: the
@@ -237,6 +311,7 @@ def report(ready, workloads):
             f"{u['namespace']}/{u['name']}"
             for u in users
             if u["judged"] and ref not in u["covered"]
+            and ref not in (u.get("exempt") or {})
         )
         if stale:
             lines.append(
