@@ -5606,17 +5606,22 @@ def start_nova_site():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log(f"nova site listening on :{NOVA_PORT}")
-    # After the socket is being served, never before: the readiness probe
-    # must be answerable while this runs, or a warm that takes six seconds
-    # is six seconds of the pod looking dead rather than six seconds saved.
     # Opt-in, because tracing every allocation costs memory and time on a
     # process this issue is about. Off, `/api/health/memory` says so in
     # its own payload rather than returning an empty list that reads like
     # "nothing allocated".
+    #
+    # Before the warm below, not after: the warm is the first big
+    # allocation this process makes, and a trace that starts after it
+    # cannot see the one thing it is most worth seeing.
     if os.environ.get("NOVA_SITE_TRACEMALLOC") == "1":
         tracemalloc.start(10)
         log("nova-site tracemalloc tracing on (NOVA_SITE_TRACEMALLOC=1)")
+    # After the socket is being served, never before: the readiness probe
+    # must be answerable while this runs, or a warm that takes six seconds
+    # is six seconds of the pod looking dead rather than six seconds saved.
     threading.Thread(target=warm_cache, name="nova-site-warm", daemon=True).start()
+
     # Same reasoning as the warm above -- off the startup path, because it
     # reads the vault -- and for the same reason it belongs at start at
     # all: the previous process's reply queue died with it, and until this
