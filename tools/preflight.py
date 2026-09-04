@@ -149,6 +149,7 @@ CHECKS = (
     "ticket_drift",
     "running_images",
     "workload_health",
+    "alerts",
     "host_memory_trend",
     "memory_headroom",
     "oom_history",
@@ -220,6 +221,7 @@ SUBJECT = {
     "ticket_drift":      ("on-box",  "the ticket store, in CouchDB here"),
     "running_images":    ("on-box",  "containers running in this cluster"),
     "workload_health":   ("on-box",  "workloads in this cluster"),
+    "alerts":            ("on-box",  "Prometheus in this cluster"),
     #: These two read this pod's own /proc, so their subject is whichever node
     #: the bridge pod is scheduled on -- server1 today. server2 joined on
     #: 2026-09-03 and neither of them can see it. `oom_history` below was the
