@@ -71,24 +71,33 @@ DEFAULT_URL = "http://telegram-bridge.infra.svc.cluster.local:8080"
 # what I can defend is that the number is unchanged and no caller has hit it.
 MAX_TEXT_BYTES = 64 * 1024 - 512  # headroom for the JSON envelope
 
-#: The longest message this loop may put on his phone, in characters. He
-#: asked for it on Telegram on 2026-09-04 at 14:25 Oslo, after a nine-line
-#: write-up:
+#: How long a message to his phone should be, in characters. A guideline,
+#: which is his word for it and the second half of one conversation.
+#:
+#: He asked for short messages on Telegram on 2026-09-04 at 14:25 Oslo, after
+#: a nine-line write-up:
 #:
 #:     "In the future, messages to telegram must be shorter. The 'Yes - done,
 #:     and it was the nameapace cap that was holding it, not an oversight' is
 #:     enough for me. I do not want the details here."
 #:
-#: His own example of "enough for me" is 89 characters; this leaves a couple
-#: of sentences' headroom above it and is well under the ~900 he was
-#: answering. It sits beside `MAX_TEXT_BYTES` and is a different kind of
-#: number: that one is the bridge's ceiling, this one is his.
+#: Cycle 915 read that as a hard cap and made a longer message a refusal. He
+#: corrected it three hours later, at 17:21 Oslo:
 #:
-#: It is enforced in `check_text`, which `send` calls, so it holds for the
-#: bare `python3 -m tools.telegram send` CLI as well as for the policy layer
-#: in `tools.notify`. A cap only in `notify` would have guarded the path no
-#: cycle actually types.
-MAX_CHARS = 280
+#:     "Not a hard cap at 280 please, more like a guideline. If its important,
+#:     i do not mind more."
+#:
+#: So nothing refuses on this number. A message over it is sent, and the
+#: sender is told by how much it went over -- the pressure is on the author,
+#: where he put it, and never on whether he hears the thing at all. This is
+#: `personality.md`'s own rule arriving from the outside: a limit needs a
+#: measured danger, and "he might find it long" is not one. The danger that
+#: is real is the opposite one, a cycle staying quiet about something that
+#: mattered because 280 was in the way.
+#:
+#: Its neighbour `MAX_TEXT_BYTES` is a different kind of number and still
+#: refuses: that one is the bridge's ceiling, this one is his taste.
+GUIDELINE_CHARS = 280
 
 
 def read_text(args, stdin=None):
@@ -116,26 +125,26 @@ def check_text(text):
     size = len(text.encode("utf-8"))
     if size > MAX_TEXT_BYTES:
         return f"message is {size} bytes, over the bridge's {MAX_TEXT_BYTES}-byte limit"
-    return too_long(text)
+    return None
 
 
-def too_long(text, limit: int = MAX_CHARS):
-    """None if the text is short enough for his phone, else why it is not.
+def over_guideline(text, limit: int = GUIDELINE_CHARS):
+    """None if the text is short enough for his phone, else a note saying so.
+
+    Advice, not a refusal, and `check_text` deliberately does not call it --
+    see `GUIDELINE_CHARS` for the two messages that settled that. `send`
+    carries this back on the line it returns, so the sender is told after a
+    message that went out, rather than a message that did not.
 
     Measured on the stripped text, because a trailing newline is not
-    something he reads. Refusing rather than truncating is deliberate:
-    cutting the tail drops whichever sentence the author thought mattered
-    and leaves him a message that stops mid-word, where a refusal makes the
-    author write the short one, which is what he asked for. The one caller
-    that cannot rewrite itself is `tools.alerts --notify`, and it builds a
-    page that fits this by construction rather than being silenced by it.
+    something he reads.
     """
     length = len(text.strip())
     if length > limit:
         return (
-            f"refusing to send {length} characters: he asked on 2026-09-04 for "
-            f"Telegram messages of at most {limit}. Say the outcome in a sentence "
-            f"and leave the detail in the journal."
+            f"{length} characters, {length - limit} over the {limit}-character "
+            f"guideline — he asked for the outcome in a sentence and the detail "
+            f"in the journal, and to send it anyway when it matters"
         )
     return None
 
@@ -181,7 +190,8 @@ def send(text, url=DEFAULT_URL, opener=urllib.request.urlopen, timeout=15):
     except Exception as err:  # URLError, socket timeout, anything below it
         return 1, f"could not reach the Telegram bridge at {url}: {err}"
     if status == 200:
-        return 0, f"sent, {len(text.strip())} character(s)"
+        note = over_guideline(text)
+        return 0, (f"sent, {note}" if note else f"sent, {len(text.strip())} character(s)")
     if status == 503:
         return 2, "the bridge is up but cannot send yet — nothing was sent"
     if status == 502:
@@ -245,6 +255,9 @@ def main(argv=None):
         if refusal:
             print(refusal)
             return 2
+        note = over_guideline(text)
+        if note:
+            print(note)
         print(f"would send to {args.url}/send, {len(text.strip())} character(s):")
         print(f"🤖 {text.strip()}")
         return 0
