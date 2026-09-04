@@ -167,6 +167,7 @@ CHECKS = (
     "nas_ports",
     "nas_privilege",
     "survey",
+    "recap_health",
 )
 
 #: Where each check's *subject* lives, and it is not where the check runs --
@@ -244,6 +245,7 @@ SUBJECT = {
     "nas_ports":         ("off-box", "the NAS"),
     "nas_privilege":     ("off-box", "the NAS"),
     "survey":            ("on-box",  "this repository's own source"),
+    "recap_health":      ("on-box",  "the recap card's own file in the vault"),
 }
 
 
