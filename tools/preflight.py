@@ -160,6 +160,7 @@ CHECKS = (
     "main_build",
     "rollback_watch",
     "backup_health",
+    "marcus_capacity",
     "nas_health",
     "nas_watch",
     "nas_egress",
@@ -246,6 +247,7 @@ SUBJECT = {
     "nas_privilege":     ("off-box", "the NAS"),
     "survey":            ("on-box",  "this repository's own source"),
     "recap_health":      ("on-box",  "the recap card's own file in the vault"),
+    "marcus_capacity":   ("on-box",  "Marcus's state document, read over the cluster network"),
 }
 
 
