@@ -90,7 +90,12 @@ has since come back; an older death on a container that is Ready again
 prints under `DIED AND RECOVERED` and does not raise. The window is one
 hour, which is three cycles at the current 20-minute cadence — long enough
 that a death is shown to a cycle that can still act on it, short enough
-that it is not shown to seventy. **A Pod that
+that it is not shown to seventy. **"Down now" is read off a Pod that is
+still running**, because a Pod in a terminal phase — a Job's, after its
+run — has every container `ready: false` forever, and reading that as an
+outage is how one `marcus-backup` run that failed at 13:20 was still being
+reported as a live incident fifteen hours and three successful runs later
+(Cycle 882). **A Pod that
 was replaced outright carries no trace at all**: `Recreate` makes a new
 Pod, so the OOMKill that started this loses its `lastState` the moment the
 replacement starts, and `restartCount` on the new Pod is 0. That case is
@@ -161,6 +166,16 @@ REPEATING = 2
 #: CreateContainerConfigError — is a state a Pod stays in until somebody
 #: acts, so it raises regardless of the phase it wears.
 TRANSIENT_WAITING = {"ContainerCreating", "PodInitializing"}
+
+# A Pod in one of these phases is finished. Every container in it is
+# `ready: false` and will stay that way forever, so readiness there says
+# nothing about whether anything is down right now -- it is the normal
+# resting state of a Job Pod that has already run. Three separate places
+# below read `ready` as "is this serving", and on a terminal Pod all three
+# were wrong in the same way: measured 2026-09-04, one `marcus-backup` run
+# that failed at 13:20 the previous day was still being reported as a live
+# outage fifteen hours and three successful runs later.
+TERMINAL_PHASES = {"Succeeded", "Failed"}
 
 #: How recently a container must have died for its death to still be news,
 #: given it has come back up since. Three cycles at the 20-minute cadence.
@@ -333,6 +348,9 @@ def deaths(pods, now, window=RECENT_DEATH):
             if also in BENIGN_TERMINATION or also == reason:
                 also = None
             ready = bool(container.get("ready"))
+            # `not ready` is what keeps a death loud after the window closes,
+            # and it is only a live signal on a Pod that is still running.
+            terminal = pod["phase"] in TERMINAL_PHASES
             at = _parse(term.get("finishedAt"))
             recent = at is None or (now - at) <= window
             row = {
@@ -346,15 +364,22 @@ def deaths(pods, now, window=RECENT_DEATH):
                 "restarts": container.get("restartCount") or 0,
                 "limit": pod["limits"].get(container.get("name") or "?"),
                 "ready": ready,
+                "terminal": terminal,
             }
-            (fresh if (not ready or recent) else old).append(row)
+            (fresh if ((not ready and not terminal) or recent) else old).append(row)
     return fresh, old
 
 
 def not_ready(pods):
     """Pods that are meant to be serving and are not.
 
-    `Succeeded` is a finished Job's Pod and is excluded. Everything else is
+    A Pod in a terminal phase is excluded -- `Succeeded` is a finished
+    Job's Pod, and `Failed` is one whose run ended non-zero. Neither is
+    going to serve again, and the death itself is already reported by
+    `deaths`; listing it here says an outage is happening now, which is a
+    different claim and a false one. A Deployment left with nobody serving
+    is caught by `unavailable`, which reads the Deployment rather than the
+    corpse of a Pod. Everything else is
     judged on the container's waiting *reason* rather than on the Pod's
     phase, because `ImagePullBackOff` is `Pending` and permanent while
     `ContainerCreating` is `Pending` and over in seconds.
@@ -365,7 +390,7 @@ def not_ready(pods):
     """
     found = []
     for pod in pods:
-        if pod["phase"] == "Succeeded":
+        if pod["phase"] in TERMINAL_PHASES:
             continue
         for container in pod["containers"]:
             if container.get("ready"):
@@ -1217,7 +1242,12 @@ def report(pods, deployments, now, headroom=None):
 
     def _death_line(d):
         limit = f", memory limit {d['limit']}" if d["limit"] else ""
-        state = "up again" if d["ready"] else "still down"
+        if d["ready"]:
+            state = "up again"
+        elif d.get("terminal"):
+            state = "Pod finished"
+        else:
+            state = "still down"
         also = f", previously {d['also']}" if d.get("also") else ""
         return (f"  {d['namespace']}/{d['pod']} [{d['container']}] — {d['reason']}"
                 f" (exit {d['exit_code']}) at {_oslo(d['at'])}, {d['restarts']} restart(s),"
@@ -1277,8 +1307,9 @@ def report(pods, deployments, now, headroom=None):
     if old_deaths:
         lines.append(
             f"DIED AND RECOVERED — {len(old_deaths)} container(s) died longer than "
-            f"{int(RECENT_DEATH.total_seconds() // 3600)}h ago and are up again. "
-            "History, so it does not raise.")
+            f"{int(RECENT_DEATH.total_seconds() // 3600)}h ago and nothing is down "
+            "now: either the container came back, or its Pod has finished and "
+            "will not run again. History, so it does not raise.")
         for d in sorted(old_deaths, key=lambda d: (d["namespace"], d["pod"])):
             lines.append(
                 f"  {d['namespace']}/{d['pod']} [{d['container']}] — {d['reason']}"
