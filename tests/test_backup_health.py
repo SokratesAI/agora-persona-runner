@@ -394,8 +394,13 @@ def _archive(backup, ago_hours, size=None, stamp="20260904T033918Z"):
 
 
 def _fresh_nas():
-    """Both NAS backups healthy, so a `main` test measures only what it is about."""
-    return NAS_NOW, [_archive(AGORA, 1.0), _archive(WHATSAPP, 0.3)], None
+    """Every NAS backup healthy, so a `main` test measures only what it is about.
+
+    Every entry in NAS_BACKUPS has to appear here: a job this helper forgets reads as
+    NEVER BACKED UP and turns an exit-1 test into an exit 2, which is how the third
+    backup announced itself.
+    """
+    return NAS_NOW, [_archive(b, 1.0) for b in bh.NAS_BACKUPS], None
 
 
 def test_a_fresh_nas_archive_is_judged_against_its_own_jobs_threshold():
@@ -532,3 +537,37 @@ class _SshDone:
         self.returncode = 0
         self.stdout = stdout
         self.stderr = ""
+
+
+TELEGRAM = next(b for b in bh.NAS_BACKUPS if b.name == "telegram-bridge-state-backup")
+
+
+def test_the_telegram_state_volume_is_covered_by_a_named_job():
+    """The instrument has to know about the CronJob, or the volume reads unprotected.
+
+    platform-config#669 built the backup and this file is where the sweep learns it
+    exists -- for one run of this loop the job was live and `backup_health` still said
+    `NOT BACKED UP`, which is the same wrong answer from the other direction.
+    """
+    assert TELEGRAM.covers == "infra/telegram-bridge-state"
+    assert TELEGRAM.prefix == "infra_telegram-bridge-state-"
+    assert TELEGRAM.covers not in bh.ACKNOWLEDGED
+
+
+def test_the_telegram_floor_passes_an_acked_bridge_with_an_empty_inbox():
+    """A floor derived from the 816-byte first run would fail a healthy volume.
+
+    801 of those bytes were `inbox.jsonl`, which is legitimately absent on a bridge
+    the owner has not written to since the last ack. What judges the contents is the
+    CronJob's REQUIRE_FILES, not this number -- so this only has to sit under the
+    gzip floor of a directory holding `owner_chat_id` and `inbox_ack`.
+    """
+    assert TELEGRAM.min_bytes < 200
+    assert TELEGRAM.min_bytes > 0
+
+
+def test_the_telegram_job_is_judged_on_its_own_six_hourly_cadence():
+    assert TELEGRAM.stale_after_hours == 8
+    fresh = _archive(TELEGRAM, ago_hours=7)
+    stale = _archive(TELEGRAM, ago_hours=9)
+    assert fresh.mtime > stale.mtime
