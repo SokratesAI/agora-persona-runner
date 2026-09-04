@@ -41,6 +41,15 @@ would have been wrong in both directions here: `couchdb-compact` names
 never mentions `marcus-data` at all. A new claim nobody declares reads as
 unprotected, which is the safe direction for a mistake to fall.
 
+**And a third verdict, because two were not enough.** `agents/agora-data` got a
+backup the same night (`platform-config/cronjobs/agora-backup.yaml`, nightly to the
+NAS, first run verified by sha256 on both sides). It is not `covered` in the sense
+the two above are: every `Backup` here is judged by reading GitHub, and the NAS is
+not readable from this loop, so nothing watches whether that job still runs. It
+prints as **backed up, freshness not judged** rather than joining the green count --
+"a backup exists" and "a backup ran last night" are the two things this whole module
+exists to keep apart.
+
 **This reads GitHub, never the cluster, and that is the design.** The subject
 is a backup of server1, so a check that runs against server1's own CronJob
 object goes silent in precisely the incident the backup exists for -- the box
@@ -139,6 +148,22 @@ BACKUPS = (
     ),
 )
 
+#: A claim that has a backup this module cannot judge the freshness of. `BACKUPS`
+#: above are all read out of GitHub, which is the point -- an on-box status readout
+#: dies in the incident a backup is for. `agora-backup` writes to the NAS over ssh,
+#: which is not readable from here, so the honest verdict is "covered, freshness not
+#: judged" rather than either silence or a green line. Kept separate from
+#: `ACKNOWLEDGED` on purpose: those are volumes deliberately left unprotected, this
+#: is a volume that is protected by something nothing is watching yet.
+NOT_JUDGED = {
+    "agents/agora-data": (
+        "the agora-backup CronJob copies it to the NAS nightly at 03:40 Oslo "
+        "(platform-config/cronjobs/agora-backup.yaml); first run 2026-09-04 verified "
+        "by sha256 on both sides. Nothing here reads the NAS, so this says a backup "
+        "exists and not that it still runs"
+    ),
+}
+
 #: A volume that is deliberately not backed up, and the measurement that makes
 #: that the right call. This is not a list of what is unimportant -- it is a list
 #: of claims whose contents can be rebuilt from something that still exists, so
@@ -202,15 +227,17 @@ def judge_coverage(claims):
     mentions a volume would have read as coverage.
     """
     declared = {b.covers: b for b in BACKUPS if b.covers}
-    covered, acknowledged, uncovered = [], [], []
+    covered, acknowledged, unjudged, uncovered = [], [], [], []
     for claim in claims:
         if claim in declared:
             covered.append((claim, declared[claim].name))
+        elif claim in NOT_JUDGED:
+            unjudged.append((claim, NOT_JUDGED[claim]))
         elif claim in ACKNOWLEDGED:
             acknowledged.append((claim, ACKNOWLEDGED[claim]))
         else:
             uncovered.append(claim)
-    return covered, acknowledged, uncovered
+    return covered, acknowledged, unjudged, uncovered
 
 
 def format_coverage(claims, error):
@@ -221,7 +248,7 @@ def format_coverage(claims, error):
             "the count above is the backups I know of and not a statement about "
             "what is unprotected: %s" % error
         ), 1
-    covered, acknowledged, uncovered = judge_coverage(claims)
+    covered, acknowledged, unjudged, uncovered = judge_coverage(claims)
     lines = []
     for claim in uncovered:
         lines.append(
@@ -230,11 +257,14 @@ def format_coverage(claims, error):
         )
     for claim, name in covered:
         lines.append("%s — backed up by the %s job judged above." % (claim, name))
+    for claim, reason in unjudged:
+        lines.append("%s — backed up, freshness NOT JUDGED here: %s." % (claim, reason))
     for claim, reason in acknowledged:
         lines.append("%s — deliberately not backed up: %s." % (claim, reason))
     lines.append(
-        "Swept %d volume(s): %d backed up, %d deliberately not, %d unprotected."
-        % (len(claims), len(covered), len(acknowledged), len(uncovered))
+        "Swept %d volume(s): %d backed up and judged, %d backed up but not judged, "
+        "%d deliberately not, %d unprotected."
+        % (len(claims), len(covered), len(unjudged), len(acknowledged), len(uncovered))
     )
     return "\n".join(lines), (2 if uncovered else 0)
 

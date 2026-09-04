@@ -311,13 +311,27 @@ def test_read_claims_reports_a_failed_kubectl_rather_than_returning_nothing():
     assert error == "Forbidden"
 
 
-def test_judge_coverage_splits_declared_acknowledged_and_unprotected():
-    covered, acknowledged, uncovered = judge_coverage(
-        ["agents/agora-data", "agents/marcus-data", "infra/ollama-models"]
+def test_judge_coverage_splits_declared_acknowledged_unjudged_and_unprotected():
+    covered, acknowledged, unjudged, uncovered = judge_coverage(
+        [
+            "agents/agora-data",
+            "agents/marcus-data",
+            "infra/ollama-models",
+            "infra/whatsapp-bridge-auth",
+        ]
     )
     assert covered == [("agents/marcus-data", "marcus")]
+    assert [claim for claim, _ in unjudged] == ["agents/agora-data"]
     assert [claim for claim, _ in acknowledged] == ["infra/ollama-models"]
-    assert uncovered == ["agents/agora-data"]
+    assert uncovered == ["infra/whatsapp-bridge-auth"]
+
+
+def test_a_volume_whose_freshness_is_not_judged_does_not_join_the_green_count():
+    """"a backup exists" and "a backup ran last night" are different claims."""
+    report, status = format_coverage(["agents/agora-data", "agents/marcus-data"], None)
+    assert status == 0
+    assert "freshness NOT JUDGED" in report
+    assert "1 backed up and judged, 1 backed up but not judged" in report
 
 
 def test_every_declared_backup_names_a_claim_and_every_acknowledgement_gives_a_reason():
@@ -326,9 +340,11 @@ def test_every_declared_backup_names_a_claim_and_every_acknowledgement_gives_a_r
 
 
 def test_format_coverage_raises_on_an_unprotected_volume_and_names_it():
-    report, status = format_coverage(["agents/agora-data", "agents/marcus-data"], None)
+    report, status = format_coverage(
+        ["infra/whatsapp-bridge-auth", "agents/marcus-data"], None
+    )
     assert status == 2
-    assert "NOT BACKED UP — agents/agora-data" in report
+    assert "NOT BACKED UP — infra/whatsapp-bridge-auth" in report
     assert "1 unprotected" in report
 
 
