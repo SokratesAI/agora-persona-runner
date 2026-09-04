@@ -15,13 +15,28 @@ So this module is the policy layer and `tools.telegram` stays the transport.
 Everything here is a decision about whether to send, made before the bytes go
 anywhere:
 
-**Quiet hours, 22:00 to 07:00 Oslo.** A routine message inside that window is
-held, not sent, and the caller is told (exit 3) so it can put the thing
-somewhere he reads in the morning instead. `--urgent` breaks through, and that
-is deliberate rather than a hedge: the class of thing he named -- a server
-down -- is the one class where waking him is the point. If he would rather
-sleep through a dead box too, the fix is one flag at the call site, and I would
-rather be told that than sit on an outage until 07:00.
+**Quiet hours, 22:00 to 07:00 Oslo. Nothing breaks through them today.** A
+message inside that window is held, not sent, whatever its urgency, and the
+caller is told (exit 3). This module shipped with `--urgent` overriding the
+window -- my call, not his, made because "a server is down" felt like the one
+class where waking him is the point. He answered it on Telegram on 2026-09-04
+at 10:29 Oslo, unprompted:
+
+    "Quiet hours should be fully respected for now as we are not hosting
+    production code. But, in the future we will host it"
+
+So the override is off at `QUIET_HOURS_BREAKTHROUGH`, and it is a switch rather
+than deleted code because he named the condition that reverses it -- production
+code on this cluster -- rather than saying never. Flipping it back to True
+restores the old behaviour exactly, and the tests below cover both settings so
+the breakthrough path cannot rot while it is off.
+
+**A held alert is delayed, not dropped -- but only for a caller that runs
+again.** `tools.alerts --notify` is in `tools.preflight`, so a still-firing
+alert is re-decided every cycle and goes out on the first cycle after 07:00.
+Nothing in this module queues anything, so a one-shot message sent once at
+03:00 by some future caller really is lost. If that caller ever exists, it
+needs a queue, not a breakthrough.
 
 **Deduplication.** A cycle wakes every eighteen minutes and reads the same
 firing alert every time. Without a memory that is 80 identical messages a day,
@@ -66,6 +81,12 @@ from tools import telegram  # noqa: E402
 
 QUIET_START_HOUR = 22
 QUIET_END_HOUR = 7
+
+#: May an urgent message be sent inside quiet hours? False since 2026-09-04,
+#: on his own answer quoted above. Kept as a switch because he scoped it
+#: to "for now ... as we are not hosting production code"; when production
+#: code runs here, this is the one line that changes.
+QUIET_HOURS_BREAKTHROUGH = False
 DEFAULT_DEDUPE_HOURS = 6.0
 DEFAULT_STATE = "/data/claude-home/nova-notify-state.json"
 
@@ -156,18 +177,24 @@ def decide(key, urgent, now, state, dedupe_hours=DEFAULT_DEDUPE_HOURS):
             f"{dedupe_hours:g}h window"
         )
     if now is None:
-        return (True, "sending: urgent, and the Oslo hour could not be read") if urgent else (
-            False,
+        if urgent and QUIET_HOURS_BREAKTHROUGH:
+            return True, "sending: urgent, and the Oslo hour could not be read"
+        return False, (
             "held: the Oslo timezone could not be resolved, so quiet hours "
-            "cannot be ruled out and this is not urgent",
+            "cannot be ruled out" + ("" if not urgent else " and nothing breaks through them")
         )
     if in_quiet_hours(now):
-        if not urgent:
+        window = f"({QUIET_START_HOUR:02d}:00-{QUIET_END_HOUR:02d}:00)"
+        if urgent and QUIET_HOURS_BREAKTHROUGH:
+            return True, f"sending: urgent, overriding quiet hours at {now:%H:%M} Oslo"
+        if urgent:
             return False, (
-                f"held: {now:%H:%M} Oslo is inside quiet hours "
-                f"({QUIET_START_HOUR:02d}:00-{QUIET_END_HOUR:02d}:00) and this is not urgent"
+                f"held: {now:%H:%M} Oslo is inside quiet hours {window} and nothing "
+                f"breaks through them — he asked for them fully respected on 2026-09-04"
             )
-        return True, f"sending: urgent, overriding quiet hours at {now:%H:%M} Oslo"
+        return False, (
+            f"held: {now:%H:%M} Oslo is inside quiet hours {window} and this is not urgent"
+        )
     return True, f"sending: {now:%H:%M} Oslo is outside quiet hours"
 
 
@@ -225,7 +252,12 @@ def build_parser():
     parser.add_argument("--key", required=True, help="what counts as 'the same message' for dedupe")
     parser.add_argument("--text", help="the message, or - to read stdin")
     parser.add_argument("--file", help="read the message from this file instead")
-    parser.add_argument("--urgent", action="store_true", help="send even inside quiet hours")
+    parser.add_argument(
+        "--urgent",
+        action="store_true",
+        help="mark as urgent; only breaks quiet hours when QUIET_HOURS_BREAKTHROUGH is on, "
+             "which it is not today",
+    )
     parser.add_argument("--dedupe-hours", type=float, default=DEFAULT_DEDUPE_HOURS)
     parser.add_argument("--state", default=DEFAULT_STATE, help="where the dedupe memory lives")
     parser.add_argument("--url", default=telegram.DEFAULT_URL)

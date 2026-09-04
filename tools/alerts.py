@@ -63,15 +63,19 @@ EXPECTED_POOLS = frozenset({
 })
 
 
-# Which findings are allowed to wake him. His constraint, capture 2026-09-04:
+# Which findings count as urgent. His constraint, capture 2026-09-04:
 # *"I can't answer anything between 22:00 and 07:00 Oslo time as I'm asleep."*
 # and, in the same capture, *"important alerts get sent to me like if one
-# server is down"*. Those pull opposite ways at 03:00, so the breakthrough set
-# is declared here in one place rather than decided per call site: a `high`
-# severity, or a scrape target that has stopped answering at all, may ring his
-# phone at night. Everything else waits for 07:00. Emptying this frozenset is
-# the whole of "stop waking me", and that is deliberate -- I picked this and he
-# can reverse it in one line.
+# server is down"*. Those pull opposite ways at 03:00, and I guessed: a `high`
+# severity or a dead scrape target was allowed to ring his phone at night.
+#
+# **He reversed that on Telegram the same day** -- *"Quiet hours should be
+# fully respected for now as we are not hosting production code"* -- so nothing
+# in this set wakes him any more. `tools.notify.QUIET_HOURS_BREAKTHROUGH` is
+# off and that is the one place the window is decided; a set named here can no
+# longer break it, which is the point of keeping the decision in one module
+# rather than per call site. What this set still does is pick the heading, so a
+# message he reads at 07:00 says which kind of night it was.
 URGENT_SEVERITIES = frozenset({"high"})
 
 
