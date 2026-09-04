@@ -22,6 +22,25 @@ Nothing read whether these jobs still work. The gap is the same one
 Agora, one layer over again: a backup job that has been dead for a week and a
 backup job with nothing new to save produce **the same silence**.
 
+**And "2 of 2" was the wrong denominator.** Cycle 883: this printed *"Judged 2
+off-box backup(s) of 2"* every run, which reads as complete coverage and is
+only ever a count of the backups I had told it about. The cluster holds eight
+PersistentVolumeClaims. Six of them had no copy anywhere, and two of those six
+are things whose loss costs the owner something real -- `agents/agora-data`,
+682 MiB of every conversation in the platform since 19 July, and
+`infra/whatsapp-bridge-auth`, the session that means he re-pairs his phone if
+it goes. Neither had a backup, a snapshot or a replica, and no check anywhere
+said so. So this now also sweeps the cluster's own claim list and reports every
+volume nothing copies.
+
+**Coverage is declared, never inferred from names.** Each `Backup` names the
+claim it covers, and a claim is otherwise either in `ACKNOWLEDGED` with the
+measurement that makes losing it cheap, or it is reported. Matching on names
+would have been wrong in both directions here: `couchdb-compact` names
+`couchdb` and copies nothing, and `marcus-backup` reads Marcus over HTTP and
+never mentions `marcus-data` at all. A new claim nobody declares reads as
+unprotected, which is the safe direction for a mistake to fall.
+
 **This reads GitHub, never the cluster, and that is the design.** The subject
 is a backup of server1, so a check that runs against server1's own CronJob
 object goes silent in precisely the incident the backup exists for -- the box
@@ -89,7 +108,7 @@ OSLO = zoneinfo.ZoneInfo("Europe/Oslo")
 #: ``stale_after_hours`` is derived per backup in the module docstring; the two
 #: numbers differ because the two measurements do.
 Backup = collections.namedtuple(
-    "Backup", "name repo stamp_path stale_after_hours subject fix"
+    "Backup", "name repo stamp_path stale_after_hours subject fix covers"
 )
 
 BACKUPS = (
@@ -103,6 +122,7 @@ BACKUPS = (
             "Read the CronJob's pods: kubectl logs -n agents job/marcus-backup-<n>. "
             "A refused connection to marcus:8080 is the netpol ipset race, not a policy gap."
         ),
+        covers="agents/marcus-data",
     ),
     Backup(
         name="vault",
@@ -115,8 +135,108 @@ BACKUPS = (
             "This cannot tell a dead backup job from a vault nothing is writing to, "
             "and both are worth looking at."
         ),
+        covers="obsidian/couchdb-data",
     ),
 )
+
+#: A volume that is deliberately not backed up, and the measurement that makes
+#: that the right call. This is not a list of what is unimportant -- it is a list
+#: of claims whose contents can be rebuilt from something that still exists, so
+#: losing the disk costs time rather than data. Each entry names what rebuilds it.
+#: A claim that is not here and is not covered by a `Backup` above is reported.
+ACKNOWLEDGED = {
+    "agents/agora-claude-bridge-data": (
+        "my own scratch workspace -- git checkouts and cycle drafts, every one of "
+        "which is re-clonable from GitHub"
+    ),
+    "agents/sokrates-docs-data": (
+        "measured at 0 bytes, 0 files by a read-only Job on server1 (Cycle 872) "
+        "before it was moved to server2"
+    ),
+    "agents/data-redis-0": (
+        "one 14-member sorted set whose newest entry is dated 2026-05-12, with no "
+        "connected client (Cycle 875); the 235 KB on disk is append-only history"
+    ),
+    "infra/ollama-models": (
+        "model blobs ollama re-pulls from upstream; losing them costs a download "
+        "(Cycle 880 carried all 1.55 GiB across the cluster for that reason)"
+    ),
+}
+
+
+def read_claims(run=None):
+    """Every PersistentVolumeClaim in the cluster as `namespace/name`, sorted.
+
+    Read from the cluster rather than from git on purpose, and for the same
+    reason `running_images` does it: a claim ArgoCD has not synced is not one
+    that holds bytes, and a claim nobody put in a repository still does.
+    Returns `(claims, error)`; an unreadable cluster is an error, never an
+    empty list, because "no volumes" and "I could not look" are opposite
+    findings and this cluster demonstrably has some.
+    """
+    runner = run or (
+        lambda args: subprocess.run(args, capture_output=True, text=True, timeout=60)
+    )
+    proc = runner(["kubectl", "get", "pvc", "-A", "-o", "json"])
+    if proc.returncode != 0:
+        return [], (proc.stderr or "kubectl exited %d" % proc.returncode).strip()
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError as err:
+        return [], "kubectl printed something that is not JSON: %s" % err
+    claims = sorted(
+        "%s/%s" % (item["metadata"]["namespace"], item["metadata"]["name"])
+        for item in payload.get("items", [])
+    )
+    if not claims:
+        return [], "kubectl answered with no claims at all, which this cluster has"
+    return claims, None
+
+
+def judge_coverage(claims):
+    """Split claims into (covered, acknowledged, uncovered).
+
+    Covered means a `Backup` above declares it. There is no name-matching here
+    and that is deliberate: `couchdb-data` is named by `couchdb-compact`, which
+    is a compaction job and not a copy of anything, so a job that merely
+    mentions a volume would have read as coverage.
+    """
+    declared = {b.covers: b for b in BACKUPS if b.covers}
+    covered, acknowledged, uncovered = [], [], []
+    for claim in claims:
+        if claim in declared:
+            covered.append((claim, declared[claim].name))
+        elif claim in ACKNOWLEDGED:
+            acknowledged.append((claim, ACKNOWLEDGED[claim]))
+        else:
+            uncovered.append(claim)
+    return covered, acknowledged, uncovered
+
+
+def format_coverage(claims, error):
+    """The coverage section, and the status it contributes."""
+    if error:
+        return (
+            "COVERAGE UNREADABLE — I could not list this cluster's volumes, so "
+            "the count above is the backups I know of and not a statement about "
+            "what is unprotected: %s" % error
+        ), 1
+    covered, acknowledged, uncovered = judge_coverage(claims)
+    lines = []
+    for claim in uncovered:
+        lines.append(
+            "NOT BACKED UP — %s is held in exactly one place and nothing copies it "
+            "anywhere. A lost disk is lost data." % claim
+        )
+    for claim, name in covered:
+        lines.append("%s — backed up by the %s job judged above." % (claim, name))
+    for claim, reason in acknowledged:
+        lines.append("%s — deliberately not backed up: %s." % (claim, reason))
+    lines.append(
+        "Swept %d volume(s): %d backed up, %d deliberately not, %d unprotected."
+        % (len(claims), len(covered), len(acknowledged), len(uncovered))
+    )
+    return "\n".join(lines), (2 if uncovered else 0)
 
 
 def _gh(args):
@@ -269,6 +389,10 @@ def main(argv=None):
         "Judged %d off-box backup(s) of %d, read from GitHub rather than from this "
         "cluster." % (len(BACKUPS) - statuses.count(1), len(BACKUPS))
     )
+    claims, claims_error = read_claims()
+    coverage, coverage_status = format_coverage(claims, claims_error)
+    print(coverage)
+    statuses.append(coverage_status)
     if 2 in statuses:
         return 2
     return 1 if 1 in statuses else 0
