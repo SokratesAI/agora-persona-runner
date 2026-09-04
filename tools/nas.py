@@ -55,6 +55,7 @@ is `GET /api/v3/calendar?start=&end=`, and Sonarr's episode carries
 
 import argparse
 import base64
+import collections
 import datetime as dt
 import json
 import os
@@ -281,7 +282,29 @@ def _run_ssh(ssh, stdin, timeout=25, run=subprocess.run):
 #: far side; this keeps that property by allowing only constants declared here.
 #: `sudo -n` is what reads Tautulli's config, which is root-owned mode 600.
 TAUTULLI_KEY_COMMAND = f"sudo -n sed -n 's/^api_key *= *//p' {TAUTULLI_CONFIG_FILE}"
-FIXED_COMMANDS = frozenset({TAUTULLI_KEY_COMMAND})
+
+#: Where `platform-config/cronjobs/volume-backup.yaml` puts every volume archive
+#: it ships. One directory per volume under this root, and each job's `NAS_DIR`
+#: is a child of it, so a listing of the root sees a backup job nobody has told
+#: this module about -- which is the direction a mistake should fall.
+NAS_BACKUP_ROOT = "/volume1/homes/nova/backups"
+
+#: The NAS's own clock, then every archive under the backup root with its mtime
+#: in epoch seconds, its size and its path.
+#:
+#: **Epoch, not a formatted time, and the clock comes back with it.** Asking for
+#: `--time-style=+%Y-%m-%dT%H:%M:%SZ` returns the NAS's *local* time wearing a
+#: `Z`: an archive whose own name says `20260904T033332Z` lists as `05:34:54Z`,
+#: which is the Oslo offset, and a check that believed the suffix would age
+#: every backup two hours young. `%T@` is seconds since the epoch and carries no
+#: zone at all. The `date -u +%s` in front is there so a NAS whose clock has
+#: drifted reports as a clock problem instead of ageing every backup wrongly and
+#: silently.
+BACKUP_LISTING_COMMAND = (
+    "date -u +%s; find " + NAS_BACKUP_ROOT + " -name '*.tar.gz' -printf '%T@ %s %p\\n'"
+)
+
+FIXED_COMMANDS = frozenset({TAUTULLI_KEY_COMMAND, BACKUP_LISTING_COMMAND})
 
 
 def _run_ssh_fixed(ssh, command, timeout=25, run=subprocess.run):
@@ -306,6 +329,50 @@ def _run_ssh_fixed(ssh, command, timeout=25, run=subprocess.run):
     if done.returncode != 0:
         raise Unreachable(f"the command exited {done.returncode}: {(done.stderr or '').strip()}")
     return done.stdout
+
+
+#: One archive on the NAS: its mtime in epoch seconds, its size in bytes, and
+#: its full path. `name` is the basename, which is what carries the job's own
+#: UTC stamp.
+NasArchive = collections.namedtuple("NasArchive", "mtime size path name")
+
+
+def backup_archives(ssh, timeout=25, run=subprocess.run):
+    """Every `*.tar.gz` under the backup root, plus the NAS's own UTC clock.
+
+    Returns `(nas_now, archives)` where `nas_now` is epoch seconds read off the
+    NAS itself and `archives` is a list of `NasArchive`, newest last. The clock
+    is returned rather than assumed so a caller can report skew instead of
+    ageing every backup by it.
+
+    A line this cannot parse is skipped rather than raising: `find` prints one
+    line per file and a single odd name must not cost the whole listing. A
+    listing with no clock line at all is `Unreachable`, because without the
+    clock every age below is a guess.
+    """
+    out = _run_ssh_fixed(ssh, BACKUP_LISTING_COMMAND, timeout=timeout, run=run)
+    lines = [line for line in out.splitlines() if line.strip()]
+    if not lines:
+        raise Unreachable("the NAS answered nothing at all, not even its clock")
+    try:
+        nas_now = int(float(lines[0].strip()))
+    except ValueError as exc:
+        raise Unreachable(
+            f"the NAS did not answer with its clock: {lines[0].strip()!r}"
+        ) from exc
+    archives = []
+    for line in lines[1:]:
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        try:
+            mtime, size = int(float(parts[0])), int(parts[1])
+        except ValueError:
+            continue
+        path = parts[2].strip()
+        archives.append(NasArchive(mtime, size, path, path.rsplit("/", 1)[-1]))
+    archives.sort(key=lambda a: a.mtime)
+    return nas_now, archives
 
 
 #: What `_curl_config` asks curl to print after the body. The status code on

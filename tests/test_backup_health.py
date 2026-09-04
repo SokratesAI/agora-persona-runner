@@ -15,7 +15,10 @@ report a healthy backup on a repo the job has never written to.
 import datetime
 import json
 
+import pytest
+
 from tools import backup_health as bh
+from tools import nas
 from tools.backup_health import (
     ACKNOWLEDGED,
     BACKUPS,
@@ -243,6 +246,7 @@ def test_main_raises_when_either_backup_is_stale(monkeypatch, capsys):
                                          "committer": {"date": date}}}
         ]), ""
     monkeypatch.setattr(bh, "_gh", run)
+    monkeypatch.setattr(bh, "read_nas_archives", lambda: _fresh_nas())
     monkeypatch.setattr(bh.datetime, "datetime", _FrozenNow)
     assert bh.main([]) == 2
     out = capsys.readouterr().out
@@ -262,6 +266,7 @@ def test_main_reports_an_unreadable_backup_beside_a_clean_one(monkeypatch, capsy
                                          "committer": {"date": "2026-09-03T11:00:00Z"}}}
         ]), ""
     monkeypatch.setattr(bh, "_gh", run)
+    monkeypatch.setattr(bh, "read_nas_archives", lambda: _fresh_nas())
     monkeypatch.setattr(bh.datetime, "datetime", _FrozenNow)
     assert bh.main([]) == 1
     out = capsys.readouterr().out
@@ -311,8 +316,8 @@ def test_read_claims_reports_a_failed_kubectl_rather_than_returning_nothing():
     assert error == "Forbidden"
 
 
-def test_judge_coverage_splits_declared_acknowledged_unjudged_and_unprotected():
-    covered, acknowledged, unjudged, uncovered = judge_coverage(
+def test_judge_coverage_splits_declared_acknowledged_and_unprotected():
+    covered, acknowledged, uncovered = judge_coverage(
         [
             "agents/agora-data",
             "agents/marcus-data",
@@ -324,18 +329,20 @@ def test_judge_coverage_splits_declared_acknowledged_unjudged_and_unprotected():
             "infra/not-in-any-registry",
         ]
     )
-    assert covered == [("agents/marcus-data", "marcus")]
-    assert [claim for claim, _ in unjudged] == ["agents/agora-data"]
+    assert covered == [
+        ("agents/agora-data", "agora-backup"),
+        ("agents/marcus-data", "marcus"),
+    ]
     assert [claim for claim, _ in acknowledged] == ["infra/ollama-models"]
     assert uncovered == ["infra/not-in-any-registry"]
 
 
-def test_a_volume_whose_freshness_is_not_judged_does_not_join_the_green_count():
-    """"a backup exists" and "a backup ran last night" are different claims."""
+def test_a_nas_backed_volume_counts_as_covered_now_that_it_is_judged():
+    """It was `backed up but not judged`; the NAS report above judges it now."""
     report, status = format_coverage(["agents/agora-data", "agents/marcus-data"], None)
     assert status == 0
-    assert "freshness NOT JUDGED" in report
-    assert "1 backed up and judged, 1 backed up but not judged" in report
+    assert "NOT JUDGED" not in report
+    assert "2 backed up and judged above" in report
 
 
 def test_every_declared_backup_names_a_claim_and_every_acknowledgement_gives_a_reason():
@@ -364,3 +371,164 @@ def test_format_coverage_never_reads_as_clean_when_the_cluster_was_unreadable():
     assert status == 1
     assert "COVERAGE UNREADABLE" in report
     assert "NOT BACKED UP" not in report
+
+
+# --- NAS-backed backups, judged over the ssh hop (Cycle 889) ----------------
+
+#: The NAS's own clock, pinned to the same instant `_FrozenNow` pins this box to,
+#: so `clock_note` has nothing to report in a test that is not about skew.
+NAS_NOW = int(NOW.timestamp())
+AGORA = next(b for b in bh.NAS_BACKUPS if b.name == "agora-backup")
+WHATSAPP = next(b for b in bh.NAS_BACKUPS if b.name == "whatsapp-auth-backup")
+
+
+def _archive(backup, ago_hours, size=None, stamp="20260904T033918Z"):
+    size = backup.min_bytes * 3 if size is None else size
+    name = "%s%s.tar.gz" % (backup.prefix, stamp)
+    return nas.NasArchive(
+        mtime=NAS_NOW - int(ago_hours * 3600),
+        size=size,
+        path="%s/x/%s" % (nas.NAS_BACKUP_ROOT, name),
+        name=name,
+    )
+
+
+def _fresh_nas():
+    """Both NAS backups healthy, so a `main` test measures only what it is about."""
+    return NAS_NOW, [_archive(AGORA, 1.0), _archive(WHATSAPP, 0.3)], None
+
+
+def test_a_fresh_nas_archive_is_judged_against_its_own_jobs_threshold():
+    verdict, age, newest = bh.judge_nas(AGORA, [_archive(AGORA, 1.0)], NAS_NOW)
+    assert verdict == "fresh"
+    assert round(age, 1) == 1.0
+    assert bh.status_for_nas(verdict, None) == 0
+
+
+def test_a_missing_archive_reads_as_never_and_not_as_stale():
+    """Never run and stopped running are fixed in different places."""
+    verdict, age, newest = bh.judge_nas(AGORA, [_archive(WHATSAPP, 0.3)], NAS_NOW)
+    assert verdict == "never"
+    assert newest is None
+    assert bh.status_for_nas(verdict, None) == 2
+    assert "NEVER BACKED UP" in bh.format_nas_report(AGORA, verdict, age, newest, None)
+
+
+def test_one_missed_nightly_run_is_stale_and_a_late_one_is_not():
+    """26 hours is one nightly slot plus two, so the boundary is the whole point."""
+    assert bh.judge_nas(AGORA, [_archive(AGORA, 25.9)], NAS_NOW)[0] == "fresh"
+    assert bh.judge_nas(AGORA, [_archive(AGORA, 26.1)], NAS_NOW)[0] == "stale"
+
+
+def test_the_whatsapp_job_is_judged_on_its_own_six_hourly_cadence():
+    """A shared threshold would let a four-a-day job sit dead for a day."""
+    assert WHATSAPP.stale_after_hours < AGORA.stale_after_hours
+    assert bh.judge_nas(WHATSAPP, [_archive(WHATSAPP, 9.0)], NAS_NOW)[0] == "stale"
+    assert bh.judge_nas(AGORA, [_archive(AGORA, 9.0)], NAS_NOW)[0] == "fresh"
+
+
+def test_a_fresh_but_truncated_archive_does_not_read_as_a_working_backup():
+    """The failure freshness alone cannot see: a job that ran and shipped a runt."""
+    runt = _archive(AGORA, 0.5, size=AGORA.min_bytes - 1)
+    verdict, age, newest = bh.judge_nas(AGORA, [runt], NAS_NOW)
+    assert verdict == "runt"
+    assert bh.status_for_nas(verdict, None) == 2
+    assert "TRUNCATED" in bh.format_nas_report(AGORA, verdict, age, newest, None)
+
+
+def test_the_newest_archive_decides_even_when_an_older_one_is_listed_after_it():
+    """`find` prints in directory order; a check reading the last line ages wrongly."""
+    old = _archive(AGORA, 50.0, stamp="20260902T033918Z")
+    new = _archive(AGORA, 1.0)
+    verdict, _, newest = bh.judge_nas(AGORA, [new, old], NAS_NOW)
+    assert verdict == "fresh"
+    assert newest.name == new.name
+
+
+def test_an_unreachable_nas_never_reads_as_clean():
+    """"I could not look" and "nothing to act on" are opposite findings."""
+    report = bh.format_nas_report(AGORA, None, None, None, "ssh to the NAS failed")
+    assert "NOT JUDGED" in report
+    assert bh.status_for_nas(None, "ssh to the NAS failed") == 1
+
+
+def test_a_pod_with_no_ssh_key_is_an_error_rather_than_a_skip(monkeypatch):
+    monkeypatch.setattr(bh.nas, "ssh_config", lambda: None)
+    now, archives, error = bh.read_nas_archives()
+    assert now is None and archives == []
+    assert "no ssh hop" in error
+
+
+def test_main_raises_when_a_nas_backup_is_stale(monkeypatch, capsys):
+    """The GitHub half green, the NAS half dead: exit 0 here would be the old bug."""
+    def run(args):
+        return 0, json.dumps([
+            {"sha": "a" * 40, "commit": {"message": SUBJECT,
+                                         "committer": {"date": "2026-09-04T05:00:00Z"}}}
+        ]), ""
+    monkeypatch.setattr(bh, "_gh", run)
+    monkeypatch.setattr(bh, "read_claims", lambda: (["agents/marcus-data"], None))
+    monkeypatch.setattr(
+        bh, "read_nas_archives",
+        lambda: (NAS_NOW, [_archive(AGORA, 40.0), _archive(WHATSAPP, 0.3)], None),
+    )
+    monkeypatch.setattr(bh.datetime, "datetime", _FrozenNow)
+    assert bh.main([]) == 2
+    out = capsys.readouterr().out
+    assert "STALE — agora-backup" in out
+    assert "whatsapp-auth-backup: the backup of" in out  # the other one still judged
+
+
+def test_a_skewed_nas_clock_is_reported_and_does_not_change_the_ages():
+    """Both ends of the subtraction come off the NAS, so skew cancels -- say so."""
+    now = datetime.datetime.fromtimestamp(NAS_NOW, datetime.timezone.utc)
+    assert bh.clock_note(NAS_NOW + 60, now) is None
+    note = bh.clock_note(NAS_NOW + 3600, now)
+    assert note and "60 minute(s) ahead of" in note
+
+
+def test_backup_archives_parses_the_clock_the_size_and_the_mtime():
+    listing = (
+        "1788497100\n"
+        "1788493241.858 134736807 /volume1/homes/nova/backups/agora-data/a.tar.gz\n"
+        "this line is not a file\n"
+        "1788495903.726 170594 /volume1/homes/nova/backups/whatsapp-bridge-auth/b.tar.gz\n"
+    )
+    now, archives = nas.backup_archives(
+        {"host": "h", "user": "u", "key": "k"},
+        run=lambda *a, **k: _SshDone(listing),
+    )
+    assert now == 1788497100
+    assert [a.name for a in archives] == ["a.tar.gz", "b.tar.gz"]
+    assert archives[0].mtime == 1788493241 and archives[0].size == 134736807
+
+
+def test_backup_archives_refuses_a_listing_with_no_clock_in_it():
+    """Without the NAS's own clock every age below is a guess, not a measurement."""
+    with pytest.raises(nas.Unreachable):
+        nas.backup_archives(
+            {"host": "h", "user": "u", "key": "k"},
+            run=lambda *a, **k: _SshDone("not-a-number 1 /x.tar.gz\n"),
+        )
+
+
+def test_the_listing_command_is_on_the_modules_own_allowlist():
+    """`_run_ssh_fixed` refuses anything not declared, which is what keeps the hop shut."""
+    assert nas.BACKUP_LISTING_COMMAND in nas.FIXED_COMMANDS
+    assert nas.NAS_BACKUP_ROOT in nas.BACKUP_LISTING_COMMAND
+
+
+def test_every_nas_backup_names_a_claim_a_prefix_and_a_floor():
+    for backup in bh.NAS_BACKUPS:
+        assert backup.covers and "/" in backup.covers
+        assert backup.prefix == backup.covers.replace("/", "_") + "-"
+        assert backup.min_bytes > 0 and backup.stale_after_hours > 0
+
+
+class _SshDone:
+    """What `subprocess.run` hands `_run_ssh_fixed` back."""
+
+    def __init__(self, stdout):
+        self.returncode = 0
+        self.stdout = stdout
+        self.stderr = ""
