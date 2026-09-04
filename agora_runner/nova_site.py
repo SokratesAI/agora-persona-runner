@@ -93,6 +93,7 @@ test asserting a real browser's header gets `gzip` back is there so the
 claim stays checked rather than argued.
 """
 
+import gc
 import gzip
 import hashlib
 import json
@@ -102,6 +103,7 @@ import re
 import socket
 import threading
 import time
+import tracemalloc
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -2344,6 +2346,117 @@ def _invalidate_capture_target(target):
         invalidate("notes")
 
 
+def read_proc_status(path="/proc/self/status"):
+    """The kernel's own numbers for this process, in bytes.
+
+    `container_memory_rss` is what the memory alert fires on and what the
+    OOM killer acts on, so a report meant to explain a growing pod has to
+    speak that unit. Only the four fields that matter are lifted.
+
+    Returns `{}` when the file cannot be read. An absent reading must
+    never come back looking like a zero one -- that is the difference
+    between "this pod holds nothing" and "I could not ask".
+    """
+    wanted = {"VmRSS": "rss_bytes", "VmSize": "vmsize_bytes",
+              "VmHWM": "rss_peak_bytes", "RssAnon": "rss_anon_bytes"}
+    out = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key in wanted:
+                    parts = rest.split()
+                    if len(parts) == 2 and parts[1] == "kB":
+                        out[wanted[key]] = int(parts[0]) * 1024
+    except OSError:
+        return {}
+    return out
+
+
+def type_histogram(objects, top=25):
+    """The `top` most numerous live types, most numerous first.
+
+    A population count rather than a byte total, deliberately.
+    `sys.getsizeof` on a container excludes everything it references, so
+    summing it over every object both double-counts the small things and
+    misses the large ones -- the number would look authoritative and mean
+    nothing. What this is for is comparing two readings: a retention
+    shows up as a type whose population climbs and does not come back.
+    """
+    counts = {}
+    for obj in objects:
+        name = type(obj).__name__
+        counts[name] = counts.get(name, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{"type": name, "count": n} for name, n in ranked[:top]]
+
+
+def cache_footprint():
+    """How many bytes of served JSON the payload cache is holding.
+
+    The first thing to rule out when this process is large, and the
+    cheapest: the bodies are strings this module owns, so their size is
+    exact rather than estimated. If the cache is 20 MB and RSS is 470 MB,
+    the cache is not the answer and the histogram is where to look next.
+    """
+    with _cache_lock:
+        entries = [(name, entry) for name, entry in _cache.items()]
+    keys = []
+    total = 0
+    for name, entry in entries:
+        body = entry[1]
+        n = len(body.encode("utf-8")) if isinstance(body, str) else 0
+        total += n
+        keys.append({"key": name, "body_bytes": n, "age_seconds": round(time.time() - entry[3], 1)})
+    keys.sort(key=lambda k: -k["body_bytes"])
+    return {"entries": len(entries), "body_bytes_total": total, "keys": keys}
+
+
+def memory_report(objects=None, status_path="/proc/self/status"):
+    """What this process is holding, for the pod that keeps growing.
+
+    Issue #131: nova-site's RSS climbs with traffic and never comes back
+    down, and the limit has been raised twice for it -- 256Mi -> 512Mi on
+    2026-08-27, 512Mi -> 1Gi on 2026-09-04 -- each time without anyone
+    naming what is retained. Raising it a third time is not a fix, and
+    the reason nobody has named the retention is that there was nothing
+    to ask: this process exposes no view of its own heap, and a profiler
+    attached to a synthetic local run profiles synthetic traffic rather
+    than his.
+
+    So the instrument goes where the growth is. Two readings of this
+    route, hours apart on the live pod, say whether RSS moved and which
+    type's population moved with it -- which is the one question the two
+    limit raises were guesses at.
+
+    `objects` is injectable so the histogram can be tested against a list
+    the test built, rather than against whatever the interpreter running
+    the test happens to be holding.
+    """
+    if objects is None:
+        objects = gc.get_objects()
+    tracing = tracemalloc.is_tracing()
+    report = {
+        "process": read_proc_status(status_path),
+        "gc": {
+            "counts": list(gc.get_count()),
+            "tracked_objects": len(objects),
+            "uncollectable": len(gc.garbage),
+        },
+        "threads": sorted(t.name for t in threading.enumerate()),
+        "cache": cache_footprint(),
+        "types": type_histogram(objects),
+        "tracemalloc": {"tracing": tracing, "top": []},
+    }
+    if tracing:
+        snapshot = tracemalloc.take_snapshot()
+        report["tracemalloc"]["top"] = [
+            {"where": str(stat.traceback), "size_bytes": stat.size, "count": stat.count}
+            for stat in snapshot.statistics("lineno")[:20]
+        ]
+    return report
+
+
 def reset_cache():
     """Drop every cached payload. For tests, which share one process: a
     payload warmed by one test is exactly the stale copy the next one
@@ -3579,6 +3692,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # kill a running demo on this answer, and a stale one would
                 # kill a demo somebody asked for CACHE_FRESH_SECONDS ago.
                 self._send_json(200, demo_activity())
+                return
+            if path == "/api/health/memory":
+                # Never cached, for the same reason `/api/health` is not:
+                # a reading of the heap that is up to CACHE_FRESH_SECONDS
+                # old is the wrong reading, and this one is asked exactly
+                # when the number is moving. Counts and type names only --
+                # it reads no document and returns no content of his.
+                self._send_json(200, memory_report())
                 return
             if path == "/api/health":
                 # Never cached, and that is the entire point of it. The
@@ -5488,6 +5609,13 @@ def start_nova_site():
     # After the socket is being served, never before: the readiness probe
     # must be answerable while this runs, or a warm that takes six seconds
     # is six seconds of the pod looking dead rather than six seconds saved.
+    # Opt-in, because tracing every allocation costs memory and time on a
+    # process this issue is about. Off, `/api/health/memory` says so in
+    # its own payload rather than returning an empty list that reads like
+    # "nothing allocated".
+    if os.environ.get("NOVA_SITE_TRACEMALLOC") == "1":
+        tracemalloc.start(10)
+        log("nova-site tracemalloc tracing on (NOVA_SITE_TRACEMALLOC=1)")
     threading.Thread(target=warm_cache, name="nova-site-warm", daemon=True).start()
     # Same reasoning as the warm above -- off the startup path, because it
     # reads the vault -- and for the same reason it belongs at start at
