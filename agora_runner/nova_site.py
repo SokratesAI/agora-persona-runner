@@ -99,6 +99,7 @@ import json
 import mimetypes
 import os
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -230,7 +231,7 @@ from agora_runner.heartbeat_liveness import liveness
 from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
                                      dumps as dumps_demos, load as load_demos,
                                      lookup as lookup_demo, mark_opened,
-                                     opened_by_a_person)
+                                     opened_by_a_person, public_rows)
 from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_rev,
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
@@ -1922,6 +1923,41 @@ def demo_activity():
         return {"started_at": SITE_STARTED_AT, "last_seen": dict(_demo_last_seen)}
 
 
+#: How long to wait for a demo's dev server to accept a connection before
+#: calling it gone. It is a TCP connect to a pod IP on this cluster's own
+#: network -- the same hop `_serve_demo` makes on every asset -- so the
+#: honest budget is milliseconds and this is already generous. It matters
+#: because the probe runs once per registered row and `/api/demos` answers
+#: a page load.
+DEMO_PROBE_TIMEOUT = 0.4
+
+
+def demo_listening(host, port, timeout=DEMO_PROBE_TIMEOUT):
+    """Is anything accepting connections on `host:port`?
+
+    The one liveness signal this pod has about a demo. `nova_demos.verdict`
+    is the better answer and it is unavailable here: it compares the row's
+    `host` against the pod reading it and checks a pid, both of which are
+    only meaningful inside the bridge pod that started the demo. From here
+    a dead dev server and a live one differ in exactly one observable way.
+    """
+    try:
+        with socket.create_connection((host, int(port)), timeout):
+            return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def demos_payload():
+    """What `/api/demos` answers: the demos a start page may link to."""
+    try:
+        registry = load_demos(_demo_registry())
+    except Exception as exc:                      # noqa: BLE001 -- reported, not raised
+        log(f"nova-site /api/demos registry read failed: {exc}")
+        return {"demos": [], "error": str(exc)[:300]}
+    return {"demos": public_rows(registry, demo_listening), "error": ""}
+
+
 def _demo_registry():
     """The registry text, reused for `DEMO_REGISTRY_TTL` seconds."""
     now = time.time()
@@ -3496,6 +3532,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # Approve and the very next thing he may do is open History
                 # to check it landed.
                 self._send_json(200, pool_history())
+                return
+            if path == "/api/demos":
+                # Never cached by the browser, and the registry read behind
+                # it is already capped at `DEMO_REGISTRY_TTL`. The whole ask
+                # this route serves is the owner's "new demos ... should be
+                # displayed immediately", so a cache header here would be
+                # the one thing that breaks it.
+                self._send_json(200, demos_payload())
                 return
             if path == "/api/demo/activity":
                 # Never cached: `tools.demo reap --idle` decides whether to
