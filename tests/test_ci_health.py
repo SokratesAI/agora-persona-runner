@@ -635,10 +635,21 @@ def test_the_report_is_in_repo_order_not_in_whichever_gh_answered_first():
 def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None):
     """A fake `subprocess.run` for the `gh api` calls `billing_meter` makes.
 
-    `runs` is `{"owner/repo": (month_total, recent_total)}` for the two
+    `runs` is `{"owner/repo": (month_total, recent_total)}` for the
     `/actions/runs?created=>=` counts `recent_private_rate` asks for. The
-    month window starts on the 1st and the recent one is `now - 24h`, so the
-    two are told apart by the date in the query rather than by call order.
+    month window starts on the 1st, the recent one is `now - 24h` and the
+    nested one is `now - 12h`, so they are told apart by the date in the
+    query rather than by call order.
+
+    A third element sets the nested count independently. **Omitting it does
+    not mean zero, it means steady** -- half the 24h runs fell in the newest
+    12 hours -- because the nested count exists only to be compared against
+    the wider one, and a fixture that answered zero would make every test
+    that does not care about stationarity assert against a `NOT STEADY` line
+    it never asked for. That is what the first draft of this did: the 24h
+    figure was served to both queries, so the nested window read twice the
+    rate of the window containing it, and every existing test carried a
+    spurious finding without one of them failing.
     """
     def runner(cmd, **kwargs):
         assert cmd[:2] == ["gh", "api"], cmd
@@ -654,7 +665,11 @@ def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(repos or []), stderr="")
         if "/actions/runs?" in path:
             full = path.split("/repos/", 1)[1].split("/actions/", 1)[0]
-            month_total, recent_total = (runs or {}).get(full, (0, 0))
+            counts = (runs or {}).get(full, (0, 0))
+            month_total, recent_total = counts[0], counts[1]
+            # A count is an integer -- the tool refuses a `total_count` that is
+            # not one, and a float default made every window unreadable.
+            nested_total = counts[2] if len(counts) > 2 else recent_total // 2
             # The two windows are told apart by the date in the query. At
             # exactly 00:00 on the 2nd, `now - 24h` IS the 1st at midnight and
             # the two queries are byte-identical -- a fixture that guessed
@@ -668,7 +683,14 @@ def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None
                 raise AssertionError(
                     "at 00:00 on the 2nd the month window and the 24h window are the "
                     "same instant; this fixture cannot tell them apart")
-            total = month_total if is_month else recent_total
+            nested_marker = "created=%3E%3D{:%Y-%m-%dT%H:%M:%S}Z".format(
+                now - timedelta(hours=ci_health.NESTED_WINDOW_HOURS)) if now else None
+            if is_month:
+                total = month_total
+            elif nested_marker is not None and nested_marker in path:
+                total = nested_total
+            else:
+                total = recent_total
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=json.dumps({"total_count": total}), stderr="")
         raise AssertionError(f"unexpected call {path}")
@@ -929,7 +951,7 @@ def test_the_meter_asks_for_the_owner_qualified_repo():
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     asked = [p for p in seen if "/actions/runs?" in p]
-    assert len(asked) == 2, seen
+    assert len(asked) == 3, seen
     assert all(p.startswith("/repos/SokratesAI/platform-config/actions/runs?") for p in asked), asked
     # `created=>=` has to reach GitHub as `created=%3E%3D`. Sent raw, `gh api`
     # produces a filter the endpoint ignores, and an unfiltered count is every
@@ -1037,3 +1059,119 @@ def test_a_repo_counted_for_the_month_but_not_the_window_refuses_to_rate():
     # and the number that would have been printed must not appear at all --
     # a zero rate on the page is what a reader would have acted on.
     assert "private minute(s)/day" not in text, text
+
+
+# --- the burn rate is not stationary -------------------------------------
+# Cycle 921. One window cannot tell a steady burn from one that changed
+# inside it. `platform-config` folded three workflows into one at 03:43 UTC
+# on 2026-09-04; fifteen hours later the 24h window still held two thirds
+# pre-fold runs and this tool printed 203.9 minutes/day, which `burn_forecast`
+# turned into "8.3 days left". Counted over the newest 12h -- all of it after
+# the fold -- the same repos ran 100 runs a day, and the honest answer was
+# about fourteen days. Cycle 917 caught it by hand and wrote the workaround
+# into the handoff. These pin it in the instrument instead.
+
+def test_a_burn_that_changed_inside_the_window_is_named_rather_than_averaged():
+    # The live shape on 2026-09-04, scaled: 200 runs across the 24h window
+    # but only 50 of them in the newest 12h. Averaged, that reads 100
+    # minutes/day; the half that is actually still happening reads 50.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 200, 50)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, rate = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    text = "\n".join(lines)
+    # The 24h rate is unchanged -- this reports beside it, it does not replace
+    # it, because counts cannot say which of the two windows is the truth.
+    assert abs(rate - 100.0) < 1e-9
+    assert "NOT STEADY" in text
+    assert "50.0 private minute(s)/day against the 100.0/day above" in text
+    assert "names the gap rather than picking a rate" in text
+
+
+def test_the_disagreement_is_quoted_as_a_range_of_days_not_a_single_figure():
+    # The number the owner actually reads. 1,700 minutes left at 50/day is 34
+    # days and at 100/day is 17; quoting either alone is a measurement this
+    # tool did not take.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 200, 50)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, _ = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    text = "\n".join(lines)
+    assert "between 17.0 and 34.0 day(s)" in text
+
+
+def test_a_steady_burn_says_nothing_at_all():
+    # Half the 24h runs in the newest 12h is the same rate twice over. A line
+    # on every clean sweep is a line nobody reads, which is how the 400-chip
+    # rule fails from the other end.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 200, 100)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, rate = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    assert abs(rate - 100.0) < 1e-9
+    assert "NOT STEADY" not in "\n".join(lines)
+
+
+def test_a_quiet_nested_window_is_too_noisy_to_call_and_stays_silent():
+    # Four runs in twelve hours against eight in twenty-four. The rates are
+    # 2/day and 2/day here, but the point is the bar: the threshold is the
+    # Poisson noise on the nested count, so a window with almost nothing in
+    # it cannot raise a finding no matter which way it leans. 6 runs in the
+    # nested window against 8 in the wide one is a 3.0/day gap under a
+    # +-4.9/day bar.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 8, 6)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, _ = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    assert "NOT STEADY" not in "\n".join(lines)
+
+
+def test_an_empty_nested_window_still_has_a_bar_of_one_run():
+    # sqrt(0) is zero and a bar of zero calls every window apart, including
+    # one that stopped for an hour. The floor is one run: 0 runs in 12h
+    # against 200 in 24h is a real stop and does report.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 200, 0)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, _ = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    text = "\n".join(lines)
+    assert "NOT STEADY" in text
+    # No range: a rate of zero divides into no number of days.
+    assert "day(s), not the single figure below" not in text
+
+
+def test_an_empty_nested_window_under_an_empty_wide_one_says_nothing():
+    # This is what the floor of one run is for, and the test above does not
+    # pin it: with a busy 24h window an empty nested one reports either way.
+    # Here the whole day held a single run. `sqrt(0)` is zero, so without the
+    # floor the bar is zero and a difference of half a minute a day -- one run
+    # -- reads as the burn changing. There is nothing here to conclude.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (600, 1, 0)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, _ = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    assert "NOT STEADY" not in "\n".join(lines)
