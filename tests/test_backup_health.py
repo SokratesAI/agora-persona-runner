@@ -558,7 +558,7 @@ def test_the_telegram_floor_passes_an_acked_bridge_with_an_empty_inbox():
     """A floor derived from the 816-byte first run would fail a healthy volume.
 
     801 of those bytes were `inbox.jsonl`, which is legitimately absent on a bridge
-    Edvard has not written to since the last ack. What judges the contents is the
+    the owner has not written to since the last ack. What judges the contents is the
     CronJob's REQUIRE_FILES, not this number -- so this only has to sit under the
     gzip floor of a directory holding `owner_chat_id` and `inbox_ack`.
     """

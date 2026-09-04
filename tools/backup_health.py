@@ -243,7 +243,7 @@ NAS_BACKUPS = (
         # session above: one skipped run reads as stale.
         stale_after_hours=8,
         # 816 bytes on the 2026-09-04 15:34 first run, of which 801 were
-        # inbox.jsonl. That part is legitimately empty on a bridge Edvard has not
+        # inbox.jsonl. That part is legitimately empty on a bridge the owner has not
         # written to since the last ack, so a floor derived from the 816 would
         # fail a volume that is perfectly fine. This one only has to be above the
         # gzip floor of an empty directory; what judges the contents is the
