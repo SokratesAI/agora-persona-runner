@@ -8651,6 +8651,13 @@
     track.setAttribute("role", "img");
     track.setAttribute("aria-label", name + " — " + counts);
     li.appendChild(track);
+    // The projected finish, on the index as well as the page, for the same
+    // reason the standing is: "which project lands first" should not cost
+    // one tap per project.
+    var standingPace = paceSentence(summary.pace);
+    if (standingPace) {
+      li.appendChild(el("div", "project-standing-pace", standingPace));
+    }
     // The worst rating among the *open* rows -- "is there anything red
     // under this project", which is the question the four status columns
     // on the page below cannot answer. `priorities` is already in
@@ -8706,6 +8713,43 @@
    * a reader who has to know a colour code has not been told anything.
    * Nothing is drawn for a project with no rows -- the page already says
    * "nothing is filed under X yet" and a 0% bar under that is noise. */
+  /* When a project finishes, in words -- idea #228's dated-roadmap half.
+   *
+   * The server computes the date; this only writes the sentence, so the
+   * page and the index cannot disagree about a number and cannot disagree
+   * with each other. `pace.finishes` is an ISO date or null, and null has
+   * two different causes that must not read the same: nothing left to do,
+   * or nothing being closed. The first needs no line at all; the second is
+   * the finding, so it says so out loud.
+   *
+   * The rate and the assumption travel with the date every time it is
+   * shown. A date on its own reads as a commitment; "6.5/week, if nothing
+   * new is added" is the same date with its own error bars attached, and
+   * the assumption is a real one -- his backlog grows. */
+  function paceSentence(pace) {
+    if (!pace) return null;
+    if (!pace.remaining) return null;
+    if (!pace.finishes) {
+      return "nothing closed in the last " + pace.windowDays + " days — "
+        + pace.remaining + " open, no date at this rate";
+    }
+    return "~" + formatMonthDay(pace.finishes) + " at " + pace.perWeek
+      + "/week — " + pace.remaining + " left, " + pace.assumes;
+  }
+
+  /* `2026-10-06` as `6 Oct`. The year is deliberately dropped: every other
+   * date on these pages is his own `MM-DD` and a lone full ISO date beside
+   * them reads as a different kind of fact than it is. */
+  function formatMonthDay(iso) {
+    var parts = String(iso).split("-");
+    if (parts.length !== 3) return iso;
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    var month = months[parseInt(parts[1], 10) - 1];
+    if (!month) return iso;
+    return parseInt(parts[2], 10) + " " + month;
+  }
+
   function renderProjectSummary(payload) {
     var summary = (payload && payload.summary) || null;
     if (!summary || !summary.total) return null;
@@ -8727,6 +8771,8 @@
     track.setAttribute("aria-label",
       summary.percentDone + "% done — " + counts);
     box.appendChild(track);
+    var pace = paceSentence(summary.pace);
+    if (pace) box.appendChild(el("div", "project-summary-pace", pace));
     if (summary.priorities && summary.priorities.length) {
       var chips = el("div", "project-summary-prios");
       summary.priorities.forEach(function (entry) {

@@ -104,7 +104,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from math import ceil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from agora_runner.audit import audit
@@ -1199,6 +1200,118 @@ def _project_thread(markdown, project):
     return out
 
 
+# How far back `_pace` counts closures. Two weeks rather than one: at ~6
+# rows a day the week-to-week number swings hard on a single quiet night,
+# and rather than a month because his boards are re-rated often enough that
+# a four-week-old rate is describing a different backlog. It is the one
+# number in here I picked rather than measured, and it is named once.
+PACE_WINDOW_DAYS = 14
+
+
+def _closed_on(item, today):
+    """The date a closed row was closed, from the only date it carries.
+
+    Every row on his boards carries exactly one date -- `Updated`, `MM-DD`
+    with no year -- and four cycles read that as "there is no history here
+    to draw a burndown from". That is right for an *open* row, whose date
+    says when it was last touched and nothing about when it started. It is
+    wrong for a *closed* one: the last thing that happened to a done row is
+    that it was closed, so its `Updated` is its closing date.
+
+    Two honest limits, both of which make this a floor rather than a fact.
+    A done row edited afterwards -- a note appended, a rating changed --
+    carries the later date, so a closure can be reported later than it
+    happened. And the year is not in the data: a `MM-DD` that would land
+    more than `_FUTURE_SLACK_DAYS` ahead of today is read as last year's,
+    which is the only reading that does not put closures in the future.
+    """
+    raw = (item.get("updated") or "").strip()
+    match = re.fullmatch(r"(\d{1,2})-(\d{1,2})", raw)
+    if not match:
+        return None
+    month, day = int(match.group(1)), int(match.group(2))
+    for year in (today.year, today.year - 1):
+        try:
+            when = date(year, month, day)
+        except ValueError:
+            return None
+        if (when - today).days <= _FUTURE_SLACK_DAYS:
+            return when
+    return None
+
+
+# A row dated a few days ahead of today is a clock skew or a hand-typed
+# date, not a row closed next year. Rolling it back a whole year on the
+# strength of one day would drop it out of every window it belongs in.
+_FUTURE_SLACK_DAYS = 3
+
+
+def _pace(items, today):
+    """When this project finishes, at the rate it is actually being closed.
+
+    This is idea #228's last half, and it is the half four of my cycles
+    handed back to the owner rather than built. Each of them wrote a version
+    of the same sentence -- a roadmap is a claim about *when*, his rows
+    carry no dates, so he has to supply either target dates or a
+    cross-project order before there can be one. That was true about the
+    data and false about the question. I do not need him to tell me when a
+    row will be done. **I close these rows, so I can measure how fast.**
+
+    So: count the rows closed in the trailing `PACE_WINDOW_DAYS`, turn that
+    into a weekly rate, and divide the open ones by it. The result is a
+    date, computed rather than requested, and every input to it is
+    something already on his boards.
+
+    Three things it deliberately does not do, because each would make the
+    date read as more than it is.
+
+    It projects over the rows I can actually move -- `open` minus the ones
+    blocked on the owner -- because the rate was measured on rows I closed
+    and applying it to rows only he can unblock would credit my throughput
+    with his inbox. `remaining` is that number and it is reported beside
+    the date rather than left implicit.
+
+    It assumes nothing new arrives, and says so in `assumes`. It cannot do
+    better: a row's `Updated` is the day it was last touched, so a backlog
+    row added today and one edited today are the same record, and there is
+    no arrival rate in the data to net off. A date that quietly modelled
+    arrivals from that field would be a guess wearing a number.
+
+    And a project with nothing closed in the window gets `perWeek` 0 and no
+    date at all, rather than a date at infinity. That is the honest output:
+    at a measured rate of zero the answer is "not at this rate", which is
+    itself the finding on a project with open rows and no movement.
+    """
+    closed_in_window = 0
+    for item in items:
+        if (item.get("statusKey") or "") not in _CLOSED_STATUS_KEYS:
+            continue
+        when = _closed_on(item, today)
+        if when is None:
+            continue
+        age = (today - when).days
+        if 0 <= age < PACE_WINDOW_DAYS:
+            closed_in_window += 1
+    summary = _project_summary(items)
+    remaining = summary["open"] - summary["blocked"]
+    per_week = round(closed_in_window * 7.0 / PACE_WINDOW_DAYS, 1)
+    pace = {
+        "windowDays": PACE_WINDOW_DAYS,
+        "closedInWindow": closed_in_window,
+        "perWeek": per_week,
+        "remaining": remaining,
+        "blocked": summary["blocked"],
+        "assumes": "nothing new is added",
+        "finishes": None,
+        "days": None,
+    }
+    if remaining > 0 and closed_in_window > 0:
+        days = int(ceil(remaining * PACE_WINDOW_DAYS / float(closed_in_window)))
+        pace["days"] = days
+        pace["finishes"] = (today + timedelta(days=days)).isoformat()
+    return pace
+
+
 def _project_summary(items):
     """How a project is actually going, as numbers rather than columns.
 
@@ -1301,7 +1414,16 @@ def _project_summaries(boards):
             # belong to the board cache that the Issues and Ideas pages
             # serve from.
             grouped.setdefault(key, []).append(item)
-    return {key: _project_summary(rows) for key, rows in grouped.items()}
+    # One clock for every project on the page, read once. Two calls to
+    # `now()` inside a loop can straddle midnight, and then two projects
+    # on one index would count the same closure into different windows.
+    today = datetime.now(OSLO).date()
+    summaries = {}
+    for key, rows in grouped.items():
+        summary = _project_summary(rows)
+        summary["pace"] = _pace(rows, today)
+        summaries[key] = summary
+    return summaries
 
 
 def _project_backlog(rows):
@@ -1544,6 +1666,9 @@ def project_payload(name=None):
     # under it. The per-board totals are still on `boards[*].total` for the
     # tab labels.
     result["summary"] = _project_summary(matched_rows)
+    # When it finishes, at the rate it is actually being closed --
+    # idea #228's last half. Same rows, same clock as the index.
+    result["summary"]["pace"] = _pace(matched_rows, datetime.now(OSLO).date())
     # One ordered queue across both boards, for the same reason the summary
     # is one: "what is next on this project" does not have an issues answer
     # and an ideas answer.

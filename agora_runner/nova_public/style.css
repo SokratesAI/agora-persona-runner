@@ -4264,6 +4264,11 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   overflow: hidden;
 }
 .project-summary-fill { height: 100%; background: var(--accent); }
+/* The projected finish, under the bar it belongs to. Dim and small: it
+   is a derived number and should not read louder than the counts it is
+   derived from. */
+.project-summary-pace { color: var(--dim); font-size: 0.85rem; margin-top: 6px; }
+.project-standing-pace { color: var(--dim); font-size: 0.8rem; margin-top: 4px; }
 .project-summary-prios { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .project-summary-prio {
   font-size: 0.8rem;
