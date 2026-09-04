@@ -227,6 +227,7 @@ from agora_runner.nova_idea_pool import (
     request_generate as pool_request_generate,
 )
 from agora_runner.nova_catalog import catalog_page, parse_catalog
+from agora_runner.nova_recap import parse_recap, recap_page
 from agora_runner.heartbeat_liveness import liveness
 from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
                                      dumps as dumps_demos, load as load_demos,
@@ -253,6 +254,7 @@ from agora_runner.nova_sources import (
     digest_markdown,
     journal_markdown,
     plan_markdown,
+    recap_markdown,
     goal_history_json,
     retro_ledger_json,
 )
@@ -494,6 +496,10 @@ def digest_payload():
 
 def catalog_payload():
     return catalog_page(parse_catalog(catalog_markdown()))
+
+
+def recap_payload():
+    return recap_page(parse_recap(recap_markdown()))
 
 
 def _drop_legacy_reply(comment):
@@ -3350,6 +3356,13 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # the site -- 11KB of markdown -- so nothing here wants
                 # a window.
                 self._send_cached_json("notes", notes_payload)
+                return
+            if path == "/api/recap":
+                # Cached like the catalog and for the same reason: it is a
+                # single small vault document that changes when a cycle
+                # rewrites it, not between two taps. It is also the
+                # smallest payload on the site -- six bullets.
+                self._send_cached_json("recap", recap_payload)
                 return
             if path == "/api/catalog":
                 # Cached like the boards, and this one changes even less

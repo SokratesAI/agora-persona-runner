@@ -3437,7 +3437,60 @@
     return card;
   }
 
-  function render(journal, digest, comments) {
+  /* The recap card, pinned above the feed.
+   *
+   * The owner, capture 2026-09-04, 🔴 Immediately: "I want a stick Journal
+   * card at the top that summarizes the last 12 hours. Keep it short as I
+   * just want this to quickly glance over what has been done. ... max 5-6
+   * bullets as many cycles work on the same problem/project."
+   *
+   * It draws what the server says and computes nothing: the bullets, the
+   * time it was written and whether that is stale all come down in the
+   * payload, because a number on the screen should have one definition
+   * and one test. Drawn only on the unfiltered, all-cycles feed -- on
+   * `/asks` and on a single-cycle page the reader has asked a narrower
+   * question and a twelve-hour summary is not an answer to it.
+   *
+   * A recap that is missing draws nothing at all rather than an empty
+   * card. He asked for a glance, and an empty box is a thing to read.
+   */
+  function renderRecap(recap) {
+    if (!recap || !recap.bullets || !recap.bullets.length) return null;
+    var card = el("section", "recap");
+    var head = el("div", "recap-head");
+    head.appendChild(el("h2", "recap-title", "Last 12 hours"));
+    var stampText = recap.writtenLabel
+      ? "as of " + recap.writtenLabel
+      : "written at an unknown time";
+    if (recap.cycles) stampText += " · cycles " + recap.cycles;
+    var stamp = el("span", "recap-stamp", stampText);
+    /* The one thing this card must never do is read as current when it is
+     * not. The stamp is always there; this only marks the case where the
+     * gap is big enough that the window it describes has moved. */
+    if (recap.stale) stamp.className = "recap-stamp stale";
+    head.appendChild(stamp);
+    card.appendChild(head);
+    var list = el("ul", "recap-list");
+    recap.bullets.forEach(function (bullet) {
+      var item = el("li", "recap-item");
+      if (bullet.lead) {
+        item.appendChild(el("strong", "recap-lead", bullet.lead));
+        if (bullet.text) item.appendChild(document.createTextNode(" " + bullet.text));
+      } else {
+        item.appendChild(document.createTextNode(bullet.text));
+      }
+      list.appendChild(item);
+    });
+    card.appendChild(list);
+    if (recap.stale) {
+      card.appendChild(el("p", "recap-note",
+        "This was written more than " + recap.staleAfterHours
+        + " hours ago, so newer cycles are not in it — the feed below is."));
+    }
+    return card;
+  }
+
+  function render(journal, digest, comments, recap) {
     /* Drop an answer to a query he has already typed past.
      *
      * `load()` guards against having navigated to a different *view* and
@@ -3570,6 +3623,10 @@
     });
 
     feed.textContent = "";
+    if (!filtered && wanted === null) {
+      var recapCard = renderRecap(recap);
+      if (recapCard) feed.appendChild(recapCard);
+    }
     /* The comments read is tolerated on purpose -- the journal is the page,
      * and a comments failure should cost the bubbles, not the feed. But
      * tolerating it silently is what made a 502 look like "nobody has
@@ -4062,6 +4119,15 @@
       // unaffected: the etag moves the moment the payload does, including
       // for the reply worker's own `replyWaitingSeconds`.
       fetchVersioned("/api/comments", "comments").catch(function () { return null; }),
+      /* The twelve-hour recap card (his 🔴 Immediately capture, 2026-09-04).
+       * Tolerated exactly like the digest and the comments: the journal is
+       * the page, and a recap that does not load should cost the card at
+       * the top, not the feed under it. Not `fetchVersioned` -- this one is
+       * served by `_send_cached_json`, which carries no `version` field for
+       * the conditional path to key off. It is six bullets. */
+      fetch("/api/recap", { cache: "no-store" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .catch(function () { return null; }),
     ]);
   }
 
@@ -11615,7 +11681,7 @@
         // Same guard, other direction: a board fetch started before a tap
         // on Journal must not land after this one.
         if (route(window.location.pathname).view !== "journal") return;
-        render(results[0], results[1], results[2]);
+        render(results[0], results[1], results[2], results[3]);
       })
       .catch(function (err) {
         feed.textContent = "";
@@ -11759,7 +11825,7 @@
            * card under his thumb where it was. */
           var before = document.body.scrollHeight;
           var top = window.scrollY;
-          render(journal, results[1], results[2]);
+          render(journal, results[1], results[2], results[3]);
           if (top > 0) window.scrollTo(0, top + (document.body.scrollHeight - before));
         }
       })

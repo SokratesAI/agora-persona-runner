@@ -4420,3 +4420,66 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 }
 .model-pick:disabled { opacity: 0.6; }
 .model-pick-note { font-size: 0.75rem; color: var(--dim); }
+
+/* The twelve-hour recap, pinned above the feed (his 🔴 Immediately capture,
+X that summarizes the last 12
+ * hours ... max 5-6 bullets").
+ *
+ * It reads as a header rather than as the first entry: accent left rule, no
+ * card chrome competing with the entries under it. He asked for something to
+ * glance at, so nothing here is tappable and nothing collapses -- the whole
+ * card is the summary. */
+.recap {
+  background: var(--card);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 0.85rem 1rem 0.9rem;
+  margin: 0 0 1.1rem;
+}
+
+.recap-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.55rem;
+}
+
+.recap-title {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.recap-stamp {
+  font-size: 0.75rem;
+  color: var(--dim);
+}
+
+/* Amber rather than red: a recap that is a few hours old is still true
+ * about what it describes, it just stops being the whole answer. */
+.recap-stamp.stale { color: #d7a45c; }
+
+.recap-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  list-style: disc;
+}
+
+.recap-item {
+  margin: 0 0 0.4rem;
+  line-height: 1.45;
+}
+
+.recap-item:last-child { margin-bottom: 0; }
+
+.recap-lead { color: var(--fg, inherit); }
+
+.recap-note {
+  margin: 0.6rem 0 0;
+  font-size: 0.78rem;
+  color: var(--dim);
+}

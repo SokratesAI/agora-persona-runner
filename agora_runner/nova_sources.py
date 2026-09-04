@@ -15,6 +15,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 from agora_runner.nova_boards import BOARD_PATHS
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_catalog import CATALOG_PATH
+from agora_runner.nova_recap import RECAP_PATH
 from agora_runner.nova_claims import CLAIMS_PATH
 from agora_runner.nova_comments import COMMENTS_PATH
 from agora_runner.nova_costs import COST_LEDGER_PATH
@@ -343,3 +344,14 @@ def catalog_markdown():
     `nova_catalog` rather than being written here a second time.
     """
     return vault_read_path(CATALOG_PATH) or ""
+
+
+def recap_markdown():
+    """`nova/resources/recap.md`, raw -- the twelve-hour recap a cycle writes.
+
+    `""` if it is missing, for `catalog_markdown`'s reason: a vault where
+    no cycle has written a recap yet is a state this system is
+    legitimately in, and the card says so rather than erroring. The path
+    comes from `nova_recap` rather than being written here a second time.
+    """
+    return vault_read_path(RECAP_PATH) or ""
