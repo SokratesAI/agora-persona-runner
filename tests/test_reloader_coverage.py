@@ -140,3 +140,66 @@ class TestReport:
         )
         assert code == 0
         assert any("not judged" in line and "agents/thing" in line for line in lines)
+
+
+class TestExemptions:
+    """A reference a restart cannot help is a decision, and it carries a reason."""
+
+    KEY = rc._EXEMPT_PREFIX + "sec.claude-auth"
+
+    def test_the_reference_name_comes_out_of_the_key(self):
+        assert rc.exemptions({self.KEY: "written once on first boot"}) == {
+            "sec:claude-auth": "written once on first boot"
+        }
+
+    def test_a_blank_reason_is_not_an_exemption(self):
+        # The value is how the report explains itself; an empty one would
+        # silence a gap and tell the reader nothing.
+        assert rc.exemptions({self.KEY: "   "}) == {}
+
+    def test_an_unknown_kind_is_ignored(self):
+        assert rc.exemptions({rc._EXEMPT_PREFIX + "configmap.x": "why"}) == {}
+
+    def test_an_ordinary_annotation_is_not_an_exemption(self):
+        assert rc.exemptions({rc._AUTO: "true"}) == {}
+
+    def test_an_exempt_reference_does_not_raise_and_prints_its_reason(self):
+        bare = _workload("agents", "bridge", {"sec:claude-auth"})
+        # Precondition: without the declaration this same workload is a gap,
+        # so a clean exit below is the exemption and not an accident.
+        assert rc.report(1, [bare])[0] == 2
+
+        w = _workload("agents", "bridge", {"sec:claude-auth"},
+                      {self.KEY: "written to the PVC once on first boot"})
+        w["exempt"] = rc.exemptions({self.KEY: "written to the PVC once on first boot"})
+        code, lines = rc.report(1, [w])
+        assert code == 0
+        assert any("EXEMPT" in line and "written to the PVC once" in line for line in lines)
+        assert not any("NO RESTART" in line for line in lines)
+
+    def test_an_exempt_workload_is_not_named_as_left_behind(self):
+        covered_one = _workload("agents", "runner", {"sec:couchdb-credentials"},
+                                {rc._AUTO: "true"})
+        w = _workload("agents", "bridge", {"sec:couchdb-credentials"})
+        w["exempt"] = {"sec:couchdb-credentials": "reason"}
+        code, lines = rc.report(1, [covered_one, w])
+        assert code == 0
+        assert not any(line.startswith("SHARED") for line in lines)
+
+    def test_an_exemption_for_something_unread_is_printed_not_raised(self):
+        w = _workload("agents", "bridge", {"sec:a"}, {rc._AUTO: "true"})
+        w["exempt"] = {"sec:gone": "reason"}
+        code, lines = rc.report(1, [w])
+        assert code == 0
+        assert any(line.startswith("stale") and "sec:gone" in line for line in lines)
+
+    def test_the_ok_line_does_not_claim_an_exempt_reference_is_covered(self):
+        w = _workload("agents", "bridge", {"sec:a", "sec:claude-auth"},
+                      {rc._SEC_RELOAD: "a"})
+        w["exempt"] = {"sec:claude-auth": "reason"}
+        code, lines = rc.report(1, [w])
+        assert code == 0
+        ok = [line for line in lines if line.startswith("ok")]
+        assert len(ok) == 1
+        assert "1 covered and 1 exempt" in ok[0]
+        assert "all covered" not in ok[0]
