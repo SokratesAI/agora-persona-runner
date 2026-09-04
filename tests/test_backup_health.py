@@ -16,6 +16,13 @@ import datetime
 import json
 
 from tools import backup_health as bh
+from tools.backup_health import (
+    ACKNOWLEDGED,
+    BACKUPS,
+    format_coverage,
+    judge_coverage,
+    read_claims,
+)
 
 
 UTC = datetime.timezone.utc
@@ -159,6 +166,7 @@ def test_main_exits_2_on_a_stale_backup(monkeypatch, capsys):
 
 
 def test_main_exits_1_when_the_repo_cannot_be_read(monkeypatch, capsys):
+    monkeypatch.setattr(bh, "read_claims", lambda: (["agents/marcus-data"], None))
     monkeypatch.setattr(bh, "_gh", _api(None, code=1, err="boom"))
     assert bh.main([]) == 1
     assert "CANNOT SEE" in capsys.readouterr().out
@@ -244,6 +252,7 @@ def test_main_raises_when_either_backup_is_stale(monkeypatch, capsys):
 
 
 def test_main_reports_an_unreadable_backup_beside_a_clean_one(monkeypatch, capsys):
+    monkeypatch.setattr(bh, "read_claims", lambda: (["agents/marcus-data"], None))
     # A partial sweep must never read as a clean one.
     def run(args):
         if VAULT.repo in args[-1]:
@@ -258,3 +267,80 @@ def test_main_reports_an_unreadable_backup_beside_a_clean_one(monkeypatch, capsy
     out = capsys.readouterr().out
     assert "CANNOT SEE" in out
     assert "1 off-box backup(s) of 2" in out
+
+
+# --- coverage sweep (Cycle 883) -------------------------------------------
+
+
+class _Proc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _pvc_json(*names):
+    return json.dumps(
+        {
+            "items": [
+                {"metadata": {"namespace": ns, "name": name}}
+                for ns, name in (n.split("/") for n in names)
+            ]
+        }
+    )
+
+
+def test_read_claims_returns_namespaced_names_sorted():
+    claims, error = read_claims(
+        run=lambda args: _Proc(stdout=_pvc_json("obsidian/couchdb-data", "agents/agora-data"))
+    )
+    assert error is None
+    assert claims == ["agents/agora-data", "obsidian/couchdb-data"]
+
+
+def test_read_claims_treats_an_empty_list_as_unreadable():
+    """"no volumes" and "I could not look" are opposite findings."""
+    claims, error = read_claims(run=lambda args: _Proc(stdout=_pvc_json()))
+    assert claims == []
+    assert error and "no claims at all" in error
+
+
+def test_read_claims_reports_a_failed_kubectl_rather_than_returning_nothing():
+    claims, error = read_claims(run=lambda args: _Proc(returncode=1, stderr="Forbidden"))
+    assert claims == []
+    assert error == "Forbidden"
+
+
+def test_judge_coverage_splits_declared_acknowledged_and_unprotected():
+    covered, acknowledged, uncovered = judge_coverage(
+        ["agents/agora-data", "agents/marcus-data", "infra/ollama-models"]
+    )
+    assert covered == [("agents/marcus-data", "marcus")]
+    assert [claim for claim, _ in acknowledged] == ["infra/ollama-models"]
+    assert uncovered == ["agents/agora-data"]
+
+
+def test_every_declared_backup_names_a_claim_and_every_acknowledgement_gives_a_reason():
+    assert [b.name for b in BACKUPS if not b.covers] == []
+    assert all(reason.strip() for reason in ACKNOWLEDGED.values())
+
+
+def test_format_coverage_raises_on_an_unprotected_volume_and_names_it():
+    report, status = format_coverage(["agents/agora-data", "agents/marcus-data"], None)
+    assert status == 2
+    assert "NOT BACKED UP — agents/agora-data" in report
+    assert "1 unprotected" in report
+
+
+def test_format_coverage_is_clean_when_every_volume_is_declared_or_acknowledged():
+    report, status = format_coverage(["agents/marcus-data", "infra/ollama-models"], None)
+    assert status == 0
+    assert "NOT BACKED UP" not in report
+    assert "0 unprotected" in report
+
+
+def test_format_coverage_never_reads_as_clean_when_the_cluster_was_unreadable():
+    report, status = format_coverage([], "Forbidden")
+    assert status == 1
+    assert "COVERAGE UNREADABLE" in report
+    assert "NOT BACKED UP" not in report
