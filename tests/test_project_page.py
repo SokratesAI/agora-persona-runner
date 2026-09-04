@@ -324,6 +324,25 @@ def test_summary_counts_across_both_boards():
     assert summary["percentDone"] == 25
 
 
+def test_the_page_summary_carries_the_projected_finish():
+    """The wiring, not the arithmetic -- `test_project_pace` owns that.
+
+    Deleting `_pace`'s call site here leaves every other test in this file
+    green, because they all read `summary` keys that predate it.
+    """
+    pace = nova_site.project_payload("Nova")["summary"]["pace"]
+    # Three open rows, one of them blocked on the owner -- the projection
+    # is over the two I can actually close.
+    assert pace["remaining"] == 2
+    assert pace["assumes"] == "nothing new is added"
+
+
+def test_the_index_standing_carries_the_projected_finish_too():
+    """Same wiring on the index, which is a separate call site."""
+    for standing in nova_site.project_payload()["projectSummary"].values():
+        assert "pace" in standing
+
+
 def test_a_dropped_row_is_not_counted_as_progress(monkeypatch):
     """`outdated` is scope removed, not work delivered.
 
