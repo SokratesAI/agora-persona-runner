@@ -280,6 +280,22 @@ def unknown_checks(names, directory=None):
     return [n for n in names if not os.path.isfile(os.path.join(directory, n + ".py"))]
 
 
+#: Extra arguments a check is run with here, and nowhere else.
+#:
+#: `alerts --notify` is the only entry today and it is the one thing in this
+#: file that reaches outside the cluster. The owner asked for it on
+#: 2026-09-04 -- *"make Nova connect to it so that important alerts get sent
+#: to me like if one server is down"* -- and this is the call every cycle
+#: already makes, which is the same argument that put `cadence_control` here:
+#: a pager a cycle has to remember to run is not a pager. The quiet-hours
+#: window and the six-hour dedupe live in `tools.notify`, so nothing here
+#: decides when his phone rings; this only decides that the question gets
+#: asked once every cycle.
+CHECK_ARGS = {
+    "alerts": ["--notify"],
+}
+
+
 def run_check(name):
     """Run one check as a subprocess. Returns (name, exit_code, output, seconds)."""
     import time
@@ -287,7 +303,7 @@ def run_check(name):
     started = time.monotonic()
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "tools." + name],
+            [sys.executable, "-m", "tools." + name] + CHECK_ARGS.get(name, []),
             cwd=os.path.dirname(tools_dir()),
             capture_output=True,
             text=True,

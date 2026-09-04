@@ -131,3 +131,95 @@ def test_everything_up_and_quiet_is_exit_zero(monkeypatch):
 @pytest.mark.parametrize("stamp", ["2026-09-04T07:00:00Z", "not-a-time"])
 def test_age_never_throws_on_a_stamp_it_cannot_parse(stamp):
     assert alerts._age(stamp)
+
+
+# --- what is allowed to reach his phone --------------------------------
+
+def _found(**kw):
+    base = {
+        "base": "http://p",
+        "rule_count": 6,
+        "pools": {"kubelet": []},
+        "active": [{"health": "up"}],
+        "missing": [],
+        "unhealthy": [],
+        "firing": [],
+        "pending": [],
+    }
+    base.update(kw)
+    return base
+
+
+def _alert(name, severity, **labels):
+    labels = {"alertname": name, "severity": severity, **labels}
+    return {"labels": labels, "state": "firing", "activeAt": "2026-09-04T06:00:00Z"}
+
+
+def test_a_quiet_cluster_pages_nobody():
+    worth, urgent, text = alerts.paging(_found())
+    assert worth is False and urgent is False and text == ""
+
+
+def test_a_high_severity_alert_is_allowed_to_wake_him():
+    worth, urgent, text = alerts.paging(_found(firing=[_alert("NodeDiskCritical", "high")]))
+    assert worth is True and urgent is True
+    assert "NodeDiskCritical" in text
+
+
+def test_a_medium_severity_alert_is_worth_telling_him_but_not_at_night():
+    worth, urgent, text = alerts.paging(_found(firing=[_alert("NodeSwapNearlyFull", "medium")]))
+    assert worth is True and urgent is False
+
+
+def test_a_down_scrape_target_is_urgent_on_its_own():
+    # His words were "if one server is down"; a kubelet that stopped answering
+    # is that case, and TargetDown cannot fire for a job discovering nothing.
+    found = _found(unhealthy=[{"scrapePool": "kubelet", "scrapeUrl": "http://n2/metrics",
+                               "lastError": "connection refused", "health": "down"}])
+    worth, urgent, text = alerts.paging(found)
+    assert worth is True and urgent is True
+    assert "http://n2/metrics" in text
+
+
+def test_no_targets_at_all_is_urgent():
+    worth, urgent, _ = alerts.paging(_found(active=[]))
+    assert worth is True and urgent is True
+
+
+def test_a_scrape_job_with_no_targets_is_reported_but_not_urgent():
+    worth, urgent, text = alerts.paging(_found(missing=["agora"]))
+    assert worth is True and urgent is False
+    assert "agora" in text
+
+
+def test_a_pending_alert_never_pages():
+    found = _found(pending=[_alert("NodeMemoryCritical", "high")])
+    assert alerts.paging(found)[0] is False
+
+
+def test_a_broken_instrument_does_not_page():
+    # It still exits 1 in the report. Waking him because Prometheus is
+    # unreachable teaches him to ignore the channel.
+    assert alerts.paging({"unreadable": "COULD NOT READ", "base": "http://p"})[0] is False
+    assert alerts.paging({"no_rules": True, "base": "http://p"})[0] is False
+
+
+def test_the_page_key_ignores_the_duration_and_tracks_the_problem():
+    # Two readings of the same outage eighteen minutes apart must share a key,
+    # or dedupe never fires and he gets 80 messages a day.
+    one = _found(firing=[_alert("NodeDiskCritical", "high")])
+    two = _found(firing=[dict(_alert("NodeDiskCritical", "high"), activeAt="2026-09-04T07:00:00Z")])
+    assert alerts._page_key(one) == alerts._page_key(two)
+
+
+def test_a_new_problem_gets_a_new_page_key():
+    one = _found(firing=[_alert("NodeDiskCritical", "high")])
+    two = _found(firing=[_alert("NodeDiskCritical", "high"), _alert("ContainerRestartLoop", "high")])
+    assert alerts._page_key(one) != alerts._page_key(two)
+
+
+def test_report_renders_a_reading_it_was_handed_without_querying(monkeypatch):
+    monkeypatch.setattr(alerts, "collect", lambda base: (_ for _ in ()).throw(AssertionError("re-queried")))
+    status, lines = alerts.report("http://p", _found(firing=[_alert("NodeDiskCritical", "high")]))
+    assert status == 2
+    assert any("FIRING" in line for line in lines)
