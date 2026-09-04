@@ -511,9 +511,99 @@ async function probeChatScrollLock(browser, path) {
   return { probe: 'chat-scroll-lock' + path, ok, detail, errors };
 }
 
+/* The galaxy actually paints, and keeps painting.
+ *
+ * `/galaxy` draws the claims ledger onto a `<canvas>`: a starfield, a
+ * pulsing core, and one body per cycle holding a row. Nothing checked in
+ * could see any of it. jsdom implements no canvas at all, so
+ * `canvas.getContext("2d")` is null there and `drawGalaxy` returns on its
+ * second line -- every jsdom test of this page passes over a function
+ * that never ran. Cycle 906 verified it by hand in real Chromium against
+ * a stubbed feed and then deleted the script, which is the exact mistake
+ * this file's own docstring is about.
+ *
+ * Three assertions, and the second two are the ones with teeth:
+ *
+ * - the canvas is sized. It starts 0x0 and the draw loop sizes it on its
+ *   first frame, so a width is evidence that the loop ran at least once.
+ * - it is painted. Every pixel is read back and the distinct RGBA values
+ *   counted. A canvas nothing drew on reads as one value (transparent
+ *   black), and a canvas holding only the background gradient reads as a
+ *   handful; the real page paints a starfield and a radial core over it.
+ *   The floor here is 8, well under the 44 Cycle 906 measured live and
+ *   well over what any single fill can produce.
+ * - it animates. Two reads 500ms apart must differ. The stars twinkle off
+ *   `Math.sin(t)` and the core pulses, so identical pixels mean
+ *   `requestAnimationFrame` is no longer being re-armed -- which is what a
+ *   throw inside `frame()` looks like from outside, since the loop
+ *   re-arms on its last line and an exception skips it.
+ *
+ * That last one is why this probe can fail rather than being green in
+ * advance: a draw loop that dies after its first frame leaves a fully
+ * painted, permanently still canvas, and the first two assertions pass
+ * over it happily.
+ *
+ * The list under the canvas is deliberately not asserted here -- it is
+ * ordinary DOM, jsdom can see it, and `tests/test_nova_galaxy.py` owns it.
+ */
+async function probeGalaxyCanvas(browser, path) {
+  const ctx = await browser.newContext(PHONE);
+  const page = await ctx.newPage();
+  const errors = watch(page);
+  await page.goto(base + path, { waitUntil: 'networkidle', timeout: 30000 });
+
+  const canvas = page.locator('canvas.galaxy-canvas');
+  await canvas.waitFor({ state: 'attached', timeout: 15000 });
+
+  // The loop sizes the canvas on its first frame; before that it is 0x0
+  // and reading pixels off it would fail for a reason that is not the
+  // one under test.
+  await page.waitForFunction(() => {
+    const c = document.querySelector('canvas.galaxy-canvas');
+    return !!c && c.width > 0 && c.height > 0;
+  }, null, { timeout: 15000 });
+
+  const sample = () => page.evaluate(() => {
+    const c = document.querySelector('canvas.galaxy-canvas');
+    const g = c.getContext('2d');
+    if (!g) return { context: false };
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    const seen = new Set();
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      seen.add((d[i] << 24) | (d[i + 1] << 16) | (d[i + 2] << 8) | d[i + 3]);
+      sum = (sum + d[i] * 3 + d[i + 1] * 5 + d[i + 2] * 7 + d[i + 3]) % 4294967296;
+    }
+    return { context: true, width: c.width, height: c.height, colours: seen.size, hash: sum };
+  });
+
+  const first = await sample();
+  await page.waitForTimeout(500);
+  const second = await sample();
+  await ctx.close();
+
+  const detail = {
+    context: first.context,
+    width: first.width,
+    height: first.height,
+    colours: first.colours,
+    firstHash: first.hash,
+    secondHash: second.hash,
+    animated: first.hash !== second.hash,
+  };
+  const ok =
+    detail.context === true &&
+    detail.width > 0 &&
+    detail.height > 0 &&
+    detail.colours >= 8 &&
+    detail.animated;
+  return { probe: 'galaxy-canvas' + path, ok, detail, errors };
+}
+
 const PROBES = {
   'nav-reachable': (b) => probeNavReachable(b, '/'),
   'chat-scroll-lock': (b) => probeChatScrollLock(b, '/'),
+  'galaxy-canvas': (b) => probeGalaxyCanvas(b, '/galaxy'),
   'search-focus': (b) => probeSearchFocus(b, '/issues'),
   'search-focus-ideas': (b) => probeSearchFocus(b, '/ideas'),
   'replay-header': (b) => probeReplayHeader(b),

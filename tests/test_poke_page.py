@@ -111,3 +111,25 @@ def test_main_exits_nonzero_when_a_probe_fails(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(poke_page, "poke", lambda *a, **k: [_row("search-focus", ok=False)])
     assert poke_page.main(["search-focus"]) == 1
     assert "FAIL" in capsys.readouterr().out
+
+
+def test_the_two_probe_lists_agree():
+    """`poke_page.PROBES` and `poke.js`'s own map name the same probes.
+
+    A probe lives in two files and neither one imports the other. Adding
+    it to `poke.js` alone means nothing ever asks for it and the whole
+    thing is dead code that reads as a shipped check; adding it to
+    `poke_page.PROBES` alone means the script reports `unknown: true`,
+    which `problems()` does turn into a failure -- but only once someone
+    runs the tool against a real browser, which is not what CI does.
+
+    Both halves were edited by hand when `galaxy-canvas` went in, which
+    is the only reason this test exists: it is the guard for the mistake
+    that change could have made silently.
+    """
+    src = (poke_page.Path(poke_page.__file__).parent / "browser" / "poke.js").read_text()
+    body = src.split("\nconst PROBES = {", 1)[1].split("\n};", 1)[0]
+    in_js = sorted(m.strip().strip("'\"") for m in
+                   [line.split(":", 1)[0] for line in body.splitlines() if ":" in line])
+    assert in_js, "could not read poke.js's PROBES map -- the parse above went stale, not the lists"
+    assert in_js == sorted(poke_page.PROBES)
