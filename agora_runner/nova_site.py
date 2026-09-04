@@ -243,6 +243,7 @@ from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_runtimes import attach_runtimes
 from agora_runner.nova_boards import BOARD_PATHS
+from agora_runner.nova_galaxy import galaxy_payload
 from agora_runner.nova_sources import (
     claims_ledger_json,
     edvard_board_markdown,
@@ -311,6 +312,7 @@ PAGE_ROUTES = (
     "/catalog",
     "/diag",
     "/projects",
+    "/galaxy",
 )
 # `/project/Nova` is a real URL for the same reason `/cycle/49` is: the
 # project page has to survive a bookmark and a cold load, not only a tap
@@ -1721,6 +1723,21 @@ def retros_payload():
     a page opened once a week is the wrong side of that trade.
     """
     return shape_retros(retro_ledger_json())
+
+
+def galaxy_up_payload():
+    """The live claims ledger, shaped for the galaxy canvas.
+
+    One read, not `next_up_payload`'s three: this answers "what is
+    happening right now" and nothing on the page ranks a board, so
+    fetching his two board files here would be paying the expensive half
+    of that route for a field this payload does not carry.
+
+    Cached like the rest at 15 seconds, for `next_up_payload`'s reason --
+    short enough that a claim taken mid-cycle shows up while he is
+    looking at the page.
+    """
+    return galaxy_payload(claims_ledger_json(), datetime.now(timezone.utc))
 
 
 def next_up_payload():
@@ -3369,6 +3386,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/next":
                 self._send_cached_json("next", next_up_payload)
+                return
+            if path == "/api/galaxy":
+                self._send_cached_json("galaxy", galaxy_up_payload)
                 return
             if path == "/api/comments":
                 # Still deliberately not cached, and the reason is

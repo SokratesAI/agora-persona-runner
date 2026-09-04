@@ -4420,3 +4420,27 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 }
 .model-pick:disabled { opacity: 0.6; }
 .model-pick-note { font-size: 0.75rem; color: var(--dim); }
+
+
+/* `/galaxy` -- his idea, ideas.md 2026-09-03. The canvas draws itself in
+   its own colours (it is space, and space is dark in either theme), so
+   nothing here themes it; what these rules own is the list underneath,
+   which is the same facts in words and does follow the page. */
+.galaxy-head { margin: 0 0 0.6rem; }
+.galaxy-title { margin: 0 0 0.2rem; font-size: 1.2rem; }
+.galaxy-says { margin: 0; opacity: 0.78; }
+.galaxy-canvas {
+  display: block;
+  width: 100%;
+  border-radius: 14px;
+  background: #05040d;
+  margin: 0 0 0.9rem;
+}
+.galaxy-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.galaxy-subhead { margin: 0.8rem 0 0.1rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.6; }
+.galaxy-row { display: flex; gap: 0.6rem; align-items: flex-start; opacity: 0.62; }
+.galaxy-row.is-live { opacity: 1; }
+.galaxy-dot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; margin-top: 0.35rem; }
+.galaxy-row-body { min-width: 0; }
+.galaxy-row-head { font-size: 0.82rem; opacity: 0.72; }
+.galaxy-row-note { overflow-wrap: anywhere; }

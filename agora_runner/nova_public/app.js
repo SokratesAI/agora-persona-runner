@@ -90,6 +90,7 @@
     if (path === "/heartbeats") return { view: "heartbeats", cycle: null, board: null };
     if (path === "/catalog") return { view: "catalog", cycle: null, board: null };
     if (path === "/diag") return { view: "diag", cycle: null, board: null };
+    if (path === "/galaxy") return { view: "galaxy", cycle: null, board: null };
     if (path === "/projects") return { view: "projects", cycle: null, board: null, project: null };
     // `/project/Nova` -- idea #92 phase 3. Decoded here rather than left
     // raw because a project name is free text the owner types into a
@@ -11143,6 +11144,268 @@
       });
   }
 
+  /* `/galaxy` -- what my Claude sessions are doing, drawn.
+   *
+   * His idea, ideas.md 2026-09-03: *"I want a page in Nova that has a
+   * vizualisation of what your Claude sessions are doing ... more space,
+   * planets, astronauts, rocketships, stars etc. Following your super-nova
+   * Galaxy theme. I want your o be really creative on this!"*
+   *
+   * One canvas and one list under it, and the list is not a fallback --
+   * it is the same data said in words, for the same reason a priority
+   * symbol on this site always carries its word: if a reader has to
+   * decode a picture to know what I said, I have not said it. A body on
+   * the canvas is one live claim; the ring it sits on is how long that
+   * cycle has held it, so a session that has just started is close in and
+   * one near its 45-minute cap is out at the edge and dimming.
+   *
+   * `requestAnimationFrame` and not a CSS animation, because the orbit
+   * has to keep its phase across a repaint and the labels have to stay
+   * upright while the bodies move. The loop stops itself the moment the
+   * route leaves this page -- nothing here polls, so a tab left open on
+   * another view costs nothing. */
+
+  var galaxyFrame = null;
+
+  function stopGalaxy() {
+    if (galaxyFrame !== null) {
+      window.cancelAnimationFrame(galaxyFrame);
+      galaxyFrame = null;
+    }
+  }
+
+  function loadGalaxy() {
+    markNav();
+    fetchPage("/api/galaxy")
+      .then(function (payload) {
+        if (route(window.location.pathname).view !== "galaxy") return;
+        renderGalaxy(payload || {});
+      })
+      .catch(function (err) {
+        if (route(window.location.pathname).view !== "galaxy") return;
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the galaxy: " + err));
+      });
+  }
+
+  /** A stable 0..1 from a slug, so one claim keeps its colour and its
+   *  starting angle across every repaint and every reload. Hashing the
+   *  slug rather than using the array index is what stops every body on
+   *  the canvas jumping when one cycle releases a row. */
+  function galaxySeed(text) {
+    var h = 2166136261;
+    var i;
+    for (i = 0; i < (text || "").length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h = (h * 16777619) >>> 0;
+    }
+    return (h >>> 8) / 16777216;
+  }
+
+  function galaxyAge(entry, ttl) {
+    /* 0 at the moment of claiming, 1 at the TTL. `null` held minutes is a
+     * row whose timestamp I could not read -- it draws at rest rather than
+     * at either end, because both ends would be a guess printed as a fact. */
+    if (entry.heldMinutes === null || entry.heldMinutes === undefined) return 0.5;
+    return Math.max(0, Math.min(1, entry.heldMinutes / (ttl || 45)));
+  }
+
+  function renderGalaxy(payload) {
+    stopGalaxy();
+    feed.textContent = "";
+
+    var active = payload.active || [];
+    var recent = payload.recent || [];
+    var ttl = payload.ttlMinutes || 45;
+
+    var head = el("div", "galaxy-head");
+    head.appendChild(el("h2", "galaxy-title", "The galaxy"));
+    var says;
+    if (payload.readable === false) {
+      says = "I could not read the claims ledger, so this is not an empty galaxy — it is a blind one.";
+    } else if (!active.length) {
+      says = "No session is holding a row this minute. The cooled bodies below are what the last few finished.";
+    } else if (active.length === 1) {
+      says = "One session is working right now.";
+    } else {
+      says = active.length + " sessions are working right now.";
+    }
+    head.appendChild(el("p", "galaxy-says", says));
+    feed.appendChild(head);
+
+    var canvas = document.createElement("canvas");
+    canvas.className = "galaxy-canvas";
+    /* Labelled, because a canvas is opaque to a screen reader and the
+     * list underneath is the accessible copy of the same facts. */
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", says + " The same list is written out below.");
+    feed.appendChild(canvas);
+
+    var list = el("div", "galaxy-list");
+    function line(entry, live) {
+      var row = el("div", "galaxy-row" + (live ? " is-live" : ""));
+      var dot = el("span", "galaxy-dot");
+      dot.style.background = galaxyColour(entry);
+      row.appendChild(dot);
+      var body = el("div", "galaxy-row-body");
+      var held = entry.heldMinutes === null || entry.heldMinutes === undefined
+        ? "age unknown"
+        : Math.round(entry.heldMinutes) + " min";
+      body.appendChild(el("div", "galaxy-row-head",
+        "Cycle " + entry.cycle + " · " + (live ? "working" : (entry.state || "released")) + " · " + held));
+      var said = entry.note || entry.outcome || entry.item;
+      body.appendChild(el("div", "galaxy-row-note", said));
+      row.appendChild(body);
+      return row;
+    }
+    var i;
+    for (i = 0; i < active.length; i += 1) list.appendChild(line(active[i], true));
+    if (recent.length) {
+      list.appendChild(el("h3", "galaxy-subhead", "Cooling"));
+      for (i = 0; i < recent.length; i += 1) list.appendChild(line(recent[i], false));
+    }
+    feed.appendChild(list);
+
+    drawGalaxy(canvas, active, recent, ttl);
+  }
+
+  /** A live body's hue, from its slug. Kept in one place because the dot
+   *  in the list and the planet on the canvas have to agree -- two
+   *  colour formulas for one body is the drift this repo keeps paying
+   *  for, one page down. */
+  function galaxyColour(entry) {
+    var hue = Math.round(galaxySeed(entry.item) * 300);
+    return "hsl(" + hue + ", 78%, 66%)";
+  }
+
+  function drawGalaxy(canvas, active, recent, ttl) {
+    var ctx = canvas.getContext && canvas.getContext("2d");
+    if (!ctx) return;
+
+    /* Fixed stars, generated once from the slug set rather than per
+     * frame: a starfield redrawn from Math.random() every frame is a
+     * snowstorm, which is the failure this whole page is one tap away
+     * from. */
+    var stars = [];
+    var s;
+    for (s = 0; s < 90; s += 1) {
+      stars.push({
+        x: galaxySeed("star-x-" + s),
+        y: galaxySeed("star-y-" + s),
+        r: 0.4 + galaxySeed("star-r-" + s) * 1.3,
+        tw: galaxySeed("star-t-" + s)
+      });
+    }
+
+    var started = null;
+
+    function frame(ts) {
+      if (route(window.location.pathname).view !== "galaxy") { stopGalaxy(); return; }
+      if (started === null) started = ts;
+      var t = (ts - started) / 1000;
+
+      var ratio = window.devicePixelRatio || 1;
+      var w = canvas.clientWidth || 320;
+      var h = Math.max(240, Math.round(w * 0.72));
+      if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) {
+        canvas.width = Math.round(w * ratio);
+        canvas.height = Math.round(h * ratio);
+        canvas.style.height = h + "px";
+      }
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+
+      var cx = w / 2;
+      var cy = h / 2;
+      var maxR = Math.min(w, h) / 2 - 26;
+
+      var sky = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) / 1.4);
+      sky.addColorStop(0, "#150f2e");
+      sky.addColorStop(1, "#05040d");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, w, h);
+
+      var i;
+      for (i = 0; i < stars.length; i += 1) {
+        var st = stars[i];
+        var a = 0.25 + 0.45 * (0.5 + 0.5 * Math.sin(t * 0.8 + st.tw * 6.28));
+        ctx.globalAlpha = a;
+        ctx.fillStyle = "#cfd6ff";
+        ctx.beginPath();
+        ctx.arc(st.x * w, st.y * h, st.r, 0, 6.2832);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      // The supernova at the middle is me: it pulses whether or not any
+      // session is holding a row, because the loop is running either way.
+      var pulse = 16 + 3 * Math.sin(t * 1.6);
+      var core = ctx.createRadialGradient(cx, cy, 0, cx, cy, pulse * 2.6);
+      core.addColorStop(0, "rgba(255,255,255,0.95)");
+      core.addColorStop(0.35, "rgba(180,160,255,0.65)");
+      core.addColorStop(1, "rgba(120,90,255,0)");
+      ctx.fillStyle = core;
+      ctx.beginPath();
+      ctx.arc(cx, cy, pulse * 2.6, 0, 6.2832);
+      ctx.fill();
+
+      // Cooled bodies first, so a live one is never painted under one.
+      drawBodies(ctx, recent, cx, cy, maxR, t, ttl, false);
+      drawBodies(ctx, active, cx, cy, maxR, t, ttl, true);
+
+      galaxyFrame = window.requestAnimationFrame(frame);
+    }
+    galaxyFrame = window.requestAnimationFrame(frame);
+  }
+
+  function drawBodies(ctx, entries, cx, cy, maxR, t, ttl, live) {
+    var i;
+    for (i = 0; i < entries.length; i += 1) {
+      var entry = entries[i];
+      var seed = galaxySeed(entry.item);
+      var age = galaxyAge(entry, ttl);
+      // Live bodies ride out from a third of the radius to the edge as
+      // the claim ages; released ones sit outside them, drifting off.
+      var radius = live
+        ? maxR * (0.34 + 0.56 * age)
+        : maxR * (0.92 + 0.06 * ((i % 3) / 3));
+      var speed = live ? 0.32 - 0.16 * age : 0.06;
+      var angle = seed * 6.2832 + t * speed;
+      var x = cx + Math.cos(angle) * radius;
+      var y = cy + Math.sin(angle) * radius * 0.62;
+
+      ctx.globalAlpha = live ? 0.28 : 0.1;
+      ctx.strokeStyle = live ? galaxyColour(entry) : "#6b6f93";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, radius, radius * 0.62, 0, 0, 6.2832);
+      ctx.stroke();
+
+      var size = live ? 7 - 2 * age : 3.4;
+      ctx.globalAlpha = live ? 1 : 0.5;
+      var glow = ctx.createRadialGradient(x, y, 0, x, y, size * 3.2);
+      glow.addColorStop(0, live ? galaxyColour(entry) : "#8f95bd");
+      glow.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 3.2, 0, 6.2832);
+      ctx.fill();
+      ctx.fillStyle = live ? galaxyColour(entry) : "#8f95bd";
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, 6.2832);
+      ctx.fill();
+
+      if (live) {
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = "#e8eaff";
+        ctx.font = "600 11px system-ui, sans-serif";
+        ctx.textAlign = x < cx ? "right" : "left";
+        ctx.fillText("Cycle " + entry.cycle, x + (x < cx ? -size - 5 : size + 5), y + 4);
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
   /* `/diag` -- what the owner's own device reports about itself.
    *
    * Three cycles running have now shipped a fix for a rendering fault on a
@@ -11607,6 +11870,10 @@
     // there is nothing to fetch and nothing that can fail on the way.
     if (here.view === "diag") {
       renderDiag();
+      return;
+    }
+    if (here.view === "galaxy") {
+      loadGalaxy();
       return;
     }
     markNav();
