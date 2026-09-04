@@ -98,11 +98,45 @@ def test_an_oversize_message_is_refused_with_its_own_length():
 
 
 def test_a_message_just_under_the_limit_is_sent():
-    """The complement of the test above: the cap refuses only what is over it."""
+    """The complement of the test above: the cap refuses only what is over it.
+
+    Sized against MAX_CHARS rather than MAX_TEXT_BYTES since 2026-09-04: the
+    character cap he asked for is 232 times tighter, so it is the binding one
+    and a body just under the byte ceiling is now correctly refused.
+    """
     opener = opener_returning(200, {"status": "sent"})
-    code, _ = telegram.send("x" * telegram.MAX_TEXT_BYTES, opener=opener)
+    code, _ = telegram.send("x" * telegram.MAX_CHARS, opener=opener)
     assert code == 0
     assert len(opener.seen) == 1
+
+
+# --- "messages to telegram must be shorter" (him, on Telegram, 2026-09-04) ---
+
+def test_a_message_over_the_character_cap_never_reaches_the_wire():
+    opener = opener_returning(200, {"status": "sent"})
+    code, line = telegram.send("x" * (telegram.MAX_CHARS + 1), opener=opener)
+    assert code == 2
+    assert opener.seen == []
+    assert str(telegram.MAX_CHARS) in line
+
+
+def test_the_bare_send_cli_is_capped_too(capsys):
+    """The hole a cap in `tools.notify` alone would have left.
+
+    This CLI is what the module docstring tells a cycle to type, and it is
+    the path the message he complained about went out on.
+    """
+    code = telegram.main(["send", "x" * (telegram.MAX_CHARS + 1), "--dry-run"])
+    assert code == 2
+    assert "characters" in capsys.readouterr().out
+
+
+def test_his_own_example_of_enough_is_short_enough():
+    example = (
+        "Yes - done, and it was the nameapace cap that was holding it, "
+        "not an oversight"
+    )
+    assert telegram.too_long(example) is None
 
 
 def test_the_payload_is_the_bridges_own_shape_and_carries_no_prefix():

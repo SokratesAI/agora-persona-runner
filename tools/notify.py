@@ -52,6 +52,32 @@ the bridge refusing, exit 1 is not being able to reach it -- the same contract
 `tools.telegram` already uses, with 3 added on top so a caller can tell
 "deliberately not sent" from "tried and failed".
 
+**Length. He asked for this on Telegram on 2026-09-04 at 14:25 Oslo:**
+
+    "In the future, messages to telegram must be shorter. The 'Yes - done, and
+    it was the nameapace cap that was holding it, not an oversight' is enough
+    for me. I do not want the details here."
+
+That example is 89 characters, and the message he was answering was a
+nine-line write-up. So a message over `MAX_CHARS` is **refused** (exit 2),
+not truncated: cutting the tail off drops whichever sentence the caller
+thought mattered and leaves him a message that stops mid-word, while a
+refusal makes the author write the short one, which is what he asked for.
+
+**The cap itself lives in `tools.telegram`, not here**, and this module only
+re-exports it. This is the policy layer and that felt like the right home for
+it, but the CLI its own docstring tells a cycle to type is `python3 -m
+tools.telegram send`, which does not come through here at all -- and that is
+the path the message he complained about went out on. A cap in the policy
+layer would have guarded the caller that was not the problem.
+
+The refusal has to be survivable for a caller that cannot rewrite itself,
+which is `tools.alerts --notify`: a firing alert must never be silenced by a
+style rule. So `alerts.paging` builds a body that fits this cap by
+construction, keeping the first few alerts whole and counting the rest, and
+its tests assert it against `MAX_CHARS` rather than against a copy of the
+number.
+
 Two limits, printed here rather than discovered later. The state file is on
 one pod's disk, so two cycles overlapping can each send once for one key --
 the failure is a duplicate message, which is the safe direction. And if the
@@ -87,6 +113,13 @@ QUIET_END_HOUR = 7
 #: to "for now ... as we are not hosting production code"; when production
 #: code runs here, this is the one line that changes.
 QUIET_HOURS_BREAKTHROUGH = False
+
+#: Both re-exported from the transport, which is where the cap is enforced
+#: so the bare `tools.telegram send` CLI cannot go around it. They are
+#: named here because this is the module callers reach for, and because
+#: `tools.alerts` sizes its page against `MAX_CHARS`.
+MAX_CHARS = telegram.MAX_CHARS
+too_long = telegram.too_long
 DEFAULT_DEDUPE_HOURS = 6.0
 DEFAULT_STATE = "/data/claude-home/nova-notify-state.json"
 

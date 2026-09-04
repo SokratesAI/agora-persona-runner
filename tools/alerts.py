@@ -289,7 +289,45 @@ def paging(found: dict) -> tuple[bool, bool, str]:
     if not reasons:
         return False, False, ""
     head = "Cluster alert" if urgent else "Cluster warning"
-    return True, urgent, head + ":\n" + "\n".join(f"- {r}" for r in reasons)
+    return True, urgent, _fit(head, reasons)
+
+
+def _fit(head: str, reasons: list[str]) -> str:
+    """The page, built to fit `notify.MAX_CHARS` rather than hoping it does.
+
+    He asked on 2026-09-04 for short Telegram messages, and `tools.telegram`
+    refuses anything longer. A refusal is the right answer for a cycle
+    writing a sentence by hand -- it goes and writes the short one. It is the
+    wrong answer here, because nothing would then rewrite the page and a real
+    outage would be silenced by a style rule. So this drops the tail and says
+    how many it dropped: the first alerts are worth reading in full, the
+    twelfth is worth knowing the count of.
+
+    The budget is imported rather than copied, so raising the cap in one place
+    widens this too. The import is local because `tools.notify` reaching back
+    into `tools.alerts` later would otherwise be a cycle nobody notices until
+    it is one.
+    """
+    from tools import telegram
+
+    budget = telegram.MAX_CHARS
+    kept: list[str] = []
+    for index, reason in enumerate(reasons):
+        # Counting this one, which is the number dropped if it does not fit.
+        remaining = len(reasons) - index
+        tail = f"\n- +{remaining} more, see tools.alerts"
+        candidate = head + ":\n" + "\n".join(f"- {r}" for r in kept + [reason]) + (
+            f"\n- +{remaining - 1} more, see tools.alerts" if remaining > 1 else ""
+        )
+        if len(candidate) > budget:
+            if not kept:
+                # One reason on its own is over budget: send the head plus as
+                # much of it as fits, rather than a page with no content in it.
+                room = budget - len(head) - len(":\n- ") - 1
+                return head + ":\n- " + reason[: max(room, 0)] + "…"
+            return head + ":\n" + "\n".join(f"- {r}" for r in kept) + tail
+        kept.append(reason)
+    return head + ":\n" + "\n".join(f"- {r}" for r in kept)
 
 
 def main(argv: list[str] | None = None) -> int:

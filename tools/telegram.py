@@ -71,6 +71,25 @@ DEFAULT_URL = "http://telegram-bridge.infra.svc.cluster.local:8080"
 # what I can defend is that the number is unchanged and no caller has hit it.
 MAX_TEXT_BYTES = 64 * 1024 - 512  # headroom for the JSON envelope
 
+#: The longest message this loop may put on his phone, in characters. He
+#: asked for it on Telegram on 2026-09-04 at 14:25 Oslo, after a nine-line
+#: write-up:
+#:
+#:     "In the future, messages to telegram must be shorter. The 'Yes - done,
+#:     and it was the nameapace cap that was holding it, not an oversight' is
+#:     enough for me. I do not want the details here."
+#:
+#: His own example of "enough for me" is 89 characters; this leaves a couple
+#: of sentences' headroom above it and is well under the ~900 he was
+#: answering. It sits beside `MAX_TEXT_BYTES` and is a different kind of
+#: number: that one is the bridge's ceiling, this one is his.
+#:
+#: It is enforced in `check_text`, which `send` calls, so it holds for the
+#: bare `python3 -m tools.telegram send` CLI as well as for the policy layer
+#: in `tools.notify`. A cap only in `notify` would have guarded the path no
+#: cycle actually types.
+MAX_CHARS = 280
+
 
 def read_text(args, stdin=None):
     """The message, from an argument, a file, or stdin. Exactly one."""
@@ -97,6 +116,27 @@ def check_text(text):
     size = len(text.encode("utf-8"))
     if size > MAX_TEXT_BYTES:
         return f"message is {size} bytes, over the bridge's {MAX_TEXT_BYTES}-byte limit"
+    return too_long(text)
+
+
+def too_long(text, limit: int = MAX_CHARS):
+    """None if the text is short enough for his phone, else why it is not.
+
+    Measured on the stripped text, because a trailing newline is not
+    something he reads. Refusing rather than truncating is deliberate:
+    cutting the tail drops whichever sentence the author thought mattered
+    and leaves him a message that stops mid-word, where a refusal makes the
+    author write the short one, which is what he asked for. The one caller
+    that cannot rewrite itself is `tools.alerts --notify`, and it builds a
+    page that fits this by construction rather than being silenced by it.
+    """
+    length = len(text.strip())
+    if length > limit:
+        return (
+            f"refusing to send {length} characters: he asked on 2026-09-04 for "
+            f"Telegram messages of at most {limit}. Say the outcome in a sentence "
+            f"and leave the detail in the journal."
+        )
     return None
 
 
