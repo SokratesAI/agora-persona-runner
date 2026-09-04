@@ -41,14 +41,34 @@ would have been wrong in both directions here: `couchdb-compact` names
 never mentions `marcus-data` at all. A new claim nobody declares reads as
 unprotected, which is the safe direction for a mistake to fall.
 
-**And a third verdict, because two were not enough.** `agents/agora-data` got a
-backup the same night (`platform-config/cronjobs/agora-backup.yaml`, nightly to the
-NAS, first run verified by sha256 on both sides). It is not `covered` in the sense
-the two above are: every `Backup` here is judged by reading GitHub, and the NAS is
-not readable from this loop, so nothing watches whether that job still runs. It
-prints as **backed up, freshness not judged** rather than joining the green count --
-"a backup exists" and "a backup ran last night" are the two things this whole module
-exists to keep apart.
+**Two of them go to the NAS instead of to GitHub, and until Cycle 889 that meant
+nobody watched them.** `agents/agora-data` and `infra/whatsapp-bridge-auth` are
+copied by `platform-config/cronjobs/volume-backup.yaml` over ssh to a Synology on
+the tailnet, and this module printed them as *backed up, freshness not judged* on
+the stated grounds that *"nothing here reads the NAS"*. That sentence was written
+on 2026-09-04 and was already false when it was written: seven `tools.nas_*`
+checks read that box over a key mounted on both pods, and `nas_ports` reads its
+TCP listener tables. So the gap was never a missing capability -- it was a claim
+in a docstring that nobody re-measured, which is the failure `prompt.md` names two
+paragraphs into "How to work". They are judged now, over the same read-only hop,
+and they join the green count.
+
+**A NAS backup is judged on two things, not one.** Freshness is the newest
+archive's mtime read off the NAS itself, against a threshold derived from that
+job's own schedule -- 26 hours for the nightly one, 8 for the one that runs four
+times a day, each being one missed run plus two hours. And **size**, because
+freshness alone has a positive result guaranteed in advance: a job that ships a
+truncated or empty archive writes a file with a fresh mtime, and that reads as a
+working backup. The floor is a third of what the last real run produced, the same
+rule the CronJob applies to its source.
+
+**The ages are taken entirely on the NAS's clock**, `nas_now - mtime`, both ends
+read in the same listing, so drift cancels rather than ageing every backup by it.
+The clock comes back with the listing anyway and prints when it is more than
+fifteen minutes out, because a NAS an hour off writes archives whose own names
+are an hour wrong. The one thing that could not be asked for is a formatted time:
+`--time-style` returns the NAS's *local* time wearing a `Z`, so an archive named
+`20260904T033332Z` lists as `05:34:54Z`. Epoch seconds carry no zone at all.
 
 **This reads GitHub, never the cluster, and that is the design.** The subject
 is a backup of server1, so a check that runs against server1's own CronJob
@@ -103,6 +123,8 @@ import datetime
 import json
 import subprocess
 import sys
+
+from tools import nas
 import zoneinfo
 
 OSLO = zoneinfo.ZoneInfo("Europe/Oslo")
@@ -148,29 +170,78 @@ BACKUPS = (
     ),
 )
 
-#: A claim that has a backup this module cannot judge the freshness of. `BACKUPS`
-#: above are all read out of GitHub, which is the point -- an on-box status readout
-#: dies in the incident a backup is for. `agora-backup` writes to the NAS over ssh,
-#: which is not readable from here, so the honest verdict is "covered, freshness not
-#: judged" rather than either silence or a green line. Kept separate from
-#: `ACKNOWLEDGED` on purpose: those are volumes deliberately left unprotected, this
-#: is a volume that is protected by something nothing is watching yet.
-NOT_JUDGED = {
-    "infra/whatsapp-bridge-auth": (
-        "the whatsapp-auth-backup CronJob copies it to the NAS four times a day at "
-        ":25 Oslo (platform-config/cronjobs/whatsapp-auth-backup.yaml); first run "
-        "2026-09-04 06:25 archived 1774 files, 361,678 bytes to 170,594, verified by "
-        "sha256 on both sides. Four a day rather than nightly because the session's "
-        "keys rotate, so a stale copy can fail to restore. Nothing here reads the "
-        "NAS, so this says a backup exists and not that it still runs"
+#: A claim backed up to the NAS by `platform-config/cronjobs/volume-backup.yaml`
+#: rather than to a GitHub repository, and judged over the same read-only ssh hop
+#: `tools.nas_health` already uses.
+#:
+#: **This was `NOT_JUDGED` -- a dict of claims with a paragraph saying nothing
+#: watched them.** Both jobs were built on 2026-09-04 and both were honest about
+#: it; what made the paragraph wrong by the next morning is that the sentence in
+#: it, *"nothing here reads the NAS"*, had already stopped being true. Seven
+#: `tools.nas_*` checks read that box over an ssh key mounted on both pods. So the
+#: gap was never a missing capability, it was a written claim nobody re-measured
+#: -- which is the exact shape `prompt.md` warns about two paragraphs into "How to
+#: work".
+#:
+#: **The measurement is the newest archive's mtime, not its name.** The job names
+#: each archive `<claim>-<UTC stamp>.tar.gz` and that stamp is taken *before* the
+#: tar is built, so a name is what the job intended; the mtime is when the NAS
+#: finished receiving bytes it then checksummed. They differ by the length of the
+#: copy -- 128 seconds on agora-data's own first run.
+#:
+#: **`min_bytes` is a floor on the archive, and it is a third of what the last
+#: real run produced** -- the same rule the CronJob's own `MIN_SOURCE_BYTES` uses
+#: on the source, for the same reason. A job that ships a truncated or empty
+#: archive writes a file with a fresh mtime, so freshness alone reads it as a
+#: working backup. That is the positive result guaranteed in advance.
+NasBackup = collections.namedtuple(
+    "NasBackup", "name covers prefix schedule stale_after_hours min_bytes subject fix"
+)
+
+NAS_BACKUPS = (
+    NasBackup(
+        name="agora-backup",
+        covers="agents/agora-data",
+        prefix="agents_agora-data-",
+        schedule="nightly at 03:40 Oslo",
+        # One nightly run plus two hours, the same derivation the marcus stamp
+        # above uses: a single skipped run must read as stale, and the run itself
+        # takes minutes on 682 MiB.
+        stale_after_hours=26,
+        # 134,736,807 bytes on the 2026-09-04 run.
+        min_bytes=44_000_000,
+        subject="every conversation in Agora",
+        fix=(
+            "Read the CronJob's pods: kubectl logs -n agents job/agora-backup-<n>. "
+            "The job verifies its own sha256 on both sides, so a run that finished "
+            "at all shipped a whole archive."
+        ),
     ),
-    "agents/agora-data": (
-        "the agora-backup CronJob copies it to the NAS nightly at 03:40 Oslo "
-        "(platform-config/cronjobs/agora-backup.yaml); first run 2026-09-04 verified "
-        "by sha256 on both sides. Nothing here reads the NAS, so this says a backup "
-        "exists and not that it still runs"
+    NasBackup(
+        name="whatsapp-auth-backup",
+        covers="infra/whatsapp-bridge-auth",
+        prefix="infra_whatsapp-bridge-auth-",
+        schedule="four times a day at :25 Oslo",
+        # Six hours between runs plus two: one skipped run is stale here too, and
+        # the session's keys rotate, so a stale copy can fail to restore.
+        stale_after_hours=8,
+        # 170,594 bytes on the 2026-09-04 06:25 run.
+        min_bytes=56_000,
+        subject="the WhatsApp session -- losing it means re-pairing his phone",
+        fix=(
+            "Read the CronJob's pods: kubectl logs -n agents "
+            "job/whatsapp-auth-backup-<n>. The volume is on server1 and the job "
+            "runs in agents, where the nas-ssh-key and the egress policy are."
+        ),
     ),
-}
+)
+
+#: How far the NAS's own clock may sit from this one before every age below is a
+#: guess rather than a measurement. Both boxes run NTP; a few minutes is normal
+#: drift and an hour is a wrong timezone or a dead sync, which would age a backup
+#: by exactly that much in whichever direction flatters it.
+CLOCK_SKEW_TOLERANCE_SECONDS = 15 * 60
+
 
 #: A volume that is deliberately not backed up, and the measurement that makes
 #: that the right call. This is not a list of what is unimportant -- it is a list
@@ -234,18 +305,17 @@ def judge_coverage(claims):
     is a compaction job and not a copy of anything, so a job that merely
     mentions a volume would have read as coverage.
     """
-    declared = {b.covers: b for b in BACKUPS if b.covers}
-    covered, acknowledged, unjudged, uncovered = [], [], [], []
+    declared = {b.covers: b.name for b in BACKUPS if b.covers}
+    declared.update({b.covers: b.name for b in NAS_BACKUPS if b.covers})
+    covered, acknowledged, uncovered = [], [], []
     for claim in claims:
         if claim in declared:
-            covered.append((claim, declared[claim].name))
-        elif claim in NOT_JUDGED:
-            unjudged.append((claim, NOT_JUDGED[claim]))
+            covered.append((claim, declared[claim]))
         elif claim in ACKNOWLEDGED:
             acknowledged.append((claim, ACKNOWLEDGED[claim]))
         else:
             uncovered.append(claim)
-    return covered, acknowledged, unjudged, uncovered
+    return covered, acknowledged, uncovered
 
 
 def format_coverage(claims, error):
@@ -256,7 +326,7 @@ def format_coverage(claims, error):
             "the count above is the backups I know of and not a statement about "
             "what is unprotected: %s" % error
         ), 1
-    covered, acknowledged, unjudged, uncovered = judge_coverage(claims)
+    covered, acknowledged, uncovered = judge_coverage(claims)
     lines = []
     for claim in uncovered:
         lines.append(
@@ -265,14 +335,12 @@ def format_coverage(claims, error):
         )
     for claim, name in covered:
         lines.append("%s — backed up by the %s job judged above." % (claim, name))
-    for claim, reason in unjudged:
-        lines.append("%s — backed up, freshness NOT JUDGED here: %s." % (claim, reason))
     for claim, reason in acknowledged:
         lines.append("%s — deliberately not backed up: %s." % (claim, reason))
     lines.append(
-        "Swept %d volume(s): %d backed up and judged, %d backed up but not judged, "
-        "%d deliberately not, %d unprotected."
-        % (len(claims), len(covered), len(unjudged), len(acknowledged), len(uncovered))
+        "Swept %d volume(s): %d backed up and judged above, %d deliberately not, "
+        "%d unprotected."
+        % (len(claims), len(covered), len(acknowledged), len(uncovered))
     )
     return "\n".join(lines), (2 if uncovered else 0)
 
@@ -303,6 +371,12 @@ def oslo(stamp):
     if parsed is None:
         return stamp or "?"
     return parsed.astimezone(OSLO).strftime("%Y-%m-%d %H:%M Oslo")
+
+
+def oslo_epoch(seconds):
+    """Epoch seconds as an Oslo wall-clock string, for a reader rather than a diff."""
+    stamp = datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+    return stamp.astimezone(OSLO).strftime("%Y-%m-%d %H:%M Oslo")
 
 
 def commits_query(backup):
@@ -403,6 +477,117 @@ def format_report(backup, commit, verdict, age, error):
     return "\n".join(lines)
 
 
+def read_nas_archives(ssh=None, run=None):
+    """`(nas_now, archives, error)` for the NAS backup root, or an error string.
+
+    `ssh_config` returning `None` is an error rather than a skip, and that is
+    the same call every other check here makes: a pod with no key cannot see
+    whether these backups run, and "I could not look" must never render as
+    "nothing to act on".
+    """
+    kwargs = {} if run is None else {"run": run}
+    try:
+        ssh = nas.ssh_config() if ssh is None else ssh
+        if not ssh:
+            return None, [], (
+                "no ssh hop to the NAS from this pod — needs an ssh binary and a "
+                "readable key at %s" % nas.SSH_DEFAULTS["key"]
+            )
+        nas_now, archives = nas.backup_archives(ssh, **kwargs)
+    except nas.Unreachable as exc:
+        return None, [], str(exc)
+    return nas_now, archives, None
+
+
+def judge_nas(backup, archives, nas_now):
+    """`(verdict, age_hours, newest)` for one NAS backup.
+
+    `never` and `stale` stay separate here for the same reason they are separate
+    for a GitHub-backed one: no archive at all means the job has never once
+    completed, an old archive means it worked and stopped, and they are fixed in
+    different places. `runt` is the third: a fresh archive far under the floor is
+    a job that ran and shipped something that is not a copy of the volume.
+    """
+    mine = [a for a in archives if a.name.startswith(backup.prefix)]
+    if not mine:
+        return "never", None, None
+    # By mtime, not by the caller's order. `backup_archives` sorts, but `find`
+    # prints in directory order and this function is judged on its own inputs --
+    # a list whose last entry is the oldest would otherwise report a working
+    # backup as dead, or a dead one as working, depending only on the filesystem.
+    newest = max(mine, key=lambda a: a.mtime)
+    age = (nas_now - newest.mtime) / 3600.0
+    if age > backup.stale_after_hours:
+        return "stale", age, newest
+    if newest.size < backup.min_bytes:
+        return "runt", age, newest
+    return "fresh", age, newest
+
+
+def format_nas_report(backup, verdict, age, newest, error):
+    """One line for one NAS backup, plus the fix when there is something to fix."""
+    if error:
+        return (
+            "%s: NOT JUDGED — I could not read the NAS, so this says a backup "
+            "exists and not that it still runs: %s." % (backup.name, error)
+        )
+    if verdict == "never":
+        return (
+            "NEVER BACKED UP — %s: no archive named %s* exists on the NAS at all, "
+            "so the %s job has never once completed. %s"
+            % (backup.name, backup.prefix, backup.name, backup.fix)
+        )
+    when = oslo_epoch(newest.mtime)
+    if verdict == "stale":
+        return (
+            "STALE — %s: the backup of %s is %.1f hours old, past the %d-hour "
+            "threshold, so the %s job has stopped succeeding. Newest archive %s, "
+            "%s. %s"
+            % (backup.name, backup.subject, age, backup.stale_after_hours,
+               backup.schedule, newest.name, when, backup.fix)
+        )
+    if verdict == "runt":
+        return (
+            "TRUNCATED — %s: the newest archive is %d bytes, under the %d-byte "
+            "floor, so the %s job ran %.1f hours ago and shipped something that is "
+            "not a whole copy of %s. %s"
+            % (backup.name, newest.size, backup.min_bytes, backup.name, age,
+               backup.subject, backup.fix)
+        )
+    return (
+        "%s: the backup of %s is %.1f hours old, inside the %d-hour threshold — "
+        "%s, %d bytes."
+        % (backup.name, backup.subject, age, backup.stale_after_hours, when,
+           newest.size)
+    )
+
+
+def clock_note(nas_now, now):
+    """A line about the NAS's clock when it is far enough off to matter, else None.
+
+    Every age above is `nas_now - mtime`, both read off the NAS, so ordinary skew
+    cancels out and this does not raise. It is printed because a NAS an hour out
+    is a NAS whose next archive lands with an hour-wrong name, and because the
+    reader should know which clock the ages were taken on.
+    """
+    skew = nas_now - int(now.timestamp())
+    if abs(skew) <= CLOCK_SKEW_TOLERANCE_SECONDS:
+        return None
+    return (
+        "The NAS's clock is %d minute(s) %s this one. Ages above are taken "
+        "entirely on the NAS's clock, so they are unaffected; a drift this size "
+        "is worth fixing on its own terms."
+        % (abs(skew) // 60, "ahead of" if skew > 0 else "behind")
+    )
+
+
+def status_for_nas(verdict, error):
+    """The exit status one NAS backup contributes: 2 actionable, 1 unreadable."""
+    if error:
+        return 1
+    return 2 if verdict in ("never", "stale", "runt") else 0
+
+
 def status_for(verdict, error):
     """The exit status one backup contributes: 2 actionable, 1 unreadable, 0 clean."""
     if error or verdict == "unreadable":
@@ -427,6 +612,30 @@ def main(argv=None):
         "Judged %d off-box backup(s) of %d, read from GitHub rather than from this "
         "cluster." % (len(BACKUPS) - statuses.count(1), len(BACKUPS))
     )
+    nas_now, archives, nas_error = read_nas_archives()
+    nas_reports = []
+    for backup in NAS_BACKUPS:
+        verdict, age, newest = (
+            judge_nas(backup, archives, nas_now) if not nas_error else (None, None, None)
+        )
+        nas_reports.append(format_nas_report(backup, verdict, age, newest, nas_error))
+        statuses.append(status_for_nas(verdict, nas_error))
+    print("\n".join(nas_reports))
+    if nas_error:
+        print(
+            "Judged 0 NAS backup(s) of %d, over the read-only ssh hop this pod "
+            "already holds." % len(NAS_BACKUPS)
+        )
+    else:
+        note = clock_note(nas_now, now)
+        print(
+            "Judged %d NAS backup(s) of %d, read off the NAS itself rather than "
+            "from this cluster; %d archive(s) under %s."
+            % (len(NAS_BACKUPS), len(NAS_BACKUPS), len(archives), nas.NAS_BACKUP_ROOT)
+        )
+        if note:
+            print(note)
+
     claims, claims_error = read_claims()
     coverage, coverage_status = format_coverage(claims, claims_error)
     print(coverage)
