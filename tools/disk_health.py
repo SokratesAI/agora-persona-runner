@@ -254,6 +254,16 @@ def _gib(value):
     return "?" if not value else "%.1fGiB" % (value / GIB)
 
 
+def _measured_gib(value):
+    """Like `_gib`, but 0 is an answer rather than a missing field.
+
+    `_gib`'s "?" means the kubelet published nothing. Every figure in the
+    breakdown is computed, so 0 there means measured-and-zero — an idle node
+    reporting no ephemeral storage is not a node that failed to report.
+    """
+    return "%.1fGiB" % (value / GIB)
+
+
 def read_claims(runner=subprocess.run):
     """Every PersistentVolumeClaim the API server knows about."""
     done = runner(
@@ -391,16 +401,27 @@ def report(node, filesystems, volumes, out=print, breakdown=None):
             out("  ok         %s" % line)
 
     if breakdown:
-        out(
-            "  MADE OF    %s: %s of container images, %s of Pod ephemeral storage, %s neither — local-path volume contents and whatever the host itself stores, which these stats cannot separate. Of %s used."
-            % (
-                node,
-                _gib(breakdown["images"]),
-                _gib(breakdown["ephemeral"]),
-                _gib(breakdown["rest"]),
-                _gib(breakdown["used"]),
-            )
+        head = "  MADE OF    %s: %s of container images, %s of Pod ephemeral storage" % (
+            node,
+            _measured_gib(breakdown["images"]),
+            _measured_gib(breakdown["ephemeral"]),
         )
+        if breakdown["rest"] < 0:
+            # The kubelet samples node.fs, runtime.imageFs and each Pod's
+            # ephemeral-storage seconds apart, and the writable-layer bytes it
+            # counts under imageFs can overlap a Pod's own. So the two named
+            # parts can sum past the disk's used total, and the remainder is
+            # then arithmetic rather than a measurement. Printing "-3.0GiB of
+            # something" would be a disk figure that is simply not true.
+            out(
+                "%s — which is %s MORE than the %s this disk reports used, so there is no remainder to name. These three figures are sampled seconds apart and the image store's writable layers can be counted twice."
+                % (head, _measured_gib(-breakdown["rest"]), _measured_gib(breakdown["used"]))
+            )
+        else:
+            out(
+                "%s, %s neither — local-path volume contents and whatever the host itself stores, which these stats cannot separate. Of %s used."
+                % (head, _measured_gib(breakdown["rest"]), _measured_gib(breakdown["used"]))
+            )
 
     for volume in volumes:
         name = "%s/%s (%s)" % (volume["namespace"], volume["claim"], volume["pod"])

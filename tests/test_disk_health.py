@@ -446,3 +446,50 @@ def test_the_second_filesystem_line_says_it_is_not_a_second_disk():
     assert "the same disk as nodefs" in imagefs[0]
     nodefs = [line for line in lines if "nodefs:" in line]
     assert "the same disk" not in nodefs[0]
+
+
+def _made_of(summary):
+    filesystems = disk_health.node_filesystems(summary)
+    lines = []
+    disk_health.report(
+        "server1",
+        filesystems,
+        [],
+        out=lines.append,
+        breakdown=disk_health.usage_breakdown(summary, filesystems),
+    )
+    return [line for line in lines if "MADE OF" in line]
+
+
+def test_a_node_with_no_ephemeral_usage_reads_as_zero_not_as_unknown():
+    """`_gib`'s "?" means the kubelet published nothing; 0 here is an answer."""
+    made = _made_of(_breakdown_summary(images=10 * GIB, ephemeral=()))
+    assert len(made) == 1
+    assert "0.0GiB of Pod ephemeral storage" in made[0]
+    assert "?" not in made[0]
+
+
+def test_an_over_attributed_disk_says_so_instead_of_printing_a_negative_size():
+    """imagefs and per-Pod ephemeral are sampled seconds apart and can overlap."""
+    used = NODE_CAPACITY - NODE_AVAILABLE
+    summary = _breakdown_summary(images=used, ephemeral=(3 * GIB,))
+    made = _made_of(summary)
+    assert len(made) == 1
+    assert "-" not in made[0].split("MADE OF")[1]
+    assert "3.0GiB MORE than" in made[0]
+    assert "no remainder to name" in made[0]
+
+
+def test_a_real_run_prints_the_breakdown():
+    """The wiring in main() is the only path preflight and a person actually take."""
+    summary = _breakdown_summary(images=10 * GIB, ephemeral=(GIB,))
+    lines = []
+    code = disk_health.main(
+        ["--node", "server1"],
+        runner=_runner(nodes=("server1",), summaries={"server1": summary}),
+        out=lines.append,
+    )
+    made = [line for line in lines if "MADE OF" in line]
+    assert len(made) == 1, lines
+    assert "10.0GiB of container images" in made[0]
+    assert code == 0
