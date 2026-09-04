@@ -1199,3 +1199,86 @@ def test_read_pods_carries_the_deletion_deadline_off_the_object():
     pods, why = wh.read_pods(runner)
     assert why is None
     assert pods[0]["deletion"] == "2026-08-29T08:28:00Z"
+
+
+# --- A finished Pod is not a live outage -------------------------------
+#
+# Cycle 882. `marcus-backup` ran at 13:20 on 2026-09-03, failed, and three
+# later runs of the same CronJob succeeded. Fifteen hours on, the report
+# still carried that Pod under CONTAINER DIED as "still down" and under
+# NOT READY as "not serving right now". Three call sites read
+# `container.ready` as "is this serving", which on a Pod that has already
+# finished is false forever and means nothing.
+
+
+def _failed_job_pod(name="marcus-backup-1-abc", at="2026-09-03T11:20:00Z"):
+    """A CronJob Pod whose single run exited 1. Phase Failed, never ready."""
+    return _pod(name=name, phase="Failed", containers=[
+        _container(ready=False, state={"terminated": {
+            "reason": "Error", "exitCode": 1, "finishedAt": at}})])
+
+
+def test_finished_pods_death_ages_out_like_any_other():
+    # 15h old, well past RECENT_DEATH, on a Pod that is over.
+    fresh, old = wh.deaths([_failed_job_pod()], NOW.replace(
+        year=2026, month=9, day=4, hour=2, minute=20))
+    assert fresh == []
+    assert [d["pod"] for d in old] == ["marcus-backup-1-abc"]
+
+
+def test_a_running_pods_death_still_stays_loud_past_the_window():
+    # The complement, and the reason the guard is on the phase rather than
+    # on the age: a container that died and is still not ready is a live
+    # outage no matter how long ago it happened.
+    pod = _pod(name="agora", phase="Running", containers=[
+        _container(ready=False, state={"terminated": {
+            "reason": "OOMKilled", "exitCode": 137,
+            "finishedAt": "2026-09-03T11:20:00Z"}})])
+    fresh, old = wh.deaths([pod], NOW.replace(
+        year=2026, month=9, day=4, hour=2, minute=20))
+    assert [d["pod"] for d in fresh] == ["agora"]
+    assert old == []
+
+
+def test_a_fresh_failure_on_a_finished_pod_is_still_reported():
+    # A CronJob that failed minutes ago is a real finding; only the ageing
+    # changed, not the raising.
+    fresh, old = wh.deaths([_failed_job_pod(at="2026-09-04T02:10:00Z")],
+                           NOW.replace(year=2026, month=9, day=4,
+                                       hour=2, minute=20))
+    assert [d["pod"] for d in fresh] == ["marcus-backup-1-abc"]
+    assert old == []
+
+
+def test_finished_pod_is_not_listed_as_not_serving():
+    assert wh.not_ready([_failed_job_pod()]) == []
+
+
+def test_a_pending_pod_is_still_listed_as_not_serving():
+    # The complement: not_ready must not have been emptied out.
+    stuck = wh.not_ready([_pod(phase="Pending", containers=[
+        _container(ready=False, state={"waiting": {
+            "reason": "ImagePullBackOff", "message": "no such image"}})])])
+    assert [s["reason"] for s in stuck] == ["ImagePullBackOff"]
+
+
+def test_finished_pod_is_not_described_as_still_down():
+    pods = [_failed_job_pod(at="2026-09-04T02:10:00Z")]
+    lines, actionable = wh.report(pods, [], NOW.replace(
+        year=2026, month=9, day=4, hour=2, minute=20))
+    body = "\n".join(lines)
+    assert "still down" not in body
+    assert "Pod finished" in body
+    assert "NOT READY" not in body
+
+
+def test_a_running_pod_that_died_is_still_described_as_still_down():
+    pod = _pod(name="agora", phase="Running", containers=[
+        _container(ready=False, state={"terminated": {
+            "reason": "OOMKilled", "exitCode": 137,
+            "finishedAt": "2026-09-04T02:10:00Z"}})])
+    lines, actionable = wh.report([pod], [], NOW.replace(
+        year=2026, month=9, day=4, hour=2, minute=20))
+    body = "\n".join(lines)
+    assert "still down" in body
+    assert actionable
