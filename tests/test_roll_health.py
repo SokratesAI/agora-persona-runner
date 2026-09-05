@@ -274,3 +274,119 @@ def test_the_clean_summary_line_is_last_and_carries_the_write_up_weight():
     last_with_digit = [ln for ln in lines if re.search(r"\d", ln)][-1]
     assert "write-ups no roller moves" in last_with_digit
     assert "0 of 1 on a done row" in last_with_digit
+
+
+def _entries_past_keep():
+    return "\n".join(f"- 2026-08-29 (Cycle {900 - i}) — n{i}"
+                     for i in range(roll_health.roll_captures.KEEP + 2))
+
+
+def test_an_owed_roll_prints_the_command_that_clears_it():
+    """The gap this closes: `roll_health` sat at ACT in `preflight` for days
+    naming a roll nobody ran, while `recap_health` -- which prints its two
+    commands -- got run. Both halves of the pair have to be named, because
+    the block is a paired compare-and-swap and a `put` of the live half onto
+    the archive path is the one mistake that loses captures."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    live = live.replace("- 2026-08-29 (Cycle 600) — a capture",
+                        _entries_past_keep())
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    printed = out.getvalue()
+    assert "python3 -m tools.roll_captures" in printed
+    assert f"put '{archive_path}'" in printed
+    assert f"put '{live_path}' " in printed
+    assert "--allow-shrink" in printed
+    assert "tools.ticket_drift --sync" in printed
+    # The archive is written first: stopping between the two writes must be
+    # able to duplicate a capture, never to lose one.
+    assert printed.index(f"put '{archive_path}'") < printed.index(
+        f"put '{live_path}' ")
+
+
+def test_the_normalise_step_appears_only_when_the_order_is_the_blocker():
+    """`--mode strays` on a file already in order is a no-op that still has
+    to be explained to whoever pastes the block, so it is emitted off the
+    roller's own refusal text rather than unconditionally."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    ordered = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    ordered = ordered.replace("- 2026-08-29 (Cycle 600) — a capture",
+                              _entries_past_keep())
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: ordered, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    roll_health.report(findings, unreadable, clean, out=out)
+    assert "normalise_captures" not in out.getvalue()
+
+    # The live shape from 2026-09-06: one stray marker at the bottom of an
+    # otherwise descending section, which is what the roller refuses on.
+    strayed = ordered.replace(
+        "- 2026-08-29 (Cycle 839) — n61",
+        "- 2026-08-29 (Cycle 839) — n61\n- 2026-09-04 (Cycle 900) — stray")
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: strayed, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    printed = out.getvalue()
+    assert roll_health.NOT_NEWEST_FIRST in printed
+    assert "python3 -m tools.normalise_captures" in printed
+    assert "--mode strays" in printed
+
+
+def test_a_clean_pair_is_handed_no_command():
+    """A remedy printed under a pair with nothing wrong is noise that trains
+    a reader to skip the block on the morning it matters."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 0
+    assert "vault_tool.py get" not in out.getvalue()
+
+
+def test_the_command_names_the_pair_it_was_handed_not_the_module_default():
+    """`check` takes `pairs`, so reading the archive back off `PAIRS` would
+    print the wrong path for exactly the callers that pass their own."""
+    live_path = "projects/somewhere/else/issues.md"
+    archive_path = "projects/somewhere/else/issues-archive.md"
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    live = live.replace("- 2026-08-29 (Cycle 600) — a capture",
+                        _entries_past_keep())
+    findings, unreadable, clean = roll_health.check(
+        pairs=((live_path, archive_path),),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    printed = out.getvalue()
+    assert f"get '{live_path}'" in printed
+    assert f"get '{archive_path}'" in printed
+    assert roll_health.PAIRS[0][1] not in printed
+
+
+def test_a_stranded_only_finding_is_not_handed_the_roll_command():
+    """The roll block does not fix a capture written above the marker -- it
+    would run, exit 0, and leave every stranded bullet exactly where it is.
+    Printing it here would read as the remedy for a finding it cannot touch,
+    so the guard is on `refusal or owed` and not on `findings` at all.
+    Asserting the hand repair is still printed is the other half: this must
+    fail because the *command* is absent, never because the finding is."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = document(strays=["- 2026-08-31 (Cycle 733) — stranded"],
+                    entries=["- 2026-08-29 (Cycle 600) — three"])
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    printed = out.getvalue()
+    assert "sit above the" in printed and "Repair: move them" in printed
+    assert "vault_tool.py get" not in printed
+    assert "tools.roll_captures --live" not in printed

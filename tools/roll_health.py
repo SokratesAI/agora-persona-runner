@@ -219,8 +219,13 @@ def _fetch(path):
 def check(pairs=PAIRS, fetch=_fetch):
     """`(findings, unreadable, clean)` -- three lists, in report order.
 
-    A `findings` entry is `(live path, bytes, stranded, refusal, owed,
-    weight)`; a `clean` entry is `(live path, bytes, weight)`.
+    A `findings` entry is `(live path, archive path, bytes, stranded,
+    refusal, owed, weight)`; a `clean` entry is `(live path, bytes, weight)`.
+    The archive path rides along because `report` prints the remedy command
+    and that command names both halves of the pair; looking it up from the
+    module-level `PAIRS` instead would have been wrong for exactly the
+    callers that matter, since `check` takes `pairs` as an argument and
+    every test passes its own.
     Taking `fetch` as an argument is what lets the tests run without a vault
     client; nothing else passes it.
     """
@@ -233,8 +238,8 @@ def check(pairs=PAIRS, fetch=_fetch):
             continue
         stranded, refusal, owed = inspect(live, archive)
         if stranded or refusal or owed:
-            findings.append((live_path, len(live), stranded, refusal, owed,
-                             weight(live, archive)))
+            findings.append((live_path, archive_path, len(live), stranded,
+                             refusal, owed, weight(live, archive)))
         else:
             clean.append((live_path, len(live), weight(live, archive)))
     return findings, unreadable, clean
@@ -272,9 +277,59 @@ def _report_weight(size, weights, out):
           f"{largest:,} bytes.", file=out)
 
 
+NOT_NEWEST_FIRST = "not newest-first"
+
+
+def remedy(path, archive, refusal):
+    """The exact block that fixes this finding, ready to paste.
+
+    **A check that names a problem but not its command does not get acted
+    on, and this file is the measurement.** `roll_health` had been in
+    `preflight` reporting `ACT` on both capture files for days, and no cycle
+    rolled them; the sibling check that *does* get run, `recap_health`,
+    prints its two commands verbatim. The difference is not the severity.
+    It is that acting on this one meant opening `roll_captures.py`, reading
+    `check_newest_first`'s docstring for the remedy it names in prose, and
+    then assembling a five-command `get`/`put` pair by hand -- while the
+    refusal line itself points at a *function*, not at a command.
+
+    Measured 2026-09-06 (Cycle 1009), on the run that finally did it:
+    `nova/resources/ideas.md` was refused over a single Cycle 900 capture
+    sitting at the bottom of its own section, `issues.md` owed a 78-capture
+    roll, and clearing both took under a minute once the commands were
+    written down. The 42,092 bytes that roll had been owed for were being
+    re-read by every cycle in the meantime.
+
+    The normalise step is emitted only when the roller's own refusal says
+    the file is not newest-first, because `--mode strays` on a file that is
+    already in order is a no-op that still has to be explained to whoever
+    reads the block. `--allow-shrink` is on the live half only; the archive
+    only ever grows, so a refusal there means something is genuinely wrong
+    (see `roll_captures`' module docstring).
+    """
+    lines = ["    Run this, as one shell call:",
+             "      cd ${NOVA_WORKSPACE:-/data/workspace}/agora-persona-runner \\",
+             f"       && python3 /app/bridge/vault_tool.py get '{path}' "
+             "--rev-file /tmp/rh.$$.live.rev > /tmp/rh.$$.live.md \\",
+             f"       && python3 /app/bridge/vault_tool.py get '{archive}' "
+             "--rev-file /tmp/rh.$$.arch.rev > /tmp/rh.$$.arch.md \\"]
+    if refusal and NOT_NEWEST_FIRST in refusal:
+        lines.append("       && python3 -m tools.normalise_captures "
+                     "--live /tmp/rh.$$.live.md --mode strays \\")
+    lines += ["       && python3 -m tools.roll_captures --live /tmp/rh.$$.live.md "
+              "--archive /tmp/rh.$$.arch.md \\",
+              f"       && python3 /app/bridge/vault_tool.py put '{archive}' "
+              "/tmp/rh.$$.arch.md --if-rev-file /tmp/rh.$$.arch.rev \\",
+              f"       && python3 /app/bridge/vault_tool.py put '{path}' "
+              "/tmp/rh.$$.live.md --allow-shrink --if-rev-file /tmp/rh.$$.live.rev",
+              "      Then `python3 -m tools.ticket_drift --sync`: the roll "
+              "rewrites a board the ticket store mirrors."]
+    return lines
+
+
 def report(findings, unreadable, clean, out=sys.stdout):
     """Print the finding, and return the exit code it deserves."""
-    for path, size, stranded, refusal, owed, weights in findings:
+    for path, archive, size, stranded, refusal, owed, weights in findings:
         print(f"UNROLLABLE — {path} ({size:,} bytes)", file=out)
         if stranded:
             print(f"    {len(stranded)} capture(s) sit above the "
@@ -289,12 +344,15 @@ def report(findings, unreadable, clean, out=sys.stdout):
         if refusal:
             print(f"    The roller refuses this pair today: {refusal}",
                   file=out)
-            print("    Nothing runs the roller, so this refusal has been "
-                  "printed to nobody until now.", file=out)
+            print("    Nothing runs the roller, so this check is the only "
+                  "place the refusal is ever printed.", file=out)
         if owed:
             print("    A roll is owed: there are more captures than "
                   f"roll_captures.KEEP ({roll_captures.KEEP}).", file=out)
         _report_weight(size, weights, out)
+        if refusal or owed:
+            for line in remedy(path, archive, refusal):
+                print(line, file=out)
     for path in unreadable:
         print(f"COULD NOT READ — {path}", file=out)
     tail_note = ("    Not judged: captures below the section — '## Retired', "
