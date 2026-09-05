@@ -72,7 +72,13 @@ MIN_DAYS_FOR_PROJECTION = 3
 
 
 def _gh(path, org):
-    """Return the parsed JSON of a `gh api` call, or raise RuntimeError."""
+    """Return the parsed JSON of a `gh api` call, or raise RuntimeError.
+
+    Both endpoints here answer in one page at this org's size (26 repos, 88
+    usage rows). If either ever spills, `--paginate` concatenates the pages as
+    separate JSON documents and this raises rather than reading page one as the
+    whole answer -- an unreadable run, which never reads as clean.
+    """
     proc = subprocess.run(
         ["gh", "api", path, "--paginate"],
         capture_output=True,
