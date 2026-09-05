@@ -2603,6 +2603,47 @@ def reset_cache():
     reset_cadence()
 
 
+def _trim_after_rebuild():
+    """Hand the pages a rebuild just freed back to the kernel.
+
+    Measured against the live pod on 2026-09-05 (cycle 936), which is the
+    reading issue #131 was waiting for. 151s of `/api/journal` every 3s --
+    49 requests, about ten stale-while-revalidate rebuilds -- moved RSS
+    142.16 -> 150.25 MiB, and across the whole run `untracked_footprint`
+    did not move by one byte (26.03 MiB before and after, largest buffer
+    5.06 MiB both times) while GC-tracked objects rose by 280. Then one
+    `malloc_trim(0)` released 27,451,392 bytes and left the process at
+    124.15 MiB -- 18 MiB *below* where the warm-up started.
+
+    So nothing Python-side is holding it. `malloc_trim`'s own docstring
+    says what that verdict implies: the fix is `MALLOC_ARENA_MAX` or a
+    periodic trim, not a fourth limit raise. This is the periodic trim,
+    and a rebuild is the right moment for it because a rebuild is exactly
+    what frees the previous body -- three multi-MB buffers per payload
+    (`_versioned` serialises twice and encodes once) that the allocator
+    otherwise keeps at the top of the heap.
+
+    Cost, measured the same way rather than assumed: three paired
+    `/api/health/memory` calls with and without `?trim=1` came out 0.622s,
+    -0.093s and 0.008s apart -- the trim is inside the noise of the heap
+    walk it rides along with, against a rebuild that costs 3.0-3.5s. So
+    there is no interval guard here: a throttle would be a number I had
+    not measured a danger for.
+
+    It runs wherever `_refresh` does -- the background thread on every
+    warm rebuild, and once on the request path for the first build of a
+    process, which already pays 3.0-3.5s for the build itself. It is
+    silent when there is no glibc to ask: a musl image must not crash a
+    cache refresh over a memory optimisation.
+    """
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.malloc_trim.argtypes = [ctypes.c_size_t]
+        libc.malloc_trim.restype = ctypes.c_int
+        libc.malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
 def _refresh(name, build):
     # Read before the build, compared after it. An `invalidate` landing
     # while this build is in flight means the build read the vault before
@@ -2626,6 +2667,7 @@ def _refresh(name, build):
         if not stale:
             _cache[name] = (payload, body, etag, time.time())
         _refreshing.discard(name)
+    _trim_after_rebuild()
     # Returned either way: a caller on the cold path asked for *an*
     # answer and this one is no older than the request that wanted it.
     # What the generation check protects is the shared cache, not this
