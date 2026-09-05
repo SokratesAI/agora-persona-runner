@@ -12,6 +12,7 @@ import re
 import pytest
 
 from tools import roll_health
+from agora_runner.rolling import _body
 from tools.roll_captures import MARKER
 
 
@@ -105,11 +106,11 @@ def test_a_stranded_capture_exits_2_and_names_the_file():
     docs = {live_path: document(strays=["- 2026-08-31 (Cycle 733) — one"],
                                 entries=["- 2026-08-29 (Cycle 600) — three"]),
             archive_path: ARCHIVE}
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],), fetch=_fetch_from(docs))
     assert unreadable == [] and clean == []
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
     printed = out.getvalue()
     assert live_path in printed
     assert "1 capture(s) sit above" in printed
@@ -117,11 +118,11 @@ def test_a_stranded_capture_exits_2_and_names_the_file():
 
 def test_a_document_that_could_not_be_read_exits_1_and_not_0():
     live_path, archive_path = roll_health.PAIRS[0]
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],), fetch=_fetch_from({}))
     assert unreadable == [live_path] and findings == [] and clean == []
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 1
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 1
     assert "no instrument" in out.getvalue()
 
 
@@ -130,7 +131,7 @@ def test_a_missing_archive_alone_is_still_unreadable():
     be judged as a clean one."""
     live_path, archive_path = roll_health.PAIRS[0]
     docs = {live_path: document(entries=["- 2026-08-29 (Cycle 600) — three"])}
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],), fetch=_fetch_from(docs))
     assert unreadable == [archive_path] and clean == []
 
@@ -139,11 +140,11 @@ def test_a_clean_pair_exits_0_and_prints_what_it_did_not_judge():
     live_path, archive_path = roll_health.PAIRS[0]
     docs = {live_path: document(entries=["- 2026-08-29 (Cycle 600) — three"]),
             archive_path: ARCHIVE}
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],), fetch=_fetch_from(docs))
     assert findings == [] and unreadable == []
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 0
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 0
     assert "Not judged" in out.getvalue()
 
 
@@ -204,15 +205,14 @@ def test_the_report_says_how_little_the_capture_roll_moves():
     """The finding this was built for: `owed` is true, and the roll it names
     moves a rounding error against the write-ups nothing rolls."""
     live_path, archive_path = roll_health.PAIRS[0]
-    entries = "\n".join(f"- 2026-08-29 (Cycle {900 - i}) — n{i}"
-                        for i in range(roll_health.roll_captures.KEEP + 2))
+    entries = _entries_past_keep()
     live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
     live = live.replace("- 2026-08-29 (Cycle 600) — a capture", entries)
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
     printed = out.getvalue()
     assert "A roll is owed" in printed
     moved = int(re.search(r"The capture roll moves ([\d,]+) of", printed)
@@ -227,15 +227,14 @@ def test_the_report_says_how_little_the_capture_roll_moves():
 
 def test_the_report_points_at_roll_done_details_when_one_would_move():
     live_path, archive_path = roll_health.PAIRS[0]
-    entries = "\n".join(f"- 2026-08-29 (Cycle {900 - i}) — n{i}"
-                        for i in range(roll_health.roll_captures.KEEP + 2))
+    entries = _entries_past_keep()
     live = _board([(1, "✅ Done")], [(1, "y" * 4000)])
     live = live.replace("- 2026-08-29 (Cycle 600) — a capture", entries)
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
     printed = out.getvalue()
     assert "tools.roll_done_details" in printed
     assert "would move nothing" not in printed
@@ -247,12 +246,12 @@ def test_a_clean_file_still_says_what_it_is_made_of():
     disappeared the moment the roll it named was actually run."""
     live_path, archive_path = roll_health.PAIRS[0]
     live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     assert findings == [] and unreadable == []
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 0
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 0
     printed = out.getvalue()
     assert "Rollable" in printed
     assert "write-up bodies across 1 row(s)" in printed
@@ -265,20 +264,30 @@ def test_the_clean_summary_line_is_last_and_carries_the_write_up_weight():
     normal morning."""
     live_path, archive_path = roll_health.PAIRS[0]
     live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 0
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 0
     lines = [ln for ln in out.getvalue().split("\n") if ln.strip()]
     last_with_digit = [ln for ln in lines if re.search(r"\d", ln)][-1]
     assert "write-ups no roller moves" in last_with_digit
     assert "0 of 1 on a done row" in last_with_digit
 
 
-def _entries_past_keep():
-    return "\n".join(f"- 2026-08-29 (Cycle {900 - i}) — n{i}"
-                     for i in range(roll_health.roll_captures.KEEP + 2))
+def _entries_past_keep(count=None, pad=1200):
+    """Captures past `KEEP` whose section is over `SECTION_CEILING`.
+
+    The padding is the point rather than filler. Since `steady()` an owed
+    roll only raises when the `## Entries` section has outgrown the size
+    `KEEP` stands in for, so a fixture of 62 one-line captures now reports
+    steady state -- correctly, and it is what the live files do. A test about
+    the remedy block has to hand the check a section that is genuinely too
+    big, which is the only shape that still asks for one.
+    """
+    count = roll_health.roll_captures.KEEP + 2 if count is None else count
+    return "\n".join(f"- 2026-08-29 (Cycle {900 - i}) — n{i} {'x' * pad}"
+                     for i in range(count))
 
 
 def test_an_owed_roll_prints_the_command_that_clears_it():
@@ -291,11 +300,11 @@ def test_an_owed_roll_prints_the_command_that_clears_it():
     live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
     live = live.replace("- 2026-08-29 (Cycle 600) — a capture",
                         _entries_past_keep())
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
     printed = out.getvalue()
     assert "python3 -m tools.roll_captures" in printed
     assert f"put '{archive_path}'" in printed
@@ -316,11 +325,11 @@ def test_the_normalise_step_appears_only_when_the_order_is_the_blocker():
     ordered = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
     ordered = ordered.replace("- 2026-08-29 (Cycle 600) — a capture",
                               _entries_past_keep())
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: ordered, archive_path: ARCHIVE}))
     out = io.StringIO()
-    roll_health.report(findings, unreadable, clean, out=out)
+    roll_health.report(findings, unreadable, clean, held, out=out)
     assert "normalise_captures" not in out.getvalue()
 
     # The live shape from 2026-09-06: one stray marker at the bottom of an
@@ -328,11 +337,11 @@ def test_the_normalise_step_appears_only_when_the_order_is_the_blocker():
     strayed = ordered.replace(
         "- 2026-08-29 (Cycle 839) — n61",
         "- 2026-08-29 (Cycle 839) — n61\n- 2026-09-04 (Cycle 900) — stray")
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: strayed, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
     printed = out.getvalue()
     assert roll_health.NOT_NEWEST_FIRST in printed
     assert "python3 -m tools.normalise_captures" in printed
@@ -344,11 +353,11 @@ def test_a_clean_pair_is_handed_no_command():
     a reader to skip the block on the morning it matters."""
     live_path, archive_path = roll_health.PAIRS[0]
     live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 0
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 0
     assert "vault_tool.py get" not in out.getvalue()
 
 
@@ -360,11 +369,11 @@ def test_the_command_names_the_pair_it_was_handed_not_the_module_default():
     live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
     live = live.replace("- 2026-08-29 (Cycle 600) — a capture",
                         _entries_past_keep())
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=((live_path, archive_path),),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
     printed = out.getvalue()
     assert f"get '{live_path}'" in printed
     assert f"get '{archive_path}'" in printed
@@ -381,11 +390,11 @@ def test_a_stranded_only_finding_is_not_handed_the_roll_command():
     live_path, archive_path = roll_health.PAIRS[0]
     live = document(strays=["- 2026-08-31 (Cycle 733) — stranded"],
                     entries=["- 2026-08-29 (Cycle 600) — three"])
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
     printed = out.getvalue()
     assert "sit above the" in printed and "Repair: move them" in printed
     assert "vault_tool.py get" not in printed
@@ -404,11 +413,11 @@ def test_every_command_line_in_the_block_is_bare():
     live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
     live = live.replace("- 2026-08-29 (Cycle 600) — a capture",
                         _entries_past_keep())
-    findings, unreadable, clean = roll_health.check(
+    findings, unreadable, clean, held = roll_health.check(
         pairs=(roll_health.PAIRS[0],),
         fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
     out = io.StringIO()
-    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
     block = roll_health.remedy(live_path, archive_path, None)
     assert "`" not in "\n".join(block)
     commands = [ln.strip() for ln in block
@@ -419,3 +428,96 @@ def test_every_command_line_in_the_block_is_bare():
         # A continuation ends in `\`; the last command in a chain ends in
         # neither, and no command line may carry English after it.
         assert " the " not in line, line
+
+
+def _steady_pair():
+    """A live file over `KEEP` whose section is comfortably inside the ceiling.
+
+    This is the live shape, in miniature: `issues.md` sits one or two captures
+    over `KEEP` on a 24,685-byte section every hour of every day, because a
+    cycle writes captures into it every hour of every day.
+    """
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    return live.replace("- 2026-08-29 (Cycle 600) — a capture",
+                        _entries_past_keep(pad=0))
+
+
+def test_a_roll_owed_on_a_small_section_does_not_raise():
+    """The defect: `owed` was true on every run, forever. A cycle rolled both
+    files to zero owed and twenty minutes later both were over `KEEP` again,
+    for a roll moving 306 bytes of 112,939."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    findings, unreadable, clean, held = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: _steady_pair(), archive_path: ARCHIVE}))
+    assert findings == [] and unreadable == [] and clean == []
+    assert [p for p, _, _ in held] == [live_path]
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 0
+    printed = out.getvalue()
+    assert "STEADY STATE" in printed
+    assert "A roll is owed and it is not a finding" in printed
+    # The block is what makes a finding actionable. Handing one out here is
+    # how a check teaches cycles to paste past it.
+    assert "tools.roll_captures" not in printed
+    assert "vault_tool.py put" not in printed
+
+
+def test_a_steady_pair_is_still_counted_and_named():
+    """A non-raising bucket that vanishes from the report is the same as a
+    check that never ran -- `preflight` shows only the last line carrying a
+    digit, so the count has to be in it."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    out = io.StringIO()
+    roll_health.report(*roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: _steady_pair(), archive_path: ARCHIVE})),
+        out=out)
+    last = out.getvalue().rstrip().split("\n")[-1]
+    assert "Swept 1 capture file(s), 1 owing a steady-state roll" in last
+    assert live_path in out.getvalue()
+
+
+def test_a_section_past_the_ceiling_still_raises_and_gets_its_command():
+    """The failure this check exists for -- nothing runs the roller, so the
+    section grows without bound -- must survive the new bucket."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    live = live.replace("- 2026-08-29 (Cycle 600) — a capture",
+                        _entries_past_keep())
+    findings, unreadable, clean, held = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    assert held == [] and len(findings) == 1
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
+    assert "tools.roll_captures" in out.getvalue()
+
+
+def test_the_ceiling_is_the_boundary_it_says_it_is():
+    """Off-by-one on a threshold is the whole of a threshold. `<=` is what
+    the report prints -- "inside the 65,000" -- so it has to be what it does."""
+    assert roll_health.steady({"section": roll_health.SECTION_CEILING})
+    assert not roll_health.steady({"section": roll_health.SECTION_CEILING + 1})
+
+
+def test_an_unmeasured_section_never_buys_silence():
+    """A check that could not measure must not read as one that came back
+    clean -- the same rule as `_fetch` returning None rather than ''."""
+    assert not roll_health.steady({})
+    assert not roll_health.steady({"section": None})
+
+
+def test_the_steady_line_names_the_section_and_the_ceiling():
+    """A verdict a reader cannot check is a verdict they have to trust. Both
+    numbers the rule turns on are printed, not just its conclusion."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = _steady_pair()
+    out = io.StringIO()
+    roll_health.report(*roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE})), out=out)
+    printed = out.getvalue()
+    section = len(_body(live, roll_health.roll_captures.spec_for(live))[1])
+    assert f"section is {section:,} bytes" in printed
+    assert f"inside the {roll_health.SECTION_CEILING:,}" in printed
