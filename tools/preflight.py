@@ -153,6 +153,7 @@ CHECKS = (
     "running_images",
     "workload_health",
     "alerts",
+    "trace_health",
     "telegram_inbox",
     "host_memory_trend",
     "memory_headroom",
@@ -237,6 +238,7 @@ SUBJECT = {
     "running_images":    ("on-box",  "containers running in this cluster"),
     "workload_health":   ("on-box",  "workloads in this cluster"),
     "alerts":            ("on-box",  "Prometheus in this cluster"),
+    "trace_health":      ("on-box",  "the live prometheus and tempo in this cluster"),
     "telegram_inbox":    ("on-box",  "the Telegram bridge in this cluster"),
     #: These two read this pod's own /proc, so their subject is whichever node
     #: the bridge pod is scheduled on -- server1 today. server2 joined on
