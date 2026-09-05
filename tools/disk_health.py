@@ -392,11 +392,20 @@ def report_unmounted(unmounted, out=print):
 #: is where local-path puts every volume in this cluster, and the rest are the
 #: host's own — the journal, the attic this loop archives volumes into before it
 #: moves them, and the home directories nothing here provisions.
+#:
+#: They must stay disjoint: `report_host_breakdown` adds them up to say how much
+#: of the remainder is still unnamed, and a directory inside another one here
+#: would be counted twice and make that subtraction lie. `/usr` and `/swapfile`
+#: were added Cycle 1010 after a live read of server1 found the named ones
+#: covering 15.3GiB of a 30.3GiB remainder — those two are 4.9GiB of the rest,
+#: and neither is under any other entry.
 HOST_DIRS = (
     "/var/log/journal",
     "/var/lib/nova-attic",
     "/var/lib/rancher/k3s/storage",
     "/root",
+    "/usr",
+    "/swapfile",
     "/home",
     "/opt",
     "/var/cache",
@@ -542,8 +551,18 @@ def budgeted_host_reader(runner=subprocess.run, budget=HOST_READ_BUDGET_SECONDS,
     return reader
 
 
-def report_host_breakdown(node, sizes, out=print):
-    """Print what the unattributed remainder is actually made of, biggest first."""
+def report_host_breakdown(node, sizes, out=print, remainder=None):
+    """Print what the unattributed remainder is actually made of, biggest first.
+
+    `remainder` is the `neither` figure from the MADE OF line. Pass it and the
+    last line says how much of that these directories actually account for --
+    which is the question a cycle reading a FILLING node asks next, and which it
+    otherwise has to do by hand off two numbers printed several lines apart. On
+    the read that prompted this, the named directories covered 15.3GiB of a
+    30.3GiB remainder and nothing said so, so the honest reading of the report
+    was "half the disk is named" and the reading it invited was "this is all of
+    it".
+    """
     for path, size in sorted(sizes.items(), key=lambda kv: -kv[1]):
         out("  HOST DIR   %s %s — %s" % (node, path, _measured_gib(size)))
     missing = [d for d in HOST_DIRS if d not in sizes]
@@ -552,6 +571,23 @@ def report_host_breakdown(node, sizes, out=print):
             "  HOST DIR   %s: %d of %d looked-for director(y/ies) do not exist on this node and are not zero: %s"
             % (node, len(missing), len(HOST_DIRS), ", ".join(missing))
         )
+    if remainder is None or remainder <= 0:
+        # No remainder to divide up: either the caller had none to give, or the
+        # named parts already summed past the disk's used total and the MADE OF
+        # line has already said that arithmetic is not a measurement.
+        return
+    named = sum(sizes.values())
+    unnamed = remainder - named
+    if unnamed <= 0:
+        out(
+            "  HOST DIR   %s: the directories above name %s, which is all of the %s the kubelet could not attribute — these three figures are sampled seconds apart, so the sum can run slightly past it."
+            % (node, _measured_gib(named), _measured_gib(remainder))
+        )
+        return
+    out(
+        "  HOST DIR   %s: the directories above name %s of that %s; %s is in directories this does not look at."
+        % (node, _measured_gib(named), _measured_gib(remainder), _measured_gib(unnamed))
+    )
 
 
 def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=None):
@@ -635,7 +671,12 @@ def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=No
                 % (node, exc)
             )
         else:
-            report_host_breakdown(node, sizes, out=out)
+            report_host_breakdown(
+                node,
+                sizes,
+                out=out,
+                remainder=breakdown["rest"] if breakdown else None,
+            )
 
     for volume in volumes:
         name = "%s/%s (%s)" % (volume["namespace"], volume["claim"], volume["pod"])
