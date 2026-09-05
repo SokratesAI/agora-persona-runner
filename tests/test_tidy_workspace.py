@@ -25,6 +25,13 @@ def workspace(tmp_path):
     """A workspace shaped like the real one: clones, tool dirs, scratch."""
     (tmp_path / "entry.md").write_text("draft", encoding="utf-8")
     (tmp_path / "digest-new.md").write_text("draft", encoding="utf-8")
+    # Aged past `MIN_LOOSE_FILE_AGE_MINUTES`, or every archiving test below
+    # would be asserting against files the sweep now correctly spares. The
+    # young case is its own test rather than the default, because "a draft a
+    # live cycle just wrote" is the exception the guard exists for.
+    old = time.time() - 24 * 3600
+    for name in ("entry.md", "digest-new.md"):
+        os.utime(tmp_path / name, (old, old))
     for clone in ("agora-persona-runner", "agora-claude-bridge", "platform-config"):
         (tmp_path / clone / ".git").mkdir(parents=True)
         (tmp_path / clone / "uncommitted.py").write_text("work", encoding="utf-8")
@@ -38,6 +45,18 @@ def _names(root):
     return sorted(os.listdir(root))
 
 
+def _aged(path):
+    """Backdate a loose file past `MIN_LOOSE_FILE_AGE_MINUTES`.
+
+    A test about anything other than the age guard has to say out loud that
+    its file is not a live cycle's draft, or the guard -- correctly -- spares
+    it and the test measures nothing.
+    """
+    stamp = time.time() - 24 * 3600
+    os.utime(path, (stamp, stamp))
+    return path
+
+
 def test_loose_files_are_archived_and_nothing_else_moves(workspace):
     archived, expired, worktrees = tidy_workspace.tidy(
         str(workspace), today="2026-08-14")
@@ -47,6 +66,59 @@ def test_loose_files_are_archived_and_nothing_else_moves(workspace):
     assert not (workspace / "entry.md").exists()
     assert (workspace / "_scratch-archive-2026-08-14" / "entry.md").read_text() \
         == "draft"
+
+
+def test_a_draft_a_live_cycle_just_wrote_is_left_alone(workspace):
+    """The incident this guard exists for, reproduced.
+
+    Cycle 972 ran this sweep at 14:54 Oslo and archived `entry-971.md`,
+    written at 14:53 by a concurrent cycle that was in its wrap-up at that
+    moment. The next thing that cycle runs is `put_entry` on that path, and
+    every wrap-up block in `prompt.md` is `&&`-chained -- so a missing file
+    takes the journal entry, the digest roll and the reply with it. A journal
+    entry is this loop's only memory across cycles and nothing recovers a
+    lost one, which is why moved-not-deleted was never a safety net here.
+    """
+    (workspace / "entry-971.md").write_text("live", encoding="utf-8")
+
+    archived, _, _ = tidy_workspace.tidy(str(workspace), today="2026-08-14")
+
+    assert "entry-971.md" not in archived
+    assert (workspace / "entry-971.md").read_text(encoding="utf-8") == "live"
+    # And the guard is an age test, not a blanket refusal to archive.
+    assert archived == ["digest-new.md", "entry.md"]
+
+
+def test_the_age_guard_is_the_measured_turn_cap(workspace):
+    """A file older than the cap cannot belong to a live cycle, so it goes.
+
+    45 minutes is read off the harness -- it kills a turn there -- rather
+    than picked for comfort, so the boundary is worth pinning: a draft one
+    minute past it is litter, one minute inside it may still be read back.
+    """
+    for name, age_minutes in (("just-inside.md", 44), ("just-past.md", 46)):
+        (workspace / name).write_text("x", encoding="utf-8")
+        stamp = time.time() - age_minutes * 60
+        os.utime(workspace / name, (stamp, stamp))
+
+    archived, _, _ = tidy_workspace.tidy(str(workspace), today="2026-08-14")
+
+    assert "just-past.md" in archived
+    assert "just-inside.md" not in archived
+    assert tidy_workspace.MIN_LOOSE_FILE_AGE_MINUTES == 45
+
+
+def test_the_cli_can_widen_the_loose_file_guard(workspace, capsys):
+    """The threshold is a guess about a duration, so it is an argument too --
+    the same shape `--min-worktree-age-hours` already has.
+    """
+    (workspace / "fresh.md").write_text("x", encoding="utf-8")
+
+    tidy_workspace.main([
+        "--root", str(workspace), "--min-loose-file-age-minutes", "0",
+        "--no-fetch", "--no-gh", "--no-demos", "--no-remote"])
+
+    assert "fresh.md" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("survivor", [
@@ -215,6 +287,7 @@ def test_a_second_sweep_on_the_same_day_does_not_nest(workspace):
     day is the answer that surprises nobody."""
     tidy_workspace.tidy(str(workspace), today="2026-08-14")
     (workspace / "entry.md").write_text("second draft", encoding="utf-8")
+    _aged(workspace / "entry.md")
 
     tidy_workspace.tidy(str(workspace), today="2026-08-14")
 
@@ -849,6 +922,8 @@ def test_both_roots_are_swept_and_each_is_named(tmp_path, monkeypatch, capsys):
     shared.mkdir()
     (own / "entry.md").write_text("draft", encoding="utf-8")
     (shared / "digest-new.md").write_text("draft", encoding="utf-8")
+    _aged(own / "entry.md")
+    _aged(shared / "digest-new.md")
     monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(shared))
     monkeypatch.setenv("NOVA_WORKSPACE", str(own))
 
@@ -951,6 +1026,7 @@ def test_the_default_root_is_read_when_called_not_when_imported(tmp_path, monkey
     own = tmp_path / "own"
     own.mkdir()
     (own / "entry.md").write_text("draft", encoding="utf-8")
+    _aged(own / "entry.md")
     monkeypatch.setattr(tidy_workspace, "SHARED_WORKSPACE", str(tmp_path / "gone"))
     monkeypatch.setenv("NOVA_WORKSPACE", str(own))
 
