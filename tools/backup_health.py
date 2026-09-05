@@ -312,6 +312,27 @@ ACKNOWLEDGED = {
         "model blobs ollama re-pulls from upstream; losing them costs a download "
         "(Cycle 880 carried all 1.55 GiB across the cluster for that reason)"
     ),
+    "infra/prometheus-data": (
+        "a metrics store, so the disk holds history rather than state: every "
+        "series is written again by the next scrape, and nothing else in this "
+        "cluster reads it. Losing it costs at most the "
+        "--storage.tsdb.retention.time window of 7 days of history, and a tar "
+        "is not a fix for that -- the Deployment runs four args and "
+        "--web.enable-admin-api is not one of them, so the snapshot endpoint "
+        "that would give a consistent copy is switched off and the only "
+        "artefact available is a tar of a live TSDB, which Prometheus does not "
+        "promise to reopen. Measured 2026-09-05 by Cycle 983: 3.9 hours of "
+        "history and 18.3 MiB of blocks"
+    ),
+    "infra/tempo-data": (
+        "a trace store, and the same shape as prometheus-data above: the disk "
+        "holds history that the live span stream writes again, and nothing "
+        "else reads it. Losing it costs at most the compactor's 168h "
+        "block_retention of traces. Measured 2026-09-05 by Cycle 983: 59.3 "
+        "spans/min and 4.28 MiB/h of raw span bytes into the distributor, so a "
+        "full 168h is about 719 MiB before Tempo compresses it -- inside the "
+        "2Gi the claim was sized for, with nothing to protect but the window"
+    ),
 }
 
 

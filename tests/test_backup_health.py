@@ -609,3 +609,49 @@ def test_the_bridge_home_job_is_judged_on_its_own_six_hourly_cadence():
     assert bh.judge_nas(BRIDGE_HOME, archives, NAS_NOW)[0] == "stale"
     archives = [_archive(BRIDGE_HOME, ago_hours=7)]
     assert bh.judge_nas(BRIDGE_HOME, archives, NAS_NOW)[0] == "fresh"
+
+
+def test_the_two_observability_volumes_are_judged_rather_than_reported():
+    """`prometheus-data` and `tempo-data` were the whole of the sweep's exit 2.
+
+    Both were given real volumes on 2026-09-05 and neither had ever been judged, so
+    the check reported them as unprotected -- correctly, since "nobody has decided"
+    and "decided not to" look identical from outside. The decision is that a metrics
+    store and a trace store hold history rather than state: the next scrape and the
+    live span stream write every series and every trace again, and nothing else in
+    this cluster reads either disk. Losing one costs its own retention window and no
+    configuration, no credential, and nothing another workload depends on.
+    """
+    report, status = format_coverage(
+        ["infra/prometheus-data", "infra/tempo-data", "agents/marcus-data"], None
+    )
+    assert status == 0
+    assert "NOT BACKED UP" not in report
+    assert "infra/prometheus-data — deliberately not backed up:" in report
+    assert "infra/tempo-data — deliberately not backed up:" in report
+    assert "2 deliberately not, 0 unprotected" in report
+
+
+def test_each_observability_acknowledgement_names_its_own_retention_window():
+    """The reason has to say what losing the disk actually costs, not that it is fine.
+
+    Both windows are read off the running objects rather than chosen here: the
+    Prometheus Deployment carries `--storage.tsdb.retention.time=7d` and the Tempo
+    ConfigMap carries a compactor `block_retention: 168h`. If either is ever
+    shortened or lengthened, this entry is a stale claim about a real cost, and the
+    assertion is what makes that visible instead of silent.
+    """
+    assert "7 days of history" in ACKNOWLEDGED["infra/prometheus-data"]
+    assert "168h" in ACKNOWLEDGED["infra/tempo-data"]
+
+
+def test_neither_observability_volume_is_also_declared_as_backed_up():
+    """The same reversal guard the bridge volume carries, before it is needed.
+
+    A claim in both places prints "deliberately not backed up" while a job copies it,
+    or -- worse -- reads as judged when nothing runs. Acknowledged and covered are
+    exclusive by construction, so pin it while the answer is easy.
+    """
+    declared = {b.covers for b in BACKUPS} | {b.covers for b in bh.NAS_BACKUPS}
+    assert "infra/prometheus-data" not in declared
+    assert "infra/tempo-data" not in declared
