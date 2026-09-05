@@ -171,7 +171,7 @@ def judge_node(node, records):
     on the normal case, and picking a number of ranks or megabytes at which
     it becomes bad would be a number I invented rather than measured
     (`personality.md`: a limit needs a danger, and I have to have measured
-    the danger). What this prints is the order. The judgement is Edvard's
+    the danger). What this prints is the order. The judgement is the owner's
     and mine, on the page, with the numbers in front of us.
     """
     scored = [r for r in records if r["score"] is not None]
