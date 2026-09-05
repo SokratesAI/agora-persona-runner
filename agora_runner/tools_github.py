@@ -242,6 +242,32 @@ def _workflow_triggers_on_a_pull_request(text):
     return any(n in PULL_REQUEST_EVENTS for n in names)
 
 
+# GitHub generates workflows the repository does not carry a file for --
+# `Dependency Graph` is `dynamic/dependabot/update-graph` on
+# agora-persona-runner today -- and the contents API answers 404 for those
+# paths, so reading their YAML is not merely hard, it is impossible. Their
+# run history is readable, and "has GitHub ever started this workflow from
+# a pull request" is a measurement rather than an assumption about what
+# Dependabot does. Refusing on them instead would make a push-only repo
+# with Dependabot switched on permanently unmergeable.
+WORKFLOW_FILE_PREFIX = ".github/workflows/"
+
+
+def _workflow_has_run_on_a_pull_request(repo_path, workflow_id):
+    """For a workflow with no file to read. None when the run history is
+    unreadable, which refuses like every other absent answer."""
+    if workflow_id is None:
+        return None
+    runs, err = _github_api(
+        "GET",
+        f"{repo_path}/actions/workflows/{workflow_id}/runs"
+        "?event=pull_request&per_page=1",
+    )
+    if err or not isinstance(runs, dict) or "total_count" not in runs:
+        return None
+    return runs["total_count"] > 0
+
+
 def _pull_request_workflows(repo_path, active, ref):
     """Split the repo's active workflows into the ones that would have
     produced a check-run on this pull request and the ones I could not read.
@@ -253,6 +279,13 @@ def _pull_request_workflows(repo_path, active, ref):
         path = workflow.get("path")
         if not path:
             unreadable.append(name)
+            continue
+        if not path.startswith(WORKFLOW_FILE_PREFIX):
+            verdict = _workflow_has_run_on_a_pull_request(repo_path, workflow.get("id"))
+            if verdict is None:
+                unreadable.append(name)
+            elif verdict:
+                on_pull_request.append(name)
             continue
         blob, err = _github_api(
             "GET",
@@ -323,7 +356,16 @@ def merge_pr(repo, pr_number, merge_method="squash", _attempts=4, _delay=2.0, _s
     stopped being mergeable.
 
     A workflow file I cannot read or cannot parse counts as neither -- it
-    refuses, because "I could not tell" is not "no check was coming"."""
+    refuses, because "I could not tell" is not "no check was coming".
+
+    The file is read at the PR's *head*, which is where GitHub reads it for
+    a `pull_request` event on a same-repo branch -- the only kind this
+    account opens, since every agent here shares one GitHub identity. For a
+    PR from a fork GitHub reads the *base* branch's copy instead, so a fork
+    could strip the trigger from its own copy and be believed. That is
+    written down rather than coded around, and unlike the last sentence of
+    this shape it names what makes it unreachable: the day this org takes a
+    PR from a fork, this line is wrong."""
     repo_path = f"/repos/{GITHUB_ORG}/{repo}"
     pr, state, err = _merge_state(repo_path, pr_number, _attempts, _delay, _sleep)
     if err:

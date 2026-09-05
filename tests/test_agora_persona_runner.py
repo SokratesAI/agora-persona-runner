@@ -5489,10 +5489,13 @@ def _merge_pr_http(pr=None, check_runs=None, workflows=None, workflow_files=None
             path = url.split("/contents/", 1)[1].split("?")[0]
             if workflow_files is None or path not in workflow_files:
                 raise AssertionError(f"{path} must not be fetched here")
-            return 200, {
-                "encoding": "base64",
-                "content": base64.b64encode(workflow_files[path].encode()).decode(),
-            }
+            raw = base64.b64encode(workflow_files[path].encode()).decode()
+            # GitHub wraps the contents payload at 60 characters. An unbroken
+            # line is a shape the real API never returns, and a fixture that
+            # only ever produces one leaves `validate=True` free to be added
+            # to the decode later with every test still green.
+            wrapped = "\n".join(raw[i:i + 60] for i in range(0, len(raw), 60)) + "\n"
+            return 200, {"encoding": "base64", "content": wrapped}
         if method == "PUT" and url.endswith("/pulls/42/merge"):
             return 200, {"sha": merged_sha}
         raise AssertionError(f"unexpected call {method} {url}")
@@ -5636,6 +5639,72 @@ def test_merge_pr_counts_pull_request_target_as_a_pull_request_trigger(runner):
                         "on: pull_request_target\njobs: {}\n"},
     ))
     assert "refusing to merge blind" in result
+
+
+def test_merge_pr_reads_the_run_history_of_a_workflow_with_no_file(runner):
+    """`Dependency Graph` is real, active, and lives at
+    `dynamic/dependabot/update-graph` on this very repo -- GitHub generates
+    it and the contents API answers 404, so refusing on every unreadable
+    file would make a push-only repo with Dependabot on permanently
+    unmergeable. Its run history answers instead."""
+    calls = []
+
+    def fake(method, url, body=None, headers=None, timeout=30):
+        calls.append(url)
+        if url.endswith("/pulls/42"):
+            return 200, {"state": "open", "mergeable_state": "clean", "head": {"sha": "headsha"}}
+        if url.endswith("/commits/headsha/check-runs"):
+            return 200, {"check_runs": []}
+        if url.endswith("/actions/workflows"):
+            return 200, {"workflows": [{"name": "Dependency Graph", "state": "active",
+                                        "id": 77, "path": "dynamic/dependabot/update-graph"}]}
+        if "/actions/workflows/77/runs" in url:
+            return 200, {"total_count": 0}
+        if method == "PUT" and url.endswith("/pulls/42/merge"):
+            return 200, {"sha": "mergedsha4567"}
+        raise AssertionError(f"unexpected call {method} {url}")
+
+    result = _run_merge_pr(runner, fake)
+    assert "merged PR #42 (squash)" in result
+    assert not [u for u in calls if "/contents/" in u], "a generated workflow has no file to fetch"
+    assert [u for u in calls if "event=pull_request" in u]
+
+
+def test_merge_pr_refuses_a_fileless_workflow_that_has_run_on_pull_requests(runner):
+    def fake(method, url, body=None, headers=None, timeout=30):
+        if url.endswith("/pulls/42"):
+            return 200, {"state": "open", "mergeable_state": "clean", "head": {"sha": "headsha"}}
+        if url.endswith("/commits/headsha/check-runs"):
+            return 200, {"check_runs": []}
+        if url.endswith("/actions/workflows"):
+            return 200, {"workflows": [{"name": "generated", "state": "active",
+                                        "id": 77, "path": "dynamic/whatever"}]}
+        if "/actions/workflows/77/runs" in url:
+            return 200, {"total_count": 3}
+        raise AssertionError(f"unexpected call {method} {url}")
+
+    result = _run_merge_pr(runner, fake)
+    assert "refusing to merge blind" in result
+    assert "generated" in result
+
+
+def test_merge_pr_refuses_a_fileless_workflow_whose_run_history_is_unreadable(runner):
+    """No file and no history is two absent answers, not a negative one."""
+    def fake(method, url, body=None, headers=None, timeout=30):
+        if url.endswith("/pulls/42"):
+            return 200, {"state": "open", "mergeable_state": "clean", "head": {"sha": "headsha"}}
+        if url.endswith("/commits/headsha/check-runs"):
+            return 200, {"check_runs": []}
+        if url.endswith("/actions/workflows"):
+            return 200, {"workflows": [{"name": "generated", "state": "active",
+                                        "id": 77, "path": "dynamic/whatever"}]}
+        if "/actions/workflows/77/runs" in url:
+            return 500, {"message": "boom"}
+        raise AssertionError(f"unexpected call {method} {url}")
+
+    result = _run_merge_pr(runner, fake)
+    assert "could not read" in result
+    assert "merged" not in result
 
 
 def test_merge_pr_refuses_when_a_workflow_file_cannot_be_read(runner):
