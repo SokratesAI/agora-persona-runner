@@ -117,3 +117,108 @@ def test_route_serves_a_report_and_not_just_a_200():
     names = {row["type"] for row in report["types"]}
     assert {"dict", "function"} <= names
     assert report["cache"]["entries"] >= 0
+
+
+# --- what the histogram cannot see (Cycle 935) -------------------------
+#
+# The second reading of this route, 74 minutes into the same pod, said
+# tracked objects fell 41,372 -> 32,140 while RSS rose 102.4 -> 150.1 MiB.
+# A population histogram over `gc.get_objects()` can only ever see
+# containers, so a process retaining nothing but large buffers reads as a
+# shrinking heap there. These tests are about the two sections added to
+# close that: the buffers, and the allocator underneath them.
+
+
+def test_untracked_footprint_sees_a_buffer_the_histogram_cannot():
+    big = "x" * 100_000
+    objects = [{"body": big}]
+
+    # The precondition, asserted rather than assumed: the histogram is
+    # blind to this string. Without this line the test below would pass
+    # just as happily against a histogram that had started counting
+    # strings, and would be measuring nothing.
+    assert "str" not in {row["type"] for row in nova_site.type_histogram(objects)}
+
+    out = nova_site.untracked_footprint(objects)
+    by_type = {row["type"]: row for row in out["types"]}
+    assert "str" in by_type
+    assert by_type["str"]["bytes"] >= 100_000
+    assert out["largest_bytes"] >= 100_000
+    assert out["bytes_total"] >= 100_000
+
+
+def test_untracked_footprint_counts_a_shared_buffer_once():
+    """Two holders of one payload is 5 MB retained, not 10."""
+    big = b"y" * 50_000
+    objects = [{"a": big}, {"b": big}]
+    out = nova_site.untracked_footprint(objects)
+    by_type = {row["type"]: row for row in out["types"]}
+    assert by_type["bytes"]["count"] == 1
+    assert by_type["bytes"]["bytes"] < 100_000
+
+
+def test_untracked_footprint_ignores_the_containers_themselves():
+    """`bytes_total` is the leaves; the histogram already has the rest."""
+    objects = [[1, 2, 3], {"n": "leaf"}]
+    out = nova_site.untracked_footprint(objects)
+    assert out["distinct"] == 1          # the value; ints are not leaves here
+    assert [row["type"] for row in out["types"]] == ["str"]
+
+
+def test_untracked_footprint_cannot_see_a_string_dict_key():
+    """A limit found by writing the test wrong, kept so nobody finds it twice.
+
+    CPython's dict traversal skips the keys of a unicode-keyed dict -- a
+    string references nothing, so it can never be part of a cycle and the
+    collector has no reason to walk it. `gc.get_referents` inherits that,
+    so this function sees dict *values* and not dict *keys*. Keys are
+    short and interned and that is why the omission is affordable, but it
+    is an omission and not a rounding error.
+    """
+    objects = [{"a-key-of-some-length": 1}]
+    assert nova_site.untracked_footprint(objects)["distinct"] == 0
+
+
+def test_malloc_trim_reports_what_the_kernel_said_either_side(monkeypatch):
+    readings = iter([{"rss_bytes": 200 * 1024 * 1024},
+                     {"rss_bytes": 150 * 1024 * 1024}])
+    monkeypatch.setattr(nova_site, "read_proc_status", lambda path: next(readings))
+
+    class _Trim:
+        argtypes = None
+        restype = None
+
+        def __call__(self, _pad):
+            return 1
+
+    class _Libc:
+        malloc_trim = _Trim()
+
+    monkeypatch.setattr(nova_site.ctypes, "CDLL", lambda *a, **k: _Libc())
+
+    out = nova_site.malloc_trim("/proc/self/status")
+    assert out["available"] is True
+    assert out["released"] is True
+    assert out["freed_bytes"] == 50 * 1024 * 1024
+
+
+def test_malloc_trim_without_glibc_says_so_rather_than_zero(monkeypatch):
+    """No allocator to ask must not read as an allocator holding nothing."""
+    def _no_libc(*a, **k):
+        raise OSError("libc.so.6: cannot open shared object file")
+
+    monkeypatch.setattr(nova_site.ctypes, "CDLL", _no_libc)
+    out = nova_site.malloc_trim("/proc/self/status")
+    assert out["available"] is False
+    assert "libc.so.6" in out["reason"]
+    assert "freed_bytes" not in out
+
+
+def test_report_carries_untracked_always_and_trim_only_when_asked():
+    objects = [{"body": "z" * 10_000}]
+    plain = nova_site.memory_report(objects=objects)
+    assert plain["untracked"]["bytes_total"] >= 10_000
+    assert "malloc_trim" not in plain
+
+    asked = nova_site.memory_report(objects=objects, trim=True)
+    assert "malloc_trim" in asked

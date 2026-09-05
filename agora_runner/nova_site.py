@@ -93,6 +93,7 @@ test asserting a real browser's header gets `gzip` back is there so the
 claim stays checked rather than argued.
 """
 
+import ctypes
 import gc
 import gzip
 import hashlib
@@ -101,6 +102,7 @@ import mimetypes
 import os
 import re
 import socket
+import sys
 import threading
 import time
 import tracemalloc
@@ -2391,6 +2393,115 @@ def type_histogram(objects, top=25):
     return [{"type": name, "count": n} for name, n in ranked[:top]]
 
 
+#: The leaf types the garbage collector does not track, and therefore the
+#: ones `type_histogram` above cannot see at all. `gc.get_objects()` returns
+#: containers; a 5 MB `str` is not a container, so a process retaining
+#: nothing but big buffers reads as a *shrinking* heap there. That is not a
+#: hypothetical -- it is what the second reading of this route said (Cycle
+#: 935): tracked objects fell 22% while RSS rose 47%.
+UNTRACKED_LEAF_TYPES = (bytes, bytearray, str)
+
+
+def untracked_footprint(objects, sizeof=sys.getsizeof):
+    """Bytes held in leaf objects the collector does not track, by type.
+
+    The histogram above answers "which type's population climbed". When
+    the honest answer is "none of them did, and RSS climbed anyway",
+    there are exactly two explanations left: buffers the collector never
+    counted, or an allocator holding freed memory. This names the first
+    one; `malloc_trim` below measures the second.
+
+    `sizeof` is exact here in a way it is not for a container -- a `str`
+    or a `bytes` references nothing, so its own size is its whole cost.
+    That is why this sums where `type_histogram` deliberately refused to.
+
+    Deduplicated by `id`, which is safe only because `objects` holds a
+    strong reference to every tracked container, so every leaf reachable
+    from one stays alive for the whole walk and no id can be reused
+    underneath us. Hand it a generator instead of that list and the
+    dedup silently starts merging unrelated objects.
+
+    One thing it cannot see, measured rather than assumed: CPython skips
+    the keys of a unicode-keyed dict when it traverses, so dict keys are
+    invisible here. They are short and interned, which is why that is
+    affordable -- but it is an omission, not a rounding error.
+
+    Honest cost: the `seen` set is one integer per distinct leaf, on the
+    process being investigated. It is a few MB on a heap this size and it
+    is freed on return -- the same trade `tracemalloc` makes and loses,
+    which is why that one is off by default and this is not.
+    """
+    seen = set()
+    counts = {}
+    total = 0
+    largest = 0
+    for obj in objects:
+        for leaf in gc.get_referents(obj):
+            if not isinstance(leaf, UNTRACKED_LEAF_TYPES):
+                continue
+            ident = id(leaf)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            n = sizeof(leaf)
+            total += n
+            if n > largest:
+                largest = n
+            name = type(leaf).__name__
+            entry = counts.setdefault(name, {"type": name, "count": 0, "bytes": 0})
+            entry["count"] += 1
+            entry["bytes"] += n
+    ranked = sorted(counts.values(), key=lambda e: (-e["bytes"], e["type"]))
+    return {
+        "distinct": len(seen),
+        "bytes_total": total,
+        "largest_bytes": largest,
+        "types": ranked,
+    }
+
+
+def malloc_trim(status_path="/proc/self/status"):
+    """Ask the C allocator to give freed memory back, and say what moved.
+
+    This is the discriminator, not a fix. Python frees an object and the
+    allocator underneath may keep the pages -- glibc raises its own mmap
+    threshold as a process runs, so multi-MB buffers stop being mapped
+    individually and start coming out of a heap that is only ever
+    returned from the top. A process doing that has no leak in any Python
+    sense and grows all day regardless.
+
+    So: RSS before, `malloc_trim(0)`, RSS after. A large drop means the
+    growth was the allocator holding freed pages, and the fix is
+    `MALLOC_ARENA_MAX` or a periodic trim rather than a fourth limit
+    raise. No drop means the memory is genuinely still referenced, and
+    `untracked_footprint` above says by what.
+
+    It is opt-in on the route rather than part of every reading, because
+    it changes the thing being measured -- two readings hours apart mean
+    nothing if the first one trimmed and the second did not.
+
+    Returns `available: False` rather than raising where there is no
+    glibc to ask (a musl image, or a stripped one). An allocator that
+    cannot be asked must not read as an allocator holding nothing.
+    """
+    before = read_proc_status(status_path)
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        trim = libc.malloc_trim
+    except (OSError, AttributeError) as e:
+        return {"available": False, "reason": str(e)}
+    trim.argtypes = [ctypes.c_size_t]
+    trim.restype = ctypes.c_int
+    released = bool(trim(0))
+    after = read_proc_status(status_path)
+    out = {"available": True, "released": released,
+           "rss_before_bytes": before.get("rss_bytes"),
+           "rss_after_bytes": after.get("rss_bytes")}
+    if out["rss_before_bytes"] is not None and out["rss_after_bytes"] is not None:
+        out["freed_bytes"] = out["rss_before_bytes"] - out["rss_after_bytes"]
+    return out
+
+
 def cache_footprint():
     """How many bytes of served JSON the payload cache is holding.
 
@@ -2412,7 +2523,7 @@ def cache_footprint():
     return {"entries": len(entries), "body_bytes_total": total, "keys": keys}
 
 
-def memory_report(objects=None, status_path="/proc/self/status"):
+def memory_report(objects=None, status_path="/proc/self/status", trim=False):
     """What this process is holding, for the pod that keeps growing.
 
     Issue #131: nova-site's RSS climbs with traffic and never comes back
@@ -2432,6 +2543,16 @@ def memory_report(objects=None, status_path="/proc/self/status"):
     `objects` is injectable so the histogram can be tested against a list
     the test built, rather than against whatever the interpreter running
     the test happens to be holding.
+
+    Cycle 935 took the second reading this was built for and the type
+    histogram answered "no type climbed" -- tracked objects fell from
+    41,372 to 32,140 while RSS went 102.4 MiB to 150.1 MiB on the same
+    pod. That is a real answer and not a null one: it rules out a leak of
+    GC-tracked containers, which is what the histogram can see. So the
+    report grew the two sections that can see the rest -- `untracked`,
+    for the buffers the collector never counted, and `malloc_trim`, which
+    is off unless asked for because it changes what the next reading
+    measures.
     """
     if objects is None:
         objects = gc.get_objects()
@@ -2446,8 +2567,11 @@ def memory_report(objects=None, status_path="/proc/self/status"):
         "threads": sorted(t.name for t in threading.enumerate()),
         "cache": cache_footprint(),
         "types": type_histogram(objects),
+        "untracked": untracked_footprint(objects),
         "tracemalloc": {"tracing": tracing, "top": []},
     }
+    if trim:
+        report["malloc_trim"] = malloc_trim(status_path)
     if tracing:
         snapshot = tracemalloc.take_snapshot()
         report["tracemalloc"]["top"] = [
@@ -3699,7 +3823,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # old is the wrong reading, and this one is asked exactly
                 # when the number is moving. Counts and type names only --
                 # it reads no document and returns no content of his.
-                self._send_json(200, memory_report())
+                # `?trim=1` asks the C allocator to hand freed pages back
+                # and reports RSS either side of it. Opt-in, because it
+                # changes the process the next reading will measure --
+                # the whole method here is two readings hours apart.
+                self._send_json(200, memory_report(trim=query.get("trim") == ["1"]))
                 return
             if path == "/api/health":
                 # Never cached, and that is the entire point of it. The
