@@ -313,6 +313,20 @@ def _next(lines):
     }
 
 
+def next_items(markdown):
+    """`roadmap.md` -> its ```next blocks, in document order.
+
+    The same rows `/plan` draws its ranked strip from, exposed because a
+    second reader now exists: `tools.roadmap_drift` checks each block's
+    `board:` field against the live boards. It has to read the fences the
+    way the page does, so it calls this rather than writing a second
+    parser -- a drift check that disagrees with the page about what the
+    file says is measuring its own regex.
+    """
+    rows, _ = _fenced(markdown, {"next": _next})
+    return rows["next"]
+
+
 def _split_ranked(items):
     """`(open_items, finished_items)`, document order preserved in both.
 

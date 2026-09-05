@@ -172,6 +172,7 @@ CHECKS = (
     "nas_ports",
     "nas_privilege",
     "survey",
+    "roadmap_drift",
     "recap_health",
 )
 
@@ -256,6 +257,7 @@ SUBJECT = {
     "nas_ports":         ("off-box", "the NAS"),
     "nas_privilege":     ("off-box", "the NAS"),
     "survey":            ("on-box",  "this repository's own source"),
+    "roadmap_drift":     ("on-box",  "the roadmap and the boards it names, in the vault"),
     "recap_health":      ("on-box",  "the recap card's own file in the vault"),
     "marcus_capacity":   ("on-box",  "Marcus's state document, read over the cluster network"),
 }
