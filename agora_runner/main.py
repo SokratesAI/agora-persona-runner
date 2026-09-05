@@ -15,6 +15,7 @@ from agora_runner.log import log
 from agora_runner.heartbeats import join_running_heartbeats, running_heartbeat_count
 from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
+from agora_runner.otel import init_tracing
 from agora_runner.catalog_refresh import start_catalog_refresh
 
 # Set by the SIGTERM/SIGINT handler, read by the poll loop between ticks.
@@ -120,6 +121,11 @@ def _serve_while_draining():
 def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
+    # Before the server binds, so the first /invoke or /mcp call is
+    # traced too. The name is passed rather than left to the module
+    # default: this process and nova-site share an image, and an unnamed
+    # runner would file its spans under the other one's service.
+    init_tracing("agora-persona-runner")
     start_invoke_server()
     # Regenerates nova/catalog.md on a timer. Here rather than in a
     # cycle's prompt because a cycle has to choose to run it, and a
