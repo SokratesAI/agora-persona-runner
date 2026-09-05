@@ -480,3 +480,126 @@ def test_a_cronjob_with_no_claim_is_not_judged_on_its_pin():
     rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[row]))
     verdict, _detail = cronjob_health.judge_pin(rows[0], {"x": "server2"})
     assert verdict is None
+
+
+# --- the volume's own node, which does not need a running Pod ---------
+
+def _local_path_pv(name, namespace, claim, node, hostnames=None):
+    """A local-path PersistentVolume as the API server actually returns one."""
+    values = [node] if hostnames is None else list(hostnames)
+    return {
+        "metadata": {"name": name},
+        "spec": {
+            "claimRef": {"namespace": namespace, "name": claim},
+            "nodeAffinity": {"required": {"nodeSelectorTerms": [
+                {"matchExpressions": [{
+                    "key": "kubernetes.io/hostname",
+                    "operator": "In",
+                    "values": values,
+                }]},
+            ]}},
+        },
+    }
+
+
+def three_query_kubectl(cronjobs=(), pods=(), pvs=(), pv_stderr=""):
+    """A `subprocess.run` that answers cronjobs, pods and pv separately.
+
+    The tool makes three different reads and the failure this file cares about
+    is one of them being refused while the others answer, so a fake that hands
+    the same body to all three could not express it.
+    """
+    def runner(args, **kwargs):
+        if "cronjobs" in args:
+            body = json.dumps({"items": list(cronjobs)})
+        elif "pods" in args:
+            body = json.dumps({"items": list(pods)})
+        elif "pv" in args:
+            if pv_stderr:
+                return subprocess.CompletedProcess(args, 1, "", pv_stderr)
+            body = json.dumps({"items": list(pvs)})
+        else:
+            raise AssertionError(f"unexpected kubectl query: {args}")
+        return subprocess.CompletedProcess(args, 0, body, "")
+    return runner
+
+
+def test_read_pv_nodes_places_a_bound_volume_by_its_hostname_affinity():
+    pvs = [
+        _local_path_pv("pvc-1", "infra", "whatsapp-bridge-auth", "server2"),
+        # An unbound PersistentVolume backs no claim, so no CronJob names it.
+        {"metadata": {"name": "pvc-spare"}, "spec": {"nodeAffinity": {
+            "required": {"nodeSelectorTerms": [{"matchExpressions": [{
+                "key": "kubernetes.io/hostname", "operator": "In",
+                "values": ["server1"]}]}]}}}},
+        # Two hostnames is not a local-path volume pinned to one node's disk,
+        # so it must answer nothing rather than resolve to the first value.
+        _local_path_pv("pvc-2", "agents", "roaming", "server1",
+                       hostnames=["server1", "server2"]),
+    ]
+    nodes, why = cronjob_health.read_pv_nodes(
+        fake_kubectl(items=pvs))
+    assert why is None
+    assert nodes == {"infra_whatsapp-bridge-auth": "server2"}
+
+
+def test_the_volume_places_a_pin_that_no_running_pod_could_place():
+    # This is the whole point of reading PersistentVolumes: infra/whatsapp-bridge
+    # is parked at zero replicas, so nothing mounts its claim and the Pod-derived
+    # reading is silent. Before this, the tool printed CANNOT SEE here and a
+    # volume move would have broken the backup with nobody told.
+    job = _backup_cronjob(pinned="server1", claim="infra_whatsapp-bridge-auth")
+    job["metadata"]["name"] = "whatsapp-auth-backup"
+    runner = three_query_kubectl(
+        cronjobs=[job],
+        pods=[],
+        pvs=[_local_path_pv("pvc-1", "infra", "whatsapp-bridge-auth", "server2")])
+    assert cronjob_health.main([], runner=runner) == 2
+
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[job]))
+    pv_nodes, _ = cronjob_health.read_pv_nodes(
+        fake_kubectl(items=[_local_path_pv(
+            "pvc-1", "infra", "whatsapp-bridge-auth", "server2")]))
+    lines, _ = cronjob_health.report(rows, now=cronjob_health._as_datetime(
+        "2026-09-05T01:45:00Z"), claim_nodes=pv_nodes)
+    wrong = [ln for ln in lines if ln.startswith("PINNED TO THE WRONG NODE")]
+    assert len(wrong) == 1
+    assert "whatsapp-auth-backup" in wrong[0]
+    assert not [ln for ln in lines if ln.startswith("CANNOT SEE")]
+
+
+def test_a_refused_pv_read_falls_back_to_pods_and_says_so(capsys):
+    # This is what the tool did before platform-config#685 granted the read, and
+    # it has to stay working: the fallback answer is real, so a refusal must not
+    # turn a pin that agrees into a failure.
+    job = _backup_cronjob(pinned="server2", claim="agents_agora-data")
+    pod = {"metadata": {"namespace": "agents", "name": "agora-1"},
+           "spec": {"nodeName": "server2",
+                    "volumes": [{"name": "d", "persistentVolumeClaim":
+                                 {"claimName": "agora-data"}}]}}
+    runner = three_query_kubectl(
+        cronjobs=[job], pods=[pod],
+        pv_stderr='Error from server (Forbidden): persistentvolumes is '
+                  'forbidden at the cluster scope')
+    status = cronjob_health.main([], runner=runner)
+    out = capsys.readouterr().out
+    assert "COULD NOT READ" in out
+    assert "Forbidden" in out
+    assert "says nothing about a volume no Pod is mounting" in out
+    assert not [ln for ln in out.splitlines() if "WRONG NODE" in ln]
+    assert status == 0
+
+
+def test_the_volume_outranks_a_pod_that_disagrees_with_it():
+    # A Pod's nodeName is where a Pod landed; the PersistentVolume's affinity is
+    # where the directory is. They can only disagree if the Pod-derived reading
+    # is stale, so the volume has to win rather than the merge order deciding.
+    job = _backup_cronjob(pinned="server1", claim="agents_agora-data")
+    stale_pod = {"metadata": {"namespace": "agents", "name": "old"},
+                 "spec": {"nodeName": "server1",
+                          "volumes": [{"name": "d", "persistentVolumeClaim":
+                                       {"claimName": "agora-data"}}]}}
+    runner = three_query_kubectl(
+        cronjobs=[job], pods=[stale_pod],
+        pvs=[_local_path_pv("pvc-1", "agents", "agora-data", "server2")])
+    assert cronjob_health.main([], runner=runner) == 2

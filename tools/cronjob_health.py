@@ -92,9 +92,18 @@ moved to `server2` the day before, and a local-path volume is a directory on
 one node's disk that exists nowhere else. Every schedule verdict here was
 correct and said nothing -- the job was on time, on the wrong box. So this now
 also compares each CronJob's `kubernetes.io/hostname` pin against the node its
-declared `CLAIM` is actually mounted on, which is the one thing a manifest
-cannot know about itself: the node is a property of the running cluster, and
-the next volume move will change it again.
+declared `CLAIM` is actually on, which is the one thing a manifest cannot know
+about itself: the node is a property of the running cluster, and the next
+volume move will change it again.
+
+Two sources answer where a claim is, and they are not equally good. The
+PersistentVolume carries the node in its own `nodeAffinity` and is authoritative;
+a Pod that mounts the claim carries the same answer but only while it runs.
+`agents/whatsapp-auth-backup` copies `infra_whatsapp-bridge-auth`, whose
+Deployment is parked at 0 replicas, so the Pod-derived reading is silent there
+and this check printed `CANNOT SEE` on the one job it most needed to place. It
+reads both now, the volume winning where both answer, and falls back to Pods
+alone -- saying so out loud -- where reading a PersistentVolume is refused.
 
 """
 
@@ -201,11 +210,11 @@ def read_claim_nodes(runner=subprocess.run):
     Keyed `<namespace>_<claim>`, which is how a volume-backup CronJob names
     the claim it covers and how local-path names the directory on disk.
 
-    The node comes from the Pod that mounts the claim, not from the
-    PersistentVolume's own `nodeAffinity`: reading a PersistentVolume is
-    refused for this loop's account (`persistentvolumes ... is forbidden ...
-    at the cluster scope`, measured Cycle 938), and a Pod's `nodeName` answers
-    the same question from an object we can read.
+    The node comes from the Pod that mounts the claim, which answers the
+    question only while something is running. `read_pv_nodes` is the
+    authoritative source and does not need a Pod; this stays as the fallback
+    for a claim no PersistentVolume names, and for a cluster where reading
+    PersistentVolumes is refused.
     """
     body, why = _run(runner, ["kubectl", "get", "pods", "-A", "-o", "json"])
     if why:
@@ -225,6 +234,68 @@ def read_claim_nodes(runner=subprocess.run):
             pvc = (volume.get("persistentVolumeClaim") or {}).get("claimName")
             if pvc:
                 nodes[f"{namespace}_{pvc}"] = node
+    return nodes, None
+
+
+def _pv_node(spec):
+    """The single hostname a PersistentVolume's nodeAffinity pins it to, or "".
+
+    local-path writes exactly one `kubernetes.io/hostname` value here, because
+    the volume is a directory on that node's disk. A PV that names more than one
+    hostname is not a local-path volume pinned to a node, so it answers nothing
+    about where a hostPath backup should run and is deliberately skipped rather
+    than resolved to whichever value came first.
+    """
+    required = ((spec.get("nodeAffinity") or {}).get("required") or {})
+    found = set()
+    for term in required.get("nodeSelectorTerms") or []:
+        for expression in term.get("matchExpressions") or []:
+            if expression.get("key") != "kubernetes.io/hostname":
+                continue
+            if expression.get("operator") != "In":
+                # NotIn/Exists narrow the placement without naming it, so they
+                # cannot answer "which node is this directory on".
+                continue
+            for value in expression.get("values") or []:
+                value = str(value).strip()
+                if value:
+                    found.add(value)
+    if len(found) != 1:
+        return ""
+    return found.pop()
+
+
+def read_pv_nodes(runner=subprocess.run):
+    """Which node each bound PersistentVolume sits on, keyed `<namespace>_<claim>`.
+
+    This is the authoritative answer and `read_claim_nodes` is the fallback: a
+    local-path PersistentVolume carries its node in `spec.nodeAffinity`, and
+    that is true whether or not anything is mounting the volume. Reading it off
+    a running Pod is only true while a Pod runs, which is why
+    `agents/whatsapp-auth-backup` printed `CANNOT SEE` -- the Deployment holding
+    `infra/whatsapp-bridge-auth` is parked at 0 replicas.
+
+    Returns `(nodes, why)`. A `why` means the read failed and the caller falls
+    back; it must never be collapsed into an empty mapping, because "no
+    PersistentVolume is pinned" and "I was refused" are different answers and
+    only the first one is a clean bill of health.
+    """
+    body, why = _run(runner, ["kubectl", "get", "pv", "-o", "json"])
+    if why:
+        return None, why
+
+    nodes = {}
+    for item in body.get("items") or []:
+        spec = item.get("spec") or {}
+        claim = spec.get("claimRef") or {}
+        namespace = (claim.get("namespace") or "").strip()
+        name = (claim.get("name") or "").strip()
+        if not namespace or not name:
+            # An unbound PersistentVolume backs no claim, so no CronJob names it.
+            continue
+        node = _pv_node(spec)
+        if node:
+            nodes[f"{namespace}_{name}"] = node
     return nodes, None
 
 
@@ -258,8 +329,9 @@ def judge_pin(row, claim_nodes):
         # is one today -- and a check that is red forever on a legitimate
         # decision is one that stops being read.
         return "CANNOT SEE", (
-            f"pinned to {pinned} and no scheduled Pod mounts {claim}, so the "
-            f"node its volume is on is not readable from here")
+            f"pinned to {pinned} and nothing readable names the node {claim} "
+            f"is on — no PersistentVolume carries a hostname affinity for it "
+            f"and no scheduled Pod mounts it")
     if node != pinned:
         return "PINNED TO THE WRONG NODE", (
             f"pinned to {pinned} and {claim} is on {node} — a local-path "
@@ -461,8 +533,9 @@ def report(rows, now=None, claim_nodes=None):
         # Same reason as the suspended and young names above: `preflight`
         # collapses a check that exits 0 to its last line carrying a digit.
         swept += (
-            f" Pinned to a node and mounted by no scheduled Pod, so the pin "
-            f"could not be compared: {', '.join(pin_unseen)}.")
+            f" Pinned to a node that neither a PersistentVolume's hostname "
+            f"affinity nor a scheduled Pod places, so the pin could not be "
+            f"compared: {', '.join(pin_unseen)}.")
     lines.append(swept)
     if suspended:
         lines.append(
@@ -498,6 +571,23 @@ def main(argv=None, runner=subprocess.run):
         claim_nodes = None
         unreadable_pods = True
     else:
+        unreadable_pods = False
+
+    # The PersistentVolume's own nodeAffinity wins where both answer, because
+    # it is where the directory is rather than where a Pod happened to land,
+    # and it answers for a volume nothing is mounting. A refusal here is not
+    # fatal: before platform-config#685 this account could not read a
+    # PersistentVolume at all, and the Pod-derived reading above is what the
+    # check ran on. It is said out loud rather than silently degraded to.
+    pv_nodes, pv_why = read_pv_nodes(runner)
+    if pv_why:
+        print(f"COULD NOT READ  {pv_why} — pins were compared against the "
+              f"Pods that mount each claim instead, which says nothing about "
+              f"a volume no Pod is mounting")
+    elif claim_nodes is not None:
+        claim_nodes = {**claim_nodes, **pv_nodes}
+    else:
+        claim_nodes = dict(pv_nodes)
         unreadable_pods = False
 
     lines, status = report(rows, claim_nodes=claim_nodes)
