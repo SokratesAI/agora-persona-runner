@@ -153,11 +153,12 @@ def projected_overrun(used, allowance, elapsed_days, days_in_month, net=0.0,
     `kind` is `"charged"` (GitHub has already billed for it), `"spent"` (the
     allowance is gone but nothing is owed yet), `"projected"` (the run rate
     lands past the allowance before the month ends) or `None` (nothing to
-    act on). The three raising kinds are exactly the three `main` prints
-    below, and they live here rather than inline because `tools.cadence_control`
-    has to ask the same question before it speeds this loop up -- a second
-    copy of the arithmetic is the duplication `prompt.md` step 2 says to
-    stop building.
+    act on). What is unified here is the **verdict**, not the wording: `main`
+    still writes its own three sentences, and it still recomputes `rate` and
+    `projected` for the line it prints. That is deliberate and it is also
+    the honest limit of this extraction -- the thing two callers now share
+    is which of the four answers is right, and a future edit to `main`'s
+    prose can still drift from the `reason` returned here.
     """
     remaining_days = days_in_month - elapsed_days
     if net > 0:
@@ -247,8 +248,8 @@ def main(argv=None):
     # The rule itself lives in `projected_overrun` above, because
     # `tools.cadence_control` asks the same question before it makes this
     # loop run more often. What stays here is the wording.
-    kind, verdict = projected_overrun(used, args.allowance, elapsed, days_in_month, net,
-                                      args.min_days)
+    kind, _verdict = projected_overrun(used, args.allowance, elapsed, days_in_month, net,
+                                       args.min_days)
     if kind == "charged":
         print(f"ACT  GitHub has charged ${net:.2f} for Actions minutes this month -- the allowance is spent.")
         status = 2

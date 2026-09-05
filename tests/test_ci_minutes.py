@@ -135,3 +135,63 @@ def test_month_progress_counts_today_as_partial():
     elapsed, days = ci_minutes.month_progress(DAY5)
     assert days == 30
     assert elapsed == pytest.approx(4.25)
+
+
+# --- the verdict cadence_control reads --------------------------------------
+# Cycle 977. `projected_overrun` and `allowance_pressure` were extracted so
+# `tools.cadence_control` could ask this module whether the loop may be sped
+# up. They were reachable only through `main` and through a canned string in
+# the cadence tests, so neither had a test of its own.
+
+def test_projected_overrun_charged_outranks_everything():
+    kind, reason = ci_minutes.projected_overrun(10, 2000, 15.0, 30.0, net=4.66)
+    assert kind == "charged"
+    assert "4.66" in reason
+
+
+def test_projected_overrun_spent_when_used_is_past_the_allowance():
+    kind, _ = ci_minutes.projected_overrun(2400, 2000, 15.0, 30.0)
+    assert kind == "spent"
+
+
+def test_projected_overrun_is_not_judged_below_the_day_floor():
+    # 400 minutes in 1.5 days extrapolates to 8000, and is still not a finding.
+    kind, reason = ci_minutes.projected_overrun(400, 2000, 1.5, 30.0)
+    assert kind is None
+    assert "not judged" in reason
+
+
+def test_projected_overrun_raises_on_the_run_rate():
+    kind, reason = ci_minutes.projected_overrun(396, 2000, 4.6, 30.0)
+    assert kind == "projected"
+    assert "2000-minute allowance" in reason
+
+
+def test_projected_overrun_is_clean_inside_the_allowance():
+    kind, reason = ci_minutes.projected_overrun(100, 2000, 10.0, 30.0)
+    assert kind is None
+    assert "inside" in reason
+
+
+def _gh_stub(private_minutes):
+    def gh(path, org):
+        if "usage" in path or "billing" in path:
+            return {"usageItems": [
+                {"repositoryName": "platform-config", "product": "actions",
+                 "quantity": private_minutes, "netAmount": 0.0, "unitType": "Minutes"},
+            ]}
+        return [{"name": "platform-config", "private": True}]
+    return gh
+
+
+def test_allowance_pressure_blocks_when_the_rate_projects_over():
+    now = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+    blocked, reason = ci_minutes.allowance_pressure(now=now, gh=_gh_stub(396))
+    assert blocked is True, reason
+    assert "2000-minute allowance" in reason
+
+
+def test_allowance_pressure_is_clear_on_a_small_bill():
+    now = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+    blocked, reason = ci_minutes.allowance_pressure(now=now, gh=_gh_stub(20))
+    assert blocked is False, reason

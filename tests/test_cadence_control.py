@@ -110,7 +110,7 @@ def test_rewrite_schedule_keeps_the_anchor(schedule, minutes, expected):
 # Actions minutes. Until now it read the Claude window only, so it could
 # speed the loop up into an allowance that was already projected to overrun.
 
-CI_BLOCK = "88 minute(s)/day projects to 2582 against the 2000-minute allowance"
+CI_BLOCK = "86 minute(s)/day projects to 2582 against the 2000-minute allowance"
 
 
 def test_speed_up_is_held_while_the_actions_allowance_is_over():
@@ -128,6 +128,10 @@ def test_the_same_speed_up_is_taken_when_the_allowance_is_clear():
 
 def test_slowing_down_is_never_held_for_the_actions_allowance():
     # A longer interval opens fewer pull requests, so it helps both budgets.
+    # This one and the deadband test below still pass with the guard deleted
+    # outright, and that is written down rather than hidden: what they pin
+    # is that the guard is not *over-broad* -- a version that held on any
+    # `ci_block` at all, or one placed before the deadband, fails here.
     action, minutes, _ = cc.decide(20, 60, ci_block=CI_BLOCK)
     assert action == "move"
     assert minutes > 20
