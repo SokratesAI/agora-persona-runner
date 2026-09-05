@@ -136,10 +136,12 @@ def extract_context(headers):
     `traceparent` in exactly that spelling and HTTP header names are
     case-insensitive on the wire.
 
-    Returns None on every failure, which `start_as_current_span` reads as
-    "use the current context" -- the behaviour this had before. A caller
-    that sends a malformed header gets an untraced-but-served request, not
-    a 500.
+    Returns None when there is nothing to read and on every raised failure,
+    which `start_as_current_span` reads as "use the current context" -- the
+    behaviour this had before. Headers that are present but carry no
+    `traceparent` come back as an empty context rather than None, which
+    starts a root span for the same reason; either way a caller that sends
+    a malformed header gets an untraced-but-served request, not a 500.
     """
     if not headers:
         return None
@@ -148,7 +150,13 @@ def extract_context(headers):
     except ImportError:  # pragma: no cover - the SDK is absent, tracing is off anyway
         return None
     try:
-        carrier = {str(k).lower(): v for k, v in headers.items()}
+        carrier = {}
+        for k, v in headers.items():
+            # First wins, which is what `HTTPMessage.get` does. A dict
+            # comprehension keeps the *last*, so a request carrying two
+            # `traceparent` headers would join a different trace here than
+            # every other reader of the same request sees.
+            carrier.setdefault(str(k).lower(), v)
         return extract(carrier)
     except Exception as e:  # a bad header must not take the site down
         log(f"otel: could not read the incoming trace context ({e})")

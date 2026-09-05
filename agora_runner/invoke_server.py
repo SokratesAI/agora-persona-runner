@@ -160,7 +160,7 @@ class InvokeHandler(BaseHTTPRequestHandler):
         # tests reach these routes -- has never had one, and tracing
         # must not be the thing that decides whether a route answers.
         method = getattr(self, "command", None) or "POST"
-        with request_span(method, self.path) as recorder:
+        with request_span(method, self.path, getattr(self, "headers", None)) as recorder:
             self._otel = recorder
             self._handle_post()
 

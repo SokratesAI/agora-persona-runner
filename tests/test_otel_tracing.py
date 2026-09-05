@@ -420,6 +420,51 @@ def test_it_reads_the_header_object_the_server_actually_passes(real_tracer):
     assert format(spans[0].parent.span_id, "016x") == _PARENT_SPAN
 
 
+def test_invoke_do_post_hands_the_request_headers_to_the_span(real_tracer, monkeypatch):
+    """This is the server Agora actually calls -- `/invoke`, `/tool-activity`
+    and `/mcp` are all on it, and every tool call a cycle makes goes through
+    `/mcp`. I fixed nova-site first and shipped this half only because the
+    reviewer found it: my own `grep` for the call sites was truncated at
+    twenty lines and this one fell off the end."""
+    monkeypatch.setattr(invoke_server.InvokeHandler, "_handle_post", lambda self: None)
+    handler = _invoke_handler("/mcp")
+    handler.headers = {"traceparent": _TRACEPARENT}
+    handler.do_POST()
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+    assert format(spans[0].parent.span_id, "016x") == _PARENT_SPAN
+
+
+def test_invoke_without_a_traceparent_still_starts_its_own_trace(real_tracer, monkeypatch):
+    """The control for the test above, on the same server."""
+    monkeypatch.setattr(invoke_server.InvokeHandler, "_handle_post", lambda self: None)
+    handler = _invoke_handler("/mcp")
+    handler.headers = {"user-agent": "curl"}
+    handler.do_POST()
+    spans = real_tracer.get_finished_spans()
+    assert spans[0].parent is None
+    assert format(spans[0].context.trace_id, "032x") != _PARENT_TRACE
+
+
+def test_a_repeated_traceparent_reads_the_same_one_HTTPMessage_does(real_tracer):
+    """`HTTPMessage.get` returns the first value of a repeated header. A dict
+    comprehension keeps the last, so without care this joins a different trace
+    than every other reader of the same request."""
+    from http.client import parse_headers
+
+    other = "00-11111111111111111111111111111111-2222222222222222-01"
+    raw = (
+        b"Traceparent: " + _TRACEPARENT.encode() + b"\r\n"
+        b"Traceparent: " + other.encode() + b"\r\n\r\n"
+    )
+    headers = parse_headers(io.BufferedReader(io.BytesIO(raw)))
+    assert headers.get("traceparent") == _TRACEPARENT
+    with otel.request_span("POST", "/mcp", headers):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+
+
 def test_extract_context_is_none_when_there_are_no_headers():
     """`None` means "use the current context", which is what this did before
     the header was read at all."""
