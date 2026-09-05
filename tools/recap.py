@@ -51,6 +51,7 @@ import sys as _sys
 
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner.nova_journal import entry_seq  # noqa: E402
 from agora_runner.nova_recap import RECAP_PATH  # noqa: E402
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -76,12 +77,24 @@ def _vault(*args):
     return out[:-1] if out.endswith("\n") else out
 
 
-def _entry_names():
-    listing = _vault("ls", JOURNAL_DIR)
+def entry_names(listing):
+    """Entry filenames from a `vault_tool.py ls`, oldest first.
+
+    Sorted by the integer sequence prefix, never as text. The folder passed
+    999 entries on 2026-09-04, and a text sort puts `1000-cycle-933.md`
+    between `100-` and `101-` -- so `names[-1]` was `999-cycle-932.md` for a
+    day and a half while twenty newer entries sat in the middle of the list.
+    That is what made the card stale: the window was reading the newest
+    entries it could see, and it could not see any of them.
+    """
     names = [line.strip().rsplit("/", 1)[-1]
-             for line in listing.splitlines() if line.strip().endswith(".md")]
-    names.sort()
-    return names
+             for line in (listing or "").splitlines()
+             if line.strip().endswith(".md")]
+    return sorted(names, key=lambda name: (entry_seq(name), name))
+
+
+def _entry_names():
+    return entry_names(_vault("ls", JOURNAL_DIR))
 
 
 #: Minutes between cycles, used only to turn "12 hours" into a count of
