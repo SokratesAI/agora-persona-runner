@@ -157,6 +157,7 @@ CHECKS = (
     "host_memory_trend",
     "memory_headroom",
     "node_memory",
+    "limit_headroom",
     "oom_rank",
     "oom_history",
     "disk_health",
@@ -248,6 +249,10 @@ SUBJECT = {
     #: The different mechanism the comment above asks for: the kubelet's own
     #: stats, over nodes/proxy, so every node is judged and not just this one's.
     "node_memory":       ("on-box",  "every node's own free memory and swap"),
+    #: node_memory reads what a node has left; this reads what each container
+    #: has left of its *own* limit, which is what killed grafana on a node that
+    #: had 4.8GiB free at the time.
+    "limit_headroom":    ("on-box",  "each container against its own memory limit"),
     "oom_rank":          ("on-box",  "every node's kernel kill order"),
     "oom_history":       ("on-box",  "every node's own kernel log"),
     "disk_health":       ("on-box",  "every node's own disk, over its kubelet"),
