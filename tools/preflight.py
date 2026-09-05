@@ -242,7 +242,7 @@ SUBJECT = {
     "memory_headroom":   ("on-box",  "the bridge pod's own node's memory"),
     #: The different mechanism the comment above asks for: the kubelet's own
     #: stats, over nodes/proxy, so every node is judged and not just this one's.
-    "node_memory":       ("on-box",  "every node's own free memory and swap"),
+    "node_memory":       ("on-box",  "every node's own free memory and swap, and the limits it has already accepted"),
     "oom_rank":          ("on-box",  "every node's kernel kill order"),
     "oom_history":       ("on-box",  "every node's own kernel log"),
     "disk_health":       ("on-box",  "every node's own disk, over its kubelet"),
