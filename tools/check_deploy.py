@@ -88,6 +88,7 @@ ROLLOUT_PENDING = "ROLLOUT PENDING"
 NOT_DEPLOYED = "NOT DEPLOYED"
 NOT_BUILT = "NOT BUILT"
 NOT_RUNNING = "NOT RUNNING"
+POD_BEHIND = "POD BEHIND"
 NO_MANIFEST = "NO MANIFEST"
 
 
@@ -142,7 +143,7 @@ def digest_of(image, path):
     return False, None
 
 
-def verdict(target, tip_sha, tip_digest, manifest_digest, deployed):
+def verdict(target, tip_sha, tip_digest, manifest_digest, deployed, running=None):
     """Compare main's tip against the manifest and the cluster.
 
     `tip_digest` is the digest of the image tagged `sha-<tip_sha>`, or
@@ -155,6 +156,26 @@ def verdict(target, tip_sha, tip_digest, manifest_digest, deployed):
     the expected reading for a cycle that merged minutes ago, and calling
     that a failure would make the check cry wolf on exactly the cycles
     that did the right thing. Every other state is.
+
+    `running` maps `namespace/name` to the digest a **Pod** was created
+    from, or `None` when pods were not read at all -- which is the old
+    behaviour and still answers about the Deployment only.
+
+    **A Deployment that has rolled is not a Pod that has restarted, and
+    that gap is 48 minutes wide here.** `agora-persona-runner` sets
+    `terminationGracePeriodSeconds: 2880` so a live cycle finishes before
+    its own pod is killed. Measured 2026-09-05: the manifest, the
+    Deployment and the registry all agreed on `7f0babe5` at 21:12 Oslo
+    while the pod serving `/mcp` was still on `f1a13c27` and would be
+    until 21:50 -- and this tool printed `IN SYNC`. Every MCP tool call a
+    cycle makes runs in that pod, so `merge_pr` refused a merge the fix
+    on main had already made legal, and the honest reading of that refusal
+    needed a fact no command here reported.
+
+    `POD_BEHIND` is not a fault, for the same reason `ROLLOUT_PENDING` is
+    not: it is the expected reading during a drain somebody merged on
+    purpose. The bug being fixed is a confident `IN SYNC`, not a missing
+    alarm.
 
     **Two of those states exist only because the target is no longer
     fixed.** With `DEPLOYMENTS` a hardcoded pair, `deployed` could never
@@ -227,9 +248,27 @@ def verdict(target, tip_sha, tip_digest, manifest_digest, deployed):
         )
         return ROLLOUT_PENDING, lines
 
+    behind = {n: d for n, d in (running or {}).items() if d != manifest_digest}
+    if behind:
+        for name, dig in sorted(behind.items()):
+            seen = "could not be read" if dig is None else _short(dig)
+            lines.append(
+                f"{POD_BEHIND}: pod {name} is still serving {seen} while the "
+                f"manifest and its Deployment both pin {_short(manifest_digest)}."
+            )
+        lines.append(
+            f"  The rollout has happened and the pod has not caught up yet. "
+            f"{target.name} drains rather than restarting, so code merged to "
+            "main is built, pinned and NOT yet executing. Anything running in "
+            "that pod -- every MCP tool call -- is the older image until it "
+            "goes. Do not judge a tool's behaviour against main during this."
+        )
+        return POD_BEHIND, lines
+
     lines.append(
         f"{IN_SYNC}: main {tip_sha} -> {_short(tip_digest)}, manifest and "
         f"{len(deployed)} deployment(s) all agree."
+        + (f" {len(running)} pod(s) are running it." if running else "")
     )
     return IN_SYNC, lines
 
@@ -339,6 +378,44 @@ def select_deployments(target, listing):
     return out
 
 
+def select_pods(target, listing):
+    """Pods in `listing` running this target's image, keyed `namespace/name`.
+
+    `listing` is `namespace/name\tphase\timage` lines. The image comes off
+    the **pod spec**, not `status.containerStatuses[].image`: the status
+    field is the resolved reference the runtime reports and can carry a
+    `docker.io/` prefix the spec does not, so matching on it drops pods
+    that are plainly running this image.
+
+    Only `Running` pods count. A `Pending` one is not serving anything yet,
+    and a `Succeeded`/`Failed` one is a finished Job pod that would report a
+    digest nobody is talking to. A pod with a `deletionTimestamp` is still
+    `Running` and is deliberately kept -- that is exactly the draining pod
+    this check exists to name.
+    """
+    out = {}
+    for line in (listing or "").splitlines():
+        name, _, rest = line.partition("\t")
+        phase, _, image = rest.partition("\t")
+        if phase.strip() != "Running":
+            continue
+        matches, digest = digest_of(image, target.image_path)
+        if matches:
+            out[name.strip()] = digest
+    return out
+
+
+def pod_digests(target):
+    listing = _run([
+        "kubectl", "get", "pods", "-A", "-o",
+        "jsonpath={range .items[*]}{.metadata.namespace}{'/'}{.metadata.name}"
+        "{'\\t'}{.status.phase}{'\\t'}{.spec.containers[0].image}{'\\n'}{end}",
+    ])
+    if listing is None:
+        return None
+    return select_pods(target, listing)
+
+
 def deployed_digests(target):
     listing = _run([
         "kubectl", "get", "deploy", "-A", "-o",
@@ -371,13 +448,17 @@ def main(argv=None):
     if deployed is None:
         print("COULD NOT READ: deployments in `agents`. Check `kubectl`.")
         return 1
+    running = pod_digests(target)
+    if running is None:
+        print("COULD NOT READ: pods. Check `kubectl`.")
+        return 1
     short = sha[:7]
     state, lines = verdict(
         target, short, digest_for_tag(target, f"sha-{short}"),
-        manifest_digest(target), deployed,
+        manifest_digest(target), deployed, running,
     )
     print("\n".join(lines))
-    return 0 if state in (IN_SYNC, ROLLOUT_PENDING) else 1
+    return 0 if state in (IN_SYNC, ROLLOUT_PENDING, POD_BEHIND) else 1
 
 
 if __name__ == "__main__":
