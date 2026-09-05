@@ -5,6 +5,8 @@ tests are about the two halves that can silently do nothing: the tracer
 never being built, and the handler never opening a span even though it is.
 """
 
+import io
+
 import pytest
 
 from importlib import import_module
@@ -53,8 +55,9 @@ class _FakeTracer:
     def __init__(self):
         self.spans = []
 
-    def start_as_current_span(self, name):
+    def start_as_current_span(self, name, context=None):
         span = _FakeSpan(name)
+        span.context = context
         self.spans.append(span)
 
         class _Ctx:
@@ -284,3 +287,186 @@ def test_the_environment_still_wins_over_the_process_name(monkeypatch):
     assert otel.service_name("agora-persona-runner") == "renamed-by-the-manifest"
     monkeypatch.setenv(otel.SERVICE_NAME_ENV, "   ")
     assert otel.service_name("agora-persona-runner") == "agora-persona-runner"
+
+
+# --- incoming trace context -------------------------------------------------
+#
+# These run against the real OpenTelemetry SDK rather than `_FakeTracer`,
+# because the claim under test is about trace ids, and a fake that records
+# whatever it is handed would agree with a broken implementation just as
+# readily as with a working one.
+
+_PARENT_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
+_PARENT_SPAN = "00f067aa0ba902b7"
+_TRACEPARENT = f"00-{_PARENT_TRACE}-{_PARENT_SPAN}-01"
+
+
+@pytest.fixture
+def real_tracer(monkeypatch):
+    """A real tracer writing into memory, so trace ids are real trace ids."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(otel, "_tracer", provider.get_tracer("test"))
+    return exporter
+
+
+def test_an_incoming_traceparent_continues_the_callers_trace(real_tracer):
+    """The whole point of instrumenting five services: one user action has to
+    come back as one trace. Agora's auto-instrumentation already sends this
+    header on every call it makes to this repo's servers; before this it was
+    read by nothing and each service started a root trace of its own."""
+    with otel.request_span("GET", "/api/journal", {"traceparent": _TRACEPARENT}):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert len(spans) == 1
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+    assert format(spans[0].parent.span_id, "016x") == _PARENT_SPAN
+
+
+def test_header_case_does_not_decide_whether_the_trace_joins(real_tracer):
+    """HTTP header names are case-insensitive on the wire and the propagator
+    only ever looks for the lowercase spelling, so an upstream that sends
+    `Traceparent` must not silently start a second trace."""
+    with otel.request_span("GET", "/api/journal", {"Traceparent": _TRACEPARENT}):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+
+
+def test_a_request_with_no_traceparent_is_still_a_root_span(real_tracer):
+    """The control. Most requests arrive from a browser with no trace at all,
+    and those must keep starting their own -- a test that only proves the
+    join would pass against code that invented a parent."""
+    with otel.request_span("GET", "/api/journal", {"user-agent": "curl"}):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert spans[0].parent is None
+    assert format(spans[0].context.trace_id, "032x") != _PARENT_TRACE
+
+
+def test_a_malformed_traceparent_starts_its_own_trace(real_tracer):
+    """The propagator does not raise on a bad header -- it returns a context
+    with nothing valid in it -- so this pins the *outcome*, which is that a
+    junk header degrades to an untraced-but-served request. It says nothing
+    about the `except` below it; `test_headers_that_raise_...` does that."""
+    with otel.request_span("GET", "/api/journal", {"traceparent": "not-a-traceparent"}):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].parent is None
+
+
+class _AngryHeaders:
+    """The only shape that reaches the `except` -- a malformed traceparent
+    does not, which a mutation of that block proved by surviving."""
+
+    def items(self):
+        raise RuntimeError("this header object is broken")
+
+
+def test_headers_that_raise_do_not_take_the_request_down(real_tracer):
+    with otel.request_span("GET", "/api/journal", _AngryHeaders()):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].parent is None
+
+
+def test_do_get_hands_the_request_headers_to_the_span(real_tracer, monkeypatch):
+    """The extraction is worth nothing if the handler never passes the
+    headers, and that half is invisible to every test above."""
+    monkeypatch.setattr(nova_site.NovaSiteHandler, "_handle_get", lambda self: None)
+    handler = _handler()
+    handler.headers = {"traceparent": _TRACEPARENT}
+    handler.do_GET()
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+
+
+def test_do_post_hands_the_request_headers_to_the_span(real_tracer, monkeypatch):
+    monkeypatch.setattr(nova_site.NovaSiteHandler, "_handle_post", lambda self: None)
+    handler = _handler()
+    handler.command = "POST"
+    handler.path = "/mcp"
+    handler.headers = {"traceparent": _TRACEPARENT}
+    handler.do_POST()
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+
+
+def test_it_reads_the_header_object_the_server_actually_passes(real_tracer):
+    """Every test above hands `request_span` a plain dict. The real argument is
+    `http.client.HTTPMessage`, which is an email.message.Message: it keeps
+    repeated headers, preserves the case they were sent in, and is falsy when
+    it is empty. This builds one off the wire bytes rather than standing in
+    for it."""
+    from http.client import parse_headers
+
+    raw = (
+        b"Host: nova-site:8083\r\n"
+        b"Traceparent: " + _TRACEPARENT.encode() + b"\r\n"
+        b"X-Dup: a\r\nX-Dup: b\r\n\r\n"
+    )
+    headers = parse_headers(io.BufferedReader(io.BytesIO(raw)))
+    with otel.request_span("GET", "/api/journal?limit=1", headers):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+    assert format(spans[0].parent.span_id, "016x") == _PARENT_SPAN
+
+
+def test_invoke_do_post_hands_the_request_headers_to_the_span(real_tracer, monkeypatch):
+    """This is the server Agora actually calls -- `/invoke`, `/tool-activity`
+    and `/mcp` are all on it, and every tool call a cycle makes goes through
+    `/mcp`. I fixed nova-site first and shipped this half only because the
+    reviewer found it: my own `grep` for the call sites was truncated at
+    twenty lines and this one fell off the end."""
+    monkeypatch.setattr(invoke_server.InvokeHandler, "_handle_post", lambda self: None)
+    handler = _invoke_handler("/mcp")
+    handler.headers = {"traceparent": _TRACEPARENT}
+    handler.do_POST()
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+    assert format(spans[0].parent.span_id, "016x") == _PARENT_SPAN
+
+
+def test_invoke_without_a_traceparent_still_starts_its_own_trace(real_tracer, monkeypatch):
+    """The control for the test above, on the same server."""
+    monkeypatch.setattr(invoke_server.InvokeHandler, "_handle_post", lambda self: None)
+    handler = _invoke_handler("/mcp")
+    handler.headers = {"user-agent": "curl"}
+    handler.do_POST()
+    spans = real_tracer.get_finished_spans()
+    assert spans[0].parent is None
+    assert format(spans[0].context.trace_id, "032x") != _PARENT_TRACE
+
+
+def test_a_repeated_traceparent_reads_the_same_one_HTTPMessage_does(real_tracer):
+    """`HTTPMessage.get` returns the first value of a repeated header. A dict
+    comprehension keeps the last, so without care this joins a different trace
+    than every other reader of the same request."""
+    from http.client import parse_headers
+
+    other = "00-11111111111111111111111111111111-2222222222222222-01"
+    raw = (
+        b"Traceparent: " + _TRACEPARENT.encode() + b"\r\n"
+        b"Traceparent: " + other.encode() + b"\r\n\r\n"
+    )
+    headers = parse_headers(io.BufferedReader(io.BytesIO(raw)))
+    assert headers.get("traceparent") == _TRACEPARENT
+    with otel.request_span("POST", "/mcp", headers):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+
+
+def test_extract_context_is_none_when_there_are_no_headers():
+    """`None` means "use the current context", which is what this did before
+    the header was read at all."""
+    assert otel.extract_context(None) is None
+    assert otel.extract_context({}) is None

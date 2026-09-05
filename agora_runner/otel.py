@@ -120,20 +120,68 @@ class _Recorder:
             self._span.record_exception(exc)
 
 
+def extract_context(headers):
+    """The W3C trace context the caller sent, or None if it sent none.
+
+    Without this every service in the cluster starts a *root* trace on
+    every request, so five instrumented services produce five unrelated
+    single-span traces for one user action and the word "distributed" in
+    distributed tracing buys nothing. Agora's outgoing HTTP is patched by
+    `@opentelemetry/auto-instrumentations-node`, which injects
+    `traceparent` on every call it makes -- including the calls it makes
+    to this repo's two servers -- so the header is already arriving and
+    was being dropped on the floor.
+
+    Header names are lowercased because the propagator looks up
+    `traceparent` in exactly that spelling and HTTP header names are
+    case-insensitive on the wire.
+
+    Returns None when there is nothing to read and on every raised failure,
+    which `start_as_current_span` reads as "use the current context" -- the
+    behaviour this had before. Headers that are present but carry no
+    `traceparent` come back as an empty context rather than None, which
+    starts a root span for the same reason; either way a caller that sends
+    a malformed header gets an untraced-but-served request, not a 500.
+    """
+    if not headers:
+        return None
+    try:
+        from opentelemetry.propagate import extract
+    except ImportError:  # pragma: no cover - the SDK is absent, tracing is off anyway
+        return None
+    try:
+        carrier = {}
+        for k, v in headers.items():
+            # First wins, which is what `HTTPMessage.get` does. A dict
+            # comprehension keeps the *last*, so a request carrying two
+            # `traceparent` headers would join a different trace here than
+            # every other reader of the same request sees.
+            carrier.setdefault(str(k).lower(), v)
+        return extract(carrier)
+    except Exception as e:  # a bad header must not take the site down
+        log(f"otel: could not read the incoming trace context ({e})")
+        return None
+
+
 @contextmanager
-def request_span(method, path):
+def request_span(method, path, headers=None):
     """Trace one HTTP request. A no-op when tracing is off.
 
     `path` is the raw request path and is split from its query string:
     the query carries row numbers and search text, which would make every
     request its own span name and is exactly the cardinality Tempo
     charges for.
+
+    `headers` is the incoming request's headers. Pass them: they carry the
+    caller's trace, and a span opened without them is a new root trace
+    rather than the next step of the one already running.
     """
     route = (path or "/").split("?", 1)[0]
     if _tracer is None:
         yield _Recorder()
         return
-    with _tracer.start_as_current_span(f"{method} {route}") as span:
+    parent = extract_context(headers)
+    with _tracer.start_as_current_span(f"{method} {route}", context=parent) as span:
         span.set_attribute("http.request.method", method)
         span.set_attribute("url.path", route)
         yield _Recorder(span)
