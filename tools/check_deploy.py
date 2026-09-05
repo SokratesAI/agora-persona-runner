@@ -90,6 +90,7 @@ NOT_BUILT = "NOT BUILT"
 NOT_RUNNING = "NOT RUNNING"
 POD_BEHIND = "POD BEHIND"
 NO_MANIFEST = "NO MANIFEST"
+NO_IMAGE_EXPECTED = "NO IMAGE EXPECTED"
 
 
 class Target(NamedTuple):
@@ -143,7 +144,115 @@ def digest_of(image, path):
     return False, None
 
 
-def verdict(target, tip_sha, tip_digest, manifest_digest, deployed, running=None):
+GATE = ".github/image-paths.py"
+
+
+def _contents(target, path, ref):
+    """Text of `path` in `target.repo` at `ref`, or None if unreadable."""
+    import base64
+
+    raw = _run([
+        "gh", "api", f"repos/{target.repo}/contents/{path}?ref={ref}",
+        "--jq", ".content",
+    ])
+    if raw is None:
+        return None
+    try:
+        return base64.b64decode(raw).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def _local_gate():
+    """This checkout's own `image-paths.py` as a module, or None."""
+    import importlib.util
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, GATE)
+    try:
+        spec = importlib.util.spec_from_file_location("_image_paths", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (OSError, ImportError, SyntaxError):
+        return None
+    return module
+
+
+def image_expected(target, sha, gate=None):
+    """Would `build-push` have produced an image for commit `sha`?
+
+    `True`, `False`, or `None` for "could not tell" -- and the caller must
+    read `None` as `True`, which is the direction the gate itself fails in.
+
+    `build.yaml` gates `build-push` on `.github/image-paths.py`, so a
+    commit touching only `tools/` and `tests/` correctly builds nothing and
+    the registry correctly holds no `sha-<tip>` image. Reading that as
+    `NOT BUILT` -- a failed or still-running build -- is a false alarm on
+    every tools-only merge this loop makes, and it is guaranteed in advance
+    rather than occasional.
+
+    Three ways this answers "could not tell" rather than guessing:
+
+    * the workflow, the Dockerfile or the commit's file list is unreadable;
+    * the target's own `image-paths.py` is not byte-identical to this
+      checkout's. The parser applied here is the local one, so a repo whose
+      copy has drifted would be judged by the wrong rule, and a wrong
+      `False` hides a build that really did fail;
+    * the commit's file list is empty, which the gate already reads as
+      "the diff told me nothing" rather than "nothing changed".
+
+    A repo whose `build.yaml` never invokes the gate answers `True`: it
+    builds on every merge, so a missing image there is a real fault.
+
+    One known narrowing, written down rather than hidden: the gate diffs
+    the whole push (`github.event.before..github.sha`) while this reads the
+    tip commit's own diff against its first parent. Those are the same set
+    for the squash merges this loop makes and differ for a multi-commit
+    push, where this can answer `False` for a push whose earlier commit did
+    touch the image.
+    """
+    workflow = _contents(target, ".github/workflows/build.yaml", sha)
+    if workflow is None:
+        return None
+    if "image-paths.py" not in workflow:
+        return True
+
+    gate = gate or _local_gate()
+    if gate is None:
+        return None
+    remote_gate = _contents(target, GATE, sha)
+    if remote_gate is None:
+        return None
+    try:
+        with open(gate.__file__, encoding="utf-8") as fh:
+            if fh.read() != remote_gate:
+                return None
+    except OSError:
+        return None
+
+    dockerfile = _contents(target, "Dockerfile", sha)
+    if dockerfile is None:
+        return None
+    try:
+        paths = gate.image_paths(dockerfile)
+    except gate.UnreadableCopy:
+        return None
+
+    raw = _run([
+        "gh", "api", f"repos/{target.repo}/commits/{sha}",
+        "--jq", ".files[].filename",
+    ])
+    if raw is None:
+        return None
+    changed = [line for line in raw.splitlines() if line.strip()]
+    if not changed:
+        return None
+    return gate.affects_image(paths, changed)
+
+
+def verdict(target, tip_sha, tip_digest, manifest_digest, deployed, running=None,
+            expected=True):
     """Compare main's tip against the manifest and the cluster.
 
     `tip_digest` is the digest of the image tagged `sha-<tip_sha>`, or
@@ -156,6 +265,12 @@ def verdict(target, tip_sha, tip_digest, manifest_digest, deployed, running=None
     the expected reading for a cycle that merged minutes ago, and calling
     that a failure would make the check cry wolf on exactly the cycles
     that did the right thing. Every other state is.
+
+    `expected` is `image_expected`'s answer: `False` only when the path
+    gate deliberately skipped the build for this commit, which makes a
+    missing image the correct state rather than a failed one. Anything
+    else -- including "could not tell" -- leaves the old `NOT BUILT`
+    reading, because a build that really did fail must not be silenced.
 
     `running` maps `namespace/name` to the digest a **Pod** was created
     from, or `None` when pods were not read at all -- which is the old
@@ -185,6 +300,17 @@ def verdict(target, tip_sha, tip_digest, manifest_digest, deployed, running=None
     both reachable: `vault-bridge` has no `-config` repo at all.
     """
     lines = []
+    if tip_digest is None and expected is False:
+        lines.append(
+            f"{NO_IMAGE_EXPECTED}: main is at {tip_sha} and the registry has "
+            f"no image tagged sha-{tip_sha}, which is correct -- that commit "
+            f"changed no file {target.name}'s image ships, so `build-push` was "
+            "skipped by the path gate rather than failing. There is no deploy "
+            "to health-check; the cluster is running an older commit's image "
+            "on purpose."
+        )
+        return NO_IMAGE_EXPECTED, lines
+
     if tip_digest is None:
         lines.append(
             f"{NOT_BUILT}: main is at {tip_sha} and the registry has no image "
@@ -453,12 +579,18 @@ def main(argv=None):
         print("COULD NOT READ: pods. Check `kubectl`.")
         return 1
     short = sha[:7]
+    tip = digest_for_tag(target, f"sha-{short}")
+    # Only asked when there is no image: three `gh` calls that answer a
+    # question nobody has when the image is there.
+    expected = True if tip else image_expected(target, sha)
     state, lines = verdict(
-        target, short, digest_for_tag(target, f"sha-{short}"),
-        manifest_digest(target), deployed, running,
+        target, short, tip,
+        manifest_digest(target), deployed, running, expected,
     )
     print("\n".join(lines))
-    return 0 if state in (IN_SYNC, ROLLOUT_PENDING, POD_BEHIND) else 1
+    return 0 if state in (
+        IN_SYNC, ROLLOUT_PENDING, POD_BEHIND, NO_IMAGE_EXPECTED
+    ) else 1
 
 
 if __name__ == "__main__":

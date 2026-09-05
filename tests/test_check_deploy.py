@@ -8,10 +8,13 @@ NOT DEPLOYED case is a regression test for something that actually
 happened, not a shape someone imagined.
 """
 
+import base64
+
+import tools.check_deploy as check_deploy
 from tools.check_deploy import (
-    IN_SYNC, NO_MANIFEST, NOT_BUILT, NOT_DEPLOYED, NOT_RUNNING,
-    POD_BEHIND, ROLLOUT_PENDING, Target, select_deployments, select_pods,
-    verdict,
+    IN_SYNC, NO_IMAGE_EXPECTED, NO_MANIFEST, NOT_BUILT, NOT_DEPLOYED,
+    NOT_RUNNING, POD_BEHIND, ROLLOUT_PENDING, Target, image_expected,
+    select_deployments, select_pods, verdict,
 )
 
 RUNNER = Target.named("agora-persona-runner")
@@ -374,3 +377,139 @@ def test_the_pod_query_reads_the_spec_image_and_spans_namespaces():
     assert ".status.phase" in src
     assert '"-A"' in src
     assert "{'/'}{.metadata.name}" in src
+
+
+# --- the path gate: a skipped build is not a failed one -----------------
+#
+# Measured on main 2026-09-05: 4d3aa0a (runner#777) changed `tools/open_prs.py`
+# and `tests/test_open_prs.py` only, `build-push` was correctly skipped, and
+# this tool printed NOT BUILT and exited 1. Both readings below are that
+# commit.
+
+GATE_TEXT = open(".github/image-paths.py", encoding="utf-8").read()
+DOCKERFILE = open("Dockerfile", encoding="utf-8").read()
+BUILD_YAML = open(".github/workflows/build.yaml", encoding="utf-8").read()
+
+
+def _fake_gh(files, gate=GATE_TEXT, workflow=BUILD_YAML, dockerfile=DOCKERFILE):
+    """A `_run` that answers the four calls `image_expected` makes."""
+    def run(cmd):
+        arg = cmd[2]
+        if "/commits/" in arg:
+            return None if files is None else "\n".join(files)
+        for needle, body in (
+            ("build.yaml", workflow),
+            ("image-paths.py", gate),
+            ("Dockerfile", dockerfile),
+        ):
+            if needle in arg:
+                if body is None:
+                    return None
+                return base64.b64encode(body.encode()).decode()
+        raise AssertionError("unexpected call: %r" % (cmd,))
+    return run
+
+
+def test_a_skipped_build_is_not_a_missing_one():
+    state, lines = verdict(RUNNER, TIP, None, OLD, _deployed(OLD), None, False)
+    assert state == NO_IMAGE_EXPECTED
+    body = "\n".join(lines)
+    assert "path gate" in body
+    # The old text sent a reader to `gh run list` for a run that never existed.
+    assert "still running" not in body
+
+
+def test_could_not_tell_still_reads_as_a_missing_build():
+    # None is the gate's own direction of failure: a build that really did
+    # fail must not be silenced by an unreadable workflow file.
+    state, _ = verdict(RUNNER, TIP, None, OLD, _deployed(OLD), None, None)
+    assert state == NOT_BUILT
+
+
+def test_the_gate_answer_is_ignored_once_an_image_exists():
+    # `expected` only ever gates the no-image branch; a False here must not
+    # change a reading about an image that is sitting in the registry.
+    state, _ = verdict(RUNNER, TIP, NEW, NEW, _deployed(NEW), None, False)
+    assert state == IN_SYNC
+
+
+def test_a_tools_only_commit_expects_no_image(monkeypatch):
+    monkeypatch.setattr(
+        check_deploy, "_run",
+        _fake_gh(["tools/open_prs.py", "tests/test_open_prs.py"]),
+    )
+    assert image_expected(RUNNER, "4d3aa0a") is False
+
+
+def test_a_commit_inside_the_image_expects_one(monkeypatch):
+    monkeypatch.setattr(
+        check_deploy, "_run", _fake_gh(["agora_runner/tools_github.py"]),
+    )
+    assert image_expected(RUNNER, "4d3aa0a") is True
+
+
+def test_a_repo_whose_build_never_consults_the_gate_always_expects_one(monkeypatch):
+    monkeypatch.setattr(
+        check_deploy, "_run",
+        _fake_gh(["tools/open_prs.py"], workflow="jobs:\n  build-push:\n"),
+    )
+    assert image_expected(RUNNER, "4d3aa0a") is True
+
+
+def test_a_drifted_gate_is_not_judged_by_this_ones_rule(monkeypatch):
+    monkeypatch.setattr(
+        check_deploy, "_run",
+        _fake_gh(["tools/open_prs.py"], gate=GATE_TEXT + "\n# a fork\n"),
+    )
+    assert image_expected(RUNNER, "4d3aa0a") is None
+
+
+def test_an_empty_file_list_is_not_read_as_nothing_changed(monkeypatch):
+    monkeypatch.setattr(check_deploy, "_run", _fake_gh([]))
+    assert image_expected(RUNNER, "4d3aa0a") is None
+
+
+def test_an_unreadable_dockerfile_cannot_tell(monkeypatch):
+    monkeypatch.setattr(
+        check_deploy, "_run", _fake_gh(["tools/open_prs.py"], dockerfile=None),
+    )
+    assert image_expected(RUNNER, "4d3aa0a") is None
+
+
+def test_a_skipped_build_does_not_exit_as_a_fault(monkeypatch, capsys):
+    # The whole point of the state: preflight and a cycle's own wrap-up read
+    # the exit code, so a correct skip that exits 1 is the false alarm again
+    # wearing a number instead of a word.
+    monkeypatch.setattr(check_deploy, "tip_sha", lambda t: "4d3aa0a" * 6)
+    monkeypatch.setattr(check_deploy, "digest_for_tag", lambda t, tag: None)
+    monkeypatch.setattr(check_deploy, "manifest_digest", lambda t: OLD)
+    monkeypatch.setattr(check_deploy, "deployed_digests", lambda t: _deployed(OLD))
+    monkeypatch.setattr(check_deploy, "pod_digests", lambda t: _deployed(OLD))
+    monkeypatch.setattr(check_deploy, "image_expected", lambda t, sha: False)
+    assert check_deploy.main([]) == 0
+    assert NO_IMAGE_EXPECTED in capsys.readouterr().out
+
+
+def test_a_build_that_really_failed_still_exits_as_a_fault(monkeypatch, capsys):
+    monkeypatch.setattr(check_deploy, "tip_sha", lambda t: "4d3aa0a" * 6)
+    monkeypatch.setattr(check_deploy, "digest_for_tag", lambda t, tag: None)
+    monkeypatch.setattr(check_deploy, "manifest_digest", lambda t: OLD)
+    monkeypatch.setattr(check_deploy, "deployed_digests", lambda t: _deployed(OLD))
+    monkeypatch.setattr(check_deploy, "pod_digests", lambda t: _deployed(OLD))
+    monkeypatch.setattr(check_deploy, "image_expected", lambda t, sha: True)
+    assert check_deploy.main([]) == 1
+    assert NOT_BUILT in capsys.readouterr().out
+
+
+def test_the_gate_is_not_asked_when_the_image_is_there(monkeypatch):
+    # Three `gh` calls that answer a question nobody has.
+    def refuse(target, sha):
+        raise AssertionError("asked the gate with an image in the registry")
+
+    monkeypatch.setattr(check_deploy, "tip_sha", lambda t: "4d3aa0a" * 6)
+    monkeypatch.setattr(check_deploy, "digest_for_tag", lambda t, tag: NEW)
+    monkeypatch.setattr(check_deploy, "manifest_digest", lambda t: NEW)
+    monkeypatch.setattr(check_deploy, "deployed_digests", lambda t: _deployed(NEW))
+    monkeypatch.setattr(check_deploy, "pod_digests", lambda t: _deployed(NEW))
+    monkeypatch.setattr(check_deploy, "image_expected", refuse)
+    assert check_deploy.main([]) == 0
