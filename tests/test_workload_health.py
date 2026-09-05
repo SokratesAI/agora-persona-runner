@@ -11,11 +11,17 @@ NOW = datetime.datetime(2026, 8, 29, 8, 0, tzinfo=datetime.timezone.utc)
 
 
 def _pod(namespace="agents", name="p", phase="Running", containers=(), limits=None,
-         conditions=(), node="server1", deletion=""):
+         conditions=(), node="server1", deletion="", requests=None):
     return {
         "namespace": namespace, "name": name, "phase": phase,
         "containers": list(containers), "conditions": list(conditions),
         "limits": dict(limits or {}),
+        # What the scheduler reserves, which is a different question from
+        # the limit and is what placement is decided on. Omitted by most
+        # tests here on purpose: a Pod record with no requests at all is a
+        # real state and `available_line` must say so rather than fall back
+        # on the limit.
+        "requests": dict(requests or {}),
         # Empty unless the test is about a Terminating Pod. It is a
         # deadline, not a start time -- see wh.KILL_MARGIN.
         "deletion": deletion,
@@ -322,12 +328,15 @@ def _meminfo(**overrides):
     return fields
 
 
-def _pod_with_limit(mib, name="big"):
-    return _pod(name=name, limits={"c": f"{mib}Mi"})
+def _pod_with_limit(mib, name="big", request_mib=None):
+    return _pod(name=name, limits={"c": f"{mib}Mi"},
+                requests=({"c": f"{request_mib}Mi"} if request_mib else None))
 
 
-def _budget_pod(name, limits=None, containers=1, phase="Running", node="server1"):
-    pod = _pod(name=name, phase=phase, limits=limits or {}, node=node)
+def _budget_pod(name, limits=None, containers=1, phase="Running", node="server1",
+                requests=None):
+    pod = _pod(name=name, phase=phase, limits=limits or {}, node=node,
+               requests=requests)
     pod["container_count"] = containers
     return pod
 
@@ -433,25 +442,61 @@ def test_a_meminfo_that_matches_no_node_is_not_judged():
     assert "CANNOT ATTRIBUTE MEMORY" in lines[0]
 
 
-def test_available_below_the_largest_configured_limit_raises():
+def test_available_below_the_largest_configured_request_raises():
     lines, actionable, judged = wh.memory_headroom(
-        _meminfo(MemAvailable=451752), NODES, [_pod_with_limit(2048)])
+        _meminfo(MemAvailable=451752), NODES,
+        [_pod_with_limit(2048, request_mib=2048)])
     assert judged is True
     assert actionable is True
     assert any("NODE OUT OF MEMORY" in line for line in lines)
+    assert any("largest container memory request" in line for line in lines)
 
 
-def test_available_above_the_largest_configured_limit_is_quiet():
+def test_a_limit_over_the_headroom_does_not_raise_when_the_request_fits():
+    """The live server1 case on 2026-09-05, and the reason this rule changed.
+
+    3663Mi free, `agora-claude-bridge` limit 4Gi, request 1Gi. The old rule
+    compared the limit and shouted that the host could not fit the workload
+    on its next roll. The scheduler never reads the limit, so the Pod would
+    have been admitted -- and that 4Gi was raised deliberately, on the owner's
+    own ask, so the alarm could only ever be silenced by undoing a decision.
+    """
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=3751000), NODES,
+        [_pod_with_limit(4096, request_mib=1024)])
+    text = " ".join(lines)
+    assert judged is True
+    assert actionable is False
+    assert "NODE OUT OF MEMORY" not in text
+    # The overhang is still stated -- it says how a runaway would land.
+    assert "The largest limit configured here is 4096Mi" in text
+    assert "host OOM killer" in text
+
+
+def test_no_request_anywhere_is_not_judged_rather_than_judged_on_the_limit():
+    """The failure this whole change exists to stop, asserted directly."""
+    lines, actionable, judged = wh.memory_headroom(
+        _meminfo(MemAvailable=451752), NODES, [_pod_with_limit(2048)])
+    text = " ".join(lines)
+    assert judged is True
+    assert actionable is False
+    assert "NODE OUT OF MEMORY" not in text
+    assert "Not judged for scheduling" in text
+
+
+def test_available_above_the_largest_configured_request_is_quiet():
     lines, actionable, _ = wh.memory_headroom(
-        _meminfo(MemAvailable=451752), NODES, [_pod_with_limit(64)])
+        _meminfo(MemAvailable=451752), NODES,
+        [_pod_with_limit(64, request_mib=64)])
     assert actionable is False
     assert any(line.startswith("MEMORY ") for line in lines)
 
 
-def test_the_threshold_is_the_biggest_limit_not_the_first_one():
+def test_the_threshold_is_the_biggest_request_not_the_first_one():
     lines, actionable, _ = wh.memory_headroom(
         _meminfo(MemAvailable=451752), NODES,
-        [_pod_with_limit(64, name="small"), _pod_with_limit(2048, name="big")])
+        [_pod_with_limit(64, name="small", request_mib=64),
+         _pod_with_limit(2048, name="big", request_mib=2048)])
     assert actionable is True
     assert "agents/big [c]" in " ".join(lines)
 
@@ -1007,8 +1052,9 @@ def test_another_nodes_headroom_is_read_from_its_own_kubelet():
     /proc/meminfo in a pod is one host's, so server2's real headroom could
     only ever be a caveat here. The kubelet publishes it per node.
     """
-    pods = [_budget_pod("a", {"c": "1Gi"}),
-            _budget_pod("b", {"c": "512Mi"}, node="server2")]
+    pods = [_budget_pod("a", {"c": "1Gi"}, requests={"c": "1Gi"}),
+            _budget_pod("b", {"c": "512Mi"}, node="server2",
+                        requests={"c": "512Mi"})]
     lines, actionable, judged = wh.memory_headroom(
         _meminfo(MemAvailable=1934336), TWO_NODES, pods,
         stats=_stats(available_mib=4096))
@@ -1019,10 +1065,12 @@ def test_another_nodes_headroom_is_read_from_its_own_kubelet():
     assert "not judged for this node" not in text
 
 
-def test_another_node_below_its_own_largest_limit_raises():
+
+def test_another_node_below_its_own_largest_request_raises():
     """server1 having room says nothing about whether server2 can start its own."""
-    pods = [_budget_pod("a", {"c": "1Gi"}),
-            _budget_pod("big", {"c": "2Gi"}, node="server2")]
+    pods = [_budget_pod("a", {"c": "1Gi"}, requests={"c": "1Gi"}),
+            _budget_pod("big", {"c": "2Gi"}, node="server2",
+                        requests={"c": "2Gi"})]
     lines, actionable, judged = wh.memory_headroom(
         _meminfo(MemAvailable=1934336), TWO_NODES, pods,
         stats=_stats(available_mib=512))

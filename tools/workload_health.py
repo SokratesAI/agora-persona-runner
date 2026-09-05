@@ -43,6 +43,19 @@ container and every percentage would be about the wrong machine while
 looking perfectly reasonable, so the equality is asserted against the
 node's own capacity and an unmatched reading exits 1 rather than 0.
 
+**Cycle 937 corrected which number the headroom check judges.** It asked
+whether the node had more free memory than the largest *limit* declared on
+it, and called a shortfall `NODE OUT OF MEMORY ... the host cannot fit it`.
+The scheduler never reads a limit while placing a Pod; it reads the
+request. So on 2026-09-05 server1 raised a permanent red against
+`agora-claude-bridge`'s 4Gi limit while its 1Gi request fitted three times
+over -- and that 4Gi was raised on purpose, on the owner's own ask the day
+before, so nothing could ever have cleared it. The raise is on the largest
+request now. The limit overhang is still printed, because it says how a
+runaway would land -- above the node's free memory the cgroup ceiling is
+never reached, the host OOM killer picks a victim instead -- but a
+statement about the shape of a future failure is not a scheduling alarm.
+
 **Cycle 706 added the budget beside the headroom, because every
 per-container question can pass while the node is over its own ceiling.**
 The check above asks whether the largest single container can still start.
@@ -230,10 +243,15 @@ def read_pods(runner=subprocess.run):
         spec = item.get("spec") or {}
         status = item.get("status") or {}
         limits = {}
+        requests = {}
         for container in spec.get("containers") or []:
-            mem = ((container.get("resources") or {}).get("limits") or {}).get("memory")
+            resources = container.get("resources") or {}
+            mem = (resources.get("limits") or {}).get("memory")
             if mem:
                 limits[container.get("name") or "?"] = mem
+            asked = (resources.get("requests") or {}).get("memory")
+            if asked:
+                requests[container.get("name") or "?"] = asked
         pods.append({
             "namespace": meta.get("namespace") or "",
             "name": meta.get("name") or "?",
@@ -241,6 +259,11 @@ def read_pods(runner=subprocess.run):
             "containers": status.get("containerStatuses") or [],
             "conditions": status.get("conditions") or [],
             "limits": limits,
+            # What the scheduler actually reserves. `limits` is the ceiling
+            # a running container may reach; this is the only figure
+            # placement is decided on, and keeping both is what lets
+            # `available_line` stop confusing the two.
+            "requests": requests,
             # How many containers the Pod declares, not how many set a limit.
             # `limits` only records the ones that did, so the two counts
             # together are what say a limit is missing rather than zero.
@@ -985,6 +1008,29 @@ def largest_limit(pods):
     return biggest, where
 
 
+def largest_request(pods):
+    """The biggest single container memory *request* among the Pods given.
+
+    Same shape as `largest_limit` and a deliberately separate function,
+    because the two answer different questions and Cycle 937 found this
+    module answering the wrong one out loud. Placement is decided on
+    requests: when a Pod rolls, the scheduler compares this figure against
+    what the node has, and never looks at the limit at all. So this is the
+    number behind "can the host still start it", and the limit is the
+    number behind "how big could it get once it is running".
+    """
+    biggest, where = None, ""
+    for pod in pods:
+        for container, quantity in (pod.get("requests") or {}).items():
+            mib = _mib(quantity)
+            if mib is None:
+                continue
+            if biggest is None or mib > biggest:
+                biggest = mib
+                where = f"{pod['namespace']}/{pod['name']} [{container}]"
+    return biggest, where
+
+
 def declared_ceiling(pods):
     """What the pods on this host are collectively allowed to take.
 
@@ -1049,7 +1095,8 @@ def budget_line(host, ceiling, limited, unlimited, total):
             f"{total:.0f}Mi ({share:.0f}%) across {limited} container(s).{unbounded}"), False
 
 
-def available_line(node, available_mib, total_mib, biggest, where):
+def available_line(node, available_mib, total_mib, biggest, where,
+                   asked=None, asked_where=""):
     """"Can this node still start the largest container configured on it?"
 
     Pulled out of `memory_headroom` in Cycle 861. Until then this judgement
@@ -1059,21 +1106,65 @@ def available_line(node, available_mib, total_mib, biggest, where):
     The kubelet publishes `availableBytes` for every node, so the rule
     travels; only the reading did not.
 
+    **Cycle 937 corrected which number it judges, and the correction is the
+    point of the extra arguments.** Until then this raised `NODE OUT OF
+    MEMORY` whenever the node had less free memory than the largest
+    *limit* on it, and said "the next time that workload rolls, the host
+    cannot fit it". That sentence is false: Kubernetes places a Pod on its
+    memory **request** and never reads the limit while scheduling. On
+    2026-09-05 server1 had 3663Mi free against `agora-claude-bridge`'s 4Gi
+    limit and a 1Gi request, so it raised a permanent red on a workload
+    that would in fact have been admitted and run at its usual ~1.3GiB --
+    and that 4Gi is deliberate, measured and asked for by the owner
+    (agora-claude-bridge-config, 2026-09-04). An alarm that can only ever
+    be silenced by undoing a decision somebody made on purpose is the
+    ignored-status-panel shape, and `budget_line` twelve lines up already
+    says the correct fact out loud: "the scheduler only ever guarded the
+    requests."
+
+    So the raise is on the request now. The limit overhang is still worth
+    *saying* -- it means the cgroup ceiling is above what the box has, so a
+    runaway is stopped by the host OOM killer picking a victim rather than
+    by the container's own fence -- but it is a statement about how a
+    failure would land, not a scheduling failure, so it does not raise.
+
+    `asked` is None when the caller has no request figures at all (an older
+    Pod record). The line then says so rather than judging the limit as if
+    it were the request, because that is the bug this exists to stop.
+
     Returns (line, actionable).
     """
-    if biggest is None:
-        return (f"MEMORY  {node}: {available_mib:.0f}Mi of {total_mib:.0f}Mi available. "
-                "No container here sets a memory limit, so there is no configured "
-                "size to judge that against."), False
-    if available_mib < biggest:
+    head = f"{available_mib:.0f}Mi of {total_mib:.0f}Mi available"
+    share = available_mib / total_mib * 100 if total_mib else 0.0
+
+    def _fence():
+        """What the limit overhang means, said as fact rather than as an alarm."""
+        if biggest is None or available_mib >= biggest:
+            return ""
+        return (f" The largest limit configured here is {biggest:.0f}Mi ({where}), "
+                f"which is more than the node has free, so that ceiling is not what "
+                f"would stop a runaway -- the host OOM killer picking a victim is.")
+
+    if asked is None:
+        if biggest is None:
+            return (f"MEMORY  {node}: {head}. No container here sets a memory limit "
+                    "or request, so there is no configured size to judge that "
+                    "against."), False
+        return (f"MEMORY  {node}: {head} ({share:.1f}%). Not judged for scheduling: "
+                "no memory request was read for this node, and a limit is not what "
+                f"placement is decided on.{_fence()}"), False
+
+    if available_mib < asked:
         return (f"NODE OUT OF MEMORY — {node} has {available_mib:.0f}Mi available of "
-                f"{total_mib:.0f}Mi ({available_mib / total_mib * 100:.1f}%), which is "
-                f"less than the largest container limit configured on it "
-                f"({biggest:.0f}Mi, {where}). "
-                "The next time that workload rolls, the host cannot fit it."), True
-    return (f"MEMORY  {node}: {available_mib:.0f}Mi of {total_mib:.0f}Mi available "
-            f"({available_mib / total_mib * 100:.1f}%), above the largest configured "
-            f"container limit ({biggest:.0f}Mi, {where})."), False
+                f"{total_mib:.0f}Mi ({share:.1f}%), which is less than the largest "
+                f"container memory request configured on it ({asked:.0f}Mi, "
+                f"{asked_where}). That is the figure the scheduler places on, so the "
+                f"next time that workload rolls the host cannot admit it."
+                f"{_fence()}"), True
+
+    return (f"MEMORY  {node}: {head} ({share:.1f}%), above the largest configured "
+            f"container memory request ({asked:.0f}Mi, {asked_where}), which is what "
+            f"the scheduler places on.{_fence()}"), False
 
 
 def swap_line(node, swap_total_mib, swap_free_mib):
@@ -1145,8 +1236,10 @@ def other_node_budgets(nodes, host, pods, stats=None):
                 "swap, were not read, which is no instrument rather than clean.")
             continue
         biggest, where = largest_limit(pods_on(pods, node))
+        asked, asked_where = largest_request(pods_on(pods, node))
         line, raised = available_line(
-            node, figures["available_mib"], nodes[node], biggest, where)
+            node, figures["available_mib"], nodes[node], biggest, where,
+            asked, asked_where)
         actionable = actionable or raised
         lines.append("  " + line)
         line, raised = swap_line(
@@ -1200,6 +1293,7 @@ def memory_headroom(meminfo, nodes, pods, stats=None):
 
     here = pods_on(pods, host)
     biggest, where = largest_limit(here)
+    asked, asked_where = largest_request(here)
     if available is None:
         # A different failure from an unattributable reading, and it does not
         # get to borrow that sentence: the host matched, one field is absent.
@@ -1211,7 +1305,8 @@ def memory_headroom(meminfo, nodes, pods, stats=None):
     available_mib = available / 1024
 
     actionable = False
-    line, raised = available_line(host, available_mib, total, biggest, where)
+    line, raised = available_line(host, available_mib, total, biggest, where,
+                                  asked, asked_where)
     actionable = actionable or raised
     lines.append(line)
 
