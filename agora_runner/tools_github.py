@@ -7,6 +7,8 @@ import subprocess
 import time
 import urllib.parse
 
+import yaml
+
 from agora_runner.config import GITHUB_READONLY_TOKEN, GITHUB_BOT_TOKEN, GITHUB_ORG
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import http_json
@@ -205,6 +207,107 @@ MERGE_STATE_REFUSALS = {
 MERGE_STATE_ALLOWED = ("clean", "unstable", "has_hooks")
 
 
+# The workflows API reports a workflow's name and state and never its
+# triggers, so "this repo has active workflows" cannot answer the question
+# merge_pr actually has: was a check-run ever going to appear on this head
+# commit? platform-config dropped `pull_request` from its only workflow on
+# purpose, to stop paying for the same private Actions minute twice per
+# merge -- so every PR to it now has zero check-runs by design, and the
+# refusal below was waiting for something that is never coming.
+PULL_REQUEST_EVENTS = ("pull_request", "pull_request_target")
+
+
+def _workflow_triggers_on_a_pull_request(text):
+    """True or False from a workflow's own YAML, and None when the file
+    cannot be read as a workflow at all -- which is not the same answer and
+    must not collapse into False, because False is what lets a merge through.
+
+    `on:` comes back as the YAML 1.1 boolean `True` once PyYAML has parsed
+    it, which is why both keys are looked up."""
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    triggers = doc["on"] if "on" in doc else doc.get(True)
+    if isinstance(triggers, str):
+        names = [triggers]
+    elif isinstance(triggers, list):
+        names = [t for t in triggers if isinstance(t, str)]
+    elif isinstance(triggers, dict):
+        names = [k for k in triggers if isinstance(k, str)]
+    else:
+        return None
+    return any(n in PULL_REQUEST_EVENTS for n in names)
+
+
+# GitHub generates workflows the repository does not carry a file for --
+# `Dependency Graph` is `dynamic/dependabot/update-graph` on
+# agora-persona-runner today -- and the contents API answers 404 for those
+# paths, so reading their YAML is not merely hard, it is impossible. Their
+# run history is readable, and "has GitHub ever started this workflow from
+# a pull request" is a measurement rather than an assumption about what
+# Dependabot does. Refusing on them instead would make a push-only repo
+# with Dependabot switched on permanently unmergeable.
+WORKFLOW_FILE_PREFIX = ".github/workflows/"
+
+
+def _workflow_has_run_on_a_pull_request(repo_path, workflow_id):
+    """For a workflow with no file to read. None when the run history is
+    unreadable, which refuses like every other absent answer."""
+    if workflow_id is None:
+        return None
+    runs, err = _github_api(
+        "GET",
+        f"{repo_path}/actions/workflows/{workflow_id}/runs"
+        "?event=pull_request&per_page=1",
+    )
+    if err or not isinstance(runs, dict) or "total_count" not in runs:
+        return None
+    return runs["total_count"] > 0
+
+
+def _pull_request_workflows(repo_path, active, ref):
+    """Split the repo's active workflows into the ones that would have
+    produced a check-run on this pull request and the ones I could not read.
+    Unreadable is its own bucket on purpose: an absent answer is not a
+    negative one, and merge_pr refuses on it rather than merging blind."""
+    on_pull_request, unreadable = [], []
+    for workflow in active:
+        name = workflow.get("name") or workflow.get("path") or "?"
+        path = workflow.get("path")
+        if not path:
+            unreadable.append(name)
+            continue
+        if not path.startswith(WORKFLOW_FILE_PREFIX):
+            verdict = _workflow_has_run_on_a_pull_request(repo_path, workflow.get("id"))
+            if verdict is None:
+                unreadable.append(name)
+            elif verdict:
+                on_pull_request.append(name)
+            continue
+        blob, err = _github_api(
+            "GET",
+            f"{repo_path}/contents/{urllib.parse.quote(path)}"
+            f"?ref={urllib.parse.quote(ref)}",
+        )
+        if err or not isinstance(blob, dict) or blob.get("encoding") != "base64":
+            unreadable.append(name)
+            continue
+        try:
+            text = base64.b64decode(blob.get("content") or "").decode("utf-8")
+        except Exception:
+            unreadable.append(name)
+            continue
+        verdict = _workflow_triggers_on_a_pull_request(text)
+        if verdict is None:
+            unreadable.append(name)
+        elif verdict:
+            on_pull_request.append(name)
+    return on_pull_request, unreadable
+
+
 def _merge_state(repo_path, pr_number, attempts, delay, sleep):
     """GitHub computes `mergeable_state` asynchronously, so a PR read seconds
     after it was opened answers `unknown` and means nothing yet. Ask again
@@ -244,11 +347,25 @@ def merge_pr(repo, pr_number, merge_method="squash", _attempts=4, _delay=2.0, _s
     have produced one. The `*-config` repos run no workflows at all, and
     refusing there was waiting for something that was never coming.
 
-    Known narrow false positive, written down rather than coded around: a
-    repo whose only workflows are `on: push` has active workflows and
-    produces no PR check-run, so it lands in that refusal. The workflows
-    API does not report triggers, and parsing every workflow's YAML to find
-    out is more machinery than the case is worth."""
+    "Should have produced one" is read off the workflow files themselves,
+    not off the workflow list: a repo whose workflows all run `on: push`
+    has active workflows and produces no PR check-run, and refusing there
+    is the same wait for nothing. This paragraph used to say that case was
+    a known false positive not worth the machinery; platform-config became
+    it on 2026-09-05, and every PR to the repo this loop merges most often
+    stopped being mergeable.
+
+    A workflow file I cannot read or cannot parse counts as neither -- it
+    refuses, because "I could not tell" is not "no check was coming".
+
+    The file is read at the PR's *head*, which is where GitHub reads it for
+    a `pull_request` event on a same-repo branch -- the only kind this
+    account opens, since every agent here shares one GitHub identity. For a
+    PR from a fork GitHub reads the *base* branch's copy instead, so a fork
+    could strip the trigger from its own copy and be believed. That is
+    written down rather than coded around, and unlike the last sentence of
+    this shape it names what makes it unreachable: the day this org takes a
+    PR from a fork, this line is wrong."""
     repo_path = f"/repos/{GITHUB_ORG}/{repo}"
     pr, state, err = _merge_state(repo_path, pr_number, _attempts, _delay, _sleep)
     if err:
@@ -277,10 +394,21 @@ def merge_pr(repo, pr_number, merge_method="squash", _attempts=4, _delay=2.0, _s
         if err:
             return (f"[merge_pr: no CI checks found for {head_sha[:7]} and I could not read "
                     f"this repo's workflows to find out whether that is expected: {err}]")
-        active = [w["name"] for w in workflows.get("workflows", []) if w.get("state") == "active"]
+        active = [w for w in workflows.get("workflows", []) if w.get("state") == "active"]
         if active:
-            return (f"[merge_pr: no CI checks found for {head_sha[:7]} but this repo has active "
-                    f"workflow(s) ({', '.join(active)}) -- refusing to merge blind]")
+            on_pull_request, unreadable = _pull_request_workflows(repo_path, active, head_sha)
+            if unreadable:
+                return (f"[merge_pr: no CI checks found for {head_sha[:7]} and I could not read "
+                        f"workflow(s) ({', '.join(unreadable)}) to find out whether a check was "
+                        f"expected -- refusing rather than guessing]")
+            if on_pull_request:
+                return (f"[merge_pr: no CI checks found for {head_sha[:7]} but this repo runs "
+                        f"workflow(s) on pull requests ({', '.join(on_pull_request)}) "
+                        f"-- refusing to merge blind]")
+            blind_note = (", no workflow in this repo runs on a pull request so there was "
+                          "no check to wait for")
+        else:
+            blind_note = ", this repo runs no workflows so there was no check to wait for"
 
     result, merge_err = _github_api(
         "PUT", f"{repo_path}/pulls/{pr_number}/merge", {"merge_method": merge_method}
@@ -290,5 +418,5 @@ def merge_pr(repo, pr_number, merge_method="squash", _attempts=4, _delay=2.0, _s
     red = [r["name"] for r in runs if r.get("conclusion") not in ("success", "neutral", "skipped")]
     note = f", over {len(red)} non-required red check(s): {', '.join(red)}" if red else ""
     if not runs:
-        note = ", this repo runs no workflows so there was no check to wait for"
+        note = blind_note
     return f"merged PR #{pr_number} ({merge_method}), sha={(result.get('sha') or '?')[:7]}{note}"
