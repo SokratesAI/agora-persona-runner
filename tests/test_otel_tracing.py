@@ -5,6 +5,8 @@ tests are about the two halves that can silently do nothing: the tracer
 never being built, and the handler never opening a span even though it is.
 """
 
+import io
+
 import pytest
 
 from importlib import import_module
@@ -395,6 +397,27 @@ def test_do_post_hands_the_request_headers_to_the_span(real_tracer, monkeypatch)
     handler.do_POST()
     spans = real_tracer.get_finished_spans()
     assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+
+
+def test_it_reads_the_header_object_the_server_actually_passes(real_tracer):
+    """Every test above hands `request_span` a plain dict. The real argument is
+    `http.client.HTTPMessage`, which is an email.message.Message: it keeps
+    repeated headers, preserves the case they were sent in, and is falsy when
+    it is empty. This builds one off the wire bytes rather than standing in
+    for it."""
+    from http.client import parse_headers
+
+    raw = (
+        b"Host: nova-site:8083\r\n"
+        b"Traceparent: " + _TRACEPARENT.encode() + b"\r\n"
+        b"X-Dup: a\r\nX-Dup: b\r\n\r\n"
+    )
+    headers = parse_headers(io.BufferedReader(io.BytesIO(raw)))
+    with otel.request_span("GET", "/api/journal?limit=1", headers):
+        pass
+    spans = real_tracer.get_finished_spans()
+    assert format(spans[0].context.trace_id, "032x") == _PARENT_TRACE
+    assert format(spans[0].parent.span_id, "016x") == _PARENT_SPAN
 
 
 def test_extract_context_is_none_when_there_are_no_headers():
