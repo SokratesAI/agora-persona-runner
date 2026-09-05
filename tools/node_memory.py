@@ -24,6 +24,26 @@ line discriminates rather than being decorative -- server1 sits at 4249Mi
 available against a 637Mi largest pod and passes, and the same rule applied to
 the 487Mi in issue #131's title fails against the same pod.
 
+**Commitment is a different question and this file does not own it.**
+Everything here is current state: how much room a node has *at this instant*.
+How much a node has already *promised* -- the memory limits of the pods placed
+on it, against its capacity -- is `tools.workload_health`, whose
+`declared_ceiling` sums them, `budget_line` raises `MEMORY OVERCOMMITTED`, and
+`other_node_budgets` already runs both for every node rather than only the one
+this pod stands on. Measured 2026-09-05 08:51 Oslo it prints *"server2 is
+7746Mi and the memory limits declared on it sum to 8064Mi (104%) across 19
+container(s)"* and exits 2.
+
+That paragraph is here because Cycle 952 built the whole of it a second time,
+in this file, and threw it away unmerged (runner#748). The docstring above
+frames *"the one source here that answers for a node this pod is not standing
+on"* as a gap this module closed; `other_node_budgets` closed it at Cycle 860.
+Nothing pointed from here to there -- `oom_rank` names `workload_health` as the
+owner of the declared budget and this file did not -- so writing the second
+implementation was a reasonable thing to start doing. **If the question is what
+a node has been promised rather than what it has left, it is answered already
+and it is not answered here.**
+
 Swap is printed and never raises. Its total is `swapAvailableBytes +
 swapUsageBytes`, so a node reporting a total of zero has no swap configured at
 all rather than full swap -- server2 is in that state today and server1 is not,
