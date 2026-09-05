@@ -17,8 +17,9 @@ this repo among them, so a sweep that decided what to keep would be one bad
 predicate away from deleting a checkout with uncommitted work in it. So:
 
 - regular files at the root, and only depth 1, are *moved* into today's
-  archive. Never deleted, because a cycle that is still running may be about
-  to read one back, and because the loss is silent if it is wrong.
+  archive -- but only once they are older than `MIN_LOOSE_FILE_AGE_MINUTES`,
+  because a cycle that is still running is about to read one back. Never
+  deleted either, because the loss is silent if it is wrong.
 - directories named exactly `_scratch-archive-<YYYY-MM-DD>` -- the shape this
   script itself creates -- are deleted once they are older than the retention
   window. Anything whose name does not parse as that date is left alone.
@@ -124,6 +125,12 @@ DEFAULT_RETENTION_DAYS = 7
 # threshold rather than the prose instruction it started as.
 MIN_WORKTREE_AGE_HOURS = 4
 
+# The same guard, for loose files, and the number is measured rather than
+# chosen: the harness kills a cycle's turn at 45 minutes, so nothing a live
+# cycle wrote can be older than that. A file younger than this may still be
+# read back by a cycle that is running right now. See `archive_loose_files`.
+MIN_LOOSE_FILE_AGE_MINUTES = 45
+
 
 def _today(today=None):
     """Today as `YYYY-MM-DD`, or the caller's stamp unchanged.
@@ -135,16 +142,39 @@ def _today(today=None):
     return today or datetime.date.today().isoformat()
 
 
-def archive_loose_files(root, today, dry_run=False):
-    """Move every regular file at `root` into `_scratch-archive-<today>`.
+def archive_loose_files(root, today, dry_run=False,
+                        min_age_minutes=MIN_LOOSE_FILE_AGE_MINUTES, now=None):
+    """Move every regular file at `root` older than `min_age_minutes` into
+    `_scratch-archive-<today>`.
 
     Returns the names moved, sorted. Moved rather than copied, or the sweep
     that is meant to end the growth becomes the thing doing the growing --
     and moved rather than deleted, because the point of failure here is a
     predicate that turned out to include something that mattered.
+
+    **Moved-not-deleted is not a safety net for a cycle that is running right
+    now, and cycle 972 proved it by doing the damage.** It ran this sweep at
+    14:54 Oslo and archived `entry-971.md`, written at 14:53 by a concurrent
+    cycle that was in its wrap-up at that moment. The next thing that cycle
+    does is `python3 -m tools.put_entry ... entry-971.md`, which fails on a
+    path that is no longer there -- and every wrap-up block in `prompt.md` is
+    `&&`-chained, so the failure takes the journal entry, the digest roll and
+    the reply with it. Nothing recovers a lost entry: it is this loop's only
+    memory across cycles.
+
+    So loose files get the age guard `stale_review_worktrees` already has,
+    for the same reason and with the same shape. The threshold differs
+    because what it derives from differs: a reviewer worktree is spared for
+    hours because a reader may sit in one, while a draft can only be as old
+    as the cycle that wrote it, and the harness kills a turn at 45 minutes.
+    On a 15-minute heartbeat this costs at most one extra sweep before a file
+    is archived, which is why the growth this tool exists to stop still
+    stops.
     """
+    cutoff = (now or time.time()) - min_age_minutes * 60
     names = sorted(name for name in os.listdir(root)
-                   if os.path.isfile(os.path.join(root, name)))
+                   if os.path.isfile(os.path.join(root, name))
+                   and os.path.getmtime(os.path.join(root, name)) <= cutoff)
     if not names or dry_run:
         return names
     destination = os.path.join(root, _ARCHIVE_PREFIX + today)
@@ -1265,7 +1295,8 @@ def _remove_worktree(root, name, clone_names):
 
 
 def tidy(root=WORKSPACE, retention_days=DEFAULT_RETENTION_DAYS, dry_run=False,
-         today=None, min_age_hours=MIN_WORKTREE_AGE_HOURS, now=None):
+         today=None, min_age_hours=MIN_WORKTREE_AGE_HOURS, now=None,
+         min_loose_file_age_minutes=MIN_LOOSE_FILE_AGE_MINUTES):
     """Run the sweep. Returns `(archived, expired, worktrees)`."""
     root = _default_root(root)
     stamp = _today(today)
@@ -1279,7 +1310,9 @@ def tidy(root=WORKSPACE, retention_days=DEFAULT_RETENTION_DAYS, dry_run=False,
     # After the worktrees, so a `_review-*` directory is never mistaken for a
     # loose file, and before the expiry so today's archive is not itself a
     # candidate for deletion on a zero-day retention.
-    archived = archive_loose_files(root, stamp, dry_run=dry_run)
+    archived = archive_loose_files(root, stamp, dry_run=dry_run,
+                                   min_age_minutes=min_loose_file_age_minutes,
+                                   now=now)
     expired = expired_archives(root, stamp, retention_days)
     if not dry_run:
         for name in expired:
@@ -1297,6 +1330,10 @@ def main(argv=None):
     parser.add_argument("--min-worktree-age-hours", type=float,
                         default=MIN_WORKTREE_AGE_HOURS,
                         help="leave reviewer worktrees newer than this alone")
+    parser.add_argument("--min-loose-file-age-minutes", type=float,
+                        default=MIN_LOOSE_FILE_AGE_MINUTES,
+                        help="leave loose files newer than this alone; a "
+                             "cycle that is still running may read one back")
     parser.add_argument("--dry-run", action="store_true",
                         help="say what would happen and change nothing")
     parser.add_argument("--no-fetch", action="store_true",
@@ -1463,7 +1500,8 @@ def _sweep_remote(roots):
 def _sweep_one(root, args):
     archived, expired, worktrees = tidy(
         root, args.retention_days, dry_run=args.dry_run,
-        min_age_hours=args.min_worktree_age_hours)
+        min_age_hours=args.min_worktree_age_hours,
+        min_loose_file_age_minutes=args.min_loose_file_age_minutes)
 
     owners = getattr(tidy, "last_owners", {})
     for name in worktrees:
