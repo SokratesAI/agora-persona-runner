@@ -74,14 +74,38 @@ claim that is mounted by nothing **and** tracked by no ArgoCD Application
 raises: no workload uses it and no repository would recreate it, so it is
 an object that exists purely by accident and holds a directory on a node's
 disk. That is a closeable finding rather than a standing one.
+
+**And when it does raise, it now names what the disk is made of.** On
+2026-09-05 server1 crossed the margin at 19.9% free, and this check said the
+56.8GiB was 24.3GiB of container images, 0.9GiB of Pod ephemeral storage and
+31.6GiB "neither -- local-path volume contents and whatever the host itself
+stores, which these stats cannot separate". That last clause is true and it is
+not an answer: finding out what those 31.6GiB actually were took five hand-run
+one-off Jobs, and the answer was a 4.1GiB systemd journal sitting at journald's
+own 4GiB default cap, 5.0GiB of build caches in `/root`, and 2.5GiB of this
+loop's own restore-point archives in `/var/lib/nova-attic` for volume moves that
+had already completed. None of that is visible to a kubelet at all, so no amount
+of reading `stats/summary` harder was ever going to produce it.
+
+`read_host_breakdown()` runs a read-only Job on the node and prints those
+directories biggest first, **only on a node that raised.** The condition is the
+point rather than an optimisation: a Job per node is tens of seconds, this check
+runs inside `tools.preflight` every cycle, and on a normal morning it would be
+answering a question nobody asked. The moment it is worth paying for is the
+moment the check is about to say FILLING. A directory absent from the node is
+named as absent rather than reported as zero -- `/home` is empty on a box with
+no human users and missing on another, and those are different facts -- and a
+read that fails prints `NOT READ` and deliberately does not move the verdict,
+since the node has already raised and this is the detail line.
 """
 
 import argparse
 import json
 import subprocess
 import sys
+import time
 
-from tools import oom_history
+from tools import oneoff_job, oom_history
 
 #: The kubelet's own default eviction thresholds, as fractions of capacity
 #: that must remain *available*. These are k3s/kubelet defaults, not a
@@ -361,9 +385,179 @@ def report_unmounted(unmounted, out=print):
         )
     return findings
 
-def report(node, filesystems, volumes, out=print, breakdown=None):
+#: Host directories the kubelet cannot attribute. Container images and each
+#: Pod's ephemeral bytes already have their own line above; everything else on
+#: the disk lands in the `neither` remainder, and until now the only way to see
+#: inside that remainder was to hand-run a Job per node. `/var/lib/rancher/k3s/storage`
+#: is where local-path puts every volume in this cluster, and the rest are the
+#: host's own — the journal, the attic this loop archives volumes into before it
+#: moves them, and the home directories nothing here provisions.
+HOST_DIRS = (
+    "/var/log/journal",
+    "/var/lib/nova-attic",
+    "/var/lib/rancher/k3s/storage",
+    "/root",
+    "/home",
+    "/opt",
+    "/var/cache",
+    "/tmp",
+    "/srv",
+)
+
+#: Long enough for `du` over the local-path storage tree -- the live read on
+#: server1 finished well inside a minute -- and short enough that a node whose
+#: disk is wedged does not hold the sweep open.
+HOST_READ_SECONDS = 90
+
+#: The budget for *all* of this run's host reads together, not per node.
+#: `tools.preflight` kills a check at 240s and calls the result unreadable, so a
+#: per-node timeout multiplies: three nodes raising at once would turn a real
+#: FILLING finding (exit 2) into a hung check (exit 1) at exactly the moment the
+#: finding matters. One shared deadline cannot do that however many nodes raise.
+HOST_READ_BUDGET_SECONDS = 150
+
+
+def host_breakdown_command(dirs=HOST_DIRS, mount="/host"):
+    """The shell the read-only Job runs. Pure, so the parser has a fixed input.
+
+    `du -xsk` and not `-m`: kibibytes are what busybox and GNU agree on, and
+    rounding to whole mebibytes inside the container would throw away the only
+    resolution this has. `-x` keeps it on the node's own filesystem, so a
+    bind-mounted volume is not counted twice.
+    """
+    parts = []
+    for directory in dirs:
+        target = mount + directory
+        parts.append(
+            'printf "%s " "{d}"; du -xsk "{t}" 2>/dev/null | cut -f1 || true; echo'.format(
+                d=directory, t=target
+            )
+        )
+    return "; ".join(parts)
+
+
+def parse_host_breakdown(logs):
+    """`<path> <kibibytes>` lines into `{path: bytes}`, skipping what was absent.
+
+    A directory that does not exist on this node prints its own name and no
+    number. That is not a failure and it is not a zero — `/home` is empty on a
+    box with no human users and missing on another — so it is left out rather
+    than reported as nothing.
+    """
+    sizes = {}
+    for line in (logs or "").splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        path, size = fields
+        if not path.startswith("/") or not size.isdigit():
+            continue
+        sizes[path] = int(size) * 1024
+    return sizes
+
+
+def read_host_breakdown(node, runner=subprocess.run, wait=HOST_READ_SECONDS):
+    """Run the read-only Job on `node` and return `{path: bytes}`.
+
+    Raises `OSError` or `ValueError` if the Job could not be run or said
+    nothing — the caller prints that rather than treating an empty answer as a
+    disk with nothing on it.
+    """
+    manifest = oneoff_job.build_manifest(
+        "disk-host-dirs-" + node,
+        host_breakdown_command(),
+        node=node,
+        hostpath="/",
+        mount_path="/host",
+    )
+    name = manifest["metadata"]["name"]
+    namespace = manifest["metadata"]["namespace"]
+
+    # A previous run of this same node's Job may still be inside its TTL, and
+    # `kubectl apply` cannot change a Job's pod template. Delete first so the
+    # answer is this sweep's, never the last one's.
+    runner(
+        ["kubectl", "delete", "job", name, "-n", namespace, "--ignore-not-found=true"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    applied = runner(
+        ["kubectl", "apply", "-f", "-"],
+        input=json.dumps(manifest),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if applied.returncode != 0:
+        raise OSError((applied.stderr or "").strip() or "kubectl apply failed")
+    runner(
+        [
+            "kubectl",
+            "wait",
+            "--for=condition=complete",
+            "--timeout=%ds" % wait,
+            "job/" + name,
+            "-n",
+            namespace,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=wait + 30,
+    )
+    logs = runner(
+        ["kubectl", "logs", "job/" + name, "-n", namespace, "--tail=100"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    sizes = parse_host_breakdown(logs.stdout)
+    if not sizes:
+        raise ValueError(
+            (logs.stderr or "").strip() or "the Job printed no directory it could measure"
+        )
+    return sizes
+
+
+def budgeted_host_reader(runner=subprocess.run, budget=HOST_READ_BUDGET_SECONDS,
+                         clock=time.monotonic, read=None):
+    """One reader whose whole run shares a single deadline.
+
+    Returns a callable of `node`. The first node to raise may take the whole
+    budget; a later one is refused rather than allowed to push the check past
+    the point where `tools.preflight` stops calling it a check at all.
+    """
+    read = read or read_host_breakdown
+    deadline = clock() + budget
+
+    def reader(node):
+        left = deadline - clock()
+        if left < 10:
+            raise OSError(
+                "the %ds host-directory budget for this run is spent, so this node was not read"
+                % budget
+            )
+        return read(node, runner=runner, wait=int(min(HOST_READ_SECONDS, left)))
+
+    return reader
+
+
+def report_host_breakdown(node, sizes, out=print):
+    """Print what the unattributed remainder is actually made of, biggest first."""
+    for path, size in sorted(sizes.items(), key=lambda kv: -kv[1]):
+        out("  HOST DIR   %s %s — %s" % (node, path, _measured_gib(size)))
+    missing = [d for d in HOST_DIRS if d not in sizes]
+    if missing:
+        out(
+            "  HOST DIR   %s: %d of %d looked-for director(y/ies) do not exist on this node and are not zero: %s"
+            % (node, len(missing), len(HOST_DIRS), ", ".join(missing))
+        )
+
+
+def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=None):
     """Print one node's verdict. Returns the number of findings on it."""
     findings = 0
+    filling = False
     shared = shares_one_filesystem(filesystems)
     for kind in ("nodefs", "imagefs"):
         filesystem = filesystems.get(kind)
@@ -393,6 +587,7 @@ def report(node, filesystems, volumes, out=print, breakdown=None):
         ) + same
         if free < raises_at(kind):
             findings += 1
+            filling = True
             out(
                 "  FILLING    %s — under %.1f%% free, and the kubelet acts at %.1f%%"
                 % (line, raises_at(kind), EVICTION_PCT[kind])
@@ -422,6 +617,25 @@ def report(node, filesystems, volumes, out=print, breakdown=None):
                 "%s, %s neither — local-path volume contents and whatever the host itself stores, which these stats cannot separate. Of %s used."
                 % (head, _measured_gib(breakdown["rest"]), _measured_gib(breakdown["used"]))
             )
+
+    # Only when this node actually raised. Naming the host directories costs a
+    # Job on the node — tens of seconds — and on a normal morning it answers a
+    # question nobody asked, which is the whole reason `preflight` is one call
+    # rather than fifty. The moment it is worth paying for is the moment the
+    # check is about to say FILLING and a cycle has to go and find out what of.
+    if filling and host_reader is not None:
+        try:
+            sizes = host_reader(node)
+        except (OSError, ValueError) as exc:
+            # The node already raised, so the exit status is settled; this is
+            # the detail line, and saying it could not be read is the honest
+            # version of not printing it.
+            out(
+                "  NOT READ   %s host directories — %s. The remainder above stays unattributed."
+                % (node, exc)
+            )
+        else:
+            report_host_breakdown(node, sizes, out=out)
 
     for volume in volumes:
         name = "%s/%s (%s)" % (volume["namespace"], volume["claim"], volume["pod"])
@@ -457,7 +671,7 @@ def report(node, filesystems, volumes, out=print, breakdown=None):
     return findings
 
 
-def main(argv=None, runner=subprocess.run, out=print):
+def main(argv=None, runner=subprocess.run, out=print, host_reader=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--node",
@@ -465,6 +679,9 @@ def main(argv=None, runner=subprocess.run, out=print):
         help="only this node (repeatable); default is every node the API server lists",
     )
     args = parser.parse_args(argv)
+
+    if host_reader is None:
+        host_reader = budgeted_host_reader(runner=runner)
 
     if args.node:
         nodes = list(args.node)
@@ -502,6 +719,7 @@ def main(argv=None, runner=subprocess.run, out=print):
             volumes,
             out=out,
             breakdown=usage_breakdown(summary, filesystems),
+            host_reader=host_reader,
         )
 
     out("== claims no Pod mounts")

@@ -78,9 +78,24 @@ def _runner(nodes=("server1",), summaries=None, node_list_rc=0, claims=(), pods=
     return run
 
 
-def _lines(argv=None, **kwargs):
+def _no_host_read(node):
+    """The host-directory read these tests deliberately do not wire up.
+
+    It is only asked for on a node that raised, and it costs a real Job on that
+    node. Refusing here keeps that cost out of every test that is about the
+    kubelet numbers, and the refusal prints its own line rather than vanishing.
+    """
+    raise OSError("this test did not wire up the host-directory read")
+
+
+def _lines(argv=None, host_reader=_no_host_read, **kwargs):
     printed = []
-    code = disk_health.main(argv or [], runner=_runner(**kwargs), out=printed.append)
+    code = disk_health.main(
+        argv or [],
+        runner=_runner(**kwargs),
+        out=printed.append,
+        host_reader=host_reader,
+    )
     return code, "\n".join(printed)
 
 
@@ -493,3 +508,235 @@ def test_a_real_run_prints_the_breakdown():
     assert len(made) == 1, lines
     assert "10.0GiB of container images" in made[0]
     assert code == 0
+
+
+# --- naming the host directories when a disk fills ------------------------
+#
+# The gap these pin: on 2026-09-05 server1 crossed the threshold and the check
+# said 31.6GiB was "neither" — local-path volumes and whatever the host stores.
+# Finding out what that actually was took five hand-run Jobs. The answer was a
+# 4.1GiB systemd journal, 5.0GiB of build caches in /root and 2.5GiB of this
+# loop's own restore-point archives, and none of it is visible to a kubelet.
+
+
+def _filling_summary():
+    """A node inside the margin above its own eviction threshold."""
+    return _summary(node_available=int(NODE_CAPACITY * 0.12))
+
+
+def test_the_command_measures_every_named_directory_under_the_mount():
+    command = disk_health.host_breakdown_command(("/var/log/journal", "/root"), mount="/host")
+    assert '"/host/var/log/journal"' in command
+    assert '"/host/root"' in command
+    # The label printed is the host's path, not the mount's -- a reader of the
+    # output cares where it is on the node, not where this Job mounted it, and
+    # /host/root is not a directory that exists on server1.
+    assert 'printf "%s " "/root"' in command
+    assert 'printf "%s " "/host/root"' not in command
+    assert "du -xsk" in command
+
+
+def test_a_directory_that_does_not_exist_is_left_out_rather_than_read_as_zero():
+    sizes = disk_health.parse_host_breakdown(
+        "/var/log/journal 4179968\n/home \n/root 5079040\n"
+    )
+    assert sizes == {"/var/log/journal": 4179968 * 1024, "/root": 5079040 * 1024}
+    assert "/home" not in sizes
+
+
+def test_the_parser_ignores_anything_that_is_not_a_path_and_a_number():
+    sizes = disk_health.parse_host_breakdown(
+        "du: /host/opt: Permission denied\nnot a path 12\n/srv 4\n"
+    )
+    assert sizes == {"/srv": 4 * 1024}
+
+
+def test_a_node_with_room_never_pays_for_the_host_read():
+    # The whole reason this is conditional. `preflight` runs every cycle and a
+    # Job per node is tens of seconds; a normal morning must not buy it.
+    calls = []
+    findings = disk_health.report(
+        "server1",
+        disk_health.node_filesystems(_summary()),
+        [],
+        out=lambda line: None,
+        host_reader=calls.append,
+    )
+    assert calls == []
+    assert findings == 0
+
+
+def test_a_filling_node_names_the_host_directories_biggest_first():
+    lines = []
+    findings = disk_health.report(
+        "server1",
+        disk_health.node_filesystems(_filling_summary()),
+        [],
+        out=lines.append,
+        host_reader=lambda node: {
+            "/root": 5 * GIB,
+            "/var/log/journal": 4 * GIB,
+            "/var/lib/nova-attic": 2 * GIB,
+        },
+    )
+    assert findings > 0
+    host = [line for line in lines if "HOST DIR" in line and "GiB" in line]
+    assert [line.split()[3] for line in host] == [
+        "/root",
+        "/var/log/journal",
+        "/var/lib/nova-attic",
+    ]
+    assert "5.0GiB" in host[0]
+
+
+def test_the_host_reader_is_asked_about_the_node_that_raised():
+    asked = []
+    disk_health.report(
+        "server2",
+        disk_health.node_filesystems(_filling_summary()),
+        [],
+        out=lambda line: None,
+        host_reader=lambda node: asked.append(node) or {"/root": GIB},
+    )
+    assert asked == ["server2"]
+
+
+def test_directories_absent_on_this_node_are_named_rather_than_dropped():
+    lines = []
+    disk_health.report(
+        "server1",
+        disk_health.node_filesystems(_filling_summary()),
+        [],
+        out=lines.append,
+        host_reader=lambda node: {"/root": GIB},
+    )
+    missing = [line for line in lines if "do not exist on this node" in line]
+    assert len(missing) == 1
+    assert "/var/log/journal" in missing[0]
+
+
+def test_a_host_read_that_fails_says_so_and_does_not_change_the_verdict():
+    lines = []
+    findings = disk_health.report(
+        "server1",
+        disk_health.node_filesystems(_filling_summary()),
+        [],
+        out=lines.append,
+        host_reader=_raise(OSError("the test namespace refused the Job")),
+    )
+    not_read = [line for line in lines if "host directories" in line]
+    assert len(not_read) == 1
+    assert "the test namespace refused the Job" in not_read[0]
+    # A detail line that could not be read must not move the verdict either way.
+    # The same node with no host_reader at all is the control.
+    without = disk_health.report(
+        "server1",
+        disk_health.node_filesystems(_filling_summary()),
+        [],
+        out=lambda line: None,
+    )
+    assert findings == without
+
+
+def _raise(exc):
+    def reader(node):
+        raise exc
+
+    return reader
+
+
+class _FakeKubectl:
+    """Records every kubectl call and answers the log read with `logs`."""
+
+    def __init__(self, logs="", apply_returncode=0):
+        self.calls = []
+        self.applied = None
+        self.logs = logs
+        self.apply_returncode = apply_returncode
+
+    def __call__(self, args, **kwargs):
+        self.calls.append(args)
+        stdout, returncode = "", 0
+        if args[:2] == ["kubectl", "apply"]:
+            returncode = self.apply_returncode
+            self.applied = kwargs.get("input")
+        if args[:2] == ["kubectl", "logs"]:
+            stdout = self.logs
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr="boom")
+
+
+def test_the_job_is_deleted_before_it_is_applied():
+    # A Job of the same name may still be inside its TTL from the last sweep,
+    # and `kubectl apply` cannot change a Job's pod template -- without the
+    # delete this would read the previous run's answer as this one's.
+    kubectl = _FakeKubectl(logs="/root 1024\n")
+    disk_health.read_host_breakdown("server1", runner=kubectl, wait=5)
+    verbs = [args[1] for args in kubectl.calls]
+    assert verbs == ["delete", "apply", "wait", "logs"]
+    assert "--ignore-not-found=true" in kubectl.calls[0]
+
+
+def test_the_job_is_pinned_to_the_node_that_raised():
+    kubectl = _FakeKubectl(logs="/root 1024\n")
+    disk_health.read_host_breakdown("server2", runner=kubectl, wait=5)
+    manifest = json.loads(kubectl.applied)
+    spec = manifest["spec"]["template"]["spec"]
+    assert spec["nodeSelector"] == {"kubernetes.io/hostname": "server2"}
+    assert spec["volumes"][0]["hostPath"]["path"] == "/"
+    assert spec["containers"][0]["volumeMounts"][0]["readOnly"] is True
+
+
+def test_a_refused_apply_is_an_error_rather_than_an_empty_disk():
+    kubectl = _FakeKubectl(logs="/root 1024\n", apply_returncode=1)
+    try:
+        disk_health.read_host_breakdown("server1", runner=kubectl, wait=5)
+    except OSError as exc:
+        assert "boom" in str(exc)
+    else:
+        raise AssertionError("a refused apply must not read as a node with nothing on it")
+
+
+def test_a_job_that_printed_nothing_is_an_error():
+    kubectl = _FakeKubectl(logs="du: cannot read\n")
+    try:
+        disk_health.read_host_breakdown("server1", runner=kubectl, wait=5)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("no measurable directory must not read as a clean node")
+
+
+# `tools.preflight` kills a check at 240s and reports it unreadable. A per-node
+# timeout multiplies, so three nodes raising at once would have turned a real
+# FILLING finding into a hung check at exactly the moment the finding matters.
+
+
+def test_the_host_read_budget_is_shared_across_nodes_not_per_node():
+    waits = []
+    ticks = iter([0.0, 0.0, 100.0, 149.5])
+
+    def read(node, runner=None, wait=None):
+        waits.append(wait)
+        return {"/root": GIB}
+
+    reader = disk_health.budgeted_host_reader(
+        budget=150, clock=lambda: next(ticks), read=read
+    )
+    reader("server1")
+    reader("server2")
+    try:
+        reader("server3")
+    except OSError as exc:
+        assert "budget for this run is spent" in str(exc)
+    else:
+        raise AssertionError("the third node must not push the check past preflight's limit")
+    # 150s left on the first node is capped by the per-read ceiling; 50s left on
+    # the second is not, and that is the whole point of taking the minimum.
+    assert waits == [disk_health.HOST_READ_SECONDS, 50]
+
+
+def test_the_budget_leaves_room_for_the_rest_of_the_check_inside_preflight():
+    from tools import preflight
+
+    assert disk_health.HOST_READ_BUDGET_SECONDS < preflight.TIMEOUT_SECONDS
+    assert disk_health.HOST_READ_SECONDS <= disk_health.HOST_READ_BUDGET_SECONDS
