@@ -40,7 +40,7 @@ correction is already going** -- rounding up when slowing down, down when
 speeding up -- because rounding the other way lands back inside the
 failure the move was made to fix.
 
-Four guards, each with a reason rather than a round number:
+Five guards, each with a reason rather than a round number:
 
   * **A floor of 15 minutes.** Below the median cycle length (~18m,
     measured over 320 cycles for `prompt.md` step 1b) every wake-up starts
@@ -53,6 +53,23 @@ Four guards, each with a reason rather than a round number:
     3 minutes, whichever is larger) is inside the noise of a burn rate
     measured over 24h, and PATCHing for it re-anchors the schedule for
     nothing.
+  * **The second budget.** This tool spends more than the Claude window.
+    Every cycle it adds opens pull requests, and a private-repo pull request
+    bills two whole Actions minutes -- one on the request, one on the commit
+    it merges into. Measured 2026-09-05, at the 15-minute cadence this tool
+    had itself set: 396 of the 2,000 included private minutes gone with 4.6
+    of 30 days elapsed, projecting 2,582, and `ci_health`'s own origin line
+    reads *"8 of 10 sampled pull-request run(s) are on this loop's own nova/
+    branches ... the lever is this loop's own cadence"*. So the controller
+    that pulls that lever was optimising one budget while spending a second
+    one it had never read. It now asks `ci_minutes.allowance_pressure()`
+    and **refuses to shorten the interval while the Actions allowance is
+    over or heading over** -- slowing down is still allowed in that state,
+    because it helps both budgets, and an unreadable allowance blocks a
+    speed-up too, since a check that could not run must never read as one
+    that came back clean. It holds rather than raising: `ci_minutes` already
+    exits 2 on that fact and two red lines for one fact is one nobody reads.
+
   * **The anti-thrash guard, which is the one that matters.** A cadence
     change does not show up in the burn rate until the trailing sample has
     rolled over, so the *set* interval and the interval the rate was
@@ -80,6 +97,7 @@ import json
 import os
 import sys
 
+from tools import ci_minutes
 from tools.quota_runway import (
     HISTORY,
     SNAPSHOT,
@@ -130,7 +148,7 @@ def deadband_for(current_minutes):
     return max(DEADBAND_MINUTES, current_minutes * DEADBAND_FRACTION)
 
 
-def decide(current_minutes, needed_minutes, spend_minutes=None):
+def decide(current_minutes, needed_minutes, spend_minutes=None, ci_block=None):
     """`(action, minutes, reason)` -- pure, so the policy is testable off a live window.
 
     `action` is one of `"hold"`, `"move"`, `"floor"`, `"ceiling"`.
@@ -142,6 +160,11 @@ def decide(current_minutes, needed_minutes, spend_minutes=None):
     disagrees with `current_minutes` by more than the deadband, a schedule
     change is still washing through the sample and this holds -- see the
     anti-thrash guard in the module docstring.
+
+    `ci_block` is a sentence saying why the Actions-minute allowance cannot
+    afford more cycles, or `None` when it can. It only ever blocks a move
+    that would make the loop *faster*; a slow-down helps both budgets and is
+    never held for it. See the second-budget guard in the module docstring.
     """
     band = deadband_for(current_minutes)
 
@@ -153,10 +176,20 @@ def decide(current_minutes, needed_minutes, spend_minutes=None):
                 f"from a rate that has not caught up yet")
 
     if needed_minutes < FLOOR_MINUTES:
+        if ci_block and FLOOR_MINUTES < current_minutes:
+            return ("hold", current_minutes,
+                    f"the window would take {needed_minutes:.0f} minutes to spend fully, "
+                    f"but the loop is not being sped up: {ci_block}")
+        # Still raised when the clamp is not a speed-up, because unspent
+        # quota is a real finding. What the allowance changes is the
+        # sentence: without it this reads as an unqualified invitation to
+        # lower the floor and run more cycles, which is the thing the
+        # Actions bill cannot currently afford.
+        cost = f" -- and {ci_block}" if ci_block else ""
         return ("floor", FLOOR_MINUTES,
                 f"the window would take {needed_minutes:.0f} minutes to spend fully, "
                 f"which is below the {FLOOR_MINUTES}-minute floor -- there is quota "
-                f"here that this tool may not spend on its own")
+                f"here that this tool may not spend on its own{cost}")
 
     if needed_minutes > CEILING_MINUTES:
         return ("ceiling", CEILING_MINUTES,
@@ -174,6 +207,11 @@ def decide(current_minutes, needed_minutes, spend_minutes=None):
                 f"{needed_minutes:.0f} minutes wanted, nearest legal interval "
                 f"{target} against {current_minutes:.0f} now -- inside the "
                 f"{band:.0f}-minute deadband")
+
+    if ci_block and target < current_minutes:
+        return ("hold", current_minutes,
+                f"{needed_minutes:.0f} minutes wanted and {target} is the nearest legal "
+                f"interval, but the loop is not being sped up: {ci_block}")
 
     direction = "slower" if target > current_minutes else "faster"
     return ("move", target,
@@ -299,7 +337,15 @@ def main_argv(argv=None):
     remaining_pct = window.get("remaining_pct")
     needed = _needed_cadence(remaining_pct, hours_to_reset, pct_per_day,
                              spend_minutes or current_minutes)
-    action, minutes, reason = decide(current_minutes, needed, spend_minutes)
+    # Only asked for when a speed-up is on the table, so an ordinary hold
+    # does not pay for two GitHub calls every cycle.
+    ci_block = None
+    if needed < current_minutes:
+        blocked, why = ci_minutes.allowance_pressure()
+        if blocked:
+            ci_block = why
+
+    action, minutes, reason = decide(current_minutes, needed, spend_minutes, ci_block)
 
     print(f"{remaining_pct:.0f}% of the seven-day window left, {hours_to_reset:.1f}h to "
           f"the reset, burning {pct_per_day:.1f}%/day at {spend_minutes or current_minutes:.0f} "

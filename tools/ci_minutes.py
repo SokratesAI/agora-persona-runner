@@ -146,6 +146,70 @@ def month_progress(now):
     return elapsed, float(days_in_month)
 
 
+def projected_overrun(used, allowance, elapsed_days, days_in_month, net=0.0,
+                      min_days=MIN_DAYS_FOR_PROJECTION):
+    """`(kind, reason)` -- is the private-minute allowance past, or heading past, its ceiling?
+
+    `kind` is `"charged"` (GitHub has already billed for it), `"spent"` (the
+    allowance is gone but nothing is owed yet), `"projected"` (the run rate
+    lands past the allowance before the month ends) or `None` (nothing to
+    act on). The three raising kinds are exactly the three `main` prints
+    below, and they live here rather than inline because `tools.cadence_control`
+    has to ask the same question before it speeds this loop up -- a second
+    copy of the arithmetic is the duplication `prompt.md` step 2 says to
+    stop building.
+    """
+    remaining_days = days_in_month - elapsed_days
+    if net > 0:
+        return ("charged",
+                f"GitHub has charged ${net:.2f} for Actions minutes this month "
+                f"-- the allowance is spent")
+    if used > allowance:
+        return ("spent",
+                f"{used:.0f} minutes is past the {allowance}-minute allowance")
+    if elapsed_days < min_days:
+        return (None,
+                f"{used / max(elapsed_days, 1e-9):.0f} minute(s)/day with only "
+                f"{elapsed_days:.1f} day(s) behind it -- below the {min_days:g}-day "
+                f"floor, so it is not judged")
+    rate = used / elapsed_days
+    projected = used + rate * remaining_days
+    if projected > allowance:
+        headroom = allowance - used
+        days_left = headroom / rate if rate > 0 else float("inf")
+        return ("projected",
+                f"{rate:.0f} minute(s)/day projects to {projected:.0f} against the "
+                f"{allowance}-minute allowance, and the remaining {headroom:.0f} "
+                f"minute(s) last {days_left:.1f} more day(s) of the "
+                f"{remaining_days:.1f} left in the month")
+    return (None,
+            f"{rate:.0f} minute(s)/day projects to {projected:.0f}, inside the "
+            f"{allowance}-minute allowance")
+
+
+def allowance_pressure(org=ORG, allowance=FREE_PLAN_MINUTES, now=None, gh=None):
+    """`(blocked, reason)` -- may this loop be made *faster* against the Actions bill?
+
+    `blocked` is True when the allowance is over or heading over, and also
+    when the usage could not be read at all. Unreadable blocks on purpose:
+    the caller is about to spend a budget, and `prompt.md` is explicit that
+    a check that could not run must never read as one that came back clean.
+    Refusing here costs nothing but the status quo -- the cadence simply
+    does not move -- while the other direction spends money nobody measured.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        items = fetch_usage(org, now.year, now.month, gh=gh)
+        visibility = fetch_visibility(org, gh=gh)
+    except RuntimeError as exc:
+        return (True, f"the Actions allowance could not be read ({exc})")
+    private, _public, _unknown, net = split_minutes(items, visibility)
+    used = sum(private.values())
+    elapsed, days_in_month = month_progress(now)
+    kind, reason = projected_overrun(used, allowance, elapsed, days_in_month, net)
+    return (kind is not None, reason)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--org", default=ORG)
@@ -180,10 +244,15 @@ def main(argv=None):
 
     status = 0
 
-    if net > 0:
+    # The rule itself lives in `projected_overrun` above, because
+    # `tools.cadence_control` asks the same question before it makes this
+    # loop run more often. What stays here is the wording.
+    kind, verdict = projected_overrun(used, args.allowance, elapsed, days_in_month, net,
+                                      args.min_days)
+    if kind == "charged":
         print(f"ACT  GitHub has charged ${net:.2f} for Actions minutes this month -- the allowance is spent.")
         status = 2
-    elif used > args.allowance:
+    elif kind == "spent":
         print(f"ACT  {used:.0f} minutes is past the {args.allowance}-minute allowance.")
         status = 2
 
@@ -196,7 +265,7 @@ def main(argv=None):
         rate = used / elapsed
         projected = used + rate * remaining_days
         print(f"Run rate {rate:.0f} minute(s)/day projects to {projected:.0f} by month end.")
-        if projected > args.allowance and status == 0:
+        if kind == "projected":
             headroom = args.allowance - used
             days_left = headroom / rate if rate > 0 else float("inf")
             print(

@@ -22,6 +22,7 @@ than reasoned about:
 
 import pytest
 
+from tools import ci_minutes
 from tools import cadence_control as cc
 
 
@@ -101,3 +102,75 @@ def test_clamps_at_the_ceiling_and_says_so():
 def test_rewrite_schedule_keeps_the_anchor(schedule, minutes, expected):
     """Dropping the anchor would re-phase the loop on every adjustment."""
     assert cc.rewrite_schedule(schedule, minutes) == expected
+
+
+# --- the second budget: the Actions-minute allowance ------------------------
+# Cycle 977. This controller sets the interval that decides how many pull
+# requests this loop opens, and a private-repo pull request bills two whole
+# Actions minutes. Until now it read the Claude window only, so it could
+# speed the loop up into an allowance that was already projected to overrun.
+
+CI_BLOCK = "88 minute(s)/day projects to 2582 against the 2000-minute allowance"
+
+
+def test_speed_up_is_held_while_the_actions_allowance_is_over():
+    action, minutes, reason = cc.decide(60, 20, ci_block=CI_BLOCK)
+    assert action == "hold", (action, reason)
+    assert minutes == 60
+    assert CI_BLOCK in reason
+
+
+def test_the_same_speed_up_is_taken_when_the_allowance_is_clear():
+    action, minutes, _ = cc.decide(60, 20, ci_block=None)
+    assert action == "move"
+    assert minutes < 60
+
+
+def test_slowing_down_is_never_held_for_the_actions_allowance():
+    # A longer interval opens fewer pull requests, so it helps both budgets.
+    action, minutes, _ = cc.decide(20, 60, ci_block=CI_BLOCK)
+    assert action == "move"
+    assert minutes > 20
+
+
+def test_the_floor_clamp_is_a_speed_up_and_is_held_too():
+    # `needed` below the floor asks to run faster than 15 minutes; from 30
+    # the clamp itself would still shorten the interval, so it is blocked.
+    action, minutes, reason = cc.decide(30, 4, ci_block=CI_BLOCK)
+    assert action == "hold", (action, reason)
+    assert minutes == 30
+    assert CI_BLOCK in reason
+
+
+def test_the_floor_still_reports_when_already_at_the_floor():
+    # At 15 minutes the clamp is not a speed-up, so the allowance cannot
+    # block anything and the tool still tells a cycle the window has
+    # unspent quota -- but it says what that quota would cost, because the
+    # bare sentence reads as an invitation to lower the floor.
+    action, minutes, reason = cc.decide(15, 4, ci_block=CI_BLOCK)
+    assert action == "floor"
+    assert minutes == cc.FLOOR_MINUTES
+    assert CI_BLOCK in reason, reason
+
+
+def test_the_floor_says_nothing_about_ci_when_the_allowance_is_clear():
+    _action, _minutes, reason = cc.decide(15, 4, ci_block=None)
+    assert "allowance" not in reason, reason
+
+
+def test_deadband_still_wins_over_the_ci_block():
+    # 48 is the legal interval below 45+3, and it is 3 minutes from 48-now,
+    # inside that interval's own 4.8-minute band. The allowance never gets
+    # asked, because there is no move to block.
+    action, _minutes, reason = cc.decide(48, 47, ci_block=CI_BLOCK)
+    assert action == "hold"
+    assert "deadband" in reason, reason
+
+
+def test_an_unreadable_allowance_blocks_a_speed_up():
+    def gh_that_fails(*_a, **_k):
+        raise RuntimeError("gh api: 502")
+
+    blocked, why = ci_minutes.allowance_pressure(gh=gh_that_fails)
+    assert blocked is True
+    assert "could not be read" in why
