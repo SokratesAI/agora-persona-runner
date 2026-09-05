@@ -37,7 +37,11 @@ bounded document**, and nothing here had ever compared the two.
 **What it judges, and what it does not.** For each live/archive pair it
 reports three things: captures stranded above the `## Entries` marker, a
 `RollError` the roller would raise if it were run today, and whether a roll is
-owed. Any of the three exits 2. What it deliberately does not judge is the
+owed. Stranded captures and a refusal always exit 2; **an owed roll exits 2
+only when the section it would trim has outgrown the size `KEEP` stands in
+for** -- otherwise it prints under `STEADY STATE` and does not raise, because
+a cycle writes captures into these files every hour and the count is back over
+`KEEP` within one. See `steady`. What it deliberately does not judge is the
 *tail* -- everything below the section, which is `## Retired`, `## Board` and
 `# Details`. Those hold bullets legitimately, so a capture appended at the end
 of the file lands somewhere this check cannot tell from ordinary content, and
@@ -46,8 +50,8 @@ one. That limit is printed on every run rather than left here, because a check
 that exits 0 over a surface it never read has to say so on the run, not in its
 source.
 
-Exit 0 when both pairs are reachable and neither owes a roll. Exit 2 when
-there is something to act on. Exit 1 when a document could not be read -- a
+Exit 0 when both pairs are reachable and neither owes a roll worth running.
+Exit 2 when there is something to act on. Exit 1 when a document could not be read -- a
 check that could not run must never read as a check that came back clean.
 """
 
@@ -76,6 +80,12 @@ PAIRS = (
     (BASE + "issues.md", BASE + "issues-archive.md"),
     (BASE + "ideas.md", BASE + "ideas-archive.md"),
 )
+
+#: The size at which the harness replaces a tool result with a ~2KB preview.
+#: This is not a number chosen here: it is the one `roll_captures.KEEP` was
+#: itself sized against, named twice in this module's docstring above, and it
+#: is what the capture roll exists to keep the `## Entries` section under.
+SECTION_CEILING = 65_000
 
 
 def stranded_bullets(live):
@@ -177,7 +187,47 @@ def weight(live, archive):
         moved = len(live) - len(new_live)
     except RollError:
         moved = None
-    return {"moved": moved, "writeups": writeups(live)}
+    return {"moved": moved, "writeups": writeups(live),
+            "section": len(_body(live, roll_captures.spec_for(live))[1])}
+
+
+def steady(weights):
+    """Is an owed roll the loop's own steady state rather than a backlog?
+
+    **The defect this closes: `owed` was true on every run, forever.**
+    Measured Cycle 1009, twenty minutes after a cycle rolled both capture
+    files to zero owed -- two captures had been appended and both files were
+    one over `roll_captures.KEEP` again, so the roll the report named moved
+    306 bytes of 112,939 on `issues.md` and 807 of 51,983 on `ideas.md`. A
+    check that is red on day one and forever is the same as one that is off,
+    which is why `security_alerts`, `agentic_health` and `argocd_health` each
+    carry a bucket that prints and does not raise. This is that bucket.
+
+    **The line is `SECTION_CEILING` against the capture section, and both
+    halves of that are derived rather than picked.** The subject is the `##
+    Entries` section, because that is the only thing `roll_captures` moves --
+    a rule on the whole file would leave `issues.md` red whatever anybody
+    did, since 67,359 of its 113,462 bytes are `# Details` write-up bodies no
+    roller touches. The threshold is the preview size `KEEP` was sized
+    against, already named in this module's docstring; `KEEP` is a count
+    standing in for it, and a count cannot tell 60 one-line captures from 60
+    paragraphs.
+
+    So this raises exactly when the bound has stopped working -- the roller
+    is not being run, or captures have grown until 60 of them no longer fit
+    -- and stays quiet when the section is inside the size the bound exists
+    to hold. It reproduces both judgements already in this file's history:
+    2026-09-01, 62 captures over 32KB and "correctly bounded", would not have
+    raised, and the finding that mattered that morning was the 94 stranded
+    captures, which raise unconditionally and still do; Cycle 1009's
+    `issues.md`, owed a 78-capture roll of 42,092 bytes on top of a 24,685-byte
+    section, would have.
+
+    `None` for `section` is not steady: a missing measurement must never buy
+    silence.
+    """
+    section = weights.get("section")
+    return section is not None and section <= SECTION_CEILING
 
 
 def inspect(live, archive):
@@ -217,10 +267,14 @@ def _fetch(path):
 
 
 def check(pairs=PAIRS, fetch=_fetch):
-    """`(findings, unreadable, clean)` -- three lists, in report order.
+    """`(findings, unreadable, clean, held)` -- four lists, in report order.
 
     A `findings` entry is `(live path, archive path, bytes, stranded,
-    refusal, owed, weight)`; a `clean` entry is `(live path, bytes, weight)`.
+    refusal, owed, weight)`; `clean` and `held` entries are `(live path,
+    bytes, weight)`. `held` is a pair whose *only* problem is an owed roll
+    that `steady` reads as this loop's own writing rather than a backlog --
+    it prints and does not raise. A pair that is also stranded or refused
+    stays a finding, and its owed line and remedy print with the rest.
     The archive path rides along because `report` prints the remedy command
     and that command names both halves of the pair; looking it up from the
     module-level `PAIRS` instead would have been wrong for exactly the
@@ -229,7 +283,7 @@ def check(pairs=PAIRS, fetch=_fetch):
     Taking `fetch` as an argument is what lets the tests run without a vault
     client; nothing else passes it.
     """
-    findings, unreadable, clean = [], [], []
+    findings, unreadable, clean, held = [], [], [], []
     for live_path, archive_path in pairs:
         live = fetch(live_path)
         archive = fetch(archive_path)
@@ -237,12 +291,15 @@ def check(pairs=PAIRS, fetch=_fetch):
             unreadable.append(live_path if live is None else archive_path)
             continue
         stranded, refusal, owed = inspect(live, archive)
-        if stranded or refusal or owed:
+        weights = weight(live, archive)
+        if owed and not stranded and not refusal and steady(weights):
+            held.append((live_path, len(live), weights))
+        elif stranded or refusal or owed:
             findings.append((live_path, archive_path, len(live), stranded,
-                             refusal, owed, weight(live, archive)))
+                             refusal, owed, weights))
         else:
-            clean.append((live_path, len(live), weight(live, archive)))
-    return findings, unreadable, clean
+            clean.append((live_path, len(live), weights))
+    return findings, unreadable, clean, held
 
 
 def _report_weight(size, weights, out):
@@ -339,8 +396,15 @@ def remedy(path, archive, refusal):
     return lines
 
 
-def report(findings, unreadable, clean, out=sys.stdout):
-    """Print the finding, and return the exit code it deserves."""
+def report(findings, unreadable, clean, held=(), out=sys.stdout):
+    """Print the finding, and return the exit code it deserves.
+
+    `held` is the non-raising bucket -- pairs that owe a roll the loop's own
+    writing re-owes within the hour. It prints in full and deliberately
+    without the remedy block: the block is what makes a finding actionable,
+    and handing one to a cycle for a roll that moves 614 of 113,462 bytes is
+    how a check teaches cycles to paste past it. See `steady`.
+    """
     for path, archive, size, stranded, refusal, owed, weights in findings:
         print(f"UNROLLABLE — {path} ({size:,} bytes)", file=out)
         if stranded:
@@ -365,6 +429,16 @@ def report(findings, unreadable, clean, out=sys.stdout):
         if refusal or owed:
             for line in remedy(path, archive, refusal):
                 print(line, file=out)
+    for path, size, weights in held:
+        print(f"STEADY STATE — {path} ({size:,} bytes)", file=out)
+        print("    A roll is owed and it is not a finding: the '## Entries' "
+              f"section is {weights['section']:,} bytes, inside the "
+              f"{SECTION_CEILING:,} that roll_captures.KEEP "
+              f"({roll_captures.KEEP}) exists to hold.", file=out)
+        print("    Captures are appended every cycle, so the count goes back "
+              "over KEEP within the hour; rolling here buys nothing and no "
+              "command is printed for it.", file=out)
+        _report_weight(size, weights, out)
     for path in unreadable:
         print(f"COULD NOT READ — {path}", file=out)
     tail_note = ("    Not judged: captures below the section — '## Retired', "
@@ -373,15 +447,18 @@ def report(findings, unreadable, clean, out=sys.stdout):
                  "them here.")
     if findings:
         print(f"{len(findings)} capture file(s) need a hand. "
-              f"Swept {len(findings) + len(clean) + len(unreadable)}.", file=out)
+              f"Swept {len(findings) + len(clean) + len(unreadable) + len(held)}"
+              f"; {len(held)} owe a roll that is steady state, not a finding.",
+              file=out)
         print(tail_note, file=out)
         return 2
     if unreadable:
         print(f"Could not read {len(unreadable)} document(s) — that is no "
               "instrument, not no roll owed.", file=out)
         return 1
-    swept = ", ".join(f"{p} ({n:,} bytes)" for p, n, _ in clean)
-    print(f"Every pair is reachable and no roll is owed: {swept}", file=out)
+    if clean:
+        swept = ", ".join(f"{p} ({n:,} bytes)" for p, n, _ in clean)
+        print(f"Every pair is reachable and needs no hand: {swept}", file=out)
     # **A clean pair gets the decomposition too, and leaving it off made the
     # answer disappear the moment it was acted on.** Cycle 815 shipped this
     # under findings only, ran the roll it named, and watched a 120,992-byte
@@ -398,8 +475,10 @@ def report(findings, unreadable, clean, out=sys.stdout):
     # and this is the whole of what a cycle reads. Putting the write-up
     # weight here is the same fix `argocd_health` needed: exiting 0 for a
     # good reason is not the same as having nothing to say.
-    marks = [w["writeups"] for _, _, w in clean if w.get("writeups")]
-    print(f"Rollable. Swept {len(clean)} capture file(s); "
+    marks = [w["writeups"] for _, _, w in list(clean) + list(held)
+             if w.get("writeups")]
+    print(f"Rollable. Swept {len(clean) + len(held)} capture file(s), "
+          f"{len(held)} owing a steady-state roll; "
           f"{sum(m['bytes'] for m in marks):,} bytes of them are '# Details' "
           f"write-ups no roller moves, {sum(m['done_count'] for m in marks)} "
           f"of {sum(m['count'] for m in marks)} on a done row.", file=out)
