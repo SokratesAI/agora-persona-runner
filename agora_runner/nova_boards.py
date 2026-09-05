@@ -330,6 +330,44 @@ def _table_rows(body):
     return rows
 
 
+#: A bullet that opens with the word DONE. Deliberately looser than
+#: `_CAPTURE_DONE_RE`: it is the *intent* to mark a capture closed, whether
+#: or not the marker parsed.
+_CAPTURE_DONE_INTENT_RE = re.compile(r"^DONE\b", re.IGNORECASE)
+
+
+def near_miss_done_marker(bullet):
+    """Did a cycle try to close this capture and write a marker that misses?
+
+    `_CAPTURE_DONE_RE` requires the colon immediately after the closing
+    paren -- `DONE (Cycle 964): ` and nothing between. That strictness is
+    correct and is not what this changes: the text after the marker is the
+    owner's sentence verbatim, so anything the marker is allowed to
+    swallow is a word of his that a later reader attributes to him.
+
+    The cost of the strictness is that a near miss is *silent*. Measured
+    2026-09-05 across both of his boards: 131 capture bullets carry a DONE
+    marker, 130 of them parse, and the one that does not is Cycle 964's
+    `DONE (Cycle 964) for the first half: ...` -- five words of report
+    wedged between the paren and the colon. `split_capture_done` returned
+    `("", bullet)` for it, so `unboarded_captures` kept it, and
+    `top_board_rows` printed a finished item at the very top of the
+    ranking under *"these outrank every row below. Take one"* for a day.
+    That is issue #88's failure exactly: a section that is partly noise
+    trains the next cycle to skip the section.
+
+    So this is not a looser marker. It is the one bit of information the
+    strict marker throws away -- *somebody meant this to be closed* -- kept
+    so a reader can say so instead of ranking the bullet as unstarted work.
+    A capture of his own never begins with the word DONE; a bullet that
+    does and does not parse was typed by a cycle, every time.
+    """
+    stripped = (bullet or "").strip()
+    if not _CAPTURE_DONE_INTENT_RE.match(stripped):
+        return False
+    return not split_capture_done(stripped)[0]
+
+
 def split_capture_priority(bullet):
     """`🟠 High: text` -> `("🟠 High", "text")`. Unrated -> `("", bullet)`.
 
