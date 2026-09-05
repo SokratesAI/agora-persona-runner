@@ -2630,8 +2630,10 @@ def _trim_after_rebuild():
     there is no interval guard here: a throttle would be a number I had
     not measured a danger for.
 
-    It runs on the refresh thread, never on the request path, and it is
-    silent when there is no glibc to ask -- a musl image must not crash a
+    It runs wherever `_refresh` does -- the background thread on every
+    warm rebuild, and once on the request path for the first build of a
+    process, which already pays 3.0-3.5s for the build itself. It is
+    silent when there is no glibc to ask: a musl image must not crash a
     cache refresh over a memory optimisation.
     """
     try:
