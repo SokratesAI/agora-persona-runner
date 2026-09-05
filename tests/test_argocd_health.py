@@ -457,3 +457,78 @@ def test_two_unexplained_applications_are_both_named():
     kept = [l for l in lines if "no immediate child this check can name" in l]
     assert len(kept) == 1
     assert "infra" in kept[0] and "other" in kept[0]
+
+
+# --- the remedy for a SealedSecret blocked on a Secret it does not own ----
+#
+# Both messages below are verbatim strings the sealed-secrets controller
+# writes, not strings built out of the matcher. The first is what
+# `argocd/scm-generator-github-token`, `crossplane-system/github-creds`,
+# `infra/repo-read-token` and `platform-catalog/github-app-creds` all carried
+# on 2026-09-05, read off the live cluster. The second is the controller's
+# wrong-key failure, which is a different problem with a different fix.
+
+_UNOWNED = ('failed update: Resource "repo-read-token" already exists and '
+            "is not managed by SealedSecret")
+_WRONG_KEY = ("no key could decrypt secret (token)")
+
+
+def test_a_secret_the_controller_does_not_own_names_the_command_that_fixes_it():
+    lines, status = report_for(
+        [app("infra", health="Degraded", sealed=[("infra", "repo-read-token")])],
+        [],
+        [sealed_secret("repo-read-token", synced="False", message=_UNOWNED)],
+    )
+    assert status == 2
+    assert any("kubectl annotate secret -n infra repo-read-token "
+               "sealedsecrets.bitnami.com/managed=true" in l for l in lines)
+    assert any("no pull request fixes this" in l for l in lines)
+
+
+def test_the_remedy_says_it_overwrites_the_live_secret():
+    # Without this the line reads as a chore. It is a credential overwrite
+    # nobody here can check first, which is why it is handed over rather
+    # than done.
+    lines, _ = report_for(
+        [app("infra", health="Degraded", sealed=[("infra", "repo-read-token")])],
+        [],
+        [sealed_secret("repo-read-token", synced="False", message=_UNOWNED)],
+    )
+    assert any("overwrites the live Secret" in l and "owner's call" in l
+               for l in lines)
+
+
+def test_a_different_sealed_secret_failure_gets_no_remedy():
+    # The control. A remedy printed beside a message it does not fit would
+    # send a cycle to annotate a Secret whose problem is a decryption key.
+    lines, status = report_for(
+        [app("infra", health="Degraded", sealed=[("infra", "repo-read-token")])],
+        [],
+        [sealed_secret("repo-read-token", synced="False", message=_WRONG_KEY)],
+    )
+    assert status == 2
+    # The failure itself is still named — only the remedy is withheld.
+    assert any("SealedSecret infra/repo-read-token is not healthy" in l
+               and _WRONG_KEY in l for l in lines)
+    assert not any("kubectl annotate" in l for l in lines)
+
+
+def test_the_remedy_names_the_namespace_and_secret_it_was_given():
+    # A hardcoded example command would pass every assertion above while
+    # telling a cycle to annotate the wrong Secret.
+    lines, _ = report_for(
+        [app("catalog", health="Degraded",
+             sealed=[("platform-catalog", "github-app-creds")])],
+        [],
+        [sealed_secret("github-app-creds", namespace="platform-catalog",
+                       synced="False", message=_UNOWNED)],
+    )
+    assert any("kubectl annotate secret -n platform-catalog github-app-creds"
+               in l for l in lines)
+    assert not any("infra" in l for l in lines)
+
+
+def test_a_healthy_application_never_prints_a_remedy():
+    lines, status = report_for([app("infra")], [], [])
+    assert status == 0
+    assert not any("kubectl annotate" in l for l in lines)

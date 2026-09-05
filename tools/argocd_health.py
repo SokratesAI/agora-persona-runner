@@ -201,6 +201,35 @@ def read_sealed_secrets(runner=subprocess.run):
     return broken, None
 
 
+# The one SealedSecret failure a pull request cannot fix, spelled out here
+# because four cycles have now each paid to re-derive that. The controller
+# refuses to overwrite a Secret it does not own, so the SealedSecret in git
+# is never applied and git has quietly stopped being the source of truth for
+# that credential. The obvious guess is a second declaration somewhere; it is
+# wrong — measured Cycle 978, each of the four names this fires on today is
+# declared exactly once across `platform-config`. The fix is a write against
+# the *live* Secret, and both of this loop's accounts are refused `get
+# secrets` in every namespace, let alone `annotate`.
+_UNOWNED_SECRET = "is not managed by SealedSecret"
+
+
+def takeover_remedy(why, namespace, name):
+    """The remedy line for a SealedSecret blocked on a Secret it does not own.
+
+    Returns None for every other SealedSecret failure — a wrong key, a
+    namespace mismatch, a controller that has not caught up. That is the
+    point rather than caution: a remedy printed beside a message it does not
+    fit reads as instructions, and a cycle following it would annotate a
+    Secret whose problem was something else entirely.
+    """
+    if _UNOWNED_SECRET not in (why or ""):
+        return None
+    return (
+        f"kubectl annotate secret -n {namespace} {name} "
+        "sealedsecrets.bitnami.com/managed=true"
+    )
+
+
 def unhealthy_children(app, broken_sealed):
     """The immediate children of `app` that are measurably unhealthy.
 
@@ -313,6 +342,20 @@ def report(apps, jobs_by_owner, now, broken_sealed=None):
             lines.append(
                 f"           {row['kind']} {row['namespace']}/{row['name']} "
                 f"is not healthy: {row['why']}")
+            remedy = takeover_remedy(row["why"], row["namespace"], row["name"])
+            if remedy:
+                # Still raises. This is a real GitOps outage and going quiet
+                # on it would be the `security_alerts` already-fixed carve-out
+                # applied to something that is not fixed. What the line adds is
+                # that no pull request closes it, so the next cycle can stop at
+                # reading it instead of re-diagnosing it.
+                lines.append(
+                    f"             no pull request fixes this — the remedy is a "
+                    f"cluster write this loop is refused: {remedy}")
+                lines.append(
+                    "             it overwrites the live Secret with what git "
+                    "holds, and this account cannot read either to compare "
+                    "them, so it is the owner's call to run")
         for row in live:
             lines.append(
                 f"           {row['namespace']}/{row['job']} failed and "
