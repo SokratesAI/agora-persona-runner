@@ -671,8 +671,17 @@ def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None
         # by, so a change to FLOOR_SAMPLE_RUNS cannot silently reroute a
         # window query into this branch.
         if "/actions/runs?" in path and "created=" not in path:
+            # `floor_share` asks for `{id, event, head_branch}` now, because
+            # `_origin_lines` needs to know whose branches are billing. A bare
+            # id in a fixture is still accepted and reads as an ordinary push
+            # on the default branch: those tests are about the floor, not the
+            # origin, and rewriting all of them would have buried the two that
+            # are actually about it.
+            rows = [row if isinstance(row, dict)
+                    else {"id": row, "event": "push", "head_branch": "main"}
+                    for row in (sample_runs or [])]
             return subprocess.CompletedProcess(
-                cmd, 0, stdout=json.dumps(sample_runs or []), stderr="")
+                cmd, 0, stdout=json.dumps(rows), stderr="")
         if "/actions/runs/" in path and "/jobs" in path:
             run_id = int(path.split("/actions/runs/", 1)[1].split("/", 1)[0])
             return subprocess.CompletedProcess(
@@ -1366,3 +1375,65 @@ def test_a_steady_window_hands_out_no_spread():
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert spread is None
+
+
+# --- _origin_lines -----------------------------------------------------------
+# `floor_share` prices the runs; this says who made them. The pair is the
+# whole answer to "cut private-repo CI" -- without the second half a cycle
+# reads a lever it cannot pull.
+
+
+def _pr_run(run_id, branch):
+    return {"id": run_id, "event": "pull_request", "head_branch": branch}
+
+
+def test_origin_names_this_loop_when_its_own_branches_are_most_of_the_sample():
+    # platform-config, 2026-09-05: 60 of 74 pull-request runs on `nova/*`.
+    run = billing_gh(
+        sample_runs=[_pr_run(1, "nova/one"), _pr_run(2, "nova/two"),
+                     _pr_run(3, "someone-else"), 4],
+        sample_jobs={1: [_job(26)], 2: [_job(30)], 3: [_job(28)], 4: [_job(31)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "2 of 3 sampled pull-request run(s) are on this loop's own" in text, text
+    assert "this loop's own cadence rather than a workflow step" in text, text
+    assert "owner's call to make" in text, text
+
+
+def test_origin_flips_when_the_branches_are_not_this_loops():
+    # The check has to be able to come out the other way or it is decoration.
+    # Same shape of sample, same counts read, opposite verdict.
+    run = billing_gh(
+        sample_runs=[_pr_run(1, "nova/one"), _pr_run(2, "dependabot/npm"),
+                     _pr_run(3, "someone-else")],
+        sample_jobs={1: [_job(26)], 2: [_job(30)], 3: [_job(28)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/agora", run=run))
+    assert "1 of 3 sampled pull-request run(s) are on this loop's own" in text, text
+    assert "not this loop's to cut" in text, text
+    assert "owner's call" not in text, text
+
+
+def test_a_push_only_sample_says_so_rather_than_reporting_zero_of_zero():
+    # Every run here is a push. Dividing that into "0 of 0 are ours" would
+    # read as a clean acquittal of the cadence off a sample that cannot
+    # judge it at all.
+    run = billing_gh(sample_runs=[1, 2], sample_jobs={1: [_job(26)], 2: [_job(30)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "none of the sampled run(s) came from a pull request" in text, text
+    assert "says nothing about whose branches" in text, text
+    assert "this loop's own" not in text, text
+
+
+def test_the_evolve_era_branch_name_still_counts_as_ours():
+    # Branches older than the 2026-08-03 rename carry `evolve/`. Reading them
+    # as somebody else's would understate this loop's share of its own bill.
+    run = billing_gh(sample_runs=[_pr_run(1, "evolve/old-work")],
+                     sample_jobs={1: [_job(26)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "1 of 1 sampled pull-request run(s) are on this loop's own" in text, text
+
+
+def test_a_run_with_no_head_branch_is_not_counted_as_ours():
+    run = billing_gh(sample_runs=[{"id": 1, "event": "pull_request", "head_branch": None}],
+                     sample_jobs={1: [_job(26)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "0 of 1 sampled pull-request run(s)" in text, text
