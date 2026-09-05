@@ -32,6 +32,7 @@ import time
 
 from agora_runner.log import log
 from agora_runner.nova_site import start_nova_site
+from agora_runner.otel import init_tracing
 from agora_runner.reply_notice import ReplyWatch
 from agora_runner.stall_notice import StallWatch
 
@@ -61,6 +62,11 @@ def _request_shutdown(signum, _frame):
 def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
+    # Before the server binds, so the first request is traced too. It is
+    # called here rather than at import of nova_site because the runner
+    # process shares that module's image and should not get a second
+    # exporter for spans it does not emit.
+    init_tracing()
     server = start_nova_site()
     # The stall notice rides this loop rather than getting a thread of its
     # own: it does nothing 99% of the time, it must not run while the

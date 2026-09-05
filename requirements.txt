@@ -1,1 +1,5 @@
 pyyaml
+# nova-site tracing (agora_runner/otel.py). Pinned like everything else
+# in the image: a rebuild months from now must not pick up a new major.
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0

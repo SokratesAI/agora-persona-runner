@@ -116,6 +116,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from agora_runner.audit import audit
 from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID, NOVA_PORT, OSLO
 from agora_runner.log import log
+from agora_runner.otel import request_span
 from agora_runner.nova_uploads import (
     MAX_UPLOAD_BYTES,
     UploadRejected,
@@ -3609,6 +3610,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json_or_304(body, etag, content_type, cache_control="no-cache")
 
     def do_GET(self):
+        # The whole GET path in one span. It is a wrapper rather than a
+        # `with` at the top of `_handle_get` so the diff that added
+        # tracing did not re-indent 500 lines of routing, and so a test
+        # that reads `_handle_get`'s source still reads the routing.
+        with request_span(self.command or "GET", self.path) as recorder:
+            self._otel = recorder
+            self._handle_get()
+
+    def _handle_get(self):
         path, _, raw_query = self.path.partition("?")
         # Before the `rstrip` below, deliberately. `/demo/foo/` and
         # `/demo/foo` are different URLs to a browser resolving a relative
@@ -4131,6 +4141,18 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         self.do_GET()
+
+    def send_response_only(self, code, message=None):
+        """Every status this handler ever sends passes through here.
+
+        `send_response` and `send_error` both funnel into it, which is why
+        the span reads the code here rather than in the twenty places that
+        send one.
+        """
+        recorder = getattr(self, "_otel", None)
+        if recorder is not None:
+            recorder.set_status_code(code)
+        super().send_response_only(code, message)
 
     def _read_json_body(self):
         """Body -> dict, or None having already sent the error response.
@@ -5585,6 +5607,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(status, payload)
 
     def do_POST(self):
+        with request_span(self.command or "POST", self.path) as recorder:
+            self._otel = recorder
+            self._handle_post()
+
+    def _handle_post(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         if path == "/mcp":
             self._handle_mcp()
