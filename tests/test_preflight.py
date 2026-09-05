@@ -744,8 +744,10 @@ def test_credential_recovery_runs_with_notify_too():
     # the flag leaves the alarm firing only into output he never reads.
     from tools import preflight as pf
 
+    # Only the CHECK_ARGS entry is asserted. `credential_recovery in CHECKS`
+    # was already true before this change, so asserting it here would pass
+    # with the change reverted and cover nothing.
     assert pf.CHECK_ARGS["credential_recovery"] == ["--notify"]
-    assert "credential_recovery" in pf.CHECKS
 
 
 def test_a_check_with_no_extra_arguments_is_run_bare(monkeypatch):

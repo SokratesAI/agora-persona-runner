@@ -687,3 +687,31 @@ def test_notify_fires_when_the_login_is_the_finding(monkeypatch, capsys, tmp_pat
     assert cr.main(["--disk", str(disk), "--notify"]) == 2
     assert len(sent) == 1
     assert "TELEGRAM sent" in capsys.readouterr().out
+
+
+def test_a_broken_pager_does_not_change_the_verdict(monkeypatch, capsys, tmp_path):
+    # The reviewer's finding on runner#758. The pager is bolted onto the
+    # check; if it explodes, the deadline still has to be reported, and the
+    # exit code still has to be 2 rather than the 1 an uncaught traceback
+    # would produce -- 1 reads as "could not measure", which is the opposite
+    # of what happened.
+    def explode(*a, **k):
+        raise RuntimeError("telegram bridge is down")
+
+    monkeypatch.setattr(cr, "page_owner", explode)
+    monkeypatch.setattr(cr, "pod_started_at", lambda: POD_START)
+    monkeypatch.setattr(cr, "sealed_written_at", lambda: POD_START - timedelta(hours=12))
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW + timedelta(days=20)), "max"))
+    disk = tmp_path / "creds.json"
+    soon = datetime.now(timezone.utc) + timedelta(hours=cr.OUTAGE_HOURS - 1)
+    disk.write_text(
+        blob(
+            millis(datetime.now(timezone.utc) + timedelta(hours=5)),
+            "max",
+            {"refreshTokenExpiresAt": millis(soon)},
+        )
+    )
+    assert cr.main(["--disk", str(disk), "--notify"]) == 2
+    out = capsys.readouterr().out
+    assert "RAISE the live credential's refresh token" in out
+    assert "could not be reached (RuntimeError" in out

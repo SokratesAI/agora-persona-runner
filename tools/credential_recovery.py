@@ -665,7 +665,24 @@ def main(argv=None):
                 # this is the one finding in the file that only he can act on,
                 # and a channel that also carries what he cannot act on is one
                 # he stops reading.
-                _, line = page_owner(login_expiry, now)
+                #
+                # Broad on purpose, and it is the only broad except in this
+                # file. Nothing in the chain below raises today -- every
+                # network and file call in `tools.notify` and `tools.telegram`
+                # already catches its own -- but this is a pager bolted onto a
+                # check, and the check's job is to report the deadline whether
+                # or not the pager works. Without this, a future change one or
+                # two modules away turns a RAISE into a traceback, and this
+                # check's verdict becomes an exit 1 that reads as "could not
+                # measure" rather than the exit 2 it is.
+                try:
+                    _, line = page_owner(login_expiry, now)
+                except Exception as exc:  # noqa: BLE001 -- see above
+                    line = (
+                        "TELEGRAM    could not be reached (%s: %s). The deadline "
+                        "above stands; only the message did not go out."
+                        % (type(exc).__name__, exc)
+                    )
                 sys.stdout.write("%s\n" % line)
         else:
             sys.stdout.write(
