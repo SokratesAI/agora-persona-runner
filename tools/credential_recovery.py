@@ -296,6 +296,23 @@ def recovery_expiry(oauth, where):
 #: it is the margin below which there is no room left to recover at all.
 OUTAGE_HOURS = 30.0
 
+#: How long the owner can go without reading anything I write. Measured
+#: 2026-09-05 over the 226 comments he has left on journal cards between
+#: 2026-08-10 and 2026-09-05: the median gap between two of them is 0.4
+#: hours and the 95th percentile is 12.9, but the longest single silence
+#: in those 26 days is 56.7 hours and one gap in 225 ran past 30. So a
+#: number below this can be raised into a stretch he is demonstrably not
+#: reading, and the alarm would be true and unheard.
+OWNER_SILENCE_HOURS = 57.0
+
+#: The lead an alarm about the login actually needs. It has to reach a
+#: human *and then* leave room for the recovery itself, so it is the two
+#: added together rather than either one. At `OUTAGE_HOURS` alone, today's
+#: 2026-09-16 deadline first raises on 2026-09-15 -- inside a silence he
+#: has already had once this month, which is the failure this constant
+#: exists to stop rather than a margin anyone chose to be comfortable.
+LOGIN_LEAD_HOURS = OWNER_SILENCE_HOURS + OUTAGE_HOURS
+
 
 def judge_live_refresh(live, now):
     """When does this loop's login die, and can it renew it itself?
@@ -322,6 +339,12 @@ def judge_live_refresh(live, now):
     credential on disk dies on the same day whether it is copied or not.
     Only an interactive login moves the date.
 
+    It raises at `LOGIN_LEAD_HOURS` rather than at `OUTAGE_HOURS`, and
+    names which of the two it tripped. `OUTAGE_HOURS` is how long the
+    recovery took once it had started; it says nothing about getting the
+    ask in front of the one person who can perform it, and an alarm can
+    be raised entirely inside a silence he is not reading.
+
     Returns (findings, expiry) with expiry None when the file carries no
     refresh expiry. There is deliberately no fallback to `expiresAt`
     here: on the *live* copy that field is eight hours wide by design, so
@@ -335,13 +358,24 @@ def judge_live_refresh(live, now):
         return findings, None
     expiry = _epoch(raw, "the live credential", "refreshTokenExpiresAt")
     hours_left = (expiry - now).total_seconds() / 3600.0
-    if hours_left <= OUTAGE_HOURS:
+    if hours_left <= LOGIN_LEAD_HOURS:
+        if hours_left <= OUTAGE_HOURS:
+            margin = (
+                "inside the %.0f hour(s) the 2026-08-17 recovery took, so there is "
+                "no margin left" % OUTAGE_HOURS
+            )
+        else:
+            margin = (
+                "inside the %.0f hour(s) an alarm needs to reach him and still leave "
+                "room to recover -- his longest measured silence (%.0f) plus the "
+                "%.0f the 2026-08-17 recovery took"
+                % (LOGIN_LEAD_HOURS, OWNER_SILENCE_HOURS, OUTAGE_HOURS)
+            )
         findings.append(
             {
                 "state": "login-expiring",
                 "detail": "the live credential's refresh token %s %s UTC, %.1f hour(s) "
-                "%s -- inside the %.0f hour(s) the 2026-08-17 recovery took, so there "
-                "is no margin left. Nothing in this loop can renew it: the CLI "
+                "%s -- %s. Nothing in this loop can renew it: the CLI "
                 "refreshes the access token and leaves this date where it is. It takes "
                 "an interactive login by the owner."
                 % (
@@ -349,7 +383,7 @@ def judge_live_refresh(live, now):
                     expiry.isoformat(timespec="seconds"),
                     abs(hours_left),
                     "ago" if hours_left <= 0 else "away",
-                    OUTAGE_HOURS,
+                    margin,
                 ),
             }
         )
