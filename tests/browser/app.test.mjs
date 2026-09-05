@@ -4574,6 +4574,77 @@ describe("navigating away mid-fetch", () => {
   });
 });
 
+/* A tap has to show on screen before the payload lands.
+ *
+ * the owner, capture 2026-09-05, rated Immediately: *"The Nova app is very
+ * slow on my phone when i navigate between pages. I have to click multiple
+ * times on the sidebar buttons before it actually switch to that page."*
+ *
+ * Every branch of `load()` but the journal one fetched first and painted
+ * nothing until the response came back, so the whole gap looked like a tap
+ * that had not registered. Measured in Chromium at his own 360x697 against
+ * the live pod: 291ms of unchanged screen tapping Issues from the journal,
+ * 705ms tapping Ideas from Issues -- before his phone's own network.
+ *
+ * These tests hold the response open, which is the only state worth
+ * asserting on: with a resolved fetch the placeholder and the real page
+ * both appear within one microtask and a test cannot tell the fix from its
+ * absence. */
+describe("a nav tap answers before its payload arrives", () => {
+  /** A `fetch` that never resolves for `match`, so the held frame persists. */
+  function hold(window, match) {
+    const realFetch = window.fetch;
+    window.fetch = (url, init) =>
+      (String(url).includes(match) ? new Promise(() => {}) : realFetch(url, init));
+  }
+
+  test("the sidebar highlight moves while the board is still loading", async () => {
+    const window = await loadSite("/");
+    hold(window, "/api/board");
+
+    click(window, window.document.querySelector(".nav-tab[href='/issues']"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.ok(
+      window.document.querySelector(".nav-tab[href='/issues']").classList.contains("on"),
+      "the tapped tab was not highlighted until its payload arrived",
+    );
+    assert.ok(
+      !window.document.querySelector(".nav-tab[href='/']").classList.contains("on"),
+      "the page he left was still highlighted",
+    );
+  });
+
+  test("the feed says what is loading while the board is still loading", async () => {
+    const window = await loadSite("/");
+    // The journal he is leaving really is on screen, or the assertion below
+    // passes on a page that was blank before the tap.
+    assert.ok(cards(window).length > 0, "no journal to navigate away from");
+    hold(window, "/api/board");
+
+    click(window, window.document.querySelector(".nav-tab[href='/issues']"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(cards(window).length, 0, "the journal was still on screen after the tap");
+    assert.match(window.document.getElementById("feed").textContent, /Loading Issues/);
+  });
+
+  /* The placeholder is for navigation only. `load()` is also how several
+   * pages refresh themselves in place, and clearing the feed on those would
+   * trade a missing flicker for a new one. */
+  test("re-loading the page you are already on does not blank it", async () => {
+    const window = await loadSite("/issues");
+    assert.ok(rows(window).length > 0, "no board to re-load");
+    hold(window, "/api/board");
+
+    click(window, window.document.querySelector(".nav-tab[href='/issues']"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.ok(rows(window).length > 0, "a refresh in place blanked the page under him");
+    assert.doesNotMatch(window.document.getElementById("feed").textContent, /Loading Issues/);
+  });
+});
+
 /* the owner, issues.md #83: "Make the header for issues and ideas bold". The
  * whole line was one dim string, so the page you were on read as part of
  * the tally after it. Two assertions, because either alone passes on its
