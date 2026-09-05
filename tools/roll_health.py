@@ -306,6 +306,17 @@ def remedy(path, archive, refusal):
     reads the block. `--allow-shrink` is on the live half only; the archive
     only ever grows, so a refusal there means something is genuinely wrong
     (see `roll_captures`' module docstring).
+
+    **Every command line is bare, and the reviewer caught me getting that
+    wrong.** The `ticket_drift --sync` line first shipped as
+    ``Then `python3 -m tools.ticket_drift --sync`: the roll rewrites ...`` --
+    a backticked command with prose either side of it, on a line inside a
+    block whose own header says to run it as one shell call. Pasted
+    literally, bash performs command substitution: the sync *runs*, its
+    output is spliced in, and the shell then tries to execute the word
+    `Then` and exits 127. A block that reports failure after doing the right
+    thing is worse than one that refuses. So prose goes on its own line and
+    a command line carries nothing but the command.
     """
     lines = ["    Run this, as one shell call:",
              "      cd ${NOVA_WORKSPACE:-/data/workspace}/agora-persona-runner \\",
@@ -322,8 +333,9 @@ def remedy(path, archive, refusal):
               "/tmp/rh.$$.arch.md --if-rev-file /tmp/rh.$$.arch.rev \\",
               f"       && python3 /app/bridge/vault_tool.py put '{path}' "
               "/tmp/rh.$$.live.md --allow-shrink --if-rev-file /tmp/rh.$$.live.rev",
-              "      Then `python3 -m tools.ticket_drift --sync`: the roll "
-              "rewrites a board the ticket store mirrors."]
+              "    Then, because the roll rewrites a board the ticket store "
+              "mirrors:",
+              "      python3 -m tools.ticket_drift --sync"]
     return lines
 
 

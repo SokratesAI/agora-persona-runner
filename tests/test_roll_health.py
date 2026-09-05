@@ -390,3 +390,32 @@ def test_a_stranded_only_finding_is_not_handed_the_roll_command():
     assert "sit above the" in printed and "Repair: move them" in printed
     assert "vault_tool.py get" not in printed
     assert "tools.roll_captures --live" not in printed
+
+
+def test_every_command_line_in_the_block_is_bare():
+    """The reviewer's finding on the first version of this block: the sync
+    line shipped as ``Then `python3 -m ...`: prose``, inside a block whose
+    own header says to run it as one shell call. Pasted, bash substitutes
+    the backticks -- the sync runs -- then tries to execute the word `Then`
+    and exits 127. A substring assertion on the command passes either way,
+    so this asserts the *shape*: a line carrying a command carries nothing
+    else, and no line in the block has a backtick in it at all."""
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = _board([(1, "⚪ Backlog")], [(1, "y" * 4000)])
+    live = live.replace("- 2026-08-29 (Cycle 600) — a capture",
+                        _entries_past_keep())
+    findings, unreadable, clean = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: live, archive_path: ARCHIVE}))
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, out=out) == 2
+    block = roll_health.remedy(live_path, archive_path, None)
+    assert "`" not in "\n".join(block)
+    commands = [ln.strip() for ln in block
+                if ln.strip().startswith(("cd ", "&& ", "python3 "))]
+    assert "python3 -m tools.ticket_drift --sync" in commands
+    for line in commands:
+        assert not line.endswith(":"), line
+        # A continuation ends in `\`; the last command in a chain ends in
+        # neither, and no command line may carry English after it.
+        assert " the " not in line, line
