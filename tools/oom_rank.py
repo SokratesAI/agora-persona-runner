@@ -10,13 +10,23 @@ container's cgroup, `workload_health` the declared budget — and none of
 them reads the one number that decides who dies: `oom_score_adj`.
 
 The kernel picks by score, and the kubelet writes that score from the
-Pod's QoS class alone:
+Pod's QoS class — with one rule that runs ahead of QoS entirely:
 
+- **`priorityClassName: system-node-critical`** -> -997, whatever the QoS
+  class is. This is `IsNodeCriticalPod` in the kubelet's own policy, and
+  it is checked *before* QoS, so a BestEffort node-critical Pod is the
+  safest thing on the box rather than the first to die.
 - **Guaranteed** (every container has request == limit) -> -997.
 - **BestEffort** (no requests and no limits anywhere in the Pod) -> 1000,
   the worst possible score. First to die, every time.
 - **Burstable** -> `1000 - 1000 * memoryRequest / nodeCapacity`, clamped
   into `[3, 999]`. A small request is a high score.
+
+**`system-cluster-critical` buys nothing here, and that is the trap.**
+The two class names read as a pair and only one of them is in the
+kubelet's OOM rule. A Pod carrying `system-cluster-critical` falls
+straight through to its QoS class, so `traefik` — which carries it —
+scores 1000 like any other BestEffort Pod.
 
 So the score is set by the *request*, and the limit — the thing that
 decides how large a runaway can get — does not enter into it at all. A
@@ -26,11 +36,13 @@ container that asks for little and may take a lot is therefore ranked
 That is the shape on server1 today and it is why this is a file rather
 than a paragraph. `agora-claude-bridge` requests 1 GiB of the node's 7746
 MiB and may grow to 4 GiB, which scores it 868 — 22nd of 22 in server1's
-kill order. Ten containers on the same node are BestEffort at 1000: all
-seven of ArgoCD, `traefik` (the cluster's ingress), `local-path-provisioner`
-(every volume mount on the box), `sealed-secrets` and `reloader`. If my own
-pod runs away, the kernel works down from 1000 and takes those before it
-reaches me.
+kill order. Nine containers on the same node are BestEffort at 1000: all
+seven of ArgoCD, `traefik` (the cluster's ingress), and `sealed-secrets`.
+If my own pod runs away, the kernel works down from 1000 and takes those
+before it reaches me. `local-path-provisioner` — every volume mount on the
+box — is **not** among them, and this file said it was for five days: it
+carries `system-node-critical`, so the kernel holds it at -997 and reaches
+it last of everything on the node, after me.
 
 **This raises nothing on the ranking, and that is deliberate.** "The
 container with the largest limit is ranked safest" is exactly how
@@ -51,16 +63,28 @@ of the whole report being confidently wrong — `prompt.md`'s "a positive
 result can be guaranteed in advance" applies to a formula as much as to
 an HTTP 200.
 
-**What it deliberately does not judge.** A Pod carrying
-`system-node-critical` or `system-cluster-critical` is named and its
-score is printed as unverified: those priority classes protect a Pod from
-*eviction and preemption*, which is the kubelet's own accounting, and
-that is a different mechanism from the kernel's `oom_score_adj`. I have
-only ever read one container's real score — my own, which carries no
-priority class — so extending the confirmed formula onto a critical Pod
-would be a claim wider than the check I took. Two of the ten BestEffort
-containers on server1 are in that set: `traefik` and
-`local-path-provisioner`.
+**Both critical classes are now read off the kernel, and they
+disagreed with each other.** This file used to name a Pod carrying either
+class and print its score as unverified, on the reasoning that those
+classes govern eviction and preemption rather than the kernel's kill
+order. That was the honest thing to write with one reading in hand, and
+it was half wrong. Measured Cycle 946 (2026-09-05) with a one-off Job on
+server1 mounting the host's `/proc` read-only — `tools.oneoff_job --node
+server1 --hostpath /proc` — reading `oom_score_adj` for each process by
+name:
+
+- `local-path-provisioner` (`system-node-critical`, BestEffort): **-997**.
+  The formula here predicted 1000. It was wrong by 1,997 on the one
+  container that mounts every volume on the box.
+- `traefik` (`system-cluster-critical`, BestEffort): **1000**. The formula
+  was right, and the priority class bought it nothing.
+- `sealed-secrets` and three ArgoCD containers (no class, BestEffort):
+  **1000**, as predicted.
+
+So `system-node-critical` is scored here now, and `system-cluster-critical`
+is deliberately not treated as protection of any kind. What stays
+unverified is any *other* priority class: the two above are the only ones
+I have read, and a third one would be a name this file has never seen.
 
 It also says nothing about *whether* a node will run out. That is
 `tools.host_memory_trend` and `tools.workload_health`. This one answers
@@ -86,9 +110,15 @@ BESTEFFORT_ADJ = 1000
 BURSTABLE_FLOOR = 1000 + GUARANTEED_ADJ
 BURSTABLE_CEILING = BESTEFFORT_ADJ - 1
 
-#: Priority classes that protect a Pod from eviction, which is not the same
-#: mechanism as the kernel's kill order. Named, not scored.
-CRITICAL_PRIORITY = ("system-node-critical", "system-cluster-critical")
+#: The one priority class the kubelet's OOM rule reads. `IsNodeCriticalPod`
+#: is checked ahead of QoS, so this wins over BestEffort. Measured on
+#: server1's local-path-provisioner: -997 against a formula that said 1000.
+NODE_CRITICAL_PRIORITY = "system-node-critical"
+#: Named on the line because it reads like protection and is not: it governs
+#: eviction and preemption only. Measured on server1's traefik: 1000.
+CLUSTER_CRITICAL_PRIORITY = "system-cluster-critical"
+#: Both, for the two places that mark a line rather than score it.
+CRITICAL_PRIORITY = (NODE_CRITICAL_PRIORITY, CLUSTER_CRITICAL_PRIORITY)
 
 SUFFIX = {"Ki": 1024, "Mi": MIB, "Gi": 1024 ** 3, "Ti": 1024 ** 4,
           "K": 1000, "M": 1000 ** 2, "G": 1000 ** 3, "T": 1000 ** 4}
@@ -112,13 +142,21 @@ def parse_quantity(raw):
         return None
 
 
-def oom_score_adj(qos_class, request_bytes, node_capacity_bytes):
+def oom_score_adj(qos_class, request_bytes, node_capacity_bytes,
+                  priority_class=None):
     """The score the kubelet writes for a container, or `None` if unknowable.
 
     `request_bytes` is that container's own memory request — 0 when it sets
     none, which is what makes a Burstable container with no request score
     999 rather than being left out.
+
+    `priority_class` is checked first because the kubelet checks it first:
+    `system-node-critical` returns -997 whatever the QoS class says.
+    `system-cluster-critical` is not in that rule and falls through, which
+    is why it is not tested for here.
     """
+    if priority_class == NODE_CRITICAL_PRIORITY:
+        return GUARANTEED_ADJ
     if qos_class == "Guaranteed":
         return GUARANTEED_ADJ
     if qos_class == "BestEffort":
@@ -157,7 +195,8 @@ def containers(pods, capacities):
                 "request": request,
                 "limit": limit,
                 "priority": spec.get("priorityClassName"),
-                "score": oom_score_adj(qos, request, capacities.get(node)),
+                "score": oom_score_adj(qos, request, capacities.get(node),
+                                       spec.get("priorityClassName")),
             })
     return out
 
@@ -185,8 +224,15 @@ def judge_node(node, records):
                   default=None)
     for position, record in enumerate(order, start=1):
         marks = []
-        if record["priority"] in CRITICAL_PRIORITY:
-            marks.append(f"{record['priority']}, score not verified from here")
+        if record["priority"] == NODE_CRITICAL_PRIORITY:
+            marks.append(f"{record['priority']}, so the kubelet holds it at "
+                         f"{GUARANTEED_ADJ} ahead of its QoS class")
+        elif record["priority"] == CLUSTER_CRITICAL_PRIORITY:
+            marks.append(f"{record['priority']}, which the kernel's kill "
+                         f"order does not read")
+        elif record["priority"]:
+            marks.append(f"{record['priority']}, a priority class I have "
+                         f"never read a real score for")
         if biggest is not None and record is biggest:
             marks.append("largest limit on this node")
         note = ("  — " + "; ".join(marks)) if marks else ""
@@ -292,15 +338,24 @@ def report(records, hostname, own_score):
     if unscored:
         lines.append(f"  NOT JUDGED  {len(unscored)} container(s) whose Pod "
                      f"carries no QoS class this knows how to score.")
-    critical = [r for r in records if r["priority"] in CRITICAL_PRIORITY]
-    if critical:
+    node_critical = [r for r in records
+                     if r["priority"] == NODE_CRITICAL_PRIORITY]
+    if node_critical:
         lines.append(
-            f"  NOT VERIFIED  {len(critical)} container(s) sit in a Pod with a "
-            f"critical priority class. Those classes govern eviction and "
-            f"preemption, which is the kubelet's accounting rather than the "
-            f"kernel's, and I have only ever read one container's real "
-            f"oom_score_adj — my own, which carries no priority class. Their "
-            f"scores above are the formula, not a reading.")
+            f"  MEASURED  {len(node_critical)} container(s) carry "
+            f"{NODE_CRITICAL_PRIORITY}, which the kubelet checks ahead of QoS "
+            f"and scores {GUARANTEED_ADJ}. Read off server1's kernel Cycle "
+            f"946: local-path-provisioner is at {GUARANTEED_ADJ} while this "
+            f"file's own formula said {BESTEFFORT_ADJ}.")
+    unread = sorted({r["priority"] for r in records
+                     if r["priority"] and r["priority"] not in CRITICAL_PRIORITY})
+    if unread:
+        lines.append(
+            f"  NOT VERIFIED  {len(unread)} priority class(es) I have never "
+            f"read a real oom_score_adj for: {', '.join(unread)}. Their scores "
+            f"above are the QoS formula, which is what "
+            f"{CLUSTER_CRITICAL_PRIORITY} turned out to obey and "
+            f"{NODE_CRITICAL_PRIORITY} turned out not to.")
     lines.append(
         f"  NOT JUDGED  whether any node will actually run out. This is the "
         f"kill ORDER only — tools.host_memory_trend and tools.workload_health "

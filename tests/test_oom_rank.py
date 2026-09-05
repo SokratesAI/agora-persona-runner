@@ -125,14 +125,65 @@ def test_an_unverified_control_raises_rather_than_reading_as_confirmed(hostname,
     assert any("CONTROL UNVERIFIED" in line for line in lines)
 
 
-def test_a_critical_priority_class_is_named_as_unverified_not_scored_silently():
+def test_node_critical_beats_besteffort_because_the_kubelet_checks_it_first():
+    """Measured on server1 Cycle 946: local-path-provisioner reads -997.
+
+    The precondition is the whole point — the same Pod without the class
+    scores 1000, so this asserts the class did the work rather than the
+    QoS class quietly agreeing.
+    """
+    assert oom_rank.oom_score_adj("BestEffort", None, CAPACITY["server1"]) == 1000
+    assert oom_rank.oom_score_adj(
+        "BestEffort", None, CAPACITY["server1"],
+        "system-node-critical") == oom_rank.GUARANTEED_ADJ
+
+
+def test_cluster_critical_buys_nothing_in_the_kill_order():
+    """Measured on server1 Cycle 946: traefik carries it and reads 1000."""
+    assert oom_rank.oom_score_adj(
+        "BestEffort", None, CAPACITY["server1"],
+        "system-cluster-critical") == oom_rank.BESTEFFORT_ADJ
+
+
+def test_node_critical_outranks_a_burstable_pod_in_the_printed_order():
+    """The correction that matters to the reader, not just to the number.
+
+    Before this, local-path-provisioner printed first in server1's kill
+    order and the bridge pod printed last. It is the other way round.
+    """
+    pods = [
+        pod("local-path", "BestEffort", [container("local-path-provisioner")],
+            priority="system-node-critical"),
+        pod("bridge", "Burstable", [container("bridge", "1Gi", "4Gi")]),
+        pod("argocd", "BestEffort", [container("argocd")]),
+    ]
+    records = oom_rank.containers(pods, CAPACITY)
+    lines, _ = oom_rank.report(records, "ns/bridge", 868)
+    order = [line for line in lines if line.strip().startswith(("1.", "2.", "3."))]
+    assert "ns/argocd" in order[0]
+    assert "ns/bridge" in order[1]
+    assert "ns/local-path" in order[2]
+
+
+def test_a_cluster_critical_pod_is_marked_as_not_protecting_it():
     pods = [pod("traefik", "BestEffort", [container("traefik")],
                 priority="system-cluster-critical")]
     records = oom_rank.containers(pods, CAPACITY)
     lines, _ = oom_rank.report(records, "ns/traefik", 1000)
     body = "\n".join(lines)
-    assert "score not verified from here" in body
-    assert "NOT VERIFIED  1 container(s)" in body
+    assert "which the kernel's kill order does not read" in body
+    assert "NOT VERIFIED" not in body
+
+
+def test_a_priority_class_never_read_is_still_flagged_as_unverified():
+    """The two measured classes must not make an unknown third read as clean."""
+    pods = [pod("thing", "BestEffort", [container("thing")],
+                priority="some-other-class")]
+    records = oom_rank.containers(pods, CAPACITY)
+    lines, _ = oom_rank.report(records, "ns/thing", 1000)
+    body = "\n".join(lines)
+    assert "NOT VERIFIED  1 priority class(es)" in body
+    assert "some-other-class" in body
 
 
 def test_read_cluster_reports_why_rather_than_returning_an_empty_cluster():
