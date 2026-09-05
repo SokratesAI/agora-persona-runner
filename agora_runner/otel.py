@@ -163,6 +163,36 @@ def extract_context(headers):
         return None
 
 
+def outgoing_headers(headers=None):
+    """The headers to send with an outgoing request, trace context added.
+
+    The other half of `extract_context`. That one lets a call *into* this
+    process continue the caller's trace; this one lets a call *out* of it
+    stay in the trace this process is already serving, so a request that
+    arrives from Agora and calls back into Agora comes back as one
+    waterfall instead of two traces that happen to be a few milliseconds
+    apart.
+
+    Returns a new dict, never the caller's -- `http_json` builds its
+    headers once per call and a mutation here would be invisible there.
+
+    Adds nothing at all when tracing is off, and nothing when there is no
+    span open: `inject` writes the header only for a valid current span,
+    so a call made outside a request -- a cron tick, a tool run from a
+    shell -- sends exactly what it sent before.
+    """
+    out = dict(headers or {})
+    if _tracer is None:
+        return out
+    try:
+        from opentelemetry.propagate import inject
+
+        inject(out)
+    except Exception as e:  # a broken propagator must not fail the request
+        log(f"otel: could not attach the outgoing trace context ({e})")
+    return out
+
+
 @contextmanager
 def request_span(method, path, headers=None):
     """Trace one HTTP request. A no-op when tracing is off.
