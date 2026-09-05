@@ -155,6 +155,7 @@ CHECKS = (
     "telegram_inbox",
     "host_memory_trend",
     "memory_headroom",
+    "node_memory",
     "oom_rank",
     "oom_history",
     "disk_health",
@@ -239,6 +240,9 @@ SUBJECT = {
     #: over by renaming the label.
     "host_memory_trend": ("on-box",  "the bridge pod's own node's memory"),
     "memory_headroom":   ("on-box",  "the bridge pod's own node's memory"),
+    #: The different mechanism the comment above asks for: the kubelet's own
+    #: stats, over nodes/proxy, so every node is judged and not just this one's.
+    "node_memory":       ("on-box",  "every node's own free memory and swap"),
     "oom_rank":          ("on-box",  "every node's kernel kill order"),
     "oom_history":       ("on-box",  "every node's own kernel log"),
     "disk_health":       ("on-box",  "every node's own disk, over its kubelet"),
