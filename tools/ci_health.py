@@ -1047,12 +1047,14 @@ def floor_share(repo, run=subprocess.run, sample=FLOOR_SAMPLE_RUNS,
     """
     runs, why = _gh_json(
         [f"/repos/{repo}/actions/runs?per_page={sample}", "-q",
-         "[.workflow_runs[] | .id]"], run)
+         "[.workflow_runs[] | {id, event, head_branch}]"], run)
     if runs is None:
         return [f"        FLOOR   could not sample {repo}'s runs: {why}"]
     if not runs:
         return [f"        FLOOR   NOT JUDGED  {repo} has no run in the API to sample, so "
                 f"the shape of its bill cannot be measured from here."]
+
+    run_ids = [row["id"] for row in runs if isinstance(row, dict) and "id" in row]
 
     def jobs_of(run_id):
         return _gh_json(
@@ -1061,7 +1063,7 @@ def floor_share(repo, run=subprocess.run, sample=FLOOR_SAMPLE_RUNS,
 
     fetched, unreadable = [], 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for jobs, job_why in pool.map(jobs_of, runs):
+        for jobs, job_why in pool.map(jobs_of, run_ids):
             if jobs is None:
                 unreadable += 1
                 continue
@@ -1110,6 +1112,7 @@ def floor_share(repo, run=subprocess.run, sample=FLOOR_SAMPLE_RUNS,
             f"minute and shortening one saves nothing. The only lever is the number of "
             f"jobs — {len(seconds) / len(runs):.1f} per run, and a run per pull request "
             f"plus a run per resulting commit.")
+    lines.extend(_origin_lines(runs))
     if unreadable:
         lines.append(f"        partial: {unreadable} of {len(runs)} sampled run(s) would not "
                      f"give up their jobs, so the counts above are a floor, not the total.")
@@ -1117,6 +1120,58 @@ def floor_share(repo, run=subprocess.run, sample=FLOOR_SAMPLE_RUNS,
         lines.append(f"        partial: {undated} job(s) carried no start or end and were left "
                      f"out rather than counted as zero.")
     return lines
+
+
+#: The head-branch prefixes this loop opens every one of its own pull requests
+#: under. `evolve/` is the pre-2026-08-03 name and still appears on branches
+#: older than the rename, which is history rather than a second identity.
+OWN_BRANCH_PREFIXES = ("nova/", "evolve/")
+
+
+def _origin_lines(runs, prefixes=OWN_BRANCH_PREFIXES):
+    """`lines` -- who is *creating* the runs the floor above prices.
+
+    `floor_share` ends by naming the lever as the number of jobs, "a run per
+    pull request plus a run per resulting commit". That is true and a reader
+    cannot act on it, because it does not say whose pull requests. Every cycle
+    since the burn went oversubscribed has read that sentence and had nowhere
+    to go with it: this module's own closing advice is "cut private-repo CI or
+    move a repo public", and the owner has ruled the second one out --
+    *"Config repos are always private."*
+
+    Measured 2026-09-05 on `platform-config`, which is 348 of this month's 383
+    private minutes: of 74 pull-request runs in the newest 31 hours, **60 were
+    on `nova/*` branches** -- this loop's own cycles. So the lever is not a
+    workflow step at all, it is the cadence, and that is the owner's decision
+    rather than something a cycle refactors its way out of.
+
+    It costs nothing to measure. The run list `floor_share` already fetches
+    carries `event` and `head_branch`, so this is two more jq fields on a call
+    that was being made either way.
+
+    **It has to be able to come out the other way**, or it is decoration. A
+    sample whose pull requests are somebody else's gets the opposite sentence
+    off the same count -- which is what stops a future cycle reading "cut the
+    cadence" off a repo this loop never pushes to.
+    """
+    branch_runs = [r for r in runs
+                   if isinstance(r, dict) and r.get("event") == "pull_request"]
+    if not branch_runs:
+        return ["        ORIGIN  none of the sampled run(s) came from a pull request, so "
+                "the sample says nothing about whose branches are billing here."]
+    ours = [r for r in branch_runs
+            if str(r.get("head_branch") or "").startswith(prefixes)]
+    named = " or ".join(p for p in prefixes)
+    head = (f"        ORIGIN  {len(ours)} of {len(branch_runs)} sampled pull-request run(s) "
+            f"are on this loop's own {named} branches.")
+    if len(ours) * 2 > len(branch_runs):
+        return [head,
+                "        so the lever is this loop's own cadence rather than a workflow "
+                "step, and each of those pull requests bills a second time on the commit "
+                "it merges into. That is the owner's call to make, not a refactor."]
+    return [head,
+            "        so most of this bill is not this loop's to cut -- a cadence change "
+            "here would move less than half of it."]
 
 
 def _sweep_repo(repo, grace_minutes, run, now):
