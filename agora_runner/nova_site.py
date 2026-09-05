@@ -3614,7 +3614,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # `with` at the top of `_handle_get` so the diff that added
         # tracing did not re-indent 500 lines of routing, and so a test
         # that reads `_handle_get`'s source still reads the routing.
-        with request_span(self.command or "GET", self.path) as recorder:
+        with request_span(self.command or "GET", self.path, getattr(self, "headers", None)) as recorder:
             self._otel = recorder
             self._handle_get()
 
@@ -5607,7 +5607,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(status, payload)
 
     def do_POST(self):
-        with request_span(self.command or "POST", self.path) as recorder:
+        with request_span(self.command or "POST", self.path, getattr(self, "headers", None)) as recorder:
             self._otel = recorder
             self._handle_post()
 
