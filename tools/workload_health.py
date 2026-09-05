@@ -268,6 +268,12 @@ def read_pods(runner=subprocess.run):
             # `limits` only records the ones that did, so the two counts
             # together are what say a limit is missing rather than zero.
             "container_count": len(spec.get("containers") or []),
+            # The declared names, from the spec rather than from
+            # `containerStatuses` -- a Pod the kubelet has not started yet has
+            # no statuses, and `unlimited_container_rss` has to be able to say
+            # a container was not measured rather than skip it silently.
+            "container_names": [c.get("name") or "?"
+                                for c in spec.get("containers") or []],
             # Which node it is actually on. Empty for a Pod the scheduler has
             # not placed yet, and that is a real state rather than a gap --
             # an unscheduled Pod is on nobody's budget.
@@ -794,6 +800,96 @@ def read_node_cgroups(host, runner=subprocess.run):
     return series[CADVISOR_SERIES], None
 
 
+def read_node_container_rss(host, runner=subprocess.run):
+    """{(namespace, pod, container): resident MiB} on `host`, or (None, why).
+
+    The other half of the same cAdvisor fetch `read_node_cgroup_series` reads.
+    That one drops every line carrying a `pod` label on purpose, because it is
+    answering "which machine-level slice holds the memory outside the Pods".
+    This one keeps exactly those lines, and for the opposite question:
+    **how much memory is held by containers that declare no limit at all.**
+
+    `budget_line` could say how many there were and not one byte of what they
+    hold, so on 2026-09-05 `argocd/argocd-application-controller` -- 310 MiB
+    resident, the largest single consumer on server1 -- contributed zero to
+    that node's budget line while five more ArgoCD containers did the same.
+    A count is not a quantity, and a budget that silently omits its largest
+    entry reads lower than the box actually is.
+
+    RSS rather than working set, for the reason `CADVISOR_RSS_SERIES` already
+    gives one screen up: working set counts reclaimable page cache, so it
+    overstates what a container would actually cost the host under pressure.
+
+    The per-Pod cgroup carries a line too, with an empty `container` label,
+    and it is dropped -- it is the sum of the containers inside it plus the
+    pause container, so keeping it would count everything twice.
+    """
+    path = f"/api/v1/nodes/{host}/proxy/metrics/cadvisor"
+    try:
+        proc = runner(["kubectl", "get", "--raw", path],
+                      capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl get --raw {path} failed: {exc}"
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        return None, f"kubectl get --raw {path} failed: {detail}"
+
+    found = {}
+    for line in proc.stdout.splitlines():
+        match = _CADVISOR_LINE.match(line)
+        if not match or match.group("series") != CADVISOR_RSS_SERIES:
+            continue
+        labels = dict(
+            (m.group("key"), m.group("value"))
+            for m in _CADVISOR_LABEL.finditer(match.group("labels")))
+        container = labels.get("container")
+        pod = labels.get("pod")
+        if not container or not pod:
+            continue
+        try:
+            value = float(match.group("value"))
+        except ValueError:
+            continue
+        found[(labels.get("namespace") or "", pod, container)] = value / 1024 / 1024
+    if not found:
+        # A 200 that named no container is no instrument, not an idle node:
+        # every node in this cluster runs Pods, and the caller must print the
+        # count-only sentence rather than a measured nought.
+        return None, f"{path} returned no per-container {CADVISOR_RSS_SERIES} series"
+    return found, None
+
+
+def unlimited_container_rss(pods, rss):
+    """What the containers that declare no memory limit actually hold.
+
+    Returns (total MiB, [(label, MiB) largest first], measured, unmeasured).
+    `pods` is already scoped to one node by the caller; `rss` is that node's
+    reading from `read_node_container_rss`.
+
+    A container the reading does not carry is counted in `unmeasured` and left
+    out of the total, never treated as nought -- a missing sample and an idle
+    container are different facts, and only one of them is safe to add up.
+    """
+    total = 0.0
+    named = []
+    unmeasured = 0
+    for pod in pods:
+        if pod.get("phase") not in ("Running", "Pending"):
+            continue
+        limits = pod.get("limits") or {}
+        for name in pod.get("container_names") or []:
+            if name in limits:
+                continue
+            mib = rss.get((pod.get("namespace") or "", pod.get("name") or "", name))
+            if mib is None:
+                unmeasured += 1
+                continue
+            total += mib
+            named.append((f"{pod.get('namespace')}/{pod.get('name')}/{name}", mib))
+    named.sort(key=lambda row: row[1], reverse=True)
+    return total, named, len(named), unmeasured
+
+
 def host_cgroup_shares(cgroups):
     """(root, kubepods, [(cgroup, mib), ...], unnamed) in MiB, from a cAdvisor read.
 
@@ -1070,7 +1166,45 @@ def declared_ceiling(pods):
     return total, with_limit, without_limit
 
 
-def budget_line(host, ceiling, limited, unlimited, total):
+def unbounded_clause(unlimited, ceiling, total, measured, why, limited=1):
+    """What the containers with no declared limit contribute, as one sentence.
+
+    Split out of `budget_line` in Cycle 986. Until then that line could only
+    say how *many* containers declared nothing, which is a count standing in
+    for a quantity: on 2026-09-05 the six ArgoCD containers on server1 -- the
+    largest single memory consumer on that node at 310 MiB resident -- added
+    zero to its budget figure while being named nowhere in it.
+
+    `measured` is `unlimited_container_rss`'s answer for this node, or None
+    when the reading could not be taken; `why` is then printed instead, so a
+    missing instrument never reads as a measured nought. It reports and does
+    **not** feed the raise: the verdict above stays on declared limits, which
+    is what the scheduler and the cgroup ceiling are actually made of, and a
+    threshold on live RSS would be a number I picked rather than measured.
+    """
+    if not unlimited:
+        return " Every running container sets one, so this sum is the whole of it."
+    floor = (f" {unlimited} more running container(s) set no limit at all, so this "
+             "sum is the least the host can be asked for, not the most."
+             if limited else
+             f" {unlimited} running container(s) declare nothing at all.")
+    if measured is None:
+        return floor + f" What they hold was not read: {why}."
+    rss, named, counted, unmeasured = measured
+    if not counted:
+        return floor + " None of them carried a resident-memory reading."
+    combined = ceiling + rss
+    share = combined / total * 100 if total else 0.0
+    largest = f" — largest {named[0][0]} at {named[0][1]:.0f}Mi" if named else ""
+    gap = (f" {unmeasured} of them carried no reading and {'is' if unmeasured == 1 else 'are'} "
+           "in neither figure." if unmeasured else "")
+    return (f"{floor} Right now {counted} of them hold {rss:.0f}Mi resident{largest}, "
+            f"so {combined:.0f}Mi of {total:.0f}Mi ({share:.0f}%) is spoken for once "
+            f"they are counted. That half is what they take today, not a ceiling "
+            f"they are held to.{gap}")
+
+
+def budget_line(host, ceiling, limited, unlimited, total, measured=None, why=""):
     """One node's declared memory budget against its own capacity.
 
     Returns (line, actionable). Shared by the node this pod stands on and
@@ -1078,14 +1212,14 @@ def budget_line(host, ceiling, limited, unlimited, total):
     -- only where the capacity came from differs, and that is the caller's.
     """
     if limited == 0:
+        # Nothing declared is the extreme of the same defect, not an exemption
+        # from it: with no ceiling anywhere, the measured half is the only
+        # thing that can be said about this node at all.
         return (f"BUDGET  {host}: no running container sets a memory limit, so there "
-                "is no declared budget to compare against the box."), False
+                "is no declared budget to compare against the box."
+                + unbounded_clause(unlimited, 0.0, total, measured, why, limited)), False
     share = ceiling / total * 100 if total else 0.0
-    unbounded = (
-        f" {unlimited} more running container(s) set no limit at all, so this "
-        "sum is the least the host can be asked for, not the most."
-        if unlimited else
-        " Every running container sets one, so this sum is the whole of it.")
+    unbounded = unbounded_clause(unlimited, ceiling, total, measured, why, limited)
     if ceiling > total:
         return (f"MEMORY OVERCOMMITTED — {host} is {total:.0f}Mi and the memory limits "
                 f"declared on it sum to {ceiling:.0f}Mi ({share:.0f}%) across {limited} "
@@ -1206,7 +1340,19 @@ def swap_line(node, swap_total_mib, swap_free_mib):
             f"({swap_free_mib / swap_total_mib * 100:.1f}%)."), False
 
 
-def other_node_budgets(nodes, host, pods, stats=None):
+def measure_unlimited(node, pods, reader):
+    """(measured, why) for one node's containers that declare no limit.
+
+    One place for the read-then-attribute pair, because `memory_headroom` and
+    `other_node_budgets` both need it and a second copy would drift.
+    """
+    rss, why = reader(node)
+    if rss is None:
+        return None, why
+    return unlimited_container_rss(pods, rss), ""
+
+
+def other_node_budgets(nodes, host, pods, stats=None, container_rss=None):
     """Every node this pod is not standing on, judged the same way as the one it is.
 
     Cycle 860 gave each of these a budget line -- capacity against the limits
@@ -1229,10 +1375,14 @@ def other_node_budgets(nodes, host, pods, stats=None):
     which is the same contract every check in `preflight` keeps.
     """
     read_stats = stats or read_node_memory_stats
+    read_rss = container_rss or read_node_container_rss
     lines, actionable, judged = [], False, True
     for node in sorted(n for n in nodes if n != host):
-        ceiling, limited, unlimited = declared_ceiling(pods_on(pods, node))
-        line, raised = budget_line(node, ceiling, limited, unlimited, nodes[node])
+        here = pods_on(pods, node)
+        ceiling, limited, unlimited = declared_ceiling(here)
+        measured, why = measure_unlimited(node, here, read_rss) if unlimited else (None, "")
+        line, raised = budget_line(node, ceiling, limited, unlimited, nodes[node],
+                                   measured, why)
         actionable = actionable or raised
         lines.append(line)
 
@@ -1265,7 +1415,7 @@ def other_node_budgets(nodes, host, pods, stats=None):
     return lines, actionable, judged
 
 
-def memory_headroom(meminfo, nodes, pods, stats=None):
+def memory_headroom(meminfo, nodes, pods, stats=None, container_rss=None):
     """Can this host still start the largest container it is configured to run?
 
     `pods` is the whole cluster and it is scoped here, not by the caller:
@@ -1320,7 +1470,9 @@ def memory_headroom(meminfo, nodes, pods, stats=None):
     lines.append(line)
 
     ceiling, limited, unlimited = declared_ceiling(here)
-    line, raised = budget_line(host, ceiling, limited, unlimited, total)
+    read_rss = container_rss or read_node_container_rss
+    measured, why = measure_unlimited(host, here, read_rss) if unlimited else (None, "")
+    line, raised = budget_line(host, ceiling, limited, unlimited, total, measured, why)
     actionable = actionable or raised
     lines.append(line)
 
@@ -1330,7 +1482,7 @@ def memory_headroom(meminfo, nodes, pods, stats=None):
     lines.append(line)
 
     other_lines, other_actionable, other_judged = other_node_budgets(
-        nodes, host, pods, stats=stats)
+        nodes, host, pods, stats=stats, container_rss=container_rss)
     lines.extend(other_lines)
     actionable = actionable or other_actionable
     return lines, actionable, other_judged
