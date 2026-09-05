@@ -44,14 +44,29 @@ implementation was a reasonable thing to start doing. **If the question is what
 a node has been promised rather than what it has left, it is answered already
 and it is not answered here.**
 
-Swap is printed and never raises. Its total is `swapAvailableBytes +
-swapUsageBytes`, so a node reporting a total of zero has no swap configured at
+Swap is printed and never raises. Its total is `swapAvailableBytes` +
+`swapUsageBytes`, so a node reporting a total of zero has no swap configured at
 all rather than full swap -- server2 is in that state today and server1 is not,
 and reading a 0 as "completely full" is exactly the confusion this file exists
 to stop.
+
+**A node having swap is not the same as a pod being able to use it, and this
+file used to say it was.** The zero-swap line read *"this node has no cushion
+and OOM-kills instead"*, which three cycles then carried into the handoff and
+onto issue #131 as a reason not to move a workload to server2. Measured
+2026-09-05 from a container on server1, the node *with* the 2GB swap file:
+`memory.swap.max` is **0** and `memory.swap.current` is **0**. Both kubelets run
+`failSwapOn: false` with `memorySwap` unset, and unset defaults to `NoSwap`, so
+every container cgroup on both nodes is forbidden swap entirely. server1's swap
+cushions host processes -- k3s, containerd, the stray `claude.exe` children
+the owner reaped on 08-29 -- and does nothing whatsoever for a pod that reaches its
+own memory limit. So the behaviour is read off each kubelet's own `configz` and
+printed beside the numbers rather than asserted here, because a sentence in this
+docstring is exactly the thing that went stale last time.
 """
 
 import argparse
+import json
 import subprocess
 
 from tools import disk_health, oom_history
@@ -87,6 +102,56 @@ def node_swap(summary):
     return free + used, used
 
 
+def read_swap_behavior(node, runner=subprocess.run):
+    """What the kubelet on `node` lets a container do with the node's swap.
+
+    Returns `memorySwap.swapBehavior`, or `""` when the key is absent. Absent is
+    a real answer rather than a missing one -- the kubelet defaults it to
+    `NoSwap` -- and it is kept distinct from the explicit spelling so a node that
+    was configured on purpose can be told from one that inherited the default.
+    """
+    done = runner(
+        [
+            "kubectl",
+            "get",
+            "--raw",
+            "/api/v1/nodes/%s/proxy/configz" % node,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode != 0:
+        raise OSError((done.stderr or "").strip() or "kubectl get --raw failed")
+    config = (json.loads(done.stdout) or {}).get("kubeletconfig") or {}
+    return ((config.get("memorySwap") or {}).get("swapBehavior")) or ""
+
+
+def swap_reaches_pods(behavior):
+    """`True` only when this kubelet lets a container use the node's swap.
+
+    `LimitedSwap` is the one setting that gives a Burstable pod any swap at all.
+    `NoSwap` and the unset default both cap every container cgroup at
+    `memory.swap.max=0`, which is why they must not be reported differently from
+    a node with no swap file.
+    """
+    return behavior == "LimitedSwap"
+
+
+def swap_clause(behavior):
+    """The sentence that says whether the swap numbers above mean anything for a pod."""
+    if behavior is None:
+        return ("could not read this kubelet's swapBehavior, so whether a pod on "
+                "this node can reach that swap at all is unmeasured")
+    if swap_reaches_pods(behavior):
+        return ("reaches pods: kubelet swapBehavior is LimitedSwap, so a Burstable "
+                "pod here may use it")
+    named = behavior or "unset, which the kubelet defaults to NoSwap"
+    return ("does NOT cushion a pod: kubelet swapBehavior is %s, so every container "
+            "cgroup on this node is capped at memory.swap.max=0 and a pod that hits "
+            "its own memory limit is OOM-killed exactly as it would be with no swap "
+            "file at all. Host processes only." % named)
+
+
 def largest_pod(summary):
     """The biggest pod working set on this node, as `(bytes, name)`.
 
@@ -118,7 +183,7 @@ def _mib(value):
     return "%dMi" % int(value / MIB)
 
 
-def report(node, summary, out=print):
+def report(node, summary, behavior=None, out=print):
     """One node's block. Returns 1 when it is a finding, else 0."""
     memory = node_memory(summary)
     if memory is None:
@@ -142,11 +207,13 @@ def report(node, summary, out=print):
     swap = node_swap(summary)
     if swap is None:
         out("          swap: the kubelet reports no swap block for this node")
-    elif swap[0] == 0:
-        out("          swap: none configured — a total of 0 is no swap file, "
-            "not a full one; this node has no cushion and OOM-kills instead")
     else:
-        out("          swap: %s of %s used" % (_mib(swap[1]), _mib(swap[0])))
+        if swap[0] == 0:
+            out("          swap: none configured — a total of 0 is no swap file, "
+                "not a full one")
+        else:
+            out("          swap: %s of %s used" % (_mib(swap[1]), _mib(swap[0])))
+        out("                %s" % swap_clause(behavior))
     return 1 if tight else 0
 
 
@@ -178,7 +245,11 @@ def main(argv=None, runner=subprocess.run, out=print):
             unreadable.append(node)
             out("  CANNOT READ %s — %s" % (node, exc))
             continue
-        judged = report(node, summary, out=out)
+        try:
+            behavior = read_swap_behavior(node, runner=runner)
+        except (OSError, ValueError):
+            behavior = None
+        judged = report(node, summary, behavior=behavior, out=out)
         if judged is None:
             unreadable.append(node)
         else:
