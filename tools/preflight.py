@@ -134,6 +134,7 @@ CHECKS = (
     "ci_minutes",
     "eol_watch",
     "cli_features",
+    "credential_recovery",
     "changelog_watch",
     "cache_health",
     "hook_cost",
@@ -214,6 +215,9 @@ SUBJECT = {
     "ci_minutes":        ("off-box", "this org's GitHub Actions billing"),
     "eol_watch":         ("off-box", "endoflife.date"),
     "cli_features":      ("on-box",  "the CLI's flag cache on this pod"),
+    #: On-box because the Secret it judges is only readable here, as an
+    #: environment variable -- the Secret object itself is refused by RBAC.
+    "credential_recovery": ("on-box", "the recovery credential in the claude-auth Secret"),
     "changelog_watch":   ("off-box", "the upstream CLI changelog"),
     "cache_health":      ("on-box",  "my own cycle records"),
     "hook_cost":         ("on-box",  "my own cycle records"),
