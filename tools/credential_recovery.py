@@ -26,7 +26,12 @@ re-authed by hand. `bridge/credentials.py` records that outage in full.
 What it could not do is tell anyone the same thing was true *again*
 before the next volume event.
 
-Measured live 2026-09-05 10:11 Oslo, from inside the bridge pod: the
+Measured 2026-09-05 10:11 Oslo, from inside the bridge pod -- and note
+what "from inside the bridge pod" costs, because cycle 959 paid it: the
+snapshot is read from an environment variable, which the kubelet freezes
+at container start and never rewrites, so it is the Secret *as of this
+pod's start* rather than the live one. `env_is_stale` below is what
+separates those two. The reading itself: the
 Secret's snapshot expired **2026-08-01T18:22:21Z**, thirty-five days ago,
 and says `subscriptionType: pro` against a live `max`. So on that
 morning, replacing the PVC -- as a server2 move, a node failure or a
@@ -58,8 +63,11 @@ compares or returns, which is also why there is no fixture in the test
 file carrying anything shaped like a real token.
 
 Exit 2 -- the Secret's snapshot cannot log in, so there is no recovery
-path from a lost volume. Exit 1 -- one of the two sides could not be
-read, which never reads as clean. Exit 0 -- the Secret would still work.
+path from a lost volume. Exit 1 -- the verdict could not be reached:
+either a side was unreadable, or the environment variable is provably
+older than the Secret (`env_is_stale`), which is a different reason and
+is deliberately not a 2. Neither ever reads as clean. Exit 0 -- the
+Secret would still work.
 """
 import argparse
 import json
@@ -76,6 +84,121 @@ SECRET_ENV = "CLAUDE_CREDENTIALS_JSON"
 
 #: Where the live copy sits, relative to CLAUDE_HOME.
 DISK_RELATIVE = os.path.join(".claude", ".credentials.json")
+
+#: The SealedSecret the controller unseals into that Secret. Its
+#: `Synced` condition carries `lastUpdateTime`, which is when the
+#: controller last *wrote* the Secret -- readable without reading a
+#: Secret, which RBAC refuses here.
+SEALED_NAME = "claude-auth"
+SEALED_NAMESPACE = "agents"
+
+
+def _kubectl(args):
+    """One `kubectl get -o jsonpath` read, or None if it cannot be made."""
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["kubectl"] + args, capture_output=True, text=True, timeout=20
+        )
+    except Exception:  # absent binary, timeout, or no API route
+        return None
+    if done.returncode != 0:
+        return None
+    value = done.stdout.strip()
+    return value or None
+
+
+def _stamp(value):
+    """An RFC3339 stamp from the API server as an aware datetime, or None.
+
+    `fromisoformat` rather than a `strptime` format, because a format
+    string only accepts the one shape it spells. `metav1.Time` marshals
+    whole seconds and a literal `Z`, but a plain Go `time.Time` carries
+    fractional seconds and an offset may be numeric -- and a value that
+    is present and unparsable would fall into the *unknown* branch,
+    which prints a caveat and changes no verdict. That is a gate that
+    silently stops gating, which is the failure shape this loop pays for
+    most often.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def sealed_written_at(read=None):
+    """When the controller last wrote the Secret this env var came from."""
+    reader = _kubectl if read is None else read
+    return _stamp(
+        reader(
+            [
+                "get",
+                "sealedsecret",
+                SEALED_NAME,
+                "-n",
+                SEALED_NAMESPACE,
+                "-o",
+                'jsonpath={.status.conditions[?(@.type=="Synced")].lastUpdateTime}',
+            ]
+        )
+    )
+
+
+def pod_started_at(read=None, env=None):
+    """When the pod holding this environment started."""
+    environ = os.environ if env is None else env
+    name = environ.get("HOSTNAME") or ""
+    if not name:
+        return None
+    reader = _kubectl if read is None else read
+    return _stamp(
+        reader(
+            [
+                "get",
+                "pod",
+                name,
+                "-n",
+                SEALED_NAMESPACE,
+                "-o",
+                "jsonpath={.status.startTime}",
+            ]
+        )
+    )
+
+
+def env_is_stale(pod_start, sealed_written):
+    """Is the snapshot in this environment provably not the current Secret?
+
+    A Secret projected as an environment variable is frozen at the moment
+    the container started; the kubelet never rewrites it. So the value
+    this check reads is the Secret *as of pod start*, and the docstring
+    above -- "measured live" -- was never true of it.
+
+    That is not pedantry. Cycle 958 resealed the credential and the
+    controller wrote the Secret at 2026-09-05 08:37 UTC; this pod started
+    2026-09-04 20:50 UTC, twelve hours earlier, so on the very next cycle
+    this check reported the expired snapshot as current and told cycle
+    959 to go and do the reseal that had already landed. It fails the
+    other way too and worse: once a pod has started with a good snapshot,
+    a later bad reseal is invisible here until the next restart, so the
+    check can report clean about a Secret it cannot see.
+
+    Both timestamps come from the API server rather than from the Secret,
+    which RBAC refuses to show this account at all. If either is
+    unreadable the answer is None -- unknown, not fresh -- because a
+    freshness claim nothing measured is the thing this function exists to
+    stop.
+    """
+    if pod_start is None or sealed_written is None:
+        return None
+    # `>=`, not `>`: these stamps are whole seconds, so a write inside the
+    # start second could have gone either way, and the safe reading of
+    # "I cannot tell" is not "the value is current".
+    return sealed_written >= pod_start
 
 
 class CredentialError(Exception):
@@ -294,6 +417,41 @@ def main(argv=None):
         )
         return 1
 
+    sealed_written = sealed_written_at()
+    pod_start = pod_started_at()
+    stale_env = env_is_stale(pod_start, sealed_written)
+    if stale_env:
+        sys.stdout.write(
+            "CANNOT JUDGE the %s snapshot in this pod's environment is not the "
+            "Secret's current contents. The controller wrote that Secret %s UTC and "
+            "this pod started %s UTC, so the value read here is the pre-write copy -- "
+            "an environment variable projected from a Secret is frozen when the "
+            "container starts and is never rewritten.\n"
+            % (
+                SECRET_ENV,
+                sealed_written.isoformat(timespec="seconds"),
+                pod_start.isoformat(timespec="seconds"),
+            )
+        )
+        sys.stdout.write(
+            "Unreadable never reads as clean, and it is deliberately not a RAISE "
+            "either: raising here sends a cycle to redo a reseal that has already "
+            "landed, which is exactly what happened to cycle 959. This becomes "
+            "readable again the next time the bridge pod restarts.\n"
+        )
+        return 1
+
+    freshness_note = None
+    if stale_env is None:
+        freshness_note = (
+            "NOT JUDGED  whether the snapshot in this pod's environment is the "
+            "Secret's current contents. That needs the SealedSecret's Synced "
+            "condition and this pod's startTime from the API server, and one of "
+            "them was unreadable here -- so the verdict below is about the Secret "
+            "as of this pod's start, which is all an environment variable can ever "
+            "carry.\n"
+        )
+
     path = args.disk or disk_path()
     live = None
     live_expiry = None
@@ -311,6 +469,8 @@ def main(argv=None):
         sys.stdout.write("Unreadable never reads as clean.\n")
         return 1
 
+    if freshness_note:
+        sys.stdout.write(freshness_note)
     return report(findings, secret_expiry, stale, live, live_expiry, now, sys.stdout, field)
 
 
