@@ -7,7 +7,33 @@ never being built, and the handler never opening a span even though it is.
 
 import pytest
 
-from agora_runner import nova_site, otel
+from importlib import import_module
+
+# `agora_runner/__init__` does `from agora_runner.main import *`, so the
+# package attribute `main` is the *function*, not the module -- a plain
+# `import agora_runner.main as runner_main` binds the function and
+# monkeypatch then fails with a bare AttributeError.
+runner_main = import_module("agora_runner.main")
+from agora_runner import invoke_server, nova_site, nova_site_main, otel
+
+
+class _StopMain(Exception):
+    """Cuts `main()` off after the tracing call, which is all these test."""
+
+
+def _raise_stop(*args, **kwargs):
+    raise _StopMain()
+
+
+class _SignalStub:
+    """`main()` installs SIGTERM handlers; a test process must keep its own."""
+
+    SIGTERM = 15
+    SIGINT = 2
+
+    @staticmethod
+    def signal(signum, handler):
+        return None
 
 
 class _FakeSpan:
@@ -155,3 +181,106 @@ def test_send_response_only_survives_a_handler_with_no_span(monkeypatch):
     handler = object.__new__(nova_site.NovaSiteHandler)
     handler.send_response_only(200)
     assert sent == [200]
+
+
+# --- the runner's own HTTP server -------------------------------------
+#
+# The runner and nova-site share an image and a module, and until now only
+# one of them emitted anything. These are the same two silent failures as
+# above, asked of the other process: the wrapper never opening a span, and
+# the service naming itself after its housemate.
+
+
+def _invoke_handler(path="/mcp"):
+    handler = object.__new__(invoke_server.InvokeHandler)
+    handler.command = "POST"
+    handler.path = path
+    return handler
+
+
+def test_invoke_do_post_opens_a_span_around_the_real_routing(tracer, monkeypatch):
+    """`_handle_post` holds every route on this server and nothing else
+    calls it, so an unwrapped `do_POST` traces nothing at all."""
+    called = []
+    monkeypatch.setattr(
+        invoke_server.InvokeHandler, "_handle_post", lambda self: called.append(self.path)
+    )
+    handler = _invoke_handler("/tool-activity")
+    handler.do_POST()
+    assert called == ["/tool-activity"]
+    assert [s.name for s in tracer.spans] == ["POST /tool-activity"]
+
+
+def test_invoke_span_drops_the_query_string(tracer, monkeypatch):
+    monkeypatch.setattr(invoke_server.InvokeHandler, "_handle_post", lambda self: None)
+    handler = _invoke_handler("/invoke?preview=1")
+    handler.do_POST()
+    assert [s.name for s in tracer.spans] == ["POST /invoke"]
+    assert tracer.spans[0].attributes["url.path"] == "/invoke"
+
+
+def test_invoke_send_response_only_records_the_status(tracer, monkeypatch):
+    """Every reply on this server goes through `_send`, which calls
+    `send_response`, which lands here."""
+    sent = []
+    monkeypatch.setattr(
+        invoke_server.BaseHTTPRequestHandler,
+        "send_response_only",
+        lambda self, code, message=None: sent.append(code),
+    )
+
+    def _routing(self):
+        self.send_response_only(401)
+
+    monkeypatch.setattr(invoke_server.InvokeHandler, "_handle_post", _routing)
+    handler = _invoke_handler()
+    handler.do_POST()
+    assert sent == [401]
+    assert tracer.spans[0].attributes["http.response.status_code"] == 401
+
+
+def test_invoke_send_response_only_survives_a_handler_with_no_span(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        invoke_server.BaseHTTPRequestHandler,
+        "send_response_only",
+        lambda self, code, message=None: sent.append(code),
+    )
+    handler = object.__new__(invoke_server.InvokeHandler)
+    handler.send_response_only(200)
+    assert sent == [200]
+
+
+def test_each_entrypoint_names_its_own_service(monkeypatch):
+    """The two processes share an image, so a runner that inherited the
+    module default would file its spans under `nova-site` and quietly mix
+    two services' latency into one line on the Traces row."""
+    named = []
+    monkeypatch.setattr(runner_main, "init_tracing", lambda name=None: named.append(name))
+    monkeypatch.setattr(runner_main, "start_invoke_server", lambda: None)
+    monkeypatch.setattr(runner_main, "start_catalog_refresh", _raise_stop)
+    monkeypatch.setattr(runner_main, "signal", _SignalStub())
+    with pytest.raises(_StopMain):
+        runner_main.main()
+    assert named == ["agora-persona-runner"]
+
+    named.clear()
+    monkeypatch.setattr(nova_site_main, "init_tracing", lambda name=None: named.append(name))
+    monkeypatch.setattr(nova_site_main, "start_nova_site", _raise_stop)
+    monkeypatch.setattr(nova_site_main, "signal", _SignalStub())
+    with pytest.raises(_StopMain):
+        nova_site_main.main()
+    assert named == ["nova-site"]
+
+
+def test_the_module_default_is_not_a_real_service_name():
+    """A third caller that forgets to name itself must be obvious in Tempo
+    rather than landing on top of one of these two."""
+    assert otel.DEFAULT_SERVICE_NAME not in ("nova-site", "agora-persona-runner")
+
+
+def test_the_environment_still_wins_over_the_process_name(monkeypatch):
+    monkeypatch.setenv(otel.SERVICE_NAME_ENV, "renamed-by-the-manifest")
+    assert otel.service_name("agora-persona-runner") == "renamed-by-the-manifest"
+    monkeypatch.setenv(otel.SERVICE_NAME_ENV, "   ")
+    assert otel.service_name("agora-persona-runner") == "agora-persona-runner"

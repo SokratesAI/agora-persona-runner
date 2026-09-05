@@ -66,7 +66,7 @@ def main():
     # called here rather than at import of nova_site because the runner
     # process shares that module's image and should not get a second
     # exporter for spans it does not emit.
-    init_tracing()
+    init_tracing("nova-site")
     server = start_nova_site()
     # The stall notice rides this loop rather than getting a thread of its
     # own: it does nothing 99% of the time, it must not run while the

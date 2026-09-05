@@ -9,6 +9,7 @@ import threading
 
 from agora_runner.config import AGORA_TOKEN, NO_CAPS, RUNNER_PORT
 from agora_runner.log import log
+from agora_runner.otel import request_span
 from agora_runner.agora_api import fetch_persona
 from agora_runner.turns import build_system
 from agora_runner.reply import generate_reply
@@ -149,6 +150,33 @@ class InvokeHandler(BaseHTTPRequestHandler):
         self._send(status, payload)
 
     def do_POST(self):
+        # The whole POST path in one span, wrapped rather than opened
+        # inside `_handle_post`, for the same two reasons nova_site.py
+        # gives: the routing keeps its indentation, and a test that reads
+        # `_handle_post` still reads the routing.
+        # `getattr` rather than `self.command`: the attribute is set by
+        # BaseHTTPRequestHandler while it parses the request line, so a
+        # handler built directly -- which is how most of this repo's
+        # tests reach these routes -- has never had one, and tracing
+        # must not be the thing that decides whether a route answers.
+        method = getattr(self, "command", None) or "POST"
+        with request_span(method, self.path) as recorder:
+            self._otel = recorder
+            self._handle_post()
+
+    def send_response_only(self, code, message=None):
+        """Every status this handler sends funnels through here.
+
+        `_send` and `_send_status` both call `send_response`, which calls
+        this, so the span reads the code in one place instead of at each
+        of the fifteen call sites that send one.
+        """
+        recorder = getattr(self, "_otel", None)
+        if recorder is not None:
+            recorder.set_status_code(code)
+        super().send_response_only(code, message)
+
+    def _handle_post(self):
         if self.path == "/tool-activity":
             self._handle_tool_activity()
             return

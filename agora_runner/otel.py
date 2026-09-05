@@ -1,4 +1,4 @@
-"""OpenTelemetry tracing for the nova-site process.
+"""OpenTelemetry tracing for the two HTTP servers in this repo.
 
 The collector has been live in `infra` since 2026-09-05 and nothing in
 this cluster emitted a span to it -- it was proven with three spans sent
@@ -31,10 +31,18 @@ from agora_runner.log import log
 ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 
 #: What the service calls itself in Tempo. Also env-driven, because the
-#: same image runs the runner process and would want its own name.
+#: same image runs the runner process and wants its own name.
 SERVICE_NAME_ENV = "OTEL_SERVICE_NAME"
 
-DEFAULT_SERVICE_NAME = "nova-site"
+#: Used only when neither the environment nor the caller names the
+#: service. It is deliberately not a real service any more: this image
+#: runs two processes, so a constant that names one of them turns a
+#: missing env var on the *other* into spans filed under a name that is
+#: already taken -- which is worse than an obviously wrong name, because
+#: the Traces row would keep drawing one line and silently mix two
+#: services' latency into it. Each entrypoint passes its own name to
+#: `init_tracing`, so this is what a third caller that forgot gets.
+DEFAULT_SERVICE_NAME = "unnamed-service"
 
 # Resolved once by init_tracing() and read by request_span(). None means
 # tracing is off, which is the state for every test run and every local
@@ -46,12 +54,16 @@ def endpoint():
     return (os.environ.get(ENDPOINT_ENV) or "").strip()
 
 
-def service_name():
-    return (os.environ.get(SERVICE_NAME_ENV) or "").strip() or DEFAULT_SERVICE_NAME
+def service_name(default=DEFAULT_SERVICE_NAME):
+    return (os.environ.get(SERVICE_NAME_ENV) or "").strip() or default
 
 
-def init_tracing():
+def init_tracing(default_service_name=DEFAULT_SERVICE_NAME):
     """Build the tracer, or return None and say why in the log.
+
+    `default_service_name` is what this process calls itself when
+    `OTEL_SERVICE_NAME` is unset. The environment still wins, so a
+    manifest can rename a service without a code change.
 
     Idempotent: the second call returns the tracer the first one built,
     so importing this from more than one place cannot install two
@@ -73,17 +85,18 @@ def init_tracing():
         log(f"otel: tracing off, OpenTelemetry is not installed ({e})")
         return None
     try:
-        provider = TracerProvider(resource=Resource.create({SERVICE_NAME: service_name()}))
+        name = service_name(default_service_name)
+        provider = TracerProvider(resource=Resource.create({SERVICE_NAME: name}))
         # The exporter reads OTEL_EXPORTER_OTLP_ENDPOINT itself and appends
         # /v1/traces to it; passing the endpoint again here would produce
         # two different behaviours for the same variable.
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
         trace.set_tracer_provider(provider)
-        _tracer = trace.get_tracer("nova_site")
+        _tracer = trace.get_tracer(name)
     except Exception as e:  # pragma: no cover - a broken SDK must not take the site down
         log(f"otel: tracing off, could not build the tracer ({e})")
         return None
-    log(f"otel: tracing on, {service_name()} -> {endpoint()}")
+    log(f"otel: tracing on, {service_name(default_service_name)} -> {endpoint()}")
     return _tracer
 
 
