@@ -31,6 +31,27 @@ def millis(when):
     return int(when.timestamp() * 1000)
 
 
+POD_START = datetime(2026, 9, 4, 20, 50, 25, tzinfo=timezone.utc)
+
+#: Captured before the autouse fixture below can replace them, so the two
+#: tests that exercise the readers themselves get the real ones.
+REAL_SEALED_WRITTEN_AT = cr.sealed_written_at
+REAL_POD_STARTED_AT = cr.pod_started_at
+
+
+@pytest.fixture(autouse=True)
+def no_cluster(monkeypatch):
+    """Every test states its own freshness inputs, or has none.
+
+    Without this the whole file's verdicts depend on whether the machine
+    running pytest happens to have a `kubectl` that can reach this
+    cluster -- green in CI, red on the bridge pod, for reasons that have
+    nothing to do with the code under test.
+    """
+    monkeypatch.setattr(cr, "sealed_written_at", lambda: None)
+    monkeypatch.setattr(cr, "pod_started_at", lambda: None)
+
+
 def test_expired_secret_raises_and_names_the_outage():
     secret = json.loads(blob(millis(NOW - timedelta(days=35)), "pro"))["claudeAiOauth"]
     live = json.loads(blob(millis(NOW + timedelta(hours=5)), "max"))["claudeAiOauth"]
@@ -282,3 +303,75 @@ def test_the_stale_tail_no_longer_claims_this_loop_cannot_fix_it():
     text = out.getvalue()
     assert "this loop has neither" not in text
     assert "sealed-secrets-pub.pem" in text and "/v1/verify" in text
+
+
+def test_env_is_stale_when_the_controller_wrote_after_this_pod_started():
+    assert cr.env_is_stale(POD_START, POD_START + timedelta(hours=12)) is True
+
+
+def test_env_is_fresh_when_the_pod_started_after_the_controller_wrote():
+    assert cr.env_is_stale(POD_START, POD_START - timedelta(hours=1)) is False
+
+
+@pytest.mark.parametrize(
+    "pod_start,sealed", [(None, POD_START), (POD_START, None), (None, None)]
+)
+def test_an_unreadable_side_is_unknown_rather_than_fresh(pod_start, sealed):
+    # None is not False. Reading it as "fresh" would let a check that
+    # could not measure anything hand down the verdict of one that had.
+    assert cr.env_is_stale(pod_start, sealed) is None
+
+
+def test_main_cannot_judge_a_snapshot_older_than_the_secret(monkeypatch, capsys, tmp_path):
+    """The exact 2026-09-05 shape: a reseal landed while this pod ran."""
+    monkeypatch.setattr(cr, "pod_started_at", lambda: POD_START)
+    monkeypatch.setattr(cr, "sealed_written_at", lambda: POD_START + timedelta(hours=12))
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW - timedelta(days=35)), "pro"))
+    disk = tmp_path / "creds.json"
+    disk.write_text(blob(millis(datetime.now(timezone.utc) + timedelta(hours=5)), "max"))
+
+    assert cr.main(["--disk", str(disk)]) == 1
+    out = capsys.readouterr().out
+    assert "CANNOT JUDGE" in out
+    # The precondition: this same input is a RAISE once the freshness
+    # gate says the environment is current. Without this line the test
+    # would still pass if the gate swallowed every verdict.
+    assert "RAISE       " not in out
+    assert "kubeseal" not in out
+
+
+def test_a_fresh_environment_still_raises_on_a_stale_secret(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(cr, "pod_started_at", lambda: POD_START)
+    monkeypatch.setattr(cr, "sealed_written_at", lambda: POD_START - timedelta(hours=1))
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW - timedelta(days=35)), "pro"))
+    disk = tmp_path / "creds.json"
+    disk.write_text(blob(millis(datetime.now(timezone.utc) + timedelta(hours=5)), "max"))
+
+    assert cr.main(["--disk", str(disk)]) == 2
+    assert "RAISE" in capsys.readouterr().out
+
+
+def test_unknown_freshness_says_so_and_does_not_change_the_verdict(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW - timedelta(days=35)), "pro"))
+    disk = tmp_path / "creds.json"
+    disk.write_text(blob(millis(datetime.now(timezone.utc) + timedelta(hours=5)), "max"))
+
+    assert cr.main(["--disk", str(disk)]) == 2
+    out = capsys.readouterr().out
+    assert "NOT JUDGED  whether the snapshot in this pod's environment" in out
+    assert "RAISE" in out
+
+
+def test_a_kubectl_that_cannot_answer_is_not_a_timestamp():
+    assert REAL_SEALED_WRITTEN_AT(read=lambda args: None) is None
+    assert REAL_SEALED_WRITTEN_AT(read=lambda args: "") is None
+    assert REAL_SEALED_WRITTEN_AT(read=lambda args: "not a stamp") is None
+
+
+def test_pod_started_at_needs_a_hostname():
+    assert REAL_POD_STARTED_AT(read=lambda args: "2026-09-04T20:50:25Z", env={}) is None
+    assert REAL_POD_STARTED_AT(
+        read=lambda args: "2026-09-04T20:50:25Z", env={"HOSTNAME": "p"}
+    ) == POD_START
