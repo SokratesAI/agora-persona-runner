@@ -38,7 +38,18 @@ morning, replacing the PVC -- as a server2 move, a node failure or a
 mistyped `kubectl delete` -- would have reproduced the August outage
 exactly.
 
-**What this judges, and what it deliberately does not.** The subject is
+**Two questions now, and only one of them is about the Secret.**
+`judge_live_refresh` answers *when does this loop's login die*, off the
+live credential's `refreshTokenExpiresAt` -- a date that counts down from
+the last interactive login and that nothing in this loop can move. It runs
+first and prints before any branch below can return, because the Secret's
+half is unreachable on a pod whose environment predates the last reseal
+while the login deadline is readable either way. The measurement behind it
+is in that function, and it retires the handoff's plan of a periodic
+reseal: a reseal copies the credential on disk, and the credential on disk
+dies on the same day whether it is copied or not.
+
+**What the Secret half judges, and what it deliberately does not.** The subject is
 the *recovery* credential in the Secret, never the live one on disk. The
 disk copy expires every few hours by design and the CLI refreshes it, so
 raising on that would be raising on the system working. A raise here
@@ -278,6 +289,73 @@ def recovery_expiry(oauth, where):
     return expires_at(oauth, where), "expiresAt"
 
 
+#: How long this loop stayed down the one time its login lapsed: the
+#: credential expired on 2026-08-17 and the owner re-authenticated by
+#: hand thirty hours later (`bridge/credentials.py` records it). It is
+#: the only measurement anyone has of how long recovery takes here, so
+#: it is the margin below which there is no room left to recover at all.
+OUTAGE_HOURS = 30.0
+
+
+def judge_live_refresh(live, now):
+    """When does this loop's login die, and can it renew it itself?
+
+    It cannot, and that is the whole reason this is judged separately
+    from the Secret's snapshot. The CLI refreshes its own *access* token
+    every few hours off the refresh token and rewrites the file; it does
+    not mint a new refresh token, so `refreshTokenExpiresAt` counts down
+    from the last interactive login and nothing this loop does moves it.
+
+    Measured 2026-09-05, and the measurement is what this function is
+    for. The file on the PVC was rewritten at 05:01:47.700 UTC that
+    morning -- `expiresAt` 13:01:47.699, eight hours out, so the refresh
+    ran. `refreshTokenExpiresAt` came back 2026-09-16T21:08:31.699, the
+    same millisecond fraction as the access token's, so the server
+    supplied both in that same response and the refresh token's deadline
+    was **not** extended by using it. Thirty days before that stamp is
+    2026-08-17T21:08 -- the hand re-auth that ended the outage. So the
+    window is a fixed thirty days from a human login, and on 2026-09-16
+    this loop stops exactly as it did on 2026-08-17.
+
+    The consequence for the handoff: resealing the Secret periodically
+    cannot prevent that. A reseal copies the credential on disk, and the
+    credential on disk dies on the same day whether it is copied or not.
+    Only an interactive login moves the date.
+
+    Returns (findings, expiry) with expiry None when the file carries no
+    refresh expiry. There is deliberately no fallback to `expiresAt`
+    here: on the *live* copy that field is eight hours wide by design, so
+    judging it would raise every afternoon on a system that is working --
+    which is the trap `recovery_expiry` documents one function up, and
+    the reason its fallback is safe there and would not be safe here.
+    """
+    findings = []
+    raw = live.get("refreshTokenExpiresAt")
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return findings, None
+    expiry = _epoch(raw, "the live credential", "refreshTokenExpiresAt")
+    hours_left = (expiry - now).total_seconds() / 3600.0
+    if hours_left <= OUTAGE_HOURS:
+        findings.append(
+            {
+                "state": "login-expiring",
+                "detail": "the live credential's refresh token %s %s UTC, %.1f hour(s) "
+                "%s -- inside the %.0f hour(s) the 2026-08-17 recovery took, so there "
+                "is no margin left. Nothing in this loop can renew it: the CLI "
+                "refreshes the access token and leaves this date where it is. It takes "
+                "an interactive login by the owner."
+                % (
+                    "expired" if hours_left <= 0 else "expires",
+                    expiry.isoformat(timespec="seconds"),
+                    abs(hours_left),
+                    "ago" if hours_left <= 0 else "away",
+                    OUTAGE_HOURS,
+                ),
+            }
+        )
+    return findings, expiry
+
+
 def read_secret(env=None):
     """The Secret's frozen snapshot -- the thing a restore would use."""
     environ = os.environ if env is None else env
@@ -407,6 +485,51 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     now = datetime.now(timezone.utc)
+
+    # The live copy is read first, and its own verdict is printed before any
+    # branch below can return. The snapshot's verdict is unreachable on a pod
+    # whose environment predates the last reseal (`env_is_stale`), and that
+    # early return used to take the login deadline down with it -- two
+    # questions with one exit, where only one of them was unanswerable.
+    path = args.disk or disk_path()
+    try:
+        live = read_disk(path)
+        live_expiry = expires_at(live, path)
+    except CredentialError:
+        live = None
+        live_expiry = None
+
+    login_status = 0
+    if live is None:
+        sys.stdout.write(
+            "CANNOT READ the live credential at %s, so when this loop's login "
+            "expires is unknown.\n" % path
+        )
+        login_status = 1
+    else:
+        login_findings, login_expiry = judge_live_refresh(live, now)
+        if login_expiry is None:
+            sys.stdout.write(
+                "NOT JUDGED  when this loop's login expires -- the live credential "
+                "carries no refreshTokenExpiresAt. There is deliberately no fallback "
+                "to expiresAt here; that field is hours wide on the live copy.\n"
+            )
+            login_status = 1
+        elif login_findings:
+            for finding in login_findings:
+                sys.stdout.write("RAISE %s\n" % finding["detail"])
+            login_status = 2
+        else:
+            sys.stdout.write(
+                "This loop's login expires %s UTC, %.1f day(s) away. Only an "
+                "interactive login by the owner moves that date -- the CLI's own "
+                "refresh does not, and neither does resealing the Secret.\n"
+                % (
+                    login_expiry.isoformat(timespec="seconds"),
+                    (login_expiry - now).total_seconds() / 86400.0,
+                )
+            )
+
     try:
         secret = read_secret()
     except CredentialError as exc:
@@ -415,7 +538,7 @@ def main(argv=None):
             "Unreadable never reads as clean -- with no snapshot to judge, whether a "
             "restore would work is unknown rather than fine.\n"
         )
-        return 1
+        return max(1, login_status)
 
     sealed_written = sealed_written_at()
     pod_start = pod_started_at()
@@ -439,7 +562,7 @@ def main(argv=None):
             "landed, which is exactly what happened to cycle 959. This becomes "
             "readable again the next time the bridge pod restarts.\n"
         )
-        return 1
+        return max(1, login_status)
 
     freshness_note = None
     if stale_env is None:
@@ -452,26 +575,19 @@ def main(argv=None):
             "carry.\n"
         )
 
-    path = args.disk or disk_path()
-    live = None
-    live_expiry = None
-    try:
-        live = read_disk(path)
-        live_expiry = expires_at(live, path)
-    except CredentialError:
-        live = None
-        live_expiry = None
-
     try:
         findings, secret_expiry, stale, field = judge(secret, live, now)
     except CredentialError as exc:
         sys.stdout.write("CANNOT READ %s\n" % exc)
         sys.stdout.write("Unreadable never reads as clean.\n")
-        return 1
+        return max(1, login_status)
 
     if freshness_note:
         sys.stdout.write(freshness_note)
-    return report(findings, secret_expiry, stale, live, live_expiry, now, sys.stdout, field)
+    return max(
+        login_status,
+        report(findings, secret_expiry, stale, live, live_expiry, now, sys.stdout, field),
+    )
 
 
 if __name__ == "__main__":
