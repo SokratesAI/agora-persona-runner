@@ -310,6 +310,27 @@ def test_the_word_done_inside_his_sentence_is_prose_not_a_marker():
     assert [c["text"] for c in got] == ["I am DONE (Cycle whatever) with this page"]
 
 
+def test_a_capture_on_an_open_row_says_which_row_carries_it():
+    """It stays in the section, and the line says where the work already lives."""
+    text = with_captures(board((64, "move something to server2", BACKLOG,
+                                "09-05", IMMEDIATE)),
+                         "move something to server2")
+    caps = top_board_rows.unboarded_captures(text, "idea")
+    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"),
+                                captures=caps)
+    assert "already boarded as #64" in out
+    assert "cut this bullet" in out
+
+
+def test_a_capture_that_matches_no_row_gets_no_boarding_note():
+    text = with_captures(board((64, "some other row", BACKLOG, "09-05", IMMEDIATE)),
+                         "please look at the login page")
+    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"),
+                                captures=top_board_rows.unboarded_captures(text, "idea"))
+    assert "please look at the login page" in out
+    assert "already boarded" not in out
+
+
 def test_his_empty_cursor_bullet_is_not_a_capture():
     text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)))
     assert top_board_rows.unboarded_captures(text, "issue") == []

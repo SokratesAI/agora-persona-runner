@@ -24,6 +24,7 @@ IMMEDIATE = PRIORITY_LABELS["immediate"]
 HIGH = PRIORITY_LABELS["high"]
 LOW = PRIORITY_LABELS["low"]
 BACKLOG = STATUS_LABELS["backlog"]
+DONE_STATUS = STATUS_LABELS["done"]
 
 
 def board(*rows, captures=(), project=False):
@@ -69,6 +70,66 @@ def test_his_unfiled_captures_come_back_separately_from_the_board():
     payload = next_payload(issues, board(), ledger(), NOW)
     assert [c["text"] for c in payload["captures"]] == ["fix the thing on the NAS"]
     assert [r["number"] for r in payload["next"]] == [10]
+
+
+def test_a_capture_already_boarded_and_closed_is_not_unprocessed():
+    """Cycle 1007 woke to two finished captures ranked above the whole board.
+
+    `board_capture` cuts the bullet as it writes the row, so a bullet and a
+    row with the same sentence only coexist when somebody boarded by hand --
+    which is what happened to idea #258 and issue #189 on 2026-09-05.
+    """
+    issues = board((189, "the handover about merge_pr", DONE_STATUS, "09-05", HIGH),
+                   (10, "a real row", BACKLOG, "08-01", HIGH),
+                   captures=["the handover about merge_pr"])
+    payload = next_payload(issues, board(), ledger(), NOW)
+    assert payload["captures"] == []
+    assert [r["number"] for r in payload["next"]] == [10]
+
+
+def test_a_capture_boarded_on_an_open_row_is_kept_and_stamped():
+    """Hiding it would lose real work; the reader is told where it lives."""
+    issues = board((77, "move something to server2", BACKLOG, "09-05", HIGH),
+                   captures=["move something to server2"])
+    payload = next_payload(issues, board(), ledger(), NOW)
+    assert [c["text"] for c in payload["captures"]] == ["move something to server2"]
+    assert payload["captures"][0]["boardedAs"]["number"] == 77
+    assert payload["captures"][0]["boardedAs"]["status"] == BACKLOG
+
+
+def test_a_capture_that_matches_no_row_carries_no_boarding():
+    """The stamp must not fire on a bullet he has just typed."""
+    issues = board((189, "some other row", DONE_STATUS, "09-05", HIGH),
+                   captures=["fix the thing on the NAS"])
+    payload = next_payload(issues, board(), ledger(), NOW)
+    assert [c["text"] for c in payload["captures"]] == ["fix the thing on the NAS"]
+    assert payload["captures"][0]["boardedAs"] is None
+
+
+def test_boarding_is_matched_across_line_wrapping_only():
+    """Whitespace differs without anything being meant by it; wording does not."""
+    issues = board((189, "a  long   sentence", DONE_STATUS, "09-05", HIGH),
+                   captures=["a long sentence", "a long sentence but not really"])
+    payload = next_payload(issues, board(), ledger(), NOW)
+    assert [c["text"] for c in payload["captures"]] == ["a long sentence but not really"]
+
+
+def test_a_closed_row_does_not_drop_a_capture_from_the_other_board():
+    """The two boards are separate pages; a row on one says nothing about the other."""
+    issues = board((189, "the handover about merge_pr", DONE_STATUS, "09-05", HIGH))
+    ideas = board(captures=["the handover about merge_pr"])
+    payload = next_payload(issues, ideas, ledger(), NOW)
+    assert [c["text"] for c in payload["captures"]] == ["the handover about merge_pr"]
+    assert payload["captures"][0]["boardedAs"] is None
+
+
+def test_an_open_duplicate_row_wins_over_a_closed_one():
+    """He re-captured the same sentence; the open row is the one to be sent to."""
+    issues = board((189, "the same sentence", DONE_STATUS, "09-05", HIGH),
+                   (190, "the same sentence", BACKLOG, "09-05", HIGH),
+                   captures=["the same sentence"])
+    payload = next_payload(issues, board(), ledger(), NOW)
+    assert payload["captures"][0]["boardedAs"]["number"] == 190
 
 
 def test_a_live_claim_says_who_is_on_it_and_names_the_row():

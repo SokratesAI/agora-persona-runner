@@ -368,6 +368,47 @@ def near_miss_done_marker(bullet):
     return not split_capture_done(stripped)[0]
 
 
+def capture_match_key(text):
+    """The comparable form of a capture bullet or a row title.
+
+    A bullet and the row made from it are the same sentence typed once,
+    so an exact match is the whole test -- this deliberately does not
+    fuzzy-match, because a near match between two of his sentences would
+    hide a real capture behind an unrelated row. What it does normalise is
+    the two things that differ without anything being meant by it: the
+    surrounding whitespace, and the line wrapping a row title picks up
+    when the bullet ran long.
+    """
+    return " ".join((text or "").split())
+
+
+def boarded_capture_rows(items):
+    """`{match key: row}` for every row on the board, best row per key.
+
+    `parse_board` already read the rows; this is only the index that lets
+    a capture bullet ask whether it is one of them. When two rows carry the
+    same title -- he has re-captured the same sentence before -- the open
+    one wins, because a capture that is still open is the one a cycle needs
+    to see. Beyond that, first wins, which is `## Board` before any later
+    table for the reason `parse_board` reads them in that order.
+    """
+    index = {}
+    for item in items or []:
+        key = capture_match_key(item.get("title"))
+        if not key:
+            continue
+        current = index.get(key)
+        if current is None:
+            index[key] = item
+            continue
+        closed = item.get("done") or item.get("statusKey") in _CLOSED_STATUS_KEYS
+        current_closed = (current.get("done")
+                          or current.get("statusKey") in _CLOSED_STATUS_KEYS)
+        if current_closed and not closed:
+            index[key] = item
+    return index
+
+
 def split_capture_priority(bullet):
     """`🟠 High: text` -> `("🟠 High", "text")`. Unrated -> `("", bullet)`.
 

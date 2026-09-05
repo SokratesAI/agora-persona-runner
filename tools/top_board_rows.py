@@ -386,7 +386,13 @@ def _capture_line(capture):
         return f"notes.md  {held}{capture['text']}{claim}"
     rating = capture["priority"] or "(unrated)"
     text = capture["text"]
-    return f"{capture['board']}s.md  {held}{rating}  {text}{claim}"
+    # An open row on the same board already carries this sentence. The
+    # bullet stays -- the work is open -- but a cycle that takes it should
+    # write on the row rather than board it a second time.
+    row = capture.get("boardedAs")
+    boarded = (f"  [📋 already boarded as #{row['number']} {row['status']} "
+               f"-- work the row, and cut this bullet]") if row else ""
+    return f"{capture['board']}s.md  {held}{rating}  {text}{claim}{boarded}"
 
 
 def _capture_reply_help(captures):

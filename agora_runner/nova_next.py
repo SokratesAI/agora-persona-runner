@@ -29,7 +29,8 @@ same split `nova_plan` and `nova_retro` follow.
 import re
 
 from agora_runner.nova_boards import (
-    BLOCKED_STATUS, _CLOSED_STATUS_KEYS, is_relayed, parse_board,
+    BLOCKED_STATUS, _CLOSED_STATUS_KEYS, boarded_capture_rows,
+    capture_match_key, is_relayed, parse_board,
     near_miss_done_marker, split_capture_done,
     split_capture_priority, status_key,
     unanswered_comment_bodies,
@@ -90,17 +91,39 @@ def unboarded_captures(markdown, board):
     section that is entirely noise is worse than no section, because the
     next cycle learns to skip it -- which is issue #88, the one this tool
     exists to fix, coming back inverted.
+
+    **A capture already sitting on this board as a row is not one of these
+    either**, and that is `boardedAs`. `board_capture` cuts the bullet as
+    it writes the row, so the two can only both exist when somebody boarded
+    by hand -- which happened twice on 2026-09-05, giving idea #258 and
+    issue #189 a closed row and a bare bullet saying the same sentence.
+    Cycle 1007 woke to both of them printed above the whole board under
+    *"these outrank every row below"*, and both were finished work. A row
+    whose status is closed drops the bullet exactly as a DONE marker does;
+    an open row keeps it and stamps it, because that work really is open
+    and the reader should be told where it already lives rather than have
+    it hidden.
     """
     captures = []
+    parsed = parse_board(markdown or "")
+    boarded = boarded_capture_rows(parsed["items"])
     # `index` counts every bullet in the list, including the finished ones
     # skipped below, because it is the address `/api/capture/comment`
     # resolves against and that route reads the same list unfiltered. A
     # position taken after filtering would answer the wrong bullet.
-    for index, bullet in enumerate(parse_board(markdown or "")["captures"]):
+    for index, bullet in enumerate(parsed["captures"]):
         done, rest = split_capture_done(bullet)
         if done:
             continue
         priority, text = split_capture_priority(rest)
+        row = boarded.get(capture_match_key(text))
+        # A capture that is already a row on this same board is not
+        # unprocessed, whatever the bullet still says. Closed rows drop out
+        # here for the same reason a `DONE (Cycle N):` marker does -- see the
+        # docstring -- and an open row stays, stamped, because the work is
+        # genuinely still open and a cycle may want to take it.
+        if row and (row["done"] or row["statusKey"] in _CLOSED):
+            continue
         captures.append({"board": board, "priority": priority, "text": text,
                          # A capture is the same signal as a comment, one
                          # file over, and the same distinction applies: a
@@ -117,6 +140,11 @@ def unboarded_captures(markdown, board):
                          # flag alone would hide a real capture on a typo.
                          # The reader is told and decides.
                          "nearMissDone": near_miss_done_marker(bullet),
+                         # Which row on this same board carries this exact
+                         # sentence as its title, if any. `board_capture`
+                         # cuts the bullet as it adds the row, so this is
+                         # only ever non-None when somebody boarded by hand.
+                         "boardedAs": row,
                          # The two halves of the reply address: which bullet,
                          # and proof it has not moved. `original` is his own
                          # sentence, rating prefix and all, and *not* any
