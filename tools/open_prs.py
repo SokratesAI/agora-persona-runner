@@ -19,15 +19,20 @@ and three green and unmerged, two of them open for thirty-six days
 
 **Five verdicts, and only two of them raise.**
 
-`NO CI RUN` is the `#566` shape: the pull request has no check-runs *and*
-its repository has at least one workflow, so a run was expected and never
-appeared. The workflow probe is the whole point -- the four `*-config`
-repos return `total_count: 0` from `actions/workflows`, so a check-run
-was never coming there and calling that a finding would be the negative
-result that was guaranteed in advance. What this cannot see is a workflow
-whose `paths:` filter excludes the files in one particular pull request;
-that is a legitimate empty rollup on a repo with workflows, and it is
-printed as a caveat rather than silently folded into either bucket.
+`NO CI RUN` is the `#566` shape: the pull request has no check-runs and a
+run was going to appear. The question is which workflows *this pull
+request* would have started, not how many the repository declares -- the
+four `*-config` repos return `total_count: 0` from `actions/workflows`,
+so nothing was ever coming there, and `platform-config` has six
+workflows and (from #719 onward) none that runs on a pull request, which
+is the same answer reached a different way. So the empty rollup is
+judged against each active workflow's own trigger block, read at the
+pull request's head; a workflow whose YAML or run history cannot be read
+lands in `unreadable` rather than quietly clearing the finding. What
+this still cannot see is a workflow whose `paths:` filter excludes the
+files in one particular pull request; that is a legitimate empty rollup
+on a repo whose workflows do run on pull requests, and it is printed as
+a caveat rather than silently folded into either bucket.
 
 `FAILING` is any check-run that concluded badly. `PENDING` is a run still
 going and never raises -- a pull request opened four minutes ago is not a
@@ -80,12 +85,20 @@ was unreadable. "I could not check" never reads as "nothing here".
 """
 
 import argparse
+import base64
 import json
 import subprocess
 import sys
 from datetime import datetime, timezone
+from urllib.parse import quote
 
-from tools.security_alerts import repos_in_org
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
+from agora_runner.tools_github import _workflow_triggers_on_a_pull_request  # noqa: E402
+from tools.security_alerts import repos_in_org  # noqa: E402
 
 #: One day. See the module docstring: the loop wakes about seventy times
 #: in a day, so a finished pull request still open after one has outlived
@@ -165,6 +178,100 @@ def has_workflows(repo, run=None):
         return int(out.strip()), None
     except ValueError:
         return None, "the workflow count came back as something that is not a number"
+
+
+# The workflow count answers "does this repo run CI at all" and was standing
+# in for "was a check-run ever going to appear on this pull request". Those
+# stop being the same question the moment a repo keeps its workflows and
+# stops running them on pull requests, which is what `platform-config` did on
+# 2026-09-05 to stop paying a second billed Actions minute per merge. Its own
+# trigger-drop pull request, #719, was then reported here as NO CI RUN
+# forever, and `merge_pr` refused it for the same reason one layer over
+# (runner#775, cycle 994). The YAML rule lives in `agora_runner.tools_github`
+# and is imported rather than copied: two spellings of "does this trigger on a
+# pull request" is how the two tools drift apart again.
+WORKFLOW_FILE_PREFIX = ".github/workflows/"
+
+
+def _workflow_ran_from_a_pull_request(repo, workflow_id, run=None):
+    """For a workflow GitHub generates and the repository carries no file
+    for -- `Dependency Graph` is `dynamic/dependabot/update-graph`, and the
+    contents API answers 404 for it. `None` when the run history is
+    unreadable, which is its own answer and not a negative one."""
+    if workflow_id is None:
+        return None
+    code, out, _ = (run or _gh)(
+        [
+            "api",
+            f"repos/{repo}/actions/workflows/{workflow_id}/runs"
+            "?event=pull_request&per_page=1",
+            "--jq",
+            ".total_count",
+        ]
+    )
+    if code != 0:
+        return None
+    try:
+        return int(out.strip()) > 0
+    except ValueError:
+        return None
+
+
+def pull_request_workflows(repo, ref, run=None):
+    """`(on_pull_request, unreadable, error)` -- which of the repository's
+    active workflows would have produced a check-run on this pull request.
+
+    Read at the pull request's own head, because that is the copy GitHub
+    evaluates for a `pull_request` trigger on a same-repo branch, and it is
+    the only ref at which #719 -- the pull request that removes the trigger
+    -- reads as push-only. (For a fork GitHub reads the base branch's copy;
+    unreachable here, since every agent shares one GitHub account.)
+
+    Unreadable is its own bucket rather than a negative, for the reason
+    `judge` acts on: "I could not tell" must not read as "no run was
+    coming", or the false alarm this closes is replaced by a silence.
+    """
+    code, out, err = (run or _gh)(
+        ["api", f"repos/{repo}/actions/workflows?per_page=100",
+         "--jq", "[.workflows[] | {id, name, path, state}]"]
+    )
+    if code != 0:
+        blob = (err or out or "").strip()
+        return [], [], blob.splitlines()[0] if blob else f"gh exited {code}"
+    try:
+        workflows = json.loads(out)
+    except ValueError:
+        return [], [], "the workflow list came back as something that is not JSON"
+    if not isinstance(workflows, list):
+        return [], [], "the workflow list came back as something that is not a list"
+
+    on_pull_request, unreadable = [], []
+    for workflow in workflows:
+        if not isinstance(workflow, dict) or workflow.get("state") != "active":
+            continue
+        name = workflow.get("name") or workflow.get("path") or "?"
+        path = workflow.get("path")
+        if not path or not path.startswith(WORKFLOW_FILE_PREFIX):
+            verdict = _workflow_ran_from_a_pull_request(repo, workflow.get("id"), run=run)
+        else:
+            code, text, _ = (run or _gh)(
+                ["api", f"repos/{repo}/contents/{quote(path)}?ref={quote(ref or '')}",
+                 "--jq", ".content"]
+            )
+            if code != 0:
+                unreadable.append(name)
+                continue
+            try:
+                decoded = base64.b64decode(text.strip()).decode("utf-8")
+            except Exception:
+                unreadable.append(name)
+                continue
+            verdict = _workflow_triggers_on_a_pull_request(decoded)
+        if verdict is None:
+            unreadable.append(name)
+        elif verdict:
+            on_pull_request.append(name)
+    return on_pull_request, unreadable, None
 
 
 def parse_time(text):
@@ -261,12 +368,18 @@ def is_superseded(repo, pr, run=None):
     return True, f"all {len(files)} changed file(s) are already identical on {base}"
 
 
-def judge(pr, now, workflow_count, max_age_days=DEFAULT_MAX_AGE_DAYS):
+def judge(pr, now, workflow_count, pr_workflows=None,
+          max_age_days=DEFAULT_MAX_AGE_DAYS):
     """`(verdict, detail)` for one pull request.
 
     `workflow_count` is the repository's own, or `None` when it could not
     be read -- and an unreadable count never turns an empty rollup into a
     finding, because then the finding would rest on the thing that failed.
+
+    `pr_workflows` is `pull_request_workflows`'s `(on_pull_request,
+    unreadable)` for this pull request, or `None` when the triggers were
+    not read. `None` keeps the old count-only judgement, so a caller that
+    does not probe is unchanged.
     """
     if is_held(pr):
         return "held", "draft" if pr.get("isDraft") else "title says HELD"
@@ -290,6 +403,30 @@ def judge(pr, now, workflow_count, max_age_days=DEFAULT_MAX_AGE_DAYS):
             if age is not None and age > max_age_days:
                 return "ready", f"no CI on this repo, open {age:.1f} day(s)"
             return "ok", "no CI on this repo, and inside the window"
+        if pr_workflows is not None:
+            on_pull_request, unreadable = pr_workflows
+            if unreadable:
+                return "unreadable", (
+                    "no check-runs, and I could not read the trigger block of "
+                    f"{len(unreadable)} of this repo's {workflow_count} workflow(s): "
+                    + ", ".join(sorted(unreadable))
+                )
+            if not on_pull_request:
+                # Every active workflow is push-only, so no check-run was
+                # ever coming and an empty rollup is the expected answer --
+                # the same place a repo with no workflows at all lands.
+                if age is not None and age > max_age_days:
+                    return "ready", (
+                        f"no workflow here runs on a pull request, open {age:.1f} day(s)"
+                    )
+                return "ok", (
+                    "no workflow here runs on a pull request, and inside the window"
+                )
+            return "no_run", (
+                f"no check-run exists, and {len(on_pull_request)} of this repo's "
+                f"{workflow_count} workflow(s) run on a pull request: "
+                + ", ".join(sorted(on_pull_request))
+            )
         return "no_run", (
             f"no check-run exists, and this repo declares {workflow_count} "
             f"workflow(s), so one was expected"
@@ -431,6 +568,7 @@ def main(argv=None, now=None, run=None):
     results = []
     caveat_repos = []
     workflow_counts = {}
+    trigger_reads = {}
     for repo in repos:
         prs, err = open_prs_for(repo, run=run)
         if err:
@@ -443,8 +581,28 @@ def main(argv=None, now=None, run=None):
                 if count_err:
                     errors.append(f"{repo}: could not read the workflow count — {count_err}")
                 workflow_counts[repo] = count
+            pr_workflows = None
+            if needs_count and workflow_counts.get(repo):
+                # Only here: one contents call per active workflow, on a pull
+                # request that has no check-runs at all on a repo that has
+                # some. That is rare, and it is the only case where the
+                # count alone gets the answer wrong.
+                key = (repo, pr.get("headRefOid"))
+                if key not in trigger_reads:
+                    on_pr, unread, probe_err = pull_request_workflows(
+                        repo, pr.get("headRefOid"), run=run
+                    )
+                    if probe_err:
+                        errors.append(
+                            f"{repo}: could not read the workflow triggers — {probe_err}"
+                        )
+                        trigger_reads[key] = None
+                    else:
+                        trigger_reads[key] = (on_pr, unread)
+                pr_workflows = trigger_reads[key]
             verdict, detail = judge(
-                pr, now, workflow_counts.get(repo), max_age_days=args.max_age_days
+                pr, now, workflow_counts.get(repo), pr_workflows=pr_workflows,
+                max_age_days=args.max_age_days
             )
             if verdict == "ready":
                 # Only `ready` is asked. A failing or still-running pull

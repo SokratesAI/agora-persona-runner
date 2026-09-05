@@ -375,3 +375,156 @@ def test_a_live_pull_request_does_not_by_itself_raise():
 def test_a_pull_request_with_no_age_is_not_guessed_into_the_window():
     rows = [dict(_live(1, 3), age=None)]
     assert open_prs.live_cycle_rows(rows) == []
+
+
+class TestPullRequestTriggers:
+    """The count answers "does this repo run CI", not "was a check-run coming
+    here". `platform-config` kept six workflows and stopped running any of
+    them on a pull request (#719, 2026-09-05) to save a billed Actions minute
+    per merge, and every pull request to it read as NO CI RUN from then on."""
+
+    def test_push_only_workflows_are_not_a_finding(self):
+        verdict, detail = open_prs.judge(
+            pr(checks=()), NOW, workflow_count=6, pr_workflows=([], [])
+        )
+        assert verdict == "ok"
+        assert "no workflow here runs on a pull request" in detail
+
+    def test_a_push_only_repo_still_reaches_ready_when_it_goes_stale(self):
+        verdict, detail = open_prs.judge(
+            pr(checks=(), days_old=9), NOW, workflow_count=6, pr_workflows=([], [])
+        )
+        assert verdict == "ready"
+
+    def test_a_missing_run_is_still_a_finding_when_a_workflow_wants_one(self):
+        verdict, detail = open_prs.judge(
+            pr(checks=()), NOW, workflow_count=6, pr_workflows=(["checks"], [])
+        )
+        assert verdict == "no_run"
+        assert "checks" in detail
+
+    def test_unreadable_triggers_never_clear_the_finding(self):
+        # The direction that matters: "I could not tell" must not read as
+        # "no run was coming", or this closes a false alarm by going silent.
+        verdict, detail = open_prs.judge(
+            pr(checks=()), NOW, workflow_count=6, pr_workflows=([], ["seal-secrets"])
+        )
+        assert verdict != "ok"
+        assert verdict == "unreadable"
+        assert "seal-secrets" in detail
+
+    def test_not_probing_leaves_the_old_count_judgement_alone(self):
+        verdict, _ = open_prs.judge(pr(checks=()), NOW, workflow_count=6)
+        assert verdict == "no_run"
+
+
+class TestReadingTheTriggers:
+    def _run(self, replies):
+        calls = []
+
+        def run(args):
+            calls.append(args)
+            for needle, reply in replies:
+                if any(needle in a for a in args):
+                    return reply
+            raise AssertionError(f"no canned reply for {args}")
+
+        run.calls = calls
+        return run
+
+    LIST = json.dumps(
+        [
+            {"id": 1, "name": "checks", "path": ".github/workflows/checks.yml",
+             "state": "active"},
+            {"id": 2, "name": "Dependency Graph",
+             "path": "dynamic/dependabot/update-graph", "state": "active"},
+            {"id": 3, "name": "old", "path": ".github/workflows/old.yml",
+             "state": "disabled_manually"},
+        ]
+    )
+
+    def _b64(self, text):
+        import base64
+        # The contents API wraps base64 at 60 characters; a single unbroken
+        # line is a fixture the real API never produces.
+        blob = base64.encodebytes(text.encode()).decode()
+        return blob
+
+    def test_a_push_only_repo_reads_as_no_pull_request_workflow(self):
+        run = self._run(
+            [
+                ("actions/workflows?per_page=100", (0, self.LIST, "")),
+                ("contents/", (0, self._b64("on:\n  push:\n    branches: [main]\n"), "")),
+                ("/runs?event=pull_request", (0, "0\n", "")),
+            ]
+        )
+        on_pr, unreadable, err = open_prs.pull_request_workflows("o/r", "deadbeef", run=run)
+        assert err is None
+        assert on_pr == []
+        assert unreadable == []
+
+    def test_a_disabled_workflow_is_not_read(self):
+        run = self._run(
+            [
+                ("actions/workflows?per_page=100", (0, self.LIST, "")),
+                ("contents/", (0, self._b64("on:\n  pull_request:\n"), "")),
+                ("/runs?event=pull_request", (0, "0\n", "")),
+            ]
+        )
+        on_pr, _, _ = open_prs.pull_request_workflows("o/r", "deadbeef", run=run)
+        assert on_pr == ["checks"]
+        assert not any("old.yml" in "".join(a) for a in run.calls)
+
+    def test_a_fileless_workflow_is_judged_on_its_run_history(self):
+        run = self._run(
+            [
+                ("actions/workflows?per_page=100", (0, self.LIST, "")),
+                ("contents/", (0, self._b64("on:\n  push:\n"), "")),
+                ("/runs?event=pull_request", (0, "3\n", "")),
+            ]
+        )
+        on_pr, unreadable, _ = open_prs.pull_request_workflows("o/r", "x", run=run)
+        assert on_pr == ["Dependency Graph"]
+        assert unreadable == []
+
+    def test_an_unreadable_file_is_not_a_negative(self):
+        run = self._run(
+            [
+                ("actions/workflows?per_page=100", (0, self.LIST, "")),
+                ("contents/", (1, "", "HTTP 404")),
+                ("/runs?event=pull_request", (0, "0\n", "")),
+            ]
+        )
+        on_pr, unreadable, _ = open_prs.pull_request_workflows("o/r", "x", run=run)
+        assert on_pr == []
+        assert unreadable == ["checks"]
+
+    def test_an_unreadable_run_history_is_not_a_negative(self):
+        run = self._run(
+            [
+                ("actions/workflows?per_page=100", (0, self.LIST, "")),
+                ("contents/", (0, self._b64("on:\n  push:\n"), "")),
+                ("/runs?event=pull_request", (1, "", "HTTP 500")),
+            ]
+        )
+        _, unreadable, _ = open_prs.pull_request_workflows("o/r", "x", run=run)
+        assert unreadable == ["Dependency Graph"]
+
+    def test_the_head_ref_is_what_the_file_is_read_at(self):
+        # #719 removes the trigger on its own branch, so `main`'s copy still
+        # carries it and only the head answers the question GitHub asked.
+        run = self._run(
+            [
+                ("actions/workflows?per_page=100", (0, self.LIST, "")),
+                ("contents/", (0, self._b64("on:\n  push:\n"), "")),
+                ("/runs?event=pull_request", (0, "0\n", "")),
+            ]
+        )
+        open_prs.pull_request_workflows("o/r", "e4bbf14", run=run)
+        assert any("ref=e4bbf14" in "".join(a) for a in run.calls)
+
+    def test_an_unlistable_repo_is_an_error_not_an_empty_answer(self):
+        run = self._run([("actions/workflows?per_page=100", (1, "", "HTTP 403"))])
+        on_pr, unreadable, err = open_prs.pull_request_workflows("o/r", "x", run=run)
+        assert err == "HTTP 403"
+        assert (on_pr, unreadable) == ([], [])
