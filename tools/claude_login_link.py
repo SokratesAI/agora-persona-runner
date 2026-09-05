@@ -88,6 +88,18 @@ DEFAULT_BINARY = "/usr/bin/claude"
 DEFAULT_SESSION = "/data/claude-home/.claude/nova-login-session.json"
 DEFAULT_CREDENTIALS = "/data/claude-home/.claude/.credentials.json"
 
+# A `start` older than this is treated as abandoned and may be overwritten.
+SESSION_TTL_SECONDS = 3600
+
+# The CLI's own save path writes these three beside the token fields and the
+# token endpoint does not return any of them -- they come from a separate
+# profile fetch. `agora-claude-bridge/bridge/credentials.py` already paid for
+# this once: an earlier version there assembled a `claudeAiOauth` out of parts,
+# dropped fields the real file carries, and the CLI answered "Not logged in".
+# So this module carries them across from whatever credential is already on
+# disk, and says out loud when there is none to carry them from.
+CARRIED_FIELDS = ("subscriptionType", "rateLimitTier", "clientId")
+
 # The scopes the running credential actually carries. Used only when the live
 # credential cannot be read -- which is the disaster this whole flow exists for,
 # so the fallback has to exist and has to say it is one.
@@ -103,6 +115,15 @@ FALLBACK_SCOPES = [
 # not minified (they are property names in a literal), so each one is findable
 # on its own and a moved neighbour cannot silently change what another resolves
 # to.
+# The bundle carries the same key names in **two** config objects: the
+# production one and a local/staging one whose CLIENT_ID is a different
+# application. A bare first-match search picks the right one today only because
+# production happens to sit earlier in the file, which is a fact about layout
+# rather than a guarantee -- so the search is anchored on the one line only the
+# production object has, and everything is read from a window after it.
+PRODUCTION_ANCHOR = 'BASE_API_URL:"https://api.anthropic.com"'
+CONFIG_WINDOW = 2000
+
 _CONFIG_KEYS = {
     "authorize_url": "CLAUDE_AI_AUTHORIZE_URL",
     "token_url": "TOKEN_URL",
@@ -136,10 +157,17 @@ def extract_oauth_config(text: str) -> dict:
     value: a wrong authorize URL is a login attempt against somebody else's
     endpoint, and the failure would look like the owner mistyping something.
     """
+    start = text.find(PRODUCTION_ANCHOR)
+    if start < 0:
+        raise CannotSee(
+            "the installed CLI carries no production OAuth config object "
+            f"({PRODUCTION_ANCHOR!r} is not in it)"
+        )
+    window = text[start:start + CONFIG_WINDOW]
     found = {}
     missing = []
     for name, key in _CONFIG_KEYS.items():
-        match = re.search(re.escape(key) + r':"([^"]+)"', text)
+        match = re.search(re.escape(key) + r':"([^"]+)"', window)
         if match is None:
             missing.append(key)
         else:
@@ -201,6 +229,22 @@ def split_pasted_code(pasted: str):
     return pasted, None
 
 
+def live_session(path: str, ttl=SESSION_TTL_SECONDS, now=None):
+    """The unspent session at `path`, or None. A `start` that clobbers one
+    silently invalidates a link already sitting on his phone, and the failure
+    surfaces an hour later as a state mismatch that names the wrong cause."""
+    try:
+        with open(path) as handle:
+            existing = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    created = existing.get("created_at")
+    if not isinstance(created, (int, float)):
+        return None
+    now = time.time() if now is None else now
+    return existing if now - created < ttl else None
+
+
 def save_session(path: str, payload: dict) -> None:
     """0600, because the verifier is half of a credential until it is spent."""
     directory = os.path.dirname(path)
@@ -248,9 +292,10 @@ def exchange(session: dict, code: str, post=None):
     return payload
 
 
-def credential_from_response(payload: dict, now_ms: int | None = None) -> dict:
-    """The on-disk shape, built the way the CLI builds it: `expires_in` and
-    `refresh_token_expires_in` are seconds from now, stored as epoch ms."""
+def credential_from_response(payload: dict, now_ms: int | None = None, carry_over: dict | None = None) -> dict:
+    """The on-disk shape: `expires_in` and `refresh_token_expires_in` are
+    seconds from now, stored as epoch ms. `carry_over` supplies the three
+    fields the token endpoint never returns -- see `CARRIED_FIELDS`."""
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     credential = {
         "accessToken": payload["access_token"],
@@ -261,7 +306,25 @@ def credential_from_response(payload: dict, now_ms: int | None = None) -> dict:
     refresh_expiry = payload.get("refresh_token_expires_in")
     if isinstance(refresh_expiry, (int, float)):
         credential["refreshTokenExpiresAt"] = now_ms + int(refresh_expiry) * 1000
+    for name in CARRIED_FIELDS:
+        value = (carry_over or {}).get(name)
+        if value is not None:
+            credential[name] = value
     return credential
+
+
+def carried_from(path: str) -> dict:
+    """The fields an existing credential can lend a new one. Missing file, bad
+    JSON and a file with none of them are all the same answer: nothing."""
+    try:
+        with open(path) as handle:
+            blob = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    existing = blob.get("claudeAiOauth")
+    if not isinstance(existing, dict):
+        return {}
+    return {k: existing[k] for k in CARRIED_FIELDS if existing.get(k) is not None}
 
 
 def describe(credential: dict) -> list:
@@ -292,6 +355,11 @@ def build_parser():
     start.add_argument("--credentials", default=DEFAULT_CREDENTIALS)
     start.add_argument("--notify", action="store_true", help="send the link to his phone")
     start.add_argument("--notify-key", default="claude-login-link")
+    start.add_argument(
+        "--force",
+        action="store_true",
+        help="mint a new link even though an unspent one exists, invalidating it",
+    )
 
     finish = sub.add_parser("finish", help="exchange the code he pasted back")
     finish.add_argument("--code", required=True, help="the `<code>#<state>` from the callback page")
@@ -309,6 +377,14 @@ def _cmd_start(args) -> int:
     except (OSError, CannotSee) as problem:
         print(f"CANNOT SEE  {problem}")
         return 1
+    held = live_session(args.session)
+    if held is not None and not args.force:
+        age = int(time.time() - held["created_at"])
+        print(
+            f"REFUSED  a link minted {age}s ago has not been spent yet -- "
+            "finish it, or pass --force to mint a new one and invalidate it"
+        )
+        return 2
     scopes, source = live_scopes(args.credentials)
     verifier, challenge = pkce_pair()
     state = secrets.token_urlsafe(24)
@@ -352,10 +428,19 @@ def _cmd_finish(args) -> int:
         return 2
     try:
         payload = exchange(session, code)
-    except (urllib.error.URLError, OSError, CannotSee, KeyError) as problem:
+    except (urllib.error.URLError, OSError, CannotSee, KeyError, ValueError) as problem:
         print(f"REFUSED  {problem}")
         return 2
-    credential = credential_from_response(payload)
+    carry = carried_from(args.install) if args.install else carried_from(DEFAULT_CREDENTIALS)
+    credential = credential_from_response(payload, carry_over=carry)
+    absent = [f for f in CARRIED_FIELDS if f not in credential]
+    if absent:
+        print(
+            "WARNING  the token endpoint does not return " + ", ".join(absent)
+            + " and no credential on disk could lend them -- the CLI's own save "
+            "path writes them, and a partial claudeAiOauth has been rejected as "
+            "'Not logged in' before (agora-claude-bridge/bridge/credentials.py)"
+        )
     for line in describe(credential):
         print(line)
     if args.install:

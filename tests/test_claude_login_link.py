@@ -226,3 +226,117 @@ def test_the_installed_binary_still_carries_the_constants():
     config = login.extract_oauth_config(login.read_binary_text())
     assert config["manual_redirect_url"].endswith("/oauth/code/callback")
     assert len(config["client_id"]) == 36
+
+
+# --- the reviewer's four findings, each with a test that fails without the fix
+
+
+LOCAL_BLOCK = (
+    'function u(){return{BASE_API_URL:t,'
+    'CLAUDE_AI_AUTHORIZE_URL:"http://localhost:4000/oauth/authorize",'
+    'TOKEN_URL:"http://localhost:8000/v1/oauth/token",'
+    'MANUAL_REDIRECT_URL:"http://localhost:3000/oauth/code/callback",'
+    'CLIENT_ID:"22422756-60c9-4084-8eb7-27705fd5cf9a"}}'
+)
+
+
+def test_extraction_reads_the_production_object_even_when_it_is_second():
+    """The bundle carries the same key names twice. First-match works today
+    only because production happens to sit first in the file; if a release
+    reorders them, an unanchored search mints a link for the local dev app."""
+    reordered = LOCAL_BLOCK + BUNDLE
+    config = login.extract_oauth_config(reordered)
+    assert config["client_id"] == "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    assert "localhost" not in config["token_url"]
+
+
+def test_extraction_refuses_a_bundle_with_no_production_object():
+    with pytest.raises(login.CannotSee):
+        login.extract_oauth_config(LOCAL_BLOCK)
+
+
+def test_carried_fields_come_across_from_the_credential_on_disk():
+    """The token endpoint returns none of these. Dropping them is the exact
+    bug agora-claude-bridge/bridge/credentials.py records as 'Not logged in'."""
+    carry = {"subscriptionType": "max", "rateLimitTier": "default_claude_max_5x", "clientId": "cid"}
+    credential = login.credential_from_response(
+        {"access_token": "a", "refresh_token": "r", "expires_in": 60}, now_ms=0, carry_over=carry
+    )
+    for name in login.CARRIED_FIELDS:
+        assert credential[name] == carry[name]
+
+
+def test_carried_from_reads_only_the_three_fields(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "SECRET", "subscriptionType": "max", "rateLimitTier": "t",
+    }}))
+    assert login.carried_from(str(path)) == {"subscriptionType": "max", "rateLimitTier": "t"}
+
+
+def test_carried_from_is_empty_when_there_is_nothing_to_carry(tmp_path):
+    assert login.carried_from(str(tmp_path / "absent.json")) == {}
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json")
+    assert login.carried_from(str(bad)) == {}
+
+
+def test_finish_warns_when_a_field_the_cli_writes_cannot_be_supplied(tmp_path, capsys, monkeypatch):
+    session = tmp_path / "session.json"
+    login.save_session(str(session), {
+        "code_verifier": "v", "state": "s", "client_id": "c",
+        "token_url": "u", "redirect_uri": "r", "created_at": 0,
+    })
+    monkeypatch.setattr(login, "DEFAULT_CREDENTIALS", str(tmp_path / "absent.json"))
+    monkeypatch.setattr(
+        login, "_post_json",
+        lambda url, body, timeout=30: (200, {
+            "access_token": "at", "refresh_token": "rt", "expires_in": 60,
+        }),
+    )
+    login.main(["--session", str(session), "finish", "--code", "code#s"])
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    for name in login.CARRIED_FIELDS:
+        assert name in out
+
+
+def test_start_refuses_to_clobber_an_unspent_link(tmp_path, capsys, monkeypatch):
+    """A second start silently invalidates a link already on his phone, and the
+    failure lands an hour later as a state mismatch blaming the wrong thing."""
+    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE)
+    session = tmp_path / "session.json"
+    creds = str(tmp_path / "absent.json")
+    assert login.main(["--session", str(session), "start", "--credentials", creds]) == 0
+    first = json.loads(session.read_text())["state"]
+
+    assert login.main(["--session", str(session), "start", "--credentials", creds]) == 2
+    assert "REFUSED" in capsys.readouterr().out
+    assert json.loads(session.read_text())["state"] == first
+
+    assert login.main([
+        "--session", str(session), "start", "--credentials", creds, "--force",
+    ]) == 0
+    assert json.loads(session.read_text())["state"] != first
+
+
+def test_an_expired_session_is_not_treated_as_live(tmp_path):
+    path = tmp_path / "s.json"
+    login.save_session(str(path), {"created_at": 1000.0})
+    assert login.live_session(str(path), ttl=60, now=1030.0) is not None
+    assert login.live_session(str(path), ttl=60, now=2000.0) is None
+
+
+def test_finish_says_refused_rather_than_raising_on_a_malformed_body(tmp_path, capsys, monkeypatch):
+    session = tmp_path / "session.json"
+    login.save_session(str(session), {
+        "code_verifier": "v", "state": "s", "client_id": "c",
+        "token_url": "u", "redirect_uri": "r", "created_at": 0,
+    })
+
+    def blows_up(url, body, timeout=30):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(login, "_post_json", blows_up)
+    assert login.main(["--session", str(session), "finish", "--code", "code#s"]) == 2
+    assert "REFUSED" in capsys.readouterr().out
