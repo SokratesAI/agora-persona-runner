@@ -2,6 +2,7 @@
 the eighteen step-1a checks read the three fields that say so."""
 import datetime
 import json
+import types
 import pytest
 from unittest import mock
 
@@ -1330,3 +1331,146 @@ def test_a_running_pod_that_died_is_still_described_as_still_down():
     body = "\n".join(lines)
     assert "still down" in body
     assert actionable
+
+
+# --- what the containers with no declared limit actually hold (Cycle 986) ---
+
+
+class _Raw:
+    """A `subprocess.run` stand-in that returns one cAdvisor body."""
+
+    def __init__(self, body, returncode=0):
+        self.body, self.returncode = body, returncode
+
+    def __call__(self, args, **kwargs):
+        assert args[:3] == ["kubectl", "get", "--raw"], args
+        return types.SimpleNamespace(
+            returncode=self.returncode, stdout=self.body, stderr="")
+
+
+_CADVISOR_BODY = "\n".join([
+    # A machine-level slice: no pod label, and this reader must not take it.
+    'container_memory_rss{id="/system.slice/k3s.service"} 5.24288e+08',
+    # The per-Pod cgroup: a pod label but an empty container, and it is the
+    # sum of the containers below it, so counting it would double everything.
+    'container_memory_rss{container="",id="/kubepods.slice/x",namespace="argocd",'
+    'pod="argocd-application-controller-0"} 3.4e+08',
+    'container_memory_rss{container="application-controller",id="/kubepods.slice/x/y",'
+    'namespace="argocd",pod="argocd-application-controller-0"} 3.25058560e+08',
+    # A different series on the same fetch, which this reader must ignore.
+    'container_memory_working_set_bytes{container="application-controller",id="z",'
+    'namespace="argocd",pod="argocd-application-controller-0"} 9.0e+08',
+])
+
+
+def test_read_node_container_rss_keeps_the_container_lines_only():
+    rss, why = wh.read_node_container_rss("server1", runner=_Raw(_CADVISOR_BODY))
+    assert why is None
+    assert rss == {("argocd", "argocd-application-controller-0",
+                    "application-controller"): 310.0}
+
+
+def test_read_node_container_rss_calls_a_reading_with_no_container_no_instrument():
+    """A 200 that named no container is a broken read, never an idle node."""
+    body = 'container_memory_rss{id="/system.slice/k3s.service"} 5.24288e+08'
+    rss, why = wh.read_node_container_rss("server1", runner=_Raw(body))
+    assert rss is None
+    assert "no per-container" in why
+
+
+def _unlimited_pod(name, namespace="argocd", names=("c",), limits=None,
+                   phase="Running", node="server1"):
+    pod = _pod(name=name, namespace=namespace, phase=phase, node=node,
+               limits=limits or {})
+    pod["container_count"] = len(names)
+    pod["container_names"] = list(names)
+    return pod
+
+
+def test_unlimited_container_rss_skips_the_containers_that_declared_a_limit():
+    pods = [_unlimited_pod("a", names=("declared", "silent"),
+                           limits={"declared": "256Mi"})]
+    rss = {("argocd", "a", "declared"): 900.0, ("argocd", "a", "silent"): 120.0}
+    total, named, counted, unmeasured = wh.unlimited_container_rss(pods, rss)
+    assert (total, counted, unmeasured) == (120.0, 1, 0)
+    assert named == [("argocd/a/silent", 120.0)]
+
+
+def test_unlimited_container_rss_counts_a_missing_reading_rather_than_calling_it_nought():
+    pods = [_unlimited_pod("a", names=("seen", "unseen"))]
+    total, named, counted, unmeasured = wh.unlimited_container_rss(
+        pods, {("argocd", "a", "seen"): 40.0})
+    assert (total, counted, unmeasured) == (40.0, 1, 1)
+
+
+def test_unlimited_container_rss_ignores_a_pod_that_is_not_running():
+    pods = [_unlimited_pod("done", phase="Succeeded")]
+    assert wh.unlimited_container_rss(pods, {("argocd", "done", "c"): 500.0}) == (
+        0.0, [], 0, 0)
+
+
+def _rss_reader(per_node):
+    def read(node):
+        found = per_node.get(node)
+        if found is None:
+            return None, f"no reading for {node}"
+        return found, None
+    return read
+
+
+def test_the_budget_line_names_what_the_unlimited_containers_hold():
+    """The gap this closes: a count where a quantity belonged.
+
+    argocd's controller declares no memory limit and held 310Mi on server1 on
+    2026-09-05, and the budget line could only say "1 more container set no
+    limit at all" -- the largest single consumer on the node, contributing
+    nought to the figure the node is judged on.
+    """
+    pods = [_budget_pod("bounded", {"c": "1Gi"}),
+            _unlimited_pod("argocd-application-controller-0",
+                           names=("application-controller",))]
+    lines, _, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), NODES, pods, stats=_stats(),
+        container_rss=_rss_reader({"server1": {
+            ("argocd", "argocd-application-controller-0",
+             "application-controller"): 310.0}}))
+    text = " ".join(lines)
+    assert "1 more running container(s) set no limit at all" in text
+    assert "Right now 1 of them hold 310Mi resident" in text
+    assert "largest argocd/argocd-application-controller-0/application-controller at 310Mi" in text
+    assert "so 1334Mi of 7746Mi (17%) is spoken for once they are counted" in text
+
+
+def test_an_unreadable_rss_says_so_instead_of_reading_nought():
+    pods = [_budget_pod("bounded", {"c": "1Gi"}),
+            _unlimited_pod("silent", names=("c",))]
+    lines, _, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), NODES, pods, stats=_stats(),
+        container_rss=_rss_reader({}))
+    text = " ".join(lines)
+    assert "What they hold was not read: no reading for server1" in text
+    assert "0Mi resident" not in text, "a missing instrument is not a measured nought"
+
+
+def test_measured_rss_does_not_change_the_verdict():
+    """It reports. The raise stays on declared limits, which is what the
+    scheduler and the cgroup ceiling are actually made of."""
+    pods = [_budget_pod("bounded", {"c": "1Gi"}),
+            _unlimited_pod("hungry", names=("c",))]
+    reader = _rss_reader({"server1": {("argocd", "hungry", "c"): 9000.0}})
+    lines, actionable, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), NODES, pods, stats=_stats(),
+        container_rss=reader)
+    assert actionable is False, "9000Mi of unlimited RSS is reported, not raised"
+    assert "MEMORY OVERCOMMITTED" not in " ".join(lines)
+
+
+def test_every_other_node_gets_the_same_measurement():
+    pods = [_budget_pod("a", {"c": "1Gi"}),
+            _unlimited_pod("elsewhere", names=("c",), node="server2")]
+    lines, _, _ = wh.memory_headroom(
+        _meminfo(MemAvailable=1934336), TWO_NODES, pods, stats=_stats(),
+        container_rss=_rss_reader({"server2": {("argocd", "elsewhere", "c"): 200.0}}))
+    text = " ".join(lines)
+    assert "BUDGET  server2" in text
+    assert "Right now 1 of them hold 200Mi resident" in text
