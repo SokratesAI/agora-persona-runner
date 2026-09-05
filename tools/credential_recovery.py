@@ -41,12 +41,17 @@ means: the copy that would be restored from is one the CLI has already
 been observed to reject.
 
 **The threshold is the credential's own field, not a number I chose.**
-`claudeAiOauth.expiresAt` in the past is expired; there is nothing to
-tune. The second signal is independent and needs no threshold at all --
+`claudeAiOauth.refreshTokenExpiresAt` in the past means the snapshot can
+mint nothing and a restore from it cannot log in; there is nothing to
+tune. On an older snapshot that has no such field the fallback is
+`expiresAt`, which is conservative and is the 2026-08-17 condition.
+Judging `expiresAt` on a *current* snapshot would be wrong: the access
+token is short-lived by design, so a Secret resealed this morning would
+raise this afternoon and the check could never be satisfied. The second signal is independent and needs no threshold at all --
 when the Secret's `subscriptionType` disagrees with the live file's, the
 Secret predates a change to the account itself.
 
-**No token is ever read out.** Only `expiresAt`, `subscriptionType` and
+**No token is ever read out.** Only the two expiry fields, `subscriptionType` and
 the set of field *names* are touched, and only those are printed. The
 values that matter are never loaded into a variable this module prints,
 compares or returns, which is also why there is no fixture in the test
@@ -113,11 +118,41 @@ def expires_at(oauth, where):
         raise CredentialError(
             "%s has no readable expiresAt (%r)" % (where, value)
         )
+    return _epoch(value, where, "expiresAt")
+
+
+def _epoch(value, where, field):
     seconds = value / 1000.0 if value > 1e11 else float(value)
     try:
         return datetime.fromtimestamp(seconds, timezone.utc)
     except (OverflowError, OSError, ValueError) as exc:
-        raise CredentialError("%s has an unusable expiresAt (%s)" % (where, exc))
+        raise CredentialError("%s has an unusable %s (%s)" % (where, field, exc))
+
+
+def recovery_expiry(oauth, where):
+    """The field that decides whether a restore can log in, and its name.
+
+    `expiresAt` is the access token, which is minted from the refresh
+    token and is *meant* to be short-lived -- a snapshot taken this
+    morning carries one that dies this afternoon. Judging it means a
+    freshly resealed Secret raises within hours of being resealed, which
+    is a check that cannot be satisfied. What a restore actually needs is
+    a live refresh token, so `refreshTokenExpiresAt` is the threshold
+    whenever the snapshot carries it.
+
+    Older snapshots do not carry it -- the one this check was written
+    against is exactly that case -- so the fallback is `expiresAt`, which
+    is the previous behaviour and is conservative: an expired access
+    token on a snapshot with no refresh expiry is the 2026-08-17
+    condition and should still raise.
+    """
+    if isinstance(oauth.get("refreshTokenExpiresAt"), (int, float)) and not isinstance(
+        oauth.get("refreshTokenExpiresAt"), bool
+    ):
+        return _epoch(oauth["refreshTokenExpiresAt"], where, "refreshTokenExpiresAt"), (
+            "refreshTokenExpiresAt"
+        )
+    return expires_at(oauth, where), "expiresAt"
 
 
 def read_secret(env=None):
@@ -152,18 +187,19 @@ def judge(secret, live, now):
     credential on disk -- silenced it.
     """
     findings = []
-    secret_expiry = expires_at(secret, "the %s Secret" % SECRET_ENV)
+    secret_expiry, field = recovery_expiry(secret, "the %s Secret" % SECRET_ENV)
     stale = secret_expiry <= now
     if stale:
         findings.append(
             {
                 "state": "expired",
-                "detail": "the Secret's snapshot expired %s UTC, %.1f day(s) ago -- "
-                "restoring from it is what took the loop down for 30 hours on "
-                "2026-08-17"
+                "detail": "the Secret's snapshot expired %s UTC, %.1f day(s) ago "
+                "(judged on %s) -- restoring from it is what took the loop down for "
+                "30 hours on 2026-08-17"
                 % (
                     secret_expiry.isoformat(timespec="seconds"),
                     (now - secret_expiry).total_seconds() / 86400.0,
+                    field,
                 ),
             }
         )
@@ -179,18 +215,19 @@ def judge(secret, live, now):
                     "account itself" % (secret_plan, live_plan),
                 }
             )
-    return findings, secret_expiry, stale
+    return findings, secret_expiry, stale, field
 
 
-def report(findings, secret_expiry, stale, live, live_expiry, now, out):
+def report(findings, secret_expiry, stale, live, live_expiry, now, out, field="expiresAt"):
     for finding in findings:
         out.write("RAISE       %s\n" % finding["detail"])
     if not stale:
         out.write(
-            "ok          the %s Secret would still log in -- expires %s UTC, in "
+            "ok          the %s Secret would still log in -- its %s is %s UTC, in "
             "%.1f day(s)\n"
             % (
                 SECRET_ENV,
+                field,
                 secret_expiry.isoformat(timespec="seconds"),
                 (secret_expiry - now).total_seconds() / 86400.0,
             )
@@ -207,12 +244,14 @@ def report(findings, secret_expiry, stale, live, live_expiry, now, out):
             "CANNOT READ the live credential on the PVC, so the subscription "
             "comparison was not made. The Secret's own expiry above is unaffected.\n"
         )
-    out.write(
-        "NOT JUDGED  whether the Secret's refreshToken could still mint a new access "
-        "token. The snapshot carries no refreshTokenExpiresAt field, so there is "
-        "nothing here to read it from; the 2026-08-17 outage is the one observation "
-        "and there the CLI could not.\n"
-    )
+    if field == "expiresAt":
+        out.write(
+            "NOT JUDGED  whether the Secret's refreshToken could still mint a new "
+            "access token. This snapshot carries no refreshTokenExpiresAt field, so "
+            "there is nothing here to read it from; the 2026-08-17 outage is the one "
+            "observation and there the CLI could not. A snapshot resealed from a "
+            "current credential does carry it and is judged on it instead.\n"
+        )
     out.write(
         "Read the recovery credential in the %s Secret and compared it against the "
         "live copy on this pod's PVC. No token value is read out of either -- only "
@@ -223,9 +262,14 @@ def report(findings, secret_expiry, stale, live, live_expiry, now, out):
             "This loop's only working credential is the file on "
             "agents/agora-claude-bridge-data. Losing that volume -- a node failure, a "
             "move to server2, a mistyped delete -- leaves no way back in without the "
-            "owner re-authenticating by hand. Fixing it means writing a current "
-            "credential into the claude-auth SealedSecret, which needs kubeseal and a "
-            "Secret write; this loop has neither.\n"
+            "owner re-authenticating by hand. Fixing it takes no Secret write and no "
+            "cluster privilege: download kubeseal, seal the live credential on this "
+            "pod's PVC against platform-config's own secrets/sealed-secrets-pub.pem "
+            "at strict scope with the four keys secrets/seal-secrets.sh builds, check "
+            "it against the controller's POST /v1/verify in kube-system (200 decrypts, "
+            "409 does not), and open a pull request replacing "
+            "secrets/sealed/agents-claude-auth.yaml. Done that way at cycle 958, "
+            "platform-config#704.\n"
         )
     return 2 if findings else 0
 
@@ -261,13 +305,13 @@ def main(argv=None):
         live_expiry = None
 
     try:
-        findings, secret_expiry, stale = judge(secret, live, now)
+        findings, secret_expiry, stale, field = judge(secret, live, now)
     except CredentialError as exc:
         sys.stdout.write("CANNOT READ %s\n" % exc)
         sys.stdout.write("Unreadable never reads as clean.\n")
         return 1
 
-    return report(findings, secret_expiry, stale, live, live_expiry, now, sys.stdout)
+    return report(findings, secret_expiry, stale, live, live_expiry, now, sys.stdout, field)
 
 
 if __name__ == "__main__":

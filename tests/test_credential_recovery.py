@@ -34,7 +34,7 @@ def millis(when):
 def test_expired_secret_raises_and_names_the_outage():
     secret = json.loads(blob(millis(NOW - timedelta(days=35)), "pro"))["claudeAiOauth"]
     live = json.loads(blob(millis(NOW + timedelta(hours=5)), "max"))["claudeAiOauth"]
-    findings, expiry, stale = cr.judge(secret, live, NOW)
+    findings, expiry, stale, _ = cr.judge(secret, live, NOW)
     assert stale is True
     states = [f["state"] for f in findings]
     assert "expired" in states
@@ -49,7 +49,7 @@ def test_expired_secret_raises_and_names_the_outage():
 def test_a_current_secret_is_clean():
     secret = json.loads(blob(millis(NOW + timedelta(days=20))))["claudeAiOauth"]
     live = json.loads(blob(millis(NOW + timedelta(hours=5))))["claudeAiOauth"]
-    findings, expiry, stale = cr.judge(secret, live, NOW)
+    findings, expiry, stale, _ = cr.judge(secret, live, NOW)
     assert findings == []
     assert stale is False
     out = io.StringIO()
@@ -66,7 +66,7 @@ def test_live_credential_expiring_soon_is_not_a_finding():
     """
     secret = json.loads(blob(millis(NOW + timedelta(days=20))))["claudeAiOauth"]
     live = json.loads(blob(millis(NOW + timedelta(minutes=3))))["claudeAiOauth"]
-    findings, _, stale = cr.judge(secret, live, NOW)
+    findings, _, stale, _ = cr.judge(secret, live, NOW)
     assert findings == []
     assert stale is False
 
@@ -74,7 +74,7 @@ def test_live_credential_expiring_soon_is_not_a_finding():
 def test_an_already_expired_live_credential_still_does_not_raise():
     secret = json.loads(blob(millis(NOW + timedelta(days=20))))["claudeAiOauth"]
     live = json.loads(blob(millis(NOW - timedelta(days=2))))["claudeAiOauth"]
-    findings, _, _ = cr.judge(secret, live, NOW)
+    findings, _, _, _ = cr.judge(secret, live, NOW)
     assert findings == []
 
 
@@ -85,7 +85,7 @@ def test_unreadable_disk_copy_does_not_silence_the_secret_verdict():
     when the Secret's staleness matters most.
     """
     secret = json.loads(blob(millis(NOW - timedelta(days=35)), "pro"))["claudeAiOauth"]
-    findings, expiry, stale = cr.judge(secret, None, NOW)
+    findings, expiry, stale, _ = cr.judge(secret, None, NOW)
     assert [f["state"] for f in findings] == ["expired"]
     out = io.StringIO()
     assert cr.report(findings, expiry, stale, None, None, NOW, out) == 2
@@ -95,7 +95,7 @@ def test_unreadable_disk_copy_does_not_silence_the_secret_verdict():
 def test_matching_plans_produce_no_plan_finding():
     secret = json.loads(blob(millis(NOW + timedelta(days=20)), "max"))["claudeAiOauth"]
     live = json.loads(blob(millis(NOW + timedelta(hours=5)), "max"))["claudeAiOauth"]
-    findings, _, _ = cr.judge(secret, live, NOW)
+    findings, _, _, _ = cr.judge(secret, live, NOW)
     assert findings == []
 
 
@@ -194,3 +194,91 @@ def test_registered_in_preflight():
 
     assert "credential_recovery" in preflight.CHECKS
     assert preflight.unlabelled_checks(["credential_recovery"]) == []
+
+
+# --- the field the verdict is taken from -----------------------------------
+#
+# A snapshot resealed from a current credential carries an `expiresAt` a few
+# hours out (the CLI mints a short-lived access token) and a
+# `refreshTokenExpiresAt` days or weeks out. Judging the first would raise on
+# a Secret resealed the same morning, which is a check that can never be
+# satisfied; judging the second asks the question the module exists for --
+# could a restore log in.
+
+
+def test_fresh_reseal_is_clean_although_its_access_token_has_expired():
+    """The case platform-config#704 creates. Fails under the old rule."""
+    secret = json.loads(
+        blob(
+            millis(NOW - timedelta(hours=2)),
+            "max",
+            {"refreshTokenExpiresAt": millis(NOW + timedelta(days=11))},
+        )
+    )["claudeAiOauth"]
+    live = json.loads(blob(millis(NOW + timedelta(hours=5)), "max"))["claudeAiOauth"]
+    findings, expiry, stale, field = cr.judge(secret, live, NOW)
+    assert field == "refreshTokenExpiresAt"
+    assert stale is False and findings == []
+    assert expiry == NOW + timedelta(days=11)
+
+
+def test_a_dead_refresh_token_raises_even_with_a_live_access_token():
+    """The discriminating half: the two fields disagree and the refresh wins."""
+    secret = json.loads(
+        blob(
+            millis(NOW + timedelta(days=30)),
+            "max",
+            {"refreshTokenExpiresAt": millis(NOW - timedelta(days=3))},
+        )
+    )["claudeAiOauth"]
+    live = json.loads(blob(millis(NOW + timedelta(hours=5)), "max"))["claudeAiOauth"]
+    findings, _, stale, field = cr.judge(secret, live, NOW)
+    assert field == "refreshTokenExpiresAt"
+    assert stale is True
+    assert [f["state"] for f in findings] == ["expired"]
+    assert "refreshTokenExpiresAt" in findings[0]["detail"]
+
+
+def test_a_snapshot_without_the_field_still_falls_back_to_expiresat():
+    """The old snapshot in the Secret today has no refreshTokenExpiresAt."""
+    secret = json.loads(blob(millis(NOW - timedelta(days=35)), "pro"))["claudeAiOauth"]
+    live = json.loads(blob(millis(NOW + timedelta(hours=5)), "max"))["claudeAiOauth"]
+    findings, _, stale, field = cr.judge(secret, live, NOW)
+    assert field == "expiresAt"
+    assert stale is True and any(f["state"] == "expired" for f in findings)
+
+
+def test_a_non_numeric_refresh_expiry_falls_back_rather_than_crashing():
+    secret = json.loads(
+        blob(millis(NOW + timedelta(days=20)), "max", {"refreshTokenExpiresAt": "soon"})
+    )["claudeAiOauth"]
+    _, _, stale, field = cr.judge(secret, None, NOW)
+    assert field == "expiresAt" and stale is False
+
+
+def test_report_names_the_field_it_judged_and_drops_the_not_judged_line():
+    out = io.StringIO()
+    cr.report([], NOW + timedelta(days=11), False, None, None, NOW, out,
+              "refreshTokenExpiresAt")
+    text = out.getvalue()
+    assert "its refreshTokenExpiresAt is" in text
+    # the "nothing here to read it from" caveat is only true of an old snapshot
+    assert "carries no refreshTokenExpiresAt" not in text
+
+
+def test_report_keeps_the_caveat_when_it_fell_back():
+    out = io.StringIO()
+    cr.report([], NOW + timedelta(days=20), False, None, None, NOW, out, "expiresAt")
+    assert "carries no refreshTokenExpiresAt" in out.getvalue()
+
+
+def test_the_stale_tail_no_longer_claims_this_loop_cannot_fix_it():
+    """That sentence stopped a cycle; it was measured false at cycle 958."""
+    out = io.StringIO()
+    cr.report(
+        [{"state": "expired", "detail": "d"}],
+        NOW - timedelta(days=35), True, None, None, NOW, out, "expiresAt",
+    )
+    text = out.getvalue()
+    assert "this loop has neither" not in text
+    assert "sealed-secrets-pub.pem" in text and "/v1/verify" in text
