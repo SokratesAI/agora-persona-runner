@@ -222,3 +222,28 @@ def test_report_carries_untracked_always_and_trim_only_when_asked():
 
     asked = nova_site.memory_report(objects=objects, trim=True)
     assert "malloc_trim" in asked
+
+
+def test_a_cache_rebuild_trims_the_arena(monkeypatch):
+    """The reading issue #131 was waiting for, turned into a guard.
+
+    Measured on the live pod 2026-09-05: ten journal rebuilds added 8.09
+    MiB of RSS while `untracked` did not move one byte, and a single
+    `malloc_trim(0)` gave back 26.18 MiB. So the growth is pages glibc is
+    holding, and `_refresh` is where they are freed -- assert that a
+    rebuild actually asks for them back, rather than that the helper
+    exists.
+    """
+    calls = []
+    monkeypatch.setattr(nova_site, "_trim_after_rebuild", lambda: calls.append(1))
+    nova_site._cache.pop("t-trim", None)
+    nova_site._refresh("t-trim", lambda: {"n": 1})
+    assert calls == [1], "a rebuild must trim; without it RSS only ever goes up"
+
+
+def test_the_trim_survives_an_image_with_no_glibc(monkeypatch):
+    """A musl image must not take a cache refresh down over an optimisation."""
+    def no_libc(*a, **k):
+        raise OSError("libc.so.6: cannot open shared object file")
+    monkeypatch.setattr(nova_site.ctypes, "CDLL", no_libc)
+    nova_site._trim_after_rebuild()
