@@ -1132,6 +1132,15 @@ def available_line(node, available_mib, total_mib, biggest, where,
     Pod record). The line then says so rather than judging the limit as if
     it were the request, because that is the bug this exists to stop.
 
+    One honest limit on the comparison itself, unchanged by this fix and
+    inherited from what it replaced: `available_mib` is what the kernel says
+    can still be allocated, and the scheduler does not use that number
+    either -- it uses allocatable minus the sum of every request already
+    placed. So this is a proxy for admission rather than admission itself.
+    It is a much closer proxy than the limit was, and it errs on the loud
+    side, since free memory is generally smaller than unreserved
+    allocatable on a box this lightly requested.
+
     Returns (line, actionable).
     """
     head = f"{available_mib:.0f}Mi of {total_mib:.0f}Mi available"
