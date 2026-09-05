@@ -390,10 +390,13 @@ def client_tool_schemas(caps, active_step=None):
         tools.append({
             "name": "merge_pr",
             "description": (
-                "Merge an open PR -- refuses unless every check-run on its head commit "
-                "has completed with a passing conclusion. Does not check who opened the "
-                "PR (every agent shares the same GitHub account, so that check would be "
-                "meaningless)."
+                "Merge an open PR once GitHub itself says it may merge -- so a red "
+                "check the repo does not require no longer blocks you, while a conflict, "
+                "a required check or a pending one still does. Refuses when no check has "
+                "run at all and one was coming, which it decides by reading the repo's "
+                "own workflow triggers rather than the mere existence of a workflow. Does "
+                "not check who opened the PR (every agent shares the same GitHub account, "
+                "so that check would be meaningless)."
             ),
             "input_schema": {
                 "type": "object",
