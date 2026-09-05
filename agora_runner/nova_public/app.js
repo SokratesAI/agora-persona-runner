@@ -11940,6 +11940,43 @@
     }
   }
 
+  /* Which route `load` last painted a placeholder for.
+   *
+   * The placeholder is for *navigation* only. `load()` is also how the page
+   * refreshes itself in place -- after a board edit, after a comment is
+   * posted, after the heartbeat page acts -- and flashing "Loading…" over a
+   * page the owner is already standing on would be a new flicker traded for
+   * a fixed one. Comparing the route against the last painted one tells the
+   * two apart with no new call site to keep in sync. */
+  var paintedRoute = null;
+
+  /** Everything in a route that decides which page is on screen. */
+  function routeKey(here) {
+    return [
+      here.view,
+      here.board || "",
+      here.project || "",
+      here.cycle === null || here.cycle === undefined ? "" : here.cycle,
+      here.conversationId || "",
+      here.asks ? "asks" : "",
+    ].join("|");
+  }
+
+  /* The one frame between the tap and the payload.
+   *
+   * The name comes from the nav tab `markNav` has just highlighted rather
+   * than from a table of its own: it is the word the owner tapped, so the
+   * two can never disagree, and a page added to the drawer needs nothing
+   * added here. A route with no tab of its own (a single cycle, one
+   * project) highlights its parent tab, which is still the honest answer to
+   * "what is loading". */
+  function showLoading() {
+    var on = navEl ? navEl.querySelector(".nav-tab.on") : null;
+    var name = on ? on.textContent.trim() : "";
+    feed.textContent = "";
+    feed.appendChild(el("p", "empty", name ? "Loading " + name + "…" : "Loading…"));
+  }
+
   function load() {
     // The overlay is fixed to the viewport and the feed under it is about
     // to be replaced, so a navigation that left it open would strand a
@@ -11972,6 +12009,38 @@
      * sitting over the Issues board after one tap. `render` repaints it on
      * the way back in. */
     hideChanged();
+    /* Answer the tap now, before anything is fetched.
+     *
+     * the owner, capture 2026-09-05, rated Immediately: *"The Nova app is
+     * very slow on my phone when i navigate between pages. I have to click
+     * multiple times on the sidebar buttons before it actually switch to
+     * that page. I want it to be instant and also show the content
+     * instantly."*
+     *
+     * The second sentence is the bug and the first sentence is what it
+     * looks like. Every branch below fetches and paints nothing until the
+     * response lands, so between the tap and the payload the screen is the
+     * *previous* page, unchanged, with the previous tab still highlighted.
+     * There was no signal at all that the tap had been received, so the
+     * only reasonable thing to do is tap again.
+     *
+     * Measured in Chromium at his own 360x697 against the live pod, from
+     * inside the cluster (`tools.poke_page`'s browser, 2026-09-05): tapping
+     * Issues from the journal changed nothing on screen for 291ms, and
+     * tapping Ideas from Issues for 705ms. That is the floor -- his phone
+     * adds the tailnet round trip and a phone's own CPU to payloads that
+     * are 75KB for Issues and 111KB for Ideas.
+     *
+     * The journal branch already called `markNav` before its fetch, and in
+     * the same run its highlight moved in 52ms against 3400ms for its
+     * content. So this is not a new mechanism; it is the one branch that
+     * had it, moved up to cover all of them. */
+    markNav();
+    var key = routeKey(here);
+    if (key !== paintedRoute) {
+      paintedRoute = key;
+      showLoading();
+    }
     if (here.view === "board") {
       loadBoard(here.board);
       return;
@@ -12022,7 +12091,8 @@
       loadGalaxy();
       return;
     }
-    markNav();
+    // `markNav` used to be here, on the journal branch alone. It is at the
+    // top of this function now, so every branch gets it.
     fetchAll()
       .then(function (results) {
         // Same guard, other direction: a board fetch started before a tap
