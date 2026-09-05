@@ -63,8 +63,11 @@ compares or returns, which is also why there is no fixture in the test
 file carrying anything shaped like a real token.
 
 Exit 2 -- the Secret's snapshot cannot log in, so there is no recovery
-path from a lost volume. Exit 1 -- one of the two sides could not be
-read, which never reads as clean. Exit 0 -- the Secret would still work.
+path from a lost volume. Exit 1 -- the verdict could not be reached:
+either a side was unreadable, or the environment variable is provably
+older than the Secret (`env_is_stale`), which is a different reason and
+is deliberately not a 2. Neither ever reads as clean. Exit 0 -- the
+Secret would still work.
 """
 import argparse
 import json
@@ -107,15 +110,24 @@ def _kubectl(args):
 
 
 def _stamp(value):
-    """An RFC3339 stamp from the API server as an aware datetime, or None."""
+    """An RFC3339 stamp from the API server as an aware datetime, or None.
+
+    `fromisoformat` rather than a `strptime` format, because a format
+    string only accepts the one shape it spells. `metav1.Time` marshals
+    whole seconds and a literal `Z`, but a plain Go `time.Time` carries
+    fractional seconds and an offset may be numeric -- and a value that
+    is present and unparsable would fall into the *unknown* branch,
+    which prints a caveat and changes no verdict. That is a gate that
+    silently stops gating, which is the failure shape this loop pays for
+    most often.
+    """
     if not value:
         return None
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def sealed_written_at(read=None):
@@ -183,7 +195,10 @@ def env_is_stale(pod_start, sealed_written):
     """
     if pod_start is None or sealed_written is None:
         return None
-    return sealed_written > pod_start
+    # `>=`, not `>`: these stamps are whole seconds, so a write inside the
+    # start second could have gone either way, and the safe reading of
+    # "I cannot tell" is not "the value is current".
+    return sealed_written >= pod_start
 
 
 class CredentialError(Exception):

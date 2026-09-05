@@ -375,3 +375,52 @@ def test_pod_started_at_needs_a_hostname():
     assert REAL_POD_STARTED_AT(
         read=lambda args: "2026-09-04T20:50:25Z", env={"HOSTNAME": "p"}
     ) == POD_START
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2026-09-04T20:50:25Z", POD_START),
+        ("2026-09-04T20:50:25.123456Z", POD_START.replace(microsecond=123456)),
+        ("2026-09-04T20:50:25+00:00", POD_START),
+        ("2026-09-04T22:50:25+02:00", POD_START),
+    ],
+)
+def test_every_stamp_shape_the_api_server_can_emit_parses(raw, expected):
+    # A shape that does not parse returns None, which is the *unknown*
+    # branch -- a caveat line and no change of verdict. So a parser that
+    # only spells one shape is a gate that silently stops gating. The
+    # +02:00 row is the one that would pass while being wrong if the
+    # offset were dropped rather than applied.
+    assert cr._stamp(raw) == expected
+
+
+def test_a_kubectl_that_is_absent_or_fails_is_not_a_timestamp(monkeypatch):
+    import subprocess
+
+    def missing(*a, **k):
+        raise FileNotFoundError("kubectl")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert cr._kubectl(["get", "pod"]) is None
+
+    def timed_out(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="kubectl", timeout=20)
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    assert cr._kubectl(["get", "pod"]) is None
+
+    class Done:
+        def __init__(self, code, out):
+            self.returncode = code
+            self.stdout = out
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done(1, "denied"))
+    assert cr._kubectl(["get", "pod"]) is None
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done(0, ""))
+    assert cr._kubectl(["get", "pod"]) is None
+    # The precondition: the same wrapper does return a value when kubectl
+    # answers, so the four Nones above are the handling and not a wrapper
+    # that can only ever return None.
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done(0, " x \n"))
+    assert cr._kubectl(["get", "pod"]) == "x"
