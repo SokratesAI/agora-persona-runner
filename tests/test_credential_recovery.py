@@ -464,11 +464,39 @@ def test_a_refresh_token_inside_the_recovery_window_raises():
     )
     assert [f["state"] for f in findings] == ["login-expiring"]
     assert "interactive login" in findings[0]["detail"]
+    assert "no margin left" in findings[0]["detail"]
     # The precondition: the same credential one hour the other side of the
     # window is clean, so this is the threshold discriminating rather than
     # the function raising on everything.
     clean, _ = cr.judge_live_refresh(
-        live_blob(8, NOW + timedelta(hours=cr.OUTAGE_HOURS + 1)), NOW
+        live_blob(8, NOW + timedelta(hours=cr.LOGIN_LEAD_HOURS + 1)), NOW
+    )
+    assert clean == []
+
+
+def test_the_alarm_fires_before_his_longest_silence_not_after():
+    """The defect this threshold exists for.
+
+    `OUTAGE_HOURS` is how long the recovery took once it started. It says
+    nothing about getting the ask in front of the one person who can do
+    it, and he has gone 56.7 hours without reading a journal card inside
+    the last month. An alarm with 30 hours of lead can therefore be raised
+    entirely inside a stretch he is not reading -- true, and unheard.
+    """
+    inside_his_silence = cr.OUTAGE_HOURS + cr.OWNER_SILENCE_HOURS / 2.0
+    findings, _ = cr.judge_live_refresh(
+        live_blob(8, NOW + timedelta(hours=inside_his_silence)), NOW
+    )
+    assert [f["state"] for f in findings] == ["login-expiring"]
+    # It says which of the two thresholds it tripped, because "he has not
+    # seen this yet" and "there is no time left to recover" are different
+    # situations and only the second one is an emergency.
+    assert "no margin left" not in findings[0]["detail"]
+    assert "reach him" in findings[0]["detail"]
+    # The precondition: the same credential just outside the lead is clean,
+    # so the window has an edge rather than swallowing everything.
+    clean, _ = cr.judge_live_refresh(
+        live_blob(8, NOW + timedelta(hours=cr.LOGIN_LEAD_HOURS + 1)), NOW
     )
     assert clean == []
 
