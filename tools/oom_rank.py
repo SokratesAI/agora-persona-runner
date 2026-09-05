@@ -36,10 +36,11 @@ container that asks for little and may take a lot is therefore ranked
 That is the shape on server1 today and it is why this is a file rather
 than a paragraph. `agora-claude-bridge` requests 1 GiB of the node's 7746
 MiB and may grow to 4 GiB, which scores it 868 — 22nd of 22 in server1's
-kill order. Nine containers on the same node are BestEffort at 1000: all
-seven of ArgoCD, `traefik` (the cluster's ingress), and `sealed-secrets`.
-If my own pod runs away, the kernel works down from 1000 and takes those
-before it reaches me. `local-path-provisioner` — every volume mount on the
+kill order. Most of what shares that node is BestEffort at 1000 — all
+seven of ArgoCD, `traefik` (the cluster's ingress), `sealed-secrets`,
+`reloader` and the Actions runner controller. If my own pod runs away,
+the kernel works down from 1000 and takes those before it reaches me.
+Run this rather than trusting that list; it is a reading of one morning. `local-path-provisioner` — every volume mount on the
 box — is **not** among them, and this file said it was for five days: it
 carries `system-node-critical`, so the kernel holds it at -997 and reaches
 it last of everything on the node, after me.
