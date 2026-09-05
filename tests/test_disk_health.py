@@ -740,3 +740,99 @@ def test_the_budget_leaves_room_for_the_rest_of_the_check_inside_preflight():
 
     assert disk_health.HOST_READ_BUDGET_SECONDS < preflight.TIMEOUT_SECONDS
     assert disk_health.HOST_READ_SECONDS <= disk_health.HOST_READ_BUDGET_SECONDS
+
+
+def test_the_named_directories_say_how_much_of_the_remainder_they_miss():
+    # The read that prompted this: server1's named directories covered 15.3GiB
+    # of a 30.3GiB remainder, and the report said nothing about the other half.
+    lines = []
+    disk_health.report_host_breakdown(
+        "server1",
+        {"/var/log/journal": 4 * disk_health.GIB, "/root": 5 * disk_health.GIB},
+        out=lines.append,
+        remainder=30 * disk_health.GIB,
+    )
+    tail = lines[-1]
+    assert "name 9.0GiB of that 30.0GiB" in tail
+    assert "21.0GiB is in directories this does not look at" in tail
+
+
+def test_no_remainder_line_at_all_when_the_caller_has_no_remainder_to_give():
+    # `usage_breakdown` can come back None, and inventing a subtraction from a
+    # figure nobody measured is worse than staying quiet.
+    lines = []
+    disk_health.report_host_breakdown(
+        "server1", {"/root": 5 * disk_health.GIB}, out=lines.append, remainder=None
+    )
+    assert not any("does not look at" in line for line in lines)
+    assert not any("which is all of" in line for line in lines)
+
+
+def test_a_negative_remainder_is_never_divided_up():
+    # The MADE OF line already explains that the parts summed past the disk's
+    # used total; subtracting from a negative would print a bigger unnamed
+    # figure than the disk has.
+    lines = []
+    disk_health.report_host_breakdown(
+        "server1", {"/root": 5 * disk_health.GIB}, out=lines.append,
+        remainder=-2 * disk_health.GIB,
+    )
+    # Neither half of the accounting, and the second half is the one a `<= 0`
+    # guard dropped to `is None` still passes: 5GiB named against a -2GiB
+    # remainder falls into the covers-it-all branch and prints "all of the
+    # -2.0GiB". Asserting only the absence of the other sentence missed that.
+    assert not any("does not look at" in line for line in lines)
+    assert not any("which is all of" in line for line in lines)
+    assert [line for line in lines if "/root" in line], lines
+
+
+def test_the_named_directories_covering_all_of_it_is_said_as_that():
+    lines = []
+    disk_health.report_host_breakdown(
+        "server1",
+        {"/root": 31 * disk_health.GIB},
+        out=lines.append,
+        remainder=30 * disk_health.GIB,
+    )
+    assert "which is all of the 30.0GiB" in lines[-1]
+    assert "does not look at" not in lines[-1]
+
+
+def test_usr_and_the_swapfile_are_measured_now():
+    # Both are real weight on server1 -- 2.9GiB and 2.0GiB, measured 2026-09-06
+    # -- and neither sits under any other entry, which is what keeps the sum
+    # above honest.
+    assert "/usr" in disk_health.HOST_DIRS
+    assert "/swapfile" in disk_health.HOST_DIRS
+    for one in disk_health.HOST_DIRS:
+        others = [d for d in disk_health.HOST_DIRS if d != one]
+        assert not any(one.startswith(other.rstrip("/") + "/") for other in others), one
+
+
+def test_a_filling_node_gets_its_remainder_named_against_the_made_of_line():
+    # End to end through `report`, because the remainder is computed there and
+    # the wiring between the two is the part a unit test on the printer cannot
+    # see.
+    lines = []
+    disk_health.report(
+        "server1",
+        disk_health.node_filesystems(_filling_summary()),
+        [],
+        out=lines.append,
+        breakdown={
+            "used": 60 * disk_health.GIB,
+            "images": 24 * disk_health.GIB,
+            "ephemeral": 2 * disk_health.GIB,
+            "rest": 34 * disk_health.GIB,
+        },
+        host_reader=lambda node: {"/root": 1 * disk_health.GIB},
+    )
+    made_of = [line for line in lines if "MADE OF" in line]
+    named = [line for line in lines if "does not look at" in line]
+    assert made_of, lines
+    assert named, lines
+    # The remainder it divides up is the MADE OF line's own figure, not one it
+    # recomputed: 34GiB in, 1GiB named, 33GiB unnamed.
+    assert "34.0GiB neither" in made_of[0]
+    assert "name 1.0GiB of that 34.0GiB" in named[0]
+    assert "33.0GiB is in directories this does not look at" in named[0]
