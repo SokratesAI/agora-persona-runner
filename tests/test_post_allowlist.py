@@ -25,7 +25,7 @@ import agora_runner.nova_site as nova_site
 
 
 def _do_post_tree():
-    source = inspect.getsource(nova_site.NovaSiteHandler.do_POST)
+    source = inspect.getsource(nova_site.NovaSiteHandler._handle_post)
     return ast.parse(source.lstrip() if source.startswith(" ") else source)
 
 
