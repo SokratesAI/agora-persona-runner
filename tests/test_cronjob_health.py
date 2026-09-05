@@ -379,3 +379,104 @@ def test_a_young_cronjob_is_named_on_the_line_preflight_keeps():
     assert len(swept) == 1
     assert "agents/agora-backup" in swept[0]
     assert "not judged" in swept[0]
+
+
+# --- the second axis: is the job pinned to the node its volume is on? -------
+#
+# Added Cycle 938, after `agents/agora-backup`'s first scheduled firing aborted
+# with `expected exactly one *_agents_agora-data directory under /storage,
+# found 0`. It was pinned to server1; the volume had moved to server2 the day
+# before. The schedule half of this check was perfectly happy about it.
+
+def _backup_cronjob(pinned="server1", claim="agents_agora-data"):
+    return {
+        "metadata": {"namespace": "agents", "name": "agora-backup",
+                     "creationTimestamp": "2026-08-01T00:00:00Z"},
+        "spec": {
+            "schedule": "40 3 * * *",
+            "jobTemplate": {"spec": {"template": {"spec": {
+                "nodeSelector": {"kubernetes.io/hostname": pinned},
+                "containers": [{
+                    "name": "backup",
+                    "env": [{"name": "PYTHONUNBUFFERED", "value": "1"},
+                            {"name": "CLAIM", "value": claim}],
+                }],
+            }}}},
+        },
+        "status": {"lastScheduleTime": "2026-09-05T01:40:00Z",
+                   "lastSuccessfulTime": "2026-09-05T01:41:00Z"},
+    }
+
+
+def test_read_cronjobs_carries_the_pin_and_the_declared_claim():
+    rows, why = cronjob_health.read_cronjobs(
+        fake_kubectl(items=[_backup_cronjob()]))
+    assert why is None
+    assert rows[0]["pinned_node"] == "server1"
+    assert rows[0]["claim"] == "agents_agora-data"
+
+
+def test_read_claim_nodes_maps_a_mounted_claim_to_its_node():
+    pods = {"items": [
+        {"metadata": {"namespace": "agents", "name": "agora-1"},
+         "spec": {"nodeName": "server2",
+                  "volumes": [{"name": "data", "persistentVolumeClaim":
+                               {"claimName": "agora-data"}}]}},
+        # An unscheduled Pod names no node and must say nothing about where
+        # its volume is -- otherwise a Pending Pod erases a real answer.
+        {"metadata": {"namespace": "infra", "name": "pending-1"},
+         "spec": {"volumes": [{"name": "d", "persistentVolumeClaim":
+                               {"claimName": "whatsapp-bridge-auth"}}]}},
+    ]}
+    nodes, why = cronjob_health.read_claim_nodes(fake_kubectl(items=pods["items"]))
+    assert why is None
+    assert nodes == {"agents_agora-data": "server2"}
+
+
+def test_a_pin_that_disagrees_with_the_volume_raises():
+    rows, _ = cronjob_health.read_cronjobs(
+        fake_kubectl(items=[_backup_cronjob(pinned="server1")]))
+    lines, status = cronjob_health.report(
+        rows,
+        now=cronjob_health._as_datetime("2026-09-05T01:45:00Z"),
+        claim_nodes={"agents_agora-data": "server2"})
+    assert status == 2
+    wrong = [ln for ln in lines if ln.startswith("PINNED TO THE WRONG NODE")]
+    assert len(wrong) == 1
+    assert "agents/agora-backup" in wrong[0]
+    assert "server1" in wrong[0] and "server2" in wrong[0]
+
+
+def test_a_pin_that_agrees_with_the_volume_does_not_raise():
+    rows, _ = cronjob_health.read_cronjobs(
+        fake_kubectl(items=[_backup_cronjob(pinned="server2")]))
+    lines, status = cronjob_health.report(
+        rows,
+        now=cronjob_health._as_datetime("2026-09-05T01:45:00Z"),
+        claim_nodes={"agents_agora-data": "server2"})
+    assert status == 0
+    assert not [ln for ln in lines if "WRONG NODE" in ln]
+    assert "1 of them name both a node and the claim they copy" in lines[-1]
+
+
+def test_an_unmounted_claim_prints_and_does_not_raise():
+    # infra/whatsapp-bridge is parked at zero replicas, so no Pod mounts its
+    # volume and the pin cannot be compared. That is an ordinary state and a
+    # check that is red forever on one is a check nobody reads.
+    rows, _ = cronjob_health.read_cronjobs(
+        fake_kubectl(items=[_backup_cronjob(pinned="server1")]))
+    lines, status = cronjob_health.report(
+        rows,
+        now=cronjob_health._as_datetime("2026-09-05T01:45:00Z"),
+        claim_nodes={})
+    assert status == 0
+    assert [ln for ln in lines if ln.startswith("CANNOT SEE")]
+    assert "could not be compared: agents/agora-backup" in lines[-1]
+
+
+def test_a_cronjob_with_no_claim_is_not_judged_on_its_pin():
+    row = _backup_cronjob(pinned="server1")
+    row["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]["env"] = []
+    rows, _ = cronjob_health.read_cronjobs(fake_kubectl(items=[row]))
+    verdict, _detail = cronjob_health.judge_pin(rows[0], {"x": "server2"})
+    assert verdict is None

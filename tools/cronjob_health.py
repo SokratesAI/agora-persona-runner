@@ -84,6 +84,18 @@ unreadable -- which includes kubectl being refused, a schedule this cannot
 parse, and finding no CronJobs at all, and never reads as clean -- and 0
 means every CronJob swept is inside one slot of its own schedule, naming
 what it swept either way.
+**A schedule is only half of it, and the other half cost a night's backup.**
+`agents/agora-backup` fired for the first time at 03:40 Oslo on 2026-09-05 and
+both attempts aborted with `expected exactly one *_agents_agora-data directory
+under /storage, found 0`. The CronJob was pinned to `server1`; the volume had
+moved to `server2` the day before, and a local-path volume is a directory on
+one node's disk that exists nowhere else. Every schedule verdict here was
+correct and said nothing -- the job was on time, on the wrong box. So this now
+also compares each CronJob's `kubernetes.io/hostname` pin against the node its
+declared `CLAIM` is actually mounted on, which is the one thing a manifest
+cannot know about itself: the node is a property of the running cluster, and
+the next volume move will change it again.
+
 """
 
 import argparse
@@ -150,8 +162,110 @@ def read_cronjobs(runner=subprocess.run):
             "created": meta.get("creationTimestamp") or "",
             "scheduled": status.get("lastScheduleTime") or "",
             "succeeded": status.get("lastSuccessfulTime") or "",
+            "pinned_node": _pinned_node(spec),
+            "claim": _declared_claim(spec),
         })
     return rows, None
+
+
+def _pod_spec(spec):
+    """A CronJob spec's Pod template spec, or an empty dict."""
+    template = ((spec.get("jobTemplate") or {}).get("spec") or {})
+    return ((template.get("template") or {}).get("spec") or {})
+
+
+def _pinned_node(spec):
+    """The hostname a CronJob's Pods are pinned to, or ""."""
+    selector = _pod_spec(spec).get("nodeSelector") or {}
+    return (selector.get("kubernetes.io/hostname") or "").strip()
+
+
+def _declared_claim(spec):
+    """The `<namespace>_<claim>` a CronJob says it copies, or "".
+
+    Read off the `CLAIM` environment variable rather than inferred from the
+    job's name, for the reason `backup_health` gives about coverage: matching
+    on names is wrong in both directions here, and `CLAIM` is the string the
+    running script actually looks for under its hostPath mount.
+    """
+    for container in _pod_spec(spec).get("containers") or []:
+        for env in container.get("env") or []:
+            if env.get("name") == "CLAIM" and env.get("value"):
+                return str(env["value"]).strip()
+    return ""
+
+
+def read_claim_nodes(runner=subprocess.run):
+    """Which node each mounted PersistentVolumeClaim sits on.
+
+    Keyed `<namespace>_<claim>`, which is how a volume-backup CronJob names
+    the claim it covers and how local-path names the directory on disk.
+
+    The node comes from the Pod that mounts the claim, not from the
+    PersistentVolume's own `nodeAffinity`: reading a PersistentVolume is
+    refused for this loop's account (`persistentvolumes ... is forbidden ...
+    at the cluster scope`, measured Cycle 938), and a Pod's `nodeName` answers
+    the same question from an object we can read.
+    """
+    body, why = _run(runner, ["kubectl", "get", "pods", "-A", "-o", "json"])
+    if why:
+        return None, why
+
+    nodes = {}
+    for item in body.get("items") or []:
+        meta = item.get("metadata") or {}
+        spec = item.get("spec") or {}
+        node = (spec.get("nodeName") or "").strip()
+        if not node:
+            # An unscheduled Pod names no node, so it says nothing about
+            # where its volume is.
+            continue
+        namespace = meta.get("namespace") or "?"
+        for volume in spec.get("volumes") or []:
+            pvc = (volume.get("persistentVolumeClaim") or {}).get("claimName")
+            if pvc:
+                nodes[f"{namespace}_{pvc}"] = node
+    return nodes, None
+
+
+def judge_pin(row, claim_nodes):
+    """Whether a CronJob is pinned to the node its claim is actually on.
+
+    Returns `(verdict, detail)` where `verdict` is `ok`, `CANNOT SEE` or
+    `PINNED TO THE WRONG NODE`, or `(None, None)` when the question does not
+    apply to this CronJob.
+
+    This is a second axis and not part of `judge`: a job on the wrong node is
+    perfectly on schedule right up until it runs, and then it fails for a
+    reason its schedule cannot express. `agents/agora-backup` fired for the
+    first time at 03:40 Oslo on 2026-09-05 and aborted with `expected exactly
+    one *_agents_agora-data directory under /storage, found 0` -- it was
+    pinned to server1 and `agents/agora-data` had moved to server2 the day
+    before. A local-path volume is a directory on one node's disk, so a job
+    that reads one by hostPath has to name that node, and nothing compared the
+    two.
+    """
+    claim = row.get("claim") or ""
+    pinned = row.get("pinned_node") or ""
+    if not claim or not pinned:
+        return None, None
+    node = claim_nodes.get(claim)
+    if node is None:
+        # No running Pod mounts this claim, so its node is not readable from
+        # here. This prints and deliberately does not raise, the same call
+        # `security_alerts` makes on an already-fixed advisory: a workload
+        # parked at zero replicas is an ordinary state -- `infra/whatsapp-bridge`
+        # is one today -- and a check that is red forever on a legitimate
+        # decision is one that stops being read.
+        return "CANNOT SEE", (
+            f"pinned to {pinned} and no scheduled Pod mounts {claim}, so the "
+            f"node its volume is on is not readable from here")
+    if node != pinned:
+        return "PINNED TO THE WRONG NODE", (
+            f"pinned to {pinned} and {claim} is on {node} — a local-path "
+            f"volume is a directory on one node's disk, so this job reads an "
+            f"empty path and fails on its next firing")
+    return "ok", f"pinned to {pinned}, which is where {claim} is"
 
 
 def _as_datetime(text):
@@ -276,15 +390,19 @@ def judge(row, now):
         f"{row['scheduled']}, last success {row['succeeded']}")
 
 
-def report(rows, now=None):
+def report(rows, now=None, claim_nodes=None):
     """The printed lines and the exit status, as (lines, status)."""
     if now is None:
         now = datetime.datetime.now(datetime.timezone.utc)
+    if claim_nodes is None:
+        claim_nodes = {}
     lines = []
     actionable = False
     unreadable = False
     suspended = []
     young = []
+    pin_judged = 0
+    pin_unseen = []
 
     for row in sorted(rows, key=lambda r: (r["namespace"], r["name"])):
         who = f"{row['namespace']}/{row['name']}"
@@ -303,6 +421,17 @@ def report(rows, now=None):
         else:
             actionable = True
             lines.append(f"{verdict}  {who} ({row['schedule']}): {detail}")
+
+        pin_verdict, pin_detail = judge_pin(row, claim_nodes)
+        if pin_verdict == "PINNED TO THE WRONG NODE":
+            pin_judged += 1
+            actionable = True
+            lines.append(f"{pin_verdict}  {who}: {pin_detail}")
+        elif pin_verdict == "CANNOT SEE":
+            pin_unseen.append(who)
+            lines.append(f"CANNOT SEE  {who}: {pin_detail}")
+        elif pin_verdict == "ok":
+            pin_judged += 1
 
     swept = (
         f"Judged {len(rows)} CronJob(s) from the live cluster, not from git. "
@@ -325,6 +454,15 @@ def report(rows, now=None):
         swept += (
             f" Younger than {GRACE_SLOTS} slot of their own schedule and "
             f"therefore not judged: {', '.join(young)}.")
+    swept += (
+        f" {pin_judged} of them name both a node and the claim they copy, and "
+        f"those two were compared.")
+    if pin_unseen:
+        # Same reason as the suspended and young names above: `preflight`
+        # collapses a check that exits 0 to its last line carrying a digit.
+        swept += (
+            f" Pinned to a node and mounted by no scheduled Pod, so the pin "
+            f"could not be compared: {', '.join(pin_unseen)}.")
     lines.append(swept)
     if suspended:
         lines.append(
@@ -351,7 +489,20 @@ def main(argv=None, runner=subprocess.run):
         print("COULD NOT READ  kubectl returned no CronJobs at all")
         return 1
 
-    lines, status = report(rows)
+    claim_nodes, why = read_claim_nodes(runner)
+    if why:
+        # A CronJob's schedule is still worth judging without this, but a pin
+        # that could not be compared must not read as a pin that agreed, so
+        # this says so and the status below never comes back clean.
+        print(f"COULD NOT READ  {why} — no pin was compared")
+        claim_nodes = None
+        unreadable_pods = True
+    else:
+        unreadable_pods = False
+
+    lines, status = report(rows, claim_nodes=claim_nodes)
+    if unreadable_pods and status == 0:
+        status = 1
     for line in lines:
         print(line)
     return status
