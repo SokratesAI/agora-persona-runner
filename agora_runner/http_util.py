@@ -8,6 +8,7 @@ import urllib.request
 
 from agora_runner.config import AGORA_URL, AGORA_INTERNAL_URL, AGORA_TOKEN, GEMINI_TRANSIENT_STATUSES
 from agora_runner.log import log
+from agora_runner.otel import outgoing_headers
 
 
 def _decoded_body(response):
@@ -34,6 +35,11 @@ def http_json(method, url, payload=None, headers=None, timeout=30):
     all_headers = {"Content-Type": "application/json", "Accept-Encoding": "gzip"}
     if headers:
         all_headers.update(headers)
+    # Every JSON call this repo makes goes through here, which is why the
+    # trace context is attached here and not at the eleven call sites. It
+    # adds a `traceparent` only while a span is open, so a cron tick or a
+    # tool run from a shell sends exactly what it sent before.
+    all_headers = outgoing_headers(all_headers)
     req = urllib.request.Request(url, data=data, headers=all_headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

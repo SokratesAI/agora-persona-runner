@@ -470,3 +470,143 @@ def test_extract_context_is_none_when_there_are_no_headers():
     the header was read at all."""
     assert otel.extract_context(None) is None
     assert otel.extract_context({}) is None
+
+
+def test_an_outgoing_call_carries_the_trace_this_process_is_serving(real_tracer):
+    """The other half of the hop. Agora calls this process, this process calls
+    Agora back, and without an injected header that second call opens a trace
+    of its own -- so one user action still comes back as several traces even
+    though every service is instrumented."""
+    with otel.request_span("POST", "/mcp", {"traceparent": _TRACEPARENT}):
+        sent = otel.outgoing_headers({"x-agora-token": "kept"})
+    assert sent["x-agora-token"] == "kept"
+    assert sent["traceparent"].split("-")[1] == _PARENT_TRACE
+
+
+def test_the_outgoing_span_id_is_this_processs_span_not_the_callers(real_tracer):
+    """A child's parent is the span that made the call. Echoing the incoming
+    `traceparent` verbatim would join the right trace and draw the wrong
+    shape -- two siblings instead of a nested call."""
+    with otel.request_span("POST", "/mcp", {"traceparent": _TRACEPARENT}):
+        sent = otel.outgoing_headers()
+    mine = format(real_tracer.get_finished_spans()[0].context.span_id, "016x")
+    assert sent["traceparent"].split("-")[2] == mine
+    assert sent["traceparent"].split("-")[2] != _PARENT_SPAN
+
+
+def test_a_call_outside_any_span_sends_no_trace_header(real_tracer):
+    """Most of this repo is a cron tick or a tool run from a shell. There is no
+    request to be part of, and inventing a root trace for each of them would
+    fill Tempo with single-span traces nobody asked for."""
+    assert "traceparent" not in otel.outgoing_headers({"x-agora-token": "kept"})
+
+
+def test_outgoing_headers_adds_nothing_when_tracing_is_off(monkeypatch):
+    """Every test run and every local run. The dict has to come back the same."""
+    monkeypatch.setattr(otel, "_tracer", None)
+    assert otel.outgoing_headers({"Content-Type": "application/json"}) == {
+        "Content-Type": "application/json"
+    }
+    assert otel.outgoing_headers() == {}
+
+
+def test_outgoing_headers_does_not_mutate_the_caller(real_tracer):
+    """`http_json` builds one dict and hands it to `urllib`; a function that
+    edited it in place would work and would hide the missing return."""
+    original = {"x-agora-token": "kept"}
+    with otel.request_span("POST", "/mcp", None):
+        otel.outgoing_headers(original)
+    assert original == {"x-agora-token": "kept"}
+
+
+def test_a_broken_propagator_does_not_fail_the_call(real_tracer, monkeypatch):
+    """A tracing library is never worth an outage of the thing it watches."""
+    import opentelemetry.propagate as propagate
+
+    def boom(carrier, *a, **kw):
+        raise RuntimeError("propagator exploded")
+
+    monkeypatch.setattr(propagate, "inject", boom)
+    with otel.request_span("POST", "/mcp", {"traceparent": _TRACEPARENT}):
+        sent = otel.outgoing_headers({"x-agora-token": "kept"})
+    assert sent == {"x-agora-token": "kept"}
+
+
+def test_http_json_puts_the_trace_on_the_wire(real_tracer, monkeypatch):
+    """The unit above proves the header is built; this proves it reaches the
+    request object, which is the part a refactor of `http_json` would drop."""
+    from agora_runner import http_util
+
+    captured = {}
+
+    class _Resp:
+        status = 200
+        headers = {}
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["headers"] = dict(req.headers)
+        return _Resp()
+
+    monkeypatch.setattr(http_util.urllib.request, "urlopen", fake_urlopen)
+    with otel.request_span("POST", "/mcp", {"traceparent": _TRACEPARENT}):
+        status, _ = http_util.http_json("POST", "http://agora/x", {"a": 1})
+    assert status == 200
+    # `urllib.request.Request` title-cases the header names it is given.
+    sent = {k.lower(): v for k, v in captured["headers"].items()}
+    assert sent["content-type"] == "application/json"
+    assert sent["traceparent"].split("-")[1] == _PARENT_TRACE
+
+
+def test_http_json_outside_a_span_sends_what_it_always_sent(monkeypatch):
+    """Tracing off is the state of every test run, so this is also the check
+    that the import above did not change what an untraced call looks like."""
+    from agora_runner import http_util
+
+    monkeypatch.setattr(otel, "_tracer", None)
+    captured = {}
+
+    class _Resp:
+        status = 200
+        headers = {}
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["headers"] = dict(req.headers)
+        return _Resp()
+
+    monkeypatch.setattr(http_util.urllib.request, "urlopen", fake_urlopen)
+    http_util.http_json("GET", "http://agora/x", None, {"x-agora-token": "t"})
+    sent = {k.lower() for k in captured["headers"]}
+    assert sent == {"content-type", "accept-encoding", "x-agora-token"}
+
+
+def test_tracing_off_does_not_reach_for_the_propagator_at_all(monkeypatch):
+    """Dropping the `_tracer` guard passes every other test here, because a
+    process with no provider has no current span and `inject` then writes
+    nothing anyway. It is still wrong: this runs on every outgoing call in the
+    repo, and with the SDK absent that is an ImportError and a log line per
+    call rather than a branch not taken."""
+    import opentelemetry.propagate as propagate
+
+    calls = []
+    monkeypatch.setattr(propagate, "inject", lambda carrier, *a, **kw: calls.append(carrier))
+    monkeypatch.setattr(otel, "_tracer", None)
+    assert otel.outgoing_headers({"x-agora-token": "kept"}) == {"x-agora-token": "kept"}
+    assert calls == []
