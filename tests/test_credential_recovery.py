@@ -551,3 +551,139 @@ def test_an_unreadable_live_copy_is_not_a_clean_login(monkeypatch, capsys, tmp_p
     assert cr.main(["--disk", str(tmp_path / "absent.json")]) >= 1
     out = capsys.readouterr().out
     assert "when this loop's login expires is unknown" in out
+
+
+# --- The owner's five-day Telegram reminder (cycle 964) -------------------
+#
+# His ask, on the cycle 961 journal card at 2026-09-05 11:27: *"Set a reminder
+# to send me a notification on telegram 5 days before expired. I will then
+# refresh the token."* Before this, the deadline was a RAISE line in preflight
+# output -- read only by a cycle, which is the one party that cannot renew it.
+
+
+def test_the_lead_honours_his_five_days_and_never_drops_below_the_measurement():
+    # Both halves, because LOGIN_LEAD_HOURS is a max of two numbers that
+    # answer different questions and either could be the larger one.
+    assert cr.LOGIN_LEAD_HOURS >= cr.OWNER_REQUESTED_LEAD_HOURS
+    assert cr.LOGIN_LEAD_HOURS >= cr.OWNER_SILENCE_HOURS + cr.OUTAGE_HOURS
+    assert cr.OWNER_REQUESTED_LEAD_HOURS == 120.0
+
+
+def test_five_days_out_raises_where_the_old_87_hour_lead_did_not():
+    # The discriminating case: 4.5 days is inside his five and outside the
+    # derived 87-hour floor, so this fails against the pre-change constant.
+    four_and_a_half = NOW + timedelta(hours=108)
+    findings, _ = cr.judge_live_refresh(live_blob(8, four_and_a_half), NOW)
+    assert findings, "4.5 days out must raise now that his five days governs"
+    assert "5 day(s) the owner asked" in findings[0]["detail"]
+
+
+def test_six_days_out_is_still_clean():
+    # The complement, so the test above cannot pass by raising on everything.
+    findings, _ = cr.judge_live_refresh(live_blob(8, NOW + timedelta(hours=144)), NOW)
+    assert findings == []
+
+
+def test_the_page_says_the_date_the_days_and_who_has_to_act():
+    text = cr.page_text(NOW + timedelta(days=4), NOW)
+    assert "4.0 days" in text
+    assert "your interactive login" in text
+    assert len(text) <= 280, "his ask: telegram messages stay short"
+
+
+def test_an_already_expired_login_pages_in_the_past_tense():
+    text = cr.page_text(NOW - timedelta(days=1), NOW)
+    assert "expired" in text
+    assert "expires" not in text
+
+
+def test_page_owner_sends_one_message_a_day_not_one_every_cycle():
+    sent = []
+
+    def fake_notify(text, **kwargs):
+        sent.append((text, kwargs))
+        return 0, "telegram: sent, %d character(s)" % len(text)
+
+    status, line = cr.page_owner(NOW + timedelta(days=4), NOW, notify_fn=fake_notify)
+    assert status == 0
+    assert line.startswith("TELEGRAM")
+    assert sent[0][1]["dedupe_hours"] == 24.0
+    assert sent[0][1]["key"] == cr.LOGIN_NOTIFY_KEY
+
+
+def test_a_held_message_is_reported_rather_than_swallowed():
+    def fake_notify(text, **kwargs):
+        return 3, "held: 23:10 Oslo is inside quiet hours"
+
+    status, line = cr.page_owner(NOW + timedelta(days=4), NOW, notify_fn=fake_notify)
+    assert status == 3
+    assert "held" in line
+
+
+def test_notify_fires_only_on_the_login_finding(monkeypatch, capsys, tmp_path):
+    sent = []
+    monkeypatch.setattr(
+        cr, "page_owner", lambda *a, **k: (sent.append(a) or (0, "TELEGRAM sent"))
+    )
+    monkeypatch.setattr(cr, "pod_started_at", lambda: POD_START)
+    monkeypatch.setattr(cr, "sealed_written_at", lambda: POD_START - timedelta(hours=12))
+    # The Secret's snapshot is expired -- a finding, and one he cannot act on.
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW - timedelta(days=35)), "max"))
+    disk = tmp_path / "creds.json"
+    disk.write_text(
+        blob(
+            millis(datetime.now(timezone.utc) + timedelta(hours=5)),
+            "max",
+            # Login is 20 days out: clean, so nothing should reach his phone
+            # even though the Secret half is raising loudly.
+            {"refreshTokenExpiresAt": millis(datetime.now(timezone.utc) + timedelta(days=20))},
+        )
+    )
+    assert cr.main(["--disk", str(disk), "--notify"]) == 2
+    assert sent == [], "the Secret's own findings must never page him"
+    assert "RAISE" in capsys.readouterr().out
+
+
+def test_notify_is_off_unless_asked_for(monkeypatch, capsys, tmp_path):
+    sent = []
+    monkeypatch.setattr(
+        cr, "page_owner", lambda *a, **k: (sent.append(a) or (0, "TELEGRAM sent"))
+    )
+    monkeypatch.setattr(cr, "pod_started_at", lambda: POD_START)
+    monkeypatch.setattr(cr, "sealed_written_at", lambda: POD_START - timedelta(hours=12))
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW + timedelta(days=20)), "max"))
+    disk = tmp_path / "creds.json"
+    soon = datetime.now(timezone.utc) + timedelta(hours=cr.OUTAGE_HOURS - 1)
+    disk.write_text(
+        blob(
+            millis(datetime.now(timezone.utc) + timedelta(hours=5)),
+            "max",
+            {"refreshTokenExpiresAt": millis(soon)},
+        )
+    )
+    assert cr.main(["--disk", str(disk)]) == 2
+    assert sent == [], "no --notify means no message"
+    # The precondition, so this cannot pass because nothing raised at all.
+    assert "RAISE the live credential's refresh token" in capsys.readouterr().out
+
+
+def test_notify_fires_when_the_login_is_the_finding(monkeypatch, capsys, tmp_path):
+    sent = []
+    monkeypatch.setattr(
+        cr, "page_owner", lambda *a, **k: (sent.append(a) or (0, "TELEGRAM sent"))
+    )
+    monkeypatch.setattr(cr, "pod_started_at", lambda: POD_START)
+    monkeypatch.setattr(cr, "sealed_written_at", lambda: POD_START - timedelta(hours=12))
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW + timedelta(days=20)), "max"))
+    disk = tmp_path / "creds.json"
+    soon = datetime.now(timezone.utc) + timedelta(hours=cr.OUTAGE_HOURS - 1)
+    disk.write_text(
+        blob(
+            millis(datetime.now(timezone.utc) + timedelta(hours=5)),
+            "max",
+            {"refreshTokenExpiresAt": millis(soon)},
+        )
+    )
+    assert cr.main(["--disk", str(disk), "--notify"]) == 2
+    assert len(sent) == 1
+    assert "TELEGRAM sent" in capsys.readouterr().out

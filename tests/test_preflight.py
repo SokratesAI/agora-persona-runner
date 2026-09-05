@@ -737,6 +737,17 @@ def test_alerts_is_the_check_that_runs_with_notify():
     assert "alerts" in pf.CHECKS
 
 
+def test_credential_recovery_runs_with_notify_too():
+    # Cycle 964, on his ask for a five-day Telegram reminder. The login
+    # deadline is the one finding in preflight that no cycle can fix, so it
+    # is the second thing here allowed to reach outside the cluster. Losing
+    # the flag leaves the alarm firing only into output he never reads.
+    from tools import preflight as pf
+
+    assert pf.CHECK_ARGS["credential_recovery"] == ["--notify"]
+    assert "credential_recovery" in pf.CHECKS
+
+
 def test_a_check_with_no_extra_arguments_is_run_bare(monkeypatch):
     from tools import preflight as pf
 
