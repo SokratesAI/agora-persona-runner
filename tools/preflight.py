@@ -315,6 +315,12 @@ def unknown_checks(names, directory=None):
 #: asked once every cycle.
 CHECK_ARGS = {
     "alerts": ["--notify"],
+    # The second entry, added 2026-09-05 on his ask on the cycle 961 card:
+    # *"Set a reminder to send me a notification on telegram 5 days before
+    # expired."* The deadline it watches is the one thing in this file no
+    # cycle can fix, so a finding that only ever lands in preflight output is
+    # a finding read exclusively by the party that cannot act on it.
+    "credential_recovery": ["--notify"],
 }
 
 

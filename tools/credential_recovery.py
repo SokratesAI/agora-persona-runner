@@ -305,13 +305,28 @@ OUTAGE_HOURS = 30.0
 #: reading, and the alarm would be true and unheard.
 OWNER_SILENCE_HOURS = 57.0
 
+#: The lead the owner asked for, in his own words, on the cycle 961
+#: journal card at 2026-09-05 11:27: *"Set a reminder to send me a
+#: notification on telegram 5 days before expired. I will then refresh
+#: the token."* Five days is his number, not one derived here.
+OWNER_REQUESTED_LEAD_HOURS = 120.0
+
 #: The lead an alarm about the login actually needs. It has to reach a
-#: human *and then* leave room for the recovery itself, so it is the two
-#: added together rather than either one. At `OUTAGE_HOURS` alone, today's
-#: 2026-09-16 deadline first raises on 2026-09-15 -- inside a silence he
-#: has already had once this month, which is the failure this constant
-#: exists to stop rather than a margin anyone chose to be comfortable.
-LOGIN_LEAD_HOURS = OWNER_SILENCE_HOURS + OUTAGE_HOURS
+#: human *and then* leave room for the recovery itself, so the derived
+#: floor is the two added together rather than either one. At
+#: `OUTAGE_HOURS` alone, today's 2026-09-16 deadline first raises on
+#: 2026-09-15 -- inside a silence he has already had once this month,
+#: which is the failure that constant exists to stop rather than a margin
+#: anyone chose to be comfortable.
+#:
+#: It is a `max`, not a replacement, because the two numbers answer
+#: different questions and either could be the larger one. His five days
+#: is what he wants to be told; the 87 hours is what the measurement says
+#: an alarm needs to survive his longest silence. Taking whichever is
+#: bigger means honouring his ask cannot quietly shrink the margin below
+#: what the measurement supports, and re-measuring `OWNER_SILENCE_HOURS`
+#: upward cannot quietly ignore him.
+LOGIN_LEAD_HOURS = max(OWNER_REQUESTED_LEAD_HOURS, OWNER_SILENCE_HOURS + OUTAGE_HOURS)
 
 
 def judge_live_refresh(live, now):
@@ -366,10 +381,18 @@ def judge_live_refresh(live, now):
             )
         else:
             margin = (
-                "inside the %.0f hour(s) an alarm needs to reach him and still leave "
-                "room to recover -- his longest measured silence (%.0f) plus the "
-                "%.0f the 2026-08-17 recovery took"
-                % (LOGIN_LEAD_HOURS, OWNER_SILENCE_HOURS, OUTAGE_HOURS)
+                "inside the %.0f hour(s) of lead this alarm carries -- the larger of "
+                "the %.0f day(s) the owner asked to be told in advance and the %.0f "
+                "hour(s) an alarm needs to reach him and still leave room to recover "
+                "(his longest measured silence %.0f plus the %.0f the 2026-08-17 "
+                "recovery took)"
+                % (
+                    LOGIN_LEAD_HOURS,
+                    OWNER_REQUESTED_LEAD_HOURS / 24.0,
+                    OWNER_SILENCE_HOURS + OUTAGE_HOURS,
+                    OWNER_SILENCE_HOURS,
+                    OUTAGE_HOURS,
+                )
             )
         findings.append(
             {
@@ -388,6 +411,82 @@ def judge_live_refresh(live, now):
             }
         )
     return findings, expiry
+
+
+#: How often the owner is told about the same deadline. The countdown is
+#: five days wide and a cycle wakes every twenty minutes, so `tools.notify`'s
+#: six-hour default would put roughly twenty messages on his phone about one
+#: date he already knows. One a day is what a five-day reminder means.
+LOGIN_NOTIFY_DEDUPE_HOURS = 24.0
+
+#: The dedupe key. Deliberately not derived from the message text: the body
+#: carries a countdown that changes on every read, so a text-derived key
+#: would defeat the dedupe on the one message it exists to hold.
+LOGIN_NOTIFY_KEY = "claude-login-expiry"
+
+
+def oslo(when):
+    """`when` in Oslo, or unchanged when the timezone database cannot answer.
+
+    Rule 7: anything the owner reads is Oslo time. Falling back to the
+    original instant is right rather than raising -- a message an hour off
+    still reaches him, and no message does not.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        return when.astimezone(ZoneInfo("Europe/Oslo"))
+    except Exception:
+        return when
+
+
+def page_text(expiry, now):
+    """The message he actually reads. Short on purpose -- his ask, 2026-09-04:
+    *"In the future, messages to telegram must be shorter."*
+
+    It says the date, the days left, and the one fact that decides what he
+    does with it: nothing on this side can renew it.
+    """
+    days = (expiry - now).total_seconds() / 86400.0
+    local = oslo(expiry)
+    if days <= 0:
+        return (
+            "Nova's Claude login expired %s Oslo. I am running on borrowed time and "
+            "only your interactive login brings it back." % local.strftime("%d %b %H:%M")
+        )
+    return (
+        "Nova's Claude login expires %s Oslo, in %.1f days. Only your interactive "
+        "login moves that date -- my own refresh and the sealed backup both die with "
+        "it." % (local.strftime("%d %b %H:%M"), days)
+    )
+
+
+def page_owner(expiry, now, notify_fn=None, state_path=None, dedupe_hours=LOGIN_NOTIFY_DEDUPE_HOURS):
+    """Put the login deadline on his phone. Returns the line to print.
+
+    `notify_fn` is resolved at call time rather than bound as a default
+    argument, for the reason `tools.notify.notify` gives about its own
+    `send`: a default is bound once at import, so a test that replaces the
+    module attribute afterwards replaces something this function never looks
+    at again -- the test passes and the real client sends the owner a message
+    from a test run.
+
+    A held message is not a failure here and is never retried: quiet hours
+    and the dedupe are both decisions `tools.notify` has already made, and
+    the countdown is re-read every cycle for five days, so the first cycle
+    after 07:00 sends it. That is the same standing-alert shape
+    `tools.alerts --notify` relies on.
+    """
+    if notify_fn is None:
+        from tools import notify as notify_module
+
+        notify_fn = notify_module.notify
+    text = page_text(expiry, now)
+    kwargs = {"key": LOGIN_NOTIFY_KEY, "dedupe_hours": dedupe_hours}
+    if state_path is not None:
+        kwargs["state_path"] = state_path
+    status, line = notify_fn(text, **kwargs)
+    return status, "TELEGRAM    %s" % line
 
 
 def read_secret(env=None):
@@ -516,6 +615,13 @@ def main(argv=None):
         default=None,
         help="path to the live .credentials.json (default: under CLAUDE_HOME)",
     )
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="also put the login deadline on the owner's phone via tools.notify. "
+             "Only the login finding is sent -- the Secret's own findings are for a "
+             "cycle to act on, and he cannot act on them at all.",
+    )
     args = parser.parse_args(argv)
 
     now = datetime.now(timezone.utc)
@@ -553,6 +659,31 @@ def main(argv=None):
             for finding in login_findings:
                 sys.stdout.write("RAISE %s\n" % finding["detail"])
             login_status = 2
+            if args.notify:
+                # Deliberately inside this branch and no other. The Secret's
+                # findings below are things a cycle fixes with a pull request;
+                # this is the one finding in the file that only he can act on,
+                # and a channel that also carries what he cannot act on is one
+                # he stops reading.
+                #
+                # Broad on purpose, and it is the only broad except in this
+                # file. Nothing in the chain below raises today -- every
+                # network and file call in `tools.notify` and `tools.telegram`
+                # already catches its own -- but this is a pager bolted onto a
+                # check, and the check's job is to report the deadline whether
+                # or not the pager works. Without this, a future change one or
+                # two modules away turns a RAISE into a traceback, and this
+                # check's verdict becomes an exit 1 that reads as "could not
+                # measure" rather than the exit 2 it is.
+                try:
+                    _, line = page_owner(login_expiry, now)
+                except Exception as exc:  # noqa: BLE001 -- see above
+                    line = (
+                        "TELEGRAM    could not be reached (%s: %s). The deadline "
+                        "above stands; only the message did not go out."
+                        % (type(exc).__name__, exc)
+                    )
+                sys.stdout.write("%s\n" % line)
         else:
             sys.stdout.write(
                 "This loop's login expires %s UTC, %.1f day(s) away. Only an "
