@@ -82,6 +82,19 @@ name:
 - `sealed-secrets` and three ArgoCD containers (no class, BestEffort):
   **1000**, as predicted.
 
+A second reading the same cycle, on two Burstable Pods, because the first
+one only exercised BestEffort and both of these predict sharply different
+numbers under the two candidate rules:
+
+- `metrics-server` (`system-node-critical`, Burstable, request 70 MiB):
+  **-997**. If the class applied only to BestEffort it would read 991.
+- `coredns` (`system-cluster-critical`, Burstable, request 70 MiB):
+  **991**, the plain Burstable formula. If that class were honoured it
+  would read -997.
+
+So the override runs ahead of Burstable as well as BestEffort, and
+`system-cluster-critical` is ignored in a second independent case.
+
 So `system-node-critical` is scored here now, and `system-cluster-critical`
 is deliberately not treated as protection of any kind. What stays
 unverified is any *other* priority class: the two above are the only ones

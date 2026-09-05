@@ -138,6 +138,27 @@ def test_node_critical_beats_besteffort_because_the_kubelet_checks_it_first():
         "system-node-critical") == oom_rank.GUARANTEED_ADJ
 
 
+def test_node_critical_overrides_burstable_too_not_only_besteffort():
+    """Measured on server1 Cycle 946: metrics-server is Burstable and reads -997.
+
+    Its precondition is the discriminating half — the same Pod without the
+    class scores 991, so a rule that only covered BestEffort would fail here.
+    """
+    request = 70 * oom_rank.MIB
+    assert oom_rank.oom_score_adj("Burstable", request, CAPACITY["server1"]) == 991
+    assert oom_rank.oom_score_adj(
+        "Burstable", request, CAPACITY["server1"],
+        "system-node-critical") == oom_rank.GUARANTEED_ADJ
+
+
+def test_cluster_critical_leaves_a_burstable_score_alone():
+    """Measured on server1 Cycle 946: coredns carries it and reads 991."""
+    request = 70 * oom_rank.MIB
+    assert oom_rank.oom_score_adj(
+        "Burstable", request, CAPACITY["server1"],
+        "system-cluster-critical") == 991
+
+
 def test_cluster_critical_buys_nothing_in_the_kill_order():
     """Measured on server1 Cycle 946: traefik carries it and reads 1000."""
     assert oom_rank.oom_score_adj(
