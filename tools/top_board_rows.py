@@ -371,6 +371,16 @@ def _capture_line(capture):
     # Printed ahead of the rating for the same reason `_line` prints the
     # comment mark there: it is part of why the line sits where it does.
     held += "↩ RELAYED, not typed by him  " if capture.get("relayed") else ""
+    # Printed before the rating, like the two marks above, because it is the
+    # reason to read the line differently rather than a property of the item:
+    # somebody already worked this and their DONE marker did not parse, so
+    # the bullet is sitting in a section that says "take one" by accident.
+    # Not filtered out here -- see `unboarded_captures` for why the reader
+    # gets told instead.
+    held += ("⚠ MARKER DID NOT PARSE — a cycle closed this and wrote "
+             "`DONE (Cycle N)` with prose before the colon; check the bullet "
+             "still holds his words, then fix the marker  "
+             ) if capture.get("nearMissDone") else ""
     claim = _claim_tag(capture)
     if capture["board"] == "note":
         return f"notes.md  {held}{capture['text']}{claim}"

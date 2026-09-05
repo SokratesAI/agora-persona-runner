@@ -30,7 +30,8 @@ import re
 
 from agora_runner.nova_boards import (
     BLOCKED_STATUS, _CLOSED_STATUS_KEYS, is_relayed, parse_board,
-    split_capture_done, split_capture_priority, status_key,
+    near_miss_done_marker, split_capture_done,
+    split_capture_priority, status_key,
     unanswered_comment_bodies,
 )
 from agora_runner.nova_claims import (
@@ -108,6 +109,14 @@ def unboarded_captures(markdown, board):
                          # still unprocessed and still owed an answer -- and
                          # sinks within it.
                          "relayed": is_relayed(text),
+                         # A cycle tried to close this one and its marker
+                         # did not parse, so the bullet is standing here as
+                         # unstarted work. Stamped rather than filtered:
+                         # the marker missing means nothing verified that
+                         # the work is finished, so dropping it on this
+                         # flag alone would hide a real capture on a typo.
+                         # The reader is told and decides.
+                         "nearMissDone": near_miss_done_marker(bullet),
                          # The two halves of the reply address: which bullet,
                          # and proof it has not moved. `original` is his own
                          # sentence, rating prefix and all, and *not* any

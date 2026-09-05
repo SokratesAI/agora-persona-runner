@@ -1360,3 +1360,64 @@ def test_a_capture_he_typed_himself_carries_no_relay_note():
     out = top_board_rows.render([], captures=captures)
     assert "UNPROCESSED CAPTURES FROM EDVARD (1) —" in out
     assert "RELAYED" not in out
+
+
+# --- a DONE marker that did not parse -------------------------------------
+#
+# Cycle 964 wrote `DONE (Cycle 964) for the first half: ...` on the capture at
+# index 0 of his issues board. `_CAPTURE_DONE_RE` wants the colon immediately
+# after the paren, so it matched nothing, and for a day `top_board_rows`
+# printed a finished item at the very top of the ranking under "these outrank
+# every row below. Take one." The verbatim bullet is used here because the
+# shape of the miss is the whole finding.
+NEAR_MISS = ("DONE (Cycle 964) for the first half: the Telegram reminder is "
+             "built and armed (runner#758)")
+
+
+def test_a_near_miss_done_marker_is_still_an_unprocessed_capture():
+    """Precondition for the flag below: it is NOT filtered out.
+
+    If the marker parsed, the bullet would be dropped by
+    `test_a_capture_a_cycle_already_closed_is_not_unprocessed` above and
+    there would be nothing to flag. Asserted rather than assumed, because
+    the whole value of the mark rests on the bullet still being here.
+    """
+    text = with_captures(board(), NEAR_MISS)
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["text"] for c in got] == [NEAR_MISS]
+
+
+def test_a_near_miss_done_marker_is_stamped_and_a_real_one_is_not():
+    text = with_captures(board(), NEAR_MISS, "the thing I typed on my phone")
+    got = top_board_rows.unboarded_captures(text, "issue")
+    assert [c["nearMissDone"] for c in got] == [True, False]
+
+
+def test_a_parsing_done_marker_leaves_nothing_stamped():
+    """The positive control for the negative above.
+
+    A bullet carrying a marker that DOES parse never reaches the stamp,
+    so the discriminating comparison is against his own plain sentence,
+    which the test above makes.
+    """
+    from agora_runner.nova_boards import near_miss_done_marker
+    assert near_miss_done_marker("DONE (Cycle 964): the old ask") is False
+    assert near_miss_done_marker(NEAR_MISS) is True
+
+
+def test_the_word_done_further_into_his_sentence_is_not_a_near_miss():
+    """`near_miss_done_marker` anchors at the start for the same reason
+    `split_capture_done` does -- past the first word it is his prose."""
+    from agora_runner.nova_boards import near_miss_done_marker
+    assert near_miss_done_marker("tell me when the migration is DONE") is False
+    assert near_miss_done_marker("Doneness of the deploy: unclear") is False
+
+
+def test_the_capture_line_says_the_marker_did_not_parse():
+    text = with_captures(board(), NEAR_MISS)
+    got = top_board_rows.unboarded_captures(text, "issue")
+    line = top_board_rows._capture_line(got[0])
+    assert "MARKER DID NOT PARSE" in line
+    plain = top_board_rows.unboarded_captures(
+        with_captures(board(), "the thing I typed on my phone"), "issue")
+    assert "MARKER DID NOT PARSE" not in top_board_rows._capture_line(plain[0])
