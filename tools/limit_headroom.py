@@ -43,6 +43,24 @@ So this module asks Prometheus how far back it actually goes
 verdict when the store covers less than `MIN_COVERAGE` of the window asked for.
 Unreadable is a finding; a green light from a blind instrument is not.
 
+**A peak is only as wide as the container is old, and the window says nothing
+about that.** `MIN_COVERAGE` above catches a store younger than the window; it
+cannot catch a *series* younger than the window, because the store can hold four
+hours of history while the container in front of you started thirty minutes ago.
+Measured 2026-09-05 18:20 Oslo: `infra/grafana` peaked at **233 MiB** over a
+0.6-hour-old container, printed under a `6h` label. Cycle 981 had sized that
+container's limit at 384Mi as "2.0x" a steady state of 183.3 MiB read off a
+2.5-hour window -- so the real peak is 27% above the number the limit was
+derived from, and 384Mi is 1.65x rather than 2.0x. The peak was never wrong; the
+window on it was. So each row now carries how much of its own container's life
+the peak actually covers.
+
+It reports that and **does not raise on it**, and the reason is measured rather
+than preferred: 14 of the 23 limited containers in this cluster were younger
+than 18h at the moment this was written, so a check that raised on a young
+series would be red every day forever, which is the same as off. The number goes
+where somebody sizing a limit will read it, beside the peak it qualifies.
+
 **The threshold is calibrated on the one kill this cluster has produced with a
 named victim, and that is a thin base rather than a law.** Grafana was holding
 190.3 MiB of a 256 MiB limit -- 74.3% -- in steady state, leaving 66 MiB for
@@ -136,12 +154,18 @@ def read_containers(window_hours, base=PROMETHEUS, get=_get):
             'max_over_time(container_memory_rss{container!=""}[%s])' % window, base, get
         )
     }
+    ages = {
+        _key(s["metric"]): float(s["value"][1]) / 3600.0
+        for s in query(
+            'time() - container_start_time_seconds{container!=""}', base, get
+        )
+    }
     rows = []
     for key, limit in limits.items():
         peak = peaks.get(key)
         if peak is None:
             continue
-        rows.append(key + (peak, limit))
+        rows.append(key + (peak, limit, ages.get(key)))
     rows.sort(key=lambda row: row[4] / row[5], reverse=True)
     return rows
 
@@ -158,9 +182,21 @@ def verdict(peak, limit):
     return "ok"
 
 
-def _line(row):
-    namespace, pod, container, node, peak, limit = row
-    return "%5.1f%%  %s/%s (%s) on %s — peak %dMi of a %dMi limit" % (
+def covers_the_window(age_hours, window_hours):
+    """Is a container old enough for a peak over `window_hours` to mean anything?
+
+    `None` -- the container start time did not answer -- is *not* coverage. An
+    unknown age and a long one are the same number of arguments away from each
+    other and opposite in meaning, so it goes to the honest side.
+    """
+    if age_hours is None:
+        return False
+    return age_hours >= MIN_COVERAGE * float(window_hours)
+
+
+def _line(row, window_hours=None):
+    namespace, pod, container, node, peak, limit, age = row
+    text = "%5.1f%%  %s/%s (%s) on %s — peak %dMi of a %dMi limit" % (
         100.0 * peak / limit,
         namespace,
         container,
@@ -169,6 +205,11 @@ def _line(row):
         int(peak / MIB),
         int(limit / MIB),
     )
+    if age is None:
+        return text + ", over an unknown slice of the container's life"
+    if window_hours is not None and not covers_the_window(age, window_hours):
+        return text + ", over only %.1fh of container life" % age
+    return text
 
 
 def report(window_hours, base=PROMETHEUS, get=_get, out=print):
@@ -196,11 +237,20 @@ def report(window_hours, base=PROMETHEUS, get=_get, out=print):
     watching = [row for row in rows if verdict(row[4], row[5]) == "watch"]
 
     for row in raising:
-        out("  NEAR LIMIT  " + _line(row))
+        out("  NEAR LIMIT  " + _line(row, window_hours))
     for row in watching:
-        out("  watch       " + _line(row))
+        out("  watch       " + _line(row, window_hours))
     if rows and not raising and not watching:
-        out("  ok          highest is " + _line(rows[0]))
+        out("  ok          highest is " + _line(rows[0], window_hours))
+
+    young = [row for row in rows if not covers_the_window(row[6], window_hours)]
+    if young:
+        out("YOUNG SERIES — %d of %d container(s) are younger than %.1fh, so "
+            "their peak above covers their whole life and not the %gh window. "
+            "A peak that short reads low: size a limit off one and the number "
+            "you get is the quietest hour that container has had."
+            % (len(young), len(rows), MIN_COVERAGE * float(window_hours),
+               float(window_hours)))
 
     out("Judged %d container(s) that declare a memory limit, on peak "
         "container_memory_rss over the last %gh. RSS is anonymous memory: the "
