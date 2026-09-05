@@ -103,6 +103,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 
 from tools import oneoff_job, oom_history
 
@@ -403,9 +404,17 @@ HOST_DIRS = (
     "/srv",
 )
 
-#: Long enough for `du` over the local-path storage tree, short enough that a
-#: node whose disk is wedged does not hold the whole preflight sweep open.
-HOST_READ_SECONDS = 180
+#: Long enough for `du` over the local-path storage tree -- the live read on
+#: server1 finished well inside a minute -- and short enough that a node whose
+#: disk is wedged does not hold the sweep open.
+HOST_READ_SECONDS = 90
+
+#: The budget for *all* of this run's host reads together, not per node.
+#: `tools.preflight` kills a check at 240s and calls the result unreadable, so a
+#: per-node timeout multiplies: three nodes raising at once would turn a real
+#: FILLING finding (exit 2) into a hung check (exit 1) at exactly the moment the
+#: finding matters. One shared deadline cannot do that however many nodes raise.
+HOST_READ_BUDGET_SECONDS = 150
 
 
 def host_breakdown_command(dirs=HOST_DIRS, mount="/host"):
@@ -508,6 +517,29 @@ def read_host_breakdown(node, runner=subprocess.run, wait=HOST_READ_SECONDS):
             (logs.stderr or "").strip() or "the Job printed no directory it could measure"
         )
     return sizes
+
+
+def budgeted_host_reader(runner=subprocess.run, budget=HOST_READ_BUDGET_SECONDS,
+                         clock=time.monotonic, read=None):
+    """One reader whose whole run shares a single deadline.
+
+    Returns a callable of `node`. The first node to raise may take the whole
+    budget; a later one is refused rather than allowed to push the check past
+    the point where `tools.preflight` stops calling it a check at all.
+    """
+    read = read or read_host_breakdown
+    deadline = clock() + budget
+
+    def reader(node):
+        left = deadline - clock()
+        if left < 10:
+            raise OSError(
+                "the %ds host-directory budget for this run is spent, so this node was not read"
+                % budget
+            )
+        return read(node, runner=runner, wait=int(min(HOST_READ_SECONDS, left)))
+
+    return reader
 
 
 def report_host_breakdown(node, sizes, out=print):
@@ -649,8 +681,7 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None):
     args = parser.parse_args(argv)
 
     if host_reader is None:
-        def host_reader(node):
-            return read_host_breakdown(node, runner=runner)
+        host_reader = budgeted_host_reader(runner=runner)
 
     if args.node:
         nodes = list(args.node)

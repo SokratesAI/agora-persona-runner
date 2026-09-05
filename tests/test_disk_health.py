@@ -704,3 +704,39 @@ def test_a_job_that_printed_nothing_is_an_error():
         pass
     else:
         raise AssertionError("no measurable directory must not read as a clean node")
+
+
+# `tools.preflight` kills a check at 240s and reports it unreadable. A per-node
+# timeout multiplies, so three nodes raising at once would have turned a real
+# FILLING finding into a hung check at exactly the moment the finding matters.
+
+
+def test_the_host_read_budget_is_shared_across_nodes_not_per_node():
+    waits = []
+    ticks = iter([0.0, 0.0, 100.0, 149.5])
+
+    def read(node, runner=None, wait=None):
+        waits.append(wait)
+        return {"/root": GIB}
+
+    reader = disk_health.budgeted_host_reader(
+        budget=150, clock=lambda: next(ticks), read=read
+    )
+    reader("server1")
+    reader("server2")
+    try:
+        reader("server3")
+    except OSError as exc:
+        assert "budget for this run is spent" in str(exc)
+    else:
+        raise AssertionError("the third node must not push the check past preflight's limit")
+    # 150s left on the first node is capped by the per-read ceiling; 50s left on
+    # the second is not, and that is the whole point of taking the minimum.
+    assert waits == [disk_health.HOST_READ_SECONDS, 50]
+
+
+def test_the_budget_leaves_room_for_the_rest_of_the_check_inside_preflight():
+    from tools import preflight
+
+    assert disk_health.HOST_READ_BUDGET_SECONDS < preflight.TIMEOUT_SECONDS
+    assert disk_health.HOST_READ_SECONDS <= disk_health.HOST_READ_BUDGET_SECONDS
