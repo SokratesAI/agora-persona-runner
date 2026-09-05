@@ -29,12 +29,40 @@ swapUsageBytes`, so a node reporting a total of zero has no swap configured at
 all rather than full swap -- server2 is in that state today and server1 is not,
 and reading a 0 as "completely full" is exactly the confusion this file exists
 to stop.
+
+**Headroom now and commitment are different questions and this answers both.**
+Everything above is current state: how much room a node has *at this instant*.
+It says nothing about how much the node has already promised. Measured
+2026-09-05 08:42 Oslo, those two readings disagree sharply -- server2 has 4982Mi
+free right now and the memory limits of the pods it has accepted add up to
+7552Mi of its 7746Mi allocatable, which is 97%, on a node with no swap. A check
+that reads only the first number calls that node healthy.
+
+**The counted percentage is a floor, never a total, and the report says so
+whenever it is one.** A container with no memory limit is in no sum: it may take
+the whole node. Fifteen of them run on server2 today -- Traefik, the Tailscale
+operator and all thirteen `ts-*` proxies, which are what serve every `.ts.net`
+address here -- so server2's real commitment is *above* 97% by an amount nothing
+can read off a manifest. Twelve more run on server1, including every ArgoCD
+container, sealed-secrets and metrics-server. **They are printed and they do not
+raise**: capping thirty containers is somebody's deliberate decision, and a
+check that goes red on day one and stays red is off.
+
+**The threshold is derived, not chosen.** A node raises when its counted limits
+exceed `allocatable + swap total` -- the point at which the pods it has already
+accepted are permitted, together, to use more memory than the machine can hand
+out, so the kernel's OOM killer is the only arbiter left. Swap belongs in it
+because it is real memory the kernel can give out, which is exactly the
+difference between the two nodes here. It discriminates today rather than being
+decorative: server1 sits at 4522Mi against 9792Mi and passes wide, and server2
+at 7552Mi against 7746Mi passes by 194Mi -- 2.5% -- so the line is live.
 """
 
 import argparse
+import json
 import subprocess
 
-from tools import disk_health, oom_history
+from tools import disk_health, oom_history, oom_rank
 
 
 MIB = 1024.0**2
@@ -94,12 +122,130 @@ def verdict(available, biggest):
     return available < biggest[0]
 
 
+
+def read_allocatable(runner=subprocess.run):
+    """`{node: allocatable memory bytes}` from the API server.
+
+    A node whose allocatable memory cannot be parsed is left out rather than
+    given a zero: a zero would make every node look over-committed, which is a
+    positive result guaranteed in advance.
+    """
+    done = runner(["kubectl", "get", "nodes", "-o", "json"],
+                  capture_output=True, text=True)
+    if done.returncode != 0:
+        raise OSError((done.stderr or "").strip() or "kubectl get nodes failed")
+    sizes = {}
+    for item in json.loads(done.stdout or "{}").get("items") or []:
+        name = (item.get("metadata") or {}).get("name")
+        raw = ((item.get("status") or {}).get("allocatable") or {}).get("memory")
+        size = oom_rank.parse_quantity(raw)
+        if name and size:
+            sizes[name] = size
+    return sizes
+
+
+def read_pods(runner=subprocess.run):
+    """Every pod the API server lists, across all namespaces."""
+    done = runner(["kubectl", "get", "pods", "-A", "-o", "json"],
+                  capture_output=True, text=True)
+    if done.returncode != 0:
+        raise OSError((done.stderr or "").strip() or "kubectl get pods failed")
+    return json.loads(done.stdout or "{}").get("items") or []
+
+
+def pod_limits(pod):
+    """`(counted bytes, [container names with no memory limit])` for one pod.
+
+    This is the kubelet's own arithmetic and not a sum of every container in the
+    spec. Ordinary init containers run *before* the app containers and release
+    their memory first, so they commit nothing concurrent and are skipped; an
+    init container with `restartPolicy: Always` is a sidecar, runs alongside,
+    and is counted. Summing every init container additively inflates the total
+    -- measured 2026-09-05, that mistake read server2 at 118% where kubectl and
+    the kubelet both say 97%.
+    """
+    spec = pod.get("spec") or {}
+    meta = pod.get("metadata") or {}
+    where = "%s/%s" % (meta.get("namespace", "?"), meta.get("name", "?"))
+    counted = 0
+    uncounted = []
+    concurrent = list(spec.get("containers") or [])
+    concurrent += [c for c in spec.get("initContainers") or []
+                   if c.get("restartPolicy") == "Always"]
+    for container in concurrent:
+        resources = container.get("resources") or {}
+        limit = oom_rank.parse_quantity((resources.get("limits") or {}).get("memory"))
+        if limit is None:
+            uncounted.append("%s:%s" % (where, container.get("name", "?")))
+        else:
+            counted += limit
+    return counted, uncounted
+
+
+def node_commitment(pods, node):
+    """`(counted bytes, [uncounted container names])` for everything on `node`.
+
+    Succeeded and Failed pods hold no memory, so they are left out; an unbound
+    pod has no node to be committed against yet.
+    """
+    counted = 0
+    uncounted = []
+    for pod in pods:
+        if (pod.get("status") or {}).get("phase") in ("Succeeded", "Failed"):
+            continue
+        if ((pod.get("spec") or {}).get("nodeName")) != node:
+            continue
+        pod_counted, pod_uncounted = pod_limits(pod)
+        counted += pod_counted
+        uncounted += pod_uncounted
+    return counted, uncounted
+
+
+def commitment_verdict(counted, allocatable, swap_total):
+    """`True` when the limits already accepted exceed what the machine has.
+
+    `swap_total` is memory the kernel can genuinely hand out, so it belongs on
+    the capacity side; `None` means the kubelet reported no swap block, which is
+    treated as none rather than guessed at.
+    """
+    if not allocatable:
+        return None
+    return counted > allocatable + (swap_total or 0)
+
+
+def report_commitment(node, counted, uncounted, allocatable, swap_total, out=print):
+    """The commitment block for one node. Returns 1 when it is a finding."""
+    if not allocatable:
+        out("          CANNOT JUDGE commitment on %s — the API server reported "
+            "no allocatable memory for it" % node)
+        return None
+    ceiling = allocatable + (swap_total or 0)
+    over = commitment_verdict(counted, allocatable, swap_total)
+    share = 100.0 * counted / allocatable
+    label = "OVERCOMMITTED" if over else "committed"
+    out("          %s: %s of limits accepted against %s allocatable (%.0f%%); "
+        "the line is %s allocatable + swap"
+        % (label, _mib(counted), _mib(allocatable), share, _mib(ceiling)))
+    if uncounted:
+        out("          %d container(s) on this node carry NO memory limit, so "
+            "the figure above is a floor and not a total: %s"
+            % (len(uncounted), ", ".join(sorted(uncounted))))
+    return 1 if over else 0
+
+
 def _mib(value):
     return "%dMi" % int(value / MIB)
 
 
-def report(node, summary, out=print):
-    """One node's block. Returns 1 when it is a finding, else 0."""
+def report(node, summary, out=print, commitment=None, allocatable=None):
+    """One node's block. Returns 1 when it is a finding, else 0.
+
+    `commitment` is `(counted, uncounted)` from `node_commitment` and
+    `allocatable` the node's allocatable memory; both default to `None`, which
+    prints the headroom half alone. That is deliberate rather than lazy -- a
+    caller that could not read the pod list must not have its silence rendered
+    as a node with nothing committed on it.
+    """
     memory = node_memory(summary)
     if memory is None:
         out("  CANNOT READ %s — the kubelet reported no node memory block" % node)
@@ -127,7 +273,16 @@ def report(node, summary, out=print):
             "not a full one; this node has no cushion and OOM-kills instead")
     else:
         out("          swap: %s of %s used" % (_mib(swap[1]), _mib(swap[0])))
-    return 1 if tight else 0
+
+    over = 0
+    if commitment is not None:
+        counted, uncounted = commitment
+        judged = report_commitment(
+            node, counted, uncounted, allocatable,
+            None if swap is None else swap[0], out=out,
+        )
+        over = judged or 0
+    return (1 if tight else 0) + over
 
 
 def main(argv=None, runner=subprocess.run, out=print):
@@ -149,6 +304,15 @@ def main(argv=None, runner=subprocess.run, out=print):
             out("Nothing was swept, so this is not a clean result.")
             return 1
 
+    pods = None
+    allocatable = {}
+    commitment_unreadable = None
+    try:
+        pods = read_pods(runner=runner)
+        allocatable = read_allocatable(runner=runner)
+    except (OSError, ValueError) as exc:
+        commitment_unreadable = str(exc)
+
     findings = 0
     unreadable = []
     for node in nodes:
@@ -158,7 +322,11 @@ def main(argv=None, runner=subprocess.run, out=print):
             unreadable.append(node)
             out("  CANNOT READ %s — %s" % (node, exc))
             continue
-        judged = report(node, summary, out=out)
+        judged = report(
+            node, summary, out=out,
+            commitment=None if pods is None else node_commitment(pods, node),
+            allocatable=allocatable.get(node),
+        )
         if judged is None:
             unreadable.append(node)
         else:
@@ -168,16 +336,23 @@ def main(argv=None, runner=subprocess.run, out=print):
         "nodes/proxy, not from this pod's /proc, so a node this pod is not "
         "standing on is judged the same as the one it is."
         % (len(nodes), ", ".join(nodes)))
-    out("NOT JUDGED  whether a node will actually run out. The line here is "
-        "whether it could absorb its own largest pod restarting; a node that "
-        "passes can still be killed by a workload that grows.")
+    out("NOT JUDGED  whether a node will actually run out. The lines here are "
+        "whether it could absorb its own largest pod restarting, and whether "
+        "the limits it has already accepted exceed what it has; a node that "
+        "passes both can still be killed by a workload that grows.")
+    if commitment_unreadable is not None:
+        out("CANNOT READ the pod list or node allocatable memory, so no node "
+            "was judged on commitment at all: %s" % commitment_unreadable)
     if unreadable:
         out("%d node(s) could not be read, so this is not a clean sweep: %s"
             % (len(unreadable), ", ".join(unreadable)))
         return 1
+    if commitment_unreadable is not None:
+        return 1
     if findings:
-        out("NODE MEMORY LOW — %d node(s) have less free memory than their own "
-            "largest pod." % findings)
+        out("NODE MEMORY — %d finding(s): a node with less free memory than its "
+            "own largest pod, or one whose accepted limits exceed its "
+            "allocatable memory plus swap." % findings)
         return 2
     return 0
 
