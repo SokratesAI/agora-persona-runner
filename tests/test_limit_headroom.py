@@ -16,10 +16,13 @@ from tools import limit_headroom as lh
 MIB = 1024**2
 
 
-def fake_get(*, coverage_hours=24.0, limits=(), peaks=(), now=1_000_000.0):
+def fake_get(*, coverage_hours=24.0, limits=(), peaks=(), ages=None, now=1_000_000.0):
     """A stand-in for `tools.alerts._get` that answers from the given rows.
 
     `limits` and `peaks` are `(namespace, pod, container, node, bytes)` tuples.
+    `ages` is the same shape with hours in the last slot; leaving it `None`
+    makes every limited container a week old, so a test that is not about the
+    series age is not silently answering a question about it.
     """
 
     def metric(row):
@@ -48,6 +51,15 @@ def fake_get(*, coverage_hours=24.0, limits=(), peaks=(), now=1_000_000.0):
             return vector(limits)
         if expr.startswith("max_over_time(container_memory_rss"):
             return vector(peaks)
+        if expr.startswith("time() - container_start_time_seconds"):
+            rows = ages if ages is not None else [row[:4] + (7 * 24.0,) for row in limits]
+            return {
+                "resultType": "vector",
+                "result": [
+                    {"metric": metric(r), "value": [now, str(float(r[4]) * 3600.0)]}
+                    for r in rows
+                ],
+            }
         raise AssertionError("unexpected query %r" % expr)
 
     return get
@@ -212,3 +224,72 @@ def test_the_discarded_counters_are_not_queried(counter):
 
     lh.report(24.0, base="http://fake", get=get, out=lambda _: None)
     assert seen and not any(counter in q for q in seen)
+
+
+def test_a_peak_over_a_young_container_says_so():
+    """The failure: grafana's 233Mi peak printed under a 6h label on a 0.6h container.
+
+    Cycle 981 sized that limit at 384Mi as 2.0x a 183.3Mi steady state read off a
+    2.5h window. The store was old enough; the container was not, and nothing in
+    the line said which of the two the peak was really taken over.
+    """
+    code, text = run(
+        window_hours=6.0,
+        coverage_hours=24.0,
+        limits=[("infra", "grafana-1", "grafana", "server2", 384 * MIB)],
+        peaks=[("infra", "grafana-1", "grafana", "server2", 233 * MIB)],
+        ages=[("infra", "grafana-1", "grafana", "server2", 0.6)],
+    )
+    assert "over only 0.6h of container life" in text
+    assert "YOUNG SERIES" in text
+    assert "1 of 1 container(s)" in text
+    assert code == 0, "a young series is reported, not raised on — see the docstring"
+
+
+def test_an_old_container_carries_no_life_caveat():
+    """The control: without it the caveat could be unconditional and mean nothing."""
+    code, text = run(
+        window_hours=6.0,
+        coverage_hours=24.0,
+        limits=[("infra", "grafana-1", "grafana", "server2", 384 * MIB)],
+        peaks=[("infra", "grafana-1", "grafana", "server2", 233 * MIB)],
+        ages=[("infra", "grafana-1", "grafana", "server2", 50.0)],
+    )
+    assert "of container life" not in text
+    assert "YOUNG SERIES" not in text
+    assert code == 0
+
+
+def test_an_unknown_container_age_is_not_read_as_old():
+    """No start-time series is unknown coverage, and unknown goes to the honest side."""
+    code, text = run(
+        window_hours=6.0,
+        coverage_hours=24.0,
+        limits=[("infra", "grafana-1", "grafana", "server2", 384 * MIB)],
+        peaks=[("infra", "grafana-1", "grafana", "server2", 233 * MIB)],
+        ages=[],
+    )
+    assert "unknown slice of the container's life" in text
+    assert "YOUNG SERIES" in text
+    assert code == 0
+
+
+def test_covers_the_window_bands():
+    assert lh.covers_the_window(24.0, 24.0)
+    assert lh.covers_the_window(18.0, 24.0)
+    assert not lh.covers_the_window(17.9, 24.0)
+    assert not lh.covers_the_window(None, 24.0)
+
+
+def test_a_young_series_never_hides_a_raise():
+    """A short window reads low, so a container over the line in one is over it for real."""
+    code, text = run(
+        window_hours=6.0,
+        coverage_hours=24.0,
+        limits=[("infra", "grafana-1", "grafana", "server2", 256 * MIB)],
+        peaks=[("infra", "grafana-1", "grafana", "server2", 200 * MIB)],
+        ages=[("infra", "grafana-1", "grafana", "server2", 0.2)],
+    )
+    assert code == 2
+    assert "NEAR LIMIT" in text
+    assert "over only 0.2h of container life" in text
