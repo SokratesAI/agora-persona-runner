@@ -154,6 +154,7 @@ CHECKS = (
     "telegram_inbox",
     "host_memory_trend",
     "memory_headroom",
+    "oom_rank",
     "oom_history",
     "disk_health",
     "ci_health",
@@ -236,6 +237,7 @@ SUBJECT = {
     #: over by renaming the label.
     "host_memory_trend": ("on-box",  "the bridge pod's own node's memory"),
     "memory_headroom":   ("on-box",  "the bridge pod's own node's memory"),
+    "oom_rank":          ("on-box",  "every node's kernel kill order"),
     "oom_history":       ("on-box",  "every node's own kernel log"),
     "disk_health":       ("on-box",  "every node's own disk, over its kubelet"),
     "ci_health":         ("off-box", "GitHub's minute meter"),
