@@ -10,7 +10,8 @@ happened, not a shape someone imagined.
 
 from tools.check_deploy import (
     IN_SYNC, NO_MANIFEST, NOT_BUILT, NOT_DEPLOYED, NOT_RUNNING,
-    ROLLOUT_PENDING, Target, select_deployments, verdict,
+    POD_BEHIND, ROLLOUT_PENDING, Target, select_deployments, select_pods,
+    verdict,
 )
 
 RUNNER = Target.named("agora-persona-runner")
@@ -273,3 +274,103 @@ def test_the_kubectl_query_asks_every_namespace_and_returns_the_namespace():
     # exactly that and watching 20 tests stay green.
     assert "{'/'}{.metadata.name}" in src
     assert "-n" not in src.split("jsonpath")[0].replace("--", "")
+
+
+# The 2026-09-05 drain, with the real digests. `7f0babe5...` is the image
+# built from main's tip 2ba0124 (runner#775, the merge_pr trigger fix) and
+# pinned by both the manifest and the Deployment by 20:59 UTC;
+# `f1a13c27...` is the image the runner pod was created from at 18:23 and
+# went on serving until its 48-minute grace period expired at 21:50 Oslo.
+# For those 48 minutes `check_deploy` printed IN SYNC while every MCP tool
+# call ran the older code -- which is how `merge_pr` came to refuse a merge
+# the code on main had already made legal.
+PINNED = "sha256:7f0babe58ca7c02de5b99411e4763d41040a5c730733514125cf7d7f40016f60"
+DRAINING = "sha256:f1a13c270198fd36d9ef30b30b7e95ff8d73272cbc73189c4cab052a851739a0"
+
+RUNNER_POD = "agents/agora-persona-runner-6f9c96bfcd-dzf6z"
+SITE_POD = "agents/nova-site-7d9f4c8b6d-abcde"
+
+
+def test_a_pod_still_serving_the_previous_image_is_not_in_sync():
+    state, lines = verdict(
+        RUNNER, TIP, PINNED, PINNED, _deployed(PINNED),
+        {RUNNER_POD: DRAINING, SITE_POD: PINNED},
+    )
+    assert state == POD_BEHIND
+    body = "\n".join(lines)
+    assert RUNNER_POD in body
+    assert "f1a13c270198" in body and "7f0babe58ca7" in body
+    # The pod that HAS caught up must not be reported as behind.
+    assert SITE_POD not in body
+
+
+def test_pods_not_read_answers_about_the_deployment_exactly_as_before():
+    """`running=None` is "I did not look", and it has to keep meaning that:
+    a caller that never reads pods must not be told every pod agrees."""
+    state, lines = verdict(RUNNER, TIP, NEW, NEW, _deployed(NEW))
+    assert state == IN_SYNC
+    assert "pod(s) are running it" not in "\n".join(lines)
+
+
+def test_every_pod_on_the_pinned_digest_is_in_sync_and_says_how_many():
+    state, lines = verdict(
+        RUNNER, TIP, NEW, NEW, _deployed(NEW), {RUNNER_POD: NEW, SITE_POD: NEW},
+    )
+    assert state == IN_SYNC
+    assert "2 pod(s) are running it" in "\n".join(lines)
+
+
+def test_a_deployment_that_has_not_rolled_outranks_a_pod_that_has_not():
+    """ROLLOUT_PENDING first. A Deployment still on the old digest explains
+    the pod by itself, and reporting the pod instead would send a cycle
+    looking at a drain when ArgoCD has not synced."""
+    state, _ = verdict(
+        RUNNER, TIP, NEW, NEW, _deployed(OLD), {RUNNER_POD: OLD},
+    )
+    assert state == ROLLOUT_PENDING
+
+
+def test_an_unreadable_pod_image_is_not_agreement():
+    state, lines = verdict(
+        RUNNER, TIP, NEW, NEW, _deployed(NEW), {RUNNER_POD: None},
+    )
+    assert state == POD_BEHIND
+    assert "could not be read" in "\n".join(lines)
+
+
+def test_a_pod_that_is_not_running_is_not_serving():
+    """A Pending pod holds the new image and is answering nothing; a
+    Succeeded one is a finished Job. Counting either would report a drain
+    as over while the old pod is still taking every call."""
+    listing = (
+        f"{RUNNER_POD}\tRunning\t{RUNNER.image_path}@{DRAINING}\n"
+        f"agents/agora-persona-runner-new\tPending\t{RUNNER.image_path}@{PINNED}\n"
+        f"agents/agora-backup-29810\tSucceeded\t{RUNNER.image_path}@{PINNED}\n"
+    )
+    assert select_pods(RUNNER, listing) == {RUNNER_POD: DRAINING}
+
+
+def test_pods_are_selected_by_image_across_every_namespace():
+    listing = (
+        f"obsidian/couchdb-0\tRunning\tcouchdb:3.3\n"
+        f"{RUNNER_POD}\tRunning\t{RUNNER.image_path}@{PINNED}\n"
+    )
+    assert select_pods(RUNNER, listing) == {RUNNER_POD: PINNED}
+
+
+def test_the_pod_query_reads_the_spec_image_and_spans_namespaces():
+    """`status.containerStatuses[].image` is the runtime's resolved
+    reference and can carry a `docker.io/` prefix the spec does not, so a
+    query built on it drops pods that are plainly running this image and
+    a drain reads as clean. Every test above feeds `select_pods` a fixture,
+    so nothing else pins which field the real query asks for."""
+    import inspect
+
+    from tools import check_deploy
+
+    src = inspect.getsource(check_deploy.pod_digests)
+    assert ".spec.containers[0].image" in src
+    assert "status.containerStatuses" not in src
+    assert ".status.phase" in src
+    assert '"-A"' in src
+    assert "{'/'}{.metadata.name}" in src
