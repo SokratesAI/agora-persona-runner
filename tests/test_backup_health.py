@@ -571,3 +571,41 @@ def test_the_telegram_job_is_judged_on_its_own_six_hourly_cadence():
     fresh = _archive(TELEGRAM, ago_hours=7)
     stale = _archive(TELEGRAM, ago_hours=9)
     assert fresh.mtime > stale.mtime
+
+
+BRIDGE_HOME = next(b for b in bh.NAS_BACKUPS if b.name == "bridge-home-backup")
+
+
+def test_my_own_volume_is_covered_by_a_named_job_and_no_longer_acknowledged():
+    """The 1.6 MB that exists nowhere else was on the "deliberately not backed up" list.
+
+    That entry was written when the whole volume read as re-clonable git checkouts.
+    Measured 2026-09-05: 1,627,965 bytes across 261 files are not -- the only working
+    Claude credential this loop has, and every file of my memory. platform-config#716
+    backs them up; a claim left in ACKNOWLEDGED here would keep printing "deliberately
+    not backed up" about a volume that now is, and the sweep would never judge whether
+    the job still runs.
+    """
+    assert BRIDGE_HOME.covers == "agents/agora-claude-bridge-data"
+    assert BRIDGE_HOME.prefix == "agents_agora-claude-bridge-data-"
+    assert BRIDGE_HOME.covers not in bh.ACKNOWLEDGED
+
+
+def test_the_bridge_home_floor_is_under_the_first_real_run():
+    """93,000 is a third of the 280,773 bytes the 2026-09-05 first run shipped.
+
+    A floor at or above the real archive turns every healthy run into TRUNCATED; a
+    floor of zero cannot tell a whole copy from an empty one, which is the failure
+    the floor exists for. The rule is a third of the last real run, the same one the
+    CronJob's own MIN_SOURCE_BYTES uses on the source.
+    """
+    assert 0 < BRIDGE_HOME.min_bytes < 280_773
+    assert BRIDGE_HOME.min_bytes > 280_773 // 4
+
+
+def test_the_bridge_home_job_is_judged_on_its_own_six_hourly_cadence():
+    assert BRIDGE_HOME.stale_after_hours == 8
+    archives = [_archive(BRIDGE_HOME, ago_hours=9)]
+    assert bh.judge_nas(BRIDGE_HOME, archives, NAS_NOW)[0] == "stale"
+    archives = [_archive(BRIDGE_HOME, ago_hours=7)]
+    assert bh.judge_nas(BRIDGE_HOME, archives, NAS_NOW)[0] == "fresh"

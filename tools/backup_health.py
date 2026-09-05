@@ -261,6 +261,30 @@ NAS_BACKUPS = (
             "are; a node move needs the CronJob's nodeSelector moved with it."
         ),
     ),
+    NasBackup(
+        name="bridge-home-backup",
+        covers="agents/agora-claude-bridge-data",
+        prefix="agents_agora-claude-bridge-data-",
+        schedule="four times a day at :10 Oslo",
+        # Six hours between runs plus two, the same derivation as the WhatsApp
+        # session: one skipped run reads as stale. The credential inside is
+        # rewritten every time the CLI refreshes its token, so a stale copy can
+        # fail to restore where a fresh one would work.
+        stale_after_hours=8,
+        # 280,773 bytes on the 2026-09-05 17:07 first run, gzipped from
+        # 1,627,965 bytes across 261 files.
+        min_bytes=93_000,
+        subject=(
+            "the 1.6 MB on my own volume that exists nowhere else -- the only "
+            "working Claude credential this loop has, and my whole memory"
+        ),
+        fix=(
+            "Read the CronJob's pods: kubectl logs -n agents "
+            "job/bridge-home-backup-<n>. The volume is bound on server1 and the "
+            "job carries a nodeSelector to match; if the claim is moved, that "
+            "line moves with it or the job dies on 'found 0 directories'."
+        ),
+    ),
 )
 
 #: How far the NAS's own clock may sit from this one before every age below is a
@@ -276,10 +300,6 @@ CLOCK_SKEW_TOLERANCE_SECONDS = 15 * 60
 #: losing the disk costs time rather than data. Each entry names what rebuilds it.
 #: A claim that is not here and is not covered by a `Backup` above is reported.
 ACKNOWLEDGED = {
-    "agents/agora-claude-bridge-data": (
-        "my own scratch workspace -- git checkouts and cycle drafts, every one of "
-        "which is re-clonable from GitHub"
-    ),
     "agents/sokrates-docs-data": (
         "measured at 0 bytes, 0 files by a read-only Job on server1 (Cycle 872) "
         "before it was moved to server2"
