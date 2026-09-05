@@ -164,7 +164,16 @@ def test_main_exits_0_on_a_current_secret(monkeypatch, capsys, tmp_path):
     future = datetime.now(timezone.utc) + timedelta(days=30)
     monkeypatch.setenv(cr.SECRET_ENV, blob(millis(future), "max"))
     disk = tmp_path / "creds.json"
-    disk.write_text(blob(millis(datetime.now(timezone.utc) + timedelta(hours=5)), "max"))
+    # The live copy needs a refresh expiry as well as an access expiry: main
+    # now judges when this loop's own login dies, and a file that cannot
+    # answer that is unknown rather than clean.
+    disk.write_text(
+        blob(
+            millis(datetime.now(timezone.utc) + timedelta(hours=5)),
+            "max",
+            extra={"refreshTokenExpiresAt": millis(future)},
+        )
+    )
     assert cr.main(["--disk", str(disk)]) == 0
 
 
@@ -424,3 +433,93 @@ def test_a_kubectl_that_is_absent_or_fails_is_not_a_timestamp(monkeypatch):
     # that can only ever return None.
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done(0, " x \n"))
     assert cr._kubectl(["get", "pod"]) == "x"
+
+
+# --- when this loop's own login dies -----------------------------------------
+#
+# A separate question from every test above it. Those all ask "would a
+# restore from the Secret work"; these ask "when does the credential this
+# loop is running on stop working", which nothing in this loop can move.
+
+
+def live_blob(access_hours, refresh=None):
+    extra = {} if refresh is None else {"refreshTokenExpiresAt": millis(refresh)}
+    return json.loads(
+        blob(millis(NOW + timedelta(hours=access_hours)), "max", extra)
+    )["claudeAiOauth"]
+
+
+def test_a_healthy_refresh_token_is_not_a_finding():
+    findings, expiry = cr.judge_live_refresh(
+        live_blob(8, NOW + timedelta(days=11.5)), NOW
+    )
+    assert findings == []
+    assert expiry == NOW + timedelta(days=11.5)
+
+
+def test_a_refresh_token_inside_the_recovery_window_raises():
+    """One hour inside the 30 hours the 2026-08-17 recovery actually took."""
+    findings, expiry = cr.judge_live_refresh(
+        live_blob(8, NOW + timedelta(hours=cr.OUTAGE_HOURS - 1)), NOW
+    )
+    assert [f["state"] for f in findings] == ["login-expiring"]
+    assert "interactive login" in findings[0]["detail"]
+    # The precondition: the same credential one hour the other side of the
+    # window is clean, so this is the threshold discriminating rather than
+    # the function raising on everything.
+    clean, _ = cr.judge_live_refresh(
+        live_blob(8, NOW + timedelta(hours=cr.OUTAGE_HOURS + 1)), NOW
+    )
+    assert clean == []
+
+
+def test_an_already_expired_refresh_token_raises_and_says_so():
+    findings, _ = cr.judge_live_refresh(
+        live_blob(8, NOW - timedelta(hours=2)), NOW
+    )
+    assert [f["state"] for f in findings] == ["login-expiring"]
+    assert "expired" in findings[0]["detail"]
+
+
+def test_a_short_access_token_alone_never_raises():
+    """The trap this whole function exists to avoid.
+
+    `expiresAt` on the live copy is hours wide by design -- the CLI
+    refreshes it. A fallback to it here would raise every afternoon on a
+    system that is working perfectly.
+    """
+    findings, expiry = cr.judge_live_refresh(live_blob(-1, None), NOW)
+    assert findings == []
+    assert expiry is None
+
+
+def test_login_deadline_survives_the_stale_environment_return(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setattr(cr, "pod_started_at", lambda: POD_START)
+    monkeypatch.setattr(cr, "sealed_written_at", lambda: POD_START + timedelta(hours=12))
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW - timedelta(days=35)), "pro"))
+    disk = tmp_path / "creds.json"
+    soon = datetime.now(timezone.utc) + timedelta(hours=cr.OUTAGE_HOURS - 1)
+    disk.write_text(
+        blob(
+            millis(datetime.now(timezone.utc) + timedelta(hours=5)),
+            "max",
+            {"refreshTokenExpiresAt": millis(soon)},
+        )
+    )
+
+    assert cr.main(["--disk", str(disk)]) == 2
+    out = capsys.readouterr().out
+    assert "RAISE the live credential's refresh token expires" in out
+    # The precondition: the snapshot half is still unjudgeable here, so
+    # this exit code came from the login half rather than from the gate
+    # having been removed.
+    assert "CANNOT JUDGE" in out
+
+
+def test_an_unreadable_live_copy_is_not_a_clean_login(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv(cr.SECRET_ENV, blob(millis(NOW + timedelta(days=20))))
+    assert cr.main(["--disk", str(tmp_path / "absent.json")]) >= 1
+    out = capsys.readouterr().out
+    assert "when this loop's login expires is unknown" in out
