@@ -28,6 +28,7 @@ from agora_runner.nova_handoff import (  # noqa: F401 -- re-exported for callers
     SPEC,
     archive_older_than,
     archive_retired,
+    explain_none_older_than,
     item_slug,
     oldest_digest_cycle,
     select_older_than,
@@ -123,10 +124,7 @@ def main(argv=None):
             return 1
         rolled = archive_older_than(live, archive, cutoff, today)
         if rolled is None:
-            print(
-                f"nothing to roll: all {len(items)} handoff item(s) cite "
-                f"cycle {cutoff} or later"
-            )
+            print(explain_none_older_than(items, cutoff))
             return 0
         new_live, new_archive, moved = rolled
         print(

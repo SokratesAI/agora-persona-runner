@@ -211,8 +211,14 @@ def stamp_retired(item, reason, today):
     return f"{item}\n\n**Retired {today:%m-%d}** — {reason.strip()}"
 
 
-def archive_retired(live, archive, slugs, reason, today):
-    """Move the items named by `slugs` out of the live section.
+def archive_indices(live, archive, picked, reason, today):
+    """Move the items at `picked` (indices into `live_items`) out.
+
+    The index is the identity here, not the slug. `archive_retired` below
+    resolves slugs to indices and hands them over; `archive_older_than`
+    already has indices and must not round-trip them back through a slug
+    lookup, because a duplicate slug among the aged-out items would then
+    abort a selection that was never ambiguous in the first place.
 
     Returns `(new_live, new_archive, moved)` and writes nothing -- the
     caller owns both files and the order they are written in.
@@ -234,7 +240,6 @@ def archive_retired(live, archive, slugs, reason, today):
         )
 
     items = live_items(live)
-    picked = select_slugs(items, slugs)
     if len(picked) == len(items):
         raise RollError(
             "refusing to roll: that would retire every item in **Next "
@@ -252,6 +257,16 @@ def archive_retired(live, archive, slugs, reason, today):
             item, stamp_retired(item, reason, today), 1
         )
     return new_live, new_archive, moved
+
+
+def archive_retired(live, archive, slugs, reason, today):
+    """Move the items named by `slugs` out of the live section.
+
+    Returns `(new_live, new_archive, moved)` and writes nothing -- the
+    caller owns both files and the order they are written in.
+    """
+    picked = select_slugs(live_items(live), slugs)
+    return archive_indices(live, archive, picked, reason, today)
 
 
 # `**Cycle 1004` at the start of a digest line. Deliberately narrower than
@@ -315,6 +330,40 @@ def select_older_than(items, cutoff):
     ]
 
 
+def explain_none_older_than(items, cutoff):
+    """Why `select_older_than` picked nothing, in the caller's own words.
+
+    The CLI used to answer this with "all N item(s) cite cycle {cutoff}
+    or later", which is only true when every item is genuinely recent. An
+    item with no slug or no cycle number is skipped by
+    `select_older_than` whatever its age, so a section held open by one
+    undated item was reported as a section that had nothing old in it --
+    a true count wrapped around a false reason, which is the shape that
+    sends a cycle looking for a bug in the cutoff.
+    """
+    unslugged = [i for i in items if item_slug(i) is None]
+    undated = [
+        i for i in items if item_slug(i) is not None and newest_cycle(i) is None
+    ]
+    recent = len(items) - len(unslugged) - len(undated)
+    parts = [f"{recent} cite(s) cycle {cutoff} or later"]
+    if unslugged:
+        parts.append(f"{len(unslugged)} carr(y/ies) no slug")
+    if undated:
+        parts.append(f"{len(undated)} cite(s) no cycle at all")
+    tail = ""
+    if unslugged or undated:
+        tail = (
+            " -- the last of those are never retired by age, whatever their "
+            "age, so they stay until a cycle names them by hand"
+        )
+    return (
+        f"nothing to roll: of {len(items)} handoff item(s), "
+        + ", ".join(parts)
+        + tail
+    )
+
+
 def archive_older_than(live, archive, cutoff, today):
     """Retire every datable item older than `cutoff`. Writes nothing.
 
@@ -327,9 +376,8 @@ def archive_older_than(live, archive, cutoff, today):
     picked = select_older_than(items, cutoff)
     if not picked:
         return None
-    slugs = [item_slug(items[i]) for i in picked]
     reason = (
         f"Rolled off by age: cites no cycle at or after {cutoff}, the oldest "
         "cycle the digest section of the same file still shows."
     )
-    return archive_retired(live, archive, slugs, reason, today)
+    return archive_indices(live, archive, picked, reason, today)
