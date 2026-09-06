@@ -9329,6 +9329,62 @@
     return button;
   }
 
+  /* Where a project is in its life, and Nova's pending proposal for it.
+   *
+   * Milestone M5 of idea #260, and the third of that milestone's three
+   * fields. The readiness meter above is drawn and never pressed; the
+   * satisfaction row is pressed and never written by a cycle. This one is
+   * both, because the spec splits it: *"lifecycle: I approve / Nova
+   * proposes"*. So the stage itself is a word he cannot type here, and the
+   * two buttons appear only while a proposal is actually waiting.
+   *
+   * No proposal draws no buttons at all, rather than a disabled pair. A
+   * control that is always on screen and almost always dead reads as
+   * broken, and there is nothing for him to do when nothing is proposed.
+   */
+  function renderProjectLifecycle(name, payload) {
+    var rated = ((payload && payload.projectPriority) || {})[name.toLowerCase()];
+    var stage = (rated && rated.lifecycle) || "";
+    var proposed = (rated && rated.lifecycleProposed) || "";
+    var row = el("div", "project-lifecycle");
+    row.appendChild(el("span", "project-prio-label", "Lifecycle"));
+    row.appendChild(el("span", "project-lifecycle-word", stage || "not set"));
+    if (!proposed) return row;
+
+    var note = el("span", "project-lifecycle-note",
+      "Nova proposes: " + proposed);
+    row.appendChild(note);
+    row.appendChild(lifecycleButton(name, "approve", "Approve", proposed, note));
+    row.appendChild(lifecycleButton(name, "decline", "Decline", proposed, note));
+    return row;
+  }
+
+  function lifecycleButton(name, decision, label, proposed, note) {
+    var button = el("button", "lifecycle-btn lifecycle-" + decision, label);
+    button.type = "button";
+    button.setAttribute(
+      "aria-label", label + " moving " + name + " to " + proposed);
+    button.addEventListener("click", function () {
+      note.textContent = "Saving\u2026";
+      fetch("/api/project/lifecycle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: name, decision: decision })
+      })
+        .then(json)
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+          // Reload for `satButton`'s reason: what the file says is what
+          // the picker reads, and the page has to show that.
+          load();
+        })
+        .catch(function (e) {
+          note.textContent = "Could not save: " + (e && e.message ? e.message : e);
+        });
+    });
+    return button;
+  }
+
   function renderProjectPriority(name, payload) {
     var row = el("div", "project-prio");
     row.appendChild(el("span", "project-prio-label", "Project priority"));
@@ -9579,6 +9635,7 @@
     feed.appendChild(renderProjectPriority(name, payload));
     feed.appendChild(renderProjectTrl(name, payload));
     feed.appendChild(renderProjectSatisfaction(name, payload));
+    feed.appendChild(renderProjectLifecycle(name, payload));
     var summary = renderProjectSummary(payload);
     if (summary) feed.appendChild(summary);
     // Under the bar and above the tabs: the bar says how far along the
