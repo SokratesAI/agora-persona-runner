@@ -257,3 +257,100 @@ def test_the_report_names_the_command_that_answers_him(capsys):
     out = capsys.readouterr().out
     assert "--reply" in out
     assert "--mark-read 2026-08-20" in out
+
+
+# --- the trend (idea #184) ---------------------------------------------
+#
+# The questions here are copied out of `survey.QUESTIONS` by index rather
+# than retyped. Retyping them is how the first version of the detector
+# passed while charting two of the three real questions: it was anchored on
+# `(1-5)` and question 1 actually reads `(1-5, and one line on why)`, which
+# a hand-written test question would not have reproduced.
+
+def _two_surveys(first, second):
+    """Two dated sections carrying `first` then `second` as answers."""
+    out = ["---", "type: log", "---", ""]
+    for date, answers in (("2026-09-06", second), ("2026-08-30", first)):
+        out.append("## %s" % date)
+        out.append("")
+        for n, question in enumerate(survey.QUESTIONS, start=1):
+            out.append("%d. %s" % (n, question))
+            out.append("  - %s" % answers.get(n, ""))
+        out.append("")
+    return "\n".join(out) + "\n"
+
+
+def test_every_rating_question_is_charted_including_the_one_that_asks_why():
+    text = _two_surveys({1: "2", 2: "2", 5: "3. Maybe"},
+                        {1: "4 the plan page helped", 2: "1", 5: "3"})
+    charted = [question for question, _ in survey.ratings(survey.parse(text))]
+    asked_for_a_number = [q for q in survey.QUESTIONS if "1-5" in q]
+    assert len(asked_for_a_number) == 3
+    assert charted == asked_for_a_number
+
+
+def test_a_free_text_question_is_never_charted():
+    text = _two_surveys({1: "2", 3: "4 things went wrong"},
+                        {1: "4", 3: "5 more things"})
+    charted = [question for question, _ in survey.ratings(survey.parse(text))]
+    assert survey.QUESTIONS[2] not in charted
+
+
+def test_the_series_runs_oldest_first_whatever_order_he_leaves_the_file_in():
+    text = _two_surveys({1: "2"}, {1: "4"})
+    points = dict(survey.ratings(survey.parse(text)))[survey.QUESTIONS[0]]
+    assert points == [("2026-08-30", 2), ("2026-09-06", 4)]
+    assert "(+2)" in "\n".join(survey.format_trend(survey.parse(text)))
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("2", 2),
+    ("3. Maybe, depends what you do with it", 3),
+    ("4 the plan page finally helped", 4),
+    ("", None),
+    ("no idea", None),
+    ("2026 was a good year", None),
+    ("7", None),
+])
+def test_a_score_is_read_only_where_he_actually_wrote_one(answer, expected):
+    assert survey.rating_of(answer) == expected
+
+
+def test_one_answer_is_not_a_trend():
+    text = _two_surveys({}, {1: "4", 2: "5"})
+    assert survey.format_trend(survey.parse(text)) == []
+
+
+def test_a_quiet_sweep_prints_no_trend(capsys, tmp_path):
+    path = tmp_path / "survey.md"
+    path.write_text(_two_surveys({1: "2"}, {1: "4"}).replace(
+        "## 2026-09-06", "## 2026-09-06 — read Cycle 900").replace(
+        "## 2026-08-30", "## 2026-08-30 — read Cycle 714"), encoding="utf-8")
+    assert survey.main(["--file", str(path), "--today", "2026-09-07"]) == 0
+    assert "TREND" not in capsys.readouterr().out
+
+
+def test_the_trend_is_printed_beside_a_survey_he_has_answered(capsys, tmp_path):
+    path = tmp_path / "survey.md"
+    path.write_text(_two_surveys({1: "2"}, {1: "4"}).replace(
+        "## 2026-08-30", "## 2026-08-30 — read Cycle 714"), encoding="utf-8")
+    assert survey.main(["--file", str(path), "--today", "2026-09-06"]) == 2
+    out = capsys.readouterr().out
+    assert "TREND" in out
+    assert "2026-08-30  2" in out
+    assert "2026-09-06  4  (+2)" in out
+
+
+def test_trend_on_its_own_says_so_when_there_is_nothing_to_compare(capsys, tmp_path):
+    path = tmp_path / "survey.md"
+    path.write_text(_two_surveys({}, {1: "4"}), encoding="utf-8")
+    assert survey.main(["--file", str(path), "--trend"]) == 0
+    assert "nothing to compare" in capsys.readouterr().out
+
+
+def test_a_posted_survey_does_not_run_into_the_previous_heading():
+    posted = survey.post(ANSWERED, "2026-09-06")
+    lines = posted.splitlines()
+    heading = next(n for n, line in enumerate(lines)
+                   if line.startswith("## ") and "2026-09-06" not in line)
+    assert lines[heading - 1] == ""
