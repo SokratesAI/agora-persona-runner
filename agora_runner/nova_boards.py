@@ -1912,11 +1912,11 @@ contract: Nova writes this from the app's project picker. One row per project th
 
 # Projects
 
-| Project | Priority | Updated |
-|---|---|---|
+| Project | Priority | Updated | Order |
+|---|---|---|---|
 """
 
-_PROJECT_META_WIDTH = 3
+_PROJECT_META_WIDTH = 4
 
 
 def parse_project_meta(markdown):
@@ -1950,7 +1950,39 @@ def parse_project_meta(markdown):
             "priority": label,
             "priorityKey": priority_key(label),
             "updated": cells[2] if len(cells) > 2 else "",
+            "order": parse_project_order_cell(cells[3] if len(cells) > 3 else ""),
         }
+    return out
+
+
+def parse_project_order_cell(cell):
+    """A `Order` cell -> a 1-based position, or `None` for unplaced.
+
+    `None` and `0` are different answers and the caller depends on it: a
+    project he has never dragged has no position at all and falls back to
+    its rating, which is what keeps M1's behaviour intact for a file he
+    has not touched yet. Anything that is not a positive whole number is
+    read as unplaced rather than as an error, because this cell is in a
+    file he can edit by hand and a typo must not take the whole table out.
+    """
+    text = (cell or "").strip()
+    if not text.isdigit():
+        return None
+    value = int(text)
+    return value if value > 0 else None
+
+
+def project_positions(markdown):
+    """`projects.md` -> `{lowercased name: 1-based position}` for placed rows.
+
+    Only the rows carrying a number. An empty dict means he has never
+    ordered the list, which every caller here treats as "fall back to the
+    ratings" rather than as "everything is first".
+    """
+    out = {}
+    for key, meta in parse_project_meta(markdown or "").items():
+        if meta.get("order"):
+            out[key] = meta["order"]
     return out
 
 
@@ -2018,13 +2050,134 @@ def set_project_priority(markdown, project, priority, dated=""):
             <= set("-| ")
         )
 
-    row = "| " + " | ".join([name, label, dated]) + " |"
+    row = "| " + " | ".join([name, label, dated, ""][:_PROJECT_META_WIDTH]) + " |"
     # Newest last: this table is small and read whole, and appending keeps
     # the file's diff to one line so his own edits stay legible in git.
     insert = rule + 1
     while insert < len(lines) and lines[insert].strip().startswith("|"):
         insert += 1
     lines.insert(insert, row)
+    return "\n".join(lines)
+
+
+_PROJECT_ORDER_HEADING = "Order"
+
+
+def _project_meta_table(lines):
+    """`(heading index, rule index, [row indexes])` for the one table, or `None`."""
+    heading = rule = None
+    rows = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if all(set(cell) <= set("-: ") and cell for cell in cells):
+            rule = index
+            continue
+        if rule is None:
+            heading = index
+            continue
+        if cells and cells[0]:
+            rows.append(index)
+    if heading is None or rule is None:
+        return None
+    return heading, rule, rows
+
+
+def _write_project_cells(cells):
+    padded = list(cells) + [""] * (_PROJECT_META_WIDTH - len(cells))
+    return "| " + " | ".join(padded[:_PROJECT_META_WIDTH]) + " |"
+
+
+def set_project_order(markdown, project, position):
+    """Place one project at `position` in his hand-ranked list, 1-based.
+
+    Milestone M3 of idea #260. His words in the spec: *"the list of
+    projects... is an ordered list where the top one has the highest
+    priority... the ui for me also makes it easy with a drag and drop
+    list."* The rating column stays and keeps meaning what it meant; what
+    changes is that a placed list outranks it, because a position he set
+    by hand is a decision and a label is a description.
+
+    **The first placement numbers every row, not just the one moved**, and
+    the seed is the ranking the picker used before this existed --
+    rating first, then the order the rows already sit in. That is the
+    spec's surface-don't-silently-act rule: the moment he drags one
+    project, the whole list gets an explicit order he can see, rather than
+    a single numbered row and seven that still rank by something else.
+
+    Returns the new markdown, or `None` if refused: an unknown project (a
+    position is a statement about a row that exists, and inventing the row
+    would rate a project he never rated), a position outside `1..N`, or a
+    file with no table to order.
+    """
+    name = (project or "").strip()
+    if not name:
+        return None
+    try:
+        position = int(position)
+    except (TypeError, ValueError):
+        return None
+
+    lines = (markdown or "").split("\n")
+    table = _project_meta_table(lines)
+    if table is None:
+        return None
+    heading, rule, rows = table
+    if not rows:
+        return None
+
+    parsed = []
+    for index in rows:
+        cells = [c.strip() for c in lines[index].strip().strip("|").split("|")]
+        cells += [""] * (_PROJECT_META_WIDTH - len(cells))
+        parsed.append((index, cells))
+
+    keys = [cells[0].lower() for _index, cells in parsed]
+    if name.lower() not in keys:
+        return None
+    if position < 1 or position > len(parsed):
+        return None
+
+    # Seed order: `rank_projects` already puts a placed project ahead of an
+    # unplaced one and falls back to the rating for the rest, which is
+    # exactly the order this list has to start from -- so there is no
+    # separate "has he ordered it yet" branch here. A file he has never
+    # ordered seeds from the ratings M1 shipped; a file he has seeds from
+    # what it says, with any unplaced row falling in behind.
+    placed = [cells for _index, cells in parsed]
+    names = [cells[0] for cells in placed]
+    meta = parse_project_meta(markdown or "")
+    ordered = []
+    taken = set()
+    for wanted in rank_projects(names, meta):
+        for i, n in enumerate(names):
+            if i not in taken and n == wanted:
+                taken.add(i)
+                ordered.append(i)
+                break
+    for i in range(len(placed)):
+        if i not in ordered:
+            ordered.append(i)
+
+    moving = ordered.index(keys.index(name.lower()))
+    which = ordered.pop(moving)
+    ordered.insert(position - 1, which)
+
+    for rank, i in enumerate(ordered, start=1):
+        placed[i][3] = str(rank)
+
+    for index, cells in parsed:
+        lines[index] = _write_project_cells(cells)
+
+    heading_cells = [c.strip() for c in lines[heading].strip().strip("|").split("|")]
+    if len(heading_cells) < _PROJECT_META_WIDTH:
+        heading_cells += [""] * (_PROJECT_META_WIDTH - len(heading_cells))
+    heading_cells[3] = heading_cells[3] or _PROJECT_ORDER_HEADING
+    lines[heading] = _write_project_cells(heading_cells)
+    lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
+
     return "\n".join(lines)
 
 
@@ -2041,11 +2194,21 @@ def rank_projects(names, meta):
     rank = {key: index for index, key in enumerate(PRIORITY_ORDER)}
     # Low is pushed one past the end to leave room for unrated below.
     rank["low"] = len(PRIORITY_ORDER)
+    # A hand-placed list wins outright (idea #260, M3): the page has to
+    # show the order he dragged, or the drag is a control that changes a
+    # number he cannot see the effect of. Unplaced projects keep falling
+    # in behind by rating, which is what a file he has never ordered does.
+    placed = {key: (m or {}).get("order") for key, m in (meta or {}).items()}
+    floor = max([p for p in placed.values() if p] or [0])
     order = []
     for index, name in enumerate(names or []):
+        seat = placed.get(name.lower())
+        if seat:
+            order.append((seat, index, name))
+            continue
         key = (meta.get(name.lower()) or {}).get("priorityKey") or ""
         # Unrated sits between medium and low, not last: every project is
         # unrated today, so sorting them below Low would bury the whole
         # board the moment one project is rated Low.
-        order.append((rank.get(key, 3), index, name))
+        order.append((floor + 1 + rank.get(key, 3), index, name))
     return [name for _rank, _index, name in sorted(order)]

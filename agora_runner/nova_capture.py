@@ -57,6 +57,7 @@ from agora_runner.nova_boards import (
     PROJECT_META_PATH,
     parse_project_meta,
     set_project_priority as _set_project_priority_md,
+    set_project_order as _set_project_order_md,
     canonical_priority,
     append_detail_note,
     capture_entries,
@@ -866,6 +867,38 @@ def set_project_priority(project, priority, dated=None):
             break
     log(f"nova-capture failed rating project {project!r}: {result}")
     return False, f"could not write project ratings: {result}"
+
+
+def set_project_order(project, position):
+    """Place a project at `position` in his hand-ranked list. Returns (ok, message).
+
+    Milestone M3 of idea #260. Same read-modify-write and same 409 retry as
+    `set_project_priority` one function up, against the same document, and
+    for the same reason -- a cycle boarding his files is the concurrent
+    writer.
+
+    **A missing file is a refusal here, unlike a rating.** A rating creates
+    the table because the first rating has to be able to land somewhere; a
+    position is a statement about a list, and a list nobody has written has
+    no positions in it. `set_project_order` in `nova_boards` answers `None`
+    for that, and for a project with no row, and for a position outside the
+    list -- none of the three is retried, because re-reading gives the same
+    answer.
+    """
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(PROJECT_META_PATH)
+        updated = _set_project_order_md(current or "", project, position)
+        if updated is None:
+            return False, f"cannot place {project!r} at {position!r}"
+        result = vault_write_path(PROJECT_META_PATH, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture placed project {project!r} at {position}")
+            return True, f"{project} is now #{position}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed placing project {project!r}: {result}")
+    return False, f"could not write project order: {result}"
 
 
 def project_priorities():

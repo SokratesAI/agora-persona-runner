@@ -4320,6 +4320,16 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-standing-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .project-standing-name { font-weight: 600; text-decoration: none; color: inherit; }
 .project-standing-counts { color: var(--dim); font-size: 0.85rem; margin-left: auto; }
+/* The two reorder buttons (idea #260, M3). 44px tall because this is a
+   phone control and a 24px target is one he misses. */
+.project-standing-move { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
+.project-standing-move-btn {
+  min-width: 44px; min-height: 44px; border-radius: 8px;
+  border: 1px solid var(--line); background: transparent; color: var(--text);
+  font-size: 1rem; cursor: pointer;
+}
+.project-standing-move-btn:disabled { opacity: 0.3; cursor: default; }
+.project-standing-move-note { color: var(--dim); font-size: 0.85rem; }
 .project-standing-track {
   margin-top: 6px;
   height: 6px;

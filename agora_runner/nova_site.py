@@ -141,6 +141,7 @@ from agora_runner.nova_capture import (
     set_priority,
     set_project,
     set_project_priority,
+    set_project_order,
     project_priorities,
 )
 from agora_runner.nova_comments import (
@@ -1694,6 +1695,13 @@ def project_payload(name=None):
             name.lower(): {
                 "priority": (meta.get(name.lower()) or {}).get("priority") or "",
                 "priorityKey": (meta.get(name.lower()) or {}).get("priorityKey") or "",
+                # Where he dragged it (idea #260, M3), or `0` for a project
+                # he has never placed. The page needs the number itself and
+                # not just the sorted list: a reorder control has to be able
+                # to say "move this to 3", and inferring that from an index
+                # would send a position the file does not use the moment he
+                # hand-edits a cell.
+                "order": (meta.get(name.lower()) or {}).get("order") or 0,
             }
             for name in known
         },
@@ -4912,6 +4920,52 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_project_order(self, payload):
+        """`POST /api/project/order` -- where a project sits in his list.
+
+        Milestone M3 of idea #260: *"the list of projects... is an ordered
+        list where the top one has the highest priority... the ui for me
+        also makes it easy with a drag and drop list."* This is the write
+        end of that drag.
+
+        `position` is 1-based and is checked as an `int` here rather than
+        coerced, the same call `_post_priority` makes about a row number: a
+        client that sends `"2"` is a client that will one day send `"top"`,
+        and the markdown layer is not where a type is decided. Everything
+        else the write can refuse -- an unknown project, a position past the
+        end of the list, a file with no table -- is `set_project_order`'s to
+        answer, because those are facts about the document rather than about
+        the request.
+        """
+        project = payload.get("project")
+        position = payload.get("position")
+        if not isinstance(project, str) or not project.strip():
+            self._send_json(400, {"error": "project must be a non-empty string"})
+            return
+        if not isinstance(position, int) or isinstance(position, bool) or position < 1:
+            self._send_json(400, {"error": "position must be an integer of 1 or more"})
+            return
+
+        try:
+            ok, message = set_project_order(project.strip(), position)
+        except Exception as e:
+            log(f"nova-site project order failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        # Nothing to invalidate, the same as the rating beside it: the
+        # project payload reads this table uncached on every page load.
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Place project {project.strip()} \u00b7 {'ok' if ok else message}",
+            after=str(position),
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def _post_board_comment(self, payload):
         """`POST /api/board/comment` -- idea #64, the comment half.
 
@@ -5712,7 +5766,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture", "/api/capture/edit", "/api/capture/delete",
             "/api/capture/convert", "/api/capture/promote", "/api/comment",
             "/api/board/priority", "/api/board/project",
-            "/api/project/priority",
+            "/api/project/priority", "/api/project/order",
             "/api/board/edit", "/api/board/delete", "/api/board/archive",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
@@ -5801,6 +5855,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/project/priority":
             self._post_project_priority(payload)
+            return
+        if path == "/api/project/order":
+            self._post_project_order(payload)
             return
         if path in ("/api/board/edit", "/api/board/delete"):
             self._post_board_amend(payload, delete=path.endswith("delete"))
