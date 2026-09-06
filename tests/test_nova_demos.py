@@ -45,6 +45,7 @@ def _args(**kw):
     from tools import demo as _demo_cli
 
     kw.setdefault("unopened", _demo_cli.DEFAULT_UNOPENED_MINUTES)
+    kw.setdefault("no_restart", False)
     return type("Args", (), kw)()
 
 
@@ -1160,9 +1161,13 @@ def test_a_site_roll_does_not_restart_the_unopened_clock():
          patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
          patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
          patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
-        assert demo_cli.cmd_reap(_args(
-            idle=demo_cli.DEFAULT_IDLE_MINUTES,
-            unopened=demo_cli.DEFAULT_UNOPENED_MINUTES)) == 0
+        # The clocks are spelled out and are the ones that were the defaults
+        # when this bug was found. The subject is the floor in `idle_seconds`,
+        # not the size of the window, and pinning it to the defaults made the
+        # test go quiet the moment the owner asked for a fortnight: nineteen
+        # hours is inside fourteen days, so the reap it asserts would stop
+        # happening for a reason that has nothing to do with what it tests.
+        assert demo_cli.cmd_reap(_args(idle=120, unopened=1080)) == 0
     assert state["registry"]["demos"] == []
     assert signalled and signalled[0][0] == 4242
 
@@ -1194,9 +1199,10 @@ def test_a_site_roll_still_spares_a_demo_somebody_opened():
          patch.object(demo_cli, "fetch_activity", lambda *a, **kw: activity), \
          patch.object(demo_cli.os, "getpgid", lambda pid: pid), \
          patch.object(demo_cli.os, "killpg", lambda *a: signalled.append(a)):
-        assert demo_cli.cmd_reap(_args(
-            idle=demo_cli.DEFAULT_IDLE_MINUTES,
-            unopened=demo_cli.DEFAULT_UNOPENED_MINUTES)) == 0
+        # Same two spelled-out clocks as the test above, and for the same
+        # reason: this asserts the floor spares an opened row, which is only
+        # a real assertion while the idle clock is short enough to bite.
+        assert demo_cli.cmd_reap(_args(idle=120, unopened=1080)) == 0
     assert [d["slug"] for d in state["registry"]["demos"]] == ["watched"]
     assert signalled == []
 
@@ -1214,7 +1220,8 @@ def test_tidy_workspace_passes_the_unopened_clock_through():
          patch.object(demo_cli, "_cleanup_temps", lambda: None):
         tidy_workspace._sweep_demos()
     assert seen == {"idle": demo_cli.DEFAULT_IDLE_MINUTES,
-                    "unopened": demo_cli.DEFAULT_UNOPENED_MINUTES}
+                    "unopened": demo_cli.DEFAULT_UNOPENED_MINUTES,
+                    "no_restart": False}
     assert _argparse  # the namespace really is one
 
 
@@ -1234,8 +1241,13 @@ def test_the_unopened_default_is_long_enough_to_cross_a_night():
     # bound the longest night he will ever have.
     assert demo_cli.DEFAULT_UNOPENED_MINUTES > longest_night_minutes * 1.4
     assert demo_cli.DEFAULT_UNOPENED_MINUTES > longest_night_minutes
-    # And it is a *longer* clock than the idle one, not a second name for it.
-    assert demo_cli.DEFAULT_UNOPENED_MINUTES > demo_cli.DEFAULT_IDLE_MINUTES
+    # It was a *longer* clock than the idle one until Cycle 1052, when the owner
+    # asked for two weeks and both became that. They may be equal, and the
+    # unopened one may never be the shorter of the two: a demo he has never
+    # opened is where a wrong answer hands him a dead link, which is the whole
+    # reason this clock exists separately.
+    assert demo_cli.DEFAULT_UNOPENED_MINUTES >= demo_cli.DEFAULT_IDLE_MINUTES
+    assert demo_cli.DEFAULT_IDLE_MINUTES >= 14 * 24 * 60
 
 
 def test_only_a_browser_counts_as_somebody_opening_a_demo():
@@ -1634,3 +1646,99 @@ def test_orphan_dirs_is_empty_when_every_directory_is_claimed():
         {"slug": "b", "dir": nova_demos.DURABLE_ROOT + "/b"},
     ]}
     assert nova_demos.orphan_dirs(registry, ["a", "b"]) == []
+
+
+def test_a_rolled_pod_restarts_its_demo_instead_of_reaping_it(tmp_path):
+    """the owner asked for demos that live two weeks. This is what makes that true.
+
+    The bridge pod rolled twice in the four hours before this was written, so
+    a longer clock on its own delivers a demo that still dies the same
+    afternoon while the number says fourteen days. The demo's files are on a
+    volume that outlives the pod and the row carries the command, so the
+    recovery is a spawn here.
+
+    The assertion that matters is `host`: a row carrying this pod's new pid
+    beside the dead pod's address is what makes `stop` signal an unrelated
+    process group, so both move or neither does.
+    """
+    from tools import demo as demo_cli
+
+    directory = tmp_path / "board166"
+    directory.mkdir()
+    state, _read, _write = _fake_registry([
+        {"slug": "board166", "host": "10.42.0.11", "port": 5174, "pid": 4242,
+         "dir": str(directory), "command": "python3 -m http.server 5174",
+         "started_at": "2026-09-01T09:00:00"},
+    ])
+    spawned = {}
+
+    class _Proc:
+        pid = 9911
+
+        def poll(self):
+            return None
+
+    def _popen(argv, **kw):
+        spawned.update(argv=argv, cwd=kw.get("cwd"), port=kw["env"]["PORT"])
+        return _Proc()
+
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.85"), \
+         patch.object(demo_cli, "SPAWN_CHECK_SECONDS", 0), \
+         patch.object(demo_cli, "pid_alive", lambda pid: pid == 9911), \
+         patch.object(demo_cli.subprocess, "Popen", _popen):
+        assert demo_cli.cmd_reap(_args(idle=None)) == 0
+
+    row, = state["registry"]["demos"]
+    assert row["host"] == "10.42.0.85"
+    assert row["pid"] == 9911
+    # Its own port, its own directory, its own recorded command.
+    assert spawned["port"] == "5174"
+    assert spawned["cwd"] == str(directory)
+    assert spawned["argv"] == ["python3", "-m", "http.server", "5174"]
+    # And the owner's clock does not restart because I redeployed.
+    assert row["started_at"] == "2026-09-01T09:00:00"
+
+
+def test_a_rolled_demo_whose_files_are_gone_is_still_reaped(tmp_path):
+    """The negative control, and it is the reason `_relaunch` returns a note.
+
+    Without this the test above passes against a `cmd_reap` that keeps every
+    `pod-gone` row unconditionally -- which would hold its port forever and is
+    the leak the reaper was built for. `discard` deletes a demo's directory,
+    so this is the state a discarded-then-rolled demo is really in.
+    """
+    from tools import demo as demo_cli
+
+    state, _read, _write = _fake_registry([
+        {"slug": "deleted", "host": "10.42.0.11", "port": 5174, "pid": 4242,
+         "dir": str(tmp_path / "not-here"),
+         "command": "python3 -m http.server 5174"},
+    ])
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.85"), \
+         patch.object(demo_cli.subprocess, "Popen",
+                      lambda *a, **kw: pytest.fail("nothing to restart")):
+        assert demo_cli.cmd_reap(_args(idle=None)) == 0
+    assert state["registry"]["demos"] == []
+
+
+def test_no_restart_reaps_a_rolled_demo_the_old_way(tmp_path):
+    """`--no-restart` is the escape, and it has to actually reach the loop."""
+    from tools import demo as demo_cli
+
+    directory = tmp_path / "board166"
+    directory.mkdir()
+    state, _read, _write = _fake_registry([
+        {"slug": "board166", "host": "10.42.0.11", "port": 5174, "pid": 4242,
+         "dir": str(directory), "command": "python3 -m http.server 5174"},
+    ])
+    with patch.object(demo_cli, "_read_registry", _read), \
+         patch.object(demo_cli, "_write_registry", _write), \
+         patch.object(demo_cli, "pod_ip", lambda: "10.42.0.85"), \
+         patch.object(demo_cli.subprocess, "Popen",
+                      lambda *a, **kw: pytest.fail("nothing to restart")):
+        assert demo_cli.cmd_reap(_args(idle=None, no_restart=True)) == 0
+    assert state["registry"]["demos"] == []
