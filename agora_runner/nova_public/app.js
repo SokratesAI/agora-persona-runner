@@ -9261,6 +9261,74 @@
     return row;
   }
 
+  /* His satisfaction with a project, 1-5, and the buttons that set it.
+   *
+   * Milestone M5 of idea #260. This is the mirror of the readiness meter
+   * above: that one is drawn and never pressed, because the spec assigns
+   * the TRL to Nova; this one is pressed and never written by a cycle,
+   * because the spec says the score is his alone.
+   *
+   * The scale carries no words on purpose. Readiness names its five
+   * levels because Nova sets them and knows what each one means; putting
+   * words on his five would be Nova's adjectives on his judgement. So the
+   * control says "2 of 5" and he means what he means by it.
+   *
+   * Pressing the score already set clears it. Unrated is a real state and
+   * a different answer from 1 -- the spec forces a diagnosis at "2 or
+   * below", and that must never fire because nobody ever pressed anything
+   * -- so there has to be a way back to it, and a sixth "clear" button
+   * would be a control for a thing he does once a year.
+   */
+  function renderProjectSatisfaction(name, payload) {
+    var rated = ((payload && payload.projectPriority) || {})[name.toLowerCase()];
+    var score = (rated && rated.satisfaction) || 0;
+    var max = (rated && rated.satisfactionMax) || 5;
+    var row = el("div", "project-sat");
+    row.appendChild(el("span", "project-prio-label", "Your satisfaction"));
+    var note = el("span", "project-sat-word", score ? score + " of " + max : "not rated");
+    var group = el("span", "sat-meter", "");
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Your satisfaction with " + name);
+    for (var i = 1; i <= max; i += 1) {
+      group.appendChild(satButton(name, i, score, max, note));
+    }
+    row.appendChild(group);
+    row.appendChild(note);
+    return row;
+  }
+
+  function satButton(name, value, score, max, note) {
+    var on = value <= score;
+    var button = el("button", "sat-dot" + (on ? " on" : ""), String(value));
+    button.type = "button";
+    button.setAttribute("aria-pressed", value === score ? "true" : "false");
+    button.setAttribute(
+      "aria-label", "Score " + name + " " + value + " of " + max
+        + (value === score ? " (press again to clear)" : ""));
+    button.addEventListener("click", function () {
+      // Pressing the current score clears it; see the comment above.
+      var wanted = value === score ? 0 : value;
+      note.textContent = "Saving\u2026";
+      fetch("/api/project/satisfaction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: name, score: wanted })
+      })
+        .then(json)
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+          // Reload rather than repainting the dots: what the file says is
+          // what the picker will read, and the page has to show that
+          // rather than what the tap implied.
+          load();
+        })
+        .catch(function (e) {
+          note.textContent = "Could not save: " + (e && e.message ? e.message : e);
+        });
+    });
+    return button;
+  }
+
   function renderProjectPriority(name, payload) {
     var row = el("div", "project-prio");
     row.appendChild(el("span", "project-prio-label", "Project priority"));
@@ -9510,6 +9578,7 @@
     }
     feed.appendChild(renderProjectPriority(name, payload));
     feed.appendChild(renderProjectTrl(name, payload));
+    feed.appendChild(renderProjectSatisfaction(name, payload));
     var summary = renderProjectSummary(payload);
     if (summary) feed.appendChild(summary);
     // Under the bar and above the tabs: the bar says how far along the

@@ -13905,6 +13905,70 @@ describe("the project page", () => {
     assert.equal(trigger.className, "chip prio prio-immediate");
   });
 
+  /* His satisfaction with a project -- milestone M5 of idea #260, the one
+   * of that milestone's three fields the spec gives to him and to nobody
+   * else: *"satisfaction 1-5: mine alone, a score of 2 or below
+   * auto-forces a diagnosis"*. The readiness meter beside it is drawn and
+   * never pressed for the opposite reason. What these hold is that unrated
+   * and 1 stay different answers on screen, and that the only way back to
+   * unrated is pressing the score that is already set. */
+  const SCORED = {
+    ...RATED,
+    projectPriority: {
+      marcus: { priority: "🔴 Immediately", priorityKey: "immediate",
+                satisfaction: 3, satisfactionMax: 5 },
+      nova: { priority: "", priorityKey: "", satisfaction: 0, satisfactionMax: 5 },
+      agora: { priority: "⚪ Low", priorityKey: "low" },
+    },
+  };
+
+  const satDots = (window) =>
+    [...window.document.querySelectorAll(".project-sat .sat-dot")];
+
+  test("an unrated project draws five empty buttons and says so", async () => {
+    const window = await loadSite("/project/Nova", { project: () => SCORED });
+    const dots = satDots(window);
+    assert.equal(dots.length, 5);
+    assert.equal(dots.filter((d) => d.className.includes("on")).length, 0);
+    // Not "1 of 5" -- nobody has pressed anything, and the spec forces a
+    // diagnosis at 2 or below, so silence must not read as a low score.
+    assert.equal(
+      window.document.querySelector(".project-sat-word").textContent, "not rated");
+  });
+
+  test("a scored project fills that many buttons and names the number", async () => {
+    const window = await loadSite("/project/Marcus",
+      { project: () => ({ ...SCORED, name: "Marcus", asked: "Marcus" }) });
+    const dots = satDots(window);
+    assert.equal(dots.filter((d) => d.className.includes("on")).length, 3);
+    assert.equal(
+      window.document.querySelector(".project-sat-word").textContent, "3 of 5");
+    // The number rides beside the dots rather than only inside them: a
+    // reader who has to count circles to know what was said is the
+    // failure this repo already fixed once on the priority glyphs.
+    assert.equal(dots[2].getAttribute("aria-pressed"), "true");
+    assert.equal(dots[1].getAttribute("aria-pressed"), "false");
+  });
+
+  test("pressing a button posts that score for the project", async () => {
+    const window = await loadSite("/project/Nova", { project: () => SCORED });
+    click(window, satDots(window)[3]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const posted = window.posted.find((p) => p.url === "/api/project/satisfaction");
+    assert.ok(posted, "no write reached /api/project/satisfaction");
+    assert.deepEqual(posted.body, { project: "Nova", score: 4 });
+    assert.equal(posted.body.number, undefined);
+  });
+
+  test("pressing the score already set clears it back to unrated", async () => {
+    const window = await loadSite("/project/Marcus",
+      { project: () => ({ ...SCORED, name: "Marcus", asked: "Marcus" }) });
+    click(window, satDots(window)[2]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const posted = window.posted.find((p) => p.url === "/api/project/satisfaction");
+    assert.deepEqual(posted.body, { project: "Marcus", score: 0 });
+  });
+
   test("the index page has no picker, because no project is chosen", async () => {
     const window = await loadSite("/projects",
       { project: () => ({ ...RATED, name: null, asked: "" }) });

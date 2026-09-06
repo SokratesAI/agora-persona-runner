@@ -4433,6 +4433,13 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .trl-dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--dim); }
 .trl-dot.on { background: var(--dim); }
 .project-trl-word { color: var(--dim); font-size: 0.9rem; }
+.project-sat { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.sat-meter { display: inline-flex; gap: 6px; align-items: center; }
+/* A tap target, not a dot: 32px is the smallest thing a thumb hits
+ * reliably, and this control lives on the phone he reads the page on. */
+.sat-dot { width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--dim); background: none; color: var(--dim); font-size: 0.85rem; cursor: pointer; padding: 0; }
+.sat-dot.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.project-sat-word { color: var(--dim); font-size: 0.9rem; }
 .project-prio-note { color: var(--dim); font-size: 0.85rem; }
 /* Inside a pill the chip is a rating, not a tap target of its own -- the
  * whole pill is the link, so the chip must not eat the tap. */

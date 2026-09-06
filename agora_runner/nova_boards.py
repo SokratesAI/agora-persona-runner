@@ -1980,11 +1980,11 @@ contract: Nova writes this from the app's project picker. One row per project th
 
 # Projects
 
-| Project | Priority | Updated | Order | TRL |
-|---|---|---|---|---|
+| Project | Priority | Updated | Order | TRL | Satisfaction |
+|---|---|---|---|---|---|
 """
 
-_PROJECT_META_WIDTH = 5
+_PROJECT_META_WIDTH = 6
 
 
 def parse_project_meta(markdown):
@@ -2020,6 +2020,8 @@ def parse_project_meta(markdown):
             "updated": cells[2] if len(cells) > 2 else "",
             "order": parse_project_order_cell(cells[3] if len(cells) > 3 else ""),
             "trl": parse_project_trl_cell(cells[4] if len(cells) > 4 else ""),
+            "satisfaction": parse_project_satisfaction_cell(
+                cells[5] if len(cells) > 5 else ""),
         }
     return out
 
@@ -2101,6 +2103,59 @@ def project_trl_key(label):
     if canonical is None:
         return 0
     return PROJECT_TRL_LEVELS.index(canonical) + 1
+
+
+#: How many points his satisfaction score has. Milestone M5 of idea #260,
+#: and the one of that milestone's three fields that is **his alone**:
+#:
+#:     *"satisfaction 1-5: mine alone, a score of 2 or below auto-forces a
+#:     diagnosis"*
+#:
+#: So this scale carries no words, and that is a decision rather than an
+#: omission. `PROJECT_TRL_LEVELS` beside it names five levels because I set
+#: those and I know what each one means; naming his five would put my words
+#: on his judgement, and a project he calls a 2 does not become "Poor"
+#: because I said so. The page says "2 of 5" and he means what he means.
+PROJECT_SATISFACTION_MAX = 5
+
+
+def canonical_satisfaction(value):
+    """A 1-5 score -> that `int`, or `None` for anything else.
+
+    `""` is not a score and is refused here -- clearing one is
+    `set_project_satisfaction(..., "")`, which the setter handles itself,
+    the same split `canonical_trl` makes.
+
+    A `bool` is refused explicitly because `True == 1` in Python, so a
+    client sending `true` would otherwise rate a project 1 out of 5.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        score = value
+    else:
+        text = str(value or "").strip()
+        if not text.isdigit():
+            return None
+        score = int(text)
+    return score if 1 <= score <= PROJECT_SATISFACTION_MAX else None
+
+
+def parse_project_satisfaction_cell(cell):
+    """A `Satisfaction` cell -> its 1-5 score, or `0` for unrated.
+
+    `0` rather than `None` so the payload carries a number on every row and
+    the page has nothing to branch on -- the same call
+    `parse_project_trl_cell` makes with `""`. Anything unreadable reads as
+    unrated for `parse_project_order_cell`'s reason: this is a file he can
+    hand-edit, and a typo must not take out the table.
+
+    **Unrated and 1 are different answers and nothing here collapses them.**
+    A project he has never scored is not a project he is unhappy with, and
+    the diagnosis the spec attaches to "2 or below" must never fire on
+    silence.
+    """
+    return canonical_satisfaction(cell) or 0
 
 
 def project_positions(markdown):
@@ -2193,6 +2248,7 @@ def set_project_priority(markdown, project, priority, dated=""):
 
 _PROJECT_ORDER_HEADING = "Order"
 _PROJECT_TRL_HEADING = "TRL"
+_PROJECT_SATISFACTION_HEADING = "Satisfaction"
 
 
 def _project_meta_table(lines):
@@ -2369,6 +2425,70 @@ def set_project_trl(markdown, project, level):
     heading_cells += [""] * (_PROJECT_META_WIDTH - len(heading_cells))
     heading_cells[3] = heading_cells[3] or _PROJECT_ORDER_HEADING
     heading_cells[4] = heading_cells[4] or _PROJECT_TRL_HEADING
+    lines[heading] = _write_project_cells(heading_cells)
+    lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
+
+    return "\n".join(lines)
+
+
+def set_project_satisfaction(markdown, project, score):
+    """Set one project's satisfaction. Returns the new markdown, or `None`.
+
+    Milestone M5 of idea #260, and the mirror image of `set_project_trl`
+    one function up. TRL is mine, so it has a CLI and deliberately no
+    control on his page; **satisfaction is his, so it has a control and
+    deliberately no CLI.** A `tools.project_satisfaction` would let a cycle
+    write a number into the one cell on this table that says what *he*
+    thinks, which is the same mistake as a TRL button, from the other end.
+
+    Refused: an unknown project, because a score is a statement about a row
+    that exists; anything outside 1-5; and a file with no table. `""` is
+    accepted and clears the cell back to unrated -- which is a real state,
+    different from 1, and the one every project is in until he presses
+    something.
+    """
+    name = (project or "").strip()
+    if not name:
+        return None
+
+    if isinstance(score, str) and not score.strip():
+        value = ""
+    else:
+        rated = canonical_satisfaction(score)
+        if rated is None:
+            return None
+        value = str(rated)
+
+    lines = (markdown or "").split("\n")
+    table = _project_meta_table(lines)
+    if table is None:
+        return None
+    heading, rule, rows = table
+    if not rows:
+        return None
+
+    hit = None
+    for index in rows:
+        cells = [c.strip() for c in lines[index].strip().strip("|").split("|")]
+        if cells and cells[0].lower() == name.lower():
+            hit = (index, cells)
+            break
+    if hit is None:
+        return None
+
+    index, cells = hit
+    cells += [""] * (_PROJECT_META_WIDTH - len(cells))
+    # `cells[0]` is left alone for `set_project_trl`'s reason: the match is
+    # case-insensitive because he types the name on a phone, and writing my
+    # casing back renames his project.
+    cells[5] = value
+    lines[index] = _write_project_cells(cells)
+
+    heading_cells = [c.strip() for c in lines[heading].strip().strip("|").split("|")]
+    heading_cells += [""] * (_PROJECT_META_WIDTH - len(heading_cells))
+    heading_cells[3] = heading_cells[3] or _PROJECT_ORDER_HEADING
+    heading_cells[4] = heading_cells[4] or _PROJECT_TRL_HEADING
+    heading_cells[5] = heading_cells[5] or _PROJECT_SATISFACTION_HEADING
     lines[heading] = _write_project_cells(heading_cells)
     lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
 
