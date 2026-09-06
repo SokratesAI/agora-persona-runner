@@ -201,3 +201,95 @@ def test_the_ranked_list_is_cut_and_the_blocked_rows_are_not_in_it():
     payload = next_payload(issues, board(), ledger(), NOW, top=1)
     assert [r["number"] for r in payload["next"]] == [11]
     assert [r["number"] for r in payload["waiting"]] == [10]
+
+
+PROJECTS = "\n".join([
+    "# Projects",
+    "",
+    "| Project | Priority | Updated |",
+    "|---|---|---|",
+    f"| Marcus | {IMMEDIATE} | 09-05 |",
+    f"| Nova | {HIGH} | 09-01 |",
+    f"| Demos | {LOW} | 09-02 |",
+    "",
+]) + "\n"
+
+
+def test_a_medium_row_in_his_top_project_outranks_a_high_row_below_it():
+    """The whole of milestone M1: the project cell now decides the order.
+
+    Both rows are the same age and neither is claimed or blocked, so under
+    the flat ranking the High row wins on its own rating alone -- which is
+    the disconnect the redesign note names, and the assertion that would
+    have passed before this change.
+    """
+    issues = board((10, "a high row in a low project", BACKLOG, "08-01", HIGH,
+                    "Demos"), project=True)
+    ideas = board((64, "a medium row in his top project", BACKLOG, "08-01",
+                   PRIORITY_LABELS["medium"], "Marcus"), project=True)
+
+    flat = next_payload(issues, ideas, ledger(), NOW)
+    assert flat["next"][0]["number"] == 10
+
+    ranked = next_payload(issues, ideas, ledger(), NOW, projects_markdown=PROJECTS)
+    assert ranked["next"][0]["number"] == 64
+    assert ranked["next"][1]["number"] == 10
+
+
+def test_immediately_skips_to_the_top_over_the_project_order():
+    """Tier 2 sits above tier 3, which is the spec's order and not a guess.
+
+    Without the skip-to-top key an Immediately row in his bottom-rated
+    project would sort below every row in Marcus, and the one label he has
+    to say "this, next" would mean less than it did before the change.
+    """
+    issues = board((10, "immediate, in a low project", BACKLOG, "08-01",
+                    IMMEDIATE, "Demos"), project=True)
+    ideas = board((64, "high, in his top project", BACKLOG, "08-01", HIGH,
+                   "Marcus"), project=True)
+
+    ranked = next_payload(issues, ideas, ledger(), NOW, projects_markdown=PROJECTS)
+    assert ranked["next"][0]["number"] == 10
+
+
+def test_a_project_he_has_not_rated_sorts_below_every_rated_one():
+    """Unrated is not Low, and it is not first either -- `_RANK`'s own rule.
+
+    `NAS` is a real project on his board with no row in `projects.md`, and
+    the row here is rated Immediately at the row level precisely so the
+    only thing deciding the order is the project cell.
+    """
+    issues = board((10, "a low row in his lowest rated project", BACKLOG,
+                    "08-01", LOW, "Demos"), project=True)
+    ideas = board((64, "a low row in an unrated project", BACKLOG, "08-01",
+                   LOW, "NAS"), project=True)
+
+    ranked = next_payload(issues, ideas, ledger(), NOW, projects_markdown=PROJECTS)
+    assert [r["number"] for r in ranked["next"]] == [10, 64]
+
+
+def test_a_blocked_row_stays_below_an_actionable_one_in_a_worse_project():
+    """The project order goes underneath the tiers that already existed.
+
+    A row nobody can take is still a row nobody can take, whichever
+    project it belongs to -- issue #94 topped this list for five days.
+    """
+    issues = board((10, "blocked, in his top project", STATUS_LABELS["blocked-on-edvard"],
+                    "08-01", IMMEDIATE, "Marcus"), project=True)
+    ideas = board((64, "actionable, in his lowest", BACKLOG, "08-01", LOW,
+                   "Demos"), project=True)
+
+    ranked = next_payload(issues, ideas, ledger(), NOW, projects_markdown=PROJECTS)
+    assert ranked["next"][0]["number"] == 64
+
+
+def test_an_empty_project_cell_ranks_as_nova_not_as_unrated():
+    """`parse_board` fills a blank with `DEFAULT_PROJECT`, so there is no
+    unfiled bucket -- and the fifteen rows still missing a cell therefore
+    rank as Nova (High) rather than sinking below every rated project."""
+    issues = board((10, "no project cell at all", BACKLOG, "08-01", LOW))
+    ideas = board((64, "filed under a project he rates Low", BACKLOG, "08-01",
+                   LOW, "Demos"), project=True)
+
+    ranked = next_payload(issues, ideas, ledger(), NOW, projects_markdown=PROJECTS)
+    assert ranked["next"][0]["number"] == 10

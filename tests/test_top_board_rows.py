@@ -12,6 +12,31 @@ from agora_runner.nova_boards import CAPTURE_PRIORITY_SEP, PRIORITY_LABELS, STAT
 from tools import top_board_rows
 
 
+#: Bound before the autouse fixture below ever replaces the name, so the
+#: two tests that are *about* `fetch_projects` still exercise the real one.
+_REAL_FETCH_PROJECTS = top_board_rows.fetch_projects
+
+
+@pytest.fixture(autouse=True)
+def _no_live_projects_read(monkeypatch):
+    """No test here may reach the vault for `projects.md`.
+
+    `main` fetches it when `--projects` is not given, and every test below
+    that predates the project ordering calls `main` with only the three
+    local boards -- which on the bridge pod is a real vault read inside a
+    unit test, and in CI is a subprocess that does not exist. Both are the
+    trap the `--notes` comment in `main` already names: green here for a
+    reason that has nothing to do with the assertion.
+
+    `("", True)` is the file being absent, which is a legitimate state and
+    ranks flat with no warning, so the tests that predate this change see
+    exactly the output they were written against. A test that cares
+    monkeypatches this again or passes `--projects`, and both win over an
+    autouse fixture applied at setup.
+    """
+    monkeypatch.setattr(top_board_rows, "fetch_projects", lambda: ("", True))
+
+
 def board(*rows, done=()):
     """A board file with the live five-column `## Board` shape."""
     head = ["## Board", "", "| # | Item | Status | Updated | Priority |",
@@ -1442,3 +1467,116 @@ def test_the_capture_line_says_the_marker_did_not_parse():
     plain = top_board_rows.unboarded_captures(
         with_captures(board(), "the thing I typed on my phone"), "issue")
     assert "MARKER DID NOT PARSE" not in top_board_rows._capture_line(plain[0])
+
+
+def project_board(*rows):
+    """A board file carrying his `Project` column, which `board` omits."""
+    head = ["## Board", "",
+            "| # | Item | Status | Updated | Priority | Project |",
+            "|---|---|---|---|---|---|"]
+    for number, title, status, updated, priority, project in rows:
+        head.append(f"| [[#{number} — {title}\\|{number}]] | {title} "
+                    f"| {status} | {updated} | {priority} | {project} |")
+    head += ["", "## Done", "", "| # | Item | Updated | Where |", "|---|---|---|---|"]
+    return "\n".join(head) + "\n"
+
+
+PROJECTS_MD = "\n".join([
+    "# Projects", "",
+    "| Project | Priority | Updated |",
+    "|---|---|---|",
+    f"| Marcus | {IMMEDIATE} | 09-05 |",
+    f"| Demos | {LOW} | 09-02 |",
+    "",
+]) + "\n"
+
+
+def test_the_printed_line_names_the_project_and_its_rating():
+    """Both ratings, each labelled. A line carrying only the row's own tag
+    would show a Medium above a High and look like a bug."""
+    rows = top_board_rows.open_rows(
+        project_board((10, "a medium row", BACKLOG, "08-01",
+                       PRIORITY_LABELS["medium"], "Marcus")), "issue")
+    out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
+    assert f"Marcus (project {IMMEDIATE})" in out
+    assert PRIORITY_LABELS["medium"] in out
+
+
+def test_main_ranks_by_his_project_order_when_given_the_file(tmp_path, capsys):
+    """The tool half of milestone M1, driven through `main` rather than
+    `render`, because the fetch is the half that was missing."""
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    projects = tmp_path / "projects.md"
+    issues.write_text(project_board(
+        (10, "a high row in his lowest project", BACKLOG, "08-01", HIGH, "Demos")))
+    ideas.write_text(project_board(
+        (64, "a medium row in his top project", BACKLOG, "08-01",
+         PRIORITY_LABELS["medium"], "Marcus")))
+    notes.write_text(NOTES.format(" "))
+    projects.write_text(PROJECTS_MD)
+
+    argv = ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes),
+            "--projects", str(projects)]
+    assert top_board_rows.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "-> idea #64" in out
+    assert "PROJECTS.MD UNREADABLE" not in out
+
+
+def test_an_unreadable_projects_file_is_said_out_loud_but_does_not_fail(
+        tmp_path, capsys, monkeypatch):
+    """Absent and unreadable mean opposite things here, same as the ledger.
+
+    No row is missing from the list, so this is not a `COULD NOT READ` and
+    not exit 1 -- what is missing is the order between projects, and a top
+    row picked without it is a different row from the one this tool names.
+    """
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    issues.write_text(project_board(
+        (10, "a high row in his lowest project", BACKLOG, "08-01", HIGH, "Demos")))
+    ideas.write_text(project_board(
+        (64, "a medium row in his top project", BACKLOG, "08-01",
+         PRIORITY_LABELS["medium"], "Marcus")))
+    notes.write_text(NOTES.format(" "))
+    monkeypatch.setattr(top_board_rows, "fetch_projects", lambda: ("", False))
+
+    argv = ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)]
+    assert top_board_rows.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "PROJECTS.MD UNREADABLE" in out
+    assert "COULD NOT READ" not in out
+    # Flat is the old behaviour, and the warning is what says so out loud.
+    assert "-> issue #10" in out
+
+
+def test_an_absent_projects_file_is_not_reported_as_unreadable(monkeypatch):
+    """It is written whole on his first rating, so `[not found:]` is the
+    normal state before he has rated anything -- and a flat ranking is the
+    right answer for it, silently."""
+    class Done:
+        returncode = 0
+        stdout = "[not found: projects/sokrates/projects/nova/projects.md]\n"
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
+    assert _REAL_FETCH_PROJECTS() == ("", True)
+
+
+def test_a_failed_projects_read_is_unreadable_not_absent(monkeypatch):
+    """The guard above must not swallow the case it exists to separate."""
+    class Done:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
+    assert _REAL_FETCH_PROJECTS() == ("", False)
+
+
+def test_the_projects_path_is_the_one_nova_boards_owns():
+    """Hand-typed copy of a path that has moved once will be wrong the next
+    time -- the same finding that pulled `BOARD_PATHS` in here."""
+    from agora_runner.nova_boards import PROJECT_META_PATH
+    assert top_board_rows.PROJECTS_PATH == PROJECT_META_PATH

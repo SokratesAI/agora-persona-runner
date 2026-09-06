@@ -254,6 +254,7 @@ from agora_runner.nova_galaxy import galaxy_payload
 from agora_runner.nova_sources import (
     claims_ledger_json,
     edvard_board_markdown,
+    project_meta_markdown,
     nova_board_markdown,
     catalog_markdown,
     comments_markdown,
@@ -1816,8 +1817,9 @@ def next_up_payload():
     Both halves are answered by `tools/top_board_rows.py` at the start of
     every cycle and neither has ever left the terminal.
 
-    Three reads rather than the two board payloads the cache already
-    holds, and that is deliberate: the ranking needs the board *markdown*
+    Four reads rather than the two board payloads the cache already
+    holds -- his two boards, the claims ledger and `projects.md`, which
+    orders the ranking between projects -- and that is deliberate: the ranking needs the board *markdown*
     (an unanswered comment is read off the write-up under the row, which
     the list payload does not carry), so reusing the cached payload would
     mean re-deriving `waiting` from a different shape of the same file --
@@ -1830,6 +1832,7 @@ def next_up_payload():
         edvard_board_markdown("ideas"),
         claims_ledger_json(),
         datetime.now(OSLO),
+        projects_markdown=project_meta_markdown(),
     )
 
 
