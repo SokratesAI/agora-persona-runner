@@ -300,14 +300,31 @@ def visible_persona_name(persona_id, name):
 
 
 def conversations():
-    """Every conversation Agora holds, newest activity first.
+    """Every conversation Agora holds that he has not archived, newest first.
+
+    It said "every conversation Agora holds" until 2026-09-06 and that was
+    already untrue -- the archived ones have always been dropped here --
+    but the fetch below now asks for the subset by name, so the sentence
+    had stopped being merely loose and started describing a call that is
+    not made.
 
     Raises rather than returning an empty list on a failed fetch: an empty
     list and an unreachable store render identically as "no conversations",
     and those mean opposite things. The route turns this into a 502 he can
     read.
     """
-    status, body = agora_get("/conversations")
+    # `?active=true` is agora#86, the second of issue #30's fixes, and it
+    # applies exactly the predicate the loop below already applied: the
+    # route filters on `!archived` and nothing else. Measured against the
+    # live store 2026-09-06 -- all 1,083 rows are 639,759 bytes in
+    # 1.26-1.73s, the 53 active ones are 29,637 bytes in 0.31-0.85s, and
+    # the two id sets are equal -- so this drops 95% of a payload that was
+    # fetched, parsed and then thrown away on every open of his sidebar
+    # (his issue #141). The `archived` skip below stays: an older Agora
+    # ignores an unknown query parameter and answers with everything, and
+    # the page must not grow 1,030 archived threads because the store in
+    # front of it rolled back.
+    status, body = agora_get("/conversations?active=true")
     if status != 200:
         raise RuntimeError(f"conversation listing returned {status}")
     rows = []

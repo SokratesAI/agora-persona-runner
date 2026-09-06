@@ -60,7 +60,10 @@ def _list(rows, list_status=200, persona_status=200, convs=None, conv_status=200
         return 404, {}
 
     def fake_conv_get(path):
-        if path == "/conversations":
+        # `nova_conversations.conversations` asks for `?active=true` now
+        # (his issue #141); the grouping here goes through that function,
+        # so the fake has to answer the spelling it actually sends.
+        if path.startswith("/conversations"):
             return conv_status, {"conversations": convs or []}
         return 404, {}
 
