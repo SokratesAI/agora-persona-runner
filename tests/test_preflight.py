@@ -806,3 +806,137 @@ def test_two_sweeps_a_minute_apart_are_told_apart_by_their_stamp():
     later = preflight.sweep_stamp(now=1788657360.0, checkout="/w/7-111/agora-persona-runner")
     assert later != mine
     assert "03:16 Oslo" in later
+
+
+# --- the per-check cadence (idea #183) ------------------------------------
+#
+# The owner asked for a frequency cut and the danger of one is specific: a
+# check that stops running must never read as a check that came back clean.
+# Every test below is pointed at that, not at the saving.
+
+NOW = 1788653760.0
+HOUR = 3600.0
+
+
+def test_a_clean_check_inside_its_window_is_held_back():
+    state = {"pin_drift": {"code": 0, "ran_at": NOW - 2 * HOUR}}
+    run, held = preflight.due_checks(["pin_drift", "open_prs"], state, NOW)
+    assert run == ["open_prs"]
+    assert [n for n, _, _ in held] == ["pin_drift"]
+
+
+def test_a_check_that_raised_is_always_asked_again():
+    # The one that would turn the alarm off: a standing finding is unchanged
+    # precisely because nobody has closed it, and it may have closed since.
+    state = {"pin_drift": {"code": 2, "ran_at": NOW - 2 * HOUR}}
+    run, held = preflight.due_checks(["pin_drift"], state, NOW)
+    assert run == ["pin_drift"] and held == []
+
+
+def test_a_check_with_no_record_runs():
+    run, held = preflight.due_checks(["pin_drift"], {}, NOW)
+    assert run == ["pin_drift"] and held == []
+
+
+def test_a_reading_older_than_the_window_is_taken_again():
+    state = {"pin_drift": {"code": 0, "ran_at": NOW - 25 * HOUR}}
+    run, held = preflight.due_checks(["pin_drift"], state, NOW)
+    assert run == ["pin_drift"] and held == []
+
+
+def test_a_reading_from_the_future_is_not_trusted():
+    # A clock that jumped backwards would otherwise fence a check off for as
+    # long as the skew lasts, and nothing would say so.
+    state = {"nas_ports": {"code": 0, "ran_at": NOW + 5 * HOUR}}
+    run, held = preflight.due_checks(["nas_ports"], state, NOW)
+    assert run == ["nas_ports"] and held == []
+
+
+def test_a_check_with_no_cadence_is_never_held_back():
+    state = {"workload_health": {"code": 0, "ran_at": NOW - 500 * HOUR}}
+    run, held = preflight.due_checks(["workload_health"], state, NOW)
+    assert run == ["workload_health"] and held == []
+
+
+def test_the_incident_checks_are_deliberately_not_on_a_cadence():
+    # These are the ones that earned their keep this week by naming something
+    # that was true for minutes. A cadence on any of them is the alarm off.
+    for name in ("workload_health", "argocd_health", "limit_headroom",
+                 "heartbeat_gaps", "cronjob_health", "main_build", "open_prs",
+                 "telegram_inbox", "nas_health", "cycle_postmortem"):
+        assert name not in preflight.CADENCE_HOURS, name
+
+
+def test_every_cadence_entry_names_a_real_check():
+    assert preflight.unknown_cadence() == []
+
+
+def test_a_cadence_entry_for_a_check_that_does_not_exist_is_named():
+    assert preflight.unknown_cadence(["a"], {"b": 24.0}) == ["b"]
+
+
+def test_the_report_names_every_held_check_and_when_it_last_ran():
+    out = io.StringIO()
+    held = [("pin_drift", {"code": 0, "ran_at": NOW - 3 * HOUR}, 24.0),
+            ("nas_ports", {"code": 0, "ran_at": NOW - 40 * HOUR}, 168.0)]
+    preflight.render([("cli_features", 0, "nothing has moved\n", 0.1)],
+                     stream=out, now=NOW, held=held)
+    text = out.getvalue()
+    assert "HELD BACK" in text
+    assert "pin_drift" in text and "nas_ports" in text
+    # The oldest reading is the one worth quoting, and it is quoted.
+    assert "2026-09-04 10:16 Oslo" in text
+    assert "40.0h ago" in text
+    # And it must not read as clean now.
+    assert "none of them is counted as clean now" in text
+
+
+def test_a_held_checks_record_survives_the_sweep():
+    # Dropping it would erase the evidence the check ever ran, and the next
+    # sweep would run everything -- the cadence would never fire twice.
+    keep = {}
+    entry = {"code": 0, "ran_at": NOW - 3 * HOUR}
+    preflight.render([("cli_features", 0, "x\n", 0.1)], stream=io.StringIO(),
+                     now=NOW, state={}, keep=keep, held=[("pin_drift", entry, 24.0)])
+    assert keep["pin_drift"] == entry
+
+
+def test_a_check_that_ran_records_when_and_how_it_exited():
+    keep = {}
+    preflight.render([("cli_features", 0, "x\n", 0.1),
+                      ("pin_drift", 2, "STALE PIN\nsomething\n", 0.1)],
+                     stream=io.StringIO(), now=NOW, state={}, keep=keep)
+    assert keep["cli_features"]["ran_at"] == NOW
+    assert keep["cli_features"]["code"] == 0
+    assert keep["pin_drift"]["code"] == 2
+    # and the repeat-collapse record is not lost by the stamping
+    assert "shape" in keep["pin_drift"]
+
+
+def test_a_one_line_finding_still_records_that_it_ran():
+    # `source_revision` reports one sentence and `render` continues past the
+    # state branches for it. Without a record it can never be held back --
+    # and it must not be, but the stamp is what makes that a decision.
+    keep = {}
+    preflight.render([("source_revision", 2, "BEHIND -- one line", 0.1)],
+                     stream=io.StringIO(), now=NOW, state={}, keep=keep)
+    assert keep["source_revision"]["ran_at"] == NOW
+
+
+def test_nothing_held_back_prints_no_held_block():
+    out = io.StringIO()
+    preflight.render([("cli_features", 0, "x\n", 0.1)], stream=out, now=NOW)
+    assert "HELD BACK" not in out.getvalue()
+
+
+def test_the_report_never_looks_a_held_window_up_again():
+    # A caller passing its own cadence must not be able to hand `render` a
+    # name the module-level table has never heard of. The window travels with
+    # the pair, so this renders rather than raising.
+    out = io.StringIO()
+    run, held = preflight.due_checks(["made_up"], {"made_up": {"code": 0, "ran_at": NOW}},
+                                     NOW, cadence={"made_up": 12.0})
+    assert run == [] and held == [("made_up", {"code": 0, "ran_at": NOW}, 12.0)]
+    preflight.render([("cli_features", 0, "x\n", 0.1)], stream=out, now=NOW, held=held)
+    assert "made_up" in out.getvalue()
+    assert "shortest window here is 12h" in out.getvalue()

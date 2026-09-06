@@ -479,6 +479,101 @@ REPRINT_HOURS = 24.0
 #: full disk, a stale pin -- is a fact, and a fact can be read once a day.
 NEVER_COLLAPSE = frozenset({"telegram_inbox"})
 
+#: How long a check's *clean* verdict stands before the check is asked again.
+#:
+#: Idea #183, the owner, 08-30: *"Cut preflight frequency from every cycle to
+#: weekly or monthly once the NAS security work is done -- it's a two-person
+#: estate, running full checks every cycle is wasteful of tokens."* Cycle 662
+#: took the half that did not wait on him -- `REPRINT_HOURS` above, which stops
+#: a standing finding being reprinted 36 times a day -- and deliberately left
+#: the frequency cut, because he tied it to the NAS work. That work is done:
+#: all six `nas_*` checks came back clean on 2026-09-06.
+#:
+#: A blanket weekly is not what this does, and the reason is measured rather
+#: than cautious. The checks that earned their keep this week are the ones
+#: whose subject moves in minutes -- `limit_headroom` caught grafana at 74% of
+#: its limit the day server2 killed it, `heartbeat_gaps` counted the firings a
+#: rollout ate, `workload_health` and `argocd_health` name a Pod that is down
+#: *now*. Reading any of those weekly is not a saving, it is turning the alarm
+#: off. So the cut is per check and keyed on one question: **how fast can this
+#: check's subject actually change?**
+#:
+#: - Daily, 24h: an upstream release, a billing period, or a window the check
+#:   itself already computes over 24 hours or more. Asking `pin_drift` whether
+#:   goreleaser published in the last 40 minutes is 36 questions a day with one
+#:   possible answer.
+#: - Weekly, 168h: the NAS security surface. Nothing on that box changes unless
+#:   a person changes it, and this is the cut he actually asked for. `nas_health`
+#:   is deliberately not here -- "is the box up" is not a surface audit.
+#:
+#: Three guards, because a cadence is the one mechanism here that can make a
+#: check stop running: a check whose last recorded verdict was **not** clean is
+#: always asked again (a finding may have closed, and a cadence must never be
+#: why a live finding goes unmeasured); a check with no record runs; and
+#: `--verbose`, `--no-state`, `--only` and `--no-cadence` each run everything,
+#: so any explicit request is answered rather than deferred. The held-back set
+#: is named in full in the report -- a check that did not run must never read
+#: as a check that came back clean.
+CADENCE_HOURS = {
+    "agentic_health": 24.0,
+    "backup_health": 24.0,
+    "cache_health": 24.0,
+    "changelog_watch": 24.0,
+    "ci_health": 24.0,
+    "ci_minutes": 24.0,
+    "cli_pin": 24.0,
+    "eol_watch": 24.0,
+    "hook_cost": 24.0,
+    "nas_versions": 24.0,
+    "pin_drift": 24.0,
+    "rollback_watch": 24.0,
+    "schedule_health": 24.0,
+    "security_alerts": 24.0,
+    "nas_egress": 168.0,
+    "nas_ports": 168.0,
+    "nas_privilege": 168.0,
+    "nas_watch": 168.0,
+}
+
+
+def unknown_cadence(names=CHECKS, cadence=None):
+    """Names given a cadence that are not in the roster.
+
+    Same argument as `unknown_checks`: an entry here that matches nothing runs
+    nothing and holds nothing back, so it is a statement about the schedule
+    that is silently false. A rename is the live case -- it would drop the
+    check back to every cycle, which is the safe direction, and leave a line
+    here claiming a weekly cadence that nothing reads.
+    """
+    cadence = CADENCE_HOURS if cadence is None else cadence
+    return sorted(set(cadence) - set(names))
+
+
+def due_checks(names, state, now, cadence=None):
+    """(to run now, held back) for `names`.
+
+    `held` is a list of (name, its state entry, the window it was held under).
+    The caller both reports it and carries the entry forward -- dropping the
+    entry would erase the record that the check ever ran, and the next sweep
+    would run everything again. The window travels with the pair rather than
+    being looked up again at print time, so a caller passing its own `cadence`
+    here cannot hand the report a name that `CADENCE_HOURS` has never heard of.
+    """
+    cadence = CADENCE_HOURS if cadence is None else cadence
+    run, held = [], []
+    for name in names:
+        window = cadence.get(name)
+        entry = (state or {}).get(name) or {}
+        ran_at = entry.get("ran_at")
+        fresh = (isinstance(ran_at, (int, float))
+                 and 0 <= now - ran_at < (window or 0) * 3600.0)
+        if window and entry.get("code") == 0 and fresh:
+            held.append((name, entry, window))
+        else:
+            run.append(name)
+    return run, held
+
+
 #: Where the "have I already printed this" record lives. Not in the checkout:
 #: concurrent cycles each get their own `git worktree`, so a per-tree file
 #: would make every cycle the first one. Not in `/data/workspace` either --
@@ -742,7 +837,8 @@ def sweep_stamp(now=None, checkout=None):
     return f"swept {when} from {checkout or 'an unreadable checkout'}"
 
 
-def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep=None):
+def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep=None,
+           held=()):
     """Print the collapsed report. `results` is a list of (name, code, output, seconds).
 
     `state` is the repeat record from `load_state`; pass `None` to disable the
@@ -750,6 +846,12 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
     `keep` is an optional dict this fills with the record to persist, so the
     caller owns the write and a run that printed nothing in full cannot mark
     everything as printed.
+
+    `held` is the (name, entry, window) triples `due_checks` kept back. They
+    are named in the report and their records are carried into `keep` -- a
+    held check that lost its record would be run again next sweep, which
+    defeats the cadence, and one that went unnamed would read as a check that
+    was never in the roster.
     """
     import time as _time
 
@@ -766,6 +868,11 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
         where, _subject = SUBJECT.get(name, ("?", "unlabelled"))
         print(f"{name:20}{where:9}{word:12}{seconds:>6.1f}  {summary_line(output)}",
               file=stream)
+        # Stamped here rather than in the branches below, because two of them
+        # `continue` out before ever touching `keep`. Without a `ran_at` on
+        # every check that actually ran, `due_checks` would hold nothing back.
+        if keep is not None:
+            keep[name] = {"ran_at": now, "code": code}
         if code == 0:
             # A caveat that is *already* the summary line is not repeated: a
             # one-line report -- `source_revision` with no git checkout says
@@ -788,7 +895,7 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
         if code != 0 and state is not None and not verbose and not exempt:
             collapse, note, entry = repeat_verdict(name, code, output, state, now)
             if keep is not None:
-                keep[name] = entry
+                keep[name] = {**keep[name], **entry}
             if collapse:
                 print(f"{'':41}  {note}", file=stream)
                 repeated.append(name)
@@ -800,7 +907,8 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
             # whenever it last went through the branch above, and taking it
             # back out of NEVER_COLLAPSE would collapse it on the very next
             # sweep against a clock that had stopped months earlier.
-            keep[name] = {**entry, "printed_at": now} if exempt else entry
+            keep[name] = {**keep[name], **entry,
+                          **({"printed_at": now} if exempt else {})}
         if code != 0 or verbose:
             noisy.append((name, code, output))
 
@@ -808,6 +916,20 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
         print(file=stream)
         print(f"===== {name}: exit {code} -- full output =====", file=stream)
         print(output.rstrip(), file=stream)
+
+    for name, entry, _window in held:
+        if keep is not None:
+            keep[name] = entry
+    if held:
+        shortest = min(w for _, _, w in held)
+        oldest = min(e.get("ran_at", now) for _, e, _ in held)
+        print(file=stream)
+        print(f"HELD BACK -- {len(held)} check(s) were clean inside their own cadence "
+              f"and were not run: {', '.join(n for n, _, _ in held)}. The oldest of "
+              f"those readings is from {_oslo(oldest)} ({(now - oldest) / 3600.0:.1f}h "
+              f"ago) and the shortest window here is {shortest:.0f}h; each exited 0 "
+              f"when it last ran and none of them is counted as clean now. "
+              f"`--no-cadence` asks them all again.", file=stream)
 
     print(file=stream)
     print(f"Ran {len(results)} check(s): {', '.join(n for n, _, _, _ in results)}.", file=stream)
@@ -855,6 +977,8 @@ def main(argv=None):
                         help="reproduce every check in full, clean ones included")
     parser.add_argument("--no-state", action="store_true",
                         help="print every finding in full, ignoring what was printed last sweep")
+    parser.add_argument("--no-cadence", action="store_true",
+                        help="run every check now, ignoring CADENCE_HOURS")
     args = parser.parse_args(argv)
 
     names = list(args.only or CHECKS)
@@ -870,6 +994,14 @@ def main(argv=None):
               file=sys.stderr)
         return 1
 
+    stale_cadence = unknown_cadence(names)
+    if not args.only and stale_cadence:
+        print(f"NO SUCH CHECK IN CADENCE_HOURS: {', '.join(stale_cadence)} -- refusing to "
+              f"run. An entry there that matches no check holds nothing back and is a "
+              f"false statement about how often this loop measures something.",
+              file=sys.stderr)
+        return 1
+
     unlabelled = unlabelled_checks(names)
     if unlabelled:
         print(f"NO SUBJECT LABEL: {', '.join(unlabelled)} -- refusing to run. Add it to "
@@ -880,6 +1012,16 @@ def main(argv=None):
 
     import time
 
+    now = time.time()
+    state = None if (args.no_state or args.verbose) else load_state()
+    # An explicit request is answered, never deferred: `--only` names the
+    # checks the caller wants *now*, and `--verbose`/`--no-state` already mean
+    # "do not let the record decide what I see".
+    if state is not None and not args.no_cadence and not args.only:
+        names, held = due_checks(names, state, now)
+    else:
+        held = []
+
     rev_started = time.monotonic()
     rev_code, rev_report = source_revision(fetch=not args.no_fetch)
     rev_seconds = time.monotonic() - rev_started
@@ -889,9 +1031,9 @@ def main(argv=None):
         for future in concurrent.futures.as_completed(futures):
             results[futures[future]] = future.result()
 
-    state = None if (args.no_state or args.verbose) else load_state()
     keep = {} if state is not None else None
-    worst = render(results, verbose=args.verbose, state=state, keep=keep)
+    worst = render(results, verbose=args.verbose, state=state, keep=keep, now=now,
+                   held=held)
     if keep:
         save_state(keep)
     return worst
