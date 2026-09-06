@@ -308,3 +308,44 @@ def test_promote_refuses_to_move_a_checkout_that_has_uncommitted_work(
         assert demo_cli.cmd_promote(_args()) == 2
     assert "uncommitted changes" in capsys.readouterr().err
     assert not (checkout / "crossplane" / "service-bakeoff.yaml").exists()
+
+
+# --- the deletion policy (idea #139) ---------------------------------------
+
+def test_a_promoted_demo_may_actually_be_deleted():
+    """The XRD default is `allowDeletion: false`, which ORPHANS the repos.
+
+    That is the right default for a service somebody deliberately claimed
+    and the wrong one for a demo: idea #139 says that if this is not
+    decided before the first promotion, you end up with dead repos and
+    dead ArgoCD Applications nobody wants to be the one to delete. So the
+    claim overrides it, and this test exists because the override is a
+    departure from a schema default and would otherwise be invisible.
+    """
+    claim = yaml.safe_load(promotion_claim(
+        "bakeoff", "a demo", "https://x/demo/bakeoff/",
+        "/data/workspace/demos/bakeoff", "2026-09-06"))
+    assert claim["spec"]["allowDeletion"] is True
+
+
+def test_the_deletion_policy_carries_its_warning_on_the_object():
+    """The person who has to reverse this is doing a `git rm` on the claim
+    file, not reading a docstring in this repo."""
+    text = promotion_claim("bakeoff", "a demo", "https://x/demo/bakeoff/",
+                           "/data/workspace/demos/bakeoff", "2026-09-06")
+    assert "Flip this to false" in text
+    # And it still parses -- a comment at the wrong indentation inside a
+    # mapping is a claim that fails to apply hours after the PR was opened.
+    assert yaml.safe_load(text)["spec"]["serviceName"] == "bakeoff"
+
+
+def test_a_description_with_a_line_break_cannot_smuggle_in_a_key():
+    """The folded scalar sits directly above `allowDeletion` now, so a
+    newline that ended the scalar would land the rest of the prose as
+    sibling YAML keys -- next to a key that decides whether a repository
+    can be destroyed."""
+    claim = yaml.safe_load(promotion_claim(
+        "bakeoff", "line one\nallowDeletion: false", "https://x/",
+        "/data/workspace/demos/bakeoff", "2026-09-06"))
+    assert claim["spec"]["allowDeletion"] is True
+    assert claim["spec"]["description"] == "line one allowDeletion: false"

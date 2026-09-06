@@ -1531,3 +1531,78 @@ def test_demo_listening_never_reaches_the_network_for_an_unusable_port():
     with patch.object(nova_site.socket, "create_connection") as conn:
         assert nova_site.demo_listening("10.42.0.9", "not-a-port") is False
     assert conn.call_count == 0
+
+
+# --- discard: throwing a demo away (idea #139) ----------------------------
+#
+# `stop` kills the process and drops the row and has never deleted a byte,
+# so this is the half of "discard has to be as cheap as create" that was
+# missing. Every test here goes at the *guard* rather than at the happy
+# path, because the happy path is `shutil.rmtree` and the only thing worth
+# proving is that it cannot be aimed at anything but a demo's own
+# directory.
+
+def test_discard_refuses_a_directory_outside_the_demo_root():
+    # A registry row may legitimately point anywhere -- `start` only refuses
+    # the ephemeral roots -- so this is the accident worth being unable to
+    # have, not a hypothetical.
+    reason = nova_demos.discard_reason("/data/workspace/agora-persona-runner")
+    assert reason and "outside" in reason
+    assert nova_demos.DURABLE_ROOT in reason
+
+
+def test_discard_refuses_the_demo_root_itself():
+    reason = nova_demos.discard_reason(nova_demos.DURABLE_ROOT)
+    assert reason and "every other demo" in reason
+
+
+def test_discard_refuses_a_sibling_whose_name_merely_starts_the_same():
+    # `/data/workspace/demos-archive` is not inside `/data/workspace/demos`.
+    # A raw `startswith` without the separator calls it contained.
+    reason = nova_demos.discard_reason(nova_demos.DURABLE_ROOT + "-archive/x")
+    assert reason and "outside" in reason
+
+
+def test_discard_allows_a_demos_own_directory():
+    assert nova_demos.discard_reason(nova_demos.DURABLE_ROOT + "/bakeoff") is None
+
+
+def test_discard_refuses_a_symlink_that_escapes_the_demo_root(tmp_path):
+    # `abspath` calls this safe; `realpath` does not. Same reasoning as
+    # `ephemeral_reason`, and the same reviewer finding.
+    root = tmp_path / "demos"
+    root.mkdir()
+    outside = tmp_path / "somewhere-else"
+    outside.mkdir()
+    link = root / "link"
+    link.symlink_to(outside)
+    with patch.object(nova_demos, "DURABLE_ROOT", str(root)):
+        # The control: a real directory in the same place is deletable, so
+        # the refusal below is about the symlink and not about the root.
+        (root / "real").mkdir()
+        assert nova_demos.discard_reason(str(root / "real")) is None
+        assert nova_demos.discard_reason(str(link)) is not None
+
+
+def test_orphan_dirs_names_only_what_no_row_claims():
+    registry = {"demos": [
+        {"slug": "board166", "dir": nova_demos.DURABLE_ROOT + "/board166"},
+    ]}
+    names = ["bakeoff", "board166", "roadmap"]
+    assert nova_demos.orphan_dirs(registry, names) == ["bakeoff", "roadmap"]
+
+
+def test_orphan_dirs_ignores_a_row_pointing_outside_the_demo_root():
+    # Such a row claims no directory *here*, so nothing under the root is
+    # protected by it -- and its own directory is never offered, because it
+    # is not in `names`.
+    registry = {"demos": [{"slug": "elsewhere", "dir": "/data/workspace/checkout"}]}
+    assert nova_demos.orphan_dirs(registry, ["bakeoff"]) == ["bakeoff"]
+
+
+def test_orphan_dirs_is_empty_when_every_directory_is_claimed():
+    registry = {"demos": [
+        {"slug": "a", "dir": nova_demos.DURABLE_ROOT + "/a"},
+        {"slug": "b", "dir": nova_demos.DURABLE_ROOT + "/b"},
+    ]}
+    assert nova_demos.orphan_dirs(registry, ["a", "b"]) == []
