@@ -153,6 +153,7 @@ CHECKS = (
     "claim_drift",
     "claim_schema",
     "roll_health",
+    "board_done_drift",
     "ticket_drift",
     "running_images",
     "workload_health",
@@ -265,6 +266,7 @@ SUBJECT = {
     "claim_drift":       ("on-box",  "live claims in this cluster"),
     "claim_schema":      ("on-box",  "live claims in this cluster"),
     "roll_health":       ("on-box",  "my own digest and handoff files"),
+    "board_done_drift":  ("on-box",  "the owner's boards against my own claim ledger"),
     "ticket_drift":      ("on-box",  "the ticket store, in CouchDB here"),
     "running_images":    ("on-box",  "containers running in this cluster"),
     "workload_health":   ("on-box",  "workloads in this cluster"),
@@ -367,6 +369,9 @@ CADENCE_HOURS = {
     # exactly who could have broken them.
     "doc_integrity": 0.0,
     "roll_health": 0.0,
+    # Every sweep -- the ledger window is about a day, so a drift this
+    # collapses is one that ages out of the evidence before it is read.
+    "board_done_drift": 0.0,
     # Every sweep -- a pull request I open or merge in this cycle moves both.
     "open_prs": 0.0,
     "main_build": 0.0,
