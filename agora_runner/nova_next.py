@@ -295,9 +295,25 @@ def project_ranks(markdown):
     called Immediately. It is deliberately not the same as Low -- the
     file's own contract line says so -- but for ordering there is nowhere
     below Low to put it.
+
+    **A project he has placed by hand outranks every rating**, which is
+    milestone M3 of that same note. His words: *"the list of projects... is
+    an ordered list where the top one has the highest priority"*. So a
+    placed project ranks by its position, and a project with no position
+    falls in behind the whole placed list by its rating, exactly as M1
+    left it. A file he has never ordered has no positions in it at all and
+    therefore behaves the way it did yesterday -- the ordering only starts
+    mattering once he has actually said something with it.
     """
-    return {name: _RANK.get(meta["priorityKey"], len(_RANK))
-            for name, meta in parse_project_meta(markdown or "").items()}
+    meta = parse_project_meta(markdown or "")
+    placed = {name: m["order"] for name, m in meta.items() if m.get("order")}
+    # Every unplaced project sorts below every placed one. `max` rather
+    # than `len(placed)`: he can hand-edit the cells, and a list numbered
+    # 1, 2, 9 must not put an unplaced project between 2 and 9.
+    floor = max(placed.values()) if placed else 0
+    return {name: (placed[name] if name in placed
+                   else floor + 1 + _RANK.get(m["priorityKey"], len(_RANK)))
+            for name, m in meta.items()}
 
 
 _DATE_RE = re.compile(r"(\d{2})-(\d{2})\s*$")

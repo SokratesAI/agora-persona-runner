@@ -14006,6 +14006,44 @@ describe("the project page", () => {
       "the second spelling drew the same numbers a second time");
   });
 
+  /* The reorder buttons -- milestone M3 of idea #260, his ordered project
+   * list. Two buttons rather than a drag gesture, deliberately: HTML5
+   * `draggable` does nothing on the touch screen he reads this on. */
+  test("each standing carries a move up and a move down, ends disabled", async () => {
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const rows = standings(window);
+    const buttons = (r) => [...r.querySelectorAll(".project-standing-move-btn")];
+    assert.equal(buttons(rows[0]).length, 2);
+    // First row cannot go up, last row cannot go down. Disabled rather
+    // than absent: a button that vanishes moves the other one under his
+    // thumb and he taps the wrong one.
+    assert.equal(buttons(rows[0])[0].disabled, true);
+    assert.equal(buttons(rows[0])[1].disabled, false);
+    assert.equal(buttons(rows[1])[0].disabled, false);
+    assert.equal(buttons(rows[1])[1].disabled, true);
+    assert.equal(buttons(rows[1])[0].getAttribute("aria-label"), "Move Nova up");
+  });
+
+  test("moving a project down sends its new 1-based position", async () => {
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const rows = standings(window);
+    rows[0].querySelectorAll(".project-standing-move-btn")[1].click();
+    await new Promise((r) => setTimeout(r, 0));
+    const sent = window.posted.at(-1);
+    assert.equal(sent.url, "/api/project/order");
+    // Marcus is drawn first, so "down" is position 2 -- the index it will
+    // occupy afterwards, not the one it occupies now.
+    assert.deepEqual(sent.body, { project: "Marcus", position: 2 });
+  });
+
+  test("moving a project up sends the position above it", async () => {
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const rows = standings(window);
+    rows[1].querySelectorAll(".project-standing-move-btn")[0].click();
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(window.posted.at(-1).body, { project: "Nova", position: 1 });
+  });
+
   test("a project page still draws the pills and no standings", async () => {
     const window = await loadSite("/project/Nova", {
       project: () => ({ ...STANDING, name: "Nova", asked: "Nova" }),

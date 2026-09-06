@@ -8825,6 +8825,7 @@
     var rated = (payload && payload.projectPriority) || {};
     var list = el("ul", "project-standing-rows");
     var seen = {};
+    var shown = [];
     for (var i = 0; i < projects.length; i++) {
       var name = projects[i];
       var key = name.toLowerCase();
@@ -8836,7 +8837,11 @@
       seen[key] = true;
       var summary = summaries[key];
       if (!summary || !summary.total) continue;
-      list.appendChild(projectStandingRow(name, summary, rated[key]));
+      shown.push({ name: name, summary: summary, rating: rated[key] });
+    }
+    for (var s = 0; s < shown.length; s++) {
+      list.appendChild(projectStandingRow(
+        shown[s].name, shown[s].summary, shown[s].rating, s, shown.length));
     }
     if (!list.childNodes.length) return null;
     var box = el("section", "project-standings");
@@ -8844,7 +8849,22 @@
     return box;
   }
 
-  function projectStandingRow(name, summary, rating) {
+  /* One project's standing, plus the two buttons that move it.
+   *
+   * Milestone M3 of idea #260 -- his ordered project list. The spec quotes
+   * him asking for a drag-and-drop list, and this is not that: it is two
+   * buttons, and the honest reason is that HTML5 `draggable` does nothing
+   * at all on a touch screen, which is the screen he reads this page on.
+   * A gesture that only works on the desktop he does not use would have
+   * been the feature-shaped half rather than the working half, so the
+   * ordering itself ships first and the drag gesture is still open.
+   *
+   * The position sent is `index + 1` of the *shown* list, which is what he
+   * is looking at, and the server renumbers the whole table from it -- so
+   * a project hidden here because it has no rows cannot be silently
+   * reordered by a button press on another one.
+   */
+  function projectStandingRow(name, summary, rating, index, total) {
     var li = el("li", "project-standing");
     var head = el("div", "project-standing-head");
     var link = el("a", "project-standing-name", name);
@@ -8893,7 +8913,53 @@
       li.appendChild(el("span", "chip prio prio-" + worst.key,
         worst.label + " · " + worst.count));
     }
+    li.appendChild(projectMoveControls(name, index, total));
     return li;
+  }
+
+  /* Move one project up or down his ordered list.
+   *
+   * `index` is 0-based within the list drawn above, so "up" is
+   * `index` (1-based `index - 1 + 1`) and "down" is `index + 2`. The ends
+   * are disabled rather than hidden: a button that disappears at the top
+   * moves the other button under his thumb, and he taps the wrong one.
+   */
+  function projectMoveControls(name, index, total) {
+    var wrap = el("div", "project-standing-move");
+    var note = el("span", "project-standing-move-note", "");
+    function mover(label, position, enabled) {
+      var button = el("button", "project-standing-move-btn", label);
+      button.type = "button";
+      button.setAttribute(
+        "aria-label", "Move " + name + (label === "\u2191" ? " up" : " down"));
+      if (!enabled) {
+        button.disabled = true;
+        return button;
+      }
+      button.addEventListener("click", function () {
+        note.textContent = "Saving\u2026";
+        fetch("/api/project/order", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project: name, position: position })
+        })
+          .then(json)
+          .then(function (result) {
+            if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+            note.textContent = "";
+            // Reload rather than swapping two nodes: the order he just set
+            // is the order the picker will use, and the page has to show
+            // what the file says rather than what the click implied.
+            load();
+          })
+          .catch(function (err) { note.textContent = "Could not move: " + err; });
+      });
+      return button;
+    }
+    wrap.appendChild(mover("\u2191", index, index > 0));
+    wrap.appendChild(mover("\u2193", index + 2, index < total - 1));
+    wrap.appendChild(note);
+    return wrap;
   }
 
   /* The rating of one project, as something the owner can change --
