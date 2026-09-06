@@ -1010,3 +1010,22 @@ def test_naming_a_check_runs_it_whatever_its_cadence(tmp_path, monkeypatch, capf
     out = capfd.readouterr().out
     assert "Ran 2 check(s)" in out
     assert "were not run" not in out
+
+
+def test_only_does_not_wipe_the_rest_of_the_record(tmp_path, monkeypatch, capfd):
+    # `save_state` replaces the whole file. A sweep of one check must not
+    # delete every other check's record on the way past -- that would reset
+    # both the cadence and the repeat collapse for the whole roster.
+    monkeypatch.setattr(preflight, "STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr(preflight, "source_revision", lambda **kw: (0, "up to date\n"))
+    monkeypatch.setattr(preflight, "run_check",
+                        lambda name: (name, 0, f"{name} swept 1 thing\n", 0.1))
+    monkeypatch.setattr(preflight, "CHECKS", ("nas_ports", "cli_pin"))
+    preflight.main([])
+    capfd.readouterr()
+    preflight.main(["--only", "cli_pin"])
+    capfd.readouterr()
+    kept = preflight.load_state(str(tmp_path / "state.json"))
+    # source_revision runs outside the roster on every sweep, so it is there too.
+    assert set(kept) == {"nas_ports", "cli_pin", "source_revision"}
+    assert kept["nas_ports"]["code"] == 0

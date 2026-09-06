@@ -1092,11 +1092,12 @@ def main(argv=None):
 
     keep = {} if state is not None else None
     if keep is not None:
-        # A held check keeps the record it already had, verbatim. Dropping it
-        # would make the next sweep read it as one that has never run, and the
-        # cadence would then never hold anything back twice in a row.
-        for name, entry, _cadence in held:
-            keep[name] = entry
+        # Every check this sweep did not run keeps the record it already had,
+        # verbatim -- the ones held back by their cadence, and the rest of the
+        # roster when `--only` names a few. `save_state` replaces the whole
+        # file, so an entry left out here is an entry deleted, and the next
+        # sweep would read that check as one that has never run.
+        keep.update({n: e for n, e in state.items() if n not in names})
     worst = render(results, verbose=args.verbose, state=state, keep=keep, now=now,
                    held=held)
     if keep:
