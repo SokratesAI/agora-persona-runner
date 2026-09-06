@@ -136,9 +136,15 @@ Of the supporting controls those reports name:
     purpose and dies with the turn, but carries no expiry of its own and no
     nonce, so a replay inside the turn window succeeds.
   * **Tool execution sandboxing. PARTIAL, and on purpose.** `--restricted`
-    and `claudeCliRestricted` exist (idea #168) and no persona is started
-    restricted yet; `terminal_exec` is an unrestricted shell by design and
-    the owner has said so repeatedly.
+    and `claudeCliRestricted` exist (idea #168), and since Cycle 1050 the
+    three chat personas the owner's row names -- Haiku, Plain assistant,
+    Study buddy -- are started restricted; `terminal_exec` is an
+    unrestricted shell by design and the owner has said so repeatedly.
+    **How many is not written here, because it is a fact about live
+    objects and this sentence went stale the moment one changed** -- it
+    read "no persona is started restricted yet" for six days after the
+    mechanism shipped. `tools.persona_restrictions` prints the current
+    answer in one call, and that tool is the register.
   * **Tool name collision and drift detection. NOT APPLICABLE.** One server,
     one schema source (`client_tool_schemas`), which is the whole point of
     this module.
