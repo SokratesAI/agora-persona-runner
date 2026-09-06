@@ -15590,8 +15590,12 @@ describe("the chat bubble opens the cycle's thread (idea #182)", () => {
     assert.equal(onConversation(window), false, "the feed is showing, not a thread");
     click(window, bubble(card));
     assert.ok(onConversation(window), "tapping the bubble opened the conversation");
-    assert.equal(window.document.querySelector(".comment-drawer.is-open"), null,
-      "the comment drawer did not open as well");
+    /* `is-commenting` on the card is what the drawer's own tests assert, and
+     * it is the class `setCommentsOpen` writes. An earlier draft of this
+     * looked for `.comment-drawer.is-open`, which nothing in this app ever
+     * sets -- an assertion that passes on every build is not an assertion. */
+    assert.equal(cardFor(window, 57), undefined,
+      "the feed was replaced by the thread, so the card is gone with it");
   });
 
   test("it opens the thread the map named, not just any thread", async () => {
