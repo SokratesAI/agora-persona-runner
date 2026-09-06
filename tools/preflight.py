@@ -124,30 +124,6 @@ from zoneinfo import ZoneInfo
 #: same three things they mean for everything else. Two cycles running it at
 #: once is safe by construction and not by luck: the second sees the first's
 #: change against a burn rate still earned at the old interval and holds.
-#: Checks that must not run while the rest of the sweep is running, because
-#: the sweep is load on the thing they measure.
-#:
-#: `cpu_throttle` reads how much of each container's runnable time the kernel
-#: took away at its own CPU limit, over a 20-second window. Run inside the
-#: concurrent group it samples a cluster that this sweep is hammering, and the
-#: two containers it hammers hardest are the two it then reports: `nova-site`,
-#: which `reply_health` asks for 30 cycle threads, and `agora-claude-bridge`,
-#: which is the pod every check in the sweep executes in. Measured Cycle 1061,
-#: two minutes apart on an otherwise idle cluster: inside the pool nova-site
-#: read **89.4% throttled over 151 periods** and the bridge **53.0% over 302**,
-#: raising exit 2; run alone, nova-site accumulated **29** periods and fell
-#: under `MIN_PERIODS` entirely while the bridge read **0.0%**. So the ACT was
-#: manufactured by the observer, and a cycle acting on it would have gone
-#: looking for a load that only exists while it is looking.
-#:
-#: Running these after the pool drains costs their own wall clock -- about 21s
-#: for `cpu_throttle` -- and that is the price of the number meaning anything.
-#: It is not perfect isolation and does not claim to be: another Nova cycle
-#: sweeping at the same moment is load this process cannot see. What it removes
-#: is the load this process makes itself, which is the part that was guaranteed
-#: to be there every single sweep.
-SOLO = ("cpu_throttle",)
-
 CHECKS = (
     "cadence_control",
     "security_alerts",
@@ -207,6 +183,30 @@ CHECKS = (
     "roadmap_drift",
     "recap_health",
 )
+
+#: Checks that must not run while the rest of the sweep is running, because
+#: the sweep is load on the thing they measure.
+#:
+#: `cpu_throttle` reads how much of each container's runnable time the kernel
+#: took away at its own CPU limit, over a 20-second window. Run inside the
+#: concurrent group it samples a cluster that this sweep is hammering, and the
+#: two containers it hammers hardest are the two it then reports: `nova-site`,
+#: which `reply_health` asks for 30 cycle threads, and `agora-claude-bridge`,
+#: which is the pod every check in the sweep executes in. Measured Cycle 1061,
+#: two minutes apart on an otherwise idle cluster: inside the pool nova-site
+#: read **89.4% throttled over 151 periods** and the bridge **53.0% over 302**,
+#: raising exit 2; run alone, nova-site accumulated **29** periods and fell
+#: under `MIN_PERIODS` entirely while the bridge read **0.0%**. So the ACT was
+#: manufactured by the observer, and a cycle acting on it would have gone
+#: looking for a load that only exists while it is looking.
+#:
+#: Running these after the pool drains costs their own wall clock -- about 21s
+#: for `cpu_throttle` -- and that is the price of the number meaning anything.
+#: It is not perfect isolation and does not claim to be: another Nova cycle
+#: sweeping at the same moment is load this process cannot see. What it removes
+#: is the load this process makes itself, which is the part that was guaranteed
+#: to be there every single sweep.
+SOLO = ("cpu_throttle",)
 
 #: Where each check's *subject* lives, and it is not where the check runs --
 #: every one of these runs here, inside the cycle, on server1.
