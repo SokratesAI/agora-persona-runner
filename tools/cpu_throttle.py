@@ -75,6 +75,10 @@ RAISE_PCT = 50.0
 #: to sit inside a preflight sweep.
 DEFAULT_WINDOW = 20
 
+#: One window is a spot reading. See `combine` for why more than one is a
+#: different measurement rather than a longer one.
+DEFAULT_SAMPLES = 1
+
 _METRIC = re.compile(
     r'^container_cpu_cfs_(throttled_)?periods_total\{([^}]*)\}\s+([0-9.eE+-]+)'
 )
@@ -123,7 +127,59 @@ def deltas(before, after):
     return rows
 
 
-def judge(rows, window_s, min_periods=MIN_PERIODS, raise_pct=RAISE_PCT):
+def combine(samples):
+    """Several `deltas` outputs, oldest first -> the totals and each sample's own ratio.
+
+    One 20-second window is a spot reading, and a container whose throttling
+    swings gets a verdict that depends on which twenty seconds the sweep
+    happened to land on. Measured on couchdb: 3.3% at 14:41 Oslo, 100.0% at
+    14:54, 99.3% at 15:38 -- three readings, two verdicts, one container. The
+    aggregate answers "how much of its runnable time did it spend stopped over
+    the whole span", which is the number a decision wants; the per-sample list
+    beside it answers "was that steady or was it a spike", which no single
+    ratio can express.
+
+    Totals are summed over the samples a container actually appeared in, so a
+    container that restarted mid-run is rated on the windows it was there for
+    rather than dropped. The count of samples it appeared in is returned so the
+    caller can say so.
+    """
+    totals, series = {}, {}
+    for sample in samples:
+        for key, (dp, dt) in sample.items():
+            tp, tt = totals.get(key, (0.0, 0.0))
+            totals[key] = (tp + dp, tt + dt)
+            series.setdefault(key, []).append((dp, dt))
+    return totals, series
+
+
+def _spread_line(entries, min_periods):
+    """The per-sample ratios under a judged container, or None if there is one sample.
+
+    A sample in which the container was barely scheduled is counted, not rated:
+    the same reason MIN_PERIODS exists, applied one window down. Rating it would
+    put a percentage of three periods into a line whose whole job is to say
+    whether the number above it is steady.
+    """
+    if len(entries) < 2:
+        return None
+    rated = [dt / dp * 100.0 for dp, dt in entries if dp >= min_periods]
+    quiet = len(entries) - len(rated)
+    if not rated:
+        return (f"      over {len(entries)} sample(s): none of them accumulated "
+                f"{min_periods} period(s), so the total above is rated and the "
+                "spread is not")
+    shown = " ".join(f"{pct:.1f}%" for pct in rated)
+    line = f"      over {len(entries)} sample(s): {shown}"
+    if quiet:
+        line += f" ({quiet} too quiet to rate)"
+    if len(rated) > 1:
+        line += f" -- {min(rated):.1f}% to {max(rated):.1f}%"
+    return line
+
+
+def judge(rows, window_s, min_periods=MIN_PERIODS, raise_pct=RAISE_PCT,
+          series=None):
     """Lines to print and the exit code, from `deltas` output."""
     judged, skipped = [], []
     for key, (dp, dt) in rows.items():
@@ -139,6 +195,9 @@ def judge(rows, window_s, min_periods=MIN_PERIODS, raise_pct=RAISE_PCT):
         ns, pod, container = key
         mark = "THROTTLED" if pct > raise_pct else "  ok     "
         lines.append(f"  {mark}  {pct:5.1f}%  {int(dp)} period(s)  {ns}/{pod} [{container}]")
+        spread = _spread_line((series or {}).get(key, []), min_periods)
+        if spread:
+            lines.append(spread)
         if pct > raise_pct:
             harmed.append(key)
     if skipped:
@@ -192,6 +251,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--window", type=float, default=DEFAULT_WINDOW,
                         help="seconds between the two cAdvisor scrapes")
+    parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES,
+                        help="consecutive windows to take; more than one prints "
+                             "each window's own ratio beside the total")
     parser.add_argument("--raise-pct", type=float, default=RAISE_PCT,
                         help="raise above this percentage of throttled periods")
     args = parser.parse_args(argv)
@@ -207,13 +269,17 @@ def main(argv=None):
         print("COULD NOT READ: " + ("; ".join(problems) or "no cAdvisor rows on any node"))
         return 1
     t0 = time.time()
-    time.sleep(args.window)
+    samples = []
+    for _ in range(max(1, args.samples)):
+        time.sleep(args.window)
+        after, more = _scrape_all(nodes)
+        problems += more
+        samples.append(deltas(before, after))
+        before = after
     window = time.time() - t0
-    after, more = _scrape_all(nodes)
-    problems += more
 
-    rows = deltas(before, after)
-    lines, code = judge(rows, window, raise_pct=args.raise_pct)
+    rows, series = combine(samples)
+    lines, code = judge(rows, window, raise_pct=args.raise_pct, series=series)
     for line in lines:
         print(line)
     for problem in problems:
@@ -221,7 +287,8 @@ def main(argv=None):
         code = max(code, 1)
     print(
         f"Judged {len(rows)} container(s) with a CPU limit across {len(nodes)} node(s) "
-        f"over {window:.0f}s, raising above {args.raise_pct:.0f}% of scheduling "
+        f"over {window:.0f}s in {len(samples)} sample(s), raising above "
+        f"{args.raise_pct:.0f}% of scheduling "
         "periods throttled. A container with no CPU limit cannot be throttled and "
         "keeps no periods at all, so it is absent here rather than passing."
     )
