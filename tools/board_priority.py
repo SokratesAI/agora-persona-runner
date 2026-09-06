@@ -1,0 +1,250 @@
+"""Re-rate one board row, on the owner's boards or my own.
+
+`agora_runner.nova_boards.set_row_priority` has existed since Cycle 274
+and the only thing that has ever called it is `nova_capture.board_note`,
+which rates a bullet **on its way onto the board for the first time**.
+There has never been a way to change a rating already written. Cycle 496
+recorded the same gap for the status cell and `tools.board_status` closed
+it; this is the missing sibling, and it took a capture from the owner to
+surface it:
+
+> *"Bump idea #260 (task-prioritization redesign) to Priority: Immediately.
+> I see it as the most important project right now because it gives us
+> control over how every other project gets worked."*
+
+That is one cell, and the two ways to do it without this file are the two
+`board_status` already named: hand-split the row on `|`, which is the
+corruption `set_row_priority` was written to end, or open Obsidian, which
+no cycle can do.
+
+    python3 -m tools.board_priority --file ideas.md --number 260 \
+        --priority immediate --dated 09-06 --note 'why it moved' --cycle 1087
+
+**It takes a path on disk and knows nothing about the vault**, the same
+contract `tools.board_row`, `tools.board_status` and
+`tools.roll_done_captures` hold, so the caller owns the compare-and-swap:
+`vault_tool.py get --rev-file` before, `board_put --if-rev-file` after.
+
+The refusals are the point, and each one is a way this could have handed
+him a broken table: a rating outside the four `PRIORITY_LABELS` spellings;
+a **blank** rating, which `set_row_priority` itself accepts and which is
+the one state that means "nobody has looked" (`prompt.md` step 6, and
+Cycle 188's deliberate use of it); a row that is not on `## Board`, or is
+closed, both of which `set_row_priority` refuses by returning `None`; a
+`--dated` or `--note` carrying a `|` or a newline, either of which splits
+a cell or a row; and `check` refusing the write when anything other than
+that one rating moved.
+
+Unlike a status move there is nothing here that is *allowed* to change a
+second cell. A re-rating changes the rating and nothing else, so `check`
+is the tightest of the three board writers: every row including the target
+must come back identical apart from `priority`.
+"""
+
+import argparse
+import sys
+
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
+from agora_runner.nova_boards import (
+    PRIORITY_LABELS,
+    append_detail_note,
+    canonical_priority,
+    parse_board,
+    parse_notes,
+    set_row_priority,
+)
+
+
+# The two keys `parse_board` derives from the rating cell. A re-rating is
+# allowed to move both of them on the target row and nothing else; naming
+# them here is what lets `check` be an equality test on everything else.
+_RATING_KEYS = frozenset({"priority", "priorityKey"})
+
+
+def _priority_choices():
+    """Every accepted spelling: the four keys and the four written forms."""
+    return [key for key in PRIORITY_LABELS if key] + [
+        value for value in PRIORITY_LABELS.values() if value
+    ]
+
+
+def resolve_priority(value):
+    """`immediate` / `🔴 Immediately` / `Immediately` -> the cell text, or `None`.
+
+    `canonical_priority` is what the rest of the system reduces a cell to,
+    so routing a typed argument through it accepts exactly the spellings
+    everything else considers equal and cannot invent a fifth. The one
+    thing it accepts that this must not is the blank rating: it is a legal
+    cell and it means "nobody has looked", which is never what a cycle
+    reaching for this tool is trying to say.
+    """
+    if not value or not value.strip():
+        return None
+    resolved = canonical_priority(value)
+    return resolved or None
+
+
+def check(before, after, number, priority, noted):
+    """Refuse the write unless that one rating moved and nothing else did.
+
+    Same shape and same reasoning as `tools.board_status.check`, minus its
+    one forgiveness: a status move may blank the target's rating, and a
+    re-rating may not change anything but the rating.
+    """
+    problems = []
+    old = parse_board(before)
+    new = parse_board(after)
+    old_by_number = {item["number"]: item for item in old["items"]}
+    new_by_number = {item["number"]: item for item in new["items"]}
+
+    if number not in old_by_number:
+        problems.append(f"#{number} was not on the board to begin with")
+    if number not in new_by_number:
+        problems.append(f"#{number} is not on the board afterwards")
+    else:
+        moved = new_by_number[number]
+        if moved["priority"] != priority:
+            problems.append(
+                f"#{number} came back as {moved['priority']!r}, asked for {priority!r}"
+            )
+        if number in old_by_number:
+            # `parse_board` derives `priorityKey` from the same cell, so
+            # both move together or the parser is broken; comparing the
+            # rest is what says nothing *else* moved.
+            was = {k: v for k, v in old_by_number[number].items() if k not in _RATING_KEYS}
+            now = {k: v for k, v in moved.items() if k not in _RATING_KEYS}
+            if was != now:
+                problems.append(f"#{number} changed something other than its rating")
+
+    if len(new["items"]) != len(old["items"]):
+        problems.append(
+            f"row count went {len(old['items'])} -> {len(new['items'])}, expected no change"
+        )
+    for was in old["items"]:
+        if was["number"] == number:
+            continue
+        now = new_by_number.get(was["number"])
+        if now is None:
+            problems.append(f"#{was['number']} fell off the board")
+        elif now != was:
+            problems.append(f"#{was['number']} changed underneath the re-rating")
+
+    old_notes = [note["text"] for note in parse_notes(before)]
+    new_notes = [note["text"] for note in parse_notes(after)]
+    if old_notes != new_notes:
+        problems.append(
+            f"the bullet stream changed: {len(old_notes)} -> {len(new_notes)} note(s)"
+        )
+
+    for old_number, body in old["details"].items():
+        if old_number == number and noted:
+            # The one write-up allowed to grow, and only by appending:
+            # `append_detail_note` adds a line and touches nothing above
+            # it, so anything else here is the substring-splice failure
+            # `tools.doc_integrity` exists to catch after the fact.
+            if not new["details"].get(old_number, "").startswith(body):
+                problems.append(f"the write-up for #{old_number} was rewritten, not appended to")
+            continue
+        if new["details"].get(old_number) != body:
+            problems.append(f"the write-up for #{old_number} changed")
+    return problems
+
+
+def _refuse_cell(value):
+    """A `|` splits the cell, a newline splits the row. Both reach his file."""
+    return "|" in value or "\n" in value
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--file", required=True, help="a board markdown on disk")
+    parser.add_argument("--number", required=True, type=int, help="the row number")
+    parser.add_argument(
+        "--priority",
+        required=True,
+        help="low / medium / high / immediate, or the written form",
+    )
+    parser.add_argument("--dated", help="MM-DD, Oslo; stamped on --note only")
+    parser.add_argument("--note", help="one line on why it moved, appended to the write-up")
+    parser.add_argument("--cycle", type=int, help="stamped on --note")
+    parser.add_argument("--out", help="where to write (default: in place)")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    priority = resolve_priority(args.priority)
+    if priority is None:
+        print(
+            f"REFUSED: '{args.priority}' is not a rating. One of: "
+            + ", ".join(_priority_choices()),
+            file=sys.stderr,
+        )
+        return 1
+    if args.dated is not None and (_refuse_cell(args.dated) or not args.dated.strip()):
+        print(
+            "REFUSED: --dated goes straight into his write-up, so it may not "
+            "be blank or carry a '|' or a newline",
+            file=sys.stderr,
+        )
+        return 1
+    if args.note is not None and (_refuse_cell(args.note) or not args.note.strip()):
+        print(
+            "REFUSED: --note is one line in his write-up, so it may not be "
+            "blank or carry a '|' or a newline",
+            file=sys.stderr,
+        )
+        return 1
+    # A note needs a date to be stamped with, and `append_detail_note`
+    # takes one rather than reaching for a clock — these files write Oslo
+    # `MM-DD` and a module that formats its own dates formats them in UTC.
+    # So the two arguments travel together or not at all.
+    if args.note is not None and args.dated is None:
+        print(
+            "REFUSED: --note is written as a dated line, so it needs --dated",
+            file=sys.stderr,
+        )
+        return 1
+
+    before = open(args.file, encoding="utf-8").read()
+    after = set_row_priority(before, args.number, priority)
+    if after is None:
+        print(
+            f"REFUSED: #{args.number} is not an open row in '## Board' in that "
+            "file (a finished row deliberately carries no rating)",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.note:
+        noted = append_detail_note(
+            after, args.number, args.note, args.dated, cycle=args.cycle, author="nova"
+        )
+        if noted is None:
+            print(
+                f"REFUSED: could not append the note to #{args.number}'s write-up",
+                file=sys.stderr,
+            )
+            return 1
+        after = noted
+
+    problems = check(before, after, args.number, priority, noted=bool(args.note))
+    if problems:
+        for problem in problems:
+            print(f"REFUSED: {problem}", file=sys.stderr)
+        return 1
+
+    was = {item["number"]: item for item in parse_board(before)["items"]}
+    print(f"#{args.number}: {was[args.number]['priority'] or '(unrated)'} -> {priority}")
+    print(f"{len(before)} -> {len(after)} bytes")
+    if args.dry_run:
+        return 0
+    open(args.out or args.file, "w", encoding="utf-8").write(after)
+    print(f"wrote {args.out or args.file}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
