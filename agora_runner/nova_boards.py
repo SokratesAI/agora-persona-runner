@@ -228,6 +228,85 @@ PRIORITY_LABELS = {
 # the drift this module keeps paying for, so it is a name now.
 PRIORITY_ORDER = ("immediate", "high", "medium", "low")
 
+# T-shirt sizes, the owner's own idea for the picking redesign (idea #260,
+# spec `task-prioritization-redesign.md`): *"a marking of the size of the
+# task/project/milestone going for t-shirt sizes s/m/l/xl. Just a
+# guess/estimate on the amount of work needed to be done. That is practical
+# for the ordering of projects/milestones as we might do the smaller ones
+# first."* It is the job-size half of importance-divided-by-size, which is
+# what milestone M4 of that spec ranks on, so the field has to exist and be
+# filled before the ranking that divides by it can be written.
+#
+# **No glyph, and that is the spec's own reasoning rather than an omission.**
+# A rating and a status both carry one because more is plainly worse or
+# plainly further along; size has no better direction -- an XL row is not a
+# worse row than an S one, only a bigger one -- so a coloured ball here
+# would assert a judgement the field does not make. The spec says a lettered
+# badge for exactly that reason, and `PRIORITY_LABELS`' rule ("allowed to
+# show a glyph, never allowed to show only a glyph") is not in tension with
+# it: the letter *is* the word here.
+#
+# `""` is a real value and the common one -- nobody has estimated this row
+# yet -- and it must stay reachable, the same way an unrated row must.
+SIZE_LABELS = {
+    "": "",
+    "s": "S",
+    "m": "M",
+    "l": "L",
+    "xl": "XL",
+}
+
+# Smallest first, because that is the direction the spec ranks in: "a small
+# job clears sooner than a big one of similar importance, so all else equal,
+# do it first."
+SIZE_ORDER = ("s", "m", "l", "xl")
+
+# What a hand-written cell might say instead of the letter. The owner types
+# into Obsidian, so `Small` and `x-large` have to land in the same bucket as
+# `S` and `XL` rather than falling off the field entirely.
+_SIZE_ALIASES = {
+    "small": "s",
+    "medium": "m",
+    "med": "m",
+    "large": "l",
+    "big": "l",
+    "extra-large": "xl",
+    "x-large": "xl",
+    "xlarge": "xl",
+    "xxl": "xl",
+}
+
+
+def size_key(size):
+    """`XL` -> `xl`, for a CSS class and a sort. `""` stays `""`.
+
+    Emoji-stripped and aliased the same way `priority_key` and `status_key`
+    are, and for the same reason: this cell is written by hand, in the
+    owner's own file, so it has to survive a synonym. An unestimated row
+    returns `""` rather than a bucket -- "nobody has sized this" is a real
+    state and a default here would hide every row that still needs one,
+    which is the same mistake `priority_key` refuses to make.
+    """
+    words = _EMOJI_RE.sub(" ", size or "").strip().lower()
+    words = re.sub(r"\s+", "-", words)
+    return _SIZE_ALIASES.get(words, words)
+
+
+def canonical_size(value):
+    """A submitted size -> the exact cell text, or `None` if unknown.
+
+    `"xl"`, `"XL"` and `"x-large"` all give `"XL"`; `""` gives `""`, which
+    is the real "unestimated" answer and not a rejection. Same shape as
+    `canonical_priority`, and same reason for matching on the key rather
+    than on an exact string: a caller holding an older vocabulary must not
+    be silently refused by a `None` that also means three other things.
+    """
+    if value is None:
+        return ""
+    if not str(value).strip():
+        return ""
+    return SIZE_LABELS.get(size_key(value))
+
 # The glyph each rating carries, indexed the other way round so a bullet
 # written as a bare glyph -- every capture the owner typed before Cycle 268,
 # and every one his phone writes from an `app.js` cached before Cycle 274
@@ -1479,7 +1558,8 @@ def parse_board(markdown):
     "details": {n: markdown}}`. `captures` is the owner's own text and
     `captureReplies` is parallel to it, holding the cycle replies written
     under each bullet.
-    An item is `{number, title, status, statusKey, updated, where, done}`;
+    An item is `{number, title, status, statusKey, updated, where, priority,
+    priorityKey, project, size, sizeKey, done}`;
     `where` is only ever set from the `## Done` table's fourth column,
     which names the PRs a thing landed in.
     """
@@ -1533,6 +1613,16 @@ def parse_board(markdown):
                 # shape and never carries one.
                 project = cells[5] if (not done and len(cells) > 5) else ""
                 project = project.strip() or DEFAULT_PROJECT
+                # `Size` is a seventh column, appended for the third time
+                # for the same reason `Priority` and `Project` were: every
+                # cell above keeps its index, and both live files parse
+                # unchanged on the day this ships without a single row
+                # being rewritten. Unlike `Project`, a blank here is
+                # **not** defaulted -- an unestimated row is a real state
+                # the picker has to be able to see, and every row on both
+                # boards is one today.
+                size = cells[6] if (not done and len(cells) > 6) else ""
+                size = canonical_size(size) or size.strip()
                 items.append({
                     "number": number,
                     "title": cells[1],
@@ -1543,6 +1633,8 @@ def parse_board(markdown):
                     "priority": priority,
                     "priorityKey": priority_key(priority),
                     "project": project,
+                    "size": size,
+                    "sizeKey": size_key(size),
                     "done": done,
                 })
             continue
@@ -1630,8 +1722,23 @@ DEFAULT_PROJECT = "Nova"
 #: diffing a real write against the live `ideas.md`.
 _PROJECT_HEADING = "Project"
 
-#: How wide a `## Board` row is once it carries a project.
-_BOARD_WIDTH = 6
+#: The seventh, on the same terms. Idea #260's spec calls it Size.
+_SIZE_HEADING = "Size"
+
+#: The headings this module appends, in column order, starting at the fifth
+#: cell -- the first four are the owner's own and are never renamed. Named
+#: as a sequence rather than as one constant per column because
+#: `_ensure_board_columns` used to hardcode "the last one gets the name and
+#: every earlier one gets a blank", which was true while exactly one column
+#: was being appended and silently wrong the moment a second was: widening
+#: a four-cell header would have written an unlabelled `Priority` column.
+_APPENDED_HEADINGS = ("Priority", _PROJECT_HEADING, _SIZE_HEADING)
+
+#: Where `_APPENDED_HEADINGS` starts, in zero-based cell positions.
+_FIRST_APPENDED = 4
+
+#: How wide a `## Board` row is once it carries a project and a size.
+_BOARD_WIDTH = _FIRST_APPENDED + len(_APPENDED_HEADINGS)
 
 
 def board_projects(items):
@@ -1654,8 +1761,8 @@ def board_projects(items):
     return seen
 
 
-def _ensure_project_column(lines, index):
-    """Give the `## Board` table a sixth column if it has only five.
+def _ensure_board_columns(lines, index):
+    """Widen the `## Board` header to `_BOARD_WIDTH` if it is narrower.
 
     A six-cell data row under a five-cell header is not a rendering
     detail -- Obsidian drops the extra cell outright, so the value the
@@ -1681,7 +1788,12 @@ def _ensure_project_column(lines, index):
         return
     dashes = [cell.strip() for cell in lines[rule].strip().strip("|").split("|")]
     while len(header) < _BOARD_WIDTH:
-        header.append(_PROJECT_HEADING if len(header) == _BOARD_WIDTH - 1 else "")
+        # Each appended column gets its own name, not a blank with one
+        # name on the end. A header cell left empty is a column Obsidian
+        # renders with no label, which is the same "the value is on his
+        # screen with nothing saying what it is" failure this function
+        # exists to prevent one column over.
+        header.append(_APPENDED_HEADINGS[len(header) - _FIRST_APPENDED])
     while len(dashes) < _BOARD_WIDTH:
         dashes.append("---")
     lines[rule - 1] = "| " + " | ".join(header) + " |"
@@ -1723,7 +1835,52 @@ def set_row_project(markdown, number, project):
         cells.append("")
     cells[5] = name
     lines[index] = "| " + " | ".join(cells) + " |"
-    _ensure_project_column(lines, index)
+    _ensure_board_columns(lines, index)
+    return "\n".join(lines)
+
+
+def set_row_size(markdown, number, size):
+    """Set one `## Board` row's `Size` cell. `None` means not written.
+
+    Milestone M2 of idea #260's picking redesign, and the third writer of
+    this exact shape after `set_row_priority` and `set_row_project`. The
+    field is mine to set rather than his -- the spec assigns row sizes to
+    *"Nova, directly, same technical-judgement ownership as TRL"* -- which
+    is why this has no capture-box route and only a CLI.
+
+    `None` has the same three meanings it has on its siblings and a caller
+    cannot tell them apart: no row carries that number on `## Board`, or
+    the row is closed, or `size` is not one of the four sizes. All three
+    mean the file must not be touched.
+
+    **A closed row is refused**, the same boundary `set_row_priority`
+    draws and for the same reason: an estimate of the work left on a
+    finished row is not a fact about anything, and the ranking that reads
+    this field only ever ranks open rows.
+
+    `""` clears the cell back to unestimated, which has to stay reachable:
+    a size is a guess, and "I guessed and I was wrong, and I do not have a
+    better guess yet" is a state the spec's own re-estimate-as-you-learn
+    rule needs a way to say.
+    """
+    size = canonical_size(size)
+    if size is None:
+        return None
+    lines = (markdown or "").split("\n")
+    index, cells = _row_span(lines, number, tables=("board",))
+    if index is None:
+        return None
+    if status_key(cells[2]) in _CLOSED_STATUS_KEYS:
+        return None
+    # Padded up to the new width rather than refused, the same way
+    # `set_row_project` pads a row that predates *its* column. A row that
+    # has never carried a project grows both cells here, so the size can
+    # be set on a row nobody has filed yet.
+    while len(cells) < _BOARD_WIDTH:
+        cells.append("")
+    cells[6] = size
+    lines[index] = "| " + " | ".join(cells) + " |"
+    _ensure_board_columns(lines, index)
     return "\n".join(lines)
 
 

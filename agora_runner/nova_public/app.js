@@ -5171,6 +5171,18 @@
     } else if (item.priority) {
       metaRow.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
     }
+    // The size badge, milestone M2 of the picking redesign. A lettered
+    // badge and deliberately not a coloured chip: a rating and a status
+    // both step down in weight because more really is worse or further
+    // along, and size has no better direction -- XL is not a worse row
+    // than S, only a bigger one -- so spending colour here would assert a
+    // judgement the field does not make. Drawn only when the row has one:
+    // most rows are unestimated and an empty badge on every one of them is
+    // noise, while the absence is itself readable as "nobody has sized
+    // this".
+    if (item.size) {
+      metaRow.appendChild(el("span", "chip size size-" + item.sizeKey, item.size));
+    }
     head.appendChild(metaRow);
     if (editable) head.appendChild(prioNote);
 
@@ -6610,6 +6622,18 @@
     metaRow.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
     if (item.priority) {
       metaRow.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
+    }
+    // The size badge, milestone M2 of the picking redesign. A lettered
+    // badge and deliberately not a coloured chip: a rating and a status
+    // both step down in weight because more really is worse or further
+    // along, and size has no better direction -- XL is not a worse row
+    // than S, only a bigger one -- so spending colour here would assert a
+    // judgement the field does not make. Drawn only when the row has one:
+    // most rows are unestimated and an empty badge on every one of them is
+    // noise, while the absence is itself readable as "nobody has sized
+    // this".
+    if (item.size) {
+      metaRow.appendChild(el("span", "chip size size-" + item.sizeKey, item.size));
     }
     head.appendChild(metaRow);
     if (item.updated) head.appendChild(el("div", "item-updated", item.updated));

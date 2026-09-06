@@ -71,7 +71,7 @@ def to_records(markdown):
     """A board file -> `{"tickets": [...], "layout": [...]}`.
 
     A ticket is `{number, title, status, statusKey, updated, priority,
-    priorityKey, project, where, done}` -- exactly the fields
+    priorityKey, project, size, sizeKey, where, done}` -- exactly the fields
     `parse_board` already hands the site -- plus `cells` (the row as it is
     written today), `detailHeading` (verbatim, because both heading shapes
     are live) and `details` (the write-up body, verbatim).
