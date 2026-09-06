@@ -325,8 +325,12 @@ def check(pairs=PAIRS, fetch=_fetch):
     refusal, owed, weight)`; `clean` and `held` entries are `(live path,
     bytes, weight)`. `held` is a pair whose *only* problem is an owed roll
     that `steady` reads as this loop's own writing rather than a backlog --
-    it prints and does not raise. A pair that is also stranded or refused
-    stays a finding, and its owed line and remedy print with the rest.
+    it prints and does not raise. A pair that is also stranded, refused or
+    entombed stays a finding, and its owed line and remedy print with the
+    rest. `entombed` is there because a buried capture pile is a defect in
+    the document rather than a roll the loop re-owes every hour, so it must
+    never reach the non-raising bucket -- and it can be the *only* thing
+    wrong, which is why it is on the finding branch too.
     The archive path rides along because `report` prints the remedy command
     and that command names both halves of the pair; looking it up from the
     module-level `PAIRS` instead would have been wrong for exactly the
