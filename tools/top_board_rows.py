@@ -95,9 +95,15 @@ from agora_runner.nova_boards import (
 # functions, one definition -- see `nova_next`'s docstring.
 from agora_runner.nova_next import (
     _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims, open_rows,
+    low_satisfaction, load_diagnoses,
     project_ranks, rank, row_slug, unboarded_captures,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
+from agora_runner.nova_boards import PROJECT_SATISFACTION_MAX
+from agora_runner.nova_next import LOW_SATISFACTION_AT
+from tools.satisfaction_diagnosis import (
+    DIAGNOSES_PATH as SAT_DIAGNOSES_PATH,
+)
 from agora_runner.nova_claims import (
     CLAIMS_PATH, ClaimError, container_started_at, finished_claims, held_by,
     load as load_claims,
@@ -136,6 +142,11 @@ NOTES_PATH = CAPTURE_TARGETS["notes"]
 # picker. Imported rather than spelled again for `BOARD_PATHS`' reason: a
 # hand-typed copy of a path that has moved once will be wrong the next time.
 PROJECTS_PATH = PROJECT_META_PATH
+
+# Where `tools.satisfaction_diagnosis` writes down that a forced diagnosis
+# actually ran. Imported rather than spelled again, same as every path
+# above it.
+DIAGNOSES_PATH = SAT_DIAGNOSES_PATH
 
 
 
@@ -214,6 +225,86 @@ def fetch_projects(path=PROJECTS_PATH):
     if done.stdout.lstrip().startswith("[not found:"):
         return "", True
     return done.stdout, True
+
+
+def fetch_diagnoses(path=DIAGNOSES_PATH):
+    """`(text, readable)` for the low-satisfaction diagnosis log.
+
+    Split the way `fetch_claims` is, and the halves mean the same opposite
+    things. **Absent is the normal state** -- nothing has been diagnosed --
+    and reading it as an empty log is right. **Unreadable is not**: without
+    the log every low score reads as never diagnosed, so the page would
+    force a diagnosis he has already been given, which is the exact loop
+    the spec forbids. That one is said out loud rather than assumed.
+    """
+    try:
+        done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return "", False
+    if done.returncode != 0:
+        return "", False
+    if done.stdout.lstrip().startswith("[not found:"):
+        return "", True
+    return done.stdout, True
+
+
+def _low_satisfaction_block(low, readable=True):
+    """The forced-diagnosis section, or nothing at all.
+
+    The spec's Satisfaction section, in two sentences that need two
+    different renderings: *"Score \u22642 auto-generates a skip-to-top
+    task: 'diagnose low satisfaction on [project]'"*, and *"if
+    satisfaction is still \u22642 after a diagnosis already ran once,
+    surface that persistence visibly rather than silently re-triggering an
+    identical diagnostic loop."* An undiagnosed project gets the forced
+    task; a diagnosed one gets a line that says so and deliberately does
+    **not** hand a cycle the same job again.
+
+    **It sits below his unprocessed captures and above the board.** A
+    capture is him typing right now and stops existing the moment somebody
+    answers it; a score persists until he changes it, so nothing is lost by
+    ranking the durable thing under the perishable one. Above the board is
+    the spec's own placement -- skip-to-top is a tier above the project
+    order, and this is the only lever that writes into it automatically.
+    """
+    if not low and readable:
+        return []
+    out = []
+    if not readable:
+        out.append("\u26a0 DIAGNOSIS LOG UNREADABLE — a project below may already "
+                   "have been diagnosed; check before you spend a cycle on it.")
+    fresh = [d for d in low if not d.get("diagnosed")]
+    again = [d for d in low if d.get("diagnosed")]
+    if fresh:
+        out.append(f"FORCED — LOW SATISFACTION ({len(fresh)}): he scored "
+                   f"{'these' if len(fresh) > 1 else 'this'} at or below "
+                   f"{LOW_SATISFACTION_AT} of {PROJECT_SATISFACTION_MAX}, which "
+                   "forces a diagnosis. Investigate before you change anything:")
+        for item in fresh:
+            out.append(f"  -> diagnose low satisfaction on {item['project']}  "
+                       f"({item['score']} of {item['max']})  "
+                       f"[claim: {item['slug']}]")
+        out.append("  Read its usage, its logs and its own open rows first, and "
+                   "ask him one or two targeted questions if the cause is not "
+                   "obvious — do not guess and patch. Do NOT touch that "
+                   "project's TRL or lifecycle: a satisfaction drop does not "
+                   "mean the engineering got less proven.")
+        out.append("  Then record it, or the next cycle is handed the same job: "
+                   "python3 -m tools.satisfaction_diagnosis record --log "
+                   "satisfaction-diagnoses.json --project <name> --score <n> "
+                   "--cycle <N> --found '<what it found>'")
+    for item in again:
+        prior = item["diagnosed"]
+        out.append(f"STILL LOW — {item['project']} is {item['score']} of "
+                   f"{item['max']} and cycle {prior.get('cycle')} already "
+                   f"diagnosed it at {prior.get('score')} on "
+                   f"{prior.get('at')}. This is not a fresh task: tell him it "
+                   "has not moved rather than running the same diagnosis again."
+                   + (f"  That run found: {prior.get('found')}"
+                      if prior.get("found") else ""))
+    out.append("")
+    return out
 
 
 def unread_notes(markdown):
@@ -547,7 +638,8 @@ def _claim_footer(rows, captures, claims_readable):
 
 
 def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
-           projects_markdown="", projects_readable=True):
+           projects_markdown="", projects_readable=True,
+           diagnoses_text="", diagnoses_readable=True):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -589,6 +681,9 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     # from two different parses of two different reads is how a page ends
     # up disagreeing with itself.
     project_meta = parse_project_meta(projects_markdown or "")
+    out.extend(_low_satisfaction_block(
+        low_satisfaction(project_meta, load_diagnoses(diagnoses_text)),
+        diagnoses_readable))
     ranked = rank(rows, project_ranks(projects_markdown))
     if not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
@@ -702,6 +797,9 @@ def main(argv=None):
     ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
     ap.add_argument("--projects",
                     help="local projects.md instead of a vault fetch")
+    ap.add_argument("--diagnoses",
+                    help="local satisfaction-diagnoses.json instead of a "
+                         "vault fetch")
     ap.add_argument("--cycle", type=int,
                     help="your own cycle number, so your own claims are not "
                          "reported back to you as somebody else's")
@@ -778,10 +876,18 @@ def main(argv=None):
     else:
         projects_md, projects_readable = fetch_projects()
 
+    if args.diagnoses:
+        with open(args.diagnoses, encoding="utf-8") as fh:
+            diagnoses_text, diagnoses_readable = fh.read(), True
+    else:
+        diagnoses_text, diagnoses_readable = fetch_diagnoses()
+
     print(render(rows, runners_up=args.runners_up, captures=captures,
                  closed_waiting=closed_waiting, claims_readable=claims_readable,
                  projects_markdown=projects_md,
-                 projects_readable=projects_readable))
+                 projects_readable=projects_readable,
+                 diagnoses_text=diagnoses_text,
+                 diagnoses_readable=diagnoses_readable))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")

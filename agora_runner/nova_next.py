@@ -26,10 +26,12 @@ and the claims ledger arrive as text, the payload leaves as a dict, the
 same split `nova_plan` and `nova_retro` follow.
 """
 
+import json
 import re
 
 from agora_runner.nova_boards import (
-    BLOCKED_STATUS, _CLOSED_STATUS_KEYS, boarded_capture_rows,
+    BLOCKED_STATUS, PROJECT_SATISFACTION_MAX, _CLOSED_STATUS_KEYS,
+    boarded_capture_rows,
     capture_match_key, is_relayed, parse_board, parse_project_meta,
     near_miss_done_marker, split_capture_done,
     split_capture_priority, status_key,
@@ -614,3 +616,97 @@ def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
         "projects": projects,
         "claimsReadable": claims_readable,
     }
+
+
+#: The satisfaction score at or below which the spec forces a diagnosis.
+#: `task-prioritization-redesign.md`, the Satisfaction section: *"Score ≤2
+#: auto-generates a skip-to-top task: 'diagnose low satisfaction on
+#: [project].'"* Two, not one, and it is his number rather than a threshold
+#: I picked -- the field is five points wide and he named the bottom two of
+#: them as the range where something is wrong enough to drop other work.
+LOW_SATISFACTION_AT = 2
+
+
+def load_diagnoses(text):
+    """The diagnosis log -> `{lowercased project: newest row}`.
+
+    The log is the durable half of the spec's second sentence about this
+    field: *"If satisfaction is still ≤2 after a diagnosis already ran
+    once, surface that persistence visibly rather than silently
+    re-triggering an identical diagnostic loop."* Without a record of what
+    already ran, a low score forces the same diagnosis every cycle
+    forever, which is the loop that sentence exists to forbid.
+
+    **It is deliberately not the claim ledger**, which is the obvious
+    place and the wrong one: `tools/claim.py` prunes a done row after
+    `DONE_KEEP_HOURS`, so a diagnosis would stop having happened about a
+    day after it did, and the persistence rule would then fire as a fresh
+    alarm. A record that expires cannot answer a question about the past.
+
+    Malformed text reads as an empty log rather than raising. A log that
+    will not parse means "I do not know what has already run", and the
+    honest behaviour then is to show the forced task -- the caller says
+    out loud that the log was unreadable, and a diagnosis run twice costs
+    an hour where one never run costs a project he has told me is bad.
+    """
+    try:
+        data = json.loads(text or "{}")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for row in data.get("diagnoses") or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("project") or "").strip()
+        if not name:
+            continue
+        out[name.lower()] = row
+    return out
+
+
+def diagnosis_slug(project):
+    """A project name -> the claim slug for diagnosing it.
+
+    Its own namespace rather than the project name alone: `marcus` would
+    collide with any board row that ever gets that slug, and the two are
+    different work. Spaces become dashes for the same reason every other
+    slug here has none -- the ledger's `--item` is a shell argument.
+    """
+    return "diagnose-" + re.sub(r"[^a-z0-9]+", "-",
+                                (project or "").strip().lower()).strip("-")
+
+
+def low_satisfaction(project_meta, diagnoses=None):
+    """Projects he has scored `LOW_SATISFACTION_AT` or below, worst first.
+
+    Each entry carries `diagnosed`, which is the log row for a diagnosis
+    that already ran, or `None`. A caller renders those two differently on
+    purpose: an undiagnosed one is the forced task the spec asks for, and a
+    diagnosed one is the *persistence* the spec asks to be surfaced rather
+    than re-run.
+
+    **Unrated is not low.** `parse_project_satisfaction_cell` returns `0`
+    for a project he has never scored, and `0 <= 2` is true, so reading the
+    number without this guard would force a diagnosis on every project on
+    the board the day the column appears. That distinction is the reason
+    the field keeps unrated and 1 apart at the cell, in the payload and on
+    screen; collapsing it here would throw that away one layer down.
+
+    **It does not look at TRL and it never will.** The spec: *"It must NOT
+    auto-touch TRL or lifecycle; a satisfaction drop doesn't imply the
+    engineering got less proven."*
+    """
+    diagnoses = diagnoses or {}
+    out = []
+    for key, meta in (project_meta or {}).items():
+        score = meta.get("satisfaction") or 0
+        if not score or score > LOW_SATISFACTION_AT:
+            continue
+        out.append({"project": meta.get("project") or key,
+                    "score": score,
+                    "max": PROJECT_SATISFACTION_MAX,
+                    "slug": diagnosis_slug(meta.get("project") or key),
+                    "diagnosed": diagnoses.get(key)})
+    return sorted(out, key=lambda d: (d["score"], d["project"].lower()))
