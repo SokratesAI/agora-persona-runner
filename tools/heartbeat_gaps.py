@@ -222,8 +222,18 @@ def format_report(results, error, window_hours, listed):
                 f"{row['oldest_run'].astimezone(timezone.utc).strftime('%m-%d %H:%M')} UTC, "
                 "so the window judged is shorter than the one asked for"
             )
+    # Grouped by reason rather than one line each. Seven of Agora's ten
+    # heartbeats reuse a single conversation and structurally always will,
+    # so a line apiece is seven lines of unchanging noise in a report every
+    # cycle reads --- and a report nobody reads is the 400-chip failure
+    # from the other end. Every name is still printed; only the reason is
+    # said once.
+    by_reason = {}
     for row in unjudged:
-        lines.append(f"NOT JUDGED — {row['name']}: {row['detail']}")
+        by_reason.setdefault(row["detail"], []).append(row["name"])
+    for detail, names in by_reason.items():
+        lines.append(f"NOT JUDGED — {len(names)} heartbeat(s): {detail}")
+        lines.append(f"    {', '.join(names)}")
 
     lines.append(
         f"Read {listed} conversation(s) and {len(results)} heartbeat(s) from {AGORA_PUBLIC}."

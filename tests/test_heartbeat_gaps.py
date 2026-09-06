@@ -120,6 +120,19 @@ def test_only_unjudged_rows_is_exit_one():
     assert "NOT JUDGED" in text
 
 
+def test_unjudged_rows_sharing_a_reason_collapse_to_one_line_but_keep_every_name():
+    convs = _conversations([0])
+    rows = [
+        hg.judge(_heartbeat(name=n, rotateConversationEachRun=None), convs, NOW, 1)
+        for n in ("Sentinel", "Retro", "Design")
+    ]
+    rows.append(hg.judge(_heartbeat(name="Off", enabled=False), convs, NOW, 1))
+    text, _ = hg.format_report(rows, None, 24, 1)
+    assert text.count("NOT JUDGED") == 2, text
+    for name in ("Sentinel", "Retro", "Design", "Off"):
+        assert name in text
+
+
 def test_a_short_list_names_its_own_shortfall():
     # Asked for 24h, but Agora listed nothing older than 45 minutes.
     row = hg.judge(_heartbeat(), _conversations([0, 15, 30, 45]), NOW, 24)
