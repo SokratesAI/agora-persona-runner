@@ -28,28 +28,58 @@ const source = readFileSync(swPath, "utf8");
  * cache answer another's request. */
 function loadWorker() {
   const handlers = {};
-  const cache = new Map();          // request key -> Response
+  /* Named caches, because the worker owns two of them now and they have
+   * opposite reading rules -- `nova-v1` is a fallback the network gets to
+   * beat, `nova-push-v1` is served ahead of the network exactly once. A fake
+   * that collapsed them into one map would let a test's prefetch answer a
+   * request the real worker would have sent to the network. */
+  const stores = new Map();         // cache name -> Map(request key -> Response)
   const puts = [];
   const timers = [];                // pending setTimeout callbacks
+  const posted = [];                // messages sent to page clients
   let cleared = 0;
+  let deletedCaches = [];
   let respondToFetch = null;        // set per test
+
+  function store(name) {
+    if (!stores.has(name)) stores.set(name, new Map());
+    return stores.get(name);
+  }
+
+  const client = { visibilityState: "hidden", postMessage(msg) { posted.push(msg); } };
+  const shown = [];
 
   const self = {
     location: { origin: "https://nova.example" },
     addEventListener(name, fn) { handlers[name] = fn; },
     skipWaiting() { return Promise.resolve(); },
-    clients: { claim: () => Promise.resolve(), matchAll: () => Promise.resolve([]) },
-    registration: { showNotification: () => Promise.resolve() },
+    clients: { claim: () => Promise.resolve(), matchAll: () => Promise.resolve([client]) },
+    registration: {
+      showNotification(title, options) { shown.push({ title, options }); return Promise.resolve(); },
+    },
   };
 
-  const caches = {
-    open: () => Promise.resolve({
+  function cacheApi(name) {
+    return {
       addAll: () => Promise.resolve(),
-      put(request, response) { puts.push(key(request)); cache.set(key(request), response); },
-    }),
-    keys: () => Promise.resolve([]),
-    delete: () => Promise.resolve(true),
-    match: (request) => Promise.resolve(cache.get(key(request))),
+      put(request, response) {
+        puts.push(key(request));
+        store(name).set(key(request), response);
+        return Promise.resolve();
+      },
+      match: (request) => Promise.resolve(store(name).get(key(request))),
+      delete(request) { return Promise.resolve(store(name).delete(key(request))); },
+    };
+  }
+
+  let cachesBroken = false;
+  const caches = {
+    open: (name) => (cachesBroken
+      ? Promise.reject(new TypeError("caches is not available"))
+      : Promise.resolve(cacheApi(name))),
+    keys: () => Promise.resolve([...stores.keys()]),
+    delete: (name) => { deletedCaches.push(name); return Promise.resolve(true); },
+    match: (request) => Promise.resolve(store("nova-v1").get(key(request))),
   };
 
   const sandbox = {
@@ -65,9 +95,16 @@ function loadWorker() {
 
   return {
     handlers,
-    cache,
+    cache: store("nova-v1"),
+    pushCache: store("nova-push-v1"),
     puts,
     timers,
+    posted,
+    shown,
+    client,
+    seedCacheNames(...names) { names.forEach((n) => store(n)); },
+    breakCaches() { cachesBroken = true; },
+    deletedCaches: () => deletedCaches,
     clearedCount: () => cleared,
     network(fn) { respondToFetch = fn; },
     fireTimer(i = 0) { timers[i].fn(); },
@@ -205,5 +242,238 @@ describe("the service worker bounds how long the network gets", () => {
     assert.equal(await response.text(), "the shell",
       "a deep link opened offline falls back to the shell, not to its own URL");
     assert.equal(response.headers.get("X-Nova-Replayed"), "1");
+  });
+});
+
+/* Fire the push handler and hand back whatever it passed to waitUntil. */
+function pushEvent(worker, payload) {
+  let held = null;
+  worker.handlers.push({
+    data: { json: () => payload, text: () => JSON.stringify(payload) },
+    waitUntil(p) { held = p; },
+  });
+  return held;
+}
+
+/* Let every already-resolved promise job run. */
+function drain() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+const THREAD = "https://nova.example/api/conversations/thread?id=c-1";
+
+describe("a push notification brings its own conversation with it", () => {
+  test("the thread is parked under the exact URL app.js will ask for", async () => {
+    /* His report, idea #224: the tap costs 5-6 seconds because the app
+     * starts from nothing. The id is in the payload, so the thread can be
+     * on the device before he finishes reading the banner.
+     *
+     * The key is the whole assertion. A cache is keyed on the URL, so a
+     * query string built even slightly differently here than in `app.js`
+     * is a miss that looks exactly like a cold cache -- nothing logs it
+     * and the feature silently does nothing forever. */
+    const worker = loadWorker();
+    worker.network(() => Promise.resolve(new Response("{\"messages\":[]}", { status: 200 })));
+
+    await pushEvent(worker, { title: "Nova", body: "cycle 1089", conversationId: "c-1" });
+
+    assert.deepEqual([...worker.pushCache.keys()], [THREAD]);
+    assert.equal(worker.cache.size, 0, "the prefetch must not land in the network-first cache");
+  });
+
+  test("the banner is not held behind the fetch", async () => {
+    /* The one thing a prefetch may never cost. `waitUntil` keeps the worker
+     * alive until the fetch lands, which is what makes the parking reliable,
+     * but the notification itself goes out first -- on a dead tailnet link
+     * ordering them the other way holds the whole banner behind a request
+     * that is never going to answer. The tap is the deadline, not the
+     * banner: the thread endpoint measures 0.17-0.40s and nobody sees a
+     * notification and taps it faster than that. */
+    const worker = loadWorker();
+    let land;
+    worker.network(() => new Promise((resolve) => { land = resolve; }));
+
+    const held = pushEvent(worker, { title: "Nova", body: "hi", conversationId: "c-1" });
+    await drain();
+
+    assert.equal(worker.shown.length, 1, "the notification must already be showing");
+    assert.equal(await pending(held), true, "and the worker must still be waiting on the prefetch");
+
+    land(new Response("{}", { status: 200 }));
+    await held;
+    assert.deepEqual([...worker.pushCache.keys()], [THREAD]);
+  });
+
+  test("a prefetch that fails does not take the notification with it", async () => {
+    /* Every way this can fail leaves the app exactly as it was -- one
+     * ordinary network-first load. Rejecting instead would trade a slow
+     * open for no notification at all, which is the failure the feature
+     * exists to avoid, made permanent. */
+    const worker = loadWorker();
+    worker.network(() => Promise.reject(new TypeError("Failed to fetch")));
+
+    await pushEvent(worker, { title: "Nova", body: "hi", conversationId: "c-1" });
+
+    assert.equal(worker.shown.length, 1);
+    assert.equal(worker.pushCache.size, 0);
+  });
+
+  test("a push with no conversationId still notifies and parks nothing", async () => {
+    const worker = loadWorker();
+    let asked = 0;
+    worker.network(() => { asked += 1; return Promise.resolve(new Response("{}", { status: 200 })); });
+
+    await pushEvent(worker, { title: "Nova", body: "hi" });
+
+    assert.equal(worker.shown.length, 1);
+    assert.equal(asked, 0, "there is no id to fetch a thread for -- do not guess one");
+    assert.equal(worker.pushCache.size, 0);
+  });
+
+  test("nothing is fetched or shown while a Nova tab is already visible", async () => {
+    /* The rule that was already here, kept: the page is showing him the
+     * thing. A prefetch would be work for a tap that cannot happen. */
+    const worker = loadWorker();
+    worker.client.visibilityState = "visible";
+    let asked = 0;
+    worker.network(() => { asked += 1; return Promise.resolve(new Response("{}", { status: 200 })); });
+
+    await pushEvent(worker, { title: "Nova", body: "hi", conversationId: "c-1" });
+
+    assert.equal(worker.shown.length, 0);
+    assert.equal(asked, 0);
+  });
+});
+
+describe("the tap after a push is answered without a round trip", () => {
+  test("the parked thread answers immediately and says it was prefetched", async () => {
+    const worker = loadWorker();
+    worker.pushCache.set(THREAD, new Response("parked body", { status: 200 }));
+    worker.network(() => new Promise(() => {}));   // the network never answers
+
+    const response = await fetchEvent(worker, req(THREAD));
+
+    assert.equal(await response.text(), "parked body");
+    assert.equal(response.headers.get("X-Nova-Prefetched"), "1");
+    assert.equal(worker.timers.length, 0, "networkFirst must not have run at all");
+  });
+
+  test("it is used once -- the next load of the same thread goes to the network", async () => {
+    /* Single use rather than an expiry, because an expiry would be a
+     * number nobody measured. The entry exists because a notification was
+     * shown and not yet tapped; the read is the tap. */
+    const worker = loadWorker();
+    worker.pushCache.set(THREAD, new Response("parked body", { status: 200 }));
+    worker.network(() => Promise.resolve(new Response("live body", { status: 200 })));
+
+    assert.equal(await (await fetchEvent(worker, req(THREAD))).text(), "parked body");
+    await drain();
+    const second = await fetchEvent(worker, req(THREAD));
+    assert.equal(await second.text(), "live body");
+    assert.equal(second.headers.get("X-Nova-Prefetched"), null);
+  });
+
+  test("no other route can ever be answered from the push cache", async () => {
+    /* The cache-first rule is gated on the path, not on the lookup coming
+     * back empty. An empty push cache would give the same answer today and
+     * would stop giving it the moment anything else parked a key there. */
+    const worker = loadWorker();
+    worker.pushCache.set("https://nova.example/api/journal", new Response("parked", { status: 200 }));
+    worker.network(() => Promise.resolve(new Response("live", { status: 200 })));
+
+    const response = await fetchEvent(worker, req("https://nova.example/api/journal"));
+    assert.equal(await response.text(), "live");
+  });
+
+  test("a thread with nothing parked behaves exactly as it did before", async () => {
+    const worker = loadWorker();
+    worker.cache.set(THREAD, new Response("stale", { status: 200 }));
+    worker.network(() => new Promise(() => {}));
+
+    const answered = fetchEvent(worker, req(THREAD));
+    assert.equal(await pending(answered), true);
+    worker.fireTimer();
+    const response = await answered;
+    assert.equal(await response.text(), "stale");
+    assert.equal(response.headers.get("X-Nova-Replayed"), "1");
+  });
+});
+
+describe("stale bytes served from a prefetch are retracted", () => {
+  test("a body that moved since the push tells the page to repaint", async () => {
+    /* Serving stale bytes is only honest if something corrects them. The
+     * banner tapped an hour later, or a reply that finished after the push,
+     * is exactly the case the single-use rule cannot see -- so the worker
+     * refetches behind the answer it gave and posts when the two differ. */
+    const worker = loadWorker();
+    worker.pushCache.set(THREAD, new Response("thinking…", { status: 200 }));
+    worker.network(() => Promise.resolve(new Response("the whole answer", { status: 200 })));
+
+    assert.equal(await (await fetchEvent(worker, req(THREAD))).text(), "thinking…");
+    await drain();
+    await drain();
+
+    assert.equal(worker.posted.length, 1);
+    assert.equal(worker.posted[0].type, "nova-thread-updated");
+    assert.equal(worker.posted[0].conversationId, "c-1");
+    assert.equal(await worker.cache.get(THREAD).text(), "the whole answer",
+      "and the fresh copy lands in the network-first cache");
+  });
+
+  test("an unchanged body says nothing, so the fast path never flickers", async () => {
+    const worker = loadWorker();
+    worker.pushCache.set(THREAD, new Response("same body", { status: 200 }));
+    worker.network(() => Promise.resolve(new Response("same body", { status: 200 })));
+
+    await fetchEvent(worker, req(THREAD));
+    await drain();
+    await drain();
+
+    assert.deepEqual(worker.posted, []);
+  });
+
+  test("a revalidation that cannot reach the network is not reported", async () => {
+    /* The messages on screen are real. A network that is down does not make
+     * them wrong, and the page's own poll is still running behind this. */
+    const worker = loadWorker();
+    worker.pushCache.set(THREAD, new Response("parked body", { status: 200 }));
+    worker.network(() => Promise.reject(new TypeError("Failed to fetch")));
+
+    assert.equal(await (await fetchEvent(worker, req(THREAD))).text(), "parked body");
+    await drain();
+    await drain();
+
+    assert.deepEqual(worker.posted, []);
+  });
+});
+
+describe("activating a new worker keeps the parked thread", () => {
+  test("the push cache survives the swap and every other cache does not", async () => {
+    /* A prefetch parked by a push that arrived while an update was
+     * installing must survive the swap, or every deploy throws away the one
+     * entry that makes the next notification open instantly. */
+    const worker = loadWorker();
+    worker.seedCacheNames("nova-v1", "nova-push-v1", "nova-v0");
+
+    let held = null;
+    worker.handlers.activate({ waitUntil(p) { held = p; } });
+    await held;
+
+    assert.deepEqual(worker.deletedCaches(), ["nova-v0"]);
+  });
+});
+
+describe("a browser without a usable Cache API still loads a thread", () => {
+  test("a rejected caches.open falls through to the network instead of erroring", async () => {
+    /* This branch sits in front of the one route a push notification lands
+     * on, and `respondWith` renders a browser error page for a promise that
+     * rejects. Safari's private mode has historically refused `caches.open`
+     * outright, so the fallback is the ordinary load rather than nothing. */
+    const worker = loadWorker();
+    worker.breakCaches();
+    worker.network(() => Promise.resolve(new Response("live body", { status: 200 })));
+
+    const response = await fetchEvent(worker, req(THREAD));
+    assert.equal(await response.text(), "live body");
   });
 });
