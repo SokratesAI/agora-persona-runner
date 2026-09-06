@@ -190,9 +190,16 @@ class ReplyWatch:
 
 
 def _live_listing():
-    from agora_runner.nova_conversations import conversation_list
+    # `conversations`, not `conversation_list`. That name has never existed
+    # in `nova_conversations`; `nova_site` imports this same function *as*
+    # `conversation_list` for its route, and this module copied the alias
+    # instead of the name. Every check raised ImportError into `tick`'s
+    # blanket `except`, so the watch ran on schedule and reported nothing
+    # from the day it shipped -- see the tests below, which call these
+    # four functions instead of injecting past them.
+    from agora_runner.nova_conversations import conversations
 
-    return conversation_list()
+    return conversations()
 
 
 def _live_thread(conversation_id):

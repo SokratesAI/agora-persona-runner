@@ -10,7 +10,7 @@ import pytest
 
 from agora_runner import reply_notice
 from agora_runner.config import NOVA_PERSONA_ID
-from agora_runner.reply_check import Silence, find_silences
+from agora_runner.reply_check import Silence, cycle_threads, find_silences
 
 NOW = datetime(2026, 8, 31, 16, 30, tzinfo=timezone.utc)
 
@@ -282,3 +282,45 @@ def test_find_silences_is_what_both_callers_agree_on():
         now=NOW)
     assert [s.name for s in found.silent] == ["Cycle 721"]
     assert found.judged == 1
+
+
+# The four `_live_*` functions are the production wiring, and every test
+# above this line injects a fake past them -- which is how `_live_listing`
+# shipped importing a name that does not exist and stayed green for six
+# days. These call them for real, with only the socket faked, so a rename
+# in `nova_conversations` or `stall_notice` fails here instead of in the
+# pod's swallowed exception handler.
+def test_the_live_listing_reaches_the_real_conversation_reader(monkeypatch):
+    from agora_runner import nova_conversations
+
+    monkeypatch.setattr(
+        nova_conversations, "agora_get",
+        lambda path: (200, {"conversations": [
+            {"id": "c1", "name": "Nova \u2014 Cycle 900", "personas": [],
+             "tags": ["evolve-cycle:900"], "lastMessageAt": "2026-09-06T05:00:00Z"}]}))
+    monkeypatch.setattr(nova_conversations, "load_reads", lambda: (None, {}))
+    monkeypatch.setattr(nova_conversations, "_folder_rows", lambda: [])
+    monkeypatch.setattr(nova_conversations, "_model_rows", lambda: [])
+    listing = reply_notice._live_listing()
+    # The shape `find_silences` is handed, not a bare list -- `cycle_threads`
+    # reads `listing["conversations"]` and the `cycleThread` flag off each row.
+    assert [c["id"] for c in cycle_threads(listing)] == ["c1"]
+
+
+def test_the_live_thread_reaches_the_real_conversation_reader(monkeypatch):
+    from agora_runner import nova_conversations
+
+    monkeypatch.setattr(
+        nova_conversations, "agora_get",
+        lambda path: (200, {"messages": []}))
+    assert reply_notice._live_thread("c1")["conversationId"] == "c1"
+
+
+def test_the_live_heartbeats_and_post_resolve_in_stall_notice():
+    # These two delegate to `stall_notice`, so what can rot is the name
+    # rather than the call; both are exercised end to end by that module's
+    # own tests once they resolve.
+    from agora_runner import stall_notice
+
+    assert callable(stall_notice._live_heartbeats)
+    assert callable(stall_notice._live_post)
