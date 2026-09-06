@@ -38,8 +38,9 @@ work happen**:
   worked example: it replied 2,458 characters opening *"Cycle 579
   done"*, so it wrote its entry under another cycle's number and 580
   reads as missing forever.
-* `silent` --- a conversation exists and holds no message at all, so
-  the heartbeat created it and nothing ever spoke.
+* `silent` --- a conversation exists and the heartbeat never spoke in
+  it. Agora's own system notices about other cycles do not count as
+  speaking; see `run_messages`.
 * `absent` --- no conversation for that number. Agora's own counter
   handed the number out and there is no record of a run.
 
@@ -247,6 +248,28 @@ def read_outcome(text):
     return "unjudged", f"after {duration}: {outcome}"
 
 
+def run_messages(messages):
+    """`messages` with Agora's own system notices dropped.
+
+    Agora posts a `system` message into a cycle's conversation to tell
+    the owner that some *earlier* cycle never replied. That notice is about
+    another run, it lands after the closing line, and `judge` reads the
+    last message -- so on 2026-09-06 the notifier corrupted the very
+    instrument that counts silent cycles. Cycle 1035 failed in 0s with
+    `Connection refused`, Agora recorded that closing line, and two
+    notices landed on top of it, so it was filed as `cut off` (which
+    raises) rather than `failed` (which does not). Cycle 1041 never ran
+    at all and its conversation holds nothing *but* three notices, so it
+    read as a run that stopped mid-way instead of one that never spoke.
+
+    The filter is on `system` rather than on the sender name, because
+    `Nova` is the sender of the heartbeat lines this check exists to
+    read and `Agora` is the sender of a legitimate reply in other
+    conversations -- only the flag separates a notice from the record.
+    """
+    return [m for m in (messages or []) if not (m or {}).get("system")]
+
+
 def judge(number, conversation, messages, now=None):
     """One entryless cycle -> `{number, verdict, detail, messages}`.
 
@@ -255,17 +278,32 @@ def judge(number, conversation, messages, now=None):
     and calling those `cut off` would report the loop working as a
     failure on every run. Including the tail is what makes that case
     reachable at all -- interior gaps are always finished.
+
+    `messages` is filtered through `run_messages` first: Agora's own
+    notices are not this run's record and judging on them is how a
+    `failed` run reads as `cut off`.
     """
+    fetched = len(messages or [])
+    messages = run_messages(messages)
     if conversation is None:
         return {"number": number, "verdict": "absent", "messages": 0,
                 "detail": "Agora holds no conversation for this number"}
-    if not messages:
-        return {"number": number, "verdict": "silent", "messages": 0,
-                "detail": "the conversation was created and nothing ever spoke in it"}
-    if len(messages) >= MESSAGE_LIMIT:
-        return {"number": number, "verdict": "unreadable", "messages": len(messages),
+    # The truncation test is on what Agora *returned*, not on what
+    # survives the filter: the read is cut off at MESSAGE_LIMIT rows
+    # whatever they contain, and counting the filtered ones would let a
+    # long conversation slip under the ceiling and be judged off a
+    # closing line that is not there.
+    if fetched >= MESSAGE_LIMIT:
+        return {"number": number, "verdict": "unreadable", "messages": fetched,
                 "detail": f"the conversation is at or past the {MESSAGE_LIMIT}-message "
                           "read limit, so its closing line may be off the end"}
+    if not messages:
+        detail = "the conversation was created and nothing ever spoke in it"
+        if fetched:
+            detail = (f"the heartbeat never spoke in it; the {fetched} message(s) "
+                      "it holds are all Agora's own notices about other cycles")
+        return {"number": number, "verdict": "silent", "messages": 0,
+                "detail": detail}
     outcome = read_outcome(messages[-1].get("text") or "")
     if outcome is None:
         last = " ".join((messages[-1].get("text") or "").split())[:120]
