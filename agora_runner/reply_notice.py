@@ -72,6 +72,21 @@ from agora_runner.stall_notice import nova_conversation
 # failure that is already permanent.
 REPLY_CHECK_SECONDS = 1800
 
+# How long after start-up the *first* check runs. It used to be one whole
+# interval, on the reasoning that a silent cycle is an hour old before it is
+# detectable so half an hour of extra latency costs nothing. That reasoning
+# is right about latency and wrong about frequency: it assumes the process
+# outlives an interval. Measured 2026-09-06 across nova-site's last eleven
+# rollouts (18:46Z-05:42Z), 5 of the 10 pod lifetimes were under 30 minutes
+# -- 16, 16, 17, 26 and 26 -- so half the pods armed the watch and died
+# without ever reaching a check. `_checked_at` resets on every restart, so
+# this is not a delay, it is a check that does not happen at all.
+#
+# The docstring's actual reason for not checking on the first tick is that it
+# lands about a second after `start_nova_site()` kicks off the cache-warming
+# thread. That wants seconds, not half an hour.
+REPLY_WARM_UP_SECONDS = 60
+
 
 def notice_text(silence):
     """What he reads on his phone. One cycle, named, with what it was doing.
@@ -120,7 +135,7 @@ class ReplyWatch:
     def __init__(self, listing=None, fetch_thread=None, heartbeats=None,
                  post=None, interval=REPLY_CHECK_SECONDS,
                  grace_minutes=GRACE_MINUTES, window_hours=WINDOW_HOURS,
-                 clock=None):
+                 clock=None, warm_up=REPLY_WARM_UP_SECONDS):
         # `clock` is wall time and is separate from `tick`'s `now`, which is
         # monotonic and only ever answers "is a check due". The two gates
         # are measured against Agora's stamps, so a test that fixes one and
@@ -131,10 +146,14 @@ class ReplyWatch:
         self._heartbeats = heartbeats or _live_heartbeats
         self._post = post or _live_post
         self._interval = interval
+        self._warm_up = warm_up
         self._grace_minutes = grace_minutes
         self._window_hours = window_hours
         self._announced = set()
         self._checked_at = None
+        # The wait before the next check: the warm-up until one has run,
+        # the full interval afterwards.
+        self._due_in = warm_up
 
     def tick(self, now=None):
         """Do a check if one is due. Returns the number of messages posted.
@@ -142,9 +161,10 @@ class ReplyWatch:
         **The first tick after construction checks nothing**, for
         `stall_notice.tick`'s reason: it lands about a second after
         `start_nova_site()` kicks off the cache-warming thread, and this
-        check reaches Agora for a conversation listing. Waiting one interval
-        costs nothing on a failure that is an hour old before it is
-        detectable.
+        check reaches Agora for a conversation listing. It waits
+        `REPLY_WARM_UP_SECONDS` rather than a whole interval, because half
+        of this pod's lifetimes are shorter than an interval -- see the
+        measurement on that constant.
 
         Never raises. This runs inside the site's shutdown loop, and a
         transient failure reaching Agora must cost a check, not the process
@@ -154,9 +174,10 @@ class ReplyWatch:
         if self._checked_at is None:
             self._checked_at = now
             return 0
-        if now - self._checked_at < self._interval:
+        if now - self._checked_at < self._due_in:
             return 0
         self._checked_at = now
+        self._due_in = self._interval
         try:
             found = find_silences(
                 self._listing(), self._fetch_thread, now=self._clock(),
@@ -164,6 +185,20 @@ class ReplyWatch:
                 window_hours=self._window_hours)
             for note in found.notes:
                 log(f"reply notice: could not read {note}")
+            # One line per completed check, whether or not anything was
+            # found. Without it a check that ran and saw nothing is
+            # byte-identical in the log to a check that never ran -- which is
+            # exactly how the `conversation_list` ImportError below stayed
+            # invisible for six days, and that at least logged something.
+            # The counts are `Silences`' own and are not decoration: `judged`
+            # is what separates "every cycle spoke" from "the listing came
+            # back empty", and an empty listing raises nothing at all, so it
+            # is the next way this watch can go quiet without failing.
+            log(f"reply notice: checked {found.judged} thread(s) in window, "
+                f"{found.live} still inside the {self._grace_minutes}m grace, "
+                f"{found.old} older than {self._window_hours}h, "
+                f"{found.unreadable} unreadable, "
+                f"{len(found.silent)} silent")
             pending = due(found.silent, self._announced)
             if not pending:
                 return 0

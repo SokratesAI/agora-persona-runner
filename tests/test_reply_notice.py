@@ -177,13 +177,38 @@ def test_the_first_tick_checks_nothing():
 
 
 def test_a_check_inside_the_interval_does_not_run():
+    # The steady interval, measured from the warm-up check rather than from
+    # start-up: arm, run one real check, then tick a second short of the
+    # next one. The first check has to happen for this to be a test of the
+    # interval at all -- 721 is silent, so an unposted second message is the
+    # assertion and a watch that never checked would pass it for free.
+    post = Recorder()
+    watch = _watch([_conversation("Cycle 721", 120, ident="c721"),
+                    _conversation("Cycle 722", 121, ident="c722")],
+                   {"c721": {"messages": [_narration("still going")]},
+                    "c722": {"messages": [_narration("also going")]}},
+                   post)
+    watch.tick(now=0.0)
+    warm = reply_notice.REPLY_WARM_UP_SECONDS + 1
+    assert watch.tick(now=warm) == 2
+    post.sent.clear()
+    assert watch.tick(now=warm + reply_notice.REPLY_CHECK_SECONDS - 1) == 0
+    assert post.sent == []
+
+
+def test_the_first_check_comes_after_the_warm_up_not_a_whole_interval():
+    # Half of nova-site's pod lifetimes are shorter than an interval, so a
+    # watch armed for a full interval never checks at all on those pods.
     post = Recorder()
     watch = _watch([_conversation("Cycle 721", 120, ident="c721")],
                    {"c721": {"messages": [_narration("still going")]}},
                    post)
     watch.tick(now=0.0)
-    assert watch.tick(now=reply_notice.REPLY_CHECK_SECONDS - 1) == 0
+    assert reply_notice.REPLY_WARM_UP_SECONDS < reply_notice.REPLY_CHECK_SECONDS
+    assert watch.tick(now=reply_notice.REPLY_WARM_UP_SECONDS - 1) == 0
     assert post.sent == []
+    assert watch.tick(now=reply_notice.REPLY_WARM_UP_SECONDS + 1) == 1
+    assert "Cycle 721" in post.sent[0][1]
 
 
 def test_a_muted_heartbeat_posts_without_buzzing():
@@ -324,3 +349,52 @@ def test_the_live_heartbeats_and_post_resolve_in_stall_notice():
 
     assert callable(stall_notice._live_heartbeats)
     assert callable(stall_notice._live_post)
+
+
+# --- the check says it ran, even when it finds nothing -------------------
+
+
+def _lines(monkeypatch):
+    """Everything `tick` logs, so a quiet check can be told from no check."""
+    written = []
+    monkeypatch.setattr(reply_notice, "log", written.append)
+    return written
+
+
+def test_a_check_that_finds_nothing_still_says_it_ran(monkeypatch):
+    written = _lines(monkeypatch)
+    post = Recorder()
+    watch = _watch([_conversation("Cycle 724", 120, ident="c724")],
+                   {"c724": {"messages": [_reply("here is your answer")]}},
+                   post)
+    assert _run(watch) == 0
+    # The precondition: this is the quiet path, so nothing else would have
+    # written a line and the assertion below is not passing for free.
+    assert post.sent == []
+    assert len(written) == 1
+    assert "checked 1 thread(s) in window" in written[0]
+    assert "0 silent" in written[0]
+
+
+def test_an_empty_listing_is_logged_as_nothing_judged(monkeypatch):
+    # The failure mode left after the `conversation_list` ImportError: a
+    # listing that comes back empty raises nothing, posts nothing, and used
+    # to log nothing, so it read exactly like a morning with no silent cycle.
+    written = _lines(monkeypatch)
+    post = Recorder()
+    watch = _watch([], {}, post)
+    assert _run(watch) == 0
+    assert post.sent == []
+    assert len(written) == 1
+    assert "checked 0 thread(s) in window" in written[0]
+
+
+def test_a_check_that_never_ran_logs_nothing(monkeypatch):
+    # The other half of the same claim: the line is only written by a check
+    # that actually completed, so its presence means the watch is alive.
+    written = _lines(monkeypatch)
+    watch = _watch([_conversation("Cycle 724", 120, ident="c724")],
+                   {"c724": {"messages": [_reply("answered")]}}, Recorder())
+    watch.tick(now=0.0)
+    watch.tick(now=1.0)
+    assert written == []
