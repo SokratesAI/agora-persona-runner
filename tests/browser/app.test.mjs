@@ -15035,6 +15035,60 @@ describe("the drawer follows the poll", () => {
     assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest"]);
   });
 
+  test("a slow answer for the running call does not undo the finished one", async () => {
+    /* Two fetches for the same step can be in flight at once now: the one his
+     * tap sent while the call was running, and the one the refresh sent when
+     * the poll saw it finish. If the running answer lands second the drawer
+     * reverts to "Still running" and stays there forever -- the signature has
+     * already moved, so nothing refreshes it again. The first reply is held
+     * back here and released after the second, which is the ordering the
+     * network can produce and the code must survive. */
+    let held = null;
+    const box = { ask: running([BASH_RUNNING]) };
+    let timers = null;
+    let calls = 0;
+    const window = await loadSite("/", {
+      ask: () => box.ask,
+      convStep: () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((resolve) => {
+            /* `res`, not a bare object: the stub hands a promise straight
+             * back to `fetch`, so it has to resolve to a Response. Resolved
+             * with the payload alone this test passed for the wrong reason --
+             * `r.ok` was undefined, the stale answer took the unreachable
+             * branch instead of the running one, and a mutation of the guard
+             * it is named after survived. */
+            held = () => resolve(res({ capability: "Bash", input: "pytest",
+                                       output: "", status: "running" }));
+          });
+        }
+        return { capability: "Bash", input: "pytest",
+                 output: "795 passing", status: "done" };
+      },
+      install: (win) => { timers = captureTimers(win); },
+    });
+    window.document.getElementById("chat-btn")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    openSheet(window);
+    click(window, rows(window)[0]);
+    await tick();
+    box.ask = running([BASH_DONE]);
+    await timers.fire();
+    await tick();
+    assert.equal(calls, 2, "the refresh has to have asked again, or this pins nothing");
+    assert.match([...window.document.querySelectorAll(".step-pre")][1].textContent,
+      /795 passing/);
+    held();
+    await tick();
+    await tick();
+    assert.equal(window.document.querySelector(".step-note"), null,
+      "the stale running answer painted over the finished one");
+    assert.match([...window.document.querySelectorAll(".step-pre")][1].textContent,
+      /795 passing/);
+  });
+
   test("back from a refreshed call returns to the list as it is now", async () => {
     /* He opens the drawer, taps into a call, and two more run while he reads
      * it. The back arrow's handler closes over the array it was given, so a
@@ -15053,6 +15107,45 @@ describe("the drawer follows the poll", () => {
     assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest", "Read/x"]);
   });
 
+  test("another thread's poll does not repaint the drawer he is reading", async () => {
+    /* One sheet, three surfaces. The floating dock lives outside the routed
+     * feed, so it can be open over a conversation page on a different thread,
+     * and both paint through `askPaintThread`. Two threads each with a turn in
+     * flight carry the same id-less pending row, so without a check on the
+     * conversation the collision is deterministic rather than unlucky: the
+     * other thread's work silently replaces what he is reading. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    box.ask = { conversationId: "c-other", waiting: true, limit: 40, messages: [
+      { id: "", sender: "", text: "", partial: true, stepsOnly: true, steps: [
+        { kind: "tool", capability: "Grep", input: "/elsewhere",
+          id: "toolu_x", status: "running" }] },
+    ] };
+    await poll();
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytestrunning"]);
+  });
+
+  test("a follow-up answered in the same gap does not hijack the drawer", async () => {
+    /* The handover looks for the message that swallowed his steps. Taking
+     * "the last message with any steps" gets that wrong when he asks a
+     * follow-up the moment the first answer lands and both settle before the
+     * next tick -- the newest message is then a different turn's work. The
+     * steps he opened are a prefix of the message that took them, so that is
+     * what is matched. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    box.ask = { conversationId: "c-ask", waiting: true, limit: 40, messages: [
+      { id: "1", sender: "Edvard", text: "run the suite" },
+      { id: "2", sender: "Nova", text: "All green.", steps: [BASH_DONE,
+        { kind: "tool", capability: "Read", input: "/x", id: "toolu_s", status: "done" }] },
+      { id: "3", sender: "Edvard", text: "and the browser ones?" },
+      { id: "4", sender: "Nova", text: "Also green.", steps: [
+        { kind: "tool", capability: "Grep", input: "/y", id: "toolu_t", status: "done" }] },
+    ] };
+    await poll();
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest", "Read/x"]);
+  });
+
   test("a repaint that changed nothing leaves his place in the list alone", async () => {
     /* Redrawing the list every four seconds would scroll a long one back to
      * the top under him, which is issue #140's complaint in a smaller box.
@@ -15065,7 +15158,7 @@ describe("the drawer follows the poll", () => {
     assert.equal(rows(window)[0], before);
   });
 
-  test("a drawer he has closed is not repainted or re-fetched behind it", async () => {
+  test("a drawer he has closed does not ask the server again", async () => {
     /* Visibility alone pins nothing here -- the refresh redraws the sheet's
      * contents and never unhides it, so a closed drawer stays closed either
      * way. What the guard actually saves is the work: a detail view he has
