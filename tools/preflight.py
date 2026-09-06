@@ -724,19 +724,17 @@ def sweep_stamp(now=None, checkout=None):
     checkout as well as the clock, because two cycles running a minute apart
     have near-identical timestamps and always-different worktrees.
 
-    The stamp is never omitted: an unreadable checkout prints as such rather
-    than dropping the line, since a report with no stamp reads exactly like
-    the reports this exists to make legible.
+    The stamp is never omitted: an empty checkout prints as such rather than
+    dropping the line or trailing off, since a report with no stamp reads
+    exactly like the reports this exists to make legible. `tools_dir` cannot
+    fail, so that fallback guards a caller passing one in, not this default.
     """
     import time as _time
 
     now = _time.time() if now is None else now
     when = _oslo(now)
     if checkout is None:
-        try:
-            checkout = os.path.dirname(tools_dir())
-        except Exception:
-            checkout = ""
+        checkout = os.path.dirname(tools_dir())
     return f"swept {when} from {checkout or 'an unreadable checkout'}"
 
 
