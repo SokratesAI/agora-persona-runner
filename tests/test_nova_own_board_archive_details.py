@@ -112,17 +112,38 @@ def test_without_the_archive_that_row_would_draw_an_empty_body(monkeypatch):
     assert set(payload["novaDetails"]) == {"2"}
 
 
-def test_the_live_write_up_wins_when_both_files_have_one(monkeypatch):
-    """A number in both files is a body that was rolled and then written
-    again, and the live file is the newer of the two."""
+def test_both_halves_are_drawn_when_a_number_is_in_both_files(monkeypatch):
+    """A number in both files is one write-up in two halves.
+
+    A `# Details` body is append-only, so the archived half is the older
+    paragraphs and the live half is the newer ones. Keeping only the live
+    half -- which is what `setdefault` did until Cycle 1073 -- is what
+    makes rolling an *open* row's write-up lossy, and therefore what
+    stops it from being rolled at all.
+    """
     archive = ARCHIVE.replace(
         "### #1 — Dead newspaper feeds", "### #2 — Unrated row"
     )
     payload = _payload(monkeypatch, archive=archive)
 
     text = _plain(payload["novaDetails"]["2"])
+    assert "82 consecutive nights" in text
     assert "still where it always was" in text
-    assert "82 consecutive nights" not in text
+
+
+def test_the_archived_half_is_drawn_before_the_live_half(monkeypatch):
+    """Order carries the meaning: oldest paragraph first, the way the
+    write-up reads in the file it was split out of. A test that only
+    asserts both halves are present passes on either order."""
+    archive = ARCHIVE.replace(
+        "### #1 — Dead newspaper feeds", "### #2 — Unrated row"
+    )
+    payload = _payload(monkeypatch, archive=archive)
+
+    text = _plain(payload["novaDetails"]["2"])
+    assert text.index("82 consecutive nights") < text.index(
+        "still where it always was"
+    )
 
 
 def test_the_archive_contributes_bodies_and_never_rows(monkeypatch):
