@@ -1050,13 +1050,30 @@ def board_payload(name):
     # page with nothing failing anywhere. The page has to be able to read
     # a rolled body before the roller may write one.
     #
-    # Live wins on a collision. A number in both files is a row whose
-    # write-up was rolled and then written again, and the live file is
-    # the newer of the two. `parse_board` over an archive that has no
-    # `## Board` table returns no items, so this adds bodies and never
-    # rows -- an archived row is still a row on the live board.
+    # A number in both files is one write-up in two halves, not two
+    # versions of one, so both are drawn -- archived half first. A
+    # `# Details` body is append-only: the row's original statement sits
+    # at the top and every later cycle adds a `**Nova, <date> (Cycle
+    # N):**` paragraph under it. So the older half is not superseded by
+    # the newer one, and the archive is by construction the older.
+    #
+    # This used to be `setdefault` -- live wins, archived half dropped --
+    # and that is what stops an *open* row's write-up from ever being
+    # rolled: the roller moves the older paragraphs off, the row is
+    # written again within the hour, and the moved half silently
+    # disappears from the page. Only a done row could be rolled, and
+    # those are 1 of 29 (`tools.roll_health`, 2026-09-06), which is why
+    # 48,118 bytes of open-row bodies sit unbounded on my own issues.md.
+    #
+    # `parse_board` over an archive that has no `## Board` table returns
+    # no items, so this adds bodies and never rows -- an archived row is
+    # still a row on the live board.
     for number, body in parse_board(nova_archive_markdown)["details"].items():
-        mine["details"].setdefault(number, body)
+        live_body = mine["details"].get(number)
+        if live_body is None:
+            mine["details"][number] = body
+        else:
+            mine["details"][number] = body.rstrip() + "\n\n" + live_body.lstrip()
     nova_details, nova_detail_comments = _split_details(mine["details"])
     # Live first, then the rolled-off older half -- both files are
     # newest-first and the archive holds only what is older than the live
