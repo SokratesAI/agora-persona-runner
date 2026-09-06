@@ -26,8 +26,11 @@ from agora_runner.nova_handoff import (  # noqa: F401 -- re-exported for callers
     ARCHIVE_TITLE,
     MARKER,
     SPEC,
+    archive_older_than,
     archive_retired,
     item_slug,
+    oldest_digest_cycle,
+    select_older_than,
     live_items,
     newest_cycle,
     select_slugs,
@@ -76,6 +79,15 @@ def main(argv=None):
         default="",
         help="why those items are finished, recorded beside them in the archive",
     )
+    parser.add_argument(
+        "--retire-older-than-digest",
+        action="store_true",
+        help=(
+            "retire every datable item older than the oldest cycle the "
+            "`## Digest` section of the same file still shows -- the one "
+            "roll that needs no judgement per item"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -90,6 +102,46 @@ def main(argv=None):
         archive = ""
 
     items = live_items(live)
+
+    if args.retire_older_than_digest:
+        if args.retire:
+            print(
+                "refusing: --retire names items by hand and "
+                "--retire-older-than-digest selects them by age; run them "
+                "as two rolls so each archive stamp says which rule moved "
+                "the item",
+                file=sys.stderr,
+            )
+            return 1
+        cutoff = oldest_digest_cycle(live)
+        if cutoff is None:
+            print(
+                "refusing: no `## Digest` line in this file carries a cycle "
+                "number, so there is no window to cut the handoff against",
+                file=sys.stderr,
+            )
+            return 1
+        rolled = archive_older_than(live, archive, cutoff, today)
+        if rolled is None:
+            print(
+                f"nothing to roll: all {len(items)} handoff item(s) cite "
+                f"cycle {cutoff} or later"
+            )
+            return 0
+        new_live, new_archive, moved = rolled
+        print(
+            f"verified: {len(moved)} item(s) retired as older than cycle "
+            f"{cutoff}, {len(items) - len(moved)} still in the handoff"
+        )
+        for item in moved:
+            print(f"  retired: {' '.join(item.split())[:120]}")
+        if args.dry_run:
+            print("--dry-run: nothing written")
+            return 0
+        open(args.archive, "w").write(new_archive)
+        open(args.live, "w").write(new_live)
+        print(f"wrote {args.archive}, then {args.live}")
+        return 0
 
     if not args.retire:
         total = sum(len(i) for i in items)

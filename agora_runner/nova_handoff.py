@@ -52,7 +52,8 @@ with whichever vault client that pod actually has:
 
 import re
 
-from agora_runner.nova_journal import split_needs_items
+from agora_runner.md_sections import outline
+from agora_runner.nova_journal import split_digest_entries, split_needs_items
 from agora_runner.rolling import RollError, RollSpec, _body, join_paragraphs, plan, verify
 
 MARKER = "\n## Next cycle\n"
@@ -251,3 +252,84 @@ def archive_retired(live, archive, slugs, reason, today):
             item, stamp_retired(item, reason, today), 1
         )
     return new_live, new_archive, moved
+
+
+# `**Cycle 1004` at the start of a digest line. Deliberately narrower than
+# `_CYCLE_RE` above: that one finds a cycle number anywhere in an item's
+# prose, which is right for dating a handoff item and wrong here, where a
+# line quoting another cycle inside its text would move the cut.
+_DIGEST_LINE_CYCLE_RE = re.compile(r"\A\*\*Cycle (?P<n>\d+)")
+
+
+def oldest_digest_cycle(live):
+    """The oldest cycle the `## Digest` section of `live` still shows.
+
+    This is the whole of the age rule, and it is read off the file rather
+    than written down here on purpose. `roll_digest` already trims that
+    section to `KEEP` lines, so the digest carries a window -- tonight,
+    cycles 1004 to 1015 -- and **Next cycle** sits in the same file
+    carrying 130 items back to cycle 940. Cutting the handoff at the
+    digest's own oldest line makes the two sections describe the same
+    stretch of time, and means there is no second number to keep in step:
+    change `roll_digest.KEEP` and this follows it.
+
+    Returns None when the section is missing or holds no line this can
+    date, and every caller treats that as "do not roll by age" -- an
+    undatable digest makes the cut guesswork, which is the same call
+    `roll_digest`'s own line matcher makes about an undatable card.
+    """
+    for level, heading, body in outline(live, max_level=2):
+        if level == 2 and heading == "Digest":
+            cycles = [
+                int(m.group("n"))
+                for m in (
+                    _DIGEST_LINE_CYCLE_RE.match(line)
+                    for line in split_digest_entries(body)
+                )
+                if m
+            ]
+            return min(cycles) if cycles else None
+    return None
+
+
+def select_older_than(items, cutoff):
+    """Indices of the items that cite no cycle at or after `cutoff`.
+
+    Three kinds of item are never selected, and all three omissions are
+    the conservative direction -- this section is where the loop keeps its
+    "do not redo this" findings, so keeping one too long costs a cycle
+    some reading and dropping one too early costs it the work again:
+
+    * an item with no slug, which `select_slugs` cannot name either;
+    * an item citing no cycle at all, which nothing here can date;
+    * an item whose *newest* citation is recent. `newest_cycle` takes the
+      maximum, so an old item that a later cycle amended stays until the
+      amendment ages out too.
+    """
+    return [
+        index
+        for index, item in enumerate(items)
+        if item_slug(item) is not None
+        and newest_cycle(item) is not None
+        and newest_cycle(item) < cutoff
+    ]
+
+
+def archive_older_than(live, archive, cutoff, today):
+    """Retire every datable item older than `cutoff`. Writes nothing.
+
+    Returns `(new_live, new_archive, moved)`, or `None` when there is
+    nothing old enough to move -- so a cycle can run this every time and
+    only pay for a write when the section has actually outgrown the
+    digest's window.
+    """
+    items = live_items(live)
+    picked = select_older_than(items, cutoff)
+    if not picked:
+        return None
+    slugs = [item_slug(items[i]) for i in picked]
+    reason = (
+        f"Rolled off by age: cites no cycle at or after {cutoff}, the oldest "
+        "cycle the digest section of the same file still shows."
+    )
+    return archive_retired(live, archive, slugs, reason, today)
