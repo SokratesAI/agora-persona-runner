@@ -27,6 +27,8 @@ convention: `decide_turn` speaks only when the last visible message came
 from him, so any other sender writes a message nothing ever answers.
 """
 
+import re
+
 from agora_runner.audit import fold_text_streams, narration_passage
 from agora_runner.config import NOVA_PERSONA_ID
 from agora_runner.http_util import agora_get, agora_internal, agora_public
@@ -522,7 +524,97 @@ def title_from_message(text):
     return head
 
 
-def autotitle(conversation_id, current_name, text):
+# Words too common to say what a thread is about. Short ones are already cut
+# by the length floor below; these are the long ones that survive it and would
+# otherwise make any two messages look related.
+TOPIC_STOPWORDS = frozenset((
+    "about", "after", "again", "also", "another", "because", "been", "before",
+    "being", "between", "both", "could", "does", "doing", "done", "down",
+    "each", "even", "every", "from", "have", "here", "into", "just", "like",
+    "make", "made", "many", "more", "most", "much", "need", "only", "other",
+    "over", "same", "should", "some", "such", "than", "that", "them", "then",
+    "there", "these", "they", "thing", "things", "think", "this", "those",
+    "through", "very", "want", "well", "were", "what", "when", "where",
+    "which", "while", "will", "with", "would", "your",
+))
+
+# How short a word may be and still say what a thread is about. Four is where
+# "chat", "demo", "node" live and where "and", "the", "for" stop.
+TOPIC_WORD_CHARS = 4
+
+
+def topic_words(text):
+    """The set of words in `text` that say what it is about.
+
+    Lowercased, punctuation stripped, short and common words dropped. This is
+    the whole of the topic model and it is deliberately not a model call --
+    rule 9 in `identity.md` forbids production work on the metered API, and
+    the subscription path costs a whole turn of a cycle's window.
+    """
+    if not isinstance(text, str):
+        return frozenset()
+    words = set()
+    for raw in re.split(r"[^0-9A-Za-z']+", text.lower()):
+        word = raw.strip("'")
+        if len(word) >= TOPIC_WORD_CHARS and word not in TOPIC_STOPWORDS:
+            words.add(word)
+    return frozenset(words)
+
+
+def title_is_derived(name, texts):
+    """Did this code write `name`, or did he?
+
+    The prerequisite for re-titling anything, and it needs no stored flag:
+    every title this app writes is by construction `title_from_message` of
+    one of the thread's own messages, so a name that reproduces exactly is a
+    name I wrote. A name he typed does not reproduce -- unless he typed the
+    derivation of his own opening line character for character, which is him
+    agreeing with the title rather than a case to protect.
+
+    `UNTITLED_NAME` counts: nobody chose it either.
+    """
+    if not isinstance(name, str) or not name:
+        return False
+    if name == UNTITLED_NAME:
+        return True
+    for text in (texts or ()):
+        if name == title_from_message(text):
+            return True
+    return False
+
+
+def topic_moved(name, recent, text):
+    """Has the thread moved off what its title says, for long enough to retitle?
+
+    His ask, `issues.md` #139: a thread should *"keep adjusting as the topic
+    shifts"*. The judgement here is what a shift is, and the risk is a title
+    that flaps -- one aside about something else is not a new topic, and a
+    name that changes under him every message is worse than a stale one.
+
+    So a shift is **two messages in a row** that share no topic word with the
+    current title: the one he just sent and the one before it. That makes the
+    earliest possible re-title his third message, and it means an aside
+    answered and dropped never renames anything.
+
+    A title with no topic words of its own cannot be judged this way, so it
+    is left alone. Refusing is the safe direction: a title that stays is a
+    worse name, a title that moves wrongly is his thread renamed under him.
+    """
+    title = topic_words(name)
+    if not title:
+        return False
+    if topic_words(text) & title:
+        return False
+    previous = None
+    for candidate in (recent or ()):
+        if isinstance(candidate, str) and candidate.strip():
+            previous = candidate
+    if previous is None:
+        return False
+    return not (topic_words(previous) & title)
+
+
+def autotitle(conversation_id, current_name, text, recent=None):
     """(ok, message). Name an untitled thread after the first thing he said.
 
     `current_name` is what the page believes the thread is called, and this
@@ -534,11 +626,20 @@ def autotitle(conversation_id, current_name, text):
     single most expensive call this app makes. The page is not being trusted
     with any authority it did not already have: `/api/conversations/rename`
     lets it rename any thread to anything.
+
+    `recent` is his own earlier messages in the thread, oldest first, not
+    including `text`. With it, a thread whose title this code derived can be
+    re-titled when the topic moves -- the third part of #139. Without it the
+    route behaves exactly as it did before: only `UNTITLED_NAME` is renamed,
+    because `title_is_derived` has nothing to reproduce the name from.
     """
     if not conversation_id:
         return False, "which conversation?"
     if current_name != UNTITLED_NAME:
-        return False, "that conversation already has a name"
+        if not title_is_derived(current_name, recent):
+            return False, "that conversation already has a name"
+        if not topic_moved(current_name, recent, text):
+            return False, "that conversation is still about the same thing"
     title = title_from_message(text)
     if not title:
         return False, "there was no title in that message"

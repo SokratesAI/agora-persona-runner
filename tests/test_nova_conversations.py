@@ -714,6 +714,92 @@ def test_a_thread_he_named_is_never_retitled():
     assert not [c for c in calls if c[0] == "PATCH"]
 
 
+# --- #139, part three: a thread keeps adjusting as the topic shifts ------
+#
+# The prerequisite was knowing which titles this app wrote. There is no
+# stored flag for it and there does not need to be: every derived title is
+# `title_from_message` of one of the thread's own messages, so a name that
+# reproduces exactly is one I wrote. What these pin is the pair of failures
+# that are invisible from the code -- a title he typed being overwritten,
+# and a title flapping on one aside.
+
+_BACKUP = "Can you look at the NAS backup? It has been failing."
+_BACKUP_TITLE = "Can you look at the NAS backup?"
+
+
+def test_a_derived_title_is_recognised_as_mine_and_a_typed_one_is_not():
+    assert convs.title_is_derived(_BACKUP_TITLE, [_BACKUP]) is True
+    assert convs.title_is_derived("Roofing", [_BACKUP]) is False
+    assert convs.title_is_derived(convs.UNTITLED_NAME, []) is True
+
+
+def test_two_messages_off_the_topic_retitle_the_thread():
+    """His ask: keep adjusting as the topic shifts. Two in a row, so a
+    thread that has genuinely moved gets the new name."""
+    (ok, message), calls = _run(lambda: convs.autotitle(
+        "c-7", _BACKUP_TITLE,
+        "Pick a palette for the chat theme",
+        recent=[_BACKUP, "What theme should the chat use"]))
+    assert ok is True and message == "Pick a palette for the chat theme"
+    assert ("PATCH", "/conversations/c-7",
+            {"name": "Pick a palette for the chat theme"}) in calls
+
+
+def test_one_aside_does_not_rename_anything():
+    """The failure this rule exists for. A title that changes every time he
+    says something tangential is worse than one that is a little stale, and
+    he cannot tell that from the app losing his rename."""
+    (ok, message), calls = _run(lambda: convs.autotitle(
+        "c-7", _BACKUP_TITLE, "Pick a palette for the chat theme",
+        recent=[_BACKUP]))
+    assert ok is False and "still about the same thing" in message
+    assert not [c for c in calls if c[0] == "PATCH"]
+
+
+def test_a_title_he_typed_survives_a_topic_shift():
+    """`test_a_thread_he_named_is_never_retitled` covers the opening
+    message. This is the same rule forty messages in, where the shift check
+    would otherwise say yes -- both of these messages are off `Roofing`."""
+    (ok, message), calls = _run(lambda: convs.autotitle(
+        "c-7", "Roofing", "Pick a palette for the chat theme",
+        recent=[_BACKUP, "What theme should the chat use"]))
+    assert ok is False and "already has a name" in message
+    assert not [c for c in calls if c[0] == "PATCH"]
+
+
+def test_staying_on_topic_keeps_the_title_it_has():
+    (ok, message), calls = _run(lambda: convs.autotitle(
+        "c-7", _BACKUP_TITLE, "The NAS backup failed again last night",
+        recent=[_BACKUP, "Which backup job is it"]))
+    assert ok is False and "still about the same thing" in message
+    assert not [c for c in calls if c[0] == "PATCH"]
+
+
+def test_without_the_history_the_route_behaves_exactly_as_it_did():
+    """An older page that sends no `recent` must not start renaming things.
+    `title_is_derived` has nothing to reproduce the name from, so every
+    named thread is treated as his."""
+    (ok, message), calls = _run(lambda: convs.autotitle(
+        "c-7", _BACKUP_TITLE, "Pick a palette for the chat theme"))
+    assert ok is False and "already has a name" in message
+    assert not [c for c in calls if c[0] == "PATCH"]
+
+
+def test_topic_words_drop_the_words_that_are_in_every_message():
+    """Without this every two messages share `about`/`should`/`would` and
+    nothing is ever off topic -- the rule would refuse forever and look
+    like it was working."""
+    assert "should" not in convs.topic_words("What should I do about this")
+    assert convs.topic_words("Move the CouchDB backup") == frozenset(
+        {"move", "couchdb", "backup"})
+
+
+def test_a_title_with_no_topic_words_is_left_alone():
+    """Refusing is the safe direction: a stale title is a worse name, a
+    wrong rename is his thread renamed under him."""
+    assert convs.topic_moved("ok", ["ok"], "Pick a palette") is False
+
+
 def test_a_message_with_no_words_in_it_leaves_the_placeholder():
     """`New chat` is honest. A title cut out of an emoji or an attachment
     line is worse than no title, and it cannot be undone by sending a

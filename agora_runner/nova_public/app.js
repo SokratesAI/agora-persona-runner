@@ -13781,16 +13781,27 @@
       // it: he can switch threads while the request is in flight, and a
       // title derived here must land on the thread he typed it into.
       //
-      // Two conditions, neither of them the safety check -- the server
-      // refuses to rename anything not still called `New chat`, and that
-      // check lives there so the placeholder is spelled in one file. These
-      // only keep the app from asking when the answer is already known.
-      // `untitled` is set by the form when he starts a thread without
-      // naming it and rides along in the stored source, so a thread he
-      // named is never asked about; "nothing painted yet" is how the dock
-      // knows this is the opening message rather than the fortieth.
-      var titleFor = conv && source.untitled && !thread.querySelector(".ask-msg")
-        ? { id: source.id, name: source.name, text: text }
+      // The safety checks are all on the server -- it refuses a name he
+      // typed, and it refuses a name it derived unless the thread has spent
+      // two messages off that topic. Those rules live there so they are
+      // spelled once. The condition here is only structural: the opening
+      // message can name an untitled thread, and a re-title is impossible
+      // before his third message because the server wants two in a row.
+      var mine = thread.querySelectorAll(".ask-msg.ask-mine");
+      var titleFor = conv && (source.untitled || mine.length >= 2)
+        ? { id: source.id, name: source.name, text: text,
+            // Every message of his in the thread, oldest first, not this
+            // one. The server reads two different things out of it: which
+            // message the current title was derived from -- that is how it
+            // knows it wrote the title rather than him, with no stored flag
+            // -- and what he was talking about just before this. Truncating
+            // at 200 cannot change the first: a derived title is cut from
+            // the first sentence and clipped to 60 characters, so it never
+            // reads past 200 anyway.
+            recent: [].map.call(mine, function (row) {
+              var body = row.querySelector(".ask-text");
+              return (body ? body.textContent : "").slice(0, 200);  // not-prose: nothing is shown, it is what the server reads a title out of
+            }) }
         : null;
       fetch(conv ? "/api/conversations/send" : "/api/ask", {
         method: "POST",
