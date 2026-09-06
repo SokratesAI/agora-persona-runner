@@ -633,7 +633,7 @@ def test_the_report_is_in_repo_order_not_in_whichever_gh_answered_first():
 # against the 2,000 included minutes.
 
 def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None,
-               sample_runs=None, sample_jobs=None):
+               sample_runs=None, sample_jobs=None, sample_events=None):
     """A fake `subprocess.run` for the `gh api` calls `billing_meter` makes.
 
     `runs` is `{"owner/repo": (month_total, recent_total)}` for the
@@ -670,6 +670,20 @@ def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None
         # a tunable and the date filter is what the two calls actually differ
         # by, so a change to FLOOR_SAMPLE_RUNS cannot silently reroute a
         # window query into this branch.
+        # `_pairing_lines` asks the same path for a wider page and a different
+        # projection -- just the events -- because a run's event is free and its
+        # jobs are one call each. The two are told apart by the jq expression
+        # rather than by the page size, so changing either sample size cannot
+        # silently reroute one query into the other's fixture.
+        if "/actions/runs?" in path and "created=" not in path \
+                and "[.workflow_runs[].event]" in cmd:
+            if sample_events is not None:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps(sample_events), stderr="")
+            derived = [row.get("event") if isinstance(row, dict) else "push"
+                       for row in (sample_runs or [])]
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(derived), stderr="")
         if "/actions/runs?" in path and "created=" not in path:
             # `floor_share` asks for `{id, event, head_branch}` now, because
             # `_origin_lines` needs to know whose branches are billing. A bare
@@ -1289,8 +1303,14 @@ def test_the_meter_samples_only_the_biggest_private_spender():
     text = "\n".join(lines)
     assert "FLOOR   SokratesAI/platform-config" in text, text
     assert "whatsapp-bridge" not in text.split("FLOOR")[1], text
+    # Two projections of the top spender's runs and nothing of anyone else's:
+    # the floor pays a call per run for jobs so it stays at 20, the pairing
+    # reads events off the row and takes 100 for one call. The guarantee this
+    # pins is the *repo*, not the number of queries.
     sampled = [p for p in seen if "/actions/runs?" in p and "created=" not in p]
-    assert sampled == ["/repos/SokratesAI/platform-config/actions/runs?per_page=20"], sampled
+    assert sampled == ["/repos/SokratesAI/platform-config/actions/runs?per_page=20",
+                       "/repos/SokratesAI/platform-config/actions/runs?per_page=100"], sampled
+    assert not [p for p in sampled if "whatsapp-bridge" in p], sampled
 
 
 # --- the spread reaches the forecast ------------------------------------
@@ -1375,6 +1395,113 @@ def test_a_steady_window_hands_out_no_spread():
         {"platform-config": 300.0}, 300.0, "SokratesAI",
         datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
     assert spread is None
+
+
+# --- _pairing_lines ----------------------------------------------------------
+# Cycle 1043. `floor_share` used to explain its job count with "a run per pull
+# request plus a run per resulting commit" -- an assumption printed in the
+# voice of a measurement, off data the module already had in hand. These pin
+# the measured version, including the two ways it has to be able to come out
+# other than "paired".
+
+
+def _push_run(run_id, branch="main"):
+    return {"id": run_id, "event": "push", "head_branch": branch}
+
+
+def test_a_paired_sample_names_the_duplicate_and_prices_it():
+    # platform-config's checks.yml, 2026-09-04T21:16Z..2026-09-06T00:48Z:
+    # 51 push against 49 pull_request in one hundred runs.
+    # Deliberately 3-against-4 rather than an even split: with equal counts
+    # the smaller and the larger side are the same number, so a mutation that
+    # priced the duplicate off the LARGER side survived a green test. The
+    # pairing that is billed twice is only ever the smaller of the two.
+    run = billing_gh(
+        sample_runs=[_push_run(1), _push_run(2), _push_run(3),
+                     _pr_run(4, "nova/a"), _pr_run(5, "nova/b"),
+                     _pr_run(6, "nova/c"), _pr_run(7, "nova/d")],
+        sample_jobs={i: [_job(30)] for i in range(1, 8)})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "3 push run(s) against 4 pull-request run(s) in the newest 7" in text, text
+    assert "a merged pull request bills twice" in text, text
+    assert "3 of the 7 sampled run(s) (43%) the second run of a tree" in text, text
+    assert "halves this repo's bill" in text, text
+
+
+def test_the_pairing_reads_a_wider_window_than_the_floor():
+    # The whole reason this is a second call. Measured 2026-09-06: the newest
+    # 20 runs of `platform-config` read 14 push against 6 pull-request and the
+    # first draft called them unpaired, while the newest 100 read 51 against
+    # 49. The floor is capped at 20 because it spends a call per run on jobs;
+    # the events are free, so they get their own page. Here the floor's own
+    # rows are all pushes and the wider window is what decides the verdict --
+    # a version that reused the floor sample cannot pass this.
+    run = billing_gh(
+        sample_runs=[1, 2],
+        sample_jobs={1: [_job(30)], 2: [_job(32)]},
+        sample_events=["push"] * 51 + ["pull_request"] * 49)
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "51 push run(s) against 49 pull-request run(s) in the newest 100" in text, text
+    assert "49 of the 100 sampled run(s) (49%) the second run of a tree" in text, text
+
+
+def test_an_unreadable_event_sample_is_named_rather_than_read_as_unpaired():
+    # A refused query that fell through to the counts would report 0 against 0
+    # and take the NOT JUDGED branch, which says "no pull-request run in the
+    # sample" -- a statement about the repo, off a sample that does not exist.
+    def run(cmd, **kwargs):
+        if "[.workflow_runs[].event]" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: refused")
+        return billing_gh(sample_runs=[_push_run(1), _pr_run(2, "nova/a")],
+                          sample_jobs={1: [_job(30)], 2: [_job(32)]})(cmd, **kwargs)
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "could not sample SokratesAI/platform-config's run events" in text, text
+    assert "no pull-request run in the sample" not in text, text
+
+
+def test_an_unpaired_sample_says_the_duplicate_is_not_the_lever():
+    # The check has to be able to come out the other way. A repo whose default
+    # branch is written by automation -- update-manifest and ingest-crds both
+    # commit straight to main -- has push runs with no pull request behind
+    # them, and there halving the triggers buys nothing.
+    run = billing_gh(
+        sample_runs=[_push_run(1), _push_run(2), _push_run(3), _push_run(4),
+                     _pr_run(5, "nova/a")],
+        sample_jobs={i: [_job(30)] for i in range(1, 6)})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "4 push run(s) against 1 pull-request run(s), which do not pair" in text, text
+    assert "duplicate is not where this bill is" in text, text
+    assert "bills twice" not in text, text
+
+
+def test_a_sample_with_no_pull_request_refuses_rather_than_reporting_zero():
+    # Bare ids in the older fixtures read as pushes on main. Dividing that
+    # into "0% is a duplicate" would acquit a repo off a sample that cannot
+    # see either side of the question.
+    run = billing_gh(sample_runs=[1, 2], sample_jobs={1: [_job(26)], 2: [_job(30)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "DOUBLE  NOT JUDGED" in text, text
+    assert "no pull-request run in the sample" in text, text
+
+
+def test_a_sample_with_no_push_run_says_nothing_is_billed_twice():
+    # A repo with no push trigger at all -- every run is its own tree, so
+    # there is no second run to drop and saying so is the honest answer
+    # rather than the "do not pair" sentence, which would read as a finding.
+    run = billing_gh(sample_runs=[_pr_run(1, "nova/a"), _pr_run(2, "nova/b")],
+                     sample_jobs={1: [_job(26)], 2: [_job(30)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/agora", run=run))
+    assert "2 pull-request run(s) and no push run at all" in text, text
+    assert "duplicate is not this repo's lever" in text, text
+
+
+def test_the_old_unmeasured_clause_is_gone():
+    # The whole point of the change: the sentence that asserted the pairing
+    # without counting it must not survive beside the count.
+    run = billing_gh(sample_runs=[_push_run(1), _pr_run(2, "nova/a")],
+                     sample_jobs={1: [_job(26)], 2: [_job(30)]})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "a run per pull request plus a run per resulting commit" not in text, text
 
 
 # --- _origin_lines -----------------------------------------------------------
