@@ -49,7 +49,8 @@ class MeteredProviderBlocked(RuntimeError):
 # `claude-cli:` and `gemini:` model exactly as before; the only thing it
 # loses is the ability to spend money.
 def generate_reply(persona, caps, system, history, conversation_id, model_override=None, sticky=False,
-                    on_text=None, active_step=None, on_thinking=None, unattended=True):
+                    on_text=None, active_step=None, on_thinking=None, unattended=True,
+                    ephemeral=False):
     model = model_override or persona.get("model") or ""
     provider, _, model_id = model.partition(":")
     if unattended and provider in METERED_PROVIDERS and not ALLOW_METERED_UNATTENDED:
@@ -71,5 +72,5 @@ def generate_reply(persona, caps, system, history, conversation_id, model_overri
     if provider == "claude-cli":
         return claude_cli_generate(model_id, bool(persona.get("thinking")), system, history,
                                     caps, persona, conversation_id, on_text=on_text, active_step=active_step,
-                                    on_thinking=on_thinking)
+                                    on_thinking=on_thinking, ephemeral=ephemeral)
     raise ValueError(f"unknown model provider {provider!r}")

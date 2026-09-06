@@ -249,8 +249,22 @@ class InvokeHandler(BaseHTTPRequestHandler):
             # /invoke serves Ask and Preview, both of which are a person
             # pressing a button, so this is an attended turn and may use a
             # metered model. Said out loud because reply.py defaults closed.
-            reply = generate_reply(persona, dict(NO_CAPS), system, merged, None,
-                                   model_override=model_override, unattended=False)
+            #
+            # The conversation id was hardcoded `None` here until 2026-09-06,
+            # which made Ask a 502 on every `claude-cli:` persona -- the
+            # bridge refuses a request without one. Ask therefore only ever
+            # worked on the metered `anthropic:` models, which need no
+            # conversation and which production may not use, so the failure
+            # was invisible for as long as nothing subscription-backed asked.
+            # Marcus's coach was the first. Agora sends it as
+            # `conversationId`; Preview genuinely has no conversation and
+            # still sends nothing, so it stays None there. `ephemeral=True`
+            # is what keeps the id from turning Ask into a turn of the
+            # conversation -- see claude_cli_generate's docstring.
+            reply = generate_reply(persona, dict(NO_CAPS), system, merged,
+                                   payload.get("conversationId"),
+                                   model_override=model_override, unattended=False,
+                                   ephemeral=True)
             self._send(200, {"reply": reply})
         except Exception as e:
             log(f"/invoke failed: {e}")
