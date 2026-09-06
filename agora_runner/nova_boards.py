@@ -1619,6 +1619,15 @@ def parse_board(markdown):
                 # boards is one today.
                 size = cells[6] if (not done and len(cells) > 6) else ""
                 size = canonical_size(size) or size.strip()
+                # `Milestone` is an eighth column, appended on the same
+                # terms as the three before it: every cell above keeps
+                # its index and both live files parse unchanged on the
+                # day this ships. A blank is **not** defaulted, for the
+                # same reason a blank `Size` is not -- a row nobody has
+                # grouped yet is a real state the ranking has to see,
+                # and every row on both boards is one today.
+                milestone = cells[7] if (not done and len(cells) > 7) else ""
+                milestone = milestone.strip()
                 items.append({
                     "number": number,
                     "title": cells[1],
@@ -1631,6 +1640,7 @@ def parse_board(markdown):
                     "project": project,
                     "size": size,
                     "sizeKey": size_key(size),
+                    "milestone": milestone,
                     "done": done,
                 })
             continue
@@ -1721,6 +1731,15 @@ _PROJECT_HEADING = "Project"
 #: The seventh, on the same terms. Idea #260's spec calls it Size.
 _SIZE_HEADING = "Size"
 
+#: The eighth, on the same terms. Milestone M4 of idea #260's spec: *"a
+#: milestone is a named group of tasks aimed at one maturity increment"*.
+#: It is free text rather than an enum, unlike `Priority`, `Status` and
+#: `Size` -- a milestone's name is a name, and a fixed vocabulary here
+#: would be me deciding in advance what increments a project can have.
+#: The name is scoped to the row's project: two projects may each have a
+#: `Backup` milestone and they are different milestones.
+_MILESTONE_HEADING = "Milestone"
+
 #: The headings this module appends, in column order, starting at the fifth
 #: cell -- the first four are the owner's own and are never renamed. Named
 #: as a sequence rather than as one constant per column because
@@ -1728,12 +1747,14 @@ _SIZE_HEADING = "Size"
 #: every earlier one gets a blank", which was true while exactly one column
 #: was being appended and silently wrong the moment a second was: widening
 #: a four-cell header would have written an unlabelled `Priority` column.
-_APPENDED_HEADINGS = ("Priority", _PROJECT_HEADING, _SIZE_HEADING)
+_APPENDED_HEADINGS = ("Priority", _PROJECT_HEADING, _SIZE_HEADING,
+                      _MILESTONE_HEADING)
 
 #: Where `_APPENDED_HEADINGS` starts, in zero-based cell positions.
 _FIRST_APPENDED = 4
 
-#: How wide a `## Board` row is once it carries a project and a size.
+#: How wide a `## Board` row is once it carries a project, a size and a
+#: milestone.
 _BOARD_WIDTH = _FIRST_APPENDED + len(_APPENDED_HEADINGS)
 
 
@@ -1875,6 +1896,53 @@ def set_row_size(markdown, number, size):
     while len(cells) < _BOARD_WIDTH:
         cells.append("")
     cells[6] = size
+    lines[index] = "| " + " | ".join(cells) + " |"
+    _ensure_board_columns(lines, index)
+    return "\n".join(lines)
+
+
+def set_row_milestone(markdown, number, milestone):
+    """Set one `## Board` row's `Milestone` cell. `None` means not written.
+
+    Milestone M4 of idea #260's picking redesign, and the fourth writer of
+    this exact shape after `set_row_priority`, `set_row_project` and
+    `set_row_size`. The field is mine rather than his -- the spec hands
+    milestone ordering to me by default (*"I want the ability to reorder
+    tasks and milestones but the default is that you do it"*) -- so it has
+    a CLI and no capture-box route.
+
+    `None` has the same two meanings it has on its siblings and a caller
+    cannot tell them apart: no row carries that number on `## Board`, or
+    the row is closed. Both mean the file must not be touched. **A closed
+    row is refused** on the same reasoning `set_row_size` refuses one: the
+    ranking that reads this field only ever ranks open rows, and regrouping
+    finished work changes nothing anybody will read.
+
+    Unlike its three siblings the value is **not** validated against a
+    vocabulary, because there is none -- a milestone name is a name. It is
+    stripped, and a name carrying a `|` is refused, because that character
+    ends a cell and would silently split the row into a wider one.
+
+    `""` clears the cell back to ungrouped, which has to stay reachable:
+    a milestone that turns out to be two milestones is regrouped by first
+    emptying it.
+    """
+    if milestone is None:
+        milestone = ""
+    milestone = str(milestone).strip()
+    if "|" in milestone:
+        return None
+    lines = (markdown or "").split("\n")
+    index, cells = _row_span(lines, number, tables=("board",))
+    if index is None:
+        return None
+    if status_key(cells[2]) in _CLOSED_STATUS_KEYS:
+        return None
+    # Padded up to the new width rather than refused, the same way
+    # `set_row_size` pads a row that predates *its* column.
+    while len(cells) < _BOARD_WIDTH:
+        cells.append("")
+    cells[7] = milestone
     lines[index] = "| " + " | ".join(cells) + " |"
     _ensure_board_columns(lines, index)
     return "\n".join(lines)

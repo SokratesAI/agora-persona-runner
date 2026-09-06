@@ -194,6 +194,15 @@ def open_rows(markdown, board):
             # project -- and they have to be answered off one read of one
             # board or they can disagree.
             "project": (item.get("project") or "").strip(),
+            # The two cells `milestone_ranks` divides one by the other.
+            # Carried for the same reason `project` is: the ranking has to
+            # be computed off one read of one board, and a tier that reads
+            # a field this function drops is a tier that silently does
+            # nothing -- which is exactly what happened on the first run
+            # of M4, and what the end-to-end test now pins.
+            "size": item.get("size") or "",
+            "sizeKey": item.get("sizeKey") or "",
+            "milestone": (item.get("milestone") or "").strip(),
             "slug": slug_for_row(board, item["number"]),
             # Named after his comment, not after the row -- see
             # `slug_for_comment`. `None` on a row nobody is waiting on, so
@@ -316,6 +325,91 @@ def project_ranks(markdown):
             for name, m in meta.items()}
 
 
+#: Job size in whatever unit the divide needs. The ratios are what matter,
+#: not the units: an XL is five S's of work, which is the ordinary reading
+#: of a t-shirt scale and the one the owner used when he asked for it
+#: (*"we might do the smaller ones first"*). An unsized row is absent from
+#: this map on purpose -- see `milestone_ranks` for why it is not defaulted.
+_SIZE_COST = {"s": 1.0, "m": 2.0, "l": 3.0, "xl": 5.0}
+
+#: Cost of delay, the numerator of the divide. **Deliberately not
+#: `len(_RANK) - rank`**, which is the obvious reading of the ratings and
+#: is wrong here: on a linear 4/3/2/1 scale against a 1..5 size scale, a
+#: single trivial Low row scores 2.0 and a three-row Immediately milestone
+#: scores 1.67, so the trivial one wins -- which is the precise failure the
+#: spec names (*"size alone would let a trivial milestone nobody needs jump
+#: ahead of an important large one"*). It fails that way because the
+#: ratings are not linear: Immediately is not twice High, it is the label
+#: that means drop the others. So the numerator is spread over the same
+#: kind of scale as the denominator. An unrated row scores 1 rather than 0
+#: -- zero would make a whole unrated milestone score exactly zero however
+#: small it is, which is a stronger statement than "nobody has rated this".
+_IMPORTANCE = {"immediate": 13.0, "high": 5.0, "medium": 2.0, "low": 1.0,
+               "": 1.0}
+
+
+def milestone_ranks(rows):
+    """Open rows -> `{(project, milestone): rank}`, best first, per project.
+
+    Milestone M4 of `task-prioritization-redesign.md`, and the tier that
+    sits between the project order and the row's own rating. The spec is
+    explicit that this tier is **computed** rather than hand-ordered, and
+    that the formula is real WSJF: *"Rank by whatever importance signal the
+    milestone carries, divided by its rolled-up size ... size alone would
+    let a trivial milestone nobody needs jump ahead of an important large
+    one."*
+
+    Importance is the **best rating any open row in the milestone carries**
+    and size is the **sum** of its rows' sizes -- rolled up from the rows in
+    both cases, which is what the spec asks for on size (*"rolled up from
+    their rows rather than separately guessed"*) and the honest reading of
+    importance: a milestone containing the one thing he called Immediately
+    is an Immediately milestone, and it does not become less urgent by also
+    containing three Low rows. Max on one axis and sum on the other is
+    deliberate rather than an oversight: importance does not accumulate,
+    work does.
+
+    **A milestone with no sized rows at all sorts last**, behind every
+    milestone that has one, and is not given a default size. That is the
+    same rule `project_ranks` applies to an unrated project and `_RANK`
+    applies to an unrated row, for the same reason: an unestimated
+    milestone is one nobody has looked at, which is a reason to size it
+    rather than a reason to work on it. Defaulting it would be inventing
+    the number the divide is most sensitive to.
+
+    **A milestone with some sized rows counts only those.** The alternative
+    -- treating an unsized row as free -- makes a half-estimated milestone
+    look smaller than a fully estimated one, so the ranking would reward
+    not sizing things. Counting only what is known makes it a floor, which
+    is the honest direction to be wrong in.
+
+    Every board is empty of milestones today, so this returns `{}` for the
+    live files and nothing reshuffles on the day it ships -- the same call
+    M1 and M3 made about their own fields.
+    """
+    best = {}
+    for row in rows or []:
+        name = (row.get("milestone") or "").strip()
+        if not name:
+            continue
+        key = ((row.get("project") or "").strip().lower(), name.lower())
+        importance = _IMPORTANCE.get(row.get("priorityKey") or "", 1.0)
+        cost = _SIZE_COST.get(row.get("sizeKey") or "")
+        carried = best.setdefault(key, {"importance": 0.0, "cost": 0.0})
+        carried["importance"] = max(carried["importance"], importance)
+        if cost:
+            carried["cost"] += cost
+    scored = []
+    for key, carried in best.items():
+        cost = carried["cost"]
+        # `(1, 0)` for an unsized milestone: sorted() puts it behind every
+        # scored one whatever its importance, which is the rule above.
+        scored.append((key, (0, -(carried["importance"] / cost))
+                       if cost else (1, 0)))
+    scored.sort(key=lambda pair: (pair[1], pair[0]))
+    return {key: position for position, (key, _) in enumerate(scored)}
+
+
 _DATE_RE = re.compile(r"(\d{2})-(\d{2})\s*$")
 
 
@@ -339,7 +433,7 @@ def age_key(updated):
     return found.group(0) if found else "99-99"
 
 
-def rank(rows, projects=None):
+def rank(rows, projects=None, milestones=None):
     """Best pick first. See the module docstring for why age is the tiebreak.
 
     **`projects` is `project_ranks(projects_markdown)`, and it sits between
@@ -410,6 +504,22 @@ def rank(rows, projects=None):
         # change replaces, wearing the new shape.
         0 if r["priorityKey"] == _SKIP_TO_TOP else 1,
         (projects or {}).get((r.get("project") or "").lower(), len(_RANK)),
+        # **The milestone tier, inside the project the tier above just
+        # chose.** `milestones` is `milestone_ranks(rows)` and passing
+        # nothing keeps every caller's previous ordering, exactly the way
+        # `projects` does -- the site's own project page has already picked
+        # a project and wants the flat list inside it.
+        #
+        # An ungrouped row sorts **behind every grouped one in its own
+        # project** and not behind the whole board: the key is the
+        # (project, milestone) pair, so `len(milestones)` is past the last
+        # milestone anywhere but every row of a better-ranked project has
+        # already been separated by the line above. Same rule as an
+        # unsized milestone and an unrated row -- ungrouped sinks.
+        (milestones or {}).get(
+            ((r.get("project") or "").strip().lower(),
+             (r.get("milestone") or "").strip().lower()),
+            len(milestones or {})),
         _RANK.get(r["priorityKey"], len(_RANK)),
         age_key(r["updated"]),
         0 if r["board"] == "issue" else 1,
@@ -466,7 +576,8 @@ def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
         claims_readable = False
         ledger = {"claims": []}
     apply_claims(rows, live)
-    ranked = rank(rows, project_ranks(projects_markdown))
+    ranked = rank(rows, project_ranks(projects_markdown),
+                  milestone_ranks(rows))
 
     active = []
     for slug, cycle in sorted(live.items(), key=lambda pair: pair[1], reverse=True):
