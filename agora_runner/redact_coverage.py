@@ -73,6 +73,24 @@ names, all base-image, shell or Claude Code harness variables, none of them
 a credential -- so the unreadable `envFrom secretRef` on that pod delivered
 nothing, which is the first evidence about it that is not a shrug.
 
+**A Secret reaches a container two ways and this judged one of them.**
+Everything above reads `os.environ`, so a Secret mounted as a *volume* was
+invisible to all of it -- not badly judged, unjudged, because a file is in
+no process's environment. Both redacting pods mount `nas-ssh-key` at
+`/etc/nas-ssh` and nothing had ever asserted that `redact()` covers it.
+`declared_secret_mounts` reads the other half of the same pod spec --
+`volumes[].secret` joined to the container's `volumeMounts` -- and every
+file under each mount gets the same four verdicts the environment half
+gets, floor included. Measured 2026-09-06 on the bridge pod: one mount, two
+files, the private key masked by the PEM pattern and the public key named
+rather than raised on. **The public-key exception is a format rule, not a
+filename convention**: an OpenSSH public key's first token says it is the
+half meant to be handed out, which is the same kind of declaration every
+pattern in `redact.py` keys off. Anything else unmasked in a Secret raises
+and a person decides. Projected volumes are left out on purpose -- the only
+one here is the kubelet's own ServiceAccount token, which no manifest asked
+for and which the JWT pattern already catches.
+
 This module lives in `agora_runner/` rather than in `tools/` for that
 reason alone: `tools/` is not in the runner image, so a check that could
 only ever run on one of the two pods it is about would print `CANNOT
@@ -84,6 +102,7 @@ can name it.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -137,6 +156,120 @@ def declared_secrets(pods):
                 if ref and (workload, ref) not in unenumerable:
                     unenumerable.append((workload, ref))
     return {k: sorted(n for n in v if n) for k, v in by_workload.items()}, unenumerable
+
+
+def declared_secret_mounts(pods):
+    """`{workload: [(secret, mount_path), ...]}` for every Secret mounted as files.
+
+    A Secret reaches a container two ways and the module above judges one of
+    them. `env[].valueFrom.secretKeyRef` puts it in the environment;
+    `volumes[].secret` puts it on the filesystem, and a file is in no
+    process's environment, so every pass above is blind to it by
+    construction. This is the same declaration, read off the other half of
+    the same pod spec -- still no heuristic, still no list in this file.
+
+    Projected volumes are deliberately left out. The one on both pods is the
+    kubelet's own ServiceAccount token, which no manifest here asked for and
+    which redact() already catches by its JWT shape; including it would make
+    every run report a mount that nobody in this estate chose.
+    """
+    by_workload = {}
+    for pod in pods.get("items") or []:
+        workload = _workload(pod)
+        if workload not in REDACTING_WORKLOADS:
+            continue
+        spec = pod.get("spec") or {}
+        secret_volumes = {}
+        for volume in spec.get("volumes") or []:
+            name = (volume.get("secret") or {}).get("secretName")
+            if volume.get("name") and name:
+                secret_volumes[volume["name"]] = name
+        found = by_workload.setdefault(workload, [])
+        for container in spec.get("containers") or []:
+            for mount in container.get("volumeMounts") or []:
+                secret = secret_volumes.get(mount.get("name"))
+                path = mount.get("mountPath")
+                if secret and path and (secret, path) not in found:
+                    found.append((secret, path))
+    return {k: sorted(v) for k, v in by_workload.items()}
+
+
+#: An OpenSSH public key says in its own first token that it is the half
+#: meant to be handed out. That is a declaration in the material itself, the
+#: same kind of thing every pattern in `redact.py` keys off, and it is the
+#: only reason this file needs any notion of "a secret mount can hold
+#: something public": `nas-ssh-key` carries `id_ed25519` and `id_ed25519.pub`
+#: side by side, and raising forever on the public half would train the eye
+#: to ignore the row. Anything else unmasked in a Secret raises and a person
+#: decides -- which is the right behaviour for an alarm, and is why this is
+#: one format rule rather than a filename convention or an exception list.
+_SSH_PUBLIC_KEY = re.compile(r"^(?:ssh-[a-z0-9-]+|ecdsa-[a-z0-9-]+)\s+[A-Za-z0-9+/=]{20,}")
+
+
+def judge_mounts(mounts, read=None, environ=None):
+    """Sort every file under each declared Secret mount into four verdicts.
+
+    Returns `(masked, too_short, unmasked, public, unreadable)`. `masked` and
+    `unmasked` mirror `judge()` exactly, including the short-value floor: a
+    two-byte file in a Secret is real and masking it would blank an ordinary
+    word out of everything this loop publishes.
+
+    `read` is `(path) -> {relative name: text}` and defaults to the real
+    filesystem, so a test can hand it a mount without writing a key to disk.
+    A mount path that does not exist here is not a pass -- that is the other
+    pod's filesystem, and it comes back as unreadable with a reason.
+
+    `environ` goes to `redact()` for the same reason `judge()` passes it: the
+    value pass looks its literals up in an environment, and a Secret can be
+    mounted as a file *and* set as a variable. Both halves must judge against
+    the same environment or the report contradicts itself.
+    """
+    read = _read_mount if read is None else read
+    masked, too_short, unmasked, public, unreadable = [], [], [], [], []
+    for secret, path in mounts:
+        try:
+            files = read(path)
+        except OSError as exc:
+            unreadable.append((secret, path, type(exc).__name__))
+            continue
+        if files is None:
+            unreadable.append((secret, path, "not mounted here"))
+            continue
+        for name in sorted(files):
+            body = files[name]
+            if body is None:
+                unreadable.append((secret, path + "/" + name, "unreadable"))
+            elif _SSH_PUBLIC_KEY.match(body.strip()):
+                public.append((secret, name))
+            elif redact(body, environ) != body:
+                masked.append((secret, name))
+            elif len(body.strip()) < _MIN_SECRET_LEN:
+                too_short.append((secret, name, len(body.strip())))
+            else:
+                unmasked.append((secret, name, len(body.strip())))
+    return masked, too_short, unmasked, public, unreadable
+
+
+def _read_mount(path):
+    """`{name: text}` for the regular files directly under `path`, or `None`.
+
+    `None` means the path is not on this filesystem, which is the ordinary
+    case for the workload this process is not inside. A file whose bytes are
+    not text reads as `None` in the mapping rather than being skipped, so an
+    unjudgeable file is named instead of counted clean.
+    """
+    if not os.path.isdir(path):
+        return None
+    out = {}
+    for name in os.listdir(path):
+        full = os.path.join(path, name)
+        if not os.path.isfile(full):
+            continue
+        try:
+            out[name] = open(full, "r", encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError):
+            out[name] = None
+    return out
 
 
 def judge(names, environ):
@@ -269,7 +402,7 @@ def read_pods(run=subprocess.run, namespace=NAMESPACE):
 
 
 def report(pods, environ=None, here=None, out=sys.stdout,
-           services=None):
+           services=None, read_mount=None):
     env = os.environ if environ is None else environ
     if pods is None:
         print("CANNOT READ — kubectl could not list pods in " + NAMESPACE
@@ -277,6 +410,7 @@ def report(pods, environ=None, here=None, out=sys.stdout,
                 "which is no instrument rather than no gap.", file=out)
         return 1
     by_workload, unenumerable = declared_secrets(pods)
+    mounts_by_workload = declared_secret_mounts(pods)
     if not by_workload:
         print("CANNOT READ — no pod in " + NAMESPACE + " matched "
               + ", ".join(REDACTING_WORKLOADS)
@@ -287,8 +421,10 @@ def report(pods, environ=None, here=None, out=sys.stdout,
     for workload in sorted(by_workload):
         names = by_workload[workload]
         if workload != here:
+            elsewhere = mounts_by_workload.get(workload) or []
             print(f"CANNOT JUDGE — {workload} declares {len(names)} secret-sourced "
-                  f"variable(s) and only that pod can read their values: "
+                  f"variable(s) and mounts {len(elsewhere)} Secret(s) as files, and "
+                  f"only that pod can read either: "
                   f"{', '.join(names)}. Run `python3 -m tools.redact_coverage` there.",
                   file=out)
             continue
@@ -310,6 +446,30 @@ def report(pods, environ=None, here=None, out=sys.stdout,
                   f"not read.", file=out)
         print(f"{workload}: {len(masked)} of {len(names)} declared secret(s) masked "
               f"({', '.join(masked) or 'none'}).", file=out)
+        mounts = mounts_by_workload.get(workload) or []
+        m_masked, m_short, m_unmasked, m_public, m_unreadable = judge_mounts(
+            mounts, read=read_mount, environ=env)
+        for secret, name, length in m_unmasked:
+            findings += 1
+            print(f"NOT MASKED — {workload}: secret/{secret} mounts {name} as a "
+                  f"file, it is {length} characters, and redact() returns it "
+                  f"unaltered. A file is in no process's environment, so the "
+                  f"value pass above never saw it.", file=out)
+        for secret, name, length in m_short:
+            print(f"NOT JUDGED — {workload}: secret/{secret}'s {name} is {length} "
+                  f"characters, below redact()'s {_MIN_SECRET_LEN}-character floor. "
+                  f"Deliberately not a finding.", file=out)
+        for secret, name in m_public:
+            print(f"NOT A SECRET — {workload}: secret/{secret}'s {name} is an "
+                  f"OpenSSH public key, which says in its own first token that it "
+                  f"is the half meant to be handed out.", file=out)
+        for secret, where, why in m_unreadable:
+            print(f"CANNOT JUDGE — {workload}: secret/{secret} at {where} was not "
+                  f"read ({why}), so nothing under it was swept.", file=out)
+        if mounts:
+            print(f"{workload}: {len(m_masked)} of "
+                  f"{len(m_masked) + len(m_short) + len(m_unmasked)} file(s) in "
+                  f"{len(mounts)} mounted Secret(s) masked.", file=out)
         if services is None:
             print(f"CANNOT JUDGE — {workload}: the Service list is unreadable, so "
                   f"the variables this process holds that the pod spec does not "
