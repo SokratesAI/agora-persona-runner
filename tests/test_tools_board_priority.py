@@ -140,7 +140,7 @@ def test_a_row_that_is_not_there_is_refused(tmp_path, capsys):
 
 
 def test_a_note_is_appended_to_that_rows_write_up(tmp_path):
-    code, path = _run(tmp_path, dated="09-06", note="you asked for this", cycle=1087)
+    code, path = _run(tmp_path, dated="09-07", note="you asked for this", cycle=1087)
     assert code == 0
     details = parse_board(path.read_text(encoding="utf-8"))["details"]
     assert details[260].startswith(parse_board(BOARD)["details"][260])
@@ -157,7 +157,7 @@ def test_a_note_without_a_date_is_refused(tmp_path, capsys):
 
 @pytest.mark.parametrize("bad", ["a | b", "a\nb", " "])
 def test_a_cell_splitting_note_is_refused(tmp_path, bad, capsys):
-    code, path = _run(tmp_path, dated="09-06", note=bad)
+    code, path = _run(tmp_path, dated="09-07", note=bad)
     assert code == 1
     assert path.read_text(encoding="utf-8") == BOARD
     assert "REFUSED" in capsys.readouterr().err
@@ -225,9 +225,50 @@ def test_check_catches_a_rewritten_write_up():
     assert any("was rewritten, not appended to" in p for p in problems)
 
 
-def test_check_passes_the_write_the_cli_actually_makes(tmp_path):
-    _, path = _run(tmp_path, dated="09-06", note="you asked for this", cycle=1087)
-    assert check(BOARD, path.read_text(encoding="utf-8"), 260, "🔴 Immediately", noted=True) == []
+def test_check_passes_the_note_carrying_write_on_a_date_the_row_did_not_have(tmp_path):
+    """The reviewer's finding, pinned. `append_detail_note` stamps `Updated`
+    with `--dated`, and a re-rating carries a *new* date almost every time --
+    the row is re-rated because time has passed. The first `check` excluded
+    only the two rating fields, so it refused this, and every test I had
+    written passed `--dated 09-06` against a row already dated 09-06, which
+    is a positive result guaranteed in advance."""
+    code, path = _run(tmp_path, dated="09-07", note="you asked for this", cycle=1087)
+    assert code == 0
+    text = path.read_text(encoding="utf-8")
+    assert _rows_from(text)[260]["updated"] == "09-07"
+    assert check(BOARD, text, 260, "🔴 Immediately", noted=True, dated="09-07") == []
+
+
+def test_check_refuses_a_date_the_caller_did_not_ask_for():
+    """The forgiveness asserts the new value rather than skipping the field:
+    excluding `updated` outright would let any date through."""
+    after = BOARD.replace(
+        "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
+        "| Redesign the picker | ⚪ Backlog | 01-01 | 🔴 Immediately |",
+    )
+    problems = check(BOARD, after, 260, "🔴 Immediately", noted=True, dated="09-07")
+    assert any("came back updated" in p for p in problems)
+
+
+def test_a_re_rating_without_a_note_may_not_move_the_date():
+    after = BOARD.replace(
+        "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
+        "| Redesign the picker | ⚪ Backlog | 09-07 | 🔴 Immediately |",
+    )
+    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
+    assert any("other than its rating" in p for p in problems)
+
+
+def test_main_actually_refuses_when_check_reports_a_problem(tmp_path, monkeypatch):
+    """The reviewer's second finding: every test drove `check` as a function
+    and nothing proved `main` wires its result into the write path. Deleting
+    the gate left all 33 green. It does not now."""
+    import tools.board_priority as module
+
+    monkeypatch.setattr(module, "check", lambda *a, **k: ["invented problem"])
+    code, path = _run(tmp_path)
+    assert code == 1
+    assert path.read_text(encoding="utf-8") == BOARD
 
 
 def test_the_rating_cell_derives_exactly_the_keys_check_forgives():

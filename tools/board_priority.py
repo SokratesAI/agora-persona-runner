@@ -35,10 +35,17 @@ closed, both of which `set_row_priority` refuses by returning `None`; a
 a cell or a row; and `check` refusing the write when anything other than
 that one rating moved.
 
-Unlike a status move there is nothing here that is *allowed* to change a
-second cell. A re-rating changes the rating and nothing else, so `check`
-is the tightest of the three board writers: every row including the target
-must come back identical apart from `priority`.
+A re-rating changes the rating and nothing else -- **unless it carries a
+`--note`**, because `append_detail_note` stamps the row's `Updated` cell
+with the same `--dated` it writes into the write-up. That is deliberate
+there and it is the ordinary case here: a row is re-rated *because* time
+has passed since it was last touched, so `--dated` almost always differs
+from the cell. The first version of `check` did not know that and refused
+every real invocation of the flag pair; the reviewer found it, and my own
+fixture hid it, because the fixture's row was already dated the day I
+passed. `check` therefore forgives `updated` on the target row only when a
+note was appended, and only to exactly the date given -- everything else,
+on every row including the target, must come back identical.
 """
 
 import argparse
@@ -88,12 +95,16 @@ def resolve_priority(value):
     return resolved or None
 
 
-def check(before, after, number, priority, noted):
+def check(before, after, number, priority, noted, dated=None):
     """Refuse the write unless that one rating moved and nothing else did.
 
-    Same shape and same reasoning as `tools.board_status.check`, minus its
-    one forgiveness: a status move may blank the target's rating, and a
-    re-rating may not change anything but the rating.
+    Same shape and same reasoning as `tools.board_status.check`. It has one
+    forgiveness of its own and it is not optional: `append_detail_note`
+    stamps `Updated` with `dated`, so when `noted` is true the target row's
+    `updated` may move, and only to `dated`. Asserting the new value rather
+    than skipping the field is what keeps this from becoming a hole -- a
+    plain exclusion would let any date through, including one a caller
+    never asked for.
     """
     problems = []
     old = parse_board(before)
@@ -115,8 +126,16 @@ def check(before, after, number, priority, noted):
             # `parse_board` derives `priorityKey` from the same cell, so
             # both move together or the parser is broken; comparing the
             # rest is what says nothing *else* moved.
-            was = {k: v for k, v in old_by_number[number].items() if k not in _RATING_KEYS}
-            now = {k: v for k, v in moved.items() if k not in _RATING_KEYS}
+            forgiven = set(_RATING_KEYS)
+            if noted:
+                if moved.get("updated") != dated:
+                    problems.append(
+                        f"#{number} came back updated {moved.get('updated')!r}, "
+                        f"asked for {dated!r}"
+                    )
+                forgiven.add("updated")
+            was = {k: v for k, v in old_by_number[number].items() if k not in forgiven}
+            now = {k: v for k, v in moved.items() if k not in forgiven}
             if was != now:
                 problems.append(f"#{number} changed something other than its rating")
 
@@ -230,7 +249,9 @@ def main(argv=None):
             return 1
         after = noted
 
-    problems = check(before, after, args.number, priority, noted=bool(args.note))
+    problems = check(
+        before, after, args.number, priority, noted=bool(args.note), dated=args.dated
+    )
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
