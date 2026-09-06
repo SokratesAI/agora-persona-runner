@@ -126,6 +126,29 @@ def span(stranded):
     return f"Cycle {min(seen)} to Cycle {max(seen)}"
 
 
+def bullet_bytes(body):
+    """Bytes of top-level `- ` lines in a write-up body.
+
+    Top-level only: a `  - ` nested under a numbered step is part of the
+    prose around it, and counting it would make an ordinary structured
+    write-up look like a capture pile.
+    """
+    return sum(len(line) + 1 for line in body.split("\n")
+               if line.startswith("- "))
+
+
+def buried(details):
+    """`[(number, bullet bytes, body bytes)]` for majority-bullet write-ups.
+
+    See `writeups` for the defect and for the measurement behind
+    "majority". Sorted biggest first, so the report leads with the row
+    that is actually costing the file its size.
+    """
+    found = [(n, bullet_bytes(body), len(body)) for n, body in details.items()
+             if bullet_bytes(body) * 2 > len(body)]
+    return sorted(found, key=lambda row: -row[1])
+
+
 def writeups(live):
     """How much of a live capture file is `# Details` write-up, or `None`.
 
@@ -154,6 +177,34 @@ def writeups(live):
 
     `None` when the file has no write-ups at all, which is a different answer
     from zero bytes of them and must not print as one.
+
+    **`buried` is the third thing this measures and it is a different defect
+    from the other two.** `prompt.md` step 6 warns that a `vault_tool.py
+    append` without the `'## Entries'` marker lands at the very bottom of the
+    document. What nothing had said is where the bottom of one of these files
+    now *is*: below `## Entries`, below `## Retired`, below `## Board`, inside
+    `# Details` -- so an unmarked append lands **inside the last row's
+    write-up**. There it is invisible three times over. `parse_notes` reads
+    captures only from the `## Entries` section, so it never renders as a
+    capture; `roll_captures` reasons about the same section, so it never
+    rolls; and the page draws it as that row's body, attributing a pile of
+    unrelated cycles to one issue. `stranded_bullets` above catches the same
+    append landing *above* the marker and cannot see this one, because
+    `_body` splits on the marker and this is on the far side of it.
+
+    Measured 2026-09-06 on the two live files, which is why the rule is
+    majority-by-bytes rather than a number picked for comfort: 29 write-ups
+    exist, 27 of them are between 0% and 16.5% top-level bullet bytes, and
+    two are **98.0%** (`issues.md` row #5, 25,062 of 25,576) and **94.0%**
+    (`ideas.md` row #3, 6,970 of 7,417). There is nothing in the gap. Both
+    are the last `### #N` block in their own file, which is what the
+    end-of-file append predicts.
+
+    A genuinely bullet-shaped write-up would fire this, and that is the
+    accepted cost rather than an oversight: these are my own two files, the
+    finding names the row, and the answer is to write that row's body as
+    prose -- not to loosen the rule until it stops catching the thing it was
+    built for.
     """
     board = parse_board(live)
     sizes = {n: len(body) for n, body in board["details"].items()}
@@ -167,6 +218,7 @@ def writeups(live):
         "done_bytes": sum(sizes[n] for n in done),
         "done_count": len(done),
         "largest": (largest, sizes[largest]),
+        "buried": buried(board["details"]),
     }
 
 
@@ -292,9 +344,14 @@ def check(pairs=PAIRS, fetch=_fetch):
             continue
         stranded, refusal, owed = inspect(live, archive)
         weights = weight(live, archive)
-        if owed and not stranded and not refusal and steady(weights):
+        # A buried capture pile is a defect in the document, not a roll that
+        # is owed, so it must never be filed under `held` -- that bucket
+        # prints and deliberately does not raise.
+        entombed = (weights["writeups"] or {}).get("buried") or []
+        if owed and not stranded and not refusal and not entombed \
+                and steady(weights):
             held.append((live_path, len(live), weights))
-        elif stranded or refusal or owed:
+        elif stranded or refusal or owed or entombed:
             findings.append((live_path, archive_path, len(live), stranded,
                              refusal, owed, weights))
         else:
@@ -332,6 +389,15 @@ def _report_weight(size, weights, out):
     number, largest = marks["largest"]
     print(f"    The largest single write-up is row #{number} at "
           f"{largest:,} bytes.", file=out)
+    for row, bullets, body in marks.get("buried") or []:
+        print(f"    BURIED CAPTURES — row #{row}'s write-up is {bullets:,} of "
+              f"{body:,} bytes of top-level bullets, which is a capture pile "
+              "that an unmarked append dropped at end-of-file, not a "
+              "write-up.", file=out)
+        print("    They render as that row's body, `parse_notes` never shows "
+              "them as captures and no roller can move them. Move them into "
+              "the archive file by hand and leave the row's own prose.",
+              file=out)
 
 
 NOT_NEWEST_FIRST = "not newest-first"
@@ -441,10 +507,11 @@ def report(findings, unreadable, clean, held=(), out=sys.stdout):
         _report_weight(size, weights, out)
     for path in unreadable:
         print(f"COULD NOT READ — {path}", file=out)
-    tail_note = ("    Not judged: captures below the section — '## Retired', "
-                 "'## Board' and '# Details' hold bullets legitimately, so a "
-                 "capture appended at end-of-file is indistinguishable from "
-                 "them here.")
+    tail_note = ("    Partly judged below the section: a '# Details' "
+                 "write-up that is majority top-level bullets is reported as "
+                 "BURIED CAPTURES above. '## Retired' and '## Board' still "
+                 "hold bullets legitimately, so a capture appended into "
+                 "either of those is indistinguishable from them here.")
     if findings:
         print(f"{len(findings)} capture file(s) need a hand. "
               f"Swept {len(findings) + len(clean) + len(unreadable) + len(held)}"
