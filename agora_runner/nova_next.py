@@ -30,7 +30,7 @@ import re
 
 from agora_runner.nova_boards import (
     BLOCKED_STATUS, _CLOSED_STATUS_KEYS, boarded_capture_rows,
-    capture_match_key, is_relayed, parse_board,
+    capture_match_key, is_relayed, parse_board, parse_project_meta,
     near_miss_done_marker, split_capture_done,
     split_capture_priority, status_key,
     unanswered_comment_bodies,
@@ -266,6 +266,40 @@ def apply_claims(items, live, my_cycle=None):
     return items
 
 
+#: The rating that means "ahead of the project order", not "the most
+#: urgent row inside its project". The redesign spec calls this tier
+#: skip-to-top and says it sits above the ordered project list; today the
+#: only lever that exists for it is the row's own Immediately tag, and the
+#: spec says so in as many words -- *"the row-level Immediately tag is the
+#: real, working lever today"*. So the key below reads that tag rather
+#: than inventing a second field for a mechanism nobody can set yet.
+_SKIP_TO_TOP = "immediate"
+
+
+def project_ranks(markdown):
+    """`projects.md` -> `{lowercased project name: rank}`, best first.
+
+    The owner rated his projects on 2026-09-01 through the app's project
+    picker and **nothing in the picking code has ever read the file.** A
+    cycle ranked purely on the row's own tag, flattened across every
+    project, so a Medium row in Marcus (which he rates Immediately) and a
+    Medium row in a project he rates Low competed as equals. He named that
+    disconnect himself as the reason for the redesign in
+    `projects/sokrates/projects/nova/task-prioritization-redesign.md`, and
+    this is that note's milestone M1.
+
+    An unrated project sorts **last**, not first, which is the same rule
+    `_RANK` already applies to an unrated row and for the same reason: a
+    project with no row in that file is one nobody has looked at, which is
+    a reason to rate it rather than a reason to work on it ahead of one he
+    called Immediately. It is deliberately not the same as Low -- the
+    file's own contract line says so -- but for ordering there is nowhere
+    below Low to put it.
+    """
+    return {name: _RANK.get(meta["priorityKey"], len(_RANK))
+            for name, meta in parse_project_meta(markdown or "").items()}
+
+
 _DATE_RE = re.compile(r"(\d{2})-(\d{2})\s*$")
 
 
@@ -289,8 +323,17 @@ def age_key(updated):
     return found.group(0) if found else "99-99"
 
 
-def rank(rows):
+def rank(rows, projects=None):
     """Best pick first. See the module docstring for why age is the tiebreak.
+
+    **`projects` is `project_ranks(projects_markdown)`, and it sits between
+    the skip-to-top tier and the row's own rating.** That placement is the
+    redesign spec's picking order, not a new opinion: expedite, then
+    skip-to-top, then the project order, then the row inside it. Passing
+    nothing keeps the flat cross-project ranking every caller had before,
+    which is what the site's own project page wants -- it has already
+    picked the project, so ordering by project inside it would order
+    nothing.
 
     **An unanswered comment outranks every rating**, including a 🔴 on
     another row. `prompt.md` step 1c already says why in the general
@@ -344,6 +387,13 @@ def rank(rows):
         0 if r.get("waiting") and not r.get("replyHeldBy")
         and not r.get("relayed") else 1,
         1 if r.get("statusKey") == _BLOCKED else 0,
+        # Skip-to-top: ahead of the project order, which is the whole of
+        # what the tier means. A row he has called Immediately is one he
+        # wants next regardless of which project it belongs to, and
+        # ranking it inside its project would be the flat behaviour this
+        # change replaces, wearing the new shape.
+        0 if r["priorityKey"] == _SKIP_TO_TOP else 1,
+        (projects or {}).get((r.get("project") or "").lower(), len(_RANK)),
         _RANK.get(r["priorityKey"], len(_RANK)),
         age_key(r["updated"]),
         0 if r["board"] == "issue" else 1,
@@ -351,7 +401,8 @@ def rank(rows):
     ))
 
 
-def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5):
+def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
+                 projects_markdown=""):
     """What a cycle waking up now would take, in the order it would take it.
 
     Three lists, and the order between them is `prompt.md` step 2's, not
@@ -365,6 +416,13 @@ def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5):
     are holding this minute, so a page built from it shows work in
     flight rather than work finished. A stale claim is not live and is
     left out, which is `held_by`'s own rule and not re-decided here.
+
+    `projects_markdown` is `projects.md`, his own rating of the projects
+    themselves, and it orders the board between the skip-to-top tier and
+    the row rating -- see `rank`. Passing nothing is the flat ranking this
+    function had before, so a caller that has not got the file still gets
+    an answer rather than an exception; the tool that prints this for a
+    cycle says out loud when it could not read it.
 
     `projects` is the same ranked rows grouped by the `Project` cell,
     highest-ranked row first, so "which project is active" is answered by
@@ -392,7 +450,7 @@ def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5):
         claims_readable = False
         ledger = {"claims": []}
     apply_claims(rows, live)
-    ranked = rank(rows)
+    ranked = rank(rows, project_ranks(projects_markdown))
 
     active = []
     for slug, cycle in sorted(live.items(), key=lambda pair: pair[1], reverse=True):

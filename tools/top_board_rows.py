@@ -87,14 +87,15 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, is_relayed, parse_board, status_key, unanswered_comment_bodies,
+    BOARD_PATHS, PROJECT_META_PATH, is_relayed, parse_board,
+    parse_project_meta, status_key, unanswered_comment_bodies,
 )
 # The ranking itself lives in `agora_runner` now, not here. The site had to
 # be able to import it and could not: `tools/` is not in the image. Same
 # functions, one definition -- see `nova_next`'s docstring.
 from agora_runner.nova_next import (
     _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims, open_rows,
-    rank, row_slug, unboarded_captures,
+    project_ranks, rank, row_slug, unboarded_captures,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_claims import (
@@ -130,6 +131,11 @@ IDEAS_PATH = BOARD_PATHS["ideas"]["edvard"]
 # above come from `BOARD_PATHS`: a hand-typed copy of a path that has moved
 # once will be wrong the next time it moves.
 NOTES_PATH = CAPTURE_TARGETS["notes"]
+
+# His own rating of the projects themselves, written by the app's project
+# picker. Imported rather than spelled again for `BOARD_PATHS`' reason: a
+# hand-typed copy of a path that has moved once will be wrong the next time.
+PROJECTS_PATH = PROJECT_META_PATH
 
 
 
@@ -173,6 +179,30 @@ def fetch_claims(path=CLAIMS_PATH):
     rather than absent**, and a cycle that reads a clean board while another
     cycle holds every row on it is the exact duplication this is here to
     stop. So they are separated, and only the second one is said out loud.
+    """
+    try:
+        done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return "", False
+    if done.returncode != 0:
+        return "", False
+    if done.stdout.lstrip().startswith("[not found:"):
+        return "", True
+    return done.stdout, True
+
+
+def fetch_projects(path=PROJECTS_PATH):
+    """`(markdown, readable)` for `projects.md`.
+
+    Split the same way `fetch_claims` is, and for the same reason: absent
+    and unreadable look identical through `_fetch` and mean opposite
+    things here. **Absent is a legitimate state** -- the file is written
+    whole on the first rating, so before he has rated anything there is
+    nothing to read and a flat ranking is the correct answer. Unreadable
+    means the project order silently is not being applied, and a top row
+    chosen without it is a different row from the one this tool is meant
+    to name, so that one is said out loud.
     """
     try:
         done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
@@ -268,7 +298,26 @@ def closed_rows_waiting(markdown, board):
         and item["number"] in waiting]
 
 
-def _line(row):
+def _project_tag(row, meta):
+    """`Marcus (project 🔴 Immediately)  `, ahead of the row's own rating.
+
+    Ahead of it because it is ahead of it in the sort, which is the rule
+    `_line` already follows for the unanswered-comment mark. Both ratings
+    are printed, each labelled, because the whole point of reading
+    `projects.md` is that a Medium row can now outrank a High one and a
+    line that showed only the row's own tag would look like a bug.
+
+    An unrated project says so rather than printing nothing: it sorts last
+    and a cycle should be able to see that is why.
+    """
+    name = (row.get("project") or "").strip()
+    if not name:
+        return ""
+    rated = (meta or {}).get(name.lower(), {}).get("priority")
+    return f"{name} (project {rated or 'unrated'})  "
+
+
+def _line(row, project_meta=None):
     rating = row["priority"] or "(unrated)"
     # Ahead of the rating, because it is ahead of it in the sort. A marker
     # that explains the order is worth more than one appended as a footnote
@@ -293,7 +342,8 @@ def _line(row):
     # taking the row needs to be able to see which is which.
     reply = (_reply_claim(row)
              if row.get("waiting") and not row.get("replyHeldBy") else "")
-    return (f"{row['board']} #{row['number']}  {waiting}{rating}  {row['status']}"
+    return (f"{row['board']} #{row['number']}  {waiting}"
+            f"{_project_tag(row, project_meta)}{rating}  {row['status']}"
             f"  (updated {row['updated']})  {row['title']}"
             f"{_claim_tag(row)}{reply}")
 
@@ -496,7 +546,8 @@ def _claim_footer(rows, captures, claims_readable):
     return out
 
 
-def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True):
+def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
+           projects_markdown="", projects_readable=True):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -533,18 +584,30 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         out.append("")
         out.extend(_capture_board_help(captures))
         out.append("")
-    ranked = rank(rows)
+    # Parsed once here rather than passed in twice: the ranks order the
+    # list and the labels explain the order on the line, and reading them
+    # from two different parses of two different reads is how a page ends
+    # up disagreeing with itself.
+    project_meta = parse_project_meta(projects_markdown or "")
+    ranked = rank(rows, project_ranks(projects_markdown))
     if not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
     else:
         header = ("TOP OF EDVARD'S BOARD — below the captures above:" if captures else
                   "TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:")
         out.append(header)
-        out.append("  -> " + _line(ranked[0]))
+        if not projects_readable:
+            # Not a `COULD NOT READ` and not exit 1: no row is missing from
+            # this list. What is missing is the order between projects, and
+            # a top row picked without it is a different row from the one
+            # this tool exists to name, so it is said rather than assumed.
+            out.append("  ⚠ PROJECTS.MD UNREADABLE — this ranking is flat across "
+                       "projects, which is the old behaviour, not his order.")
+        out.append("  -> " + _line(ranked[0], project_meta))
         rest = ranked[1:1 + runners_up]
         if rest:
             out.append("  next:")
-            out.extend("     " + _line(r) for r in rest)
+            out.extend("     " + _line(r, project_meta) for r in rest)
     # Every waiting row, not just the ones that fit in the runners-up window.
     # Answering him is cheap and the list is short; a row that is waiting and
     # ranked fifth is exactly the one that goes unanswered for three days.
@@ -621,7 +684,7 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         out.append(f"  {len(blocked)} row(s) ranked down as blocked on Edvard. "
                    "Nothing for a cycle to build on the row(s) listed here — "
                    "this is not a verdict on the ranking above:")
-        out.extend("     " + _line(r) for r in blocked)
+        out.extend("     " + _line(r, project_meta) for r in blocked)
         out.append("  If one is actually actionable now, set its status back.")
     out.extend(_claim_footer(ranked, captures, claims_readable))
     return "\n".join(out)
@@ -637,6 +700,8 @@ def main(argv=None):
     # passes for a reason that has nothing to do with what it asserts.
     ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
     ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
+    ap.add_argument("--projects",
+                    help="local projects.md instead of a vault fetch")
     ap.add_argument("--cycle", type=int,
                     help="your own cycle number, so your own claims are not "
                          "reported back to you as somebody else's")
@@ -707,8 +772,16 @@ def main(argv=None):
         apply_finished(group, finished)
         apply_progress(group, progressed)
 
+    if args.projects:
+        with open(args.projects, encoding="utf-8") as fh:
+            projects_md, projects_readable = fh.read(), True
+    else:
+        projects_md, projects_readable = fetch_projects()
+
     print(render(rows, runners_up=args.runners_up, captures=captures,
-                 closed_waiting=closed_waiting, claims_readable=claims_readable))
+                 closed_waiting=closed_waiting, claims_readable=claims_readable,
+                 projects_markdown=projects_md,
+                 projects_readable=projects_readable))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")

@@ -12,7 +12,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 `nova_comments`, which do no I/O at all; this module is only the fetch.
 """
 
-from agora_runner.nova_boards import BOARD_PATHS
+from agora_runner.nova_boards import BOARD_PATHS, PROJECT_META_PATH
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_catalog import CATALOG_PATH
 from agora_runner.nova_recap import RECAP_PATH
@@ -231,6 +231,24 @@ def claims_ledger_json():
     identical and mean opposite things.
     """
     return vault_read_path(CLAIMS_PATH) or ""
+
+
+def project_meta_markdown():
+    """`projects.md`, raw -- his rating of the projects themselves.
+
+    Fourth small file on this page and the one that decides the order
+    between projects; `nova_next.rank` reads it between the skip-to-top
+    tier and the row's own rating.
+
+    `""` when the document does not exist, and here that really is the
+    same as empty: the file is written whole by the app's project picker
+    on the first rating, so before he has rated anything there is nothing
+    to order by and the flat ranking is the right answer. The tool that
+    prints this for a cycle draws the absent/unreadable distinction,
+    because it talks to the vault through a subprocess that can fail; this
+    call cannot tell the two apart and does not pretend to.
+    """
+    return vault_read_path(PROJECT_META_PATH) or ""
 
 
 def edvard_board_markdown(name):
