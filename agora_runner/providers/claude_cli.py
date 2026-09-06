@@ -68,8 +68,7 @@ import base64
 import json
 
 from agora_runner.config import (CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN,
-                                 CLAUDE_CLI_CONCURRENT, NOVA_PERSONA_ID,
-                                 RUNNER_SELF_URL)
+                                 CLAUDE_CLI_CONCURRENT, RUNNER_SELF_URL)
 from agora_runner.log import log
 from agora_runner.http_util import http_json, fetch_attachment_bytes
 from agora_runner.tool_activity import grant as grant_tool_activity, revoke as revoke_tool_activity
@@ -112,23 +111,22 @@ def _bridge_attachments(message):
 def _bridge_persona_id(persona):
     """Which persona to tell the bridge about, for the memory pin only.
 
-    Every persona but one is itself. Nova is the exception, and it is not a
-    special case for its own sake: the bridge decides Nova's memory
-    directory from the *message*, not from an id -- `is_cycle_opening`
-    matches the heartbeat text, and a cycle gets `nova-memory`. But Nova is
-    also an ordinary Agora persona with an ordinary id, and a turn addressed
-    to it that is not a heartbeat -- the owner replying in a live Nova
-    conversation -- does not match that text. Sending the id on that turn
-    would pin `persona-memory/<nova id>`: a second, working memory that no
-    cycle ever reads and that never sees a cycle's notes, so Nova's memory
-    would silently split in two on the phrasing of the triggering message.
-    Sending nothing keeps that turn exactly as inert as it was before the
-    field existed, which is the honest state until one directory can serve
-    both -- the bridge would have to be told which id is Nova's, and that is
-    configuration this change does not need.
+    Every persona is itself, Nova included. Nova used to be excepted here
+    and sent nothing, because the bridge picked its memory directory off the
+    *message* -- `is_cycle_opening` matches the heartbeat text, so a cycle
+    got `nova-memory` -- and sending an id on a non-heartbeat turn would have
+    pinned `persona-memory/<nova id>` instead: a second working memory that
+    no cycle reads. That split is gone. The bridge now knows which id is
+    Nova's (`quota.NOVA_PERSONA_ID`) and resolves it to the same
+    `nova-memory` directory a cycle gets, so a live Nova conversation and a
+    heartbeat write one brain -- which is what idea #186 asks for: "talking
+    to Nova anywhere should feel like talking to the same person".
+
+    Ordering: the bridge half has to be live first. A runner that sends the
+    id to a bridge that predates that constant is exactly the split this
+    docstring used to describe, so do not ship this ahead of it.
     """
-    persona_id = (persona or {}).get("id") or ""
-    return "" if persona_id == NOVA_PERSONA_ID else persona_id
+    return (persona or {}).get("id") or ""
 
 
 def claude_cli_generate(model_id, thinking, system, history, caps, persona, conversation_id,

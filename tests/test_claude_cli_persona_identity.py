@@ -56,16 +56,24 @@ def test_a_persona_with_no_id_sends_an_empty_string_not_null(persona):
     assert sent["persona_id"] == ""
 
 
-def test_nova_sends_no_persona_id_so_its_memory_does_not_split():
-    """Nova is an ordinary persona with an ordinary id, and the bridge picks
-    its memory directory off the heartbeat text rather than off an id. A
-    non-heartbeat turn addressed to Nova -- the owner replying in a live Nova
-    conversation -- would therefore be pinned to `persona-memory/<nova id>`,
-    a second working memory that no cycle reads and that never sees a
-    cycle's notes. Sending nothing leaves that turn as inert as it was
-    before this field existed."""
+def test_nova_sends_its_own_id_so_a_live_chat_reaches_the_cycle_memory():
+    """Idea #186: one brain across every surface.
+
+    A turn addressed to Nova that is not a heartbeat -- the owner replying in
+    a live Nova conversation -- does not match `is_cycle_opening`, so the
+    bridge has nothing but this field to key a memory directory on. It used
+    to be blank for Nova, which meant a live chat turn got the CLI's
+    per-working-directory default: a fresh empty directory on every
+    concurrent slot, and nothing a cycle would ever read. The bridge now maps
+    Nova's id to the same `nova-memory` directory a cycle gets, so the id has
+    to actually be sent.
+
+    This is the half that must not ship ahead of the bridge half: against an
+    older bridge the same id derives `persona-memory/<nova id>` and splits
+    the brain in two, which is the failure the previous version of this test
+    was guarding."""
     from agora_runner.config import NOVA_PERSONA_ID
     sent = _send({"name": "Nova", "id": NOVA_PERSONA_ID})
-    assert sent["persona_id"] == ""
+    assert sent["persona_id"] == NOVA_PERSONA_ID
     other = _send({"name": "Vergil", "id": "cccccccc-0000-0000-0000-000000000000"})
     assert other["persona_id"] == "cccccccc-0000-0000-0000-000000000000"
