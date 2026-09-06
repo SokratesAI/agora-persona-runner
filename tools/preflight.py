@@ -161,6 +161,7 @@ CHECKS = (
     "memory_headroom",
     "node_memory",
     "limit_headroom",
+    "cpu_throttle",
     "oom_rank",
     "oom_history",
     "disk_health",
@@ -259,6 +260,10 @@ SUBJECT = {
     #: has left of its *own* limit, which is what killed grafana on a node that
     #: had 4.8GiB free at the time.
     "limit_headroom":    ("on-box",  "each container against its own memory limit"),
+    #: and this one reads each container against its own *CPU* limit, which no
+    #: usage figure can express: pinned at the limit and using half of it both
+    #: read as a number below a ceiling.
+    "cpu_throttle":      ("on-box",  "each container against its own CPU limit"),
     "oom_rank":          ("on-box",  "every node's kernel kill order"),
     "oom_history":       ("on-box",  "every node's own kernel log"),
     "disk_health":       ("on-box",  "every node's own disk, over its kubelet"),
@@ -320,6 +325,7 @@ CADENCE_HOURS = {
     "crossplane_health": 0.0,
     "alerts": 0.0,
     "limit_headroom": 0.0,
+    "cpu_throttle": 0.0,
     "node_memory": 0.0,
     "oom_history": 0.0,
     # Every sweep -- the loop itself, and `cadence_control` *acts* on a burn
