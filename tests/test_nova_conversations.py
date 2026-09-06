@@ -37,7 +37,12 @@ def _fakes(conversations=None, messages=None, personas=None, create_id="c-new",
 
     def fake_get(path):
         calls.append(("GET", path, None))
-        if path == "/conversations":
+        if path in ("/conversations", "/conversations?active=true"):
+            # Both spellings answer the same rows on purpose. The route
+            # really does filter on `!archived` and nothing else, so a fake
+            # that quietly dropped archived rows for the `active=true`
+            # spelling would make the "an older Agora answers with
+            # everything" test below unable to fail.
             return list_status, {"conversations": conversations or []}
         if path == "/personas":
             return 200, {"personas": personas or []}
@@ -320,7 +325,7 @@ def _manage_fakes(status=200, body=None, folders=None, folder_status=200):
         calls.append(("GET", path, None))
         if path == "/folders":
             return folder_status, {"folders": folders or []}
-        if path == "/conversations":
+        if path.startswith("/conversations"):
             return 200, {"conversations": []}
         if path == "/models":
             return 200, {"models": MODEL_CATALOG}
@@ -445,7 +450,7 @@ def test_the_listing_carries_folders_and_each_row_s_folder_id():
         folders=[{"id": "f-2", "name": "Zebras"}, {"id": "f-1", "name": "apples"}])
 
     def listing(path):
-        if path == "/conversations":
+        if path.startswith("/conversations"):
             return 200, {"conversations": [
                 {"id": "c-1", "name": "One", "folderId": "f-1"},
                 {"id": "c-2", "name": "Two"},
@@ -465,7 +470,7 @@ def test_an_unreadable_folder_list_still_returns_every_conversation():
     fake_get, _internal, _public, _calls = _manage_fakes(folder_status=500)
 
     def listing(path):
-        if path == "/conversations":
+        if path.startswith("/conversations"):
             return 200, {"conversations": [{"id": "c-1", "name": "One"}]}
         return fake_get(path)
 
@@ -973,3 +978,47 @@ def test_model_choice_asks_agora_nothing_without_a_conversation():
     (payload, calls) = _run(lambda: convs.model_choice(""))
     assert payload == {"model": "", "models": [], "found": False}
     assert calls == []
+
+
+def test_the_listing_asks_agora_for_active_rows_only():
+    """His issue #141: the sidebar list is slow every time it is opened.
+
+    `agora#86` added `?active=true`, which filters on `!archived` -- the
+    same predicate this module already applied after the fetch. Measured
+    against the live store 2026-09-06: 1,083 rows / 639,759 bytes /
+    1.26-1.73s unfiltered against 53 rows / 29,637 bytes / 0.31-0.85s
+    filtered, and the two id sets are equal. So 95% of that payload was
+    fetched, parsed and discarded on every open.
+    """
+    (_, calls) = _run(convs.conversations, conversations=[LIVE_ROW])
+    assert ("GET", "/conversations?active=true", None) in calls
+    assert ("GET", "/conversations", None) not in calls
+
+
+def test_model_choice_still_reads_the_unfiltered_listing():
+    """The one caller that must NOT filter, and the reason is asymmetric.
+
+    `model_choice` looks one conversation up by id, and Agora has no
+    `GET /conversations/<id>`. Ask the filtered route about an archived
+    thread and it answers `found: False`, which the page draws as "that
+    thread is gone" -- the exact wrong answer its own docstring is about.
+    Being slow there costs a page he opened; being wrong costs the answer.
+    """
+    archived = dict(LIVE_ROW, id="c-old", archived=True, model="claude-cli:claude-opus-5")
+    (payload, calls) = _run(lambda: convs.model_choice("c-old"), conversations=[archived])
+    assert ("GET", "/conversations", None) in calls
+    assert payload["found"] is True
+    assert payload["model"] == "claude-cli:claude-opus-5"
+
+
+def test_an_archived_row_is_still_dropped_when_agora_ignores_the_filter():
+    """The client-side skip stays, because the query parameter is a request.
+
+    An Agora older than agora#86 ignores an unknown query parameter and
+    answers with the whole store. If the skip had been deleted as
+    "now redundant", a rollback of the store in front of this page would
+    put 1,030 archived threads in his sidebar and nothing here would fail.
+    """
+    archived = dict(LIVE_ROW, id="c-old", archived=True)
+    (payload, _) = _run(convs.conversations, conversations=[LIVE_ROW, archived])
+    assert [r["id"] for r in payload["conversations"]] == ["c-1"]
