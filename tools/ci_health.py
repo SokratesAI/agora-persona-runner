@@ -98,6 +98,8 @@ import argparse
 import calendar
 import concurrent.futures
 import math
+import base64
+import binascii
 import json
 import subprocess
 import sys
@@ -1189,6 +1191,112 @@ PAIRED_EVENT_RATIO = 0.7
 PAIRING_SAMPLE_RUNS = 100
 
 
+def _strip_yaml_comment(line):
+    """`line` with a trailing `#` comment removed, by YAML's own rule.
+
+    A `#` only opens a comment at the start of the line or after whitespace,
+    which is why this is not `line.split("#")[0]`. It does not track quoting,
+    so a `#` inside a quoted scalar preceded by a space would be cut -- no
+    trigger name contains one, and the alternative is a YAML parser for two
+    key names.
+    """
+    out = []
+    for i, ch in enumerate(line):
+        if ch == "#" and (i == 0 or line[i - 1].isspace()):
+            break
+        out.append(ch)
+    return "".join(out)
+
+
+def declared_triggers(text):
+    """The event names one workflow file's `on:` block declares today.
+
+    The whole point of reading the file rather than trusting the run history:
+    a run row is a record of a trigger that fired, and a trigger that has been
+    deleted keeps its runs. `platform-config` dropped `pull_request` from
+    `checks.yml` at 21:16 Oslo on 2026-09-05 (#719) and the newest hundred
+    runs still read 51 push against 48 pull-request the next morning, because
+    one hundred runs there is about thirty-five hours. So `_pairing_lines`
+    went on naming "drop one of the two triggers" as this repo's lever for
+    every sweep after the lever had been taken -- and `_older_half`'s own
+    docstring, in this same module, already named that merge as the thing
+    that changed. An instrument that recommends a merged fix costs a cycle
+    its window.
+
+    `on:` is the one YAML key that cannot be read with a YAML parser without
+    care -- YAML 1.1 resolves the bare word `on` to the boolean `True` -- so
+    this scans the block instead, and handles the three shapes a workflow
+    actually uses: a mapping under `on:`, a flow list `on: [push, pull_request]`,
+    and a bare `on: push`. Returns an empty set when there is no `on:` block
+    it can find, which the caller treats as unreadable rather than as "no
+    triggers".
+    """
+    lines = text.splitlines()
+    for i, raw in enumerate(lines):
+        key = _strip_yaml_comment(raw)
+        stripped = key.strip()
+        if not stripped.split(":")[0].strip().strip("\'\"") == "on":
+            continue
+        if ":" not in stripped or raw[:1].isspace():
+            continue
+        inline = stripped.split(":", 1)[1].strip()
+        if inline:
+            return {part.strip().strip("\'\"")
+                    for part in inline.strip("[]").split(",") if part.strip()}
+        events, block_indent = set(), None
+        for nxt in lines[i + 1:]:
+            if not nxt.strip():
+                continue
+            if not nxt[:1].isspace():
+                break
+            body = _strip_yaml_comment(nxt)
+            if not body.strip():
+                continue
+            indent = len(body) - len(body.lstrip())
+            if block_indent is None:
+                block_indent = indent
+            if indent != block_indent:
+                continue
+            item = body.strip()
+            if item.startswith("- "):
+                events.add(item[2:].strip().rstrip(":").strip("\'\""))
+            elif ":" in item:
+                events.add(item.split(":", 1)[0].strip().strip("\'\""))
+        return events
+    return set()
+
+
+def _declared_triggers(repo, paths, run=subprocess.run):
+    """`(events, unreadable)` across the workflow files behind the sampled runs.
+
+    Only the files that actually produced a run in the sample are read, so
+    this is one `gh` call per workflow that is billing rather than one per
+    workflow in the repo -- `platform-config`'s hundred runs come from a
+    single file. `unreadable` is a count and not a flag because the caller
+    has to say how much of the answer is missing, and a file it could not
+    read must never look like a file that declares nothing.
+    """
+    events, unreadable = set(), 0
+    for path in paths:
+        blob, _why = _gh_json(
+            [f"/repos/{repo}/contents/{path}", "-q", "{c: .content}"], run)
+        content = blob.get("c") if isinstance(blob, dict) else None
+        if not content:
+            unreadable += 1
+            continue
+        try:
+            text = base64.b64decode(content).decode("utf-8", "replace")
+        except (ValueError, binascii.Error):
+            unreadable += 1
+            continue
+        found = declared_triggers(text)
+        if not found:
+            unreadable += 1
+            continue
+        events |= found
+    return events, unreadable
+
+
 def _pairing_lines(repo, run=subprocess.run, sample=PAIRING_SAMPLE_RUNS,
                    ratio=PAIRED_EVENT_RATIO):
     """`lines` -- how much of the bill is the second run of a tree already tested.
@@ -1220,11 +1328,14 @@ def _pairing_lines(repo, run=subprocess.run, sample=PAIRING_SAMPLE_RUNS,
     is not where the bill is; a sample with no pull-request run in it cannot
     judge the question at all and says so rather than reporting a tidy zero.
     """
-    events, why = _gh_json(
+    rows, why = _gh_json(
         [f"/repos/{repo}/actions/runs?per_page={sample}", "-q",
-         "[.workflow_runs[].event]"], run)
-    if events is None:
+         "[.workflow_runs[] | {event, path}]"], run)
+    if rows is None:
         return [f"        DOUBLE  could not sample {repo}'s run events: {why}"]
+    events = [r.get("event") for r in rows if isinstance(r, dict)]
+    paths = sorted({r.get("path") for r in rows
+                    if isinstance(r, dict) and r.get("path")})
     pushes = sum(1 for e in events if e == "push")
     pulls = sum(1 for e in events if e == "pull_request")
     if not pulls:
@@ -1242,13 +1353,30 @@ def _pairing_lines(repo, run=subprocess.run, sample=PAIRING_SAMPLE_RUNS,
                 f"duplicate is not where this bill is."]
     paired = min(pushes, pulls)
     counted = pushes + pulls
-    return [f"        DOUBLE  {pushes} push run(s) against {pulls} pull-request run(s) "
+    head = (f"        DOUBLE  {pushes} push run(s) against {pulls} pull-request run(s) "
             f"in the newest {len(events)}, so a merged pull request bills twice — once "
-            f"on the branch and once on the commit it lands.",
-            f"        that makes {paired} of the {counted} sampled run(s) "
-            f"({paired / counted * 100:.0f}%) the second run of a tree the first one "
-            f"already tested. Dropping one of the two triggers is the only lever that "
-            f"halves this repo's bill without changing what is built."]
+            f"on the branch and once on the commit it lands.")
+    share = (f"        that makes {paired} of the {counted} sampled run(s) "
+             f"({paired / counted * 100:.0f}%) the second run of a tree the first one "
+             f"already tested.")
+    declared, unreadable = _declared_triggers(repo, paths, run)
+    retired = sorted({"push", "pull_request"} - declared) if declared else []
+    if retired and not unreadable:
+        return [head,
+                share + f" But no workflow behind those runs still declares "
+                        f"`{retired[0]}` — that trigger is already gone, so the "
+                        f"duplicate above is history and there is no lever here "
+                        f"left to take.",
+                f"        read from {repo}'s default branch: " +
+                ", ".join(paths) + f" declare {', '.join(sorted(declared))}."]
+    lever = (share + " Dropping one of the two triggers is the only lever that "
+             "halves this repo's bill without changing what is built.")
+    lines = [head, lever]
+    if unreadable:
+        lines.append(f"        partial: could not read {unreadable} of {len(paths)} "
+                     f"workflow file(s) behind those runs, so the lever above is not "
+                     f"confirmed against the triggers declared today.")
+    return lines
 
 
 #: The head-branch prefixes this loop opens every one of its own pull requests
