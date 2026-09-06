@@ -8945,3 +8945,132 @@ def test_invoke_ignores_a_model_that_is_not_a_non_empty_string(clean_grants):
         })
         assert seen["override"] is None, bad
         assert seen["effective"] == "claude-cli:claude-opus-5", bad
+
+
+def test_run_heartbeat_claims_with_a_compare_and_swap_on_the_lastRunAt_it_read(runner):
+    """The claim carries the `lastRunAt` the due decision was made against.
+
+    Without it the claim is a plain write and two overlapping pollers both
+    get a 200 and both run the cycle -- which is what stops
+    agora-persona-runner's Deployment moving off `Recreate` (issue #130).
+    """
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@1h", "name": "HB",
+                 "lastRunAt": "2026-09-06T07:00:00.000Z"}
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    heartbeat_updates = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == f"/heartbeats/{heartbeat['id']}":
+            heartbeat_updates.append(payload)
+        return 200, {}
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", return_value="done"), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
+        runner.run_heartbeat(heartbeat)
+
+    assert heartbeat_updates[0]["ifLastRunAt"] == "2026-09-06T07:00:00.000Z"
+    # And it must be the *previous* mark, not the new one being written --
+    # a claim that preconditions on the value it is about to write matches
+    # nothing and refuses every run.
+    assert heartbeat_updates[0]["lastRunAt"] != heartbeat_updates[0]["ifLastRunAt"]
+    # A heartbeat that has never run races on null, which is a real value.
+    assert "ifLastRunAt" in heartbeat_updates[0]
+
+
+def test_run_heartbeat_claims_with_none_when_the_heartbeat_has_never_run(runner):
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@1h", "name": "HB"}
+    persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+               "capabilities": dict(runner.NO_CAPS)}
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    heartbeat_updates = []
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == f"/heartbeats/{heartbeat['id']}":
+            heartbeat_updates.append(payload)
+        return 200, {}
+
+    with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "generate_reply", return_value="done"), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
+        runner.run_heartbeat(heartbeat)
+
+    assert heartbeat_updates[0]["ifLastRunAt"] is None
+
+
+def test_run_heartbeat_does_not_run_when_another_poller_won_the_claim(runner):
+    """409 is the one claim failure that is an answer rather than a blip."""
+    heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                 "schedule": "every@1h", "name": "HB",
+                 "lastRunAt": "2026-09-06T07:00:00.000Z"}
+    logs = []
+    generate_calls = []
+    notify_calls = []
+    heartbeat_updates = []
+
+    def fake_agora_internal(method, path, payload=None):
+        heartbeat_updates.append(payload)
+        return 409, {"lastRunAt": "2026-09-06T07:00:00.500Z"}
+
+    with patch.object(runner.heartbeats, "fetch_persona") as fetch_persona, \
+         patch.object(runner.heartbeats, "generate_reply",
+                      side_effect=lambda *a, **k: generate_calls.append(a) or "x"), \
+         patch.object(runner.heartbeats, "notify",
+                      side_effect=lambda *a, **k: notify_calls.append(a) or (200, "m")), \
+         patch.object(runner.heartbeats, "audit"), \
+         patch.object(runner.heartbeats, "log", side_effect=lambda m: logs.append(m)), \
+         patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
+        runner.run_heartbeat(heartbeat)
+
+    assert generate_calls == []
+    assert notify_calls == []
+    # Not even the persona is fetched, and no second PATCH stamps a result
+    # over the winner's claim.
+    assert fetch_persona.call_count == 0
+    assert len(heartbeat_updates) == 1
+    assert any("another poller claimed this run" in m for m in logs), logs
+
+
+def test_run_heartbeat_still_runs_when_the_claim_fails_for_any_other_reason(runner):
+    """An Agora too old to know `ifLastRunAt` answers 400 here.
+
+    That is the same unclaimed-but-running behaviour this had before the
+    compare-and-swap, so the two halves may roll in either order without
+    losing a cycle. A transient 503 lands in the same branch.
+    """
+    for status in (400, 503):
+        heartbeat = {"id": "hb1", "personaId": "p1", "conversationId": "conv-1",
+                     "schedule": "every@1h", "name": "HB"}
+        persona = {"id": "p1", "name": "Test", "model": "anthropic:claude-haiku-4-5-20251001",
+                   "capabilities": dict(runner.NO_CAPS)}
+        detail = {"personas": [], "messages": [], "stickyFallback": False}
+        logs = []
+        notify_calls = []
+
+        def fake_agora_internal(method, path, payload=None, _status=status):
+            if payload and payload.get("lastResult") == "running":
+                return _status, {}
+            return 200, {}
+
+        with patch.object(runner.heartbeats, "fetch_persona", return_value=persona), \
+             patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+             patch.object(runner.heartbeats, "generate_reply", return_value="ran anyway"), \
+             patch.object(runner.heartbeats, "notify",
+                          side_effect=lambda *a, **k: notify_calls.append(a) or (200, "m")), \
+             patch.object(runner.heartbeats, "audit"), \
+             patch.object(runner.heartbeats, "log", side_effect=lambda m: logs.append(m)), \
+             patch.object(runner.heartbeats, "agora_internal", side_effect=fake_agora_internal):
+            runner.run_heartbeat(heartbeat)
+
+        assert notify_calls, f"HTTP {status} must not abort the run"
+        assert any("claim PATCH failed" in m and str(status) in m for m in logs), logs
