@@ -1980,11 +1980,11 @@ contract: Nova writes this from the app's project picker. One row per project th
 
 # Projects
 
-| Project | Priority | Updated | Order | TRL | Satisfaction |
-|---|---|---|---|---|---|
+| Project | Priority | Updated | Order | TRL | Satisfaction | Lifecycle | Proposed |
+|---|---|---|---|---|---|---|---|
 """
 
-_PROJECT_META_WIDTH = 6
+_PROJECT_META_WIDTH = 8
 
 
 def parse_project_meta(markdown):
@@ -2022,6 +2022,10 @@ def parse_project_meta(markdown):
             "trl": parse_project_trl_cell(cells[4] if len(cells) > 4 else ""),
             "satisfaction": parse_project_satisfaction_cell(
                 cells[5] if len(cells) > 5 else ""),
+            "lifecycle": parse_project_lifecycle_cell(
+                cells[6] if len(cells) > 6 else ""),
+            "lifecycleProposed": parse_project_lifecycle_cell(
+                cells[7] if len(cells) > 7 else ""),
         }
     return out
 
@@ -2103,6 +2107,54 @@ def project_trl_key(label):
     if canonical is None:
         return 0
     return PROJECT_TRL_LEVELS.index(canonical) + 1
+
+
+#: What stage of its life a project is in. Milestone M5 of idea #260, and
+#: the one of that milestone's three fields with an approval gate:
+#:
+#:     *"lifecycle: I approve / Nova proposes"*
+#:
+#: Four stages, not five. `PROJECT_TRL_LEVELS` beside it needed a fifth so
+#: its meter read the same width as the satisfaction one; this is a state a
+#: project is in rather than a meter, so inventing a fifth would be adding
+#: a stage nobody needs to make a picture line up.
+PROJECT_LIFECYCLE_STAGES = ("Idea", "Active", "Paused", "Retired")
+
+
+def canonical_lifecycle(value):
+    """A stage name -> its canonical spelling, or `None` for anything else.
+
+    Matched case-insensitively because both write paths end up carrying
+    text he or a cycle typed. Unlike `canonical_trl` there is deliberately
+    **no 1-4 numeric form**: a TRL is a rung on a ladder and its number
+    means something, while "the project is at stage 3" means nothing --
+    `Paused` is not more of anything than `Active`.
+
+    `""` is not a stage and is refused here; clearing one is the caller's
+    job, the same split `canonical_trl` and `canonical_satisfaction` make.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for stage in PROJECT_LIFECYCLE_STAGES:
+        if stage.lower() == text.lower():
+            return stage
+    return None
+
+
+def parse_project_lifecycle_cell(cell):
+    """A `Lifecycle` or `Proposed` cell -> its stage, or `""` for none.
+
+    Anything unreadable reads as no stage at all, for
+    `parse_project_order_cell`'s reason: this is a file he can hand-edit
+    and a typo must not take out the table.
+
+    **No stage and `Idea` are different answers.** A project nobody has
+    placed on the lifecycle is not a project I have judged to be an idea,
+    and the approve/decline control must not appear for a proposal that
+    was never made.
+    """
+    return canonical_lifecycle(cell) or ""
 
 
 #: How many points his satisfaction score has. Milestone M5 of idea #260,
@@ -2249,6 +2301,39 @@ def set_project_priority(markdown, project, priority, dated=""):
 _PROJECT_ORDER_HEADING = "Order"
 _PROJECT_TRL_HEADING = "TRL"
 _PROJECT_SATISFACTION_HEADING = "Satisfaction"
+_PROJECT_LIFECYCLE_HEADING = "Lifecycle"
+_PROJECT_PROPOSED_HEADING = "Proposed"
+
+#: Column index -> the name that column carries, for every column this
+#: module appends past the three `parse_project_meta` started with. One
+#: table rather than a line per setter: five setters each naming the
+#: subset of headings they happened to know about is how a file ends up
+#: with `| Lifecycle |  |` in its heading row, and a blank heading is not
+#: a column a reader can name.
+_PROJECT_APPENDED_HEADINGS = {
+    3: _PROJECT_ORDER_HEADING,
+    4: _PROJECT_TRL_HEADING,
+    5: _PROJECT_SATISFACTION_HEADING,
+    6: _PROJECT_LIFECYCLE_HEADING,
+    7: _PROJECT_PROPOSED_HEADING,
+}
+
+
+def _name_project_headings(lines, heading, rule):
+    """Fill in any heading cell this module has a name for, and widen the rule.
+
+    Every setter widens the table to `_PROJECT_META_WIDTH`, so every setter
+    has to be able to name the columns it just created -- including the
+    ones it does not itself write. An existing heading is never
+    overwritten: he can rename a column and the parser matches on position,
+    not on the word.
+    """
+    cells = [c.strip() for c in lines[heading].strip().strip("|").split("|")]
+    cells += [""] * (_PROJECT_META_WIDTH - len(cells))
+    for index, name in _PROJECT_APPENDED_HEADINGS.items():
+        cells[index] = cells[index] or name
+    lines[heading] = _write_project_cells(cells)
+    lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
 
 
 def _project_meta_table(lines):
@@ -2359,12 +2444,7 @@ def set_project_order(markdown, project, position):
     for index, cells in parsed:
         lines[index] = _write_project_cells(cells)
 
-    heading_cells = [c.strip() for c in lines[heading].strip().strip("|").split("|")]
-    if len(heading_cells) < _PROJECT_META_WIDTH:
-        heading_cells += [""] * (_PROJECT_META_WIDTH - len(heading_cells))
-    heading_cells[3] = heading_cells[3] or _PROJECT_ORDER_HEADING
-    lines[heading] = _write_project_cells(heading_cells)
-    lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
+    _name_project_headings(lines, heading, rule)
 
     return "\n".join(lines)
 
@@ -2421,12 +2501,7 @@ def set_project_trl(markdown, project, level):
     cells[4] = label
     lines[index] = _write_project_cells(cells)
 
-    heading_cells = [c.strip() for c in lines[heading].strip().strip("|").split("|")]
-    heading_cells += [""] * (_PROJECT_META_WIDTH - len(heading_cells))
-    heading_cells[3] = heading_cells[3] or _PROJECT_ORDER_HEADING
-    heading_cells[4] = heading_cells[4] or _PROJECT_TRL_HEADING
-    lines[heading] = _write_project_cells(heading_cells)
-    lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
+    _name_project_headings(lines, heading, rule)
 
     return "\n".join(lines)
 
@@ -2484,14 +2559,109 @@ def set_project_satisfaction(markdown, project, score):
     cells[5] = value
     lines[index] = _write_project_cells(cells)
 
-    heading_cells = [c.strip() for c in lines[heading].strip().strip("|").split("|")]
-    heading_cells += [""] * (_PROJECT_META_WIDTH - len(heading_cells))
-    heading_cells[3] = heading_cells[3] or _PROJECT_ORDER_HEADING
-    heading_cells[4] = heading_cells[4] or _PROJECT_TRL_HEADING
-    heading_cells[5] = heading_cells[5] or _PROJECT_SATISFACTION_HEADING
-    lines[heading] = _write_project_cells(heading_cells)
-    lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
+    _name_project_headings(lines, heading, rule)
 
+    return "\n".join(lines)
+
+
+def _project_meta_row(lines, project):
+    """`(line index, cells)` for one project's row, or `None`.
+
+    Lifted out of the four setters that each had a copy of it. The match is
+    case-insensitive and `cells[0]` is never rewritten: he types the name
+    on a phone, and writing my casing back renames his project.
+    """
+    name = (project or "").strip()
+    if not name:
+        return None
+    table = _project_meta_table(lines)
+    if table is None:
+        return None
+    heading, rule, rows = table
+    if not rows:
+        return None
+    for index in rows:
+        cells = [c.strip() for c in lines[index].strip().strip("|").split("|")]
+        if cells and cells[0].lower() == name.lower():
+            cells += [""] * (_PROJECT_META_WIDTH - len(cells))
+            return heading, rule, index, cells
+    return None
+
+
+def propose_project_lifecycle(markdown, project, stage):
+    """Propose one project's lifecycle stage. Returns the new markdown, or `None`.
+
+    Milestone M5 of idea #260, and the third of that milestone's three
+    fields. The other two are owned outright -- the TRL is mine, so it has
+    a CLI and no button; the satisfaction is his, so it has a button and no
+    CLI. **This one is shared, and the spec says how: I propose, he
+    approves.** So this function writes the `Proposed` cell and never the
+    `Lifecycle` cell beside it, and `resolve_project_lifecycle` below is
+    the only thing in this module that can move a value between them.
+
+    That split is the approval gate, and it is enforced here rather than
+    remembered: there is no argument to this function that writes a live
+    stage. A cycle that wants to skip the gate would have to edit his file
+    by hand, which is the thing every writer in this module exists to stop.
+
+    Refused: an unknown project, because a stage is a statement about a row
+    that exists; a stage outside the four; and a file with no table. `""`
+    is accepted and withdraws a proposal I have not had answered yet --
+    which is a real thing to want, and is not the same as him declining it.
+    """
+    text = str(stage or "").strip()
+    if text:
+        label = canonical_lifecycle(text)
+        if label is None:
+            return None
+    else:
+        label = ""
+
+    lines = (markdown or "").split("\n")
+    hit = _project_meta_row(lines, project)
+    if hit is None:
+        return None
+    heading, rule, index, cells = hit
+
+    cells[7] = label
+    lines[index] = _write_project_cells(cells)
+    _name_project_headings(lines, heading, rule)
+    return "\n".join(lines)
+
+
+def resolve_project_lifecycle(markdown, project, decision):
+    """Approve or decline a proposed lifecycle stage. Returns markdown, or `None`.
+
+    The other half of `propose_project_lifecycle`, and his half: an
+    `approve` moves the proposed stage into the live `Lifecycle` cell and
+    clears the proposal, a `decline` clears the proposal and leaves the
+    live stage exactly as it was.
+
+    **A decision with nothing proposed is refused rather than treated as a
+    no-op**, because the two are different facts and the caller has to be
+    able to tell him which happened: approving a proposal that a cycle
+    withdrew a minute ago must not report success against a stage he never
+    saw.
+    """
+    verdict = str(decision or "").strip().lower()
+    if verdict not in ("approve", "decline"):
+        return None
+
+    lines = (markdown or "").split("\n")
+    hit = _project_meta_row(lines, project)
+    if hit is None:
+        return None
+    heading, rule, index, cells = hit
+
+    proposed = parse_project_lifecycle_cell(cells[7])
+    if not proposed:
+        return None
+
+    if verdict == "approve":
+        cells[6] = proposed
+    cells[7] = ""
+    lines[index] = _write_project_cells(cells)
+    _name_project_headings(lines, heading, rule)
     return "\n".join(lines)
 
 

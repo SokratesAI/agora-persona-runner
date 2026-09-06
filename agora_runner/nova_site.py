@@ -143,6 +143,7 @@ from agora_runner.nova_capture import (
     set_project_priority,
     set_project_order,
     set_project_satisfaction,
+    resolve_project_lifecycle,
     project_priorities,
 )
 from agora_runner.nova_comments import (
@@ -1721,6 +1722,10 @@ def project_payload(name=None):
                 "satisfaction": (
                     meta.get(name.lower()) or {}).get("satisfaction") or 0,
                 "satisfactionMax": PROJECT_SATISFACTION_MAX,
+                "lifecycle": (
+                    meta.get(name.lower()) or {}).get("lifecycle") or "",
+                "lifecycleProposed": (
+                    meta.get(name.lower()) or {}).get("lifecycleProposed") or "",
             }
             for name in known
         },
@@ -4985,6 +4990,53 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_project_lifecycle(self, payload):
+        """`POST /api/project/lifecycle` -- he answers a lifecycle proposal.
+
+        Milestone M5 of idea #260: *"lifecycle: I approve / Nova
+        proposes"*. This route carries `decision`, never a stage, and that
+        is the approval gate rather than an omission -- a route that took a
+        stage would let anything holding this endpoint set a live lifecycle
+        without a proposal ever having been made, which is the gate wearing
+        a lock with no door.
+
+        The stage that lands is whichever one is sitting in the `Proposed`
+        cell at the moment he presses, read inside the same read-modify-write
+        as the write. Everything the write can refuse -- an unknown project,
+        a file with no table, a decision on a project with nothing proposed
+        -- is `resolve_project_lifecycle`'s to answer, because those are
+        facts about the document rather than about the request.
+        """
+        project = payload.get("project")
+        decision = payload.get("decision")
+        if not isinstance(project, str) or not project.strip():
+            self._send_json(400, {"error": "project must be a non-empty string"})
+            return
+        if decision not in ("approve", "decline"):
+            self._send_json(
+                400, {"error": "decision must be 'approve' or 'decline'"})
+            return
+
+        try:
+            ok, message = resolve_project_lifecycle(project.strip(), decision)
+        except Exception as e:
+            log(f"nova-site project lifecycle failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Lifecycle {decision} for {project.strip()} \u00b7 {'ok' if ok else message}",
+            after=decision,
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+        )
+        if not ok:
+            self._send_json(502, {"error": message})
+            return
+        self._send_json(200, {"ok": True, "message": message})
+
     def _post_project_satisfaction(self, payload):
         """`POST /api/project/satisfaction` -- how happy he is with a project.
 
@@ -5849,6 +5901,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/board/priority", "/api/board/project",
             "/api/project/priority", "/api/project/order",
             "/api/project/satisfaction",
+            "/api/project/lifecycle",
             "/api/board/edit", "/api/board/delete", "/api/board/archive",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
@@ -5943,6 +5996,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/project/satisfaction":
             self._post_project_satisfaction(payload)
+            return
+        if path == "/api/project/lifecycle":
+            self._post_project_lifecycle(payload)
             return
         if path in ("/api/board/edit", "/api/board/delete"):
             self._post_board_amend(payload, delete=path.endswith("delete"))

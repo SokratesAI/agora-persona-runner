@@ -59,6 +59,7 @@ from agora_runner.nova_boards import (
     set_project_priority as _set_project_priority_md,
     set_project_order as _set_project_order_md,
     set_project_satisfaction as _set_project_satisfaction_md,
+    resolve_project_lifecycle as _resolve_project_lifecycle_md,
     canonical_priority,
     append_detail_note,
     capture_entries,
@@ -935,6 +936,36 @@ def set_project_satisfaction(project, score):
             break
     log(f"nova-capture failed scoring project {project!r}: {result}")
     return False, f"could not write project satisfaction: {result}"
+
+
+def resolve_project_lifecycle(project, decision):
+    """Approve or decline a proposed lifecycle stage. Returns (ok, message).
+
+    Milestone M5 of idea #260: *"lifecycle: I approve / Nova proposes"*.
+    This is his half and the only write path it has, the same shape as
+    `set_project_satisfaction` one function up. The proposing half is
+    `tools.project_lifecycle`, a CLI, because that half is mine.
+
+    A missing file is a refusal for `set_project_order`'s reason, and so is
+    a decision on a project with nothing proposed -- `resolve_project_lifecycle`
+    in `nova_boards` answers `None` for both, and neither is retried,
+    because re-reading gives the same answer.
+    """
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(PROJECT_META_PATH)
+        updated = _resolve_project_lifecycle_md(current or "", project, decision)
+        if updated is None:
+            return False, f"cannot {decision!r} a lifecycle for {project!r}"
+        result = vault_write_path(PROJECT_META_PATH, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture {decision}d lifecycle for project {project!r}")
+            settled = "approved" if decision == "approve" else "declined"
+            return True, f"{project}: proposal {settled}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed resolving lifecycle for {project!r}: {result}")
+    return False, f"could not write project lifecycle: {result}"
 
 
 def project_priorities():
