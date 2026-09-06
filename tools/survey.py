@@ -172,6 +172,92 @@ def parse(text):
     return sections
 
 
+#: A rating question is one that asks him for a number, and it says so in
+#: its own text -- `(1-5`. Keyed on the question rather than on its
+#: position because the position is not stable: `QUESTIONS` is a tuple a
+#: future cycle is expected to edit, and an index would silently start
+#: charting a different question.
+#:
+#: The closing bracket is deliberately not required, and leaving it in is
+#: the first thing I got wrong here: two of the three rating questions
+#: close on `(1-5)` and the third reads `(1-5, and one line on why)`, so a
+#: pattern anchored on `(1-5)` charted two of them and dropped the one that
+#: asks how useful I am -- silently, because a question with no series
+#: simply does not appear.
+_RATING_QUESTION = re.compile(r"\(\s*1\s*-\s*5")
+
+#: `2`, `3.`, `4 - the plan page helped`. His answers are typed on a phone
+#: into a bullet, so the number is the first thing on the line and whatever
+#: follows it is prose. Anchored, and bounded to 1-5: a `2026` pasted into
+#: an answer must not read as a score, and an unanchored search would find
+#: one.
+_RATING_ANSWER = re.compile(r"^([1-5])(?!\d)")
+
+
+def rating_of(answer):
+    """The 1-5 score at the start of `answer`, or `None` if there isn't one.
+
+    `None` rather than 0 for "he skipped it" or "he answered in words":
+    zero is a legal-looking score that would drag an average down and read
+    as a rating he never gave.
+    """
+    match = _RATING_ANSWER.match((answer or "").strip())
+    return int(match.group(1)) if match else None
+
+
+def ratings(sections):
+    """`[(question, [(date, score), ...]), ...]`, each series oldest first.
+
+    Question order is first appearance walking the sections oldest first,
+    so a question he has answered longest reads first and a new one is
+    added at the bottom rather than reshuffling the chart.
+
+    Idea #184 is the reason this exists, and the sentence it turns on is his:
+    *"This data will serve as your benchmark on the quality of your
+    products."* A benchmark is a comparison. One survey answered 2 out of 5
+    is a complaint; the same question answered 2 and then 4 is a
+    measurement, and until now nothing anywhere put the two next to each
+    other -- the row was deliberately left In progress saying exactly that.
+    """
+    order = []
+    series = {}
+    for section in sorted(sections, key=lambda s: s.date):
+        for question, answer in section.answers:
+            if not _RATING_QUESTION.search(question):
+                continue
+            score = rating_of(answer)
+            if score is None:
+                continue
+            if question not in series:
+                series[question] = []
+                order.append(question)
+            series[question].append((section.date, score))
+    return [(question, series[question]) for question in order]
+
+
+def format_trend(sections):
+    """Lines charting every rating question over time, or `[]`.
+
+    `[]` when no question has been answered with a number twice, because a
+    single point is not a trend and printing it as one would be the same
+    overclaim `personality.md` has a section about. The caller decides
+    where this goes; `report` only prints it beside an unread survey, so a
+    quiet sweep stays exactly as quiet as it is today (idea #183).
+    """
+    series = [(q, points) for q, points in ratings(sections) if len(points) > 1]
+    if not series:
+        return []
+    lines = ["    TREND  his ratings, oldest first"]
+    for question, points in series:
+        lines.append("      %s" % question)
+        previous = None
+        for date, score in points:
+            move = "" if previous is None else "  (%+d)" % (score - previous)
+            lines.append("        %s  %d%s" % (date, score, move))
+            previous = score
+    return lines
+
+
 def newest(sections):
     """The section with the latest date, or `None`.
 
@@ -214,6 +300,13 @@ def post(text, date_str, questions=QUESTIONS):
     while at < len(lines) and not lines[at].strip():
         at += 1
     block = render(date_str, questions).splitlines()
+    # `render` ends its string with a newline and `splitlines()` drops the
+    # empty element that produced -- so without this the new survey's last
+    # answer bullet sat directly above the previous survey's `## ` heading.
+    # Measured on his live file when I posted the 2026-09-06 one. It renders
+    # either way; what it costs is that the file gets denser every week, in
+    # a document whose whole job is to be quick to answer on a phone.
+    block.append("")
     return "\n".join(lines[:at] + [""] + block + lines[at:]).lstrip("\n") + "\n"
 
 
@@ -316,6 +409,12 @@ def report(sections, today, out=None):
               "python3 -m tools.survey --file survey.md --mark-read %s "
               "--cycle <N> --reply '<what I did about it>'" % section.date,
               file=out)
+        # Printed here and nowhere else on a routine sweep: this is the one
+        # moment a cycle is about to write him a reply, and the reply is
+        # what the trend is for. A chart on every sweep would be the
+        # reprinted paragraph idea #183 is about.
+        for line in format_trend(sections):
+            print(line, file=out)
     if due:
         print("DUE  post a new survey -- %s" % reason, file=out)
     print("Judged %d survey(s) in his own vault file; weekly cadence, "
@@ -340,6 +439,8 @@ def main(argv=None, fetch=_fetch, out=None):
     parser.add_argument("--cycle", help="the cycle number for --mark-read")
     parser.add_argument("--reply", help="what I did about his answers; "
                                         "written into his file under them")
+    parser.add_argument("--trend", action="store_true",
+                        help="print his ratings over time and nothing else")
     args = parser.parse_args(argv)
 
     today = (_dt.date.fromisoformat(args.today) if args.today
@@ -386,6 +487,17 @@ def main(argv=None, fetch=_fetch, out=None):
         with open(args.file, "w", encoding="utf-8") as handle:
             handle.write(new)
         print("wrote %s" % args.file, file=out)
+        return 0
+
+    if args.trend:
+        lines = format_trend(parse(text))
+        if not lines:
+            print("no rating question has been answered with a number twice "
+                  "yet, so there is nothing to compare", file=out)
+            return 0
+        for line in lines:
+            print(line.strip() if line.startswith("    TREND") else line[4:],
+                  file=out)
         return 0
 
     return report(parse(text), today, out=out)
