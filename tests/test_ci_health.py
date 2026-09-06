@@ -14,6 +14,7 @@ healthy push) and `an_outage_and_a_stalled_run_are_separate_lines` — the
 wrong half.
 """
 
+import base64
 import json
 import subprocess
 import urllib.error
@@ -632,8 +633,13 @@ def test_the_report_is_in_repo_order_not_in_whichever_gh_answered_first():
 # public one are separate numbers, and only the private one is measured
 # against the 2,000 included minutes.
 
+DEFAULT_WORKFLOW_PATH = ".github/workflows/checks.yml"
+DEFAULT_WORKFLOW = "on:\n  push:\n    branches: [main]\n  pull_request:\n"
+
+
 def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None,
-               sample_runs=None, sample_jobs=None, sample_events=None):
+               sample_runs=None, sample_jobs=None, sample_events=None,
+               workflows=None):
     """A fake `subprocess.run` for the `gh api` calls `billing_meter` makes.
 
     `runs` is `{"owner/repo": (month_total, recent_total)}` for the
@@ -675,12 +681,30 @@ def billing_gh(usage=None, repos=None, fail=None, runs=None, seen=None, now=None
         # jobs are one call each. The two are told apart by the jq expression
         # rather than by the page size, so changing either sample size cannot
         # silently reroute one query into the other's fixture.
+        # `_declared_triggers` reads the workflow file behind each sampled
+        # run, because a deleted trigger keeps its runs. Unlisted paths serve
+        # a file declaring BOTH events, so a fixture that says nothing about
+        # workflows gets the pre-Cycle-1053 verdict and the tests written
+        # before this existed still assert what they meant to.
+        if "/contents/" in path:
+            wf_path = path.split("/contents/", 1)[1]
+            text = (workflows or {}).get(wf_path, DEFAULT_WORKFLOW)
+            if text is None:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: refused")
+            blob = base64.b64encode(text.encode()).decode()
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"c": blob}), stderr="")
         if "/actions/runs?" in path and "created=" not in path \
-                and "[.workflow_runs[].event]" in cmd:
+                and "[.workflow_runs[] | {event, path}]" in cmd:
             if sample_events is not None:
+                rows = [e if isinstance(e, dict)
+                        else {"event": e, "path": DEFAULT_WORKFLOW_PATH}
+                        for e in sample_events]
                 return subprocess.CompletedProcess(
-                    cmd, 0, stdout=json.dumps(sample_events), stderr="")
-            derived = [row.get("event") if isinstance(row, dict) else "push"
+                    cmd, 0, stdout=json.dumps(rows), stderr="")
+            derived = [{"event": row.get("event") if isinstance(row, dict) else "push",
+                        "path": (row.get("path") if isinstance(row, dict) else None)
+                                or DEFAULT_WORKFLOW_PATH}
                        for row in (sample_runs or [])]
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=json.dumps(derived), stderr="")
@@ -1405,8 +1429,11 @@ def test_a_steady_window_hands_out_no_spread():
 # other than "paired".
 
 
-def _push_run(run_id, branch="main"):
-    return {"id": run_id, "event": "push", "head_branch": branch}
+def _push_run(run_id, branch="main", path=None):
+    row = {"id": run_id, "event": "push", "head_branch": branch}
+    if path:
+        row["path"] = path
+    return row
 
 
 def test_a_paired_sample_names_the_duplicate_and_prices_it():
@@ -1450,7 +1477,7 @@ def test_an_unreadable_event_sample_is_named_rather_than_read_as_unpaired():
     # and take the NOT JUDGED branch, which says "no pull-request run in the
     # sample" -- a statement about the repo, off a sample that does not exist.
     def run(cmd, **kwargs):
-        if "[.workflow_runs[].event]" in cmd:
+        if "[.workflow_runs[] | {event, path}]" in cmd:
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: refused")
         return billing_gh(sample_runs=[_push_run(1), _pr_run(2, "nova/a")],
                           sample_jobs={1: [_job(30)], 2: [_job(32)]})(cmd, **kwargs)
@@ -1510,8 +1537,11 @@ def test_the_old_unmeasured_clause_is_gone():
 # reads a lever it cannot pull.
 
 
-def _pr_run(run_id, branch):
-    return {"id": run_id, "event": "pull_request", "head_branch": branch}
+def _pr_run(run_id, branch, path=None):
+    row = {"id": run_id, "event": "pull_request", "head_branch": branch}
+    if path:
+        row["path"] = path
+    return row
 
 
 def test_origin_names_this_loop_when_its_own_branches_are_most_of_the_sample():
@@ -1631,3 +1661,111 @@ def test_a_nested_window_as_wide_as_the_whole_one_names_no_older_half():
     assert ci_health._older_half(
         recent_runs=200, nested_rate=200.0, nested_runs=100,
         minutes_per_run=1.0, window_hours=24.0, nested_hours=24.0) == []
+
+
+# --- the lever has to still exist ---------------------------------------------
+# Cycle 1053. `_pairing_lines` named "drop one of the two triggers" as
+# platform-config's lever on 2026-09-06, fifteen hours after platform-config#719
+# dropped it. A hundred runs there is about thirty-five hours, so the sample
+# straddled the merge and the recommendation outlived the thing it recommended.
+
+
+def test_a_retired_trigger_turns_the_lever_into_history():
+    # The measured case. The runs still pair; the file behind them no longer
+    # declares `pull_request`, so there is nothing left to drop.
+    run = billing_gh(
+        sample_runs=[_push_run(1), _push_run(2), _push_run(3),
+                     _pr_run(4, "nova/a"), _pr_run(5, "nova/b"), _pr_run(6, "nova/c")],
+        sample_jobs={i: [_job(30)] for i in range(1, 7)},
+        workflows={DEFAULT_WORKFLOW_PATH: "on:\n  push:\n    branches: [main]\n"})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "3 push run(s) against 3 pull-request run(s)" in text, text
+    assert "`pull_request` — that trigger is already gone" in text, text
+    assert "no lever here left to take" in text, text
+    assert "halves this repo's bill" not in text, text
+
+
+def test_a_trigger_that_is_still_declared_keeps_the_lever():
+    # The complement, and the one that fails if the check is wired to say
+    # "history" whatever the file holds.
+    run = billing_gh(
+        sample_runs=[_push_run(1), _push_run(2), _push_run(3),
+                     _pr_run(4, "nova/a"), _pr_run(5, "nova/b"), _pr_run(6, "nova/c")],
+        sample_jobs={i: [_job(30)] for i in range(1, 7)},
+        workflows={DEFAULT_WORKFLOW_PATH: "on:\n  push:\n    branches: [main]\n  pull_request:\n"})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "halves this repo's bill" in text, text
+    assert "already gone" not in text, text
+
+
+def test_an_unreadable_workflow_keeps_the_lever_and_says_it_is_unconfirmed():
+    # A file it could not read must never read as a file declaring nothing --
+    # that would retire both triggers at once and print the history line off
+    # no evidence at all.
+    run = billing_gh(
+        sample_runs=[_push_run(1), _push_run(2), _push_run(3),
+                     _pr_run(4, "nova/a"), _pr_run(5, "nova/b"), _pr_run(6, "nova/c")],
+        sample_jobs={i: [_job(30)] for i in range(1, 7)},
+        workflows={DEFAULT_WORKFLOW_PATH: None})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "halves this repo's bill" in text, text
+    assert "could not read 1 of 1 workflow file(s)" in text, text
+    assert "already gone" not in text, text
+
+
+def test_only_the_workflows_that_billed_are_read():
+    # One `gh` call per billing workflow, not per workflow in the repo. The
+    # sample here comes from one file and the repo's other five are never
+    # asked for.
+    seen = []
+    run = billing_gh(
+        sample_runs=[_push_run(1), _pr_run(2, "nova/a")],
+        sample_jobs={1: [_job(30)], 2: [_job(30)]},
+        seen=seen)
+    ci_health.floor_share("SokratesAI/platform-config", run=run)
+    reads = [p for p in seen if "/contents/" in p]
+    assert reads == [f"/repos/SokratesAI/platform-config/contents/{DEFAULT_WORKFLOW_PATH}"], reads
+
+
+def test_declared_triggers_ignores_a_commented_out_trigger():
+    # The trap a grep falls into: platform-config's checks.yml carries a
+    # comment explaining that the `pull_request` trigger was removed, so the
+    # word is still in the file and the trigger is not.
+    text = ("on:\n"
+            "  # the pull_request trigger was removed here, see #719\n"
+            "  push:\n"
+            "    branches: [main]\n")
+    assert ci_health.declared_triggers(text) == {"push"}
+
+
+def test_declared_triggers_reads_the_flow_and_list_forms():
+    assert ci_health.declared_triggers("on: [push, pull_request]\n") == {"push", "pull_request"}
+    assert ci_health.declared_triggers("on:\n  - push\n  - pull_request\n") == {"push", "pull_request"}
+    assert ci_health.declared_triggers('"on":\n  push:\n    branches: [main]\n') == {"push"}
+
+
+def test_declared_triggers_says_nothing_when_there_is_no_on_block():
+    # Empty is "I could not find it", which the caller counts as unreadable.
+    assert ci_health.declared_triggers("jobs:\n  build:\n    runs-on: ubuntu-latest\n") == set()
+
+
+def test_one_unreadable_workflow_beside_a_readable_one_still_blocks_the_history_line():
+    # The case the single-file test above cannot reach: one file reads and
+    # declares only `push`, so `pull_request` looks retired -- and the file
+    # that would not open is exactly where it could still be declared. A
+    # first pass guarded this only by "did anything read at all", which is
+    # green here whether or not the unreadable count is consulted.
+    run = billing_gh(
+        sample_runs=[_push_run(1, path=".github/workflows/checks.yml"),
+                     _push_run(2, path=".github/workflows/checks.yml"),
+                     _push_run(3, path=".github/workflows/other.yml"),
+                     _pr_run(4, "nova/a", path=".github/workflows/other.yml"),
+                     _pr_run(5, "nova/b", path=".github/workflows/other.yml"),
+                     _pr_run(6, "nova/c", path=".github/workflows/other.yml")],
+        sample_jobs={i: [_job(30)] for i in range(1, 7)},
+        workflows={".github/workflows/checks.yml": "on:\n  push:\n    branches: [main]\n",
+                   ".github/workflows/other.yml": None})
+    text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
+    assert "already gone" not in text, text
+    assert "halves this repo's bill" in text, text
+    assert "could not read 1 of 2 workflow file(s)" in text, text
