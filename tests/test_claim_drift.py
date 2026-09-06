@@ -38,9 +38,11 @@ def _claim(service, **overrides):
     return {"name": service, "namespace": "platform-catalog", "spec": spec}
 
 
-def _rows(claim, docs):
-    rows, has_deployment, has_pvc = cd.compare(claim, docs)
-    return dict((f, (o, d)) for f, o, d in rows), has_deployment, has_pvc
+def _rows(claim, docs, ordered_fields=cd.FIELDS):
+    rows, has_deployment, has_pvc = cd.compare(
+        claim, docs, set(ordered_fields))
+    return (dict((f, (v, d)) for f, v, d, _s in rows),
+            has_deployment, has_pvc)
 
 
 def test_a_matching_manifest_reports_no_disagreement():
@@ -135,11 +137,102 @@ def test_a_missing_manifest_is_a_reason_rather_than_no_drift():
 
 def test_the_report_names_both_values_for_a_drifted_field():
     results = [{"name": "svc", "namespace": "platform-catalog",
-                "rows": [("publicPort", "8080", "8090")],
+                "rows": [("publicPort", "8080", "8090", "ordered")],
                 "has_deployment": True, "has_pvc": True, "drift": True}]
     report = cd.format_report(results, [])
     assert "ordered 8080, deployed 8090" in report
     assert "1 of 1" in report
+
+
+def test_a_defaulted_field_is_not_reported_as_an_order():
+    # The whole point of Cycle 1025's change: the live XR carries 8080
+    # because the XRD defaults it, not because anybody asked for it, and
+    # the old report said "ordered 8080" about exactly this row.
+    results = [{"name": "svc", "namespace": "platform-catalog",
+                "rows": [("publicPort", "8080", "8090", "default")],
+                "has_deployment": True, "has_pvc": True, "drift": True}]
+    report = cd.format_report(results, [])
+    assert "never ordered, XRD default 8080, deployed 8090" in report
+    assert "ordered 8080," not in report
+
+
+def test_a_defaulted_field_still_counts_as_drift():
+    # Making the sentence honest must not make the alarm quieter: the
+    # stored XR still says 8080 and the service still runs 8090.
+    rows, has_deployment, has_pvc = cd.compare(
+        _claim("svc", publicPort=8080),
+        _manifest("svc", port="8090"), set())
+    assert cd.is_drifted(rows, has_deployment, has_pvc) is True
+
+
+def test_compare_labels_each_field_by_whether_the_claim_file_sets_it():
+    rows, _has_deployment, _has_pvc = cd.compare(
+        _claim("svc"), _manifest("svc"), {"publicPort"})
+    source = dict((f, s) for f, _v, _d, s in rows)
+    assert source["publicPort"] == "ordered"
+    assert source["internalPort"] == "default"
+    assert source["metricsPort"] == "default"
+    assert source["persistenceSize"] == "default"
+
+
+def test_an_unread_claim_file_is_labelled_unknown_not_ordered():
+    rows, _has_deployment, _has_pvc = cd.compare(
+        _claim("svc"), _manifest("svc"), None)
+    assert all(source == "unknown" for _f, _v, _d, source in rows)
+    report = cd.format_report(
+        [{"name": "svc", "namespace": "n",
+          "rows": [("publicPort", "8080", "8090", "unknown")],
+          "has_deployment": True, "has_pvc": True, "drift": True}], [])
+    assert "8080 on the XR, claim file unread, deployed 8090" in report
+
+
+def test_the_report_names_a_claim_that_orders_nothing():
+    rows = [(f, "x", "x", "default") for f in cd.FIELDS]
+    report = cd.format_report(
+        [{"name": "svc", "namespace": "n", "rows": rows,
+          "has_deployment": True, "has_pvc": True, "drift": False}], [])
+    assert "NOT SELF-SERVICE — 1 of 1" in report
+    assert "svc" in report
+
+
+def test_a_claim_that_orders_one_field_is_not_called_unordered():
+    rows = [(f, "x", "x", "ordered" if f == "publicPort" else "default")
+            for f in cd.FIELDS]
+    report = cd.format_report(
+        [{"name": "svc", "namespace": "n", "rows": rows,
+          "has_deployment": True, "has_pvc": True, "drift": False}], [])
+    assert "NOT SELF-SERVICE" not in report
+
+
+def test_ordered_fields_come_from_the_claim_file_in_git():
+    import base64 as _b64
+    claim_yaml = ("apiVersion: platform.sokratesai.io/v1alpha1\n"
+                  "kind: GitHubService\n"
+                  "metadata:\n  name: svc\n"
+                  "spec:\n  serviceName: svc\n  publicPort: 8090\n")
+    encoded = _b64.b64encode(claim_yaml.encode()).decode()
+    fields, why = cd.read_ordered_fields(
+        "svc", lambda *_a, **_k: _proc(encoded + "\n"))
+    assert why is None
+    assert fields == {"publicPort"}
+
+
+def test_a_claim_file_holding_another_service_is_a_reason_not_an_answer():
+    import base64 as _b64
+    other = ("kind: GitHubService\nmetadata:\n  name: other\n"
+             "spec:\n  serviceName: other\n  publicPort: 1\n")
+    encoded = _b64.b64encode(other.encode()).decode()
+    fields, why = cd.read_ordered_fields(
+        "svc", lambda *_a, **_k: _proc(encoded + "\n"))
+    assert fields is None
+    assert "no GitHubService named svc" in why
+
+
+def test_an_unreadable_claim_file_is_a_reason_not_an_empty_set():
+    fields, why = cd.read_ordered_fields(
+        "svc", lambda *_a, **_k: _proc("", returncode=1, stderr="Not Found"))
+    assert fields is None
+    assert "Not Found" in why
 
 
 def test_the_report_says_an_unreadable_repo_out_loud():
@@ -189,7 +282,7 @@ def test_a_shape_mismatch_counts_even_when_no_field_can_be_compared():
     bare = {"name": "svc", "namespace": "n", "spec": {"serviceName": "svc"}}
     rows, has_deployment, has_pvc = cd.compare(
         bare, _manifest("svc", deployment_name="svc-web", with_pvc=False))
-    assert all(o is None for _f, o, _d in rows)
+    assert all(v is None for _f, v, _d, _s in rows)
     assert cd.is_drifted(rows, has_deployment, has_pvc) is True
 
 

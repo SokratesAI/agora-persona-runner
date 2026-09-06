@@ -39,11 +39,28 @@ edited by hand is still what Crossplane reconciles; the manifest comes
 from GitHub's API, not from a local checkout, because the checkout may be
 behind and because these `-config` repos are not cloned here at all.
 
-**A field the claim does not set is not compared.** The XRD gives
+**"ordered" used to be a word this check had not earned.** The XRD gives
 `publicPort`, `internalPort`, `metricsPort` and `persistenceSize`
-defaults, and Kubernetes writes those defaults into the stored object, so
-in practice all four are always present -- but a claim missing one is
-reported as not-compared rather than compared against a guess.
+defaults, and the API server writes those defaults into the stored
+object, so every one of the four is always present on the live XR
+whatever anybody asked for. Reading the live XR alone therefore cannot
+tell a value somebody chose from a value the schema supplied, and until
+Cycle 1025 this printed `ordered 8080` about all of them. Measured
+2026-09-06: not one of the four claim files in `platform-config` sets any
+of the four fields, so every number this check had ever called an order
+was an XRD default.
+
+So the source of the *order* is the claim as written in git --
+`crossplane/service-<name>.yaml` in `SokratesAI/platform-config` -- while
+the value compared is still the live XR's, because that is what
+Crossplane reconciles. A field the claim file does not set is reported as
+defaulted rather than ordered, and it still counts as drift: the stored
+XR says 8080 and the service runs 8090 either way, so the claim does not
+describe the service. What changes is the sentence, not the verdict --
+"nobody ordered this and the default disagrees" is a different problem
+from "the order went stale", and only one of them is fixed by step 4.
+A claim file this cannot find is reported as such and its fields are
+labelled unknown, never assumed ordered.
 
 **What it cannot see.** It looks for a Deployment named after the service
 and a PVC named `<service>-data`, which is what the template writes. A
@@ -112,6 +129,42 @@ def read_claims(runner=subprocess.run):
     return claims, []
 
 
+def read_ordered_fields(service, runner=subprocess.run):
+    """Which of `FIELDS` the claim file in git actually sets, or a reason.
+
+    The live XR carries all four whatever was asked for, so the only
+    honest source for "was this ordered" is the YAML somebody wrote. It
+    lives at a known path per service; a claim written to a differently
+    named file is not found, and that is returned as a reason rather than
+    read as "ordered nothing", which would print a confident sentence
+    about a file this never opened.
+    """
+    body, why = _run(runner, ["gh", "api",
+                              "repos/SokratesAI/platform-config/contents/"
+                              "crossplane/service-%s.yaml" % service,
+                              "--jq", ".content"])
+    if why:
+        return None, why
+    try:
+        raw = base64.b64decode(body.replace("\n", ""))
+    except (ValueError, TypeError) as exc:
+        return None, "the claim file did not decode: %s" % exc
+    try:
+        docs = [d for d in yaml.safe_load_all(raw) if isinstance(d, dict)]
+    except yaml.YAMLError as exc:
+        return None, "the claim file is not YAML: %s" % exc
+    for doc in docs:
+        if doc.get("kind") != "GitHubService":
+            continue
+        spec = doc.get("spec", {}) or {}
+        if (spec.get("serviceName") or
+                doc.get("metadata", {}).get("name")) != service:
+            continue
+        return {f for f in FIELDS if f in spec}, None
+    return None, ("crossplane/service-%s.yaml holds no GitHubService named "
+                  "%s" % (service, service))
+
+
 def read_manifest(service, runner=subprocess.run):
     """The parsed docs of `<service>-config/manifest.yaml`, or a reason."""
     body, why = _run(runner, ["gh", "api",
@@ -171,8 +224,15 @@ def _storage(pvc):
     return None if value is None else str(value)
 
 
-def compare(claim, docs):
-    """`[(field, ordered, deployed)]` for this claim, `deployed` may be None."""
+def compare(claim, docs, ordered_fields=None):
+    """`[(field, value, deployed, source)]`, `deployed` may be None.
+
+    `value` is the live XR's, which is what Crossplane reconciles.
+    `source` is `"ordered"` when the claim file in git sets the field,
+    `"default"` when it does not, and `"unknown"` when the claim file
+    could not be read -- `ordered_fields` is `None` in that case and this
+    never guesses.
+    """
     service = claim["name"]
     spec = claim["spec"]
     deployment = _deployment(docs, service)
@@ -181,15 +241,19 @@ def compare(claim, docs):
     rows = []
     for field in FIELDS:
         if field not in spec:
-            rows.append((field, None, None))
+            rows.append((field, None, None, "unknown"))
             continue
-        ordered = str(spec[field])
+        value = str(spec[field])
         if field == "persistenceSize":
             deployed = None if pvc is None else _storage(pvc)
         else:
             deployed = (None if deployment is None
                         else _env_value(deployment, ENV_FOR[field]))
-        rows.append((field, ordered, deployed))
+        if ordered_fields is None:
+            source = "unknown"
+        else:
+            source = "ordered" if field in ordered_fields else "default"
+        rows.append((field, value, deployed, source))
     return rows, deployment is not None, pvc is not None
 
 
@@ -201,16 +265,20 @@ def is_drifted(rows, has_deployment, has_pvc):
     env var for every port, so an absent one means the manifest has moved
     away from the shape the claim ordered. A shape mismatch -- no
     Deployment under that name, no `<service>-data` PVC -- counts on its
-    own. For a claim carrying the XRD's defaults the field rule already
-    catches that, since every templated value then reads as absent; the
-    guard is for a claim that sets none of the four, where the field rule
-    has nothing to compare and would call a manifest of some other shape
-    an agreement.
+    own, and it is the only rule left for a claim that sets none of the
+    four, where the field rule has nothing to compare and would call a
+    manifest of some other shape an agreement.
+
+    Whether a value was ordered or defaulted does not enter into it: the
+    stored XR says 8080 either way and the service runs 8090 either way,
+    so the claim fails to describe it either way. That distinction is the
+    report's job, not the verdict's -- making the sentence honest must
+    not make the alarm quieter.
     """
     if not has_deployment or not has_pvc:
         return True
-    return any(ordered is not None and ordered != deployed
-               for _field, ordered, deployed in rows)
+    return any(value is not None and value != deployed
+               for _field, value, deployed, _source in rows)
 
 
 def format_report(results, problems):
@@ -220,10 +288,12 @@ def format_report(results, problems):
 
     if drifted:
         out.append("CLAIM NO LONGER DESCRIBES THE SERVICE — %d of %d "
-                   "GitHubService claim(s). The manifest is usually the "
-                   "correct value and the claim the stale one; the fix is "
-                   "idea #158 step 4 (compose objects, not text), never "
-                   "editing manifest.yaml to match."
+                   "GitHubService claim(s). The manifest is the correct "
+                   "value on every one measured so far, so the fix is never "
+                   "editing manifest.yaml to match; it is idea #158 step 4 "
+                   "(compose objects, not text) for a field somebody "
+                   "ordered, and ordering the field at all for one the XRD "
+                   "merely defaulted."
                    % (len(drifted), len(results)))
         for row in drifted:
             out.append("  %s (%s)" % (row["name"], row["namespace"]))
@@ -234,29 +304,48 @@ def format_report(results, problems):
             if not row["has_pvc"]:
                 out.append("      no PersistentVolumeClaim named %s-data in "
                            "manifest.yaml" % row["name"])
-            for field, ordered, deployed in row["rows"]:
-                if ordered is None:
+            for field, value, deployed, source in row["rows"]:
+                if value is None:
                     out.append("      %s: not set on the claim, not compared"
                                % field)
-                elif deployed is None:
-                    out.append("      %s: ordered %s, absent from the manifest"
-                               % (field, ordered))
-                elif ordered != deployed:
-                    out.append("      %s: ordered %s, deployed %s"
-                               % (field, ordered, deployed))
+                    continue
+                said = {"ordered": "ordered %s" % value,
+                        "default": "never ordered, XRD default %s" % value,
+                        "unknown": "%s on the XR, claim file unread" % value}[
+                            source]
+                if deployed is None:
+                    out.append("      %s: %s, absent from the manifest"
+                               % (field, said))
+                elif value != deployed:
+                    out.append("      %s: %s, deployed %s"
+                               % (field, said, deployed))
 
     for row in agreed:
         out.append("AGREES  %s — all %d templated field(s) still match"
                    % (row["name"], len(FIELDS)))
 
+    unordered = [r["name"] for r in results
+                 if all(source == "default"
+                        for _f, _v, _d, source in r["rows"])]
+    if unordered:
+        out.append("NOT SELF-SERVICE — %d of %d claim(s) order none of the "
+                   "four fields, so every value above is the XRD's default "
+                   "rather than anybody's order: %s. That is a different "
+                   "problem from a stale order and step 4 does not fix it: "
+                   "these services were never ordered through the claim, "
+                   "they were described by it afterwards."
+                   % (len(unordered), len(results), ", ".join(unordered)))
+
     for problem in problems:
         out.append("PROBLEM  %s" % problem)
 
-    out.append("Read %d live GitHubService claim(s) from the API server and "
-               "their manifest.yaml from GitHub. Only the four fields the "
-               "composition templates are compared: %s. Nothing here says "
-               "what is running — that is tools.running_images and "
-               "tools.workload_health." % (len(results), ", ".join(FIELDS)))
+    out.append("Read %d live GitHubService claim(s) from the API server, "
+               "their manifest.yaml from GitHub, and each claim's own YAML in "
+               "platform-config to tell an ordered field from an XRD default. "
+               "Only the four fields the composition templates are compared: "
+               "%s. Nothing here says what is running — that is "
+               "tools.running_images and tools.workload_health."
+               % (len(results), ", ".join(FIELDS)))
     return "\n".join(out)
 
 
@@ -271,7 +360,10 @@ def main(argv=None):
         if why:
             problems.append("%s: %s" % (claim["name"], why))
             continue
-        rows, has_deployment, has_pvc = compare(claim, docs)
+        ordered_fields, why = read_ordered_fields(claim["name"])
+        if why:
+            problems.append("%s: %s" % (claim["name"], why))
+        rows, has_deployment, has_pvc = compare(claim, docs, ordered_fields)
         drift = is_drifted(rows, has_deployment, has_pvc)
         results.append({"name": claim["name"],
                         "namespace": claim["namespace"],
