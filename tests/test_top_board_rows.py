@@ -581,11 +581,25 @@ def test_an_unanswered_comment_still_beats_blocked():
     assert [r["number"] for r in ranked] == [94, 95]
 
 
+
+def _first_ranked_line(out):
+    """The pick, found by the header above it rather than by line number.
+
+    These two tests used `splitlines()[1]`, which asserts the header is on
+    line 0 -- a fact about the whole page, not about the ranking they are
+    checking. The maintenance reservation (M6) prints above the header when
+    it fires, so the index moved and neither test was about that.
+    """
+    lines = out.splitlines()
+    head = next(i for i, l in enumerate(lines)
+                if l.startswith("TOP OF EDVARD'S BOARD"))
+    return head + 1, lines[head + 1]
+
 def test_render_names_the_blocked_rows_rather_than_hiding_them():
     text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
                  (99, "actionable", BACKLOG, "08-20", LOW))
     out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
-    assert "issue #99" in out.splitlines()[1]
+    assert "issue #99" in _first_ranked_line(out)[1]
     assert "blocked on Edvard" in out
     # The row itself, in full, on its own line -- not a bare number folded
     # into the sentence. `#94` alone does not say which board.
@@ -620,8 +634,9 @@ def test_the_nothing_to_build_line_cannot_be_read_as_a_verdict_on_the_ranking():
     assert "not a verdict on the ranking above" in verdict
     # The actionable row is the pick above the block, never inside it.
     lines = out.splitlines()
-    assert lines[1].startswith("  -> issue #7")
-    assert lines.index(verdict) > 1
+    idx, first = _first_ranked_line(out)
+    assert first.startswith("  -> issue #7")
+    assert lines.index(verdict) > idx
     assert "#7" not in verdict
 
 

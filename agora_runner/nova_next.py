@@ -710,3 +710,105 @@ def low_satisfaction(project_meta, diagnoses=None):
                     "slug": diagnosis_slug(meta.get("project") or key),
                     "diagnosed": diagnoses.get(key)})
     return sorted(out, key=lambda d: (d["score"], d["project"].lower()))
+
+
+#: The projects the maintenance reservation forces the project tier onto.
+#: Two names rather than one because the boards use both and they mean the
+#: same kind of hour: `Infra` is the cluster and the box, `Maintenance` is
+#: this loop's own upkeep. Lowercased to match `project_ranks`, which keys
+#: on the lowercased project name.
+MAINTENANCE_PROJECTS = ("infra", "maintenance")
+
+#: Milestone M6 of `task-prioritization-redesign.md`: every Nth cycle the
+#: project tier is forced to maintenance regardless of where those projects
+#: sit in the owner's hand-ordered list.
+#:
+#: **N is 5, and the spec's own note about it was measured from one
+#: instrument and is wrong.** It says *"1 in 5 would be a raise, not a
+#: floor"*, from 13.3% of the 98 journal entries in cycles 965-1067 naming
+#: an Infra or Maintenance board row -- and names its own blind spot in the
+#: next paragraph: 36.7% of those cycles name no board row at all and were
+#: never classified. Classified, cycle 1102, over cycles 965-1101 (128
+#: entries): 14 of the 91 boarded ones are Infra or Maintenance (15.4%),
+#: and **34 of the 37 unboarded ones are maintenance in substance** -- a
+#: disk filling, an instrument reading the wrong node, a CI workflow red on
+#: main, a roller that would not roll. That is 48 of 128, **37.5%**. So one
+#: cycle in five is a floor well under current behaviour rather than a tax
+#: on top of it, which is what a reservation is for: it does not cap the
+#: other four cycles, it only stops a run of feature work from crowding
+#: maintenance out entirely.
+MAINTENANCE_EVERY = 5
+
+
+def maintenance_reserved(cycle, every=MAINTENANCE_EVERY):
+    """Is `cycle` one of the reserved maintenance cycles?
+
+    `None` is not reserved, and that is deliberate rather than a default:
+    a caller that does not know which cycle it is cannot know whether this
+    one is reserved, and firing on a guess would force maintenance at a
+    rate nobody chose. `top_board_rows` says so on the page instead.
+    """
+    if cycle is None:
+        return False
+    if every <= 0:
+        raise ValueError("the reservation cadence must be a positive number "
+                         "of cycles")
+    return cycle % every == 0
+
+
+def maintenance_queue(rows):
+    """The rows a reserved cycle could actually take.
+
+    A row another cycle holds is not in the queue, and neither is one
+    blocked on the owner: the reservation exists to spend an hour on
+    maintenance, and a row no cycle can take is not an hour of anything.
+    That is the same rule `rank` applies to those two flags one tier down;
+    applying it here as well is what makes "falls through when the queue is
+    empty" mean *empty of work* rather than *empty of rows*.
+    """
+    return [r for r in rows
+            if (r.get("project") or "").strip().lower() in MAINTENANCE_PROJECTS
+            and not r.get("heldBy")
+            and r.get("statusKey") != _BLOCKED]
+
+
+def reserve_maintenance(projects, rows, cycle, every=MAINTENANCE_EVERY):
+    """Force the project tier onto maintenance, or say why it did not.
+
+    Returns `(ranks, note)`. `note` is `None` when nothing was forced and a
+    sentence when something was, or when the reservation was due and fell
+    through -- the caller prints it. **The reservation is a rewrite of the
+    project rank map and nothing else**, which is exactly the tier the spec
+    puts it in: an expedite or a skip-to-top row still wins, because those
+    keys sort above the project one in `rank`, and the ordering *inside*
+    maintenance is untouched.
+
+    **Falling through when the queue is empty is the spec's rule, and it is
+    reported rather than silent.** A reserved cycle that finds no
+    maintenance row should carry on with the ordinary pick; a cycle that is
+    never told the reservation fired at all cannot tell that apart from a
+    reservation that does not work.
+    """
+    if not maintenance_reserved(cycle, every):
+        return projects, None
+    queue = maintenance_queue(rows)
+    if not queue:
+        return projects, (
+            f"🔧 RESERVED MAINTENANCE CYCLE (every {every}th, this is cycle "
+            f"{cycle}) — but no open, unheld, unblocked row is filed under "
+            + " or ".join(p.capitalize() for p in MAINTENANCE_PROJECTS)
+            + ", so the ranking below is the ordinary one.")
+    ranks = dict(projects or {})
+    # Below every forced project and above every other one, whatever the
+    # owner's order says. Ranks can be any comparable number, so going
+    # *under* the existing floor keeps his order intact underneath rather
+    # than renumbering a file this function must not touch.
+    floor = min(ranks.values()) if ranks else 0
+    for offset, name in enumerate(MAINTENANCE_PROJECTS):
+        ranks[name] = floor - len(MAINTENANCE_PROJECTS) + offset
+    return ranks, (
+        f"🔧 RESERVED MAINTENANCE CYCLE (every {every}th, this is cycle "
+        f"{cycle}) — the project tier is forced to "
+        + " and ".join(p.capitalize() for p in MAINTENANCE_PROJECTS)
+        + f", ahead of the owner's project order. {len(queue)} row(s) are in "
+        "that queue. Take the top row below; it is a maintenance row.")

@@ -96,7 +96,7 @@ from agora_runner.nova_boards import (
 from agora_runner.nova_next import (
     _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims, open_rows,
     low_satisfaction, load_diagnoses,
-    project_ranks, rank, row_slug, unboarded_captures,
+    project_ranks, rank, reserve_maintenance, row_slug, unboarded_captures,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_boards import PROJECT_SATISFACTION_MAX
@@ -639,7 +639,7 @@ def _claim_footer(rows, captures, claims_readable):
 
 def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
            projects_markdown="", projects_readable=True,
-           diagnoses_text="", diagnoses_readable=True):
+           diagnoses_text="", diagnoses_readable=True, cycle=None):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -684,7 +684,24 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     out.extend(_low_satisfaction_block(
         low_satisfaction(project_meta, load_diagnoses(diagnoses_text)),
         diagnoses_readable))
-    ranked = rank(rows, project_ranks(projects_markdown))
+    # Milestone M6: every fifth cycle the project tier is forced onto
+    # maintenance. It rewrites the project ranks and nothing else, so the
+    # captures above and the skip-to-top tier below are untouched -- and
+    # the note is printed whether it forced anything or fell through,
+    # because a reservation nobody can see fired is one nobody can tell
+    # apart from a broken one.
+    project_rank_map, reservation = reserve_maintenance(
+        project_ranks(projects_markdown), rows, cycle)
+    if reservation:
+        out.append(reservation)
+    elif cycle is None:
+        # Not silence: the reservation cannot be evaluated without knowing
+        # which cycle this is, and a page that says nothing reads as "this
+        # is an ordinary cycle" when the honest answer is "I do not know".
+        out.append("🔧 MAINTENANCE RESERVATION NOT EVALUATED — pass "
+                   "`--cycle <N>` and every 5th cycle is forced onto "
+                   "Infra/Maintenance work.")
+    ranked = rank(rows, project_rank_map)
     if not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
     else:
@@ -802,7 +819,9 @@ def main(argv=None):
                          "vault fetch")
     ap.add_argument("--cycle", type=int,
                     help="your own cycle number, so your own claims are not "
-                         "reported back to you as somebody else's")
+                         "reported back to you as somebody else's -- and so "
+                         "the maintenance reservation can tell whether this "
+                         "cycle is a reserved one")
     ap.add_argument("--runners-up", type=int, default=3)
     args = ap.parse_args(argv)
 
@@ -887,7 +906,8 @@ def main(argv=None):
                  projects_markdown=projects_md,
                  projects_readable=projects_readable,
                  diagnoses_text=diagnoses_text,
-                 diagnoses_readable=diagnoses_readable))
+                 diagnoses_readable=diagnoses_readable,
+                 cycle=args.cycle))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")
