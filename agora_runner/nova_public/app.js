@@ -8054,7 +8054,12 @@
    *
    * There is no bar and no number here on purpose. This strip answers "what
    * is next and where is it", and the scoreboard above it is the only thing
-   * on this page with a figure worth drawing. */
+   * on this page with a figure worth drawing.
+   *
+   * The board reference under the claim is a link. It names the row this card
+   * came from -- `issue #131, idea #179` -- and until now it was plain text on
+   * a page whose whole complaint (issue #96) is that it does not connect to
+   * anything. The href comes from the server, never from this text. */
   function rankedCard(item) {
     var card = el("li", "rank-card");
     var head = el("div", "rank-head");
@@ -8067,7 +8072,18 @@
     }
     card.appendChild(head);
     if (item.claim) card.appendChild(el("p", "rank-claim", item.claim));
-    if (item.board) card.appendChild(el("p", "rank-board", item.board));
+    // `boardSpans` carries `issue #131` as a link to `/issues#131`, the same
+    // way a journal card's `Board:` footer does -- the server parses it, this
+    // never reads a number out of the text. A card written before the server
+    // sent spans still has the plain string, so that is the fallback rather
+    // than a blank line.
+    if (item.boardSpans && item.boardSpans.length) {
+      var board = el("p", "rank-board");
+      renderSpans(board, item.boardSpans);
+      card.appendChild(board);
+    } else if (item.board) {
+      card.appendChild(el("p", "rank-board", item.board));
+    }
     return card;
   }
 

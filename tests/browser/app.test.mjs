@@ -9328,6 +9328,39 @@ describe("the plan page", () => {
     assert.equal(window.document.querySelectorAll(".plan-card").length, 2);
   });
 
+  /* Issue #96, and the DOM is the only place that can answer it: the board
+   * reference under a card names a row on one of his own boards, and it was
+   * plain text on the page whose complaint is that it does not connect to
+   * anything. The href comes from the server, so what this pins is that the
+   * anchor exists, stays inside the app, and does not open a browser tab. */
+  test("a card's board reference is a link into this app, not a new tab", async () => {
+    const linked = {
+      ...R1,
+      board: "issue #131, idea #179",
+      boardSpans: [
+        { kind: "link", text: "issue #131", url: "/issues#131" },
+        { kind: "text", text: ", " },
+        { kind: "link", text: "idea #179", url: "/ideas#179" },
+      ],
+    };
+    const window = await loadSite("/plan", { plan: ranked([linked]) });
+    const board = window.document.querySelector(".rank-card .rank-board");
+    const anchors = [...board.querySelectorAll("a")];
+    assert.deepEqual(anchors.map((a) => a.getAttribute("href")), ["/issues#131", "/ideas#179"]);
+    assert.deepEqual(anchors.map((a) => a.textContent), ["issue #131", "idea #179"]);
+    // Internal, so no `target` — leaving the PWA for its own page and having
+    // to navigate back is the wrong answer on a phone.
+    assert.equal(anchors[0].getAttribute("target"), null);
+    assert.equal(board.textContent, "issue #131, idea #179");
+  });
+
+  test("a card the server sent no spans for still shows its board reference", async () => {
+    const window = await loadSite("/plan", { plan: ranked([R1]) });
+    const board = window.document.querySelector(".rank-card .rank-board");
+    assert.equal(board.textContent, "idea #73");
+    assert.equal(board.querySelector("a"), null);
+  });
+
   /* The two lists (2026-08-25). The heading is a claim about every card
    * under it, and on that morning three of the five cards under "What I
    * would do next, in order" were finished. Only the DOM can say whether
