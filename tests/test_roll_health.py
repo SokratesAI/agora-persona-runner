@@ -13,6 +13,7 @@ import pytest
 
 from tools import roll_health
 from agora_runner.rolling import _body
+from tools import roll_captures
 from tools.roll_captures import MARKER
 
 
@@ -145,7 +146,7 @@ def test_a_clean_pair_exits_0_and_prints_what_it_did_not_judge():
     assert findings == [] and unreadable == []
     out = io.StringIO()
     assert roll_health.report(findings, unreadable, clean, held, out=out) == 0
-    assert "Not judged" in out.getvalue()
+    assert "Partly judged below the section" in out.getvalue()
 
 
 def test_roll_health_is_in_preflight():
@@ -521,3 +522,108 @@ def test_the_steady_line_names_the_section_and_the_ceiling():
     section = len(_body(live, roll_health.roll_captures.spec_for(live))[1])
     assert f"section is {section:,} bytes" in printed
     assert f"inside the {roll_health.SECTION_CEILING:,}" in printed
+
+
+# A board plus a `# Details` section, which `document()` above deliberately
+# does not build -- it was written for the stranded-above-the-marker shape and
+# has no rows, so `parse_board` returns no write-ups for it at all.
+def boarded(details, status="⚪ Backlog", captures=1):
+    """A capture file whose `# Details` bodies are `details` -> `{n: body}`."""
+    rows = "\n".join(
+        f"| [[#{n} — row {n}\\|{n}]] | row {n} | {status} | 09-06 | 🟠 High |"
+        for n in details)
+    blocks = "\n\n".join(f"### #{n} — row {n}\n\n{body}"
+                          for n, body in details.items())
+    entries = "".join(f"\n- 2026-08-29 (Cycle {600 - i}) — capture {i}\n"
+                      for i in range(captures))
+    return ("---\ntype: note\nstatus: capture\n---\n\n# Nova — Issues\n"
+            + MARKER + entries
+            + "\n## Board\n\n| # | Item | Status | Updated | Priority |\n"
+            "|---|------|--------|---------|---|\n" + rows
+            + "\n\n# Details\n\n" + blocks + "\n")
+
+
+# The real thing, trimmed: `issues.md` row #5's own paragraph, then the
+# capture pile an unmarked append dropped on top of it. Written out rather
+# than generated, so the test cannot pass by re-spelling the rule.
+PILE = """`do_HEAD` is a stub that ignores the path entirely, returning 200.
+
+- DONE (Cycle 411): **wrong — `gitleaks` was at `/tmp/gitleaks` the whole time.**
+- DONE (Cycle 400): 2026-08-25 (Cycle 398) — **There is a Crossplane managed `Repository`.**
+- The bridge Dockerfile pins `CLAUDE_CODE_VERSION=2.1.226`; upstream is 2.1.245 — 2026-08-25
+- 2026-08-27 (Cycle 508) — **`tools.board_status --file` takes a local path.**
+"""
+
+PROSE = """Measured 2026-09-06 06:00 Oslo by the architecture run.
+
+The agora pod is using 499m of a 500m CPU limit and 78.7% of its scheduling
+periods are throttled. What degrades is the latency of Edvard's chat.
+"""
+
+
+def test_a_write_up_that_is_mostly_bullets_is_a_buried_capture_pile():
+    live = boarded({5: PILE, 30: PROSE})
+    marks = roll_health.writeups(live)
+    assert [row for row, _, _ in marks["buried"]] == [5]
+    row, bullets, body = marks["buried"][0]
+    assert bullets > body // 2 and bullets == roll_health.bullet_bytes(PILE)
+
+
+def test_an_ordinary_prose_write_up_is_not_buried():
+    # The precondition this negative depends on: the row really is there to
+    # be judged, so a pass cannot come from `writeups` seeing nothing.
+    live = boarded({30: PROSE})
+    marks = roll_health.writeups(live)
+    assert marks["count"] == 1
+    assert marks["buried"] == []
+
+
+def test_a_nested_bullet_under_a_step_is_not_counted():
+    body = "Three fixes, in this order:\n\n1. Drop the field.\n  - and its test\n"
+    assert roll_health.bullet_bytes(body) == 0
+
+
+def test_a_buried_pile_raises_even_when_the_roll_is_steady_state():
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = boarded({5: PILE}, captures=roll_captures.KEEP + 1)
+    docs = {live_path: live, archive_path: ARCHIVE}
+    # The precondition, asserted rather than assumed: without the buried pile
+    # this pair lands in `held`, which prints and does not raise. So a pass
+    # here really is the new clause and not an empty `held` bucket.
+    plain = boarded({30: PROSE}, captures=roll_captures.KEEP + 1)
+    _, _, _, plain_held = roll_health.check(
+        pairs=(roll_health.PAIRS[0],),
+        fetch=_fetch_from({live_path: plain, archive_path: ARCHIVE}))
+    assert len(plain_held) == 1
+
+    findings, unreadable, clean, held = roll_health.check(
+        pairs=(roll_health.PAIRS[0],), fetch=_fetch_from(docs))
+    assert held == [] and clean == [] and len(findings) == 1
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
+    printed = out.getvalue()
+    assert "BURIED CAPTURES — row #5" in printed
+    assert "not a write-up" in printed
+
+
+def test_a_buried_pile_is_a_finding_when_nothing_else_is_wrong():
+    """The pile alone raises — no stranded captures, no refusal, no owed roll.
+
+    Mutation 2 of five: dropping `or entombed` from the finding branch
+    survived the test above, because that file also owed a roll. This is the
+    case where the pile is the only thing wrong, and it is the real one —
+    `issues.md` owes a roll every hour, `ideas.md` need not.
+    """
+    live_path, archive_path = roll_health.PAIRS[0]
+    live = boarded({5: PILE}, captures=1)
+    docs = {live_path: live, archive_path: ARCHIVE}
+    # Precondition: the three older signals are all quiet on this document.
+    stranded, refusal, owed = roll_health.inspect(live, ARCHIVE)
+    assert stranded == [] and refusal is None and owed is False
+
+    findings, unreadable, clean, held = roll_health.check(
+        pairs=(roll_health.PAIRS[0],), fetch=_fetch_from(docs))
+    assert clean == [] and held == [] and len(findings) == 1
+    out = io.StringIO()
+    assert roll_health.report(findings, unreadable, clean, held, out=out) == 2
+    assert "BURIED CAPTURES — row #5" in out.getvalue()
