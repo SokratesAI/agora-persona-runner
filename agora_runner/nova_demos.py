@@ -621,6 +621,25 @@ def promotion_claim(name, description, demo_url, directory, today):
     going public is a three-commit dance the XRD documents at length, and
     doing it implicitly on a promotion would be irreversible for anything
     already cloned.
+
+    **`allowDeletion: true` is the decision idea #139 asks for, and it is a
+    departure from the XRD default.** That default is `false`, which maps
+    `spec.managementPolicies` to `[Observe, Create, Update,
+    LateInitialize]` -- no `Delete` -- so removing the claim file *orphans*
+    the GitHub repositories rather than deleting them. That is the right
+    default for a service somebody deliberately claimed and the wrong one
+    for a demo: #139's own words are that "if that decision is not made
+    before the first promotion you end up with twenty dead repos and twenty
+    dead ArgoCD Applications nobody wants to be the one to delete." A
+    promotion is a "keep this" tap in a meeting, so discard is the likelier
+    next step, and a discard that leaves the repo behind is the same
+    not-really-a-throwaway this row exists to end.
+
+    The cost is real and is why the rendered claim says so in a comment
+    rather than only here: the moment a promoted demo stops being a demo,
+    somebody has to flip this to `false`, or a `git rm` of the claim file
+    destroys a repository and its history. That is a comment on the object
+    itself, where the person doing the `git rm` is looking.
     """
     # **Collapse the description to one line before it is rendered.** It is
     # emitted as a folded scalar with a single indented line under it, so a
@@ -652,6 +671,12 @@ def promotion_claim(name, description, demo_url, directory, today):
         f"  serviceName: {name}",
         "  description: >-",
         f"    {description}",
+        "  # Idea #139: a demo has to be as cheap to throw away as to make, so",
+        "  # deleting this file really deletes the repositories. The XRD default",
+        "  # is false, which orphans them instead. **Flip this to false the",
+        "  # moment this stops being a demo** -- after that, a `git rm` here",
+        "  # destroys the repo and its history.",
+        "  allowDeletion: true",
         "",
     ])
 

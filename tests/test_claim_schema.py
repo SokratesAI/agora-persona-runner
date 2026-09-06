@@ -7,6 +7,18 @@ import pytest
 from tools import claim_schema
 
 
+#: A stand-in for the live XRD, so `judge`'s logic can be tested with no
+#: cluster. **It is not the live schema and it silently went stale.** The
+#: live `githubservices.platform.sokratesai.io` carries nine spec fields --
+#: allowDeletion, description, internalPort, metricsPort, persistenceSize,
+#: publicPort, secretScanning, serviceName, visibility (read off the cluster
+#: 2026-09-06) -- and this fixture had four. That is fine for every test
+#: below that feeds it a hand-written document, and wrong for the one that
+#: feeds it the *real* rendered promotion claim: adding `allowDeletion` to
+#: that claim was reported as "not a field the live schema has -- refused on
+#: apply", against a cluster that has it. A guard against a stale schema,
+#: judging from a stale schema. `tools.claim_schema` itself reads the live
+#: XRD and was right the whole time; only this fixture drifted.
 GHS_SCHEMA = {
     "type": "object",
     "required": ["serviceName"],
@@ -16,6 +28,7 @@ GHS_SCHEMA = {
         "description": {"type": "string"},
         "publicPort": {"type": "integer"},
         "visibility": {"type": "string", "enum": ["private", "public"]},
+        "allowDeletion": {"type": "boolean"},
     },
 }
 
