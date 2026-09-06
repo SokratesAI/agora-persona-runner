@@ -211,21 +211,17 @@ def stamp_retired(item, reason, today):
     return f"{item}\n\n**Retired {today:%m-%d}** — {reason.strip()}"
 
 
-def archive_indices(live, archive, picked, reason, today):
-    """Move the items at `picked` (indices into `live_items`) out.
+def _check_reason(reason):
+    """Refuse a reason that would damage the archive, before anything else.
 
-    The index is the identity here, not the slug. `archive_retired` below
-    resolves slugs to indices and hands them over; `archive_older_than`
-    already has indices and must not round-trip them back through a slug
-    lookup, because a duplicate slug among the aged-out items would then
-    abort a selection that was never ambiguous in the first place.
-
-    Returns `(new_live, new_archive, moved)` and writes nothing -- the
-    caller owns both files and the order they are written in.
+    Checked here rather than left to `_check_archive`, for the reason
+    `nova_needs.archive_answered` gives: the reason is spliced in after
+    `verify` has run, so the heading guard cannot see it. It is its own
+    function so that `archive_retired` can run it *before* resolving
+    slugs -- the caller who passed both a bad slug and a bad reason used
+    to be told about the reason, and a refactor is not the place to
+    change which of two complaints a caller hears.
     """
-    # Checked here rather than left to `_check_archive`, for the reason
-    # `nova_needs.archive_answered` gives: the reason is spliced in after
-    # `verify` has run, so the heading guard cannot see it.
     if re.search(r"^#{1,6}[ \t]", reason, re.MULTILINE):
         raise RollError(
             "refusing to roll: the reason contains a markdown heading, "
@@ -239,6 +235,28 @@ def archive_indices(live, archive, picked, reason, today):
             "the unreadable log this tool exists to stop growing."
         )
 
+
+def archive_indices(live, archive, picked, reason, today):
+    """Move the items at `picked` (indices into `live_items`) out.
+
+    The index is the identity here, not the slug. `archive_retired` below
+    resolves slugs to indices and hands them over; `archive_older_than`
+    already has indices and must not round-trip them back through a slug
+    lookup, because a duplicate slug among the aged-out items would then
+    abort a selection that was never ambiguous in the first place.
+
+    `picked` is sorted and deduplicated on the way in, to match what
+    `plan` does with it internally. Without that, an index passed twice
+    would be stamped once and reported twice: the second `.replace` finds
+    the already-stamped copy and silently changes nothing, so `moved`
+    would over-report what the archive actually says.
+
+    Returns `(new_live, new_archive, moved)` and writes nothing -- the
+    caller owns both files and the order they are written in.
+    """
+    _check_reason(reason)
+
+    picked = sorted(set(picked))
     items = live_items(live)
     if len(picked) == len(items):
         raise RollError(
@@ -265,6 +283,7 @@ def archive_retired(live, archive, slugs, reason, today):
     Returns `(new_live, new_archive, moved)` and writes nothing -- the
     caller owns both files and the order they are written in.
     """
+    _check_reason(reason)
     picked = select_slugs(live_items(live), slugs)
     return archive_indices(live, archive, picked, reason, today)
 
@@ -345,12 +364,30 @@ def explain_none_older_than(items, cutoff):
     undated = [
         i for i in items if item_slug(i) is not None and newest_cycle(i) is None
     ]
-    recent = len(items) - len(unslugged) - len(undated)
-    parts = [f"{recent} cite(s) cycle {cutoff} or later"]
+    # `recent` is measured against the cutoff rather than inferred as
+    # "everything else". Inferring it would make this function correct
+    # only when `select_older_than` has already returned empty, and a
+    # caller who got that wrong would be handed the exact failure the
+    # docstring above describes -- a confident sentence about items this
+    # function never looked at.
+    recent = [
+        i
+        for i in items
+        if item_slug(i) is not None
+        and newest_cycle(i) is not None
+        and newest_cycle(i) >= cutoff
+    ]
+    parts = [f"{len(recent)} cite(s) cycle {cutoff} or later"]
     if unslugged:
         parts.append(f"{len(unslugged)} carr(y/ies) no slug")
     if undated:
         parts.append(f"{len(undated)} cite(s) no cycle at all")
+    stale = len(items) - len(unslugged) - len(undated) - len(recent)
+    if stale:
+        parts.append(
+            f"{stale} (y)our caller should have retired and did not -- "
+            "this was asked out of sequence"
+        )
     tail = ""
     if unslugged or undated:
         tail = (

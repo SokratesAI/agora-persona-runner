@@ -26,6 +26,7 @@ from agora_runner.nova_handoff import (  # noqa: F401 -- re-exported for callers
     ARCHIVE_TITLE,
     MARKER,
     SPEC,
+    archive_indices,
     archive_older_than,
     archive_retired,
     explain_none_older_than,
