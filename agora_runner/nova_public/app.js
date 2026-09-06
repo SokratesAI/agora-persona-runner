@@ -13006,6 +13006,181 @@
     form.appendChild(attach.input);
     send.parentNode.insertBefore(attach.button, send);
 
+    /* Talking to Nova instead of typing at her -- his `ideas.md` #221:
+     * *"I do have a goal of being able to talk to you instead of writing
+     * text like this."*
+     *
+     * This is the browser half and it is the whole of the first slice. The
+     * mic dictates into the same box he types in; the speaker reads each new
+     * answer back. There is no server, no model and no per-token cost --
+     * `SpeechRecognition` and `speechSynthesis` are the phone's own, and on
+     * iOS the recogniser is still only under the `webkit` prefix. The
+     * mechanism the row was open about (a WhatsApp call, some other dialler,
+     * or something in the app) is answered here by the cheapest of the three:
+     * it ships in one page load and needs nothing of his to be set up.
+     *
+     * Each button is revealed only if the API behind it is present, so a
+     * browser with neither shows exactly the composer it always had.
+     */
+    var voice = (function () {
+      var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      var synth = window.speechSynthesis;
+      var micBtn = document.getElementById("chat-mic");
+      var speakBtn = document.getElementById("chat-speak");
+      var SPEAK_KEY = "nova-chat-speak";
+      var listening = null;
+      var speakOn = false;
+      /* The newest message as it stood at the last paint, sender and text
+       * together. A *count* is the obvious key and it is the wrong one:
+       * `loadOlder` prepends history, so the array grows by twenty without a
+       * word being said, and a count-based rule would read a message from
+       * last Tuesday out loud. Comparing the tail only moves when the tail
+       * moves. `null` means nothing painted yet. */
+      var lastTail = null;
+
+      function speechLang() {
+        return document.documentElement.lang
+          || (window.navigator && window.navigator.language)
+          || "en-US";
+      }
+
+      /* Markdown is written to be looked at. Read aloud, the markers are
+       * noise -- "star star merged star star" -- so they come out and the
+       * words stay. A fenced block becomes the words "code block" rather
+       * than being spelled character by character. */
+      function plainSpeech(text) {
+        return String(text)
+          .replace(/```[\s\S]*?```/g, " code block ")
+          .replace(/`([^`]*)`/g, "$1")
+          .replace(/!\[[^\]]*\]\([^)]*\)/g, " image ")
+          .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+          // A `#` only comes out at the start of a line, where it is a
+          // heading. Stripping it everywhere turns `runner#42` into
+          // "runner 42", and a PR number is the one thing in these answers
+          // he most needs to hear correctly. `_` is left alone for the same
+          // reason -- `nova_site` is a name, not emphasis.
+          .replace(/^[ \t]*[#>]+[ \t]*/gm, "")
+          .replace(/\*/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      function say(text) {
+        var words = plainSpeech(text);
+        if (!words) return;
+        // One answer at a time: a second one arriving mid-sentence replaces
+        // the first rather than queueing behind it, because the one he is
+        // waiting to hear is always the newest.
+        synth.cancel();
+        var utterance = new window.SpeechSynthesisUtterance(words);
+        utterance.lang = speechLang();
+        synth.speak(utterance);
+      }
+
+      function syncMic() {
+        if (!micBtn) return;
+        micBtn.setAttribute("aria-pressed", listening ? "true" : "false");
+      }
+
+      function syncSpeak() {
+        if (!speakBtn) return;
+        speakBtn.setAttribute("aria-pressed", speakOn ? "true" : "false");
+      }
+
+      function startListening() {
+        var rec = new Recognition();
+        rec.lang = speechLang();
+        rec.interimResults = false;
+        rec.continuous = false;
+        rec.onresult = function (event) {
+          var said = "";
+          var results = event.results || [];
+          for (var i = event.resultIndex || 0; i < results.length; i += 1) {
+            said += results[i][0].transcript;
+          }
+          said = said.trim();
+          if (!said) return;
+          /* Dictation lands in the box and does not send. A recogniser that
+           * mishears has to be correctable before it goes out, and the box
+           * is where correcting already happens -- sending on silence would
+           * make every mishearing a message he cannot take back. */
+          box.value = box.value ? box.value.replace(/\s*$/, "") + " " + said : said;
+          growChatBox();
+        };
+        rec.onerror = function () {
+          status.textContent = "didn't catch that";
+        };
+        rec.onend = function () {
+          listening = null;
+          syncMic();
+        };
+        listening = rec;
+        syncMic();
+        try {
+          rec.start();
+        } catch (err) {
+          // `start()` on an already-running recogniser throws; treat it as
+          // not listening rather than leaving the button stuck pressed.
+          listening = null;
+          syncMic();
+        }
+      }
+
+      /* Called on every paint of the thread. */
+      function heard(messages) {
+        var list = messages || [];
+        var newest = list.length ? list[list.length - 1] : null;
+        var tail = newest ? (newest.sender + "\n" + newest.text) : "";
+        var was = lastTail;
+        lastTail = tail;
+        // First paint is history he has already read, and an unchanged tail
+        // is a repaint. Neither is something to read out.
+        if (was === null || tail === was) return;
+        if (!speakOn || !synth) return;
+        if (!newest || newest.sender === "Edvard" || !newest.text) return;
+        say(newest.text);
+      }
+
+      /* Switching threads makes the next paint history again -- without
+       * this, opening another conversation reads its last answer aloud. */
+      function forget() {
+        lastTail = null;
+      }
+
+      if (micBtn && Recognition) {
+        micBtn.removeAttribute("hidden");
+        micBtn.addEventListener("click", function () {
+          if (listening) {
+            listening.stop();
+            return;
+          }
+          startListening();
+        });
+      }
+
+      if (speakBtn && synth) {
+        speakBtn.removeAttribute("hidden");
+        try {
+          speakOn = window.localStorage.getItem(SPEAK_KEY) === "on";
+        } catch (err) {
+          speakOn = false;
+        }
+        syncSpeak();
+        speakBtn.addEventListener("click", function () {
+          speakOn = !speakOn;
+          // Switching it off stops the sentence in progress. Leaving it
+          // talking would make the button a lie about the next answer only.
+          if (!speakOn) synth.cancel();
+          try {
+            window.localStorage.setItem(SPEAK_KEY, speakOn ? "on" : "off");
+          } catch (err) { /* private mode: the toggle still works, it just won't survive a reload */ }
+          syncSpeak();
+        });
+      }
+
+      return { heard: heard, forget: forget };
+    })();
+
     function setDot(on) {
       if (on) dot.removeAttribute("hidden");
       else dot.setAttribute("hidden", "");
@@ -13037,6 +13212,10 @@
        * check only ever tests the mutation I thought of. */
       if (!isOpen && loaded && messages.length > lastCount) setDot(true);
       lastCount = messages.length;
+      // Reads the newest answer aloud when the speaker is switched on. It
+      // runs on every paint, including the ones that change nothing -- the
+      // decision about whether anything is new lives inside it.
+      voice.heard(messages);
       /* Both of these are read **before** the repaint and neither can be read
        * after it: `renderAskThread` empties the container, and emptying it
        * puts `scrollTop` back to 0. So a version of this that asked where he
@@ -13599,6 +13778,9 @@
       // looking at right now.
       loaded = false;
       lastCount = 0;
+      // Same reason, for the speaker: the newest message on a thread he has
+      // just opened is not an answer that arrived, so it is not read aloud.
+      voice.forget();
       // A new thread opens on its newest page, whatever he had scrolled back
       // to on the last one.
       pageLimit = PAGE_STEP;

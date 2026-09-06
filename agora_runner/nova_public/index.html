@@ -173,6 +173,17 @@
               autocapitalize="sentences" autocomplete="off"></textarea>
     <div class="chat-actions">
       <p id="chat-status" class="chat-status" role="status" aria-live="polite"></p>
+      <!-- Both start hidden and app.js reveals whichever of the two speech
+           APIs this browser actually has (ideas.md #221). A control that
+           cannot do anything is worse than no control. -->
+      <button id="chat-mic" class="attach-btn chat-voice" type="button" hidden
+              title="Speak your question" aria-label="Speak your question" aria-pressed="false">
+        <span aria-hidden="true">&#127908;</span>
+      </button>
+      <button id="chat-speak" class="attach-btn chat-voice" type="button" hidden
+              title="Read answers aloud" aria-label="Read answers aloud" aria-pressed="false">
+        <span aria-hidden="true">&#128266;</span>
+      </button>
       <button id="chat-send" class="chat-send" type="submit">Send</button>
     </div>
   </form>

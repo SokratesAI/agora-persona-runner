@@ -15551,3 +15551,186 @@ describe("the galaxy page", () => {
     assert.match(canvas.getAttribute("aria-label"), /2 sessions are working/);
   });
 });
+
+/* Talking to Nova instead of typing at her -- his `ideas.md` #221: *"I do
+ * have a goal of being able to talk to you instead of writing text like
+ * this."* The first slice is the browser's own speech APIs wired into the
+ * chat dock: a mic that dictates into the box, and a speaker that reads a
+ * new answer back.
+ *
+ * jsdom has neither API, which is what makes these tests worth writing --
+ * the absent case is the default here, so the "both buttons stay hidden"
+ * test cannot pass by accident, and every other test has to install a
+ * double before app.js runs. */
+describe("talking to Nova", () => {
+  /* A recogniser shaped like the browser's: `start()` records the call, and
+   * the test decides what it heard by calling `onresult` itself. */
+  function fakeRecognition(record) {
+    return function Recognition() {
+      const rec = {
+        lang: "",
+        interimResults: true,
+        continuous: true,
+        start() { record.started += 1; record.live = rec; },
+        stop() { record.stopped += 1; if (rec.onend) rec.onend(); },
+        onresult: null,
+        onerror: null,
+        onend: null,
+      };
+      record.made.push(rec);
+      return rec;
+    };
+  }
+
+  /* `tap` and `answersOnPoll` are named this in six other blocks of this
+   * file and scoped to each; these are this block's own copies rather than
+   * a seventh reach into somebody else's closure. */
+  function tap(window, id) {
+    window.document.getElementById(id).dispatchEvent(new window.Event("click"));
+  }
+
+  const waiting = { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] };
+  const answered = {
+    conversationId: "c", waiting: false,
+    messages: [{ id: "1", sender: "Edvard", text: "q" }, { id: "2", sender: "Nova", text: "Seven." }],
+  };
+
+  function answersOnPoll() {
+    let turn = 0;
+    return () => {
+      turn += 1;
+      return turn === 1 ? waiting : answered;
+    };
+  }
+
+  function fakeSynth(record) {
+    return {
+      speak(utterance) { record.spoken.push(utterance.text); },
+      cancel() { record.cancels += 1; },
+    };
+  }
+
+  function withSpeech(win, { recognition, synthesis } = {}) {
+    if (recognition) win.webkitSpeechRecognition = recognition;
+    if (synthesis) {
+      win.speechSynthesis = synthesis;
+      win.SpeechSynthesisUtterance = function (text) { this.text = text; this.lang = ""; };
+    }
+  }
+
+  test("a browser with no speech API shows neither button", async () => {
+    const window = await loadSite("/");
+    assert.ok(window.document.getElementById("chat-mic").hasAttribute("hidden"),
+      "a mic that cannot listen is worse than no mic");
+    assert.ok(window.document.getElementById("chat-speak").hasAttribute("hidden"),
+      "a speaker that cannot speak is worse than no speaker");
+  });
+
+  test("dictation lands in the box he types in rather than sending on its own", async () => {
+    const record = { made: [], started: 0, stopped: 0, live: null };
+    const window = await loadSite("/", {
+      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
+    });
+    const mic = window.document.getElementById("chat-mic");
+    assert.equal(mic.hasAttribute("hidden"), false, "the mic stayed hidden on a browser that has one");
+
+    tap(window, "chat-btn");
+    mic.dispatchEvent(new window.Event("click"));
+    assert.equal(record.started, 1, "tapping the mic did not start listening");
+    assert.equal(mic.getAttribute("aria-pressed"), "true", "nothing on screen says it is listening");
+
+    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "how many pods are running" }]] });
+    assert.equal(window.document.getElementById("chat-box").value, "how many pods are running");
+    assert.equal(window.posted.length, 0, "dictation sent itself before he could correct it");
+
+    record.live.onend();
+    assert.equal(mic.getAttribute("aria-pressed"), "false", "the button stayed pressed after it stopped");
+  });
+
+  test("dictating twice appends rather than replacing what he already said", async () => {
+    const record = { made: [], started: 0, stopped: 0, live: null };
+    const window = await loadSite("/", {
+      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
+    });
+    tap(window, "chat-btn");
+    const mic = window.document.getElementById("chat-mic");
+    mic.dispatchEvent(new window.Event("click"));
+    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "how many pods" }]] });
+    record.live.onend();
+    mic.dispatchEvent(new window.Event("click"));
+    record.live.onresult({ resultIndex: 0, results: [[{ transcript: "are running" }]] });
+    assert.equal(window.document.getElementById("chat-box").value, "how many pods are running");
+  });
+
+  test("tapping the mic while it is listening stops it", async () => {
+    const record = { made: [], started: 0, stopped: 0, live: null };
+    const window = await loadSite("/", {
+      install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
+    });
+    tap(window, "chat-btn");
+    const mic = window.document.getElementById("chat-mic");
+    mic.dispatchEvent(new window.Event("click"));
+    mic.dispatchEvent(new window.Event("click"));
+    assert.equal(record.stopped, 1, "the second tap started a second recogniser instead of stopping the first");
+    assert.equal(record.started, 1);
+  });
+
+  test("with the speaker on, an answer that arrives is read aloud and his own question is not", async () => {
+    const record = { spoken: [], cancels: 0 };
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
+      ask: answersOnPoll(),
+    });
+    const speaker = window.document.getElementById("chat-speak");
+    assert.equal(speaker.hasAttribute("hidden"), false, "the speaker stayed hidden on a browser that has one");
+    speaker.dispatchEvent(new window.Event("click"));
+    assert.equal(speaker.getAttribute("aria-pressed"), "true");
+
+    tap(window, "chat-btn");
+    await timers.fire();
+    assert.deepEqual(record.spoken, [], "it read the thread he opened, not the answer he was waiting for");
+
+    await timers.fire();
+    assert.deepEqual(record.spoken, ["Seven."], "the answer that landed was not read out");
+  });
+
+  test("with the speaker off, nothing is spoken", async () => {
+    const record = { spoken: [], cancels: 0 };
+    let timers;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
+      ask: answersOnPoll(),
+    });
+    // Deliberately not tapping the speaker: the default is silence, and this
+    // is the control for the test above -- without it that one would pass on
+    // a build that reads every answer aloud whatever the button says.
+    assert.equal(window.document.getElementById("chat-speak").getAttribute("aria-pressed"), "false");
+    tap(window, "chat-btn");
+    await timers.fire();
+    await timers.fire();
+    assert.deepEqual(record.spoken, []);
+  });
+
+  test("markdown markers come out of what is read aloud", async () => {
+    const record = { spoken: [], cancels: 0 };
+    let timers;
+    const answer = {
+      conversationId: "c", waiting: false,
+      messages: [
+        { id: "1", sender: "Edvard", text: "q" },
+        { id: "2", sender: "Nova", text: "**merged** `runner#42` and [the PR](https://x/1)\n\n```\nnpm test\n```" },
+      ],
+    };
+    let turn = 0;
+    const window = await loadSite("/", {
+      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
+      ask: () => { turn += 1; return turn === 1 ? { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] } : answer; },
+    });
+    window.document.getElementById("chat-speak").dispatchEvent(new window.Event("click"));
+    tap(window, "chat-btn");
+    await timers.fire();
+    await timers.fire();
+    assert.deepEqual(record.spoken, ["merged runner#42 and the PR code block"]);
+  });
+});
