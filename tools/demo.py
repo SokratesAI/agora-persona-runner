@@ -9,6 +9,7 @@ serves it.
     python3 -m tools.demo start bakeoff /data/workspace/demos/bakeoff
     python3 -m tools.demo list
     python3 -m tools.demo stop bakeoff
+    python3 -m tools.demo discard bakeoff   # ...and delete its files
     python3 -m tools.demo promote bakeoff     # "keep this" -- opens the claim PR
     python3 -m tools.demo ship bakeoff        # ...once that PR is merged
 
@@ -41,6 +42,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -58,6 +60,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     ALIVE,
     CLAIM_DIR,
     DEMOS_PATH,
+    DURABLE_ROOT,
     POD_GONE,
     PROCESS_GONE,
     PUBLIC_BASE,
@@ -65,6 +68,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     DemoError,
     check_promotable,
     claim_path,
+    discard_reason,
     dumps,
     entries,
     ephemeral_reason,
@@ -72,6 +76,7 @@ from agora_runner.nova_demos import (  # noqa: E402
     load,
     lookup,
     no_recorded_open,
+    orphan_dirs,
     promotion_branch,
     promotion_claim,
     register,
@@ -386,11 +391,79 @@ def cmd_stop(args):
     return 0
 
 
+def durable_dirs():
+    """Every directory sitting under `DURABLE_ROOT`, or [] if there is none."""
+    try:
+        return sorted(n for n in os.listdir(DURABLE_ROOT)
+                      if os.path.isdir(os.path.join(DURABLE_ROOT, n)))
+    except OSError:
+        return []
+
+
+def _print_orphans(registry):
+    """Name the directories on disk that no registry row claims.
+
+    `reap` frees a port held by a demo that is gone; nothing has ever
+    named the *files* left behind, so the only way to find them was to
+    `ls` the root by hand. A leak nobody can see is one nobody removes.
+    """
+    left = orphan_dirs(registry, durable_dirs())
+    if not left:
+        return
+    print(f"\n{len(left)} directory/directories under {DURABLE_ROOT} belong to "
+          f"no running demo -- `python3 -m tools.demo discard <slug>` deletes one:")
+    for name in left:
+        print(f"  {name}")
+
+
+def cmd_discard(args):
+    """Throw a demo away: stop it, drop its row, and delete its files.
+
+    Idea #139. `stop` does the first two and has never done the third, so
+    a demo is discardable only in the sense that it stops answering. This
+    is the whole command that row asks for on the local tier.
+
+    **It deletes an unregistered directory too, and that is the point.**
+    Five of the six directories on disk this morning belong to demos that
+    were stopped days ago; if discard only worked on registered slugs
+    those are unreachable and the leak this closes stays open. So a slug
+    with no row is not an error here -- `stop` says that, and this says
+    what it deleted.
+    """
+    registry, rev = _read_registry()
+    entry = lookup(registry, args.slug)
+    directory = entry.get("dir") if entry else os.path.join(DURABLE_ROOT, args.slug)
+    stopped = "was not registered"
+    if entry is not None:
+        rc = cmd_stop(args)
+        if rc != 0:
+            # `stop` printed why. Deleting the files under a process this
+            # account could not signal leaves it serving a hole -- exactly
+            # the shape `ephemeral_reason` exists to refuse.
+            return rc
+        stopped = "stopped"
+    if not directory:
+        print(f"{args.slug}: {stopped}; no directory was recorded to delete")
+        return 0
+    refusal = discard_reason(directory)
+    if refusal:
+        print(f"refusing to delete {args.slug}'s directory: {refusal}",
+              file=sys.stderr)
+        return 2
+    if not os.path.isdir(directory):
+        print(f"{args.slug}: {stopped}; {directory} is already gone")
+        return 0
+    shutil.rmtree(directory)
+    print(f"{args.slug}: {stopped}; deleted {directory}")
+    return 0
+
+
 def cmd_list(args):
     registry, _ = _read_registry()
     rows = entries(registry)
     if not rows:
         print("no demos are running")
+        _print_orphans(registry)
         return 0
     here = pod_ip()
     activity = fetch_activity()
@@ -415,6 +488,7 @@ def cmd_list(args):
         # failure this listing was printing before: `reap` is the button.
         print(f"\n{stale} of {len(rows)} hold a port and are not serving "
               f"anything -- `python3 -m tools.demo reap` releases them")
+    _print_orphans(registry)
     return 0
 
 
@@ -706,6 +780,11 @@ def main(argv=None):
     stop = sub.add_parser("stop", help="stop a demo and release its port")
     stop.add_argument("slug")
     stop.set_defaults(func=cmd_stop)
+
+    discard = sub.add_parser(
+        "discard", help="stop a demo and delete its files (idea #139)")
+    discard.add_argument("slug")
+    discard.set_defaults(func=cmd_discard)
 
     lst = sub.add_parser("list", help="what is running")
     lst.set_defaults(func=cmd_list)

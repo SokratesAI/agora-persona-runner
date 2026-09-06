@@ -203,6 +203,66 @@ def ephemeral_reason(directory, slug="<slug>", environ=None):
     )
 
 
+def discard_reason(directory, environ=None):
+    """Why `rm -rf`-ing `directory` would be wrong, or None if it is safe.
+
+    Idea #139: *"a throwaway you cannot throw away is not temporary."*
+    `stop` kills the process and drops the registry row and has never
+    deleted anything from disk, so every demo ever handed over is still
+    sitting under `DURABLE_ROOT` -- six directories this morning, one of
+    which is registered. The other five are the whole of what this
+    function exists to let a cycle remove.
+
+    The guard is a containment test and it is the only thing between a
+    typo and a recursive delete of something that matters, so it is a
+    pure function with its own tests rather than an `if` inside the
+    command. Three refusals, each of which a plausible call reaches:
+
+    * anything that is not under `DURABLE_ROOT` -- a demo may be started
+      from any directory, and `start` only refuses the *ephemeral* roots,
+      so a registry row can legitimately point at `/data/workspace` or at
+      a checkout. Deleting one of those is the accident worth being
+      unable to have.
+    * `DURABLE_ROOT` itself, which contains every other demo.
+    * a path whose *resolved* form escapes -- `realpath`, not `abspath`,
+      for the same reason `ephemeral_reason` uses it: a symlink at a safe
+      path pointing somewhere else is still a delete of somewhere else.
+
+    Containment compares against `root + os.sep` so a sibling directory
+    named `/data/workspace/demos-archive` is not read as inside
+    `/data/workspace/demos`.
+    """
+    root = os.path.realpath(DURABLE_ROOT)
+    path = os.path.realpath(directory)
+    if path == root:
+        return (f"{path} is the demo root itself and holds every other "
+                f"demo; name a slug's own directory")
+    if not path.startswith(root + os.sep):
+        return (f"{path} is outside {root}; this only deletes a demo's own "
+                f"directory, and a registry row may point anywhere")
+    return None
+
+
+def orphan_dirs(registry, names):
+    """Directory names under `DURABLE_ROOT` that no registry row claims.
+
+    `names` is what the caller read off the disk, so this stays pure and
+    the listing command owns the `os.listdir`. A row pointing outside
+    `DURABLE_ROOT` claims no name here, which is correct: its directory is
+    not one of these and must not be offered for deletion.
+    """
+    root = os.path.realpath(DURABLE_ROOT)
+    claimed = set()
+    for demo in entries(registry):
+        directory = demo.get("dir")
+        if not directory:
+            continue
+        path = os.path.realpath(directory)
+        if path.startswith(root + os.sep):
+            claimed.add(path[len(root) + 1:].split(os.sep)[0])
+    return sorted(n for n in names if n not in claimed)
+
+
 def _free_port(registry):
     taken = {d.get("port") for d in registry.get("demos", [])}
     for port in range(PORT_MIN, PORT_MAX + 1):
