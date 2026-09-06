@@ -74,10 +74,14 @@ from agora_runner.heartbeat_liveness import (  # noqa: E402
 #: claimed by two. Not a tolerance to tune --- it is the midpoint.
 _SLOT_SHARE = 0.5
 
-#: The most conversations to ask Agora for in one read. Nova alone writes
-#: ~96 a day, and the window this defaults to is 24h; 400 covers four days
-#: of it and the check names its own shortfall rather than silently reading
-#: a partial window.
+#: The most conversations to ask Agora for in one read. Measured 2026-09-06:
+#: Agora ignores this parameter and returns its whole list anyway --- 1,047
+#: rows against a limit of 400 --- so this is a ceiling this asks for and
+#: does not get, not one it enforces. It stays because the day the endpoint
+#: starts honouring it, four days of Nova's ~96-a-day is the window worth
+#: having; and either way the report names its own shortfall rather than
+#: silently judging a partial window. The honest cost of that is a
+#: megabyte-scale read once per preflight sweep.
 _CONVERSATION_LIMIT = 400
 
 
