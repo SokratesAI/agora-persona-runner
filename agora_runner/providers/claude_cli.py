@@ -130,7 +130,25 @@ def _bridge_persona_id(persona):
 
 
 def claude_cli_generate(model_id, thinking, system, history, caps, persona, conversation_id,
-                         on_text=None, active_step=None, on_thinking=None):
+                         on_text=None, active_step=None, on_thinking=None, ephemeral=False):
+    """ephemeral (2026-09-06): this turn is a side question, not a turn of the
+    conversation -- the /invoke path behind Ask, which Decisions/0005 defines
+    as tool-less and persisting nothing. It needs `conversation_id` anyway,
+    because the bridge refuses a request without one (400 "conversation_id and
+    prompt (or attachments) are required"), which is why Ask answered 502 on
+    every claude-cli persona until today and therefore only ever worked on the
+    metered `anthropic:` models production may not use.
+
+    Handing the real id over is not enough on its own, and passing it alone
+    would have been worse than the 502: `generate` below resumes the
+    conversation's stored CLI session by that id and writes the new session id
+    back, so a side question would land inside the conversation's own history;
+    and `grant_tool_activity` returns a token for any truthy id, so the CLI's
+    tool calls would render as chips in a conversation Ask is not supposed to
+    write to. So ephemeral forces the two flags that already exist for exactly
+    this shape -- `stateless` (never read or write the stored session) and
+    `restricted` (block the tool roster) -- and takes no activity grant.
+    """
     if not history:
         raise RuntimeError("empty history after normalization")
     # `or ""`, not a default: merge_history copies `text` through
@@ -157,8 +175,8 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         "system": system,
         "prompt": prompt,
         "model": model_id,
-        "restricted": bool(persona.get("claudeCliRestricted")),
-        "stateless": bool(persona.get("claudeCliStateless")),
+        "restricted": bool(persona.get("claudeCliRestricted")) or ephemeral,
+        "stateless": bool(persona.get("claudeCliStateless")) or ephemeral,
         # Off unless CLAUDE_CLI_CONCURRENT is set on this deployment. See
         # config.py: this is the 18-minute-cadence switch, and until it is
         # on, a second heartbeat blocks on the bridge's lock rather than
@@ -185,7 +203,7 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
     # conversation and revoked the moment the call ends -- tool_activity.py
     # explains why it is a callback here rather than the bridge posting to
     # Agora directly.
-    activity_token = grant_tool_activity(persona.get("name", ""), conversation_id)
+    activity_token = None if ephemeral else grant_tool_activity(persona.get("name", ""), conversation_id)
     if activity_token:
         body["activity"] = {
             "url": f"{RUNNER_SELF_URL}/tool-activity",
