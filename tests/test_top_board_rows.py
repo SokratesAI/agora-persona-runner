@@ -37,6 +37,19 @@ def _no_live_projects_read(monkeypatch):
     monkeypatch.setattr(top_board_rows, "fetch_projects", lambda: ("", True))
 
 
+@pytest.fixture(autouse=True)
+def _no_live_diagnoses_read(monkeypatch):
+    """Nor for the low-satisfaction diagnosis log, for the same reason.
+
+    `main` fetches it when `--diagnoses` is not given, which is every test
+    in this file that predates the forced diagnosis. `("", True)` is the
+    log being absent -- nothing has been diagnosed -- which renders
+    nothing at all, so those tests see the output they were written
+    against.
+    """
+    monkeypatch.setattr(top_board_rows, "fetch_diagnoses", lambda: ("", True))
+
+
 def board(*rows, done=()):
     """A board file with the live five-column `## Board` shape."""
     head = ["## Board", "", "| # | Item | Status | Updated | Priority |",
