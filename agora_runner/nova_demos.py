@@ -400,11 +400,33 @@ def opened_by_a_person(user_agent):
     `no_recorded_open` without this would have been a guard that reports itself
     working and guards nothing, in the one flow that uses it.
 
+    **A headless browser is a probe wearing a browser's clothes**, and that
+    is how this guard came back. The `Mozilla` test above was written when
+    the proof was one `urllib` GET. The proof is a real browser now --
+    `prompt.md` asks a cycle to drive its own demo in phone-sized Chromium
+    via `tools.see_page.render_env` before handing the link over, because an
+    HTML file that loads says nothing about the JavaScript -- and Playwright's
+    Chromium announces itself as `Mozilla/5.0 (X11; Linux x86_64)
+    AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/131.0.6778.33
+    Safari/537.36` (measured Cycle 1048, off the browser this repo actually
+    launches). Every word of that says browser. So the stronger proof put
+    the demo straight back on the two-hour idle clock, which is the exact
+    failure the paragraph above says this function exists to prevent.
+
+    `Headless` is the whole discriminator and it is deliberately not a list
+    of tool names: Chromium, Chrome and Edge all put it in the product
+    token when they run without a window, and nothing a person taps does.
+
     Wrong in the safe direction on purpose. A real open that is not counted
     leaves the demo on the *longer* unopened clock and costs nothing; a
-    probe counted as an open is the failure above.
+    probe counted as an open is the failure above. That asymmetry is why
+    this rejects on a substring rather than trying to recognise the
+    browsers a person might really use.
     """
-    return "Mozilla" in (user_agent or "")
+    agent = user_agent or ""
+    if "Headless" in agent:
+        return False
+    return "Mozilla" in agent
 
 
 def no_recorded_open(entry, activity):
