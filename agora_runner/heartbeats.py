@@ -343,14 +343,38 @@ def run_heartbeat(heartbeat):
     # replacement pod reads it — and it starts the same cycle over. A
     # kill isn't an exception, so the `except Exception` below can never
     # clean this up; only a claim written up front survives it.
+    #
+    # `ifLastRunAt` makes that claim a compare-and-swap (agora#89): the write
+    # lands only while `lastRunAt` still holds the value this snapshot was
+    # read at, so of two pollers that both saw the same due tick exactly one
+    # wins and the other is told 409. Nothing overlaps today — the runner
+    # deploys with `Recreate` and a 48-minute grace, so the replacement pod is
+    # not created until the running cycle exits, which is the outage in issue
+    # #130 — and this is the guard that has to exist before that Deployment
+    # can move to RollingUpdate.
+    #
+    # `previous_run_at` is the right token and not merely a convenient one:
+    # it is read off the same snapshot `run_due_heartbeats` decided due-ness
+    # from, so it is exactly the state the decision was made against.
     claim_status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
-                                     {"forceRun": False,
+                                     {"ifLastRunAt": previous_run_at,
+                                      "forceRun": False,
                                       "lastRunAt": datetime.now(timezone.utc).isoformat(),
                                       "lastResult": "running"})
+    if claim_status == 409:
+        # Somebody else claimed this tick. This is the one claim failure that
+        # is a real answer rather than a blip, and it is fatal on purpose:
+        # running anyway is the duplicate cycle the claim exists to prevent.
+        log(f"heartbeat {heartbeat['name']}: another poller claimed this run "
+            "(HTTP 409 on the lastRunAt compare-and-swap), not running it here")
+        return
     if claim_status not in (200, 201):
         # Not fatal — a transient Agora blip shouldn't block a real
         # cycle — but never silent: this line is the evidence if
-        # duplicate runs ever reappear.
+        # duplicate runs ever reappear. An Agora too old to know
+        # `ifLastRunAt` answers 400 here and lands in this branch, which is
+        # the same unclaimed-but-running behaviour this had before, so the
+        # two halves may roll in either order without losing a cycle.
         log(f"heartbeat {heartbeat['name']}: claim PATCH failed (HTTP {claim_status}), "
             "run is unclaimed and may be duplicated by a restart or another replica")
     persona = fetch_persona(heartbeat["personaId"])
