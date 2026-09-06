@@ -1980,6 +1980,23 @@ body.nav-open { overflow: hidden; }
    abandoned. */
 .chip-blocked-on-edvard { color: var(--warn); border-color: var(--warn); border-style: dashed; }
 
+/* Size (idea #260, milestone M2). A t-shirt estimate of the work, S/M/L/XL,
+   sitting beside the status and the rating -- so the one thing it must not
+   do is read as a third judgement. No colour and no fill: the four sizes are
+   drawn identically, because XL is not worse than S and any weight ramp here
+   would say it was. What separates it from the two chips beside it is shape
+   rather than hue -- square corners and a monospace letter, so it reads as a
+   measurement at a glance. Cursor is default because, unlike the rating,
+   nothing here is tappable: sizing a row is mine, not his (the spec assigns
+   it to "Nova, directly"). */
+.chip.size {
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  cursor: default;
+}
+
 /* Priority sits beside the status chip, so it must not read as a second
    status. Filled rather than outlined, and the four ratings step down in
    weight as well as hue -- red/green is the one pair a colour-blind

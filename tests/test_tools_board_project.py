@@ -123,13 +123,22 @@ def test_the_project_list_is_read_back_off_the_rows(tmp_path):
     assert board_projects(items) == ["NAS", DEFAULT_PROJECT]
 
 
-def test_the_header_grows_a_sixth_column(tmp_path):
-    """A six-cell row under a five-cell header is dropped by Obsidian."""
+def test_the_header_grows_to_the_full_board_width(tmp_path):
+    """A data row wider than its header is dropped by Obsidian.
+
+    The widener takes the header to `_BOARD_WIDTH` in one go rather than to
+    the one column the caller is setting, so writing a project also names
+    the `Size` column that milestone M2 added. Both headings are asserted
+    by name and not only by a `|` count: a count passes on a header that
+    grew an unlabelled cell, which is the failure the width constant is
+    supposed to have made impossible.
+    """
     code, path = _run(tmp_path)
     assert code == 0
     text = path.read_text(encoding="utf-8")
     header = [line for line in text.split("\n") if line.startswith("| # |")][0]
-    assert header.count("|") == 7, header
+    assert header.count("|") == 8, header
+    assert header.rstrip().endswith("| Priority | Project | Size |"), header
 
 
 def test_a_bad_row_in_a_multi_row_run_writes_nothing(tmp_path, capsys):

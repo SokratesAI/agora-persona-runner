@@ -1268,6 +1268,56 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
   });
 });
 
+/* The `Size` badge -- milestone M2 of idea #260's picking redesign. The
+ * field is a t-shirt estimate of the work on a row, and this is the whole
+ * of it from where he stands: a lettered badge beside the status and the
+ * rating.
+ *
+ * The absent case is the one worth pinning rather than the present one. An
+ * unestimated row is the common row today -- every row on both boards is
+ * one -- and the server sends `size: ""` for it, so a badge drawn
+ * unconditionally would put an empty pill on every card and the *absence*
+ * of one would stop meaning anything. */
+describe("the size badge", () => {
+  /* `board` is a per-URL responder rather than a body -- the same route
+   * serves the list and a single row, and `serve` tells them apart on the
+   * URL. Returning `null` for anything else falls back to the real
+   * fixture, so only the list is stubbed here. */
+  const sized = (size, sizeKey) => {
+    const board = structuredClone(payload.board);
+    board.items[0].size = size;
+    board.items[0].sizeKey = sizeKey;
+    return (url) => (url.includes("item=") ? null : board);
+  };
+
+  test("draws the letter the server sent, with its key as a class", async () => {
+    const number = payload.board.items[0].number;
+    const window = await loadSite("/issues", { board: sized("XL", "xl") });
+    const row = window.document.getElementById("item-" + number);
+    const badge = row.querySelector(".item-meta-row > .chip.size");
+    assert.ok(badge, "no size badge was drawn on a row the server sized");
+    assert.equal(badge.textContent, "XL");
+    assert.equal(badge.className, "chip size size-xl");
+    /* Not a button: sizing a row is mine, not his, so a control here would
+     * be one whose only outcome is that nothing happens. */
+    assert.notEqual(badge.tagName, "BUTTON");
+  });
+
+  test("draws nothing at all on an unestimated row", async () => {
+    const number = payload.board.items[0].number;
+    const window = await loadSite("/issues", { board: sized("", "") });
+    const row = window.document.getElementById("item-" + number);
+    assert.equal(row.querySelector(".chip.size"), null,
+      "an unestimated row was given an empty badge, so absence stops reading as unsized");
+    /* The control: the same selector must match on a sized row, or the
+     * assertion above passes against a badge that was simply renamed. */
+    const other = await loadSite("/issues", { board: sized("S", "s") });
+    assert.ok(
+      other.document.getElementById("item-" + number).querySelector(".chip.size"),
+      "the selector matches nothing at all, so the assertion above is vacuous");
+  });
+});
+
 /* The `Project` chip row -- idea #92's phase 2. The chip is the whole
  * feature from where he stands: the column exists to be filtered on, and
  * a column nothing filters on is a column he has to read cell by cell.

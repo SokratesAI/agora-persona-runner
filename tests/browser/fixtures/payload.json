@@ -357,6 +357,8 @@
         "priority": "",
         "priorityKey": "",
         "project": "Nova",
+        "size": "",
+        "sizeKey": "",
         "done": false
       },
       {
@@ -369,6 +371,8 @@
         "priority": "",
         "priorityKey": "",
         "project": "Nova",
+        "size": "",
+        "sizeKey": "",
         "done": false
       },
       {
@@ -381,6 +385,8 @@
         "priority": "",
         "priorityKey": "",
         "project": "Nova",
+        "size": "",
+        "sizeKey": "",
         "done": false
       },
       {
@@ -393,6 +399,8 @@
         "priority": "",
         "priorityKey": "",
         "project": "Nova",
+        "size": "",
+        "sizeKey": "",
         "done": true
       }
     ],
@@ -455,6 +463,8 @@
       "priority": "",
       "priorityKey": "",
       "project": "Nova",
+      "size": "",
+      "sizeKey": "",
       "done": false,
       "blocks": [
         {
