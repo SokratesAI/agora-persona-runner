@@ -359,6 +359,7 @@
         "project": "Nova",
         "size": "",
         "sizeKey": "",
+        "milestone": "",
         "done": false
       },
       {
@@ -373,6 +374,7 @@
         "project": "Nova",
         "size": "",
         "sizeKey": "",
+        "milestone": "",
         "done": false
       },
       {
@@ -387,6 +389,7 @@
         "project": "Nova",
         "size": "",
         "sizeKey": "",
+        "milestone": "",
         "done": false
       },
       {
@@ -401,6 +404,7 @@
         "project": "Nova",
         "size": "",
         "sizeKey": "",
+        "milestone": "",
         "done": true
       }
     ],
@@ -465,6 +469,7 @@
       "project": "Nova",
       "size": "",
       "sizeKey": "",
+      "milestone": "",
       "done": false,
       "blocks": [
         {

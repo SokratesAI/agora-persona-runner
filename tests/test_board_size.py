@@ -97,7 +97,8 @@ def test_the_header_gains_the_size_column():
     """
     written = set_row_size(BOARD, 7, "s")
     header = [line for line in written.split("\n") if line.startswith("| # |")][0]
-    assert header == "| # | Idea | Status | Updated | Priority | Project | Size |"
+    assert header == ("| # | Idea | Status | Updated | Priority | Project "
+                      "| Size | Milestone |")
     # `## Done` is a different table with a different shape and must not
     # have grown anything.
     assert "| # | Item | Landed | Where |" in written
