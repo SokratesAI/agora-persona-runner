@@ -142,6 +142,7 @@ from agora_runner.nova_capture import (
     set_project,
     set_project_priority,
     set_project_order,
+    set_project_satisfaction,
     project_priorities,
 )
 from agora_runner.nova_comments import (
@@ -199,6 +200,8 @@ from agora_runner.nova_boards import (
     split_capture_priority,
     split_detail_conversation,
     project_trl_key,
+    PROJECT_SATISFACTION_MAX,
+    canonical_satisfaction,
 )
 from agora_runner.nova_conversation_reads import mark_seen as mark_conversation_seen
 from agora_runner.nova_conversations import (
@@ -1711,6 +1714,13 @@ def project_payload(name=None):
                 "trl": (meta.get(name.lower()) or {}).get("trl") or "",
                 "trlKey": project_trl_key(
                     (meta.get(name.lower()) or {}).get("trl") or ""),
+                # How satisfied he is with it (idea #260, M5), 1-5, `0`
+                # for unrated. Unrated and 1 are different answers and
+                # nothing collapses them -- the spec hangs an automatic
+                # diagnosis off "2 or below" and silence is not a 2.
+                "satisfaction": (
+                    meta.get(name.lower()) or {}).get("satisfaction") or 0,
+                "satisfactionMax": PROJECT_SATISFACTION_MAX,
             }
             for name in known
         },
@@ -4975,6 +4985,68 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_project_satisfaction(self, payload):
+        """`POST /api/project/satisfaction` -- how happy he is with a project.
+
+        Milestone M5 of idea #260: *"satisfaction 1-5: mine alone, a score
+        of 2 or below auto-forces a diagnosis"*. This is the whole write
+        path for that field, and it is a route rather than a CLI on
+        purpose. `tools.project_trl` beside it is the opposite call for the
+        opposite reason: the TRL is mine, so a button would say he owns a
+        number he does not; the satisfaction is his, so a command line
+        would let a cycle write his opinion for him.
+
+        `score` is checked as an `int` here rather than coerced, the same
+        call `_post_project_order` makes -- and `canonical_satisfaction`
+        refuses a `bool` explicitly, because `True == 1` in Python and a
+        client sending `true` would otherwise score a project 1 out of 5.
+        `0` is legal and clears the score back to unrated; the markdown
+        layer takes `""` for that, so the two spellings meet here rather
+        than in his file.
+
+        Everything else the write can refuse -- an unknown project, a file
+        with no table -- is `set_project_satisfaction`'s to answer, because
+        those are facts about the document rather than about the request.
+        """
+        project = payload.get("project")
+        score = payload.get("score")
+        if not isinstance(project, str) or not project.strip():
+            self._send_json(400, {"error": "project must be a non-empty string"})
+            return
+        if isinstance(score, bool) or not isinstance(score, int):
+            self._send_json(400, {"error": "score must be an integer"})
+            return
+        if score == 0:
+            wanted = ""
+        elif canonical_satisfaction(score) is None:
+            self._send_json(
+                400,
+                {"error": f"score must be 1-{PROJECT_SATISFACTION_MAX}, or 0 to clear"})
+            return
+        else:
+            wanted = score
+
+        try:
+            ok, message = set_project_satisfaction(project.strip(), wanted)
+        except Exception as e:
+            log(f"nova-site project satisfaction failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        # Nothing to invalidate, the same as the rating and the order
+        # beside it: the project payload reads this table uncached on
+        # every page load.
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Score project {project.strip()} \u00b7 {'ok' if ok else message}",
+            after=str(score),
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def _post_board_comment(self, payload):
         """`POST /api/board/comment` -- idea #64, the comment half.
 
@@ -5776,6 +5848,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture/convert", "/api/capture/promote", "/api/comment",
             "/api/board/priority", "/api/board/project",
             "/api/project/priority", "/api/project/order",
+            "/api/project/satisfaction",
             "/api/board/edit", "/api/board/delete", "/api/board/archive",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
@@ -5867,6 +5940,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/project/order":
             self._post_project_order(payload)
+            return
+        if path == "/api/project/satisfaction":
+            self._post_project_satisfaction(payload)
             return
         if path in ("/api/board/edit", "/api/board/delete"):
             self._post_board_amend(payload, delete=path.endswith("delete"))

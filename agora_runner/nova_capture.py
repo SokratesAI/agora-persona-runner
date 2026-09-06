@@ -58,6 +58,7 @@ from agora_runner.nova_boards import (
     parse_project_meta,
     set_project_priority as _set_project_priority_md,
     set_project_order as _set_project_order_md,
+    set_project_satisfaction as _set_project_satisfaction_md,
     canonical_priority,
     append_detail_note,
     capture_entries,
@@ -899,6 +900,41 @@ def set_project_order(project, position):
             break
     log(f"nova-capture failed placing project {project!r}: {result}")
     return False, f"could not write project order: {result}"
+
+
+def set_project_satisfaction(project, score):
+    """Record how satisfied he is with a project, 1-5. Returns (ok, message).
+
+    Milestone M5 of idea #260, and the only write path this field has:
+    *"satisfaction 1-5: mine alone"*. Same read-modify-write and same 409
+    retry as `set_project_order` one function up, against the same
+    document, and for the same reason -- a cycle boarding his files is the
+    concurrent writer.
+
+    **A missing file is a refusal here, the same as a position and unlike a
+    rating.** A rating creates the table because the first rating has to
+    land somewhere; a satisfaction score is a judgement about a project,
+    and a project that has never been rated has no row to judge.
+
+    `""` clears the score back to unrated and is not the same as 1 -- the
+    spec hangs an automatic diagnosis off "2 or below", and that must never
+    fire because nobody has pressed anything.
+    """
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(PROJECT_META_PATH)
+        updated = _set_project_satisfaction_md(current or "", project, score)
+        if updated is None:
+            return False, f"cannot score {project!r} as {score!r}"
+        result = vault_write_path(PROJECT_META_PATH, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture scored project {project!r} at {score or '(unrated)'}")
+            shown = f"{score} of 5" if score else "unrated"
+            return True, f"{project} is now {shown}"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed scoring project {project!r}: {result}")
+    return False, f"could not write project satisfaction: {result}"
 
 
 def project_priorities():
