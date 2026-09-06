@@ -91,7 +91,9 @@ as coverage. See `SUBJECT`.
 
 Checks run concurrently because they are independent and several are slow
 (`pin_drift` ~30s, `security_alerts` ~14s against 21 repos); output is
-printed in the declared order regardless, so two runs are comparable.
+printed in the declared order regardless, so two runs are comparable. The
+exception is `SOLO`, which is the roster of checks whose subject this sweep
+is itself load on -- they run after the pool drains, alone.
 """
 import argparse
 import concurrent.futures
@@ -181,6 +183,30 @@ CHECKS = (
     "roadmap_drift",
     "recap_health",
 )
+
+#: Checks that must not run while the rest of the sweep is running, because
+#: the sweep is load on the thing they measure.
+#:
+#: `cpu_throttle` reads how much of each container's runnable time the kernel
+#: took away at its own CPU limit, over a 20-second window. Run inside the
+#: concurrent group it samples a cluster that this sweep is hammering, and the
+#: two containers it hammers hardest are the two it then reports: `nova-site`,
+#: which `reply_health` asks for 30 cycle threads, and `agora-claude-bridge`,
+#: which is the pod every check in the sweep executes in. Measured Cycle 1061,
+#: two minutes apart on an otherwise idle cluster: inside the pool nova-site
+#: read **89.4% throttled over 151 periods** and the bridge **53.0% over 302**,
+#: raising exit 2; run alone, nova-site accumulated **29** periods and fell
+#: under `MIN_PERIODS` entirely while the bridge read **0.0%**. So the ACT was
+#: manufactured by the observer, and a cycle acting on it would have gone
+#: looking for a load that only exists while it is looking.
+#:
+#: Running these after the pool drains costs their own wall clock -- about 21s
+#: for `cpu_throttle` -- and that is the price of the number meaning anything.
+#: It is not perfect isolation and does not claim to be: another Nova cycle
+#: sweeping at the same moment is load this process cannot see. What it removes
+#: is the load this process makes itself, which is the part that was guaranteed
+#: to be there every single sweep.
+SOLO = ("cpu_throttle",)
 
 #: Where each check's *subject* lives, and it is not where the check runs --
 #: every one of these runs here, inside the cycle, on server1.
@@ -1091,10 +1117,17 @@ def main(argv=None):
     names, held = due_and_held(names, cadence_state, now)
 
     results = [("source_revision", rev_code, rev_report, rev_seconds)] + [None] * len(names)
+    # `SOLO` checks are held out of the pool and run after it drains -- see the
+    # constant. Their slot in `results` is the same either way, so the report
+    # still prints in the declared order and two sweeps stay comparable.
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {pool.submit(run_check, name): i + 1 for i, name in enumerate(names)}
+        futures = {pool.submit(run_check, name): i + 1
+                   for i, name in enumerate(names) if name not in SOLO}
         for future in concurrent.futures.as_completed(futures):
             results[futures[future]] = future.result()
+    for i, name in enumerate(names):
+        if name in SOLO:
+            results[i + 1] = run_check(name)
 
     keep = {} if state is not None else None
     if keep is not None:
