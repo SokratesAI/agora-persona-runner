@@ -10880,6 +10880,16 @@
    */
   var convOpenId = null;
   var convOpenName = "";
+  /* The container `openConversation` painted the messages into.
+   *
+   * Held so that something outside the page can ask for a repaint -- which
+   * today is exactly one caller, the service worker telling us the thread it
+   * prefetched for a notification has moved since. `convOpenId` alone is not
+   * enough: every repaint path here also needs the element, and rebuilding
+   * the page instead would throw away his scroll position and anything he
+   * had half-typed into the composer.
+   */
+  var convOpenThread = null;
 
   function renderConvThread(container, payload, afterSend) {
     container.textContent = "";
@@ -10915,30 +10925,43 @@
     };
   }
 
+  /* Repaint an open thread from a payload, keeping him where he was reading.
+   *
+   * Extracted from `pollConv` because the service worker can now ask for the
+   * same repaint (see the `message` listener at the bottom of this file), and
+   * a second copy of the scroll handling is a second place for it to be got
+   * wrong. Returns whether it actually painted, which is what lets the poll
+   * tell "the answer moved on" from "he has navigated away".
+   *
+   * Both measurements are taken **before** the repaint and neither can be
+   * taken after it: `renderConvThread` empties the container, which collapses
+   * the document, and the browser clamps the scroll offset to the shorter
+   * page. So by the time the messages are back he is somewhere near the top
+   * and there is nothing left to read.
+   *
+   * His capture, `issues.md` #140: *"Chat auto-scrolls to the bottom every
+   * time a new message arrives even if I've scrolled up to reread
+   * something."* Cycle 568 fixed that in the chat dock and this page was
+   * never touched, where it is worse rather than the same -- the dock jumped
+   * him to the newest message, this threw him to the oldest one.
+   */
+  function repaintConvThread(container, conversationId, payload) {
+    if (route(window.location.pathname).view !== "conversations") return false;
+    if (convOpenId !== conversationId) return false;
+    var follow = pageAtBottom();
+    var was = pageScrollTop();
+    renderConvThread(container, payload, convAfterSend(container, conversationId));
+    if (follow) scrollPageToBottom();
+    else window.scrollTo(0, was);
+    return true;
+  }
+
   function pollConv(container, conversationId, attempts) {
     if (attempts >= ASK_POLL_MAX) return;
     livePolls.push(setTimeout(function () {
       fetchPage("/api/conversations/thread?id=" + encodeURIComponent(conversationId))
         .then(function (payload) {
-          if (route(window.location.pathname).view !== "conversations") return;
-          if (convOpenId !== conversationId) return;
-          /* Both measurements are taken **before** the repaint and neither
-           * can be taken after it: `renderConvThread` empties the container,
-           * which collapses the document, and the browser clamps the scroll
-           * offset to the shorter page. So by the time the messages are back
-           * he is somewhere near the top and there is nothing left to read.
-           *
-           * His capture, `issues.md` #140: *"Chat auto-scrolls to the bottom
-           * every time a new message arrives even if I've scrolled up to
-           * reread something."* Cycle 568 fixed that in the chat dock and
-           * this page was never touched, where it is worse rather than the
-           * same -- the dock jumped him to the newest message, this threw
-           * him to the oldest one. */
-          var follow = pageAtBottom();
-          var was = pageScrollTop();
-          renderConvThread(container, payload, convAfterSend(container, conversationId));
-          if (follow) scrollPageToBottom();
-          else window.scrollTo(0, was);
+          if (!repaintConvThread(container, conversationId, payload)) return;
           if (payload.waiting) pollConv(container, conversationId, attempts + 1);
         })
         .catch(function () { pollConv(container, conversationId, attempts + 1); });
@@ -10978,6 +11001,7 @@
     paintModelPicker(modelHost, id);
 
     var thread = el("div", "ask-thread");
+    convOpenThread = thread;
     var form = el("form", "ask-form");
     var box = el("textarea", "ask-box");
     box.setAttribute("rows", "3");
@@ -12799,6 +12823,32 @@
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").then(subscribeToPush).catch(function () {});
+    /* The worker retracting a thread it served him out of its prefetch cache.
+     *
+     * `sw.js` parks the conversation a push notification is about, then hands
+     * that parked copy straight back on the tap so the message is on screen
+     * with no round trip. That is only honest if something corrects it when
+     * the parked copy is old -- a banner tapped an hour later, a reply that
+     * finished after the push -- so the worker refetches behind the answer it
+     * gave and posts this when the two differ. It says nothing when they
+     * match, which is the ordinary case, so there is no flicker on the fast
+     * path this exists to make fast.
+     *
+     * Guarded on the thread being the one still open, the same way `pollConv`
+     * is: he can back out and open another one while the revalidation is in
+     * flight, and a late answer must not repaint the thread he is reading now
+     * with the messages of the one he left.
+     */
+    navigator.serviceWorker.addEventListener("message", function (event) {
+      var msg = event.data || {};
+      if (msg.type !== "nova-thread-updated" || !msg.conversationId) return;
+      if (!convOpenThread || convOpenId !== msg.conversationId) return;
+      var container = convOpenThread;
+      var id = msg.conversationId;
+      fetchPage("/api/conversations/thread?id=" + encodeURIComponent(id))
+        .then(function (payload) { repaintConvThread(container, id, payload); })
+        .catch(function () { /* the messages on screen are still real */ });
+    });
   }
 
   /* The chat dock -- the owner's capture on `ideas.md`, 2026-08-25, rated

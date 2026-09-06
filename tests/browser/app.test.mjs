@@ -15734,3 +15734,85 @@ describe("talking to Nova", () => {
     assert.deepEqual(record.spoken, ["merged runner#42 and the PR code block"]);
   });
 });
+
+/* The page half of the push prefetch (ideas #224 and #226).
+ *
+ * `sw.js` now hands back the conversation it parked when the notification
+ * arrived, so the tap paints with no round trip. That is only honest if the
+ * page corrects itself when the parked copy turns out to be old -- a banner
+ * tapped an hour later, or a reply that finished after the push -- so the
+ * worker refetches behind the answer it gave and posts a message when the
+ * two differ. These tests are that listener; the worker's side is in
+ * `sw.test.mjs`.
+ */
+describe("the worker can retract a thread it served from its prefetch", () => {
+  const PARKED = { conversationId: "c-9", waiting: false,
+    messages: [{ id: "1", sender: "Nova", text: "thinking about it" }] };
+  const FRESH = { conversationId: "c-9", waiting: false,
+    messages: [{ id: "1", sender: "Nova", text: "merged it, suite green" }] };
+
+  /* A `navigator.serviceWorker` jsdom does not have. `register` has to
+   * resolve, because the real one's `.then` is where the push subscription
+   * is set up, and `addEventListener` is the whole point -- it is how the
+   * worker reaches the page. */
+  function withWorker(captured) {
+    return (window) => {
+      Object.defineProperty(window.navigator, "serviceWorker", {
+        configurable: true,
+        value: {
+          register: () => Promise.resolve({ pushManager: null }),
+          addEventListener(name, fn) { captured[name] = fn; },
+        },
+      });
+    };
+  }
+
+  async function openThread(bodies) {
+    const captured = {};
+    let n = 0;
+    const window = await loadSite("/conversation/c-9", {
+      convList: () => res({ conversations: [{ id: "c-9", name: "Nova — Cycle 1089" }] }),
+      convThread: () => bodies[Math.min(n++, bodies.length - 1)],
+      install: withWorker(captured),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { window, captured, asked: () => n };
+  }
+
+  test("it repaints the open thread with the body that actually landed", async () => {
+    const { window, captured } = await openThread([PARKED, FRESH]);
+    assert.match(window.document.querySelector(".ask-text").textContent, /thinking about it/);
+
+    assert.ok(captured.message, "app.js never subscribed to the worker's messages");
+    captured.message({ data: { type: "nova-thread-updated", conversationId: "c-9" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.match(window.document.querySelector(".ask-text").textContent, /merged it, suite green/);
+  });
+
+  test("a message about a different thread is ignored", async () => {
+    /* He can back out and open another thread while the revalidation is in
+     * flight. A late answer must not repaint the thread he is reading now
+     * with the messages of the one he left. */
+    const { window, captured, asked } = await openThread([PARKED, FRESH]);
+    const before = asked();
+
+    captured.message({ data: { type: "nova-thread-updated", conversationId: "c-other" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(asked(), before, "nothing should have been re-fetched");
+    assert.match(window.document.querySelector(".ask-text").textContent, /thinking about it/);
+  });
+
+  test("any other worker message is left alone", async () => {
+    const { window, captured, asked } = await openThread([PARKED, FRESH]);
+    const before = asked();
+
+    captured.message({ data: { type: "something-else", conversationId: "c-9" } });
+    captured.message({});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(asked(), before);
+    assert.match(window.document.querySelector(".ask-text").textContent, /thinking about it/);
+  });
+});
