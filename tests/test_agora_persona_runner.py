@@ -4109,7 +4109,7 @@ def test_poll_once_skips_workflow_bound_conversations_but_still_runs_heartbeats(
     heartbeats_body = {"heartbeats": [{"enabled": True, "workflowId": "wf1", "conversationId": "c1"}]}
 
     def fake_agora_get(path):
-        if path == "/conversations":
+        if path == "/conversations?active=true":
             return 200, conversations_body
         return 404, {}
 
@@ -4166,7 +4166,7 @@ def test_poll_once_answers_live_cycle_conversation_and_a_plain_heartbeats(runner
     ]}
 
     def fake_agora_get(path):
-        if path == "/conversations":
+        if path == "/conversations?active=true":
             return 200, conversations_body
         return 404, {}
 
@@ -4247,7 +4247,7 @@ def test_poll_once_answers_a_retired_cycle_conversation_too(runner):
     ]}
 
     def fake_agora_get(path):
-        if path == "/conversations":
+        if path == "/conversations?active=true":
             return 200, conversations_body
         return 404, {}
 
@@ -4296,7 +4296,7 @@ def test_message_in_an_in_flight_cycle_conversation_still_reaches_the_next_trigg
     polled = []
     with _run_in_flight_for(runner, "hb1"), \
          patch.object(runner.poll, "agora_get",
-                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
@@ -4339,7 +4339,7 @@ def test_every_cycle_conversation_answers_edvard_on_the_spot(runner):
 
     polled, acked, chipped = [], [], []
     with patch.object(runner.poll, "agora_get",
-                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation",
@@ -4370,7 +4370,7 @@ def test_no_answered_live_chip_when_the_turn_did_not_speak(runner):
 
     chipped = []
     with patch.object(runner.poll, "agora_get",
-                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation", return_value=None), \
@@ -7183,7 +7183,7 @@ def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
     acked = []
     with _run_in_flight_for(runner, "hb1"), \
          patch.object(runner.poll, "agora_get",
-                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation"), \
@@ -7205,7 +7205,7 @@ def test_an_archived_cycle_thread_is_not_acknowledged(runner):
 
     acked = []
     with patch.object(runner.poll, "agora_get",
-                      side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+                      side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation"), \
@@ -8412,7 +8412,7 @@ def test_a_running_cycle_keeps_its_own_conversation_out_of_the_live_set(runner):
 
     def _poll(acked_into, polled_into):
         with patch.object(runner.poll, "agora_get",
-                          side_effect=lambda p: (200, conversations_body) if p == "/conversations" else (404, {})), \
+                          side_effect=lambda p: (200, conversations_body) if p == "/conversations?active=true" else (404, {})), \
              patch.object(runner.poll, "agora_internal",
                           side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
              patch.object(runner.poll, "poll_conversation",

@@ -24,7 +24,16 @@ def poll_once():
     would double-answer -- see main.py's `_drain_and_exit`.
     """
     clear_persona_cache()
-    status, body = agora_get("/conversations")
+    # `?active=true` -- issue #30, fix 2. This tick runs every 11 seconds and
+    # the store holds 1,052 conversations of which 999 are archived; measured
+    # 2026-09-06 the full list is 1,836,578 bytes against 94,105 for the
+    # active ones, and every archived row was dropped on the next line
+    # anyway. Nothing below needs one: poll_conversation skips on the flag,
+    # cycle_bound_conversation_ids already filters `not archived` when it
+    # walks this listing, and acknowledge_deferred is guarded by it too.
+    # An Agora that predates agora#86 ignores the parameter and answers with
+    # everything, which is exactly what this asked for until today.
+    status, body = agora_get("/conversations?active=true")
     if status != 200:
         # This is the one failure mode that silently skips EVERY
         # conversation for the whole tick with no per-conversation log at
