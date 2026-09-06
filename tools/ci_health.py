@@ -662,14 +662,55 @@ def recent_private_rate(repos, used_private, org, now,
         f"{minutes_per_run:.2f} measured private minute(s) per run "
         f"({priced_minutes:.0f} minute(s) over {month_runs} run(s) this month) — "
         f"{rate:.1f} private minute(s)/day.")
-    steady_lines, spread = _stationarity(rate, nested_runs, minutes_per_run,
+    steady_lines, spread = _stationarity(rate, recent_runs, nested_runs,
+                                         minutes_per_run,
                                          window_hours, nested_hours,
                                          used_private, allowance)
     lines.extend(steady_lines)
     return lines, rate, spread
 
 
-def _stationarity(rate, nested_runs, minutes_per_run,
+def _older_half(recent_runs, nested_rate, nested_runs, minutes_per_run,
+                window_hours, nested_hours):
+    """One line giving the rate of the part of the window the nested one excludes.
+
+    The wide window *contains* the nested one, so when the two disagree the
+    wide figure is a blend of two regimes and neither printed number is the
+    rate of either. Subtracting gives the disjoint older segment, which is the
+    one nobody can otherwise see -- and the step between it and the nested rate
+    is what a reader has to measure by hand today.
+
+    Cycle 1019 paid for that by hand. The sweep read 87.5/day over 24h and
+    48.9/day over the newest 12h, raised OVERSUBSCRIBED, and told the reader to
+    find the cause; the cause was `platform-config` dropping its
+    `pull_request` trigger at 21:16 Oslo on 2026-09-05, inside the older half.
+    The older half ran at 126/day and the newest at 48.9 -- a step, not drift,
+    and the 24h blend was never anybody's rate.
+
+    Arithmetic on counts already in hand: no extra API call, no threshold, and
+    it deliberately does not touch the exit status. `burn_forecast` still
+    judges on the higher of the two windows the caller passes it, so a burn
+    that was over the allowance stays over.
+
+    Empty when the segment is empty or degenerate -- a nested window that is
+    the whole window, or a count that came back nested-larger-than-wide, has no
+    older half to name and this says nothing rather than inventing one.
+    """
+    older_hours = window_hours - nested_hours
+    older_runs = recent_runs - nested_runs
+    if older_hours <= 0 or older_runs < 0:
+        return []
+    older_rate = older_runs / (older_hours / 24.0) * minutes_per_run
+    direction = "fell" if older_rate > nested_rate else "rose"
+    return [
+        f"        the {older_hours:.0f}h before that ran {older_runs} run(s), "
+        f"{older_rate:.1f}/day — so the rate {direction} between the two halves "
+        f"and the {window_hours:.0f}h figure is a blend of both, not either one. "
+        f"Look for what changed about {nested_hours:.0f}h ago."
+    ]
+
+
+def _stationarity(rate, recent_runs, nested_runs, minutes_per_run,
                   window_hours, nested_hours, used_private, allowance):
     """Lines saying whether the burn held steady across `window_hours`.
 
@@ -711,10 +752,13 @@ def _stationarity(rate, nested_runs, minutes_per_run,
         f"{rate:.1f}/day above — a gap wider than the ±{2 * noise:.1f}/day of counting "
         f"noise on {nested_runs} run(s), so the {window_hours:.0f}h figure above is "
         f"not one steady rate.",
+    ]
+    lines.extend(_older_half(recent_runs, nested_rate, nested_runs,
+                             minutes_per_run, window_hours, nested_hours))
+    lines.append(
         "        Counts cannot say whether that is a change in what a merge costs or "
         "just the hour of day, so this names the gap rather than picking a rate. "
-        "Find the cause before quoting either number.",
-    ]
+        "Find the cause before quoting either number.")
     if remaining > 0 and min(nested_rate, rate) > 0:
         lo = remaining / max(nested_rate, rate)
         hi = remaining / min(nested_rate, rate)

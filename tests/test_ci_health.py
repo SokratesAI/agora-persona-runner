@@ -1437,3 +1437,70 @@ def test_a_run_with_no_head_branch_is_not_counted_as_ours():
                      sample_jobs={1: [_job(26)]})
     text = "\n".join(ci_health.floor_share("SokratesAI/platform-config", run=run))
     assert "0 of 1 sampled pull-request run(s)" in text, text
+
+
+# Cycle 1019. A not-steady window printed the wide rate and the nested one and
+# nothing else, so the segment that actually changed was invisible: the wide
+# window CONTAINS the nested one, so its figure is a blend and the older half's
+# own rate appears nowhere. The sweep at 03:54 Oslo read 87.5/day over 24h and
+# 48.9/day over 12h, raised OVERSUBSCRIBED, and said "find the cause"; the
+# cause was platform-config dropping its `pull_request` trigger at 21:16 Oslo
+# the evening before, and finding it by hand cost a cycle. The older half ran
+# at ~126/day. That number is arithmetic on counts the check already had.
+
+
+def test_a_not_steady_window_names_the_rate_of_its_older_half():
+    # 200 runs over 24h with 50 of them in the newest 12h, at 1 minute a run:
+    # the wide window reads 200/day, the nested 100/day, and the 12h nobody can
+    # otherwise see ran 150 runs -> 300/day. That last figure is the finding.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (300, 200, 50)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, _rate, _spread = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    text = "\n".join(lines)
+    assert "NOT STEADY" in text
+    assert "the 12h before that ran 150 run(s), 300.0/day" in text
+    assert "the rate fell between the two halves" in text
+    # Beside the existing lines, never instead of them: the two windows the
+    # check has always printed are what `burn_forecast` judges on.
+    assert "100.0 private minute(s)/day against the 200.0/day above" in text
+    assert "names the gap rather than picking a rate" in text
+
+
+def test_the_older_half_says_rose_when_the_newest_half_is_the_busy_one():
+    # The direction word has to discriminate, or it is decoration. Same shape
+    # with the halves swapped: 50 runs in the older 12h, 150 in the newest.
+    run = billing_gh(
+        usage=[usage_item("platform-config", 300.0)],
+        repos=[{"name": "platform-config", "private": True}],
+        runs={"SokratesAI/platform-config": (300, 200, 150)},
+        now=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    lines, _rate, _spread = ci_health.recent_private_rate(
+        {"platform-config": 300.0}, 300.0, "SokratesAI",
+        datetime(2026, 9, 10, 12, tzinfo=timezone.utc), run=run)
+    text = "\n".join(lines)
+    assert "the 12h before that ran 50 run(s), 100.0/day" in text
+    assert "the rate rose between the two halves" in text
+    assert "the rate fell" not in text
+
+
+def test_a_nested_count_larger_than_the_wide_one_names_no_older_half():
+    # GitHub serves the two counts from two search calls, so a run created
+    # between them can make the nested count the larger. There is no older
+    # half to name then, and inventing a negative one would print a rate
+    # below zero as if it were a measurement.
+    assert ci_health._older_half(
+        recent_runs=10, nested_rate=20.0, nested_runs=20,
+        minutes_per_run=1.0, window_hours=24.0, nested_hours=12.0) == []
+
+
+def test_a_nested_window_as_wide_as_the_whole_one_names_no_older_half():
+    # Nothing outside it, so the segment is zero hours long and dividing by it
+    # would raise rather than report.
+    assert ci_health._older_half(
+        recent_runs=200, nested_rate=200.0, nested_runs=100,
+        minutes_per_run=1.0, window_hours=24.0, nested_hours=24.0) == []
