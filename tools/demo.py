@@ -59,6 +59,8 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner.nova_demos import (  # noqa: E402
     ALIVE,
     CLAIM_DIR,
+    DEFAULT_IDLE_MINUTES,
+    DEFAULT_UNOPENED_MINUTES,
     DEMOS_PATH,
     DURABLE_ROOT,
     POD_GONE,
@@ -97,49 +99,6 @@ SPAWN_CHECK_SECONDS = 1.0
 #: is looking. Reachable from either pod -- measured Cycle 349 from the
 #: bridge pod with plain `urllib`.
 ACTIVITY_URL = "http://nova-site.agents.svc.cluster.local:8083/api/demo/activity"
-
-#: How long a demo may go unasked-for before `reap --idle` stops it.
-#:
-#: **Two weeks, and it was two hours until the owner asked for this** --
-#: comments board 2026-09-06 12:10 (his card comment), on Cycle 1048's card: *"I want demos to
-#: love for 2 weeks."* Two hours protected a demo left open in a meeting
-#: that resumes after lunch, which is a use nobody here has ever had; what
-#: he actually does is open a link on his phone, put the phone down, and
-#: come back to it days later. The thing being spent is one of thirty
-#: ports, and `_free_port` refuses a start with a message that says which
-#: ports are held rather than serving on somebody else's -- so the cost of
-#: this being too long is a legible error and one `tools.demo discard`,
-#: while the cost of it being too short is the dead link he complained
-#: about. Override per call; nothing reaps on idle unless asked.
-DEFAULT_IDLE_MINUTES = 14 * 24 * 60
-
-#: The same clock for a demo nobody has opened *yet*. Twelve hours because
-#: the thing being protected is a link handed over while the owner is
-#: asleep: across 2026-08-10 to 08-28 he wrote 161 comments and not one
-#: falls between midnight and 05:00 Oslo, and the eight most recent nights
-#: of silence ran 6.0h to 11.9h (median 10.7h). Eighteen rather than twelve
-#: because twelve sat six minutes above the longest night I had *happened*
-#: to measure, on eight samples -- a margin that thin is a coincidence
-#: dressed as a decision, and one slightly longer night reproduces the whole
-#: bug. Eighteen is the 75th percentile of all seventeen gaps in that window
-#: that cross 03:00. Still bounded, because a demo that is never going to be
-#: opened should not hold a port forever either.
-#:
-#: **The durable mark closed most of this, Cycle 608.** `last_seen` still
-#: lives in the site pod's memory, but the first browser request now writes
-#: `opened_at` into the registry row, which survives the roll -- see
-#: `nova_demos.mark_opened`. What is left on this clock and cannot be fixed
-#: is a row written before that shipped, and one whose write lost the
-#: compare-and-swap to a cycle allocating a port. Both land on the long
-#: clock, which is the safe direction: the cost is one of thirty ports, and
-#: the other error is a dead link in the owner's hand.
-#: **Also two weeks now, for the same ask.** The eighteen hours below was
-#: derived to cross one night, because that was the whole question when a
-#: demo could not survive a pod roll anyway. It can now -- `_relaunch`
-#: below restarts one -- so the two clocks answer the same question again
-#: and there is no longer a reason for them to differ. The reasoning above
-#: is kept because it is the measurement, not the number.
-DEFAULT_UNOPENED_MINUTES = 14 * 24 * 60
 
 
 def fetch_activity(url=ACTIVITY_URL, timeout=10):

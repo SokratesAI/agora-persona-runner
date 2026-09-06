@@ -3,7 +3,13 @@
 from datetime import datetime, timedelta, timezone
 
 from agora_runner.config import MAX_HISTORY, OSLO
-from agora_runner.nova_demos import DURABLE_ROOT, PUBLIC_BASE
+from agora_runner.nova_demos import (
+    DEFAULT_IDLE_MINUTES,
+    DEFAULT_UNOPENED_MINUTES,
+    DURABLE_ROOT,
+    PUBLIC_BASE,
+    humanise_minutes,
+)
 
 
 def decide_turn(thread, personas):
@@ -352,6 +358,12 @@ def runs_on_the_bridge(persona):
 #: to find out it could make one. Same failure as being handed an image in
 #: a comment and reporting blindness while the bytes sat in the vault: a
 #: capability a session does not know it has is one it does not have.
+#:
+#: **The lifetime at the end is rendered from the reaper's own constants,
+#: never typed.** It read "eighteen hours ... two hours" for the fifteen
+#: hours after cycle 1052 moved both clocks to a fortnight on the owner's ask,
+#: so every persona built from this was handing him a number nothing
+#: enforced. A number restated in English is a second copy of the number.
 DEMO_SECTION = (
     "## Live demos\n"
     "You can build a throwaway app and hand Edvard a link he can open on his "
@@ -367,7 +379,8 @@ DEMO_SECTION = (
     "His next message is the edit: change the files in place and the dev "
     "server reloads, so the URL does not change and the tab he already has "
     "open on his phone just updates. A demo he has never opened is stopped "
-    "after eighteen hours, and two hours after he last looked at one."
+    f"after {humanise_minutes(DEFAULT_UNOPENED_MINUTES)}, and "
+    f"{humanise_minutes(DEFAULT_IDLE_MINUTES)} after he last looked at one."
 )
 
 

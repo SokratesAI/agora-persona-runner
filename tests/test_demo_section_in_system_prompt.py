@@ -89,3 +89,66 @@ def test_it_tells_the_turn_to_reply_with_the_link():
     """The acceptance line on idea #135 is him tapping a link. A demo that
     is started and not handed over meets nothing."""
     assert "reply with that link" in DEMO_SECTION
+
+
+def test_the_lifetime_it_quotes_is_the_lifetime_the_reaper_enforces():
+    """The failure this pins: the sentence said "eighteen hours ... two
+    hours" while the constants said fourteen days.
+
+    The owner asked for two weeks on 2026-09-06 and cycle 1052 moved both
+    clocks in `tools.demo`. Nothing moved the English, so every persona's
+    system prompt -- including this loop's own -- kept handing out a number
+    the reaper had stopped using, and a turn reading it would have told him
+    a live demo was about to die.
+
+    Asserting against `humanise_minutes` of the constants rather than
+    against the string "two weeks" is the point: a literal here would be a
+    fourth copy of the number and would need editing on the next change,
+    which is the whole defect.
+    """
+    from agora_runner.nova_demos import (
+        DEFAULT_IDLE_MINUTES,
+        DEFAULT_UNOPENED_MINUTES,
+        humanise_minutes,
+    )
+
+    # A guard on the precondition: if the two clocks ever diverge again this
+    # test still says something, and the two clauses stop being the same
+    # phrase asserted twice.
+    unopened = humanise_minutes(DEFAULT_UNOPENED_MINUTES)
+    idle = humanise_minutes(DEFAULT_IDLE_MINUTES)
+
+    assert "never opened is stopped after %s," % unopened in DEMO_SECTION
+    assert "%s after he last looked at one." % idle in DEMO_SECTION
+    # And the number it replaced is gone rather than merely joined.
+    assert "eighteen hours" not in DEMO_SECTION
+
+
+def test_the_tool_and_the_prompt_read_one_pair_of_clocks():
+    """Same argument as `PUBLIC_BASE` one test above: `tools.demo` reaps on
+    these and `turns.py` describes them, so they cannot be two objects."""
+    from agora_runner import nova_demos
+    from tools import demo as demo_cli
+
+    assert demo_cli.DEFAULT_IDLE_MINUTES is nova_demos.DEFAULT_IDLE_MINUTES
+    assert (demo_cli.DEFAULT_UNOPENED_MINUTES
+            is nova_demos.DEFAULT_UNOPENED_MINUTES)
+
+
+def test_humanise_minutes_says_the_shapes_these_clocks_take():
+    """Weeks, days and hours get a word; anything else gets the number.
+
+    The fallback is deliberate and is asserted here so a future cycle does
+    not read it as an omission: a sentence saying "20161 minutes" is ugly
+    and true, and inventing an English numeral for every integer is the
+    kind of tidiness that buys nothing.
+    """
+    from agora_runner.nova_demos import humanise_minutes
+
+    assert humanise_minutes(14 * 24 * 60) == "two weeks"
+    assert humanise_minutes(7 * 24 * 60) == "one week"
+    assert humanise_minutes(3 * 24 * 60) == "three days"
+    assert humanise_minutes(18 * 60) == "18 hours"
+    assert humanise_minutes(2 * 60) == "two hours"
+    assert humanise_minutes(60) == "one hour"
+    assert humanise_minutes(90) == "90 minutes"

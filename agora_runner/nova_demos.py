@@ -85,6 +85,80 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
 DEFAULT_WORKSPACE = "/data/workspace"
 
 
+#: The two clocks live here rather than in `tools/demo.py`, for the same
+#: reason `PUBLIC_BASE` above does: a third caller needs them. `turns.py`
+#: tells a chat turn how long the demo it is about to hand over will live,
+#: and it said "eighteen hours ... two hours" as prose while these constants
+#: said fourteen days -- so the sentence in every persona's system prompt
+#: had been wrong since the owner asked for two weeks. A number restated in
+#: English is a second copy of the number. `humanise_minutes` below is what
+#: lets the sentence be rendered from the constant instead.
+#: How long a demo may go unasked-for before `reap --idle` stops it.
+#:
+#: **Two weeks, and it was two hours until the owner asked for this** --
+#: comments board 2026-09-06 12:10 (his card comment), on Cycle 1048's card: *"I want demos to
+#: love for 2 weeks."* Two hours protected a demo left open in a meeting
+#: that resumes after lunch, which is a use nobody here has ever had; what
+#: he actually does is open a link on his phone, put the phone down, and
+#: come back to it days later. The thing being spent is one of thirty
+#: ports, and `_free_port` refuses a start with a message that says which
+#: ports are held rather than serving on somebody else's -- so the cost of
+#: this being too long is a legible error and one `tools.demo discard`,
+#: while the cost of it being too short is the dead link he complained
+#: about. Override per call; nothing reaps on idle unless asked.
+DEFAULT_IDLE_MINUTES = 14 * 24 * 60
+
+#: The same clock for a demo nobody has opened *yet*. Twelve hours because
+#: the thing being protected is a link handed over while the owner is
+#: asleep: across 2026-08-10 to 08-28 he wrote 161 comments and not one
+#: falls between midnight and 05:00 Oslo, and the eight most recent nights
+#: of silence ran 6.0h to 11.9h (median 10.7h). Eighteen rather than twelve
+#: because twelve sat six minutes above the longest night I had *happened*
+#: to measure, on eight samples -- a margin that thin is a coincidence
+#: dressed as a decision, and one slightly longer night reproduces the whole
+#: bug. Eighteen is the 75th percentile of all seventeen gaps in that window
+#: that cross 03:00. Still bounded, because a demo that is never going to be
+#: opened should not hold a port forever either.
+#:
+#: **The durable mark closed most of this, Cycle 608.** `last_seen` still
+#: lives in the site pod's memory, but the first browser request now writes
+#: `opened_at` into the registry row, which survives the roll -- see
+#: `nova_demos.mark_opened`. What is left on this clock and cannot be fixed
+#: is a row written before that shipped, and one whose write lost the
+#: compare-and-swap to a cycle allocating a port. Both land on the long
+#: clock, which is the safe direction: the cost is one of thirty ports, and
+#: the other error is a dead link in the owner's hand.
+#: **Also two weeks now, for the same ask.** The eighteen hours below was
+#: derived to cross one night, because that was the whole question when a
+#: demo could not survive a pod roll anyway. It can now -- `_relaunch`
+#: below restarts one -- so the two clocks answer the same question again
+#: and there is no longer a reason for them to differ. The reasoning above
+#: is kept because it is the measurement, not the number.
+DEFAULT_UNOPENED_MINUTES = 14 * 24 * 60
+
+
+def humanise_minutes(minutes):
+    """`20160` -> `"two weeks"`. For prose that must not restate a constant.
+
+    Only the shapes these clocks actually take get a word: whole weeks,
+    whole days, whole hours. Anything else falls back to the number and its
+    unit, which is plainer than a wrong word and cannot drift. There is no
+    table of English numerals beyond twelve here on purpose -- a sentence
+    reading "20160 minutes" is ugly and correct, and ugly is recoverable.
+    """
+    words = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+             7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven",
+             12: "twelve"}
+
+    def say(n, unit):
+        return "%s %s%s" % (words.get(n, n), unit, "" if n == 1 else "s")
+
+    for size, unit in ((7 * 24 * 60, "week"), (24 * 60, "day"), (60, "hour")):
+        if minutes % size == 0 and minutes >= size:
+            return say(minutes // size, unit)
+    return say(minutes, "minute")
+
+
 def concurrent_root(environ=None):
     """Where a per-turn workspace lives, derived the way the bridge derives it.
 
