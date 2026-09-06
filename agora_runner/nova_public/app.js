@@ -10210,6 +10210,49 @@
   var stepSheetBack = null;
   var stepSheetClose = null;
 
+  /* What the open sheet is showing, so the four-second poll can keep it
+   * current instead of it drawing whatever it was opened with.
+   *
+   * That staleness was the one limit left on his issue #168 after the drawer
+   * itself shipped: a call that was still running when he opened it said
+   * "close and open this again for the output", and steps that arrived while
+   * he was reading never appeared at all. Both surfaces that draw a thread
+   * repaint it whole every four seconds; this is what carries the sheet along
+   * with them.
+   *
+   * `key` is the message the steps hang off. A real message has an Agora id;
+   * the block for work with no answer under it yet has none, because the
+   * server invents that row (`visible_rows`), so it gets a sentinel that no
+   * id can collide with. */
+  var STEP_SHEET_PENDING_KEY = " steps-only";
+  var stepSheetOn = null;
+
+  function stepMessageKey(message) {
+    if (message.id) return String(message.id);
+    return message.stepsOnly ? STEP_SHEET_PENDING_KEY : "";
+  }
+
+  /* Enough of a step to tell "nothing moved" from "something did", and
+   * nothing more. A repaint that changed none of this must not redraw the
+   * sheet: he would lose his place in a long list of tool rows every four
+   * seconds, which is the same complaint as the thread scrolling under him
+   * (issue #140). `status` is in here because that is the field that turns
+   * a running call into a finished one. */
+  /* What a step *is*, ignoring everything that legitimately changes under it:
+   * a call is the same call once it finishes, and its arguments arrive in two
+   * halves. So what it is and which one it is, and nothing else. */
+  function stepIdentity(step) {
+    return [step.kind, step.capability || "", step.id || "",
+            step.text || ""].join("");
+  }
+
+  function stepSignature(steps) {
+    return steps.map(function (step) {
+      return [step.kind, step.capability || "", step.id || "",
+              step.status || "", step.input || "", step.text || ""].join("");
+    }).join("");
+  }
+
   function buildStepSheet() {
     if (stepSheet) return stepSheet;
     stepSheetBackdrop = el("div", "step-backdrop");
@@ -10310,6 +10353,11 @@
     if (!stepSheet || stepSheet.hidden) return;
     stepSheet.hidden = true;
     stepSheetBackdrop.hidden = true;
+    /* Deliberately not clearing `stepSheetOn` here. `refreshStepSheet` reads
+     * `stepSheet.hidden` first and `openStepSheet` overwrites the whole
+     * record, so a second guard would be one nothing can fail on -- I wrote
+     * it, mutated it away, and all six tests stayed green. That is the same
+     * pair of guards `pollConv` above has already been cut down to once. */
     document.removeEventListener("keydown", onStepSheetKey, true);
   }
 
@@ -10352,7 +10400,21 @@
    * things went wrong -- a call the thread no longer holds (404) against a
    * fetch that did not land -- because "no output" and "I could not ask" mean
    * different things and only one of them is worth retrying. */
+  /* Which detail fetch is the current one.
+   *
+   * One tap used to mean one fetch, and `stepSheetBack.hidden` was enough to
+   * catch the only race there was -- he goes back while it is in flight. The
+   * refresh above issues a second one for the same step, so now two can be
+   * out at once: the `running` answer from his tap and the `done` answer from
+   * the poll that saw it finish. If they land in that order the drawer reverts
+   * to "Still running" and stays there, because the signature has already
+   * moved and nothing will refresh it again. */
+  var stepDetailToken = 0;
+
   function showStepDetail(conversationId, step, limit) {
+    if (stepSheetOn) stepSheetOn.detailId = step.id || "";
+    stepDetailToken += 1;
+    var token = stepDetailToken;
     stepSheetBack.hidden = false;
     stepSheetTitle.textContent = step.capability || "tool";
     stepSheetSub.hidden = false;
@@ -10383,7 +10445,7 @@
      * agreeing with `nova_site.py` about a sentence. The status is the
      * contract. */
     function failed(note) {
-      if (stepSheetBack.hidden) return;  // he went back while it was in flight
+      if (stepSheetBack.hidden || token !== stepDetailToken) return;
       stepSheetBody.textContent = "";
       section("Inputs", step.input || "");
       stepSheetBody.appendChild(el("p", "step-note", note));
@@ -10406,17 +10468,21 @@
       return r.json();
     }).then(function (found) {
       if (!found) return;
-      if (stepSheetBack.hidden) return;
+      if (stepSheetBack.hidden || token !== stepDetailToken) return;
       stepSheetBody.textContent = "";
       section("Inputs", found.input || step.input || "");
       if (found.status === "running") {
         /* An empty Output block over a call still running reads as "this
-         * printed nothing", which is a different and wrong fact. The sheet
-         * does not follow the four-second poll -- it draws the steps it was
-         * opened with -- so this says what is true and what to do about it
-         * rather than pretending to be live. */
-        stepSheetBody.appendChild(el("p", "step-note",
-          "Still running. Close and open this again for the output."));
+         * printed nothing", which is a different and wrong fact.
+         *
+         * It used to say "close and open this again for the output", which
+         * was true while the sheet drew only what it was opened with. It
+         * follows the poll now, so that instruction would be busywork -- but
+         * the replacement deliberately promises nothing either: the repaint
+         * is what fills this in, and a thread the server has stopped calling
+         * `waiting` is no longer being polled. So it states the fact and
+         * stops there. */
+        stepSheetBody.appendChild(el("p", "step-note", "Still running — no output yet."));
         return;
       }
       section("Output", found.output || "");
@@ -10437,12 +10503,112 @@
     });
   }
 
-  function openStepSheet(conversationId, steps, label, limit) {
-    buildStepSheet();
+  /* Draw the list and point the back arrow at *these* steps.
+   *
+   * The two go together: the arrow's handler closes over the array it was
+   * given, so a refresh that repainted the list without rebinding it would
+   * leave "back" returning to the version he opened with. */
+  function paintStepList(conversationId, steps, limit) {
+    var label = stepsLabel(steps);
     stepSheetBack.onclick = function () {
       showStepList(conversationId, steps, label, limit);
     };
     showStepList(conversationId, steps, label, limit);
+  }
+
+  /* Which steps the open sheet should now be showing, given a fresh payload.
+   *
+   * The one case worth spelling out is the handover. While a turn runs, its
+   * work is a row of its own with no id; the moment the answer arrives the
+   * server attaches those same steps to the answer message instead, and the
+   * id-less row is gone. Matching on the key alone would go stale at exactly
+   * the interesting moment, so a sheet opened on that row follows the steps
+   * to the message that swallowed them -- which is the last message carrying
+   * any, because `flush` hangs them on the message that comes after them.
+   * Then it re-keys, so every later poll is an exact match again. */
+  function stepsForOpenSheet(messages) {
+    var i;
+    for (i = 0; i < messages.length; i += 1) {
+      if (stepMessageKey(messages[i]) === stepSheetOn.key) {
+        return messages[i].steps || [];
+      }
+    }
+    if (stepSheetOn.key !== STEP_SHEET_PENDING_KEY) return null;
+    /* The steps he is reading are the ones that moved, so the message that
+     * swallowed them opens with them -- `flush` copies the whole pending list
+     * on before anything else is appended. Matching that prefix rather than
+     * taking "the last message with any steps" is what keeps this right when
+     * two rounds land inside one four-second gap: he asks a follow-up the
+     * moment the first answer appears, both settle before the next tick, and
+     * the newest message is then a different turn's work entirely. */
+    for (i = messages.length - 1; i >= 0; i -= 1) {
+      if (openedStepsLeadWith(messages[i].steps)) {
+        stepSheetOn.key = stepMessageKey(messages[i]);
+        return messages[i].steps;
+      }
+    }
+    return null;
+  }
+
+  function openedStepsLeadWith(steps) {
+    var mine = stepSheetOn.opened;
+    if (!steps || steps.length < mine.length) return false;
+    for (var i = 0; i < mine.length; i += 1) {
+      if (stepIdentity(steps[i]) !== mine[i]) return false;
+    }
+    return true;
+  }
+
+  /* Carry the open sheet forward onto a repaint. Called once per thread
+   * paint, on both surfaces that draw one. */
+  function refreshStepSheet(payload) {
+    if (!stepSheet || stepSheet.hidden || !stepSheetOn) return;
+    /* One sheet, three surfaces. The floating dock sits outside the routed
+     * feed, so it can be open over a conversation page on a different thread,
+     * and switching the dock's own thread repaints without closing the sheet.
+     * Both land here. The pending row's key carries no conversation of its
+     * own, so two threads each with a turn in flight collide on it every
+     * time -- the thread is checked rather than inferred from the key. */
+    if ((payload && payload.conversationId) !== stepSheetOn.conversationId) return;
+    var steps = stepsForOpenSheet((payload && payload.messages) || []);
+    // The block he is reading is not in this payload at all -- he has paged
+    // back past it, or the window rolled. Leave the sheet exactly as it is:
+    // wiping it would take the thing he opened off the screen.
+    if (!steps) return;
+    var signature = stepSignature(steps);
+    if (signature === stepSheetOn.signature) return;
+    stepSheetOn.signature = signature;
+    var conversationId = stepSheetOn.conversationId;
+    var limit = stepSheetOn.limit;
+    if (!stepSheetBack.hidden && stepSheetOn.detailId) {
+      for (var i = 0; i < steps.length; i += 1) {
+        if (steps[i].id === stepSheetOn.detailId) {
+          // Rebind first: `showStepDetail` leaves the arrow pointing at
+          // whatever the last paint gave it.
+          stepSheetBack.onclick = (function (fresh) {
+            return function () { showStepList(conversationId, fresh, stepsLabel(fresh), limit); };
+          }(steps));
+          showStepDetail(conversationId, steps[i], limit);
+          return;
+        }
+      }
+      return;  // that call is gone from the block; keep showing what he opened
+    }
+    if (!stepSheetBack.hidden) return;  // a detail view with no id to re-find
+    /* His place in the list survives the redraw. A tool row leaving the
+     * viewport because two more arrived above it is the auto-scroll
+     * complaint of issue #140 in a smaller box. */
+    var at = stepSheetBody.scrollTop;
+    paintStepList(conversationId, steps, limit);
+    stepSheetBody.scrollTop = at;
+  }
+
+  function openStepSheet(conversationId, steps, limit, key) {
+    buildStepSheet();
+    stepSheetOn = { key: key, conversationId: conversationId, limit: limit,
+                    detailId: "", signature: stepSignature(steps),
+                    opened: steps.map(stepIdentity) };
+    paintStepList(conversationId, steps, limit);
     setStepSheetHeight(STEP_SHEET_OPEN_VH);
     stepSheetBackdrop.hidden = false;
     stepSheet.hidden = false;
@@ -10452,7 +10618,7 @@
 
   /* The collapsed line itself. Returns null when there is nothing behind it,
    * so a message with no steps is unchanged. */
-  function stepsLine(conversationId, steps, limit) {
+  function stepsLine(conversationId, steps, limit, key) {
     if (!steps || !steps.length) return null;
     var label = stepsLabel(steps);
     var line = el("button", "ask-steps");
@@ -10461,7 +10627,7 @@
     line.appendChild(el("span", "ask-steps-chev", "›"));
     line.setAttribute("aria-label", label + " — open the details");
     line.addEventListener("click", function () {
-      openStepSheet(conversationId, steps, label, limit);
+      openStepSheet(conversationId, steps, limit, key);
     });
     return line;
   }
@@ -10472,7 +10638,7 @@
    * journal card's ask -- and only one of them has a module variable to
    * read. */
   function askMessage(message, conversationId, limit, retry) {
-    var steps = stepsLine(conversationId, message.steps, limit);
+    var steps = stepsLine(conversationId, message.steps, limit, stepMessageKey(message));
     /* A row that is only the work behind an answer still being written.
      * It is not a bubble: nothing has been said yet, and drawing it as one
      * is the thing he asked me to stop doing. */
@@ -10682,6 +10848,10 @@
       // and two answers in a row both point at the same question.
       if (message.sender === "Edvard" && message.text) asked = message.text;
     });
+    // Last, and outside the loop: the sheet is one node on <body> rather
+    // than something inside a message, so it is repainted once against the
+    // whole payload and not once per row.
+    refreshStepSheet(payload);
   }
 
   function renderAskThread(container, payload, afterSend) {

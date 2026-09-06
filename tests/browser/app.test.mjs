@@ -14881,10 +14881,10 @@ describe("the drawer, after review", () => {
   };
 
   test("a call still running says so instead of an empty Output block", async () => {
-    /* The sheet draws the steps it was opened with and does not follow the
-     * four-second poll, so a tool that finishes while he is looking at it
-     * would otherwise leave an Output heading over nothing -- which reads as
-     * "this command printed nothing", a different and wrong fact. */
+    /* An Output heading over nothing reads as "this command printed nothing",
+     * which is a different and wrong fact. The sheet follows the poll now, so
+     * this note is what he sees until the call lands rather than a permanent
+     * state -- "the drawer follows the poll" below is what pins the landing. */
     const window = await openDock({
       ask: RUNNING,
       convStep: () => ({ capability: "Bash", input: "pytest", output: "",
@@ -14919,6 +14919,276 @@ describe("the drawer, after review", () => {
     click(window, window.document.querySelector(".step-sheet .step-tool"));
     await tick();
     assert.deepEqual(asked, ["/api/conversations/step?id=c-ask&tool=t"]);
+  });
+});
+
+/* The one limit left on his issue #168 after the drawer shipped: it drew the
+ * steps it was opened with and nothing else, so a call still running when he
+ * opened it told him to close the drawer and open it again, and work that
+ * arrived while he was reading never appeared at all. Both surfaces that draw
+ * a thread repaint it every four seconds; these are about the sheet being
+ * carried along with them. */
+describe("the drawer follows the poll", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /* One tool call, still running, with no answer under it yet -- which is the
+   * shape `visible_rows` emits for a turn in flight and the only shape this
+   * behaviour matters for. */
+  const running = (steps) => ({
+    conversationId: "c-ask", waiting: true, limit: 40,
+    messages: [
+      { id: "1", sender: "Edvard", text: "run the suite" },
+      { id: "", sender: "", text: "", partial: true, stepsOnly: true, steps: steps },
+    ],
+  });
+  const BASH_RUNNING = { kind: "tool", capability: "Bash", input: "pytest",
+                         id: "toolu_r", status: "running" };
+  const BASH_DONE = { kind: "tool", capability: "Bash", input: "pytest",
+                      id: "toolu_r", status: "done" };
+
+  /* `ask` and `convStep` are read out of boxes rather than fixed, so a test
+   * changes what the server says between two polls -- which is the whole of
+   * what is under test here. A fixed body could never show a call finishing. */
+  async function openDock(first) {
+    const box = { ask: first, step: { capability: "Bash", input: "pytest",
+                                      output: "", status: "running" } };
+    const asked = [];
+    let timers = null;
+    const window = await loadSite("/", {
+      ask: () => box.ask,
+      convStep: (url) => { asked.push(url); return box.step; },
+      install: (win) => { timers = captureTimers(win); },
+    });
+    window.document.getElementById("chat-btn")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    return { window, box, asked,
+             poll: async () => { await timers.fire(); await tick(); } };
+  }
+
+  const rows = (window) =>
+    [...window.document.querySelectorAll(".step-sheet .step-tool")];
+  const openSheet = (window) => {
+    click(window, window.document.querySelector("#chat-thread .ask-steps"));
+  };
+
+  test("a call that finishes while he is reading it fills its own Output in", async () => {
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    click(window, rows(window)[0]);
+    await tick();
+    // The precondition, asserted rather than assumed: without it a test that
+    // only checks the end state passes against a drawer that was never stale.
+    assert.match(window.document.querySelector(".step-note").textContent,
+      /Still running/);
+    box.ask = running([BASH_DONE]);
+    box.step = { capability: "Bash", input: "pytest",
+                 output: "795 passing", status: "done" };
+    await poll();
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".step-section-label")]
+        .map((n) => n.textContent), ["Inputs", "Output"]);
+    assert.match(
+      [...window.document.querySelectorAll(".step-pre")][1].textContent, /795 passing/);
+    assert.equal(window.document.querySelector(".step-note"), null);
+    assert.equal(window.document.querySelector(".step-sub").textContent, "Completed");
+  });
+
+  test("work that arrives while the drawer is open joins the list", async () => {
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    assert.equal(rows(window).length, 1);
+    box.ask = running([BASH_DONE,
+      { kind: "tool", capability: "Read", input: "/x", id: "toolu_s", status: "running" }]);
+    await poll();
+    assert.deepEqual(rows(window).map((n) => n.textContent.replace(/running$/, "")),
+      ["Bashpytest", "Read/x"]);
+    // The title counts what is in the drawer now, not what it held when he
+    // tapped -- it is the same label as the line he tapped and both move.
+    assert.equal(window.document.querySelector(".step-title").textContent, "Used 2 tools");
+  });
+
+  test("the drawer follows its steps onto the answer that swallows them", async () => {
+    /* The handover, which is the moment this is most likely to break: the
+     * server hangs a running turn's work on a row with no id, then moves that
+     * same work onto the answer the instant it arrives and drops the row. A
+     * sheet keyed on the id-less row alone would go stale exactly there. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    assert.equal(rows(window).length, 1);
+    box.ask = { conversationId: "c-ask", waiting: true, limit: 40, messages: [
+      { id: "1", sender: "Edvard", text: "run the suite" },
+      { id: "2", sender: "Nova", text: "All green.", steps: [BASH_DONE,
+        { kind: "tool", capability: "Read", input: "/x", id: "toolu_s", status: "done" }] },
+    ] };
+    await poll();
+    assert.equal(rows(window).length, 2);
+    // And it re-keys onto that message, so the next poll is an exact match
+    // rather than another guess at the end of the list.
+    box.ask = { conversationId: "c-ask", waiting: true, limit: 40, messages: [
+      { id: "1", sender: "Edvard", text: "run the suite" },
+      { id: "2", sender: "Nova", text: "All green.", steps: [BASH_DONE] },
+      { id: "3", sender: "Nova", text: "And another.", steps: [
+        { kind: "tool", capability: "Grep", input: "/y", id: "toolu_t", status: "done" }] },
+    ] };
+    await poll();
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest"]);
+  });
+
+  test("a slow answer for the running call does not undo the finished one", async () => {
+    /* Two fetches for the same step can be in flight at once now: the one his
+     * tap sent while the call was running, and the one the refresh sent when
+     * the poll saw it finish. If the running answer lands second the drawer
+     * reverts to "Still running" and stays there forever -- the signature has
+     * already moved, so nothing refreshes it again. The first reply is held
+     * back here and released after the second, which is the ordering the
+     * network can produce and the code must survive. */
+    let held = null;
+    const box = { ask: running([BASH_RUNNING]) };
+    let timers = null;
+    let calls = 0;
+    const window = await loadSite("/", {
+      ask: () => box.ask,
+      convStep: () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((resolve) => {
+            /* `res`, not a bare object: the stub hands a promise straight
+             * back to `fetch`, so it has to resolve to a Response. Resolved
+             * with the payload alone this test passed for the wrong reason --
+             * `r.ok` was undefined, the stale answer took the unreachable
+             * branch instead of the running one, and a mutation of the guard
+             * it is named after survived. */
+            held = () => resolve(res({ capability: "Bash", input: "pytest",
+                                       output: "", status: "running" }));
+          });
+        }
+        return { capability: "Bash", input: "pytest",
+                 output: "795 passing", status: "done" };
+      },
+      install: (win) => { timers = captureTimers(win); },
+    });
+    window.document.getElementById("chat-btn")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    openSheet(window);
+    click(window, rows(window)[0]);
+    await tick();
+    box.ask = running([BASH_DONE]);
+    await timers.fire();
+    await tick();
+    assert.equal(calls, 2, "the refresh has to have asked again, or this pins nothing");
+    assert.match([...window.document.querySelectorAll(".step-pre")][1].textContent,
+      /795 passing/);
+    held();
+    await tick();
+    await tick();
+    assert.equal(window.document.querySelector(".step-note"), null,
+      "the stale running answer painted over the finished one");
+    assert.match([...window.document.querySelectorAll(".step-pre")][1].textContent,
+      /795 passing/);
+  });
+
+  test("back from a refreshed call returns to the list as it is now", async () => {
+    /* He opens the drawer, taps into a call, and two more run while he reads
+     * it. The back arrow's handler closes over the array it was given, so a
+     * refresh that repainted the detail without rebinding it would walk him
+     * back to the list he tapped from -- one row, minus everything that has
+     * happened since. Found by mutation: nothing else here fails on it. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    click(window, rows(window)[0]);
+    await tick();
+    box.ask = running([BASH_DONE,
+      { kind: "tool", capability: "Read", input: "/x", id: "toolu_s", status: "done" }]);
+    box.step = { capability: "Bash", input: "pytest", output: "795 passing", status: "done" };
+    await poll();
+    click(window, window.document.querySelector(".step-back"));
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest", "Read/x"]);
+  });
+
+  test("another thread's poll does not repaint the drawer he is reading", async () => {
+    /* One sheet, three surfaces. The floating dock lives outside the routed
+     * feed, so it can be open over a conversation page on a different thread,
+     * and both paint through `askPaintThread`. Two threads each with a turn in
+     * flight carry the same id-less pending row, so without a check on the
+     * conversation the collision is deterministic rather than unlucky: the
+     * other thread's work silently replaces what he is reading. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    box.ask = { conversationId: "c-other", waiting: true, limit: 40, messages: [
+      { id: "", sender: "", text: "", partial: true, stepsOnly: true, steps: [
+        { kind: "tool", capability: "Grep", input: "/elsewhere",
+          id: "toolu_x", status: "running" }] },
+    ] };
+    await poll();
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytestrunning"]);
+  });
+
+  test("a follow-up answered in the same gap does not hijack the drawer", async () => {
+    /* The handover looks for the message that swallowed his steps. Taking
+     * "the last message with any steps" gets that wrong when he asks a
+     * follow-up the moment the first answer lands and both settle before the
+     * next tick -- the newest message is then a different turn's work. The
+     * steps he opened are a prefix of the message that took them, so that is
+     * what is matched. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    box.ask = { conversationId: "c-ask", waiting: true, limit: 40, messages: [
+      { id: "1", sender: "Edvard", text: "run the suite" },
+      { id: "2", sender: "Nova", text: "All green.", steps: [BASH_DONE,
+        { kind: "tool", capability: "Read", input: "/x", id: "toolu_s", status: "done" }] },
+      { id: "3", sender: "Edvard", text: "and the browser ones?" },
+      { id: "4", sender: "Nova", text: "Also green.", steps: [
+        { kind: "tool", capability: "Grep", input: "/y", id: "toolu_t", status: "done" }] },
+    ] };
+    await poll();
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest", "Read/x"]);
+  });
+
+  test("a repaint that changed nothing leaves his place in the list alone", async () => {
+    /* Redrawing the list every four seconds would scroll a long one back to
+     * the top under him, which is issue #140's complaint in a smaller box.
+     * Asserted on node identity: the row he can see has to be the same node,
+     * not an equal one. */
+    const { window, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    const before = rows(window)[0];
+    await poll();
+    assert.equal(rows(window)[0], before);
+  });
+
+  test("a drawer he has closed does not ask the server again", async () => {
+    /* Visibility alone pins nothing here -- the refresh redraws the sheet's
+     * contents and never unhides it, so a closed drawer stays closed either
+     * way. What the guard actually saves is the work: a detail view he has
+     * shut would otherwise ask the server for that call's output once every
+     * four seconds, forever, for a panel nobody is looking at. */
+    const { window, box, poll, asked } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    click(window, rows(window)[0]);
+    await tick();
+    assert.equal(asked.length, 1, "the open detail view asks once");
+    click(window, window.document.querySelector(".step-close"));
+    assert.equal(window.document.querySelector(".step-sheet").hasAttribute("hidden"), true);
+    box.ask = running([BASH_DONE]);
+    await poll();
+    assert.equal(window.document.querySelector(".step-sheet").hasAttribute("hidden"), true);
+    assert.equal(asked.length, 1, "a closed drawer asked the server again");
+  });
+
+  test("a block he has paged past leaves the drawer as it is", async () => {
+    /* He can scroll back through a long thread, so the message the drawer was
+     * opened on can fall out of the window entirely. Emptying the sheet then
+     * would take the thing he is reading off the screen; it holds instead. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    box.ask = { conversationId: "c-ask", waiting: true, limit: 40, messages: [
+      { id: "9", sender: "Edvard", text: "something else entirely" },
+    ] };
+    await poll();
+    assert.equal(window.document.querySelector(".step-sheet").hasAttribute("hidden"), false);
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytestrunning"]);
   });
 });
 
