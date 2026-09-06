@@ -1,4 +1,4 @@
-"""`/api/journal/threads` -- which cycles still have a live chat thread.
+"""`/api/cycle-threads` -- which cycles still have a live chat thread.
 
 Idea #182: the chat bubble on a journal card should open the cycle's own
 heartbeat conversation rather than the comment box. The card cannot know

@@ -576,7 +576,7 @@ def ask_chat_payload():
 
 
 def cycle_threads_payload():
-    """`/api/journal/threads` -- the cycle threads that are still live.
+    """`/api/cycle-threads` -- the cycle threads that are still live.
 
     His idea #182: *"instead of the comment dropdown box, the conversation
     that was created for the heartbeat opens in the conversation modal
@@ -3791,7 +3791,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             if path == "/api/asks/chat":
                 self._send_cached_json("askchat", ask_chat_payload)
                 return
-            if path == "/api/journal/threads":
+            if path == "/api/cycle-threads":
                 self._send_cached_json("cyclethreads", cycle_threads_payload)
                 return
             if path == "/api/comments":

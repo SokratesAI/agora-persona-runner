@@ -4289,7 +4289,7 @@
        * chat bubble can open the thread instead of the comment box. Same
        * tolerance again: this is a shortcut on a button that already works,
        * so a failing Agora must cost the shortcut and nothing else. */
-      fetchVersioned("/api/journal/threads", "cyclethreads").catch(function () { return null; }),
+      fetchVersioned("/api/cycle-threads", "cyclethreads").catch(function () { return null; }),
     ]);
   }
 

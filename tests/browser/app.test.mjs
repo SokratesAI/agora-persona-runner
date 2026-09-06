@@ -314,11 +314,10 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // reason: a vault with no catalog written yet is a real state.
       return res(catalog || { services: [], doors: [], missing: true }, catalogStatus);
     }
-    /* Before the journal fallback at the bottom, which answers anything
-     * unmatched with the journal payload: `/api/journal/threads` would
-     * otherwise be served a feed. Idea #182 -- which cycles still have a
-     * live heartbeat thread for the chat bubble to open. */
-    if (url.includes("/api/journal/threads")) {
+    /* Before the journal fallback at the bottom, which answers anything it
+     * does not recognise with the journal payload. Idea #182 -- which cycles
+     * still have a live heartbeat thread for the chat bubble to open. */
+    if (url.includes("/api/cycle-threads")) {
       const body = typeof cycleThreads === "function" ? cycleThreads(url) : cycleThreads;
       if (body && typeof body.then === "function") return body;
       return res(body || { cycles: {} }, cycleThreadsStatus);
@@ -3277,10 +3276,10 @@ describe("the page notices new entries on its own", () => {
       // `Promise.all` and an unresolved fourth leg would hold the journal
       // leg's own resolver, so the test would be waiting on itself.
       if (String(url).includes("/api/asks/chat")) return res({ cycles: [] });
-      // Same reason, and it has to come before the catch-all rather than
-      // after: `/api/journal/threads` starts with `/api/journal`, so the
-      // slow branch below would answer it and the round would never settle.
-      if (String(url).includes("/api/journal/threads")) return res({ cycles: {} });
+      // Same reason: this stub answers everything it does not name with the
+      // deliberately slow journal below, and an unresolved fifth leg holds
+      // the whole `Promise.all` open, so the round would never settle.
+      if (String(url).includes("/api/cycle-threads")) return res({ cycles: {} });
       return new Promise((r) => { resolveJournal = () => r(res(grown('W/"slow"'))); });
     };
     window.document.dispatchEvent(new window.Event("visibilitychange"));
