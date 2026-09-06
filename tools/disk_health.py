@@ -280,8 +280,15 @@ def days_to_eviction(filesystem, kind, slope_per_day):
     return headroom / slope_per_day
 
 
-def report_trend(node, kind, filesystem, trend, out=print):
-    """One TREND line, or one line saying why there is not one."""
+def report_trend(node, kind, filesystem, trend, out=print, also=()):
+    """One TREND line, or one line saying why there is not one.
+
+    `also` names the other action points on the *same* disk. On this estate
+    nodefs and imagefs are one filesystem, and the kubelet acts on it twice:
+    it garbage-collects images at 15% free and evicts pods at 10%. Projecting
+    only to the eviction point would quote the later of two dates as if it
+    were the first thing that happens.
+    """
     if trend is None:
         out(
             "  NO TREND   %s %s — prometheus has no stored series for this node, so this is current state only"
@@ -312,9 +319,15 @@ def report_trend(node, kind, filesystem, trend, out=print):
             % TREND_MIN_SPAN_HOURS
         )
     else:
-        tail = " — %.1f day(s) to the %.1f%%-free point the kubelet acts at" % (
-            days,
-            EVICTION_PCT[kind],
+        points = [(EVICTION_PCT[kind], days, "pods are evicted")]
+        for other, label in also:
+            other_days = days_to_eviction(filesystem, other, trend["slope_per_day"])
+            if other_days is not None:
+                points.append((EVICTION_PCT[other], other_days, label))
+        points.sort(key=lambda point: point[1])
+        tail = " — " + ", then ".join(
+            "%.1f day(s) to the %.1f%%-free point %s" % (day, pct, label)
+            for pct, day, label in points
         )
     out(
         "  TREND      %s %s: %s over the last %.1fh (%d samples, %s used at the start and %s at the end)%s"
@@ -846,7 +859,10 @@ def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=No
     if trend_read:
         nodefs = filesystems.get("nodefs")
         if nodefs is not None and available_pct(nodefs) is not None:
-            report_trend(node, "nodefs", nodefs, trend, out=out)
+            also = ()
+            if shared and filesystems.get("imagefs") is not None:
+                also = (("imagefs", "images are garbage-collected"),)
+            report_trend(node, "nodefs", nodefs, trend, out=out, also=also)
             if not shared and filesystems.get("imagefs") is not None:
                 out(
                     "  NO TREND   %s imagefs — a separate disk from nodefs, and the stored series only covers `/`"
@@ -954,6 +970,10 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None,
     trend_error = None
     try:
         trends = trend_reader()
+    # KeyError belongs with the other two: a Prometheus that answers
+    # `status: success` with a payload missing `value` or `values` is neither a
+    # network failure nor a bad status, and it must land in the same place --
+    # the disclaimer -- rather than crash a run whose free-space verdict is fine.
     except (OSError, ValueError, KeyError) as exc:
         trend_read = False
         trend_error = str(exc)

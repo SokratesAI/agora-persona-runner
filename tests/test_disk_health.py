@@ -990,7 +990,40 @@ def test_the_trend_line_carries_the_projection_and_its_own_endpoints():
     # The endpoints are printed so a reader can disagree with the fit rather
     # than take the slope on trust -- an outlier at either end moves it.
     assert "50.0GiB used at the start and 51.0GiB at the end" in lines[0]
-    assert "day(s) to the 10.0%-free point" in lines[0]
+    assert "day(s) to the 10.0%-free point pods are evicted" in lines[0]
+
+
+def test_a_shared_disk_names_the_earlier_action_point_first():
+    # nodefs and imagefs are one filesystem here, and the kubelet acts on it
+    # twice. Quoting only the eviction date names the later of two things.
+    lines = []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        {"capacityBytes": NODE_CAPACITY, "availableBytes": int(NODE_CAPACITY * 0.198)},
+        _trend(2.41),
+        out=lines.append,
+        also=(("imagefs", "images are garbage-collected"),),
+    )
+    tail = lines[0].split(" — ")[-1]
+    first, second = tail.split(", then ")
+    assert "15.0%-free point images are garbage-collected" in first
+    assert "10.0%-free point pods are evicted" in second
+
+
+def test_the_shared_disk_second_point_is_wired_through_report():
+    lines = []
+    disk_health.report(
+        "server1",
+        disk_health.node_filesystems(_summary()),
+        [],
+        out=lines.append,
+        trend=_trend(2.41),
+    )
+    trend_line = [line for line in lines if "TREND      " in line]
+    assert len(trend_line) == 1, lines
+    assert "images are garbage-collected" in trend_line[0]
+    assert "pods are evicted" in trend_line[0]
 
 
 def test_a_flat_disk_is_named_flat_and_gets_no_date():
@@ -1099,3 +1132,53 @@ def test_the_sweep_line_names_the_nodes_it_could_not_trend(monkeypatch):
     assert len(read) == 1, lines
     assert "0 of 1 node(s)" in read[0]
     assert "no series for server1" in read[0]
+
+
+def test_a_flat_trend_cannot_suppress_a_real_finding(monkeypatch):
+    """The direction that matters: a slope must not talk a red node down.
+
+    The reviewer caught that the exit-status test only proved a trend cannot
+    manufacture a finding. Nothing in `report`'s accumulator reads the trend
+    today; this is what says so when someone wires one in.
+    """
+    monkeypatch.setattr(
+        disk_health, "read_trends", lambda *a, **k: {"server1": _trend(-9.0)}
+    )
+    lines = []
+    code = disk_health.main(
+        ["--node", "server1"],
+        runner=_runner(
+            nodes=("server1",), summaries={"server1": _filling_summary()}
+        ),
+        out=lines.append,
+        host_reader=lambda node: {},
+    )
+    text = "\n".join(lines)
+    assert "FILLING" in text
+    assert "flat or shrinking (-9.00GiB/day)" in text
+    assert code == 2
+
+
+def test_the_capacity_tolerance_holds_on_both_sides_of_one_percent():
+    """A tolerance with no boundary test is any tolerance at all."""
+    filesystem = {
+        "capacityBytes": NODE_CAPACITY,
+        "availableBytes": int(NODE_CAPACITY * 0.198),
+    }
+    inside, outside = [], []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        filesystem,
+        _trend(2.41, capacity=int(NODE_CAPACITY * 1.005)),
+        out=inside.append,
+    )
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        filesystem,
+        _trend(2.41, capacity=int(NODE_CAPACITY * 1.02)),
+        out=outside.append,
+    )
+    assert "TREND      " in inside[0], inside
+    assert "NO TREND" in outside[0], outside
