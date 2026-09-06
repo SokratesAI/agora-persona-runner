@@ -389,3 +389,68 @@ def test_split_at_never_moves_the_exit_status(monkeypatch, capsys):
 def test_an_unparseable_split_at_refuses_rather_than_reporting_on_nothing(capsys):
     assert postmortem_main(["--split-at", "last tuesday"]) == 1
     assert "COULD NOT READ" in capsys.readouterr().out
+
+
+# --- Agora's own notices are not the run's record (idea #170) ---------
+
+#: Verbatim, off cycle 1035's conversation on 2026-09-06. Agora posts one
+#: of these into whichever cycle conversation is open when it notices an
+#: *earlier* cycle never replied, so it lands after that run's closing
+#: line and is about a different run entirely.
+NOTICE = {
+    "sender": "Agora",
+    "system": True,
+    "text": ("Nova — Cycle 1029 finished without ever replying to you.\n\n"
+             "It ran, and the thread it left you is all narration — no answer "
+             "at the end. Its journal entry is the record of what it actually "
+             "did, and the next cycle will relay it.\n\n"
+             "One message per cycle. You will not get this one again."),
+}
+
+#: Verbatim, same conversation, the line this check exists to read.
+CLOSING_1035 = message(
+    "heartbeat: Nova finished in 0s — failed: "
+    "<urlopen error [Errno 111] Connection refused>")
+
+
+def test_a_notice_landing_after_the_closing_line_does_not_hide_it():
+    """Cycle 1035, verbatim and in order. Agora recorded why the run
+    failed and then wrote two notices about other cycles on top of it.
+    Judging the last message called that `cut off`, which raises, when
+    Agora had already said `failed`, which does not."""
+    row = judge(1035, {"id": "x"},
+                [message("heartbeat: Nova (every@15m@16:00)"),
+                 CLOSING_1035, dict(NOTICE), dict(NOTICE)])
+    assert row["verdict"] == "failed"
+    assert "Connection refused" in row["detail"]
+
+
+def test_a_conversation_holding_only_notices_never_spoke():
+    """Cycle 1041, verbatim shape: three notices and no heartbeat line at
+    all. The run never started, and counting Agora's own messages as the
+    run speaking filed it as one that stopped part-way."""
+    row = judge(1041, {"id": "x"}, [dict(NOTICE) for _ in range(3)])
+    assert row["verdict"] == "silent"
+    assert "3 message(s)" in row["detail"]
+    assert "Agora's own notices" in row["detail"]
+
+
+def test_a_run_that_really_said_nothing_still_says_so_plainly():
+    """The pre-existing shape has to keep its own wording -- an empty
+    conversation and one holding three notices are different findings and
+    the report is the only place that difference is visible."""
+    row = judge(1029, {"id": "x"}, [])
+    assert row["verdict"] == "silent"
+    assert row["detail"] == (
+        "the conversation was created and nothing ever spoke in it")
+
+
+def test_truncation_is_judged_on_what_agora_returned_not_what_survives():
+    """A conversation at the read ceiling is unreadable however many of
+    its rows are notices -- the closing line is off the end either way,
+    and counting the filtered rows would let it slip under the ceiling
+    and be judged off a message that is not the last one."""
+    row = judge(600, {"id": "x"},
+                [dict(NOTICE)] + [message("Bash: ...")] * (MESSAGE_LIMIT - 1))
+    assert row["verdict"] == "unreadable"
+    assert row["messages"] == MESSAGE_LIMIT
