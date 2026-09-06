@@ -1154,8 +1154,9 @@ def floor_share(repo, run=subprocess.run, sample=FLOOR_SAMPLE_RUNS,
             f"        not one of the {len(seconds)} ran past a minute (median {median:.0f}s, "
             f"longest {ordered[-1]:.0f}s), so no step here is long enough to bill a second "
             f"minute and shortening one saves nothing. The only lever is the number of "
-            f"jobs — {len(seconds) / len(runs):.1f} per run, and a run per pull request "
-            f"plus a run per resulting commit.")
+            f"jobs — {len(seconds) / len(runs):.1f} per run, and the line below is what "
+            f"makes that count what it is.")
+    lines.extend(_pairing_lines(repo, run))
     lines.extend(_origin_lines(runs))
     if unreadable:
         lines.append(f"        partial: {unreadable} of {len(runs)} sampled run(s) would not "
@@ -1164,6 +1165,90 @@ def floor_share(repo, run=subprocess.run, sample=FLOOR_SAMPLE_RUNS,
         lines.append(f"        partial: {undated} job(s) carried no start or end and were left "
                      f"out rather than counted as zero.")
     return lines
+
+
+#: How close two event counts have to be before a sample is read as "one push
+#: run for every pull-request run". It is a tolerance rather than a threshold:
+#: runs in flight at either end of the sample window make an exact tie
+#: impossible even on a repo where every `main` commit is a merge. Measured on
+#: `platform-config` 2026-09-06, 51 push against 49 pull_request, the ratio is
+#: 0.96; a repo where half of `main` arrives from automation sits near 0.5. The
+#: line is drawn clear of both rather than at the midpoint of nothing.
+PAIRED_EVENT_RATIO = 0.7
+
+#: The pairing sample is deliberately five times the floor sample, and it is a
+#: separate call. `floor_share` is capped at 20 runs because it spends one `gh`
+#: call *per run* fetching jobs; the event of a run costs nothing extra, it is
+#: already on the run row, so one page of 100 buys a window five times as wide
+#: for one call. That is not a tuning preference. Measured 2026-09-06 on
+#: `platform-config`: the newest 20 runs read 14 push against 6 pull-request
+#: and this function called them unpaired, while the newest 100 read 51 against
+#: 49 and called them paired. The 20-run window is a few hours of a repo whose
+#: pull requests arrive in bursts, so the narrow sample answered the wrong
+#: question confidently.
+PAIRING_SAMPLE_RUNS = 100
+
+
+def _pairing_lines(repo, run=subprocess.run, sample=PAIRING_SAMPLE_RUNS,
+                   ratio=PAIRED_EVENT_RATIO):
+    """`lines` -- how much of the bill is the second run of a tree already tested.
+
+    `floor_share` ends by naming the number of jobs as the only lever on a
+    repo whose jobs all finish inside a minute. Until Cycle 1043 it then
+    explained that number with the clause *"a run per pull request plus a run
+    per resulting commit"*, and **that clause was never measured**. It
+    happened to be true of `platform-config`, which is the worst way for a
+    claim to be wrong: it reads as a measurement, it is an assumption, and
+    the one repo anybody checks it against is the one it was written from.
+    The count costs one `gh` call -- a run's event is on the run row, so no
+    per-run fan-out is needed and the window can be much wider than the
+    floor's (see `PAIRING_SAMPLE_RUNS`, which is why this is its own call
+    rather than a second read of the list `floor_share` already has).
+
+    Measured by hand on 2026-09-06 while taking idea #74, `checks.yml` over
+    2026-09-04T21:16Z..2026-09-06T00:48Z: **51 `push` and 49 `pull_request`**
+    in one hundred runs. So a merged pull request really does bill twice
+    there, and close to half of that repo's 380 private minutes this month is
+    the second run of a tree the first run already tested. That number is
+    what names the lever, and no instrument printed it -- I ran `gh run list`
+    by hand for it, which is the definition of a fact that will have to be
+    re-derived by whoever looks next.
+
+    **It has to be able to come out the other way**, the same standard
+    `_origin_lines` holds itself to. A repo whose `main` commits arrive from
+    automation rather than from merges does not pair, and there the duplicate
+    is not where the bill is; a sample with no pull-request run in it cannot
+    judge the question at all and says so rather than reporting a tidy zero.
+    """
+    events, why = _gh_json(
+        [f"/repos/{repo}/actions/runs?per_page={sample}", "-q",
+         "[.workflow_runs[].event]"], run)
+    if events is None:
+        return [f"        DOUBLE  could not sample {repo}'s run events: {why}"]
+    pushes = sum(1 for e in events if e == "push")
+    pulls = sum(1 for e in events if e == "pull_request")
+    if not pulls:
+        return ["        DOUBLE  NOT JUDGED  no pull-request run in the sample, so it "
+                "cannot say whether a merge here bills a second time on the commit "
+                "it lands."]
+    if not pushes:
+        return [f"        DOUBLE  {pulls} pull-request run(s) and no push run at all, so "
+                f"nothing sampled here is billed twice for one tree and the duplicate "
+                f"is not this repo's lever."]
+    if min(pushes, pulls) < ratio * max(pushes, pulls):
+        return [f"        DOUBLE  {pushes} push run(s) against {pulls} pull-request "
+                f"run(s), which do not pair, so most commits reaching the default "
+                f"branch here are not arriving through a merged pull request and the "
+                f"duplicate is not where this bill is."]
+    paired = min(pushes, pulls)
+    counted = pushes + pulls
+    return [f"        DOUBLE  {pushes} push run(s) against {pulls} pull-request run(s) "
+            f"in the newest {len(events)}, so a merged pull request bills twice — once "
+            f"on the branch and once on the commit it lands.",
+            f"        that makes {paired} of the {counted} sampled run(s) "
+            f"({paired / counted * 100:.0f}%) the second run of a tree the first one "
+            f"already tested. Dropping one of the two triggers is the only lever that "
+            f"halves this repo's bill without changing what is built."]
 
 
 #: The head-branch prefixes this loop opens every one of its own pull requests
