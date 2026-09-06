@@ -180,6 +180,38 @@ def back_off(conversation_id, conversation_name, failures, reason, last_message_
     log(f"[{conversation_name}] backing off {delay}s after {failures} failures: {reason}")
 
 
+def _unchanged_since_last_tick(summary, cached):
+    """True when the listing row says this conversation has not moved since
+    we cached its window, and there is nothing else that wants another look.
+
+    Issue #30, fix 3. Fixes 1 and 2 shrank `GET /conversations`; this is the
+    one that removes requests. `?after&rev` already made the *answer* to a
+    per-conversation fetch nearly empty, but the request itself is still one
+    round trip per conversation per tick, and the server still has to read
+    and parse that conversation's file to answer it. `rev` on the listing row
+    (agora#87) is the same `prefixRev` fingerprint the messages route returns,
+    so equality here means every message, its text and its forgotten flag are
+    exactly what we already hold -- there is nothing to fetch.
+
+    The one thing this must not swallow is a retry. A reply that *failed*
+    wrote nothing, so the conversation's rev is unchanged, and skipping on
+    rev alone would mean a conversation never got a second attempt --
+    `_conversation_backoff` would sit there forever with nothing to expire
+    into. So a conversation with a failure recorded against it always takes
+    the fetch. `_conversation_failures` is the wider of the two (backoff is
+    only ever set from it, and both are cleared together on success), which
+    is why it is the one tested.
+
+    Absent or empty `rev` on the row is not an error: an Agora that predates
+    agora#87 sends no such field, and every conversation then takes the fetch
+    exactly as it did before.
+    """
+    listed_rev = summary.get("rev")
+    if not listed_rev or listed_rev != cached[1]:
+        return False
+    return summary["id"] not in _conversation_failures
+
+
 def poll_conversation(summary):
     name = summary.get("name", summary.get("id"))
     if summary.get("archived"):
@@ -193,8 +225,11 @@ def poll_conversation(summary):
     if summary.get("status", "active") != "active":
         debug_log(f"[{name}] skipped: status={summary.get('status')}")
         return
-    path = f"/conversations/{summary['id']}/messages?limit={FETCH_LIMIT}"
     cached = _message_window_cache.get(summary["id"])
+    if cached and _unchanged_since_last_tick(summary, cached):
+        debug_log(f"[{name}] skipped: unchanged since last tick (rev {cached[1]})")
+        return
+    path = f"/conversations/{summary['id']}/messages?limit={FETCH_LIMIT}"
     if cached:
         path += f"&after={quote(cached[0])}&rev={quote(cached[1])}"
     status, detail = agora_get(path)

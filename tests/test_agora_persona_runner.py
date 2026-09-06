@@ -7790,6 +7790,18 @@ def _fake_messages_server(runner, all_messages):
     return fake_agora_get, requests
 
 
+def _prefix_rev(messages):
+    """The listing `rev` agora's ConversationStore puts on a summary row --
+    the same prefixRev fingerprint over the whole conversation that the
+    messages route returns. Written out here rather than reused from the
+    fake server's closure so a test that sets a summary's rev is stating
+    what the *server* would have sent, not echoing the client."""
+    h = hashlib.sha1()
+    for m in messages:
+        h.update(json.dumps([m["id"], m.get("forgotten") is True, m["text"]]).encode())
+    return h.hexdigest()[:16]
+
+
 def _msg(n, sender="Edvard", text=None):
     return {"id": f"m{n}", "sender": sender, "text": text or f"message {n}", "forgotten": False}
 
@@ -7902,6 +7914,94 @@ def test_the_window_never_grows_past_fetch_limit(runner, polling):
     assert len(seen[-1]) == runner.FETCH_LIMIT
     assert [m["id"] for m in seen[-1]] == [f"m{n}" for n in range(5, runner.FETCH_LIMIT + 5)], \
         "the window must be the newest FETCH_LIMIT, exactly as a full fetch would return"
+
+
+# ---------------------------------------------------------------------------
+# Issue #30, fix 3: the listing row carries the same rev, so an unchanged
+# conversation costs no request at all. Fixes 1 and 2 shrank the listing;
+# ?after&rev made each per-conversation answer nearly empty, but the request
+# itself -- one round trip per conversation per tick, and one file read on the
+# server to answer it -- was still being paid to learn nothing.
+# ---------------------------------------------------------------------------
+
+
+def test_an_unchanged_listing_rev_skips_the_fetch_entirely(runner, polling):
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(1), _msg(2)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)          # no rev on the row yet
+        assert len(requests) == 1, "the first tick has nothing cached and must fetch"
+        summary["rev"] = _prefix_rev(messages)     # what the next listing carries
+        runner.poll_conversation(summary)
+
+    assert len(requests) == 1, "an unchanged conversation must cost no request"
+    assert len(seen) == 1, "and no turn is decided, because nothing was read"
+
+
+def test_a_moved_listing_rev_is_fetched_and_the_new_message_is_seen(runner, polling):
+    """The half that makes the skip safe to have: the row moving must still
+    reach decide_turn, or a message the owner sent would sit unanswered."""
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(1), _msg(2)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        summary["rev"] = _prefix_rev(messages)
+        runner.poll_conversation(summary)          # skipped
+        messages.append(_msg(3))
+        summary["rev"] = _prefix_rev(messages)     # the listing moved
+        runner.poll_conversation(summary)
+
+    assert len(requests) == 2, "the tick after the row moved must fetch"
+    assert [m["id"] for m in seen[-1]] == ["m1", "m2", "m3"]
+
+
+def test_a_listing_row_with_no_rev_is_fetched_every_tick(runner, polling):
+    """An Agora that predates agora#87 sends no rev, and every conversation
+    must then behave exactly as it did before this change."""
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(1), _msg(2)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        runner.poll_conversation(summary)
+        summary["rev"] = ""                        # present but empty is the same case
+        runner.poll_conversation(summary)
+
+    assert len(requests) == 3
+    assert "rev" not in summary or not summary["rev"]
+
+
+def test_a_conversation_with_a_recorded_failure_is_retried_even_when_its_rev_holds(runner, polling):
+    """A reply that failed wrote nothing, so the conversation's rev does not
+    move -- skipping on rev alone would mean the backoff never got a second
+    attempt to expire into, and the conversation went silent for good."""
+    summary, seen, fake_decide_turn = polling
+    messages = [_msg(1), _msg(2)]
+    fake_agora_get, requests = _fake_messages_server(runner, messages)
+
+    with patch.object(runner.conversations, "agora_get", side_effect=fake_agora_get), \
+         patch.object(runner.conversations, "decide_turn", side_effect=fake_decide_turn):
+        runner.poll_conversation(summary)
+        summary["rev"] = _prefix_rev(messages)
+        runner.conversations._conversation_failures[summary["id"]] = 1
+        try:
+            runner.poll_conversation(summary)
+            assert len(requests) == 2, "a conversation owed a retry must still be fetched"
+            # ...and the same row with the failure cleared is skipped, so the
+            # assertion above is about the failure and not about the rev.
+            runner.conversations._conversation_failures.pop(summary["id"], None)
+            runner.poll_conversation(summary)
+            assert len(requests) == 2
+        finally:
+            runner.conversations._conversation_failures.pop(summary["id"], None)
 
 
 def test_the_incremental_window_matches_what_a_full_fetch_would_have_returned(runner, polling):
