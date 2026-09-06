@@ -6,8 +6,8 @@ in `agora_runner.vault.vault_write_path`, which is the one place an
 in-process board write lands. Its own handoff named what that does not
 cover, and this is it.
 
-**`tools.board_capture`, `board_row`, `board_status`, `board_project` and
-`board_untag_project` write a local file, and a cycle then puts that file
+**`tools.board_capture`, `board_row`, `board_status`, `board_priority`,
+`board_project` and `board_untag_project` write a local file, and a cycle then puts that file
 into the vault with `/app/bridge/vault_tool.py put`** -- a different
 program, in a different repo, in a different process, that knows nothing
 about the ticket store. Every one of those writes leaves the store a
