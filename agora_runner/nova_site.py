@@ -5113,17 +5113,35 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         """`/api/conversations/autotitle` -- name a thread after its first message.
 
         `issues.md` #139. It is `rename` with the title derived rather than
-        typed, and with one refusal `rename` does not have: it will not touch
-        a thread whose name is anything but the placeholder, so a title he
-        chose is never overwritten by something he said afterwards.
+        typed, and with refusals `rename` does not have: it will not touch a
+        name he typed, so a title he chose is never overwritten by something
+        he said afterwards, and it will not touch a name it derived either
+        unless the thread has spent two messages off that topic.
 
         `name` is what the page believes the thread is called. See
         `nova_conversations.autotitle` for why that is read off the page and
         not off the store.
         """
+        payload = payload or {}
+        # His earlier messages in the thread, which `autotitle` needs to tell a
+        # title it derived from one he typed. It is a list, and
+        # `_conversation_write` validates strings only, so it is checked here
+        # and closed over rather than passed through as a sixth argument that
+        # the other four writes would have to ignore.
+        recent = payload.get("recent")
+        if recent is None:
+            recent = []
+        if not isinstance(recent, list) or any(
+                not isinstance(t, str) for t in recent):
+            self._send_json(400, {"error": "recent must be a list of strings"})
+            return
         self._conversation_write(
-            payload, conversation_autotitle, "autotitle",
+            payload,
+            lambda cid, name, text: conversation_autotitle(
+                cid, name, text, recent),
+            "autotitle",
             ("which conversation", "that conversation already has a name",
+             "that conversation is still about the same thing",
              "there was no title"),
             lambda p: (p.get("id"), p.get("name"), p.get("text")))
 
