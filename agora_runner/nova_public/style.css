@@ -4428,6 +4428,11 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 
 .project-prio { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
 .project-prio-label { color: var(--dim); font-size: 0.9rem; }
+.project-trl { display: flex; align-items: center; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.trl-meter { display: inline-flex; gap: 4px; align-items: center; }
+.trl-dot { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--dim); }
+.trl-dot.on { background: var(--dim); }
+.project-trl-word { color: var(--dim); font-size: 0.9rem; }
 .project-prio-note { color: var(--dim); font-size: 0.85rem; }
 /* Inside a pill the chip is a rating, not a tap target of its own -- the
  * whole pill is the link, so the chip must not eat the tap. */

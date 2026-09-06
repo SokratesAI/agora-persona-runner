@@ -1980,11 +1980,11 @@ contract: Nova writes this from the app's project picker. One row per project th
 
 # Projects
 
-| Project | Priority | Updated | Order |
-|---|---|---|---|
+| Project | Priority | Updated | Order | TRL |
+|---|---|---|---|---|
 """
 
-_PROJECT_META_WIDTH = 4
+_PROJECT_META_WIDTH = 5
 
 
 def parse_project_meta(markdown):
@@ -2019,6 +2019,7 @@ def parse_project_meta(markdown):
             "priorityKey": priority_key(label),
             "updated": cells[2] if len(cells) > 2 else "",
             "order": parse_project_order_cell(cells[3] if len(cells) > 3 else ""),
+            "trl": parse_project_trl_cell(cells[4] if len(cells) > 4 else ""),
         }
     return out
 
@@ -2038,6 +2039,68 @@ def parse_project_order_cell(cell):
         return None
     value = int(text)
     return value if value > 0 else None
+
+
+#: How proven a project is under real conditions, worst first, 1-based by
+#: index. Milestone M5 of idea #260, compressed from NASA/DoD's nine-level
+#: Technology Readiness Level scale. The spec names four --
+#: *"Prototype -> Functional -> Hardened -> Proven"* -- and asks for five so
+#: the meter reads the same width as satisfaction, leaving the fifth label
+#: open. **`Concept` is the one I chose, and it goes at the bottom rather
+#: than the top**: a project he has filed rows under and not built yet is a
+#: real state this scale could not say before, and adding a level above
+#: `Proven` would have made the label he already picked as the ceiling stop
+#: meaning the ceiling. Nova sets this directly with no approval gate --
+#: the spec's own call, because it is a technical self-assessment and not a
+#: judgement about him.
+PROJECT_TRL_LEVELS = ("Concept", "Prototype", "Functional", "Hardened", "Proven")
+
+
+def canonical_trl(value):
+    """A level name or a 1-5 number -> the canonical label, or `None`.
+
+    Both spellings are accepted because both are how it gets written: a
+    cycle passes the word on the command line and his own file is a table
+    a person can hand-edit, where `3` is the obvious thing to type. `""`
+    is not a level and is refused here -- clearing a TRL is
+    `set_project_trl(..., "")`, which the setter handles itself.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        index = int(text)
+        if 1 <= index <= len(PROJECT_TRL_LEVELS):
+            return PROJECT_TRL_LEVELS[index - 1]
+        return None
+    for label in PROJECT_TRL_LEVELS:
+        if label.lower() == text.lower():
+            return label
+    return None
+
+
+def parse_project_trl_cell(cell):
+    """A `TRL` cell -> its canonical label, or `""` for unassessed.
+
+    `""` rather than `None` so the payload carries a string on every row
+    and the page has nothing to branch on. Anything unreadable reads as
+    unassessed for the same reason `parse_project_order_cell` does: this
+    is a file he can edit by hand, and a typo must not take out the table.
+    """
+    return canonical_trl(cell) or ""
+
+
+def project_trl_key(label):
+    """A canonical label -> its 1-based level, or `0` for unassessed.
+
+    The number is what a dot meter counts and what a sort would compare;
+    keeping it out of the label means the page never has to know the
+    order of the words.
+    """
+    canonical = canonical_trl(label)
+    if canonical is None:
+        return 0
+    return PROJECT_TRL_LEVELS.index(canonical) + 1
 
 
 def project_positions(markdown):
@@ -2129,6 +2192,7 @@ def set_project_priority(markdown, project, priority, dated=""):
 
 
 _PROJECT_ORDER_HEADING = "Order"
+_PROJECT_TRL_HEADING = "TRL"
 
 
 def _project_meta_table(lines):
@@ -2243,6 +2307,68 @@ def set_project_order(markdown, project, position):
     if len(heading_cells) < _PROJECT_META_WIDTH:
         heading_cells += [""] * (_PROJECT_META_WIDTH - len(heading_cells))
     heading_cells[3] = heading_cells[3] or _PROJECT_ORDER_HEADING
+    lines[heading] = _write_project_cells(heading_cells)
+    lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
+
+    return "\n".join(lines)
+
+
+def set_project_trl(markdown, project, level):
+    """Set one project's TRL. Returns the new markdown, or `None` if refused.
+
+    Milestone M5 of idea #260, and the one field of the three that needs
+    no approval gate: the spec puts it in the same ownership as the
+    code-quality calls a cycle already makes without asking. So the write
+    path is this function and a CLI, not a control on his page -- a button
+    for him would assert he owns a number the spec says I do.
+
+    Refused: an unknown project, because a readiness score is a statement
+    about a row that exists and inventing the row would rate a project he
+    never rated; a level outside the five; and a file with no table.
+    `""` is accepted and clears the cell, which is *unassessed* -- a real
+    state, and the one every project is in until a cycle looks.
+    """
+    name = (project or "").strip()
+    if not name:
+        return None
+
+    text = str(level or "").strip()
+    if text:
+        label = canonical_trl(text)
+        if label is None:
+            return None
+    else:
+        label = ""
+
+    lines = (markdown or "").split("\n")
+    table = _project_meta_table(lines)
+    if table is None:
+        return None
+    heading, rule, rows = table
+    if not rows:
+        return None
+
+    hit = None
+    for index in rows:
+        cells = [c.strip() for c in lines[index].strip().strip("|").split("|")]
+        if cells and cells[0].lower() == name.lower():
+            hit = (index, cells)
+            break
+    if hit is None:
+        return None
+
+    index, cells = hit
+    cells += [""] * (_PROJECT_META_WIDTH - len(cells))
+    # `cells[0]` is left alone for the same reason `set_project_priority`
+    # leaves it: the match is case-insensitive because he types the name on
+    # a phone, and writing my casing back renames his project.
+    cells[4] = label
+    lines[index] = _write_project_cells(cells)
+
+    heading_cells = [c.strip() for c in lines[heading].strip().strip("|").split("|")]
+    heading_cells += [""] * (_PROJECT_META_WIDTH - len(heading_cells))
+    heading_cells[3] = heading_cells[3] or _PROJECT_ORDER_HEADING
+    heading_cells[4] = heading_cells[4] or _PROJECT_TRL_HEADING
     lines[heading] = _write_project_cells(heading_cells)
     lines[rule] = "|" + "---|" * _PROJECT_META_WIDTH
 

@@ -198,6 +198,7 @@ from agora_runner.nova_boards import (
     split_capture_done,
     split_capture_priority,
     split_detail_conversation,
+    project_trl_key,
 )
 from agora_runner.nova_conversation_reads import mark_seen as mark_conversation_seen
 from agora_runner.nova_conversations import (
@@ -1702,6 +1703,14 @@ def project_payload(name=None):
                 # would send a position the file does not use the moment he
                 # hand-edits a cell.
                 "order": (meta.get(name.lower()) or {}).get("order") or 0,
+                # How proven it is (idea #260, M5), as the label and as the
+                # 1-5 the dot meter counts. `""`/`0` is unassessed, which
+                # is every project until a cycle looks -- and it is a
+                # different answer from `Concept`, so the page draws an
+                # empty meter rather than one dot.
+                "trl": (meta.get(name.lower()) or {}).get("trl") or "",
+                "trlKey": project_trl_key(
+                    (meta.get(name.lower()) or {}).get("trl") or ""),
             }
             for name in known
         },
