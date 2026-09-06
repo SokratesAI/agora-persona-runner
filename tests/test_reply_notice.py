@@ -177,13 +177,38 @@ def test_the_first_tick_checks_nothing():
 
 
 def test_a_check_inside_the_interval_does_not_run():
+    # The steady interval, measured from the warm-up check rather than from
+    # start-up: arm, run one real check, then tick a second short of the
+    # next one. The first check has to happen for this to be a test of the
+    # interval at all -- 721 is silent, so an unposted second message is the
+    # assertion and a watch that never checked would pass it for free.
+    post = Recorder()
+    watch = _watch([_conversation("Cycle 721", 120, ident="c721"),
+                    _conversation("Cycle 722", 121, ident="c722")],
+                   {"c721": {"messages": [_narration("still going")]},
+                    "c722": {"messages": [_narration("also going")]}},
+                   post)
+    watch.tick(now=0.0)
+    warm = reply_notice.REPLY_WARM_UP_SECONDS + 1
+    assert watch.tick(now=warm) == 2
+    post.sent.clear()
+    assert watch.tick(now=warm + reply_notice.REPLY_CHECK_SECONDS - 1) == 0
+    assert post.sent == []
+
+
+def test_the_first_check_comes_after_the_warm_up_not_a_whole_interval():
+    # Half of nova-site's pod lifetimes are shorter than an interval, so a
+    # watch armed for a full interval never checks at all on those pods.
     post = Recorder()
     watch = _watch([_conversation("Cycle 721", 120, ident="c721")],
                    {"c721": {"messages": [_narration("still going")]}},
                    post)
     watch.tick(now=0.0)
-    assert watch.tick(now=reply_notice.REPLY_CHECK_SECONDS - 1) == 0
+    assert reply_notice.REPLY_WARM_UP_SECONDS < reply_notice.REPLY_CHECK_SECONDS
+    assert watch.tick(now=reply_notice.REPLY_WARM_UP_SECONDS - 1) == 0
     assert post.sent == []
+    assert watch.tick(now=reply_notice.REPLY_WARM_UP_SECONDS + 1) == 1
+    assert "Cycle 721" in post.sent[0][1]
 
 
 def test_a_muted_heartbeat_posts_without_buzzing():
