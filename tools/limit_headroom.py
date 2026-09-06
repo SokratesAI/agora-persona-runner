@@ -61,6 +61,24 @@ than 18h at the moment this was written, so a check that raised on a young
 series would be red every day forever, which is the same as off. The number goes
 where somebody sizing a limit will read it, beside the peak it qualifies.
 
+**A peak on its own cannot say whether the container is still up there.**
+Measured 2026-09-06 05:12 Oslo: `agents/backend` (the newspaper service) peaked
+at **100.0 MiB of its 128 MiB limit** over the window and raised at 78.1%, and
+its RSS at that moment was **57.1 MiB** -- 45% of the limit, flat to a tenth of
+a MiB for the previous four and a half hours. `infra/grafana` raised the same
+night at 69.7% off a 267 MiB peak and was sitting at 187.5 MiB, also flat. One
+of those is a container that spiked at start-up and settled; the other would be
+a container walking toward its ceiling, and **this check printed them
+identically**, so a cycle reading a raise had to go and take a second
+measurement by hand before it could tell which. That second measurement is one
+instant query against the same Prometheus, so each row now carries it.
+
+It does **not** move the verdict, and the reason is the kill this file is
+calibrated on: grafana died holding its peak, not its average, so raising on the
+current reading would have let the one kill this cluster has produced go
+unwarned. The pair is for ranking, which is a judgement a reader makes and this
+tool does not.
+
 **The threshold is calibrated on the one kill this cluster has produced with a
 named victim, and that is a thin base rather than a law.** Grafana was holding
 190.3 MiB of a 256 MiB limit -- 74.3% -- in steady state, leaving 66 MiB for
@@ -160,12 +178,16 @@ def read_containers(window_hours, base=PROMETHEUS, get=_get):
             'time() - container_start_time_seconds{container!=""}', base, get
         )
     }
+    currents = {
+        _key(s["metric"]): float(s["value"][1])
+        for s in query('container_memory_rss{container!=""}', base, get)
+    }
     rows = []
     for key, limit in limits.items():
         peak = peaks.get(key)
         if peak is None:
             continue
-        rows.append(key + (peak, limit, ages.get(key)))
+        rows.append(key + (peak, limit, ages.get(key), currents.get(key)))
     rows.sort(key=lambda row: row[4] / row[5], reverse=True)
     return rows
 
@@ -194,8 +216,22 @@ def covers_the_window(age_hours, window_hours):
     return age_hours >= MIN_COVERAGE * float(window_hours)
 
 
+def _now_clause(current, limit):
+    """What to say about a container's RSS *right now*, beside its peak.
+
+    Always said, never thresholded. A peak alone cannot tell a container that
+    spiked once and settled from one sitting at its ceiling, and the difference
+    is the whole of what a reader does next; a margin for when it is "worth
+    mentioning" would be a number nobody measured. `None` is the series not
+    answering, which is not zero and is not folded into it.
+    """
+    if current is None:
+        return "; RSS now unreadable, so the peak is all there is"
+    return "; now %dMi (%.0f%% of the limit)" % (int(current / MIB), 100.0 * current / limit)
+
+
 def _line(row, window_hours=None):
-    namespace, pod, container, node, peak, limit, age = row
+    namespace, pod, container, node, peak, limit, age, current = row
     text = "%5.1f%%  %s/%s (%s) on %s — peak %dMi of a %dMi limit" % (
         100.0 * peak / limit,
         namespace,
@@ -206,10 +242,10 @@ def _line(row, window_hours=None):
         int(limit / MIB),
     )
     if age is None:
-        return text + ", over an unknown slice of the container's life"
-    if window_hours is not None and not covers_the_window(age, window_hours):
-        return text + ", over only %.1fh of container life" % age
-    return text
+        text += ", over an unknown slice of the container's life"
+    elif window_hours is not None and not covers_the_window(age, window_hours):
+        text += ", over only %.1fh of container life" % age
+    return text + _now_clause(current, limit)
 
 
 def report(window_hours, base=PROMETHEUS, get=_get, out=print):
@@ -258,9 +294,17 @@ def report(window_hours, base=PROMETHEUS, get=_get, out=print):
         "Working set and max-usage both count page cache and read at or near "
         "100%% of the limit for containers that are perfectly healthy."
         % (len(rows), float(window_hours)))
+    out("The `now` figure beside each peak is that container's RSS at this "
+        "instant. A container that spiked once and settled and one sitting at "
+        "its ceiling produce the same peak, and only the pair tells them "
+        "apart; the verdict stays keyed on the peak, because the kernel kills "
+        "on the spike and not on the average.")
     out("NOT JUDGED  containers with no memory limit at all — there is no "
         "ceiling to be close to, and whether one should exist is "
         "tools.workload_health's question.")
+    out("NOT JUDGED  whether a container is trending up. Two readings are a "
+        "peak and an instant, not a slope, and a slope over this store would "
+        "be fitted to whatever history it happens to hold.")
 
     short = covered is None or covered < MIN_COVERAGE * float(window_hours)
     if covered is None:

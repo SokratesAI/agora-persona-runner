@@ -16,13 +16,17 @@ from tools import limit_headroom as lh
 MIB = 1024**2
 
 
-def fake_get(*, coverage_hours=24.0, limits=(), peaks=(), ages=None, now=1_000_000.0):
+def fake_get(*, coverage_hours=24.0, limits=(), peaks=(), ages=None, currents=None,
+             now=1_000_000.0):
     """A stand-in for `tools.alerts._get` that answers from the given rows.
 
-    `limits` and `peaks` are `(namespace, pod, container, node, bytes)` tuples.
-    `ages` is the same shape with hours in the last slot; leaving it `None`
-    makes every limited container a week old, so a test that is not about the
-    series age is not silently answering a question about it.
+    `limits`, `peaks` and `currents` are `(namespace, pod, container, node,
+    bytes)` tuples. `ages` is the same shape with hours in the last slot;
+    leaving it `None` makes every limited container a week old, so a test that
+    is not about the series age is not silently answering a question about it.
+    Leaving `currents` `None` answers the instant query with `peaks`, which is a
+    container still sitting at its high-water mark -- the case where the new
+    reading adds nothing, so a test that is not about it is not answering it.
     """
 
     def metric(row):
@@ -51,6 +55,8 @@ def fake_get(*, coverage_hours=24.0, limits=(), peaks=(), ages=None, now=1_000_0
             return vector(limits)
         if expr.startswith("max_over_time(container_memory_rss"):
             return vector(peaks)
+        if expr.startswith("container_memory_rss"):
+            return vector(peaks if currents is None else currents)
         if expr.startswith("time() - container_start_time_seconds"):
             rows = ages if ages is not None else [row[:4] + (7 * 24.0,) for row in limits]
             return {
@@ -293,3 +299,74 @@ def test_a_young_series_never_hides_a_raise():
     assert code == 2
     assert "NEAR LIMIT" in text
     assert "over only 0.2h of container life" in text
+
+
+def test_a_settled_spike_prints_where_it_is_now():
+    """The failure this reading exists for, with the numbers that produced it.
+
+    Measured 2026-09-06 05:12 Oslo: `agents/backend` peaked at 100.0Mi of a
+    128Mi limit and raised at 78.1%, while its RSS at that instant was 57.1Mi --
+    45% of the limit and flat for four and a half hours. The raise was correct
+    and the line gave a reader no way to tell it from a container sitting at
+    78%.
+    """
+    code, text = run(
+        limits=[("agents", "newspaper-1", "backend", "server2", 128 * MIB)],
+        peaks=[("agents", "newspaper-1", "backend", "server2", 100 * MIB)],
+        currents=[("agents", "newspaper-1", "backend", "server2", 57 * MIB)],
+    )
+    assert "peak 100Mi of a 128Mi limit" in text
+    assert "now 57Mi (45% of the limit)" in text
+    assert code == 2, "the verdict stays keyed on the peak — the kernel kills on the spike"
+
+
+def test_a_container_at_its_ceiling_reads_differently():
+    """The control the test above needs: same peak, same verdict, different `now`.
+
+    Without this the `now` clause could be printing the peak back to itself and
+    every assertion above would still pass.
+    """
+    code, text = run(
+        limits=[("agents", "newspaper-1", "backend", "server2", 128 * MIB)],
+        peaks=[("agents", "newspaper-1", "backend", "server2", 100 * MIB)],
+        currents=[("agents", "newspaper-1", "backend", "server2", 100 * MIB)],
+    )
+    assert "now 100Mi (78% of the limit)" in text
+    assert "now 57Mi" not in text
+    assert code == 2
+
+
+def test_a_missing_current_series_is_not_read_as_zero():
+    """No instant sample is the series not answering, which is not 0Mi.
+
+    Zero would print `now 0Mi (0% of the limit)` — the most reassuring line this
+    tool can produce — off a container it could not see at all.
+    """
+    code, text = run(
+        limits=[("agents", "newspaper-1", "backend", "server2", 128 * MIB)],
+        peaks=[("agents", "newspaper-1", "backend", "server2", 100 * MIB)],
+        currents=[],
+    )
+    assert "RSS now unreadable" in text
+    assert "now 0Mi" not in text
+    assert code == 2, "an unreadable current reading never quietens a peak that raised"
+
+
+def test_the_instant_reading_is_asked_of_prometheus():
+    """The clause is only worth anything if it comes from a second query.
+
+    A `now` derived from the peak would render identically and say nothing, so
+    this asserts the bare instant expression is actually issued.
+    """
+    seen = []
+    inner = fake_get(
+        limits=[("agents", "newspaper-1", "backend", "server2", 128 * MIB)],
+        peaks=[("agents", "newspaper-1", "backend", "server2", 100 * MIB)],
+    )
+
+    def spy(base, path):
+        seen.append(urllib.parse.parse_qs(urllib.parse.urlparse(path).query)["query"][0])
+        return inner(base, path)
+
+    lh.report(24.0, base="http://fake", get=spy, out=lambda _line: None)
+    assert 'container_memory_rss{container!=""}' in seen
