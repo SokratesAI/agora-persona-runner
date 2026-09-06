@@ -1,7 +1,7 @@
 """Milestone M5 of idea #260: the lifecycle field and its approval gate.
 
 The other two fields of that milestone are owned outright -- the TRL is
-Nova's, the satisfaction is Edvard's -- and each has exactly one write
+Nova's, the satisfaction is the owner's -- and each has exactly one write
 path. This one is shared, so it has two, and the whole value of the field
 is that they cannot be swapped: Nova writes a proposal and can never write
 a live stage, and the approve/decline route never carries a stage at all.
