@@ -2830,6 +2830,18 @@ body.has-full-chart { overflow: hidden; }
  * status sits left and the paperclip sits against Send. It keeps the 44px
  * target the rest of this file holds every button to. */
 .chat-actions .attach-btn { margin-left: auto; }
+/* The two voice buttons (ideas.md #221) sit in the same right-hand group.
+   The `auto` margin has to land on the first control that is actually on
+   screen, and both of these are hidden on a browser with no speech API --
+   `:not([hidden])` is what keeps the paperclip from being stranded in the
+   middle of a `space-between` row when they are. */
+.chat-actions .chat-voice:not([hidden]) { margin-left: auto; }
+.chat-actions .chat-voice:not([hidden]) ~ .chat-voice,
+.chat-actions .chat-voice:not([hidden]) ~ .attach-btn { margin-left: 0; }
+/* Pressed is a real state here rather than a hover flourish: the mic stays
+   pressed while it is listening and the speaker while it is switched on, and
+   on a phone there is no hover to tell him either. */
+.chat-voice[aria-pressed="true"] { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 
 .ask-pending { color: var(--dim); font-style: italic; }
 /* The pending bubble carries three lines now (issues.md, 2026-08-30): the
