@@ -670,7 +670,6 @@ def recent_private_rate(repos, used_private, org, now,
     return lines, rate, spread
 
 
-
 def _older_half(recent_runs, nested_rate, nested_runs, minutes_per_run,
                 window_hours, nested_hours):
     """One line giving the rate of the part of the window the nested one excludes.
