@@ -256,11 +256,6 @@ SIZE_LABELS = {
     "xl": "XL",
 }
 
-# Smallest first, because that is the direction the spec ranks in: "a small
-# job clears sooner than a big one of similar importance, so all else equal,
-# do it first."
-SIZE_ORDER = ("s", "m", "l", "xl")
-
 # What a hand-written cell might say instead of the letter. The owner types
 # into Obsidian, so `Small` and `x-large` have to land in the same bucket as
 # `S` and `XL` rather than falling off the field entirely.
@@ -306,6 +301,7 @@ def canonical_size(value):
     if not str(value).strip():
         return ""
     return SIZE_LABELS.get(size_key(value))
+
 
 # The glyph each rating carries, indexed the other way round so a bullet
 # written as a bare glyph -- every capture the owner typed before Cycle 268,
