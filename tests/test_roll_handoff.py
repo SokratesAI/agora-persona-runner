@@ -302,3 +302,109 @@ def test_count_items_ignores_stamps_and_split_items_does_not():
     body = archive.split(ARCHIVE_TITLE, 1)[1]
     assert len(split_items(body)) == 4  # two items and two stamps
     assert len(count_items(body)) == 2  # the two items
+
+
+# The age roll. `AGED` is deliberately not `LIVE`: its digest section
+# carries more than one line, listed newest first the way the real file
+# is, so `min` and "the first one" are different answers and a mutation
+# swapping them cannot survive.
+AGED = """---
+type: log
+---
+
+# Journal — Digest
+
+## Next cycle
+
+**[recent-thing]** Cycle 671, still worth reading.
+
+**[amended-thing]** Raised at Cycle 640 and rewritten at Cycle 670.
+
+**[boundary-thing]** Cycle 669 -- exactly the oldest cycle the digest shows.
+
+**[stale-thing]** Cycle 640, long finished.
+
+**[undatable-thing]** A standing rule that cites no cycle.
+
+**A standing instruction with no slug at all.** Cycle 600.
+
+## Digest
+
+**Cycle 671** (2026-08-30 18:00) — did a thing.
+
+**Cycle 669** (2026-08-30 16:00) — mentions Cycle 200 in passing.
+"""
+
+
+def test_the_cut_is_the_oldest_cycle_the_digest_still_shows():
+    # 669, not 671 (the first line) and not 200 (quoted inside a line).
+    assert roll_handoff.oldest_digest_cycle(AGED) == 669
+
+
+def test_no_digest_line_with_a_cycle_number_means_no_cut():
+    undated = AGED.replace("**Cycle 671** (2026-08-30 18:00) — did a thing.", "").replace(
+        "**Cycle 669** (2026-08-30 16:00) — mentions Cycle 200 in passing.",
+        "**Ideas & research** (2026-08-30 16:00) — a weekly line.",
+    )
+    assert roll_handoff.oldest_digest_cycle(undated) is None
+
+
+def test_selection_by_age_skips_what_it_cannot_name_or_date():
+    items = live_items(AGED)
+    picked = roll_handoff.select_older_than(items, 669)
+    assert [item_slug(items[i]) for i in picked] == ["stale-thing"]
+    # boundary-thing cites exactly 669 and stays: the digest still shows
+    # that cycle, so the two sections cover the same stretch of time.
+    # amended-thing cites 640 and 670; the newest citation keeps it.
+    # undatable-thing and the unslugged paragraph are never selectable.
+
+
+def test_age_roll_moves_the_old_items_and_records_the_rule():
+    new_live, new_archive, moved = roll_handoff.archive_older_than(
+        AGED, "", 669, TODAY
+    )
+    assert [item_slug(i) for i in moved] == ["stale-thing"]
+    assert [item_slug(i) for i in live_items(new_live)] == [
+        "recent-thing",
+        "amended-thing",
+        "boundary-thing",
+        "undatable-thing",
+        None,
+    ]
+    assert "oldest cycle the digest section" in new_archive
+    assert "**Retired 08-30**" in new_archive
+    assert ARCHIVE_TITLE in new_archive
+
+
+def test_age_roll_writes_nothing_when_every_item_is_inside_the_window():
+    assert roll_handoff.archive_older_than(AGED, "", 600, TODAY) is None
+
+
+def test_cli_refuses_to_mix_the_two_selection_rules(tmp_path, capsys):
+    live = tmp_path / "live.md"
+    live.write_text(AGED)
+    archive = tmp_path / "archive.md"
+    code = roll_handoff.main(
+        [
+            "--live", str(live), "--archive", str(archive),
+            "--retire", "stale-thing", "--reason", "done",
+            "--retire-older-than-digest",
+        ]
+    )
+    assert code == 1
+    assert "two rolls" in capsys.readouterr().err
+    assert live.read_text() == AGED
+
+
+def test_cli_rolls_by_age_and_writes_both_files(tmp_path, capsys):
+    live = tmp_path / "live.md"
+    live.write_text(AGED)
+    archive = tmp_path / "archive.md"
+    code = roll_handoff.main(
+        ["--live", str(live), "--archive", str(archive), "--retire-older-than-digest"]
+    )
+    assert code == 0
+    assert "older than cycle 669" in capsys.readouterr().out
+    assert "stale-thing" not in live.read_text()
+    assert "stale-thing" in archive.read_text()
+    assert "recent-thing" in live.read_text()
