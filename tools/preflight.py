@@ -707,6 +707,39 @@ def source_revision(directory=None, fetch=True):
                    f"{fetched} -- every check on main exists here.")
     return 0, f"Current: {where}, level with origin/main{fetched}."
 
+def sweep_stamp(now=None, checkout=None):
+    """One line saying when this sweep ran and which checkout it ran from.
+
+    Cycles overlap, they share the bridge pod's `/tmp`, and they are the same
+    model reading the same instructions -- so they invent the same scratch
+    filenames. On 2026-09-06 cycle 1013 ran this sweep into `/tmp/preflight.txt`
+    in the background, read that path before its own run had finished, and got
+    a sweep another cycle had left there roughly ninety minutes earlier. Every
+    verdict it then reasoned from was that other cycle's. It surfaced only
+    because one row (`recap_health` ACT) contradicted the handoff and would not
+    reproduce; the other fifty rows would have been acted on in silence.
+
+    Nothing in the report said when it was taken, so a leftover copy and a
+    fresh one are the same bytes. This is that missing sentence. It names the
+    checkout as well as the clock, because two cycles running a minute apart
+    have near-identical timestamps and always-different worktrees.
+
+    The stamp is never omitted: an unreadable checkout prints as such rather
+    than dropping the line, since a report with no stamp reads exactly like
+    the reports this exists to make legible.
+    """
+    import time as _time
+
+    now = _time.time() if now is None else now
+    when = _oslo(now)
+    if checkout is None:
+        try:
+            checkout = os.path.dirname(tools_dir())
+        except Exception:
+            checkout = ""
+    return f"swept {when} from {checkout or 'an unreadable checkout'}"
+
+
 def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep=None):
     """Print the collapsed report. `results` is a list of (name, code, output, seconds).
 
@@ -722,6 +755,7 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
     worst = 0
     noisy = []
     repeated = []
+    print(sweep_stamp(now), file=stream)
     print(f"{'check':20}{'where':9}{'verdict':12}{'s':>6}  summary", file=stream)
     caveated = 0
     for name, code, output, seconds in results:

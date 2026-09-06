@@ -769,3 +769,40 @@ def test_a_check_with_no_extra_arguments_is_run_bare(monkeypatch):
     assert seen["cmd"][-1] == "--notify"
     pf.run_check("disk_health")
     assert seen["cmd"][-1] == "tools.disk_health"
+
+
+def test_sweep_stamp_names_the_clock_and_the_checkout():
+    # 2026-09-06 02:16 Oslo, the minute cycle 1013 measured the collision.
+    line = preflight.sweep_stamp(now=1788653760.0, checkout="/w/agora-persona-runner")
+    assert line == "swept 2026-09-06 02:16 Oslo from /w/agora-persona-runner"
+
+
+def test_sweep_stamp_survives_an_unreadable_checkout():
+    # A report with no stamp reads exactly like the leftover this exists to
+    # expose, so the line is never dropped -- it says what it could not read.
+    line = preflight.sweep_stamp(now=1788653760.0, checkout="")
+    assert line.startswith("swept 2026-09-06 02:16 Oslo from ")
+    assert "unreadable checkout" in line
+
+
+def test_report_opens_on_its_own_stamp():
+    out = io.StringIO()
+    preflight.render([("cli_features", 0, "nothing has moved\n", 0.1)],
+                     stream=out, now=1788653760.0)
+    first = out.getvalue().splitlines()[0]
+    assert first.startswith("swept 2026-09-06 02:16 Oslo from ")
+    # Above the table, not inside it: a stamp under the header is a row.
+    assert out.getvalue().splitlines()[1].startswith("check")
+
+
+def test_two_sweeps_a_minute_apart_are_told_apart_by_their_stamp():
+    # The failure: two cycles redirect to one path and the reader cannot tell
+    # whose bytes they are. Same clock minute, different worktree, and the
+    # stamps must still differ.
+    mine = preflight.sweep_stamp(now=1788653760.0, checkout="/w/7-111/agora-persona-runner")
+    theirs = preflight.sweep_stamp(now=1788653760.0, checkout="/w/7-222/agora-persona-runner")
+    assert mine != theirs
+    # And the same worktree an hour apart differs too.
+    later = preflight.sweep_stamp(now=1788657360.0, checkout="/w/7-111/agora-persona-runner")
+    assert later != mine
+    assert "03:16 Oslo" in later
