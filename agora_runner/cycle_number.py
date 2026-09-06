@@ -63,6 +63,18 @@ _COUNTER_PATH = "projects/sokrates/projects/agora/nova/_cycle_counters/{}.json"
 _NAME_RE = re.compile(r"Cycle\s+(\d+)\s*$")
 
 
+def cycle_in_name(name):
+    """The cycle number a conversation's name ends in, or None.
+
+    The name is the only place a cycle number is written down -- the
+    `evolve-cycle:` tag carries the *heartbeat* id, not the number -- so
+    every reader that wants "which cycle is this thread" comes through
+    here rather than keeping its own copy of `_NAME_RE`.
+    """
+    match = _NAME_RE.search(name or "")
+    return int(match.group(1)) if match else None
+
+
 def numbers_in(conversations, tag):
     """Every cycle number named by a conversation carrying `tag`, ascending.
 
@@ -82,9 +94,9 @@ def numbers_in(conversations, tag):
     for conversation in conversations or []:
         if tag not in (conversation.get("tags") or []):
             continue
-        match = _NAME_RE.search(conversation.get("name") or "")
-        if match:
-            found.append(int(match.group(1)))
+        number = cycle_in_name(conversation.get("name") or "")
+        if number is not None:
+            found.append(number)
     return sorted(found)
 
 

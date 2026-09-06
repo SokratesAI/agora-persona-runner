@@ -1616,6 +1616,33 @@
    * what he has done, made from a payload that never came. */
   var haveComments = false;
 
+  /* Cycles whose ask he has already answered in the cycle's own chat
+   * thread, as `{ "1068": true }`. His issue #165: the ask goes out in the
+   * reply, the reply is what his phone buzzes with, and answering it there
+   * left the badge up until he repeated himself in a comment box.
+   *
+   * `/api/asks/chat` is tolerated exactly like `/api/comments` -- a read
+   * that fails leaves this empty, so every ask reads as open. That is the
+   * safe direction: showing him a question he has answered costs a scroll,
+   * hiding one he has not costs him the question. */
+  var chatAnsweredCycles = {};
+
+  function setChatAnswered(payload) {
+    var cycles = (payload && payload.cycles) || [];
+    var next = {};
+    for (var i = 0; i < cycles.length; i++) next[String(cycles[i])] = true;
+    chatAnsweredCycles = next;
+  }
+
+  /* Whether this card's ask has an answer anywhere -- a comment on the
+   * card, or a message from him in the cycle's thread. One function so the
+   * header count and the `/asks` feed can never disagree about it. */
+  function askAnswered(cycle, commentsByCycle) {
+    var answers = commentsByCycle && commentsByCycle[String(cycle)];
+    if (answers && answers.length) return true;
+    return !!chatAnsweredCycles[String(cycle)];
+  }
+
   /* The oldest ask the owner has not replied to, or null.
    *
    * `status.asks` is every card that raised one, newest first and with no
@@ -1634,8 +1661,7 @@
     var asks = (status && status.asks) || [];
     var open = [];
     for (var i = 0; i < asks.length; i++) {
-      var answers = commentsByCycle[String(asks[i].cycle)];
-      if (answers && answers.length) continue;
+      if (askAnswered(asks[i].cycle, commentsByCycle)) continue;
       open.push(asks[i]);
     }
     return open;
@@ -3606,6 +3632,9 @@
     // changed" from "changed while he was typing".
     renderedVersion = (journal && journal.version) || null;
     renderedComments = JSON.stringify(comments);
+    // Set from the map, not from a payload: `setChatAnswered` has already
+    // run for this render, and the poll compares the same normalised form.
+    renderedChat = JSON.stringify(chatAnsweredCycles);
     var commentsByCycle = (comments && comments.byCycle) || {};
     var commentsByEntry = (comments && comments.byEntry) || {};
 
@@ -3674,8 +3703,7 @@
     var filtered = routedAsks(window.location.pathname);
     if (filtered) {
       entries = entries.filter(function (entry) {
-        var answers = commentsByCycle[String(entry.cycle)];
-        return !(answers && answers.length);
+        return !askAnswered(entry.cycle, commentsByCycle);
       });
     }
 
@@ -4209,6 +4237,11 @@
       // unaffected: the etag moves the moment the payload does, including
       // for the reply worker's own `replyWaitingSeconds`.
       fetchVersioned("/api/comments", "comments").catch(function () { return null; }),
+      /* Which open asks he has already answered in the cycle's own thread
+       * (issue #165). Tolerated like the two above: this one costs the
+       * server an Agora round trip per open ask, so a slow or failing
+       * Agora must cost the badge, never the feed. */
+      fetchVersioned("/api/asks/chat", "askchat").catch(function () { return null; }),
     ]);
   }
 
@@ -12114,6 +12147,7 @@
         // Same guard, other direction: a board fetch started before a tap
         // on Journal must not land after this one.
         if (route(window.location.pathname).view !== "journal") return;
+        setChatAnswered(results[3]);
         render(results[0], results[1], results[2]);
       })
       .catch(function (err) {
@@ -12164,6 +12198,9 @@
    * a saved copy" banner is raised and never lowered. */
   var renderedReplayed = false;
   var renderedComments = null;
+  /* The chat-answered map the feed on screen was built from -- see the
+   * poll's `changed` below. */
+  var renderedChat = null;
   var pollTimer = null;
   /* Whether a poll's fetch is outstanding. Read only by `resume` below --
    * the timer cannot overlap itself, because it is only ever rescheduled
@@ -12221,6 +12258,16 @@
       .then(function (results) {
         var journal = results[0];
         var comments = JSON.stringify(results[2]);
+        // An answer he typed into a cycle's thread changes nothing in the
+        // journal or the comments payload, so without this the badge would
+        // stay up until some other thing moved.
+        //
+        // Compared as the normalised map rather than as the raw payload:
+        // a failed read and an empty answer are both "nothing is answered
+        // in chat", and stringifying the two payloads would call that a
+        // change on every poll that failed.
+        setChatAnswered(results[3]);
+        var chat = JSON.stringify(chatAnsweredCycles);
         // Normalised the same way `render` stores it. A payload with no
         // `version` at all -- an older server, or the tailnet serving the
         // last build's response to this build's app.js -- would otherwise
@@ -12229,7 +12276,7 @@
         var version = (journal && journal.version) || null;
         var replayedNow = !!(journal && journal.status && journal.status.replayed);
         var changed = version !== renderedVersion || comments !== renderedComments
-          || replayedNow !== renderedReplayed;
+          || chat !== renderedChat || replayedNow !== renderedReplayed;
         // Re-checked after the fetch as well as before it: a request takes
         // long enough for him to have started typing during one.
         // A poll that came back is the only thing that clears the header's

@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -313,6 +313,14 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // No default fixture beyond the empty shape, for retro and plan's
       // reason: a vault with no catalog written yet is a real state.
       return res(catalog || { services: [], doors: [], missing: true }, catalogStatus);
+    }
+    /* Before the branch below, which `url.includes` would otherwise
+     * swallow: `/api/asks/chat` contains `/api/ask`. Issue #165 -- which
+     * open asks he has already answered in the cycle's own thread. */
+    if (url.includes("/api/asks/chat")) {
+      const body = typeof askChat === "function" ? askChat(url) : askChat;
+      if (body && typeof body.then === "function") return body;
+      return res(body || { cycles: [] }, askChatStatus);
     }
     if (url.includes("/api/ask")) {
       // A function, because the point of most of these tests is that the
@@ -3256,6 +3264,10 @@ describe("the page notices new entries on its own", () => {
     window.fetch = (url) => {
       if (String(url).includes("/api/digest")) return res(payload.digest);
       if (String(url).includes("/api/comments")) return res(payload.comments);
+      // Answered rather than left to the catch-all below: the round is one
+      // `Promise.all` and an unresolved fourth leg would hold the journal
+      // leg's own resolver, so the test would be waiting on itself.
+      if (String(url).includes("/api/asks/chat")) return res({ cycles: [] });
       return new Promise((r) => { resolveJournal = () => r(res(grown('W/"slow"'))); });
     };
     window.document.dispatchEvent(new window.Event("visibilitychange"));
@@ -5931,6 +5943,52 @@ describe("an ask nobody answered is named in the header", () => {
         byCycle: { 260: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
         needs: [],
       },
+    });
+    assert.deepEqual(feedCycles(window), ["cycle-271", "cycle-247"]);
+  });
+
+  /* Issue #165's open half. The ask goes out in the reply, his phone buzzes
+   * with the reply, and the thread it arrived in is where he answers it --
+   * which used to leave the card on this page until he went and repeated
+   * himself in the comment box. `/api/asks/chat` is what the server found. */
+  test("a card he answered in the cycle's chat leaves the filtered view", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: { byCycle: {}, needs: [] },
+      askChat: { cycles: [260] },
+    });
+    assert.deepEqual(feedCycles(window), ["cycle-271", "cycle-247"]);
+  });
+
+  test("the header count drops the chat-answered ask too", async () => {
+    /* The count and this feed read one predicate, so they cannot disagree
+     * about what is waiting -- the failure that would show here first. */
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: { byCycle: {}, needs: [] },
+      askChat: { cycles: [260] },
+    });
+    assert.match(window.document.getElementById("feed").textContent,
+      /2 entries are waiting on you/);
+  });
+
+  test("an unreachable chat answer leaves every ask on the page", async () => {
+    /* The safe direction, and the precondition is asserted: these three
+     * really are asks, so "all three still shown" is not vacuously true of
+     * an empty feed. */
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 260, 247]),
+      comments: { byCycle: {}, needs: [] },
+      askChat: () => Promise.reject(new Error("network")),
+    });
+    assert.deepEqual(feedCycles(window), ["cycle-271", "cycle-260", "cycle-247"]);
+  });
+
+  test("a chat answer for a cycle with no ask changes nothing", async () => {
+    const window = await loadSite("/asks", {
+      journal: () => askPayload([271, 247]),
+      comments: { byCycle: {}, needs: [] },
+      askChat: { cycles: [9999] },
     });
     assert.deepEqual(feedCycles(window), ["cycle-271", "cycle-247"]);
   });
