@@ -325,7 +325,7 @@ def _manage_fakes(status=200, body=None, folders=None, folder_status=200):
         calls.append(("GET", path, None))
         if path == "/folders":
             return folder_status, {"folders": folders or []}
-        if path.startswith("/conversations"):
+        if path in ("/conversations", "/conversations?active=true"):
             return 200, {"conversations": []}
         if path == "/models":
             return 200, {"models": MODEL_CATALOG}
@@ -450,7 +450,7 @@ def test_the_listing_carries_folders_and_each_row_s_folder_id():
         folders=[{"id": "f-2", "name": "Zebras"}, {"id": "f-1", "name": "apples"}])
 
     def listing(path):
-        if path.startswith("/conversations"):
+        if path in ("/conversations", "/conversations?active=true"):
             return 200, {"conversations": [
                 {"id": "c-1", "name": "One", "folderId": "f-1"},
                 {"id": "c-2", "name": "Two"},
@@ -470,7 +470,7 @@ def test_an_unreadable_folder_list_still_returns_every_conversation():
     fake_get, _internal, _public, _calls = _manage_fakes(folder_status=500)
 
     def listing(path):
-        if path.startswith("/conversations"):
+        if path in ("/conversations", "/conversations?active=true"):
             return 200, {"conversations": [{"id": "c-1", "name": "One"}]}
         return fake_get(path)
 
@@ -1011,14 +1011,35 @@ def test_model_choice_still_reads_the_unfiltered_listing():
     assert payload["model"] == "claude-cli:claude-opus-5"
 
 
-def test_an_archived_row_is_still_dropped_when_agora_ignores_the_filter():
-    """The client-side skip stays, because the query parameter is a request.
+def test_both_agoras_answer_the_same_list():
+    """Two servers, one answer -- which is the whole claim this change makes.
 
-    An Agora older than agora#86 ignores an unknown query parameter and
-    answers with the whole store. If the skip had been deleted as
-    "now redundant", a rollback of the store in front of this page would
-    put 1,030 archived threads in his sidebar and nothing here would fail.
+    `test_archived_conversations_are_left_out` above already covers the
+    server that *ignores* `?active=true` and answers with everything: an
+    Agora older than agora#86 does exactly that, and the client-side
+    `archived` skip is what keeps 1,030 archived threads out of his
+    sidebar on a rollback. What had no coverage is the server that
+    honours it, because the shared fake answers both spellings the same
+    rows regardless of the query. So this one filters when asked, the way
+    the live route does, and asserts the page draws the same thing.
     """
     archived = dict(LIVE_ROW, id="c-old", archived=True)
-    (payload, _) = _run(convs.conversations, conversations=[LIVE_ROW, archived])
-    assert [r["id"] for r in payload["conversations"]] == ["c-1"]
+    both = [LIVE_ROW, archived]
+
+    def honours_the_filter(path):
+        if path == "/conversations?active=true":
+            return 200, {"conversations": [c for c in both if not c.get("archived")]}
+        if path == "/conversations":
+            return 200, {"conversations": both}
+        if path == "/folders":
+            return 200, {"folders": []}
+        if path == "/models":
+            return 200, {"models": MODEL_CATALOG}
+        return 404, {}
+
+    with patch.object(convs, "agora_get", side_effect=honours_the_filter):
+        filtered = convs.conversations()
+    (ignored, _) = _run(convs.conversations, conversations=both)
+    assert [r["id"] for r in filtered["conversations"]] == ["c-1"]
+    assert ([r["id"] for r in filtered["conversations"]]
+            == [r["id"] for r in ignored["conversations"]])
