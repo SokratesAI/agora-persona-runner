@@ -14952,16 +14952,18 @@ describe("the drawer follows the poll", () => {
   async function openDock(first) {
     const box = { ask: first, step: { capability: "Bash", input: "pytest",
                                       output: "", status: "running" } };
+    const asked = [];
     let timers = null;
     const window = await loadSite("/", {
       ask: () => box.ask,
-      convStep: () => box.step,
+      convStep: (url) => { asked.push(url); return box.step; },
       install: (win) => { timers = captureTimers(win); },
     });
     window.document.getElementById("chat-btn")
       .dispatchEvent(new window.Event("click"));
     await tick();
-    return { window, box, poll: async () => { await timers.fire(); await tick(); } };
+    return { window, box, asked,
+             poll: async () => { await timers.fire(); await tick(); } };
   }
 
   const rows = (window) =>
@@ -15033,6 +15035,24 @@ describe("the drawer follows the poll", () => {
     assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest"]);
   });
 
+  test("back from a refreshed call returns to the list as it is now", async () => {
+    /* He opens the drawer, taps into a call, and two more run while he reads
+     * it. The back arrow's handler closes over the array it was given, so a
+     * refresh that repainted the detail without rebinding it would walk him
+     * back to the list he tapped from -- one row, minus everything that has
+     * happened since. Found by mutation: nothing else here fails on it. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    click(window, rows(window)[0]);
+    await tick();
+    box.ask = running([BASH_DONE,
+      { kind: "tool", capability: "Read", input: "/x", id: "toolu_s", status: "done" }]);
+    box.step = { capability: "Bash", input: "pytest", output: "795 passing", status: "done" };
+    await poll();
+    click(window, window.document.querySelector(".step-back"));
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest", "Read/x"]);
+  });
+
   test("a repaint that changed nothing leaves his place in the list alone", async () => {
     /* Redrawing the list every four seconds would scroll a long one back to
      * the top under him, which is issue #140's complaint in a smaller box.
@@ -15045,14 +15065,23 @@ describe("the drawer follows the poll", () => {
     assert.equal(rows(window)[0], before);
   });
 
-  test("a poll does not reopen a drawer he has closed", async () => {
-    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+  test("a drawer he has closed is not repainted or re-fetched behind it", async () => {
+    /* Visibility alone pins nothing here -- the refresh redraws the sheet's
+     * contents and never unhides it, so a closed drawer stays closed either
+     * way. What the guard actually saves is the work: a detail view he has
+     * shut would otherwise ask the server for that call's output once every
+     * four seconds, forever, for a panel nobody is looking at. */
+    const { window, box, poll, asked } = await openDock(running([BASH_RUNNING]));
     openSheet(window);
+    click(window, rows(window)[0]);
+    await tick();
+    assert.equal(asked.length, 1, "the open detail view asks once");
     click(window, window.document.querySelector(".step-close"));
     assert.equal(window.document.querySelector(".step-sheet").hasAttribute("hidden"), true);
     box.ask = running([BASH_DONE]);
     await poll();
     assert.equal(window.document.querySelector(".step-sheet").hasAttribute("hidden"), true);
+    assert.equal(asked.length, 1, "a closed drawer asked the server again");
   });
 
   test("a block he has paged past leaves the drawer as it is", async () => {

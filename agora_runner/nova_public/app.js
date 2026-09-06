@@ -10345,7 +10345,11 @@
     if (!stepSheet || stepSheet.hidden) return;
     stepSheet.hidden = true;
     stepSheetBackdrop.hidden = true;
-    stepSheetOn = null;
+    /* Deliberately not clearing `stepSheetOn` here. `refreshStepSheet` reads
+     * `stepSheet.hidden` first and `openStepSheet` overwrites the whole
+     * record, so a second guard would be one nothing can fail on -- I wrote
+     * it, mutated it away, and all six tests stayed green. That is the same
+     * pair of guards `pollConv` above has already been cut down to once. */
     document.removeEventListener("keydown", onStepSheetKey, true);
   }
 
