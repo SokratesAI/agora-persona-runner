@@ -300,7 +300,13 @@ def visible_persona_name(persona_id, name):
 
 
 def conversations():
-    """Every conversation Agora holds, newest activity first.
+    """Every conversation Agora holds that he has not archived, newest first.
+
+    It said "every conversation Agora holds" until 2026-09-06 and that was
+    already untrue -- the archived ones have always been dropped here --
+    but the fetch below now asks for the subset by name, so the sentence
+    had stopped being merely loose and started describing a call that is
+    not made.
 
     Raises rather than returning an empty list on a failed fetch: an empty
     list and an unreachable store render identically as "no conversations",
