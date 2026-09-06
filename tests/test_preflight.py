@@ -806,3 +806,226 @@ def test_two_sweeps_a_minute_apart_are_told_apart_by_their_stamp():
     later = preflight.sweep_stamp(now=1788657360.0, checkout="/w/7-111/agora-persona-runner")
     assert later != mine
     assert "03:16 Oslo" in later
+
+
+NOW = 1788653760.0  # 2026-09-06 02:16 Oslo
+
+
+def _clean(name, hours_ago, code=0):
+    return {name: {"code": code, "ran_at": NOW - hours_ago * 3600.0}}
+
+
+def test_a_clean_check_inside_its_cadence_is_not_run():
+    state = _clean("nas_ports", 2.0)   # weekly
+    due, held = preflight.due_and_held(["nas_ports"], state, NOW)
+    assert due == []
+    assert [n for n, _e, _c in held] == ["nas_ports"]
+
+
+def test_a_clean_check_past_its_cadence_is_run_again():
+    state = _clean("cli_pin", 25.0)    # daily
+    due, held = preflight.due_and_held(["cli_pin"], state, NOW)
+    assert due == ["cli_pin"]
+    assert held == []
+
+
+def test_a_check_that_did_not_come_back_clean_is_run_every_sweep():
+    # The one safety property: a cadence may only ever delay re-confirming good
+    # news. An alarm that is ringing is re-measured until it stops, which is
+    # also the only way it can ever be seen to clear.
+    state = _clean("nas_ports", 0.1, code=2)
+    due, held = preflight.due_and_held(["nas_ports"], state, NOW)
+    assert due == ["nas_ports"]
+    assert held == []
+    unreadable = _clean("nas_ports", 0.1, code=1)
+    assert preflight.due_and_held(["nas_ports"], unreadable, NOW)[0] == ["nas_ports"]
+
+
+def test_a_check_with_no_record_at_all_is_run():
+    # A fresh state file runs the whole roster. That is the safe direction: an
+    # unrun check must never read as one that came back clean.
+    due, held = preflight.due_and_held(["nas_ports"], {}, NOW)
+    assert due == ["nas_ports"]
+    # And an entry that predates this mechanism carries no `ran_at`.
+    legacy = {"nas_ports": {"shape": "abc", "printed_at": NOW - 60}}
+    assert preflight.due_and_held(["nas_ports"], legacy, NOW)[0] == ["nas_ports"]
+
+
+def test_a_zero_cadence_check_is_run_however_recently_it_passed():
+    state = _clean("workload_health", 0.0)
+    assert preflight.CADENCE_HOURS["workload_health"] == 0.0
+    due, held = preflight.due_and_held(["workload_health"], state, NOW)
+    assert due == ["workload_health"]
+    assert held == []
+
+
+def test_no_state_holds_nothing_back():
+    # --verbose and --no-state pass state=None, so there is always one flag
+    # that runs the whole roster on demand.
+    due, held = preflight.due_and_held(["nas_ports", "cli_pin"], None, NOW)
+    assert due == ["nas_ports", "cli_pin"]
+    assert held == []
+
+
+def test_every_check_on_the_roster_has_a_cadence():
+    assert preflight.uncadenced_checks(preflight.CHECKS) == []
+
+
+def test_a_check_with_no_cadence_is_refused_rather_than_defaulted():
+    assert preflight.uncadenced_checks(["nas_ports", "invented"]) == ["invented"]
+
+
+def test_the_never_collapse_checks_run_every_sweep():
+    # `telegram_inbox` exits 0 when nobody is waiting, so a cadence would hold
+    # it back on exactly the sweeps where the owner has just written.
+    for name in preflight.NEVER_COLLAPSE:
+        assert preflight.CADENCE_HOURS[name] == 0.0
+
+
+def test_the_held_block_says_it_is_carrying_nothing_red():
+    lines = preflight.held_lines([("nas_ports", {"code": 0, "ran_at": NOW - 7200.0}, 168.0)],
+                                 NOW)
+    assert "1 check(s) were not run" in lines[0]
+    assert "run every sweep regardless" in lines[0]
+    assert "nas_ports" in lines[1]
+    assert "2.0h ago" in lines[1]
+    assert "due again in 166.0h" in lines[1]
+
+
+def test_nothing_held_prints_nothing():
+    assert preflight.held_lines([], NOW) == []
+
+
+def test_the_report_names_every_held_check():
+    out = io.StringIO()
+    preflight.render([("cli_features", 0, "nothing has moved\n", 0.1)],
+                     stream=out, now=NOW,
+                     held=[("nas_ports", {"code": 0, "ran_at": NOW - 3600.0}, 168.0)])
+    text = out.getvalue()
+    assert "Ran 1 check(s)" in text
+    assert "1 check(s) were not run" in text
+    assert "nas_ports" in text
+
+
+def test_every_result_lands_in_the_record_it_is_read_from_next_sweep():
+    # `due_and_held` reads `code` and `ran_at`. A verdict that never reached
+    # the record would make the next sweep treat that check as never-run.
+    keep = {}
+    preflight.render([("cli_features", 0, "nothing has moved\n", 0.1),
+                      ("cli_pin", 2, "BEHIND -- 3 release(s)\nand a second line\n", 0.2)],
+                     stream=io.StringIO(), state={}, keep=keep, now=NOW)
+    assert keep["cli_features"]["code"] == 0
+    assert keep["cli_features"]["ran_at"] == NOW
+    assert keep["cli_pin"]["code"] == 2
+    assert keep["cli_pin"]["ran_at"] == NOW
+    # and the collapse record it already kept is still there beside them
+    assert "shape" in keep["cli_pin"]
+
+
+def test_a_collapsed_finding_keeps_its_verdict_in_the_record():
+    # The repeat collapse writes its own entry over the top; the verdict has to
+    # survive that, or a standing ACT would look clean to the next sweep and
+    # get held back.
+    output = "BEHIND -- 3 release(s)\nand a second line\n"
+    first = {}
+    preflight.render([("cli_pin", 2, output, 0.2)], stream=io.StringIO(),
+                     state={}, keep=first, now=NOW)
+    second = {}
+    text = io.StringIO()
+    preflight.render([("cli_pin", 2, output, 0.2)], stream=text,
+                     state=first, keep=second, now=NOW + 600.0)
+    assert "UNCHANGED since" in text.getvalue()
+    assert second["cli_pin"]["code"] == 2
+    assert second["cli_pin"]["ran_at"] == NOW + 600.0
+
+
+def test_a_record_stamped_in_the_future_is_due_rather_than_held():
+    # Concurrent cycles share one record and not one clock. A sweep whose
+    # `ran_at` is ahead of now must not hold a check back for the skew.
+    state = _clean("nas_ports", -3.0)
+    due, held = preflight.due_and_held(["nas_ports"], state, NOW)
+    assert due == ["nas_ports"]
+    assert held == []
+
+
+def test_a_second_sweep_holds_back_what_the_first_one_cleared(tmp_path, monkeypatch, capfd):
+    # capfd, not capsys: `render` binds `stream=sys.stdout` as a default argument
+    # at import time, so it writes to the real descriptor and capsys sees nothing.
+    # The whole mechanism, end to end and across two runs. The first sweep has
+    # no record and runs everything; the second must run only what is due.
+    # `main` is the only place the held records are carried into the file that
+    # the next sweep reads, so a unit test of `due_and_held` cannot see this.
+    monkeypatch.setattr(preflight, "STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr(preflight, "source_revision", lambda **kw: (0, "up to date\n"))
+    monkeypatch.setattr(preflight, "run_check",
+                        lambda name: (name, 0, f"{name} swept 1 thing\n", 0.1))
+
+    # Not `--only`: naming a check explicitly is a request to run that check,
+    # so it deliberately ignores the cadence. This is the ordinary sweep.
+    monkeypatch.setattr(preflight, "CHECKS", ("nas_ports", "workload_health"))
+    assert preflight.main([]) == 0
+    first = capfd.readouterr().out
+    assert "Ran 3 check(s)" in first          # both, plus source_revision
+    assert "were not run" not in first
+
+    assert preflight.main([]) == 0
+    second = capfd.readouterr().out
+    # nas_ports is weekly and came back clean a moment ago; workload_health is
+    # every-sweep and runs again.
+    assert "Ran 2 check(s)" in second
+    assert "workload_health" in second
+    assert "1 check(s) were not run" in second
+
+    # And the third sweep must still hold it: the record the second one wrote
+    # has to carry the held check forward, not drop it.
+    assert preflight.main([]) == 0
+    assert "1 check(s) were not run" in capfd.readouterr().out
+
+
+def test_all_runs_the_whole_roster_even_when_nothing_is_due(tmp_path, monkeypatch, capfd):
+    monkeypatch.setattr(preflight, "STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr(preflight, "source_revision", lambda **kw: (0, "up to date\n"))
+    monkeypatch.setattr(preflight, "run_check",
+                        lambda name: (name, 0, f"{name} swept 1 thing\n", 0.1))
+    monkeypatch.setattr(preflight, "CHECKS", ("nas_ports",))
+    preflight.main([])
+    capfd.readouterr()
+    preflight.main(["--all"])
+    out = capfd.readouterr().out
+    assert "Ran 2 check(s)" in out
+    assert "were not run" not in out
+
+
+def test_naming_a_check_runs_it_whatever_its_cadence(tmp_path, monkeypatch, capfd):
+    # `--only nas_ports` is a request to run nas_ports. Answering it with "not
+    # due" would make the flag useless on exactly the check you asked about.
+    monkeypatch.setattr(preflight, "STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr(preflight, "source_revision", lambda **kw: (0, "up to date\n"))
+    monkeypatch.setattr(preflight, "run_check",
+                        lambda name: (name, 0, f"{name} swept 1 thing\n", 0.1))
+    monkeypatch.setattr(preflight, "CHECKS", ("nas_ports",))
+    preflight.main([])
+    capfd.readouterr()
+    preflight.main(["--only", "nas_ports"])
+    out = capfd.readouterr().out
+    assert "Ran 2 check(s)" in out
+    assert "were not run" not in out
+
+
+def test_only_does_not_wipe_the_rest_of_the_record(tmp_path, monkeypatch, capfd):
+    # `save_state` replaces the whole file. A sweep of one check must not
+    # delete every other check's record on the way past -- that would reset
+    # both the cadence and the repeat collapse for the whole roster.
+    monkeypatch.setattr(preflight, "STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr(preflight, "source_revision", lambda **kw: (0, "up to date\n"))
+    monkeypatch.setattr(preflight, "run_check",
+                        lambda name: (name, 0, f"{name} swept 1 thing\n", 0.1))
+    monkeypatch.setattr(preflight, "CHECKS", ("nas_ports", "cli_pin"))
+    preflight.main([])
+    capfd.readouterr()
+    preflight.main(["--only", "cli_pin"])
+    capfd.readouterr()
+    kept = preflight.load_state(str(tmp_path / "state.json"))
+    # source_revision runs outside the roster on every sweep, so it is there too.
+    assert set(kept) == {"nas_ports", "cli_pin", "source_revision"}
+    assert kept["nas_ports"]["code"] == 0

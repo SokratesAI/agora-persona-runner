@@ -278,6 +278,179 @@ SUBJECT = {
 }
 
 
+#: How often each check has to actually run, in hours. 0 means every sweep.
+#:
+#: The owner, idea #183: *"Cut preflight frequency from every cycle to weekly or
+#: monthly once the NAS security work is done -- it's a two-person estate,
+#: running full checks every cycle is wasteful of tokens."* Cycle 673 did the
+#: half that did not wait on him -- a standing finding collapses to one line
+#: instead of reprinting -- and deliberately left the frequency alone. What was
+#: left is the floor that collapse cannot touch: **the summary table itself.**
+#: Measured on a real sweep, 2026-09-06 05:55 Oslo, 57 checks: 19,477 bytes of
+#: table and caveats against 32,728 bytes of full findings. The table is the
+#: part that is the same every time and is paid ~96 times a day.
+#:
+#: So the saving is not running fewer checks for its own sake. It is that a
+#: check which came back clean an hour ago, and whose subject cannot have moved
+#: since, costs a subprocess and a table row to say so again.
+#:
+#: **The one safety property, and everything else follows from it: a check that
+#: did not exit 0 last sweep is due every sweep, whatever its cadence says.** A
+#: cadence can therefore only ever delay re-confirming *good* news. An alarm
+#: that is already ringing keeps being re-measured until it stops, which is also
+#: the only way it can ever be seen to clear. A check with no record at all is
+#: due too, so a fresh state file runs the whole roster -- the safe direction.
+#:
+#: The tiers are a judgement about the subject, not a measurement, and they are
+#: written as one sentence each rather than a number I cannot defend:
+#:
+#:   0    the subject can change between two cycles AND the change would change
+#:        what I do in this cycle -- the live cluster, the loop itself, my own
+#:        files, and anything I might have altered by merging something.
+#:   24   the subject moves on a human or daily scale: GitHub's meters, upstream
+#:        releases, my own history, disks and memory trends.
+#:   168  the subject moves on a release or estate scale: base-image EOL, Helm
+#:        sources, annotations on workloads, the NAS's own surface.
+DEFAULT_CADENCE_HOURS = 24.0
+
+CADENCE_HOURS = {
+    # Every sweep -- live cluster state, and a failure here is this cycle's work.
+    "workload_health": 0.0,
+    "argocd_health": 0.0,
+    "crossplane_health": 0.0,
+    "alerts": 0.0,
+    "limit_headroom": 0.0,
+    "node_memory": 0.0,
+    "oom_history": 0.0,
+    # Every sweep -- the loop itself, and `cadence_control` *acts* on a burn
+    # rate that is only current if it is read now.
+    "cadence_control": 0.0,
+    "heartbeat_health": 0.0,
+    "heartbeat_gaps": 0.0,
+    # Every sweep -- the owner is waiting on a reply in it. Same reason it is in
+    # NEVER_COLLAPSE: "unchanged since last sweep" is the worst possible reason
+    # to stop looking at an unanswered message.
+    "telegram_inbox": 0.0,
+    # Every sweep -- files I rewrite in my own wrap-up, so the previous cycle is
+    # exactly who could have broken them.
+    "doc_integrity": 0.0,
+    "roll_health": 0.0,
+    # Every sweep -- a pull request I open or merge in this cycle moves both.
+    "open_prs": 0.0,
+    "main_build": 0.0,
+    # Daily -- GitHub's meters, upstream releases, my own history.
+    "security_alerts": 24.0,
+    "agentic_health": 24.0,
+    "cli_pin": 24.0,
+    "pin_drift": 24.0,
+    "ci_minutes": 24.0,
+    "ci_health": 24.0,
+    "cli_features": 24.0,
+    "changelog_watch": 24.0,
+    "credential_recovery": 24.0,
+    "cache_health": 24.0,
+    "hook_cost": 24.0,
+    "cycle_postmortem": 24.0,
+    "reply_health": 24.0,
+    "seal_cert_drift": 24.0,
+    "claim_drift": 24.0,
+    "claim_schema": 24.0,
+    "ticket_drift": 24.0,
+    "running_images": 24.0,
+    "cronjob_health": 24.0,
+    "disk_health": 24.0,
+    "host_memory_trend": 24.0,
+    "memory_headroom": 24.0,
+    "oom_rank": 24.0,
+    "marcus_capacity": 24.0,
+    "backup_health": 24.0,
+    "rollback_watch": 24.0,
+    "trace_health": 24.0,
+    "recap_health": 24.0,
+    "roadmap_drift": 24.0,
+    "survey": 24.0,
+    "nas_health": 24.0,
+    # Weekly -- a release train, a chart source, an annotation on a workload or
+    # a listening port on a box nobody reinstalls between Tuesdays.
+    "eol_watch": 168.0,
+    "schedule_health": 168.0,
+    "helm_repo_health": 168.0,
+    "reloader_coverage": 168.0,
+    "redact_coverage": 168.0,
+    "nas_watch": 168.0,
+    "nas_egress": 168.0,
+    "nas_versions": 168.0,
+    "nas_ports": 168.0,
+    "nas_privilege": 168.0,
+}
+
+
+def uncadenced_checks(names):
+    """Names in `names` with no entry in `CADENCE_HOURS`.
+
+    Same contract as `unlabelled_checks`: a hard error before anything runs,
+    rather than a silent fall back to the default. A check added without a
+    cadence would inherit a whole day of staleness from a dict it is not in,
+    and nobody would ever find out -- the row would look identical to a check
+    someone had thought about.
+    """
+    return [n for n in names if n not in CADENCE_HOURS]
+
+
+def due_and_held(names, state, now):
+    """Split `names` into the checks to run now and the ones to carry forward.
+
+    Returns `(due, held)`, where `held` is a list of `(name, entry, cadence)`
+    for checks that exited 0 within their cadence. Their previous verdict is in
+    `entry`; nothing here invents one.
+
+    `state` of `None` -- which is what `--verbose` and `--no-state` pass --
+    holds nothing back at all, so there is always one flag that runs the whole
+    roster on demand.
+    """
+    if state is None:
+        return list(names), []
+    due, held = [], []
+    for name in names:
+        entry = state.get(name) or {}
+        cadence = CADENCE_HOURS.get(name, DEFAULT_CADENCE_HOURS)
+        ran_at = entry.get("ran_at")
+        # A check that did not come back clean is due every sweep, whatever its
+        # cadence says. A check with no record has never run under this
+        # mechanism and is due as well.
+        if not ran_at or entry.get("code", 0) != 0:
+            due.append(name)
+            continue
+        hours = (now - ran_at) / 3600.0
+        # `hours >= cadence` is what makes a cadence of 0 run every sweep; there
+        # is deliberately no separate `cadence <= 0` clause, because a mutation
+        # round showed it could never change an answer and a guard that cannot
+        # fail is not a guard. The negative case is the one it does not cover:
+        # two cycles share this record and their clocks are not the same clock,
+        # so a record stamped slightly in the future must read as due rather
+        # than as held for the length of the skew.
+        if hours < 0 or hours >= cadence:
+            due.append(name)
+        else:
+            held.append((name, entry, cadence))
+    return due, held
+
+
+def held_lines(held, now):
+    """The report block for checks this sweep did not run. Empty list if none."""
+    if not held:
+        return []
+    lines = [f"{len(held)} check(s) were not run: each exited 0 at the time named and its "
+             f"cadence has not come round again. A check that did NOT come back clean is "
+             f"run every sweep regardless, so nothing red is being carried here."]
+    for name, entry, cadence in sorted(held):
+        ago = (now - entry.get("ran_at", now)) / 3600.0
+        due_in = max(0.0, cadence - ago)
+        where, _subject = SUBJECT.get(name, ("?", "unlabelled"))
+        lines.append(f"  {name:20}{where:9}ok, {ago:.1f}h ago; due again in {due_in:.1f}h")
+    return lines
+
+
 def unlabelled_checks(names):
     """Names in `names` with no entry in `SUBJECT`.
 
@@ -742,7 +915,8 @@ def sweep_stamp(now=None, checkout=None):
     return f"swept {when} from {checkout or 'an unreadable checkout'}"
 
 
-def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep=None):
+def render(results, stream=None, verbose=False, state=None, now=None,
+           keep=None, held=None):
     """Print the collapsed report. `results` is a list of (name, code, output, seconds).
 
     `state` is the repeat record from `load_state`; pass `None` to disable the
@@ -753,6 +927,11 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
     """
     import time as _time
 
+    # Resolved here rather than in the signature. A `stream=sys.stdout` default
+    # binds the object that existed at import time, so anything that replaces
+    # `sys.stdout` afterwards -- a test harness, a caller redirecting output --
+    # is written past rather than to.
+    stream = sys.stdout if stream is None else stream
     now = _time.time() if now is None else now
     worst = 0
     noisy = []
@@ -762,6 +941,11 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
     caveated = 0
     for name, code, output, seconds in results:
         worst = max(worst, code)
+        # Written before any branch below can `continue`, because this is what
+        # `due_and_held` reads next sweep -- a check whose verdict never landed
+        # in the record would be treated as one that has never run.
+        if keep is not None:
+            keep[name] = {"code": code, "ran_at": now}
         word = STATUS_WORD.get(code, f"EXIT {code}")
         where, _subject = SUBJECT.get(name, ("?", "unlabelled"))
         print(f"{name:20}{where:9}{word:12}{seconds:>6.1f}  {summary_line(output)}",
@@ -788,7 +972,7 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
         if code != 0 and state is not None and not verbose and not exempt:
             collapse, note, entry = repeat_verdict(name, code, output, state, now)
             if keep is not None:
-                keep[name] = entry
+                keep[name] = {**keep[name], **entry}
             if collapse:
                 print(f"{'':41}  {note}", file=stream)
                 repeated.append(name)
@@ -800,7 +984,8 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
             # whenever it last went through the branch above, and taking it
             # back out of NEVER_COLLAPSE would collapse it on the very next
             # sweep against a clock that had stopped months earlier.
-            keep[name] = {**entry, "printed_at": now} if exempt else entry
+            entry = {**entry, "printed_at": now} if exempt else entry
+            keep[name] = {**keep[name], **entry}
         if code != 0 or verbose:
             noisy.append((name, code, output))
 
@@ -811,6 +996,8 @@ def render(results, stream=sys.stdout, verbose=False, state=None, now=None, keep
 
     print(file=stream)
     print(f"Ran {len(results)} check(s): {', '.join(n for n, _, _, _ in results)}.", file=stream)
+    for line in held_lines(held or [], now):
+        print(line, file=stream)
     on_box = [n for n, _, _, _ in results if SUBJECT.get(n, ("?",))[0] == "on-box"]
     off_box = [n for n, _, _, _ in results if SUBJECT.get(n, ("?",))[0] == "off-box"]
     print(f"{len(off_box)} watch(es) something off this box and would still answer if "
@@ -855,6 +1042,8 @@ def main(argv=None):
                         help="reproduce every check in full, clean ones included")
     parser.add_argument("--no-state", action="store_true",
                         help="print every finding in full, ignoring what was printed last sweep")
+    parser.add_argument("--all", action="store_true",
+                        help="run every check now, ignoring its cadence; findings still collapse")
     args = parser.parse_args(argv)
 
     names = list(args.only or CHECKS)
@@ -878,20 +1067,39 @@ def main(argv=None):
               file=sys.stderr)
         return 1
 
+    uncadenced = uncadenced_checks(names)
+    if uncadenced:
+        print(f"NO CADENCE: {', '.join(uncadenced)} -- refusing to run. Add it to "
+              f"CADENCE_HOURS with a reason; falling back to a default would give it a "
+              f"day of staleness that nobody chose.", file=sys.stderr)
+        return 1
+
     import time
 
     rev_started = time.monotonic()
     rev_code, rev_report = source_revision(fetch=not args.no_fetch)
     rev_seconds = time.monotonic() - rev_started
+    state = None if (args.no_state or args.verbose) else load_state()
+    now = time.time()
+    cadence_state = None if (state is None or args.only or args.all) else state
+    names, held = due_and_held(names, cadence_state, now)
+
     results = [("source_revision", rev_code, rev_report, rev_seconds)] + [None] * len(names)
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(run_check, name): i + 1 for i, name in enumerate(names)}
         for future in concurrent.futures.as_completed(futures):
             results[futures[future]] = future.result()
 
-    state = None if (args.no_state or args.verbose) else load_state()
     keep = {} if state is not None else None
-    worst = render(results, verbose=args.verbose, state=state, keep=keep)
+    if keep is not None:
+        # Every check this sweep did not run keeps the record it already had,
+        # verbatim -- the ones held back by their cadence, and the rest of the
+        # roster when `--only` names a few. `save_state` replaces the whole
+        # file, so an entry left out here is an entry deleted, and the next
+        # sweep would read that check as one that has never run.
+        keep.update({n: e for n, e in state.items() if n not in names})
+    worst = render(results, verbose=args.verbose, state=state, keep=keep, now=now,
+                   held=held)
     if keep:
         save_state(keep)
     return worst
