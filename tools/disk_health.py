@@ -49,10 +49,20 @@ above its own eviction threshold**, 1 means a node's kubelet or the node
 list was unreadable — which never reads as clean — and 0 means everything
 it could judge has room, naming what it swept and what it could not cap.
 
-Two scopes it prints for itself. This is current state, not a trend: a disk
-at 76% that is filling by 2GiB a day and one that has been flat for a month
-read identically here, and only a stored series separates them. And the
-per-node half reads each *node's* kubelet, so it sees only what is mounted.
+Two scopes it printed for itself. The first is closed as of Cycle 1013: the
+kubelet is a single reading, so a disk at 76% filling by 2GiB a day and one
+flat for a month read identically here — and only a stored series separates
+them. Prometheus has one, `container_fs_usage_bytes{id="/"}` per node, so
+each node now also gets a least-squares slope over the last 24 hours and,
+where the fit spans at least six hours, how many days that slope puts
+between it and the kubelet's own eviction point. **The slope is reported and
+does not move the exit status**, which still turns on free space alone: a
+projection is an extrapolation and the thing that evicts pods is the
+percentage. Measured 2026-09-06 01:56 Oslo, which is why this is worth
+having — server1 sits inside the margin and reads FILLING, and its disk has
+been flat for the whole readable window while server2, which reads ok, is
+the one growing. The second scope is unchanged: the per-node half reads each
+*node's* kubelet, so it sees only what is mounted.
 
 **That second gap is now closed from the other side, and closing it found
 two.** Cycle 871 went looking for a workload to move onto server2 and
@@ -104,6 +114,9 @@ import json
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from tools import oneoff_job, oom_history
 
@@ -118,6 +131,217 @@ EVICTION_PCT = {"nodefs": 10.0, "imagefs": 15.0}
 MARGIN_PCT = 5.0
 
 GIB = 1024.0**3
+
+#: Prometheus keeps a stored series of every node's root filesystem, which is
+#: the one thing a single kubelet reading cannot give: yesterday's number.
+PROMETHEUS = "http://prometheus.infra.svc.cluster.local:9090"
+PROM_TIMEOUT = 20
+
+#: How far back to fit the slope, and how finely to sample it. The window is
+#: a bound on one query, not a threshold — nothing is judged against it.
+TREND_HOURS = 24.0
+TREND_STEP_SECONDS = 1800
+
+#: A fit shorter than this does not get turned into a projection. This estate
+#: has real periodicity inside a day — hourly vault backups, six-hourly
+#: newspaper jobs, an image pull on every merge — so a slope taken over one
+#: hour extrapolates a single event into a trend, and a 1GiB layer pull reads
+#: as +24GiB/day. Six hours is a quarter of that cycle. The slope itself is
+#: still printed below this span, with its span beside it; only the
+#: days-to-eviction arithmetic is withheld.
+TREND_MIN_SPAN_HOURS = 6.0
+
+#: Two points define a line and say nothing about whether it is one.
+TREND_MIN_SAMPLES = 4
+
+
+def _prom_json(url, opener=urllib.request.urlopen):
+    with opener(url, timeout=PROM_TIMEOUT) as response:
+        payload = json.load(response)
+    if payload.get("status") != "success":
+        raise ValueError("prometheus answered status=%r" % (payload.get("status"),))
+    return payload["data"]
+
+
+def root_devices(base=PROMETHEUS, opener=urllib.request.urlopen):
+    """Which block device backs `/` on each node, per cAdvisor.
+
+    A node publishes several filesystems at `id="/"` — `/dev/shm`, `/run`,
+    tmpfs mounts — and only one of them is the disk the kubelet is reporting
+    on. Picking the largest is not a guess: the caller checks the chosen
+    device's capacity against the kubelet's own `capacityBytes` and refuses
+    the trend rather than fitting a line through the wrong filesystem.
+    """
+    url = base + "/api/v1/query?" + urllib.parse.urlencode(
+        {"query": 'container_fs_limit_bytes{id="/"}'}
+    )
+    data = _prom_json(url, opener=opener)
+    best = {}
+    for entry in data.get("result", []):
+        metric = entry.get("metric") or {}
+        node = metric.get("node")
+        device = metric.get("device")
+        if not node or not device:
+            continue
+        limit = float(entry["value"][1])
+        if node not in best or limit > best[node][1]:
+            best[node] = (device, limit)
+    return best
+
+
+def root_usage_series(base=PROMETHEUS, opener=urllib.request.urlopen,
+                      hours=TREND_HOURS, now=None):
+    """Every node's root-filesystem usage over the window, as (epoch, bytes)."""
+    end = time.time() if now is None else now
+    url = base + "/api/v1/query_range?" + urllib.parse.urlencode({
+        "query": 'container_fs_usage_bytes{id="/"}',
+        "start": "%d" % int(end - hours * 3600),
+        "end": "%d" % int(end),
+        "step": "%d" % TREND_STEP_SECONDS,
+    })
+    data = _prom_json(url, opener=opener)
+    series = {}
+    for entry in data.get("result", []):
+        metric = entry.get("metric") or {}
+        node = metric.get("node")
+        device = metric.get("device")
+        if not node or not device:
+            continue
+        points = [(float(t), float(v)) for t, v in entry.get("values", [])]
+        if points:
+            series[(node, device)] = points
+    return series
+
+
+def fit_slope(points):
+    """Least-squares bytes-per-day through (epoch seconds, bytes).
+
+    Returns None when there is nothing to fit — fewer than two distinct
+    timestamps is not a slow trend, it is no trend.
+    """
+    if len(points) < 2:
+        return None
+    n = float(len(points))
+    mean_t = sum(t for t, _ in points) / n
+    mean_v = sum(v for _, v in points) / n
+    denominator = sum((t - mean_t) ** 2 for t, _ in points)
+    if denominator == 0:
+        return None
+    numerator = sum((t - mean_t) * (v - mean_v) for t, v in points)
+    return (numerator / denominator) * 86400.0
+
+
+def read_trends(base=PROMETHEUS, opener=urllib.request.urlopen, hours=TREND_HOURS,
+                now=None):
+    """Per node: the fitted slope of its root disk, its span and its sample count.
+
+    Returns a dict of node -> dict, or raises OSError/ValueError if Prometheus
+    could not be read at all. A node Prometheus has no series for is simply
+    absent, which the report says out loud rather than treating as flat.
+    """
+    devices = root_devices(base=base, opener=opener)
+    series = root_usage_series(base=base, opener=opener, hours=hours, now=now)
+    trends = {}
+    for node, (device, limit) in devices.items():
+        points = series.get((node, device))
+        if not points or len(points) < TREND_MIN_SAMPLES:
+            continue
+        slope = fit_slope(points)
+        if slope is None:
+            continue
+        trends[node] = {
+            "device": device,
+            "capacity": limit,
+            "slope_per_day": slope,
+            "span_hours": (points[-1][0] - points[0][0]) / 3600.0,
+            "samples": len(points),
+            "first": points[0][1],
+            "last": points[-1][1],
+        }
+    return trends
+
+
+def days_to_eviction(filesystem, kind, slope_per_day):
+    """How long until this filesystem reaches the kubelet's own action point.
+
+    None when it is not heading there — a flat or shrinking disk has no date,
+    and saying "never" would be a claim about the future rather than the fit.
+    """
+    if slope_per_day is None or slope_per_day <= 0:
+        return None
+    available = filesystem.get("availableBytes")
+    capacity = filesystem.get("capacityBytes")
+    if not available or not capacity:
+        return None
+    floor = capacity * EVICTION_PCT[kind] / 100.0
+    headroom = available - floor
+    if headroom <= 0:
+        return 0.0
+    return headroom / slope_per_day
+
+
+def report_trend(node, kind, filesystem, trend, out=print, also=()):
+    """One TREND line, or one line saying why there is not one.
+
+    `also` names the other action points on the *same* disk. On this estate
+    nodefs and imagefs are one filesystem, and the kubelet acts on it twice:
+    it garbage-collects images at 15% free and evicts pods at 10%. Projecting
+    only to the eviction point would quote the later of two dates as if it
+    were the first thing that happens.
+    """
+    if trend is None:
+        out(
+            "  NO TREND   %s %s — prometheus has no stored series for this node, so this is current state only"
+            % (node, kind)
+        )
+        return
+    capacity = filesystem.get("capacityBytes")
+    if capacity and abs(trend["capacity"] - capacity) > capacity * 0.01:
+        out(
+            "  NO TREND   %s %s — prometheus's largest `/` filesystem is %s (%s) and the kubelet reports %s; not fitting a line through a different disk"
+            % (node, kind, trend["device"], _gib(trend["capacity"]), _gib(capacity))
+        )
+        return
+    per_day = trend["slope_per_day"] / GIB
+    span = trend["span_hours"]
+    shape = "growing by %+.2fGiB/day" % per_day if trend["slope_per_day"] > 0 else (
+        "flat or shrinking (%+.2fGiB/day)" % per_day
+    )
+    tail = ""
+    days = days_to_eviction(filesystem, kind, trend["slope_per_day"])
+    if days is None:
+        tail = " — not heading for the %.1f%%-free point the kubelet acts at" % (
+            EVICTION_PCT[kind],
+        )
+    elif span < TREND_MIN_SPAN_HOURS:
+        tail = (
+            " — no projection from a span under %.1fh; that is short enough for one image pull to be the whole slope"
+            % TREND_MIN_SPAN_HOURS
+        )
+    else:
+        points = [(EVICTION_PCT[kind], days, "pods are evicted")]
+        for other, label in also:
+            other_days = days_to_eviction(filesystem, other, trend["slope_per_day"])
+            if other_days is not None:
+                points.append((EVICTION_PCT[other], other_days, label))
+        points.sort(key=lambda point: point[1])
+        tail = " — " + ", then ".join(
+            "%.1f day(s) to the %.1f%%-free point %s" % (day, pct, label)
+            for pct, day, label in points
+        )
+    out(
+        "  TREND      %s %s: %s over the last %.1fh (%d samples, %s used at the start and %s at the end)%s"
+        % (
+            node,
+            kind,
+            shape,
+            span,
+            trend["samples"],
+            _gib(trend["first"]),
+            _gib(trend["last"]),
+            tail,
+        )
+    )
 
 
 #: `tools.oom_history` already owns this, and it is the function that had to be
@@ -590,7 +814,8 @@ def report_host_breakdown(node, sizes, out=print, remainder=None):
     )
 
 
-def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=None):
+def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=None,
+           trend=None, trend_read=True):
     """Print one node's verdict. Returns the number of findings on it."""
     findings = 0
     filling = False
@@ -630,6 +855,19 @@ def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=No
             )
         else:
             out("  ok         %s" % line)
+
+    if trend_read:
+        nodefs = filesystems.get("nodefs")
+        if nodefs is not None and available_pct(nodefs) is not None:
+            also = ()
+            if shared and filesystems.get("imagefs") is not None:
+                also = (("imagefs", "images are garbage-collected"),)
+            report_trend(node, "nodefs", nodefs, trend, out=out, also=also)
+            if not shared and filesystems.get("imagefs") is not None:
+                out(
+                    "  NO TREND   %s imagefs — a separate disk from nodefs, and the stored series only covers `/`"
+                    % node
+                )
 
     if breakdown:
         head = "  MADE OF    %s: %s of container images, %s of Pod ephemeral storage" % (
@@ -712,7 +950,8 @@ def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=No
     return findings
 
 
-def main(argv=None, runner=subprocess.run, out=print, host_reader=None):
+def main(argv=None, runner=subprocess.run, out=print, host_reader=None,
+         trend_reader=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--node",
@@ -723,6 +962,21 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None):
 
     if host_reader is None:
         host_reader = budgeted_host_reader(runner=runner)
+    if trend_reader is None:
+        trend_reader = read_trends
+
+    trends = {}
+    trend_read = True
+    trend_error = None
+    try:
+        trends = trend_reader()
+    # KeyError belongs with the other two: a Prometheus that answers
+    # `status: success` with a payload missing `value` or `values` is neither a
+    # network failure nor a bad status, and it must land in the same place --
+    # the disclaimer -- rather than crash a run whose free-space verdict is fine.
+    except (OSError, ValueError, KeyError) as exc:
+        trend_read = False
+        trend_error = str(exc)
 
     if args.node:
         nodes = list(args.node)
@@ -761,6 +1015,8 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None):
             out=out,
             breakdown=usage_breakdown(summary, filesystems),
             host_reader=host_reader,
+            trend=trends.get(node),
+            trend_read=trend_read,
         )
 
     out("== claims no Pod mounts")
@@ -795,9 +1051,23 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None):
             "NOT JUDGED  the requested size of the %d uncapped claim(s) above. There is no quota behind it, so the real limit is the node filesystem judged above."
             % uncapped
         )
-    out(
-        "NOT JUDGED  whether a disk is filling. This is current state; a flat disk and one that was ten points emptier yesterday read the same here."
-    )
+    if not trend_read:
+        out(
+            "NOT JUDGED  whether a disk is filling — prometheus was unreadable (%s), so this run is current state only, exactly as it was before the stored series was wired in."
+            % trend_error
+        )
+    else:
+        trended = sorted(n for n in nodes if n in trends)
+        blind = sorted(n for n in nodes if n not in trends)
+        out(
+            "TREND READ  %d of %d node(s) got a fitted slope off prometheus's stored series (%s)%s. The slope is reported; it does not change the exit status, which still turns on free space alone."
+            % (
+                len(trended),
+                len(nodes),
+                ", ".join(trended) or "none",
+                "" if not blind else "; no series for %s" % ", ".join(blind),
+            )
+        )
     out(
         "NOT JUDGED  how much disk an unmounted claim actually holds. It is in no node's kubelet stats at all, so the section above says that it exists and not what it costs."
     )

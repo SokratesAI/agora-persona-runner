@@ -7,10 +7,32 @@ for every volume forever, and a reader that judged it against the reported
 capacity would call a 72%-full node disk a healthy 1Gi volume.
 """
 
+import io
 import json
 import subprocess
 
+import pytest
+
 from tools import disk_health
+
+#: Bound at import, before the autouse fixture below replaces the name. A test
+#: of `read_trends` itself has to call the real one, and asking for it through
+#: the module would hand back the stub -- which for the too-short-a-series test
+#: would have been a vacuous pass, since the stub also returns `{}`.
+REAL_READ_TRENDS = disk_health.read_trends
+
+
+@pytest.fixture(autouse=True)
+def _no_live_prometheus(monkeypatch):
+    """Every existing test predates the trend and must not reach the network.
+
+    `main` looks `read_trends` up on the module at call time, so this reaches
+    it. Without it each of those tests would open a real socket to the
+    in-cluster Prometheus and wait out a 20-second timeout in CI — and pass,
+    because an unreachable Prometheus is a handled `OSError`. That is the
+    slowest possible way to be green.
+    """
+    monkeypatch.setattr(disk_health, "read_trends", lambda *a, **k: {})
 
 
 NODE_CAPACITY = 80307429376
@@ -836,3 +858,327 @@ def test_a_filling_node_gets_its_remainder_named_against_the_made_of_line():
     assert "34.0GiB neither" in made_of[0]
     assert "name 1.0GiB of that 34.0GiB" in named[0]
     assert "33.0GiB is in directories this does not look at" in named[0]
+
+
+# --- the stored series, so "filling" can mean filling ---------------------
+#
+# The gap these pin: the kubelet is one reading. On 2026-09-06 01:56 server1
+# read FILLING at 19.8% free and server2 read ok at 74.3% free, and the only
+# way to know which of them was actually losing ground was to go and query
+# Prometheus by hand. Both were growing; server1 had three days of headroom
+# and server2 twenty-one.
+
+
+def _prom_opener(limits, series):
+    """A fake urlopen that answers the two queries `read_trends` makes."""
+
+    def opener(url, timeout=None):
+        if "query_range" in url:
+            payload = {"status": "success", "data": {"result": series}}
+        else:
+            payload = {"status": "success", "data": {"result": limits}}
+        return io.BytesIO(json.dumps(payload).encode())
+
+    return opener
+
+
+def _limit(node, device, size):
+    return {"metric": {"node": node, "device": device}, "value": [0, str(size)]}
+
+
+def _range(node, device, points):
+    return {
+        "metric": {"node": node, "device": device},
+        "values": [[t, str(v)] for t, v in points],
+    }
+
+
+def test_the_biggest_root_filesystem_is_the_one_that_gets_fitted():
+    # cAdvisor publishes /dev/shm and /run at id="/" too, and a line fitted
+    # through a 64MiB tmpfs is not a line about the disk.
+    # The tmpfs is listed FIRST on purpose: with the disk first, "take the
+    # largest" and "take the one you saw first" give the same answer and the
+    # test pins nothing.
+    opener = _prom_opener(
+        [
+            _limit("server1", "/dev/shm", GIB // 16),
+            _limit("server1", "/dev/sda1", 80 * GIB),
+        ],
+        [],
+    )
+    assert disk_health.root_devices(opener=opener) == {
+        "server1": ("/dev/sda1", float(80 * GIB))
+    }
+
+
+def test_a_flat_series_fits_a_flat_line():
+    points = [(0.0, 100.0), (3600.0, 100.0), (7200.0, 100.0), (10800.0, 100.0)]
+    assert disk_health.fit_slope(points) == 0.0
+
+
+def test_one_point_is_not_a_trend():
+    assert disk_health.fit_slope([(0.0, 100.0)]) is None
+    assert disk_health.fit_slope([]) is None
+
+
+def test_a_growing_series_fits_bytes_per_day():
+    # One GiB per hour, sampled hourly, is 24GiB a day.
+    points = [(i * 3600.0, i * GIB) for i in range(8)]
+    assert round(disk_health.fit_slope(points) / GIB, 3) == 24.0
+
+
+def test_a_three_sample_series_is_too_short_to_fit():
+    # Two points define a line and say nothing about whether it is one.
+    opener = _prom_opener(
+        [_limit("server1", "/dev/sda1", 80 * GIB)],
+        [_range("server1", "/dev/sda1", [(0, 1), (3600, 2), (7200, 3)])],
+    )
+    assert REAL_READ_TRENDS(opener=opener) == {}
+
+
+def test_read_trends_reports_span_endpoints_and_slope():
+    points = [(i * 3600.0, 50 * GIB + i * GIB) for i in range(12)]
+    opener = _prom_opener(
+        [_limit("server1", "/dev/sda1", 80 * GIB)],
+        [_range("server1", "/dev/sda1", points)],
+    )
+    trend = REAL_READ_TRENDS(opener=opener)["server1"]
+    assert trend["samples"] == 12
+    assert round(trend["span_hours"], 1) == 11.0
+    assert round(trend["slope_per_day"] / GIB, 2) == 24.0
+    assert trend["first"] == 50 * GIB
+    assert trend["last"] == 61 * GIB
+
+
+def test_a_growing_disk_gets_a_date_and_a_flat_one_does_not():
+    filesystem = {"capacityBytes": 100 * GIB, "availableBytes": 30 * GIB}
+    # 30GiB free, the kubelet acts at 10GiB free, so 20GiB of headroom.
+    assert disk_health.days_to_eviction(filesystem, "nodefs", float(2 * GIB)) == 10.0
+    assert disk_health.days_to_eviction(filesystem, "nodefs", 0.0) is None
+    assert disk_health.days_to_eviction(filesystem, "nodefs", float(-GIB)) is None
+
+
+def test_a_disk_already_past_the_eviction_point_has_no_days_left():
+    filesystem = {"capacityBytes": 100 * GIB, "availableBytes": 5 * GIB}
+    assert disk_health.days_to_eviction(filesystem, "nodefs", float(GIB)) == 0.0
+
+
+def _trend(slope_gib_per_day, span_hours=11.5, capacity=NODE_CAPACITY):
+    return {
+        "device": "/dev/sda1",
+        "capacity": float(capacity),
+        "slope_per_day": slope_gib_per_day * GIB,
+        "span_hours": span_hours,
+        "samples": 24,
+        "first": 50.0 * GIB,
+        "last": 51.0 * GIB,
+    }
+
+
+def test_the_trend_line_carries_the_projection_and_its_own_endpoints():
+    lines = []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        {"capacityBytes": NODE_CAPACITY, "availableBytes": int(NODE_CAPACITY * 0.198)},
+        _trend(2.41),
+        out=lines.append,
+    )
+    assert len(lines) == 1, lines
+    assert "growing by +2.41GiB/day" in lines[0]
+    assert "24 samples" in lines[0]
+    # The endpoints are printed so a reader can disagree with the fit rather
+    # than take the slope on trust -- an outlier at either end moves it.
+    assert "50.0GiB used at the start and 51.0GiB at the end" in lines[0]
+    assert "day(s) to the 10.0%-free point pods are evicted" in lines[0]
+
+
+def test_a_shared_disk_names_the_earlier_action_point_first():
+    # nodefs and imagefs are one filesystem here, and the kubelet acts on it
+    # twice. Quoting only the eviction date names the later of two things.
+    lines = []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        {"capacityBytes": NODE_CAPACITY, "availableBytes": int(NODE_CAPACITY * 0.198)},
+        _trend(2.41),
+        out=lines.append,
+        also=(("imagefs", "images are garbage-collected"),),
+    )
+    tail = lines[0].split(" — ")[-1]
+    first, second = tail.split(", then ")
+    assert "15.0%-free point images are garbage-collected" in first
+    assert "10.0%-free point pods are evicted" in second
+
+
+def test_the_shared_disk_second_point_is_wired_through_report():
+    lines = []
+    disk_health.report(
+        "server1",
+        disk_health.node_filesystems(_summary()),
+        [],
+        out=lines.append,
+        trend=_trend(2.41),
+    )
+    trend_line = [line for line in lines if "TREND      " in line]
+    assert len(trend_line) == 1, lines
+    assert "images are garbage-collected" in trend_line[0]
+    assert "pods are evicted" in trend_line[0]
+
+
+def test_a_flat_disk_is_named_flat_and_gets_no_date():
+    lines = []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        {"capacityBytes": NODE_CAPACITY, "availableBytes": int(NODE_CAPACITY * 0.198)},
+        _trend(-0.4),
+        out=lines.append,
+    )
+    assert "flat or shrinking (-0.40GiB/day)" in lines[0]
+    assert "not heading for the 10.0%-free point" in lines[0]
+    assert "day(s) to" not in lines[0]
+
+
+def test_a_short_span_prints_the_slope_and_withholds_the_projection():
+    lines = []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        {"capacityBytes": NODE_CAPACITY, "availableBytes": int(NODE_CAPACITY * 0.198)},
+        _trend(2.41, span_hours=1.0),
+        out=lines.append,
+    )
+    assert "growing by +2.41GiB/day" in lines[0]
+    assert "no projection from a span under" in lines[0]
+    assert "day(s) to the" not in lines[0]
+
+
+def test_a_fit_through_a_different_disk_is_refused_rather_than_printed():
+    lines = []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        {"capacityBytes": NODE_CAPACITY, "availableBytes": int(NODE_CAPACITY * 0.198)},
+        _trend(2.41, capacity=GIB // 16),
+        out=lines.append,
+    )
+    assert "NO TREND" in lines[0]
+    assert "not fitting a line through a different disk" in lines[0]
+    assert "growing by" not in lines[0]
+
+
+def test_a_node_prometheus_has_no_series_for_says_so():
+    lines = []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        {"capacityBytes": NODE_CAPACITY, "availableBytes": int(NODE_CAPACITY * 0.198)},
+        None,
+        out=lines.append,
+    )
+    assert "NO TREND" in lines[0]
+    assert "current state only" in lines[0]
+
+
+def test_an_unreadable_prometheus_never_reads_as_a_flat_disk(monkeypatch):
+    """The whole point: no series must not print as "not filling"."""
+
+    def boom(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(disk_health, "read_trends", boom)
+    lines = []
+    code = disk_health.main(
+        ["--node", "server1"],
+        runner=_runner(nodes=("server1",), summaries={"server1": _summary()}),
+        out=lines.append,
+    )
+    text = "\n".join(lines)
+    assert "NOT JUDGED  whether a disk is filling" in text
+    assert "connection refused" in text
+    assert "TREND      " not in text
+    assert "NO TREND" not in text
+    assert code == 0
+
+
+def test_a_trend_does_not_change_the_exit_status(monkeypatch):
+    """A projection is an extrapolation; the thing that evicts is the percentage."""
+    monkeypatch.setattr(
+        disk_health, "read_trends", lambda *a, **k: {"server1": _trend(9.0)}
+    )
+    lines = []
+    code = disk_health.main(
+        ["--node", "server1"],
+        runner=_runner(nodes=("server1",), summaries={"server1": _summary()}),
+        out=lines.append,
+    )
+    text = "\n".join(lines)
+    assert "TREND      server1 nodefs: growing by +9.00GiB/day" in text
+    # 23.8% free -- above the margin -- so the run is clean despite the slope.
+    assert code == 0
+    assert "does not change the exit status" in text
+
+
+def test_the_sweep_line_names_the_nodes_it_could_not_trend(monkeypatch):
+    monkeypatch.setattr(disk_health, "read_trends", lambda *a, **k: {})
+    lines = []
+    disk_health.main(
+        ["--node", "server1"],
+        runner=_runner(nodes=("server1",), summaries={"server1": _summary()}),
+        out=lines.append,
+    )
+    read = [line for line in lines if line.startswith("TREND READ")]
+    assert len(read) == 1, lines
+    assert "0 of 1 node(s)" in read[0]
+    assert "no series for server1" in read[0]
+
+
+def test_a_flat_trend_cannot_suppress_a_real_finding(monkeypatch):
+    """The direction that matters: a slope must not talk a red node down.
+
+    The reviewer caught that the exit-status test only proved a trend cannot
+    manufacture a finding. Nothing in `report`'s accumulator reads the trend
+    today; this is what says so when someone wires one in.
+    """
+    monkeypatch.setattr(
+        disk_health, "read_trends", lambda *a, **k: {"server1": _trend(-9.0)}
+    )
+    lines = []
+    code = disk_health.main(
+        ["--node", "server1"],
+        runner=_runner(
+            nodes=("server1",), summaries={"server1": _filling_summary()}
+        ),
+        out=lines.append,
+        host_reader=lambda node: {},
+    )
+    text = "\n".join(lines)
+    assert "FILLING" in text
+    assert "flat or shrinking (-9.00GiB/day)" in text
+    assert code == 2
+
+
+def test_the_capacity_tolerance_holds_on_both_sides_of_one_percent():
+    """A tolerance with no boundary test is any tolerance at all."""
+    filesystem = {
+        "capacityBytes": NODE_CAPACITY,
+        "availableBytes": int(NODE_CAPACITY * 0.198),
+    }
+    inside, outside = [], []
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        filesystem,
+        _trend(2.41, capacity=int(NODE_CAPACITY * 1.005)),
+        out=inside.append,
+    )
+    disk_health.report_trend(
+        "server1",
+        "nodefs",
+        filesystem,
+        _trend(2.41, capacity=int(NODE_CAPACITY * 1.02)),
+        out=outside.append,
+    )
+    assert "TREND      " in inside[0], inside
+    assert "NO TREND" in outside[0], outside
