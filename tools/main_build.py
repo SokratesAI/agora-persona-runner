@@ -88,8 +88,8 @@ was unreadable. "I could not check" never reads as "nothing here".
 """
 
 import argparse
-import datetime
 import base64
+import datetime
 import json
 import subprocess
 import sys
