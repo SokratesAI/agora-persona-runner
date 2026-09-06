@@ -408,3 +408,134 @@ def test_cli_rolls_by_age_and_writes_both_files(tmp_path, capsys):
     assert "stale-thing" not in live.read_text()
     assert "stale-thing" in archive.read_text()
     assert "recent-thing" in live.read_text()
+
+
+# A duplicate slug among the aged-out items. The age roll resolves items
+# by index and must not be stopped by an ambiguity that only exists in
+# the slug namespace -- cycle 1017's reviewer found this after the merge.
+AGED_DUPLICATE = AGED.replace(
+    "**[stale-thing]** Cycle 640, long finished.",
+    "**[stale-thing]** Cycle 640, long finished.\n\n"
+    "**[stale-thing]** Cycle 641, a second item wearing the same slug.",
+)
+
+
+def test_the_age_roll_survives_a_duplicate_slug_among_the_aged_items():
+    # Both copies are older than the cutoff and both must move. Going
+    # through `select_slugs` raised "the section has a duplicate slug"
+    # and aborted the whole roll, including the five unambiguous items.
+    rolled = roll_handoff.archive_older_than(AGED_DUPLICATE, "", 669, TODAY)
+    assert rolled is not None
+    new_live, new_archive, moved = rolled
+    text = [" ".join(i.split()) for i in moved]
+    assert sum("[stale-thing]" in t for t in text) == 2
+    assert any("Cycle 641" in t for t in text)
+    assert "[stale-thing]" not in new_live
+    assert "[recent-thing]" in new_live
+
+
+def test_a_duplicate_slug_still_stops_a_roll_that_names_it_by_hand():
+    # The index path is for the age roll only. `--retire stale-thing`
+    # is still a guess between two items and is still refused.
+    with pytest.raises(roll_handoff.RollError) as excinfo:
+        roll_handoff.archive_retired(
+            AGED_DUPLICATE, "", ["stale-thing"], "finished", TODAY
+        )
+    assert "duplicate slug" in str(excinfo.value)
+
+
+def test_nothing_to_roll_names_the_items_it_cannot_date():
+    # `AGED` holds one undated item and one with no slug, and neither is
+    # retirable at any cutoff. At cutoff 600 nothing moves, and the old
+    # message said all six "cite cycle 600 or later" -- four do.
+    items = live_items(AGED)
+    said = roll_handoff.explain_none_older_than(items, 600)
+    assert "of 6 handoff item(s)" in said
+    assert "4 cite(s) cycle 600 or later" in said
+    assert "1 carr(y/ies) no slug" in said
+    assert "1 cite(s) no cycle at all" in said
+
+
+def test_nothing_to_roll_says_only_the_true_thing_when_every_item_is_recent():
+    # No unslugged or undated item, so no clause about them at all.
+    every_item_dated = "\n\n".join(
+        [
+            "**[a-thing]** Cycle 671, recent.",
+            "**[b-thing]** Cycle 670, also recent.",
+        ]
+    )
+    said = roll_handoff.explain_none_older_than(
+        live_items(
+            AGED.split("## Next cycle")[0]
+            + "## Next cycle\n\n"
+            + every_item_dated
+            + "\n\n## Digest\n\n**Cycle 671** (2026-08-30 18:00) — did a thing.\n"
+        ),
+        669,
+    )
+    assert "2 cite(s) cycle 669 or later" in said
+    assert "no slug" not in said
+    assert "no cycle at all" not in said
+
+
+def test_nothing_to_roll_says_so_when_it_is_asked_out_of_sequence():
+    # `explain_none_older_than` measures "recent" against the cutoff
+    # rather than inferring it as everything left over, so a caller that
+    # asks before `select_older_than` has returned empty is told, instead
+    # of being handed a confident sentence about items nothing looked at.
+    # AGED at cutoff 669: three items are genuinely at or after it, one
+    # (stale-thing, cycle 640) is not, plus the unslugged and undated pair.
+    items = live_items(AGED)
+    said = roll_handoff.explain_none_older_than(items, 669)
+    assert "3 cite(s) cycle 669 or later" in said
+    assert "1 (y)our caller should have retired" in said
+    assert "asked out of sequence" in said
+
+
+def test_the_cli_prints_the_bucket_breakdown_when_nothing_rolls(tmp_path, capsys):
+    # The wiring, end to end: `main` must print what the helper returns.
+    # Cut against a digest whose oldest line is older than every handoff
+    # item, so nothing is selected and the message is the whole output.
+    live = tmp_path / "live.md"
+    live.write_text(
+        AGED.replace(
+            "**Cycle 669** (2026-08-30 16:00)", "**Cycle 600** (2026-08-30 16:00)"
+        )
+    )
+    archive = tmp_path / "archive.md"
+    before = live.read_text()
+    code = roll_handoff.main(
+        ["--live", str(live), "--archive", str(archive),
+         "--retire-older-than-digest"]
+    )
+    said = capsys.readouterr().out
+    assert code == 0
+    assert "nothing to roll: of 6 handoff item(s)" in said
+    assert "4 cite(s) cycle 600 or later" in said
+    assert "1 carr(y/ies) no slug" in said
+    assert "1 cite(s) no cycle at all" in said
+    assert "asked out of sequence" not in said
+    assert live.read_text() == before
+
+
+def test_a_bad_reason_is_reported_before_a_bad_slug():
+    # Both are wrong. The reason guard ran first before `archive_retired`
+    # became a wrapper, and a refactor is not the place to change which
+    # of two complaints a caller hears.
+    with pytest.raises(roll_handoff.RollError) as excinfo:
+        roll_handoff.archive_retired(LIVE, "", ["no-such-slug"], "", TODAY)
+    assert "needs a reason" in str(excinfo.value)
+
+
+def test_an_index_passed_twice_is_stamped_and_reported_once():
+    # `plan` sorts and dedups internally; `moved` is built from `picked`,
+    # so without the same normalisation the second `.replace` would find
+    # the already-stamped copy, change nothing, and still be counted.
+    items = live_items(AGED)
+    stale = [i for i, item in enumerate(items) if "[stale-thing]" in item]
+    assert len(stale) == 1
+    _, new_archive, moved = roll_handoff.archive_indices(
+        AGED, "", stale * 2, "finished", TODAY
+    )
+    assert len(moved) == 1
+    assert new_archive.count("**Retired") == 1
