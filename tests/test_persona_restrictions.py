@@ -9,8 +9,6 @@ personas that differ in exactly one field.
 import io
 import json
 
-import pytest
-
 from tools import persona_restrictions as pr
 
 
@@ -139,3 +137,17 @@ def test_main_exits_1_when_agora_is_unreachable(monkeypatch, capsys):
     monkeypatch.setattr(pr, "fetch", lambda: ([], "could not read: down"))
     assert pr.main([]) == 1
     assert "NO INSTRUMENT" in capsys.readouterr().out
+
+
+def test_fetch_refuses_a_detail_response_with_no_persona_record():
+    """A 200 that is not a persona record must not be skipped. Dropping it
+    would shrink the count silently, which is the same 'no instrument reads
+    as clean' failure the tool's exit 1 exists to prevent."""
+    def opener(url, timeout=None):
+        if url.endswith("/personas"):
+            return _Resp(json.dumps({"personas": [{"id": "a"}]}).encode())
+        return _Resp(json.dumps({"error": "gone"}).encode())
+
+    personas, error = pr.fetch(opener=opener)
+    assert personas == []
+    assert "no persona record at /personas/a" in error
