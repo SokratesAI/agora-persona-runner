@@ -71,6 +71,12 @@ MAX_NAME_CHARS = 200
 # nothing else -- a thread he named himself is never renamed under him.
 UNTITLED_NAME = "New chat"
 
+# What Agora puts in `sender` for a message the owner typed. Three places
+# in this module already keyed on the literal and `nova_chat_answers` is a
+# fourth, in another module -- the string is a fact about the message
+# store, not about any one reader of it.
+OWNER_SENDER = "Edvard"
+
 # How long a derived title may be. Far below `MAX_NAME_CHARS`, because this
 # one is read in a switcher row on a 360px phone rather than typed by him.
 TITLE_CHARS = 60
@@ -227,7 +233,7 @@ def visible_rows(messages):
         # Steps belong to what the persona said after them, never to what he
         # said next: a block that runs into one of his messages is his turn
         # ending, not the start of the next one, so it stands alone.
-        flush(None if row["sender"] == "Edvard" else row)
+        flush(None if row["sender"] == OWNER_SENDER else row)
         out.append(row)
     flush(None)
     return out
@@ -426,7 +432,7 @@ def thread(conversation_id, limit=MAX_THREAD):
     # before the real reply lands. `partial` is the flag it carries, so this
     # is the same line it always was.
     settled = [m for m in messages if not m.get("partial")]
-    waiting = bool(settled) and settled[-1]["sender"] == "Edvard"
+    waiting = bool(settled) and settled[-1]["sender"] == OWNER_SENDER
     return {
         "conversationId": conversation_id,
         "messages": messages[-limit:],
@@ -458,7 +464,7 @@ def send(conversation_id, text):
         return False, f"that is longer than {MAX_MESSAGE_CHARS} characters"
     status, body = agora_internal(
         "POST", f"/conversations/{conversation_id}/notify",
-        {"text": text, "sender": "Edvard", "system": False, "push": False},
+        {"text": text, "sender": OWNER_SENDER, "system": False, "push": False},
     )
     # `push: False` for the reason Cycle 439 built presence for -- he is
     # looking at the thread he just typed into, and Agora cannot see this

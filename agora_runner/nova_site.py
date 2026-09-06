@@ -215,6 +215,7 @@ from agora_runner.nova_conversations import (
     thread as conversation_thread,
     watching as conversation_watching,
 )
+from agora_runner.nova_chat_answers import answered_in_chat
 from agora_runner.nova_heartbeats import (
     heartbeats as heartbeat_list,
     run_now as heartbeat_run_now,
@@ -533,6 +534,45 @@ def _drop_legacy_reply(comment):
     readers above are real and this is only about the wire.
     """
     return {k: v for k, v in comment.items() if k not in ("reply", "replyStamp")}
+
+
+def ask_chat_payload():
+    """`/api/asks/chat` -- the open asks he has already answered in chat.
+
+    His issue #165: an answer he gives in the cycle's own thread left no
+    trace anywhere the page looked, so the ask stayed on `/asks` until he
+    repeated himself in a comment box. `nova_chat_answers` holds the rule;
+    this is the I/O around it.
+
+    **It asks only about the asks that are still open in the journal**, so
+    the cost is one Agora thread fetch per open ask (eight today) and not
+    one per cycle. `open_asks` has already dropped the ones a later cycle
+    declared resolved.
+
+    It is cached like the other payloads rather than built per request: an
+    answer he typed a second ago can wait `CACHE_FRESH_SECONDS`, and the
+    alternative is these fetches on every poll of a page he leaves open.
+    Comments are the payload that must never be stale, and they are still
+    built per request -- this is the second, slower signal beside them, not
+    a replacement for it.
+    """
+    journal, _body, _etag = cached_payload("journal", journal_payload)
+    cycles = [
+        ask.get("cycle")
+        for ask in (journal.get("status") or {}).get("asks") or []
+        if ask.get("cycle") is not None
+    ]
+    if not cycles:
+        return {"cycles": []}
+    try:
+        listing = conversation_list()
+    except Exception as e:  # noqa: BLE001
+        # Same direction as an unreadable thread: no listing means no
+        # answers found, so every ask stays open rather than quietly
+        # clearing. The page says nothing; the ask is simply still there.
+        log(f"nova-site ask-chat listing failed: {e}")
+        return {"cycles": []}
+    return {"cycles": answered_in_chat(cycles, listing, conversation_thread)}
 
 
 def comments_payload():
@@ -3691,6 +3731,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/galaxy":
                 self._send_cached_json("galaxy", galaxy_up_payload)
+                return
+            if path == "/api/asks/chat":
+                self._send_cached_json("askchat", ask_chat_payload)
                 return
             if path == "/api/comments":
                 # Still deliberately not cached, and the reason is
