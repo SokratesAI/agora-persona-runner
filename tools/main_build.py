@@ -35,6 +35,14 @@ cannot see is a workflow whose `paths:` filter excluded the files in one
 particular merge -- that is a legitimately empty commit and it is printed
 as a caveat rather than folded into either bucket.
 
+`TOO YOUNG TO JUDGE` is `NOT BUILT` before the race is over, and it does
+not raise. A commit that landed seconds ago has no run yet because GitHub
+has not created one, not because nothing will: measured over 150 push
+runs, the first run appears a median of 3s after the commit. A sweep that
+happens to land inside that window used to report the loop's own main
+repository as unbuilt every time a cycle merged, which is the one way to
+make the instrument that would catch a real one worth ignoring.
+
 `NO IMAGE` is the third state Cycle 795 asked for by name: a run exists
 on HEAD and its conclusion is `skipped`, so nothing was produced. On a
 pull request `build-push` is skipped here by design and `open_prs`
@@ -81,6 +89,7 @@ was unreadable. "I could not check" never reads as "nothing here".
 
 import argparse
 import base64
+import datetime
 import json
 import subprocess
 import sys
@@ -288,10 +297,17 @@ def compared_repos(workflow, job_name, self_repo):
     return sorted(found)
 
 
-def head_committed_at(repo, run=None):
-    """`(iso timestamp, error)` for the default branch's newest commit."""
+def head_committed_at(repo, run=None, ref="HEAD"):
+    """`(iso timestamp, error)` for one commit on a repository.
+
+    `ref` defaults to `HEAD` because the caller that asks about *another*
+    repository only knows its branch. The caller that asks about this
+    repository's own HEAD passes the sha it already resolved, so a merge
+    landing between the two calls cannot make it read a different commit
+    than the one it judged.
+    """
     code, out, err = (run or _gh)(
-        ["api", f"repos/{repo}/commits/HEAD", "--jq", ".commit.committer.date"]
+        ["api", f"repos/{repo}/commits/{ref}", "--jq", ".commit.committer.date"]
     )
     if code != 0:
         blob = (err or out or "").strip()
@@ -372,6 +388,37 @@ def perishable_notes(repo, sha, runs, errors, run=None):
                     f"gh run rerun {run_id} --repo {repo} --job {job.get('id')}"
                 )
     return notes
+
+
+#: How long after a commit lands GitHub may take to register its run before
+#: `NOT BUILT` is an honest verdict rather than a race with the merge that
+#: just happened. Measured 2026-09-06 over the 150 push runs GitHub still
+#: holds for agora-persona-runner, agora-claude-bridge, agora, marcus and
+#: platform-config: the gap between a commit's own committer date and the
+#: creation of the first run on it is a median of 3s, a 90th percentile of
+#: 4s and a maximum of 10s. 120s is twelve times the worst of those, which
+#: is the room a number like this needs -- the failure it prevents is a
+#: false finding every time a cycle merges, and the cost of being generous
+#: is one sweep's delay in noticing a genuinely unbuilt commit.
+TOO_YOUNG_SECONDS = 120
+
+
+def commit_age_seconds(stamp, now=None):
+    """Seconds between `stamp` (ISO 8601, from the GitHub API) and now.
+
+    Returns `None` when the stamp cannot be parsed, because an unreadable
+    date must never be the thing that quietens a finding.
+    """
+    if not stamp:
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    reference = now or datetime.datetime.now(datetime.timezone.utc)
+    return (reference - when).total_seconds()
 
 
 def judge(runs, workflow_count):
@@ -462,6 +509,10 @@ _HEADINGS = {
     ),
     "no_image": "NO IMAGE — the run was skipped, so the merge produced nothing",
     "not_built": "NOT BUILT — a run was expected on this commit and never appeared",
+    "too_young": (
+        "TOO YOUNG TO JUDGE — the commit landed seconds ago and GitHub has "
+        "not registered its run yet"
+    ),
     "running": "still building",
     "no_ci": "no workflows on this repo",
     "ok": "green on the default branch",
@@ -491,7 +542,7 @@ def format_report(results, swept, errors, caveat_repos):
     for row in by_verdict.get("unreadable") or []:
         lines.append(f"COULD NOT JUDGE — {row['repo']}: {row['detail']}")
 
-    for verdict in ("running", "no_ci", "ok"):
+    for verdict in ("too_young", "running", "no_ci", "ok"):
         rows = by_verdict.get(verdict) or []
         if not rows:
             continue
@@ -610,7 +661,22 @@ def main(argv=None, run=None):
         if verdict == "red":
             notes = perishable_notes(repo, sha, runs, errors, run=run)
         if verdict == "not_built":
-            caveat_repos.append(repo)
+            stamp, stamp_err = head_committed_at(repo, run=run, ref=sha)
+            if stamp_err:
+                errors.append(
+                    f"{repo}: could not read the commit date of {sha[:7]}, so "
+                    f"NOT BUILT stands rather than being aged out — {stamp_err}"
+                )
+            age = commit_age_seconds(stamp)
+            if age is not None and age < TOO_YOUNG_SECONDS:
+                verdict = "too_young"
+                detail = (
+                    f"this commit is {int(age)}s old and no run exists yet; "
+                    f"a run appears within {TOO_YOUNG_SECONDS}s of a merge, so "
+                    "there is nothing to judge until the next sweep"
+                )
+            else:
+                caveat_repos.append(repo)
         results.append(
             {"repo": repo, "sha": sha, "url": url,
              "verdict": verdict, "detail": detail, "notes": notes}

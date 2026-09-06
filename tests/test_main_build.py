@@ -1,5 +1,6 @@
 """Tests for `tools.main_build`."""
 
+import datetime
 import json
 
 from tools import main_build
@@ -665,3 +666,95 @@ class TestARunWithNoStartTime:
         )
         assert notes == []
         assert errors and "no start time" in errors[0]
+
+
+class TestACommitTooYoungToJudge:
+    """A merge that landed seconds ago has no run yet, and that is not a finding.
+
+    Measured 2026-09-06: preflight sampled `main_build` three seconds after
+    #787 merged, and it reported `agora-persona-runner` as NOT BUILT. The
+    push run for that commit was created three seconds after the commit --
+    the sweep and the merge raced, and the sweep lost. A false raise here is
+    expensive out of proportion to itself: this is the one instrument that
+    would catch a genuinely unbuilt default branch, and one that cries wolf
+    every time a cycle merges is one nobody reads.
+    """
+
+    def _fake(self, committed_at, workflows="4"):
+        def fake(args):
+            joined = " ".join(args)
+            if args[:2] == ["repo", "list"]:
+                return 0, json.dumps(
+                    [{"nameWithOwner": "o/r", "isArchived": False}]
+                ), ""
+            if "commits/HEAD" in joined:
+                return 0, "abc123\n", ""
+            if "commits/abc123" in joined:
+                if committed_at is None:
+                    return 1, "", "not found"
+                return 0, f"{committed_at}\n", ""
+            if "actions/runs?head_sha" in joined:
+                return 0, json.dumps([]), ""
+            if "actions/workflows" in joined:
+                return 0, f"{workflows}\n", ""
+            return 0, "main\n", ""
+
+        return fake
+
+    @staticmethod
+    def _ago(seconds):
+        when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            seconds=seconds
+        )
+        return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_a_commit_seconds_old_with_no_run_does_not_raise(self, capsys):
+        code = main_build.main([], run=self._fake(self._ago(5)))
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "TOO YOUNG TO JUDGE" in out
+        assert "NOT BUILT" not in out
+        # The caveat belongs to NOT BUILT; an aged-out repo must not drag it in.
+        assert "paths:" not in out
+
+    def test_an_old_commit_with_no_run_still_raises(self, capsys):
+        code = main_build.main([], run=self._fake(self._ago(7200)))
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "NOT BUILT" in out
+        assert "TOO YOUNG TO JUDGE" not in out
+
+    def test_a_commit_just_past_the_grace_still_raises(self, capsys):
+        code = main_build.main(
+            [], run=self._fake(self._ago(main_build.TOO_YOUNG_SECONDS + 30))
+        )
+        assert code == 2
+        assert "NOT BUILT" in capsys.readouterr().out
+
+    def test_an_unreadable_commit_date_leaves_the_finding_standing(self, capsys):
+        code = main_build.main([], run=self._fake(None))
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "NOT BUILT" in out
+        assert "could not read the commit date" in out
+
+    def test_a_garbled_commit_date_leaves_the_finding_standing(self, capsys):
+        code = main_build.main([], run=self._fake("not a date"))
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "NOT BUILT" in out
+
+
+class TestCommitAgeSeconds:
+    def test_an_unparseable_stamp_is_none(self):
+        assert main_build.commit_age_seconds("yesterday") is None
+        assert main_build.commit_age_seconds("") is None
+        assert main_build.commit_age_seconds(None) is None
+
+    def test_a_naive_stamp_is_read_as_utc(self):
+        now = datetime.datetime(2026, 9, 6, 12, 0, tzinfo=datetime.timezone.utc)
+        assert main_build.commit_age_seconds("2026-09-06T11:59:00", now=now) == 60
+
+    def test_a_zulu_stamp_parses(self):
+        now = datetime.datetime(2026, 9, 6, 12, 0, tzinfo=datetime.timezone.utc)
+        assert main_build.commit_age_seconds("2026-09-06T11:58:00Z", now=now) == 120
