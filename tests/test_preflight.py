@@ -2,6 +2,7 @@
 import io
 import os
 import re
+import time
 
 from tools import preflight
 
@@ -1029,3 +1030,56 @@ def test_only_does_not_wipe_the_rest_of_the_record(tmp_path, monkeypatch, capfd)
     # source_revision runs outside the roster on every sweep, so it is there too.
     assert set(kept) == {"nas_ports", "cli_pin", "source_revision"}
     assert kept["nas_ports"]["code"] == 0
+
+
+def test_a_solo_check_never_runs_while_another_check_is_running(tmp_path, monkeypatch, capfd):
+    # The defect this exists for: `cpu_throttle` samples a 20s window of the
+    # cluster's CPU throttling, and the sweep around it is load on the two
+    # containers it then names -- nova-site, which `reply_health` asks for 30
+    # cycle threads, and the bridge pod every check runs in. Measured Cycle
+    # 1061 two minutes apart: 89.4%/53.0% inside the pool, NOT JUDGED/0.0%
+    # alone. A unit test of the pool cannot see that, so this asserts the one
+    # thing that makes the number honest -- nothing else was in flight.
+    import threading
+    monkeypatch.setattr(preflight, "STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setattr(preflight, "source_revision", lambda **kw: (0, "up to date\n"))
+    monkeypatch.setattr(preflight, "CHECKS", ("nas_ports", "cpu_throttle", "workload_health"))
+    monkeypatch.setattr(preflight, "SOLO", ("cpu_throttle",))
+
+    lock = threading.Lock()
+    in_flight = set()
+    # Every call, not the last one per name. Holding one entry per name lets a
+    # check that ran twice -- once inside the pool and once after it -- report
+    # the quiet second run and hide the overlapping first, which is exactly
+    # what the mutation that drops the `not in SOLO` filter does.
+    calls = []
+
+    def fake(name):
+        with lock:
+            calls.append((name, set(in_flight)))
+            in_flight.add(name)
+        time.sleep(0.05)
+        with lock:
+            in_flight.discard(name)
+        return (name, 0, f"{name} swept 1 thing\n", 0.1)
+
+    monkeypatch.setattr(preflight, "run_check", fake)
+    assert preflight.main(["--all"]) == 0
+
+    solo_calls = [alongside for name, alongside in calls if name == "cpu_throttle"]
+    assert len(solo_calls) == 1
+    assert solo_calls[0] == set()
+    # The precondition: the pool really did overlap the other two, so "nothing
+    # was alongside cpu_throttle" is a fact about SOLO and not about a sweep
+    # that happened to be serial.
+    assert any(alongside for name, alongside in calls if name != "cpu_throttle")
+
+    out = capfd.readouterr().out
+    assert "Ran 4 check(s)" in out
+    assert "cpu_throttle" in out
+
+
+def test_every_solo_check_is_on_the_roster():
+    # A name in SOLO that is not in CHECKS is a check held out of the pool and
+    # then never run at all -- `main` only ever iterates `names`.
+    assert set(preflight.SOLO) <= set(preflight.CHECKS)
