@@ -2,8 +2,8 @@
 
 Nova's site is deliberately NOT started here. It was until 2026-08-09,
 and it has its own process and its own Deployment now, because this one
-is `Recreate` with a 2880s drain -- so the site went down for the whole
-length of every cycle. `run_nova_site.py` is its entrypoint; the
+had `strategy: Recreate` and a 2880s drain -- so the site went down for
+the whole length of every cycle. `run_nova_site.py` is its entrypoint; the
 reasoning is in agora_runner/nova_site_main.py.
 """
 
@@ -12,7 +12,7 @@ import time
 
 from agora_runner.config import AGORA_URL, POLL_INTERVAL_SECONDS
 from agora_runner.log import log
-from agora_runner.heartbeats import join_running_heartbeats, running_heartbeat_count
+from agora_runner.heartbeats import join_running_heartbeats
 from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
 from agora_runner.otel import init_tracing
@@ -69,53 +69,34 @@ def _sleep_between_ticks(seconds):
         remaining -= step
 
 
-def _serve_while_draining():
-    """Keep answering ordinary conversation turns until the drain ends.
+def _drain_and_exit():
+    """Wait for the cycles already in flight, then let the process end.
 
-    `terminationGracePeriodSeconds` on this Deployment is 2880s and the
-    strategy is `Recreate`, so from the moment a redeploy lands there is
-    no other persona runner anywhere -- the replacement pod is not
-    created until this one exits. Until 2026-08-31 the drain set the
-    shutdown flag and went straight to `join_running_heartbeats`, so for
-    the whole of that wait every persona in Agora (Claude, Opus, Gemini,
-    Haiku, Plain assistant, Study buddy ...) answered nothing at all, and
-    `tools.workload_health` deliberately does not raise inside a
-    workload's own drain budget, so nothing reported it either. Measured
-    Cycle 692: the pod was told to drain at 03:36 Oslo, a message to the
-    Claude persona posted at 03:43 was still unanswered at 03:47, and the
-    Deployment had read `Available: False` for twelve minutes with a
-    SIGKILL deadline of 04:24. That is the owner's issue #130.
+    This deliberately polls nothing at all, and that is a change from
+    2026-08-31 to 2026-09-06 rather than an oversight. While the strategy
+    was `Recreate`, the replacement pod was not created until this one
+    exited, so a drain meant every persona in Agora (Claude, Opus, Gemini,
+    Haiku, Plain assistant, Study buddy ...) answered nobody for up to the
+    full 48 minutes -- the owner's issue #130, measured Cycle 692. The
+    answer then was to spend the wait answering conversations, because
+    this process was the only one alive.
 
-    The wait itself is not shortened by a single second and must not be:
-    it lasts exactly as long as the in-flight cycle, which is why an idle
-    pod still exits within a tick. What changes is that the wait is spent
-    working. It can be *lengthened*, by at most one conversation turn: a
-    tick runs synchronously, so if the cycle finishes early in a tick the
-    replacement pod waits out the rest of it. That is the honest cost and
-    it is bounded by one turn, against a window that is otherwise up to
-    the full 48 minutes with every persona silent. Starting a *new* heartbeat run stays forbidden -- that run
-    would be killed part-way, which is the regression the drain was built
-    for -- so this passes `start_heartbeats=False`.
+    It is no longer the only one alive. The strategy is `RollingUpdate`
+    with `maxSurge: 1, maxUnavailable: 1`, so the replacement pod is
+    created in the same reconcile that requests this one's deletion and is
+    serving within seconds. A draining pod that kept polling would now be
+    a *second* poller against the same conversations, and the duplicate it
+    produces is a second reply to the owner rather than a silent one.
 
-    There is no second replica to race with: `Recreate` guarantees this
-    process is the only one alive. That is what makes this safe here and
-    is the reason it is not simply "keep polling" -- the heartbeat claim
-    is a plain PATCH rather than a compare-and-swap
-    (`heartbeats.py`: "may be duplicated by a restart or another
-    replica"), so a strategy that overlaps two pollers is a separate,
-    larger change.
+    Starting a new heartbeat run stays forbidden for the same reason it
+    always was -- that run would be SIGKILLed part-way -- and here it is
+    forbidden by not polling at all.
+
+    What this does not do is shorten the wait by a second. The in-flight
+    cycle keeps its full budget; `join_running_heartbeats` below is what
+    holds the process open, and an idle pod still exits immediately.
     """
-    while running_heartbeat_count():
-        try:
-            poll_once(start_heartbeats=False)
-        except Exception as e:
-            log(f"poll failed while draining: {e}")
-        # Re-checked after the tick as well as before it: a tick takes
-        # real time, and sleeping a full interval after the last cycle
-        # has finished would hold the replacement pod out for no reason.
-        if not running_heartbeat_count():
-            return
-        time.sleep(POLL_INTERVAL_SECONDS)
+    join_running_heartbeats()
 
 
 def main():
@@ -145,8 +126,7 @@ def main():
         if not _shutdown_requested:
             _sleep_between_ticks(POLL_INTERVAL_SECONDS)
         if _shutdown_requested:
-            _serve_while_draining()
-            join_running_heartbeats()
+            _drain_and_exit()
             log("drain complete, exiting")
             return
 
