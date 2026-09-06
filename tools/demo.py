@@ -430,7 +430,11 @@ def cmd_discard(args):
     with no row is not an error here -- `stop` says that, and this says
     what it deleted.
     """
-    registry, rev = _read_registry()
+    # The registry is read only to find the directory and to know whether
+    # there is a row to stop; `cmd_stop` takes its own read and its own
+    # revision, because the write-back is a compare-and-swap and a rev
+    # captured here would be the stale one by then.
+    registry, _rev = _read_registry()
     entry = lookup(registry, args.slug)
     directory = entry.get("dir") if entry else os.path.join(DURABLE_ROOT, args.slug)
     stopped = "was not registered"
