@@ -9230,6 +9230,37 @@
     return box;
   }
 
+  // The five levels, worst first, mirroring `PROJECT_TRL_LEVELS` in
+  // `nova_boards.py`. A duplicated list is the thing this repo keeps
+  // deleting, and it is duplicated here on purpose and only here: the
+  // payload carries the label and the count, so the page never decides
+  // what a level *means* -- this array exists to draw five dots and to
+  // say what the empty one would have been, which is a rendering fact.
+  var TRL_DOTS = 5;
+
+  function renderProjectTrl(name, payload) {
+    var rated = ((payload && payload.projectPriority) || {})[name.toLowerCase()];
+    var level = (rated && rated.trlKey) || 0;
+    var label = (rated && rated.trl) || "";
+    var row = el("div", "project-trl");
+    row.appendChild(el("span", "project-prio-label", "Readiness"));
+    var meter = el("span", "trl-meter", "");
+    // `aria-label` rather than dots alone: a dot meter is exactly the
+    // "if a reader has to know the code to know what I said" failure, so
+    // the word rides beside it on screen and inside it for a reader that
+    // cannot see it.
+    meter.setAttribute("role", "img");
+    meter.setAttribute("aria-label", label
+      ? "Readiness " + label + ", " + level + " of " + TRL_DOTS
+      : "Readiness not assessed");
+    for (var i = 1; i <= TRL_DOTS; i += 1) {
+      meter.appendChild(el("span", "trl-dot" + (i <= level ? " on" : ""), ""));
+    }
+    row.appendChild(meter);
+    row.appendChild(el("span", "project-trl-word", label || "not assessed"));
+    return row;
+  }
+
   function renderProjectPriority(name, payload) {
     var row = el("div", "project-prio");
     row.appendChild(el("span", "project-prio-label", "Project priority"));
@@ -9478,6 +9509,7 @@
       return;
     }
     feed.appendChild(renderProjectPriority(name, payload));
+    feed.appendChild(renderProjectTrl(name, payload));
     var summary = renderProjectSummary(payload);
     if (summary) feed.appendChild(summary);
     // Under the bar and above the tabs: the bar says how far along the
