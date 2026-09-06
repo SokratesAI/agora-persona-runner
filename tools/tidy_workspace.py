@@ -1402,8 +1402,14 @@ def _sweep_demos(idle_minutes=None):
         # `unopened` is the longer clock for a demo nobody has opened yet, and
         # it has to be passed explicitly: `cmd_reap` reads it off the
         # namespace, and argparse is not involved on this path.
+        # Every field `cmd_reap` reads has to be here: argparse is not
+        # involved on this path, so a new flag it does not know about is an
+        # AttributeError that the `except` below turns into one quiet line.
+        # `no_restart=False` is the point of running it from this pod -- a
+        # demo whose pod rolled gets restarted here rather than reaped.
         demo_cli.cmd_reap(argparse.Namespace(
-            idle=idle, unopened=demo_cli.DEFAULT_UNOPENED_MINUTES))
+            idle=idle, unopened=demo_cli.DEFAULT_UNOPENED_MINUTES,
+            no_restart=False))
     except Exception as e:
         print("could not sweep demos: %s -- a stale demo may still be holding "
               "a port" % (str(e)[:200],))

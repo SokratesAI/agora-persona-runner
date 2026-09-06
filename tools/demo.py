@@ -98,11 +98,20 @@ SPAWN_CHECK_SECONDS = 1.0
 #: bridge pod with plain `urllib`.
 ACTIVITY_URL = "http://nova-site.agents.svc.cluster.local:8083/api/demo/activity"
 
-#: How long a demo may go unasked-for before `reap --idle` stops it. Two
-#: hours because the thing being protected is a demo left open in a meeting
-#: that resumes after lunch, and the thing being spent is one of thirty
-#: ports. Override per call; nothing reaps on idle unless asked.
-DEFAULT_IDLE_MINUTES = 120
+#: How long a demo may go unasked-for before `reap --idle` stops it.
+#:
+#: **Two weeks, and it was two hours until the owner asked for this** --
+#: comments board 2026-09-06 12:10 (his card comment), on Cycle 1048's card: *"I want demos to
+#: love for 2 weeks."* Two hours protected a demo left open in a meeting
+#: that resumes after lunch, which is a use nobody here has ever had; what
+#: he actually does is open a link on his phone, put the phone down, and
+#: come back to it days later. The thing being spent is one of thirty
+#: ports, and `_free_port` refuses a start with a message that says which
+#: ports are held rather than serving on somebody else's -- so the cost of
+#: this being too long is a legible error and one `tools.demo discard`,
+#: while the cost of it being too short is the dead link he complained
+#: about. Override per call; nothing reaps on idle unless asked.
+DEFAULT_IDLE_MINUTES = 14 * 24 * 60
 
 #: The same clock for a demo nobody has opened *yet*. Twelve hours because
 #: the thing being protected is a link handed over while the owner is
@@ -124,7 +133,13 @@ DEFAULT_IDLE_MINUTES = 120
 #: compare-and-swap to a cycle allocating a port. Both land on the long
 #: clock, which is the safe direction: the cost is one of thirty ports, and
 #: the other error is a dead link in the owner's hand.
-DEFAULT_UNOPENED_MINUTES = 1080
+#: **Also two weeks now, for the same ask.** The eighteen hours below was
+#: derived to cross one night, because that was the whole question when a
+#: demo could not survive a pod roll anyway. It can now -- `_relaunch`
+#: below restarts one -- so the two clocks answer the same question again
+#: and there is no longer a reason for them to differ. The reasoning above
+#: is kept because it is the measurement, not the number.
+DEFAULT_UNOPENED_MINUTES = 14 * 24 * 60
 
 
 def fetch_activity(url=ACTIVITY_URL, timeout=10):
@@ -496,15 +511,73 @@ def cmd_list(args):
     return 0
 
 
+def _relaunch(entry, here):
+    """Start this demo's recorded command again in *this* pod. `(ok, note)`.
+
+    A demo's dev server dies with the pod it was spawned in, but nothing
+    else about it does: `/data/workspace/demos/<slug>` is on a volume that
+    survives the roll, and the registry row carries the command and the
+    port. So the recovery is a spawn here, not a reach into a pod that no
+    longer exists.
+
+    **It rewrites `host` before `pid`, and both or neither.** A pid is only
+    meaningful inside the pod that created it -- `nova_demos.verdict` has
+    the reproduction -- so a row carrying this pod's new pid beside the dead
+    pod's address is the exact state that makes `stop` signal an unrelated
+    process group. The caller writes the registry after this returns.
+
+    `opened_at` and `started_at` are deliberately untouched. The demo is the
+    same demo and the owner's clock should not restart because I redeployed;
+    resetting `started_at` here would hand every rolled demo a fresh
+    fourteen days, which is the bug this whole file keeps re-learning in
+    other shapes.
+    """
+    directory = entry.get("dir")
+    command = entry.get("command")
+    if not directory or not os.path.isdir(directory):
+        return False, "its directory is gone"
+    if not command:
+        return False, "no command was recorded for it"
+    log_path = os.path.join(tempfile.gettempdir(), "demo-%s.log" % entry["slug"])
+    try:
+        with open(log_path, "ab") as logfh:
+            proc = subprocess.Popen(
+                shlex.split(command), cwd=directory,
+                stdout=logfh, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, start_new_session=True,
+                env={**os.environ, "PORT": str(entry.get("port"))},
+            )
+    except OSError as e:
+        return False, "could not run %r: %s" % (command, e)
+    # Same check `start` makes, and for the same reason: a dev server that
+    # dies on startup would otherwise leave a row claiming to serve a URL
+    # that 502s, with the evidence in a temp log nobody knows to open.
+    time.sleep(SPAWN_CHECK_SECONDS)
+    if proc.poll() is not None:
+        return False, "%r exited %s immediately" % (command, proc.returncode)
+    entry["host"] = here
+    entry["pid"] = proc.pid
+    entry["log"] = log_path
+    return True, "the pod it ran in rolled; restarted here as pid %d" % proc.pid
+
+
 def cmd_reap(args):
     """Drop every row whose demo is gone, and free its port.
 
     Idea #136 asks that a demo survive the owner's deploys and stop itself
-    when nobody is looking. It cannot survive a roll -- the dev server dies
-    with the pod, and this pod cannot restart a process in a pod that no
-    longer exists -- so the honest half is that the registry stops claiming
-    it did. Nothing else in this loop ever ran `stop` for a demo whose pod
-    had rolled, which is why one row held port 5174 for two days.
+    when nobody is looking. **The first half is real now**: a row whose pod
+    has rolled is *restarted here* rather than dropped -- see `_relaunch`
+    -- and only a row this pod cannot revive is reaped. That is what makes
+    the two-week clocks above mean anything; the bridge pod rolled twice in
+    the four hours before I wrote this, so a constant on its own would have
+    delivered a demo that still died the same afternoon while the number
+    said fourteen days.
+
+    This docstring said the opposite until Cycle 1052 -- *"this pod cannot
+    restart a process in a pod that no longer exists"* -- which is true and
+    was never the question. The demo's files live on `/data/workspace`, a
+    volume that outlives every pod, and the row already records the exact
+    command and directory. Nothing had to reach into the dead pod.
 
     It leaves a `STARTING` row alone -- `verdict` has the reproduction.
 
@@ -523,6 +596,18 @@ def cmd_reap(args):
     """
     registry, rev = _read_registry()
     here = pod_ip()
+    # Revive before judging. A `POD_GONE` row is the one case where the demo
+    # is not actually gone -- only the process is -- so it gets a restart
+    # here before anything collects it, and only the ones that cannot be
+    # restarted fall through to `doomed` below.
+    revived = []
+    if not args.no_restart:
+        for demo in entries(registry):
+            if judge(demo, here) != POD_GONE:
+                continue
+            ok, note = _relaunch(demo, here)
+            if ok:
+                revived.append((demo, note))
     states = [(d, judge(d, here)) for d in entries(registry)]
     doomed = [(d, VERDICT_TEXT[v]) for d, v in states if v in REAPABLE]
     refused = []
@@ -555,8 +640,17 @@ def cmd_reap(args):
                 continue
             clock = "never opened" if waiting else "idle"
             doomed.append((demo, f"{clock} {int(age // 60)} min; {note}"))
+    if revived and not doomed:
+        # The registry still has to be written: `_relaunch` moved `host` and
+        # `pid` onto this pod in memory, and losing that write leaves a live
+        # server behind a row that reads `pod-gone` -- which is where the
+        # next sweep would restart it a second time on a port already bound.
+        _write_registry(registry, rev)
+    for demo, why in revived:
+        print(f"{demo['slug']}: {why}")
     if not doomed:
-        print("nothing to reap")
+        if not revived:
+            print("nothing to reap")
         for demo, note in refused:
             print(f"{demo['slug']}: {note}; port {demo['port']} stays registered",
                   file=sys.stderr)
@@ -799,6 +893,9 @@ def main(argv=None):
                       help=f"also stop demos nobody has asked for in this many "
                            f"minutes (default {DEFAULT_IDLE_MINUTES} when the "
                            f"flag is given with no number)")
+    reap.add_argument("--no-restart", action="store_true",
+                      help="reap a demo whose pod rolled instead of "
+                           "restarting it here")
     reap.add_argument("--unopened", type=int, default=DEFAULT_UNOPENED_MINUTES,
                       metavar="MINUTES",
                       help=f"the same clock for a demo nobody has opened yet, "
