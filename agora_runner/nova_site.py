@@ -215,7 +215,7 @@ from agora_runner.nova_conversations import (
     thread as conversation_thread,
     watching as conversation_watching,
 )
-from agora_runner.nova_chat_answers import answered_in_chat
+from agora_runner.nova_chat_answers import answered_in_chat, cycle_threads
 from agora_runner.nova_heartbeats import (
     heartbeats as heartbeat_list,
     run_now as heartbeat_run_now,
@@ -573,6 +573,45 @@ def ask_chat_payload():
         log(f"nova-site ask-chat listing failed: {e}")
         return {"cycles": []}
     return {"cycles": answered_in_chat(cycles, listing, conversation_thread)}
+
+
+def cycle_threads_payload():
+    """`/api/journal/threads` -- the cycle threads that are still live.
+
+    His idea #182: *"instead of the comment dropdown box, the conversation
+    that was created for the heartbeat opens in the conversation modal
+    instead and i ask my question there"*. The card needs one thing to do
+    that -- the conversation id for the cycle it is about -- and the site is
+    the only side that can look it up, because the listing lives in Agora.
+
+    **Most cards will not be in here and that is the design, not a gap.**
+    The conversation rotation keeps roughly thirty cycle threads alive at a
+    time, so a card older than about a day has no thread to open and keeps
+    the comment box. A comment is still the only channel that survives the
+    rotation, and it is what every later cycle reads.
+
+    One id per cycle rather than a list: `cycle_threads` returns every
+    thread that names the number because six cycles have written two
+    entries, and a button has to open exactly one. First in listing order
+    wins -- the listing is newest-message-first, so that is the thread with
+    something in it.
+
+    Cached like `/api/asks/chat`, and it fails the same way: a listing
+    Agora refuses leaves the map empty, which costs the shortcut and leaves
+    the comment box, rather than costing the feed.
+    """
+    try:
+        listing = conversation_list()
+    except Exception as e:  # noqa: BLE001 -- see docstring
+        log(f"nova-site cycle-threads listing failed: {e}")
+        return {"cycles": {}}
+    return {
+        "cycles": {
+            str(number): ids[0]
+            for number, ids in cycle_threads(listing).items()
+            if ids
+        }
+    }
 
 
 def comments_payload():
@@ -3751,6 +3790,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/asks/chat":
                 self._send_cached_json("askchat", ask_chat_payload)
+                return
+            if path == "/api/journal/threads":
+                self._send_cached_json("cyclethreads", cycle_threads_payload)
                 return
             if path == "/api/comments":
                 # Still deliberately not cached, and the reason is

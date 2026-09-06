@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, cycleThreads, cycleThreadsStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -313,6 +313,15 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
       // No default fixture beyond the empty shape, for retro and plan's
       // reason: a vault with no catalog written yet is a real state.
       return res(catalog || { services: [], doors: [], missing: true }, catalogStatus);
+    }
+    /* Before the journal fallback at the bottom, which answers anything
+     * unmatched with the journal payload: `/api/journal/threads` would
+     * otherwise be served a feed. Idea #182 -- which cycles still have a
+     * live heartbeat thread for the chat bubble to open. */
+    if (url.includes("/api/journal/threads")) {
+      const body = typeof cycleThreads === "function" ? cycleThreads(url) : cycleThreads;
+      if (body && typeof body.then === "function") return body;
+      return res(body || { cycles: {} }, cycleThreadsStatus);
     }
     /* Before the branch below, which `url.includes` would otherwise
      * swallow: `/api/asks/chat` contains `/api/ask`. Issue #165 -- which
@@ -3268,6 +3277,10 @@ describe("the page notices new entries on its own", () => {
       // `Promise.all` and an unresolved fourth leg would hold the journal
       // leg's own resolver, so the test would be waiting on itself.
       if (String(url).includes("/api/asks/chat")) return res({ cycles: [] });
+      // Same reason, and it has to come before the catch-all rather than
+      // after: `/api/journal/threads` starts with `/api/journal`, so the
+      // slow branch below would answer it and the round would never settle.
+      if (String(url).includes("/api/journal/threads")) return res({ cycles: {} });
       return new Promise((r) => { resolveJournal = () => r(res(grown('W/"slow"'))); });
     };
     window.document.dispatchEvent(new window.Event("visibilitychange"));
@@ -15549,5 +15562,76 @@ describe("the galaxy page", () => {
     assert.ok(canvas, "no canvas on the galaxy page");
     assert.equal(canvas.getAttribute("role"), "img");
     assert.match(canvas.getAttribute("aria-label"), /2 sessions are working/);
+  });
+});
+
+/* Idea #182: the chat bubble opens the cycle's own thread while it is alive.
+ *
+ * His words: *"instead of the comment dropdown box, the conversation that was
+ * created for the heartbeat opens in the conversation modal instead and i ask
+ * my question there"*. The ask reached him as a push notification from that
+ * thread, so answering it in the thread is one tap instead of two channels.
+ *
+ * Agora keeps about thirty cycle threads alive, so the shortcut covers about
+ * the last day of cards and every older card keeps the comment box. That is
+ * why the fallback below is a test and not a footnote: it is the common case,
+ * not the edge one.
+ */
+describe("the chat bubble opens the cycle's thread (idea #182)", () => {
+  const cardFor = (w, cycle) =>
+    cards(w).find((c) => c.querySelector("h2").textContent === "Cycle " + cycle);
+  const bubble = (card) => card.querySelector(".comment-toggle");
+  const onConversation = (w) => !!w.document.querySelector(".conv-back");
+
+  test("a card whose cycle still has a thread opens it instead of the drawer", async () => {
+    const window = await loadSite("/", { cycleThreads: { cycles: { 57: "conv-57" } } });
+    const card = cardFor(window, 57);
+    assert.ok(bubble(card), "the card has a chat bubble to tap");
+    assert.equal(onConversation(window), false, "the feed is showing, not a thread");
+    click(window, bubble(card));
+    assert.ok(onConversation(window), "tapping the bubble opened the conversation");
+    assert.equal(window.document.querySelector(".comment-drawer.is-open"), null,
+      "the comment drawer did not open as well");
+  });
+
+  test("it opens the thread the map named, not just any thread", async () => {
+    /* Without this the test above passes on a build that opens a hardcoded
+     * conversation, or the first one in the listing. */
+    const asked = [];
+    const window = await loadSite("/", {
+      cycleThreads: { cycles: { 57: "conv-57" } },
+      convThread: (url) => {
+        asked.push(url);
+        return { conversationId: "conv-57", messages: [], waiting: false };
+      },
+    });
+    click(window, bubble(cardFor(window, 57)));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.ok(asked.length, "it fetched a thread");
+    assert.ok(String(asked[0]).includes("conv-57"),
+      "it fetched conv-57, got " + asked.join(", "));
+  });
+
+  test("a card with no live thread still opens the comment box", async () => {
+    /* The common case: the rotation drops a thread after about a day, and
+     * comments are the only channel that outlives it. The precondition is
+     * asserted -- cycle 57 does get the shortcut in this same window -- so
+     * "the drawer opened" is not passing because the whole feature is off. */
+    const window = await loadSite("/", { cycleThreads: { cycles: { 57: "conv-57" } } });
+    click(window, bubble(cardFor(window, 55)));
+    assert.equal(onConversation(window), false, "cycle 55 has no thread to open");
+    assert.ok(cardFor(window, 55).classList.contains("is-commenting"),
+      "the comment drawer opened instead");
+  });
+
+  test("an unreachable thread map leaves every bubble on the comment box", async () => {
+    /* The failure direction. A listing Agora refuses must cost the shortcut,
+     * never the button -- the comment box is what worked before this existed. */
+    const window = await loadSite("/", {
+      cycleThreads: () => Promise.reject(new Error("network")),
+    });
+    click(window, bubble(cardFor(window, 57)));
+    assert.equal(onConversation(window), false);
+    assert.ok(cardFor(window, 57).classList.contains("is-commenting"));
   });
 });

@@ -1634,6 +1634,33 @@
     chatAnsweredCycles = next;
   }
 
+  /* The live heartbeat thread for a cycle, as `{ "1075": "<conv id>" }`.
+   *
+   * His idea #182: *"instead of the comment dropdown box, the conversation
+   * that was created for the heartbeat opens ... and i ask my question
+   * there"*. The chat bubble on a journal card opens that thread when this
+   * map has one, and falls back to the comment drawer when it does not.
+   *
+   * It is nearly always empty for an old card, on purpose: Agora keeps
+   * about thirty cycle threads alive, so the shortcut covers roughly the
+   * last day of cards and everything older keeps the box. Same tolerance as
+   * `/api/asks/chat` -- a read that fails leaves this empty, which costs
+   * the shortcut and never the comment. */
+  var cycleThreadIds = {};
+
+  function setCycleThreads(payload) {
+    cycleThreadIds = (payload && payload.cycles) || {};
+  }
+
+  /* The conversation id to open for this card, or "" for none. Entries with
+   * no cycle number -- a retrospective is written by its own heartbeat --
+   * have no thread by construction, and `String(undefined)` would otherwise
+   * look one up under the key "undefined". */
+  function threadForCycle(cycle) {
+    if (cycle === null || cycle === undefined) return "";
+    return cycleThreadIds[String(cycle)] || "";
+  }
+
   /* Whether this card's ask has an answer anywhere -- a comment on the
    * card, or a message from him in the cycle's thread. One function so the
    * header count and the `/asks` feed can never disagree about it. */
@@ -2946,6 +2973,17 @@
        * this and the drawer below return before the collapse at the end,
        * for the same reason the journal toggle does. */
       if (commenting && event.target.closest(".comment-toggle")) {
+        /* idea #182: while the cycle's own thread is still alive, the
+         * bubble opens it rather than the comment box -- that is where the
+         * ask reached him, on the push notification, and it is where the
+         * running cycle can answer him back. Older cards fall through to
+         * the drawer, which is the only channel that outlives the thread
+         * rotation and the only one a later cycle reads. */
+        var thread = threadForCycle(entry.cycle);
+        if (thread) {
+          openConversationById(thread);
+          return;
+        }
         setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true", true);
         return;
       }
@@ -3458,6 +3496,11 @@
       if (event.target.closest("a")) return;
       if (event.target.closest(".comment-drawer")) return;
       if (event.target.closest(".comment-toggle")) {
+        // idea #182, the same rule as the feed card: the live thread if
+        // there is one, the comment box otherwise. This page is where a
+        // push notification lands, so it is the likelier of the two.
+        var thread = threadForCycle(cycleNumber);
+        if (thread) return openConversationById(thread);
         setCommentsOpen(commenting.toggle.getAttribute("aria-expanded") !== "true", true);
       }
     });
@@ -4242,6 +4285,11 @@
        * server an Agora round trip per open ask, so a slow or failing
        * Agora must cost the badge, never the feed. */
       fetchVersioned("/api/asks/chat", "askchat").catch(function () { return null; }),
+      /* Which cycles still have a live heartbeat thread (idea #182), so the
+       * chat bubble can open the thread instead of the comment box. Same
+       * tolerance again: this is a shortcut on a button that already works,
+       * so a failing Agora must cost the shortcut and nothing else. */
+      fetchVersioned("/api/journal/threads", "cyclethreads").catch(function () { return null; }),
     ]);
   }
 
@@ -12318,6 +12366,7 @@
         // on Journal must not land after this one.
         if (route(window.location.pathname).view !== "journal") return;
         setChatAnswered(results[3]);
+        setCycleThreads(results[4]);
         render(results[0], results[1], results[2]);
       })
       .catch(function (err) {
@@ -12437,6 +12486,7 @@
         // in chat", and stringifying the two payloads would call that a
         // change on every poll that failed.
         setChatAnswered(results[3]);
+        setCycleThreads(results[4]);
         var chat = JSON.stringify(chatAnsweredCycles);
         // Normalised the same way `render` stores it. A payload with no
         // `version` at all -- an older server, or the tailnet serving the
