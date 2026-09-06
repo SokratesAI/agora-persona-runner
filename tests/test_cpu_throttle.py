@@ -132,3 +132,102 @@ def test_deltas_drops_a_row_whose_throttled_counter_alone_went_backwards():
     before = {("a", "p", "c"): {"periods": 1000.0, "throttled": 900.0}}
     after = {("a", "p", "c"): {"periods": 2000.0, "throttled": 5.0}}
     assert ct.deltas(before, after) == {}
+
+
+def test_combine_sums_the_windows_and_keeps_each_one():
+    a = {("a", "p", "c"): (1000.0, 33.0)}
+    b = {("a", "p", "c"): (1000.0, 990.0)}
+    totals, series = ct.combine([a, b])
+    assert totals == {("a", "p", "c"): (2000.0, 1023.0)}
+    assert series == {("a", "p", "c"): [(1000.0, 33.0), (1000.0, 990.0)]}
+
+
+def test_combine_rates_a_container_on_the_windows_it_was_present_for():
+    # It restarted, so `deltas` dropped it from the second window.
+    a = {("a", "p", "c"): (1000.0, 500.0), ("a", "q", "d"): (800.0, 0.0)}
+    b = {("a", "q", "d"): (800.0, 8.0)}
+    totals, series = ct.combine([a, b])
+    assert totals[("a", "p", "c")] == (1000.0, 500.0)
+    assert len(series[("a", "p", "c")]) == 1
+    assert len(series[("a", "q", "d")]) == 2
+
+
+def test_several_windows_print_each_ratio_and_the_range_under_the_verdict():
+    # couchdb's real swing: 3.3% at 14:41 Oslo and 100.0% at 14:54.
+    key = ("obsidian", "couchdb-1", "couchdb")
+    samples = [{key: (1000.0, 33.0)}, {key: (1000.0, 1000.0)}]
+    rows, series = ct.combine(samples)
+    lines, code = ct.judge(rows, 40.0, series=series)
+    assert code == 2  # 51.65% over the pair
+    spread = [ln for ln in lines if "over 2 sample(s)" in ln]
+    assert len(spread) == 1
+    assert "3.3%" in spread[0] and "100.0%" in spread[0]
+    assert "3.3% to 100.0%" in spread[0]
+
+
+def test_one_window_prints_no_spread_because_there_is_nothing_to_compare():
+    key = ("a", "p", "c")
+    one = [{key: (1000.0, 900.0)}]
+    rows, series = ct.combine(one)
+    lines, _ = ct.judge(rows, 20.0, series=series)
+    assert not any("sample(s):" in ln for ln in lines)
+    # The precondition: the same container with a second window does print one,
+    # so the assertion above is about the sample count and not about the row.
+    two = one + [{key: (1000.0, 900.0)}]
+    rows2, series2 = ct.combine(two)
+    lines2, _ = ct.judge(rows2, 40.0, series=series2)
+    assert any("over 2 sample(s):" in ln for ln in lines2)
+
+
+def test_a_window_too_quiet_to_rate_is_counted_rather_than_given_a_percentage():
+    key = ("a", "p", "c")
+    samples = [{key: (1000.0, 900.0)}, {key: (3.0, 1.0)}]
+    rows, series = ct.combine(samples)
+    lines, _ = ct.judge(rows, 40.0, series=series)
+    spread = [ln for ln in lines if "over 2 sample(s)" in ln][0]
+    assert "33.3%" not in spread
+    assert "1 too quiet to rate" in spread
+
+
+def test_a_total_worth_rating_over_windows_that_are_not_says_so():
+    key = ("a", "p", "c")
+    samples = [{key: (40.0, 39.0)} for _ in range(4)]
+    rows, series = ct.combine(samples)
+    lines, code = ct.judge(rows, 80.0, series=series)
+    assert code == 2  # 160 periods in total, over the floor
+    spread = [ln for ln in lines if "over 4 sample(s)" in ln][0]
+    assert "the spread is not" in spread
+    assert "%" not in spread.split("sample(s):")[1].split("period(s)")[0]
+
+
+def test_each_window_is_measured_from_the_one_before_it_not_from_the_start(monkeypatch):
+    """The sampling loop must advance its baseline, or every window is cumulative.
+
+    Cumulative ratios are the trap the module docstring opens with: a container
+    that was throttled once looks throttled forever, because the counters run
+    from container start. Holding the first scrape as the baseline for all of
+    them reintroduces it one level down, inside the loop that was added to
+    escape it.
+    """
+    key = ("a", "p", "c")
+    scrapes = [
+        {key: {"periods": 0.0, "throttled": 0.0}},
+        {key: {"periods": 1000.0, "throttled": 20.0}},
+        {key: {"periods": 2000.0, "throttled": 20.0}},
+        {key: {"periods": 3000.0, "throttled": 1000.0}},
+    ]
+    taken = iter(scrapes)
+    monkeypatch.setattr(ct, "node_names", lambda: (["n1"], None))
+    monkeypatch.setattr(ct, "_scrape_all", lambda nodes: (next(taken), []))
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    code = ct.main(["--samples", "3", "--window", "0"])
+
+    out = "\n".join(printed)
+    # 1000 of 3000 periods over the three windows, so under the raising line,
+    # and the last window is the spike the total alone cannot show.
+    assert code == 0
+    assert "33.3%" in out
+    assert "2.0% 0.0% 98.0%" in out
