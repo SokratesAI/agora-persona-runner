@@ -324,3 +324,52 @@ def test_the_live_heartbeats_and_post_resolve_in_stall_notice():
 
     assert callable(stall_notice._live_heartbeats)
     assert callable(stall_notice._live_post)
+
+
+# --- the check says it ran, even when it finds nothing -------------------
+
+
+def _lines(monkeypatch):
+    """Everything `tick` logs, so a quiet check can be told from no check."""
+    written = []
+    monkeypatch.setattr(reply_notice, "log", written.append)
+    return written
+
+
+def test_a_check_that_finds_nothing_still_says_it_ran(monkeypatch):
+    written = _lines(monkeypatch)
+    post = Recorder()
+    watch = _watch([_conversation("Cycle 724", 120, ident="c724")],
+                   {"c724": {"messages": [_reply("here is your answer")]}},
+                   post)
+    assert _run(watch) == 0
+    # The precondition: this is the quiet path, so nothing else would have
+    # written a line and the assertion below is not passing for free.
+    assert post.sent == []
+    assert len(written) == 1
+    assert "checked 1 thread(s) in window" in written[0]
+    assert "0 silent" in written[0]
+
+
+def test_an_empty_listing_is_logged_as_nothing_judged(monkeypatch):
+    # The failure mode left after the `conversation_list` ImportError: a
+    # listing that comes back empty raises nothing, posts nothing, and used
+    # to log nothing, so it read exactly like a morning with no silent cycle.
+    written = _lines(monkeypatch)
+    post = Recorder()
+    watch = _watch([], {}, post)
+    assert _run(watch) == 0
+    assert post.sent == []
+    assert len(written) == 1
+    assert "checked 0 thread(s) in window" in written[0]
+
+
+def test_a_check_that_never_ran_logs_nothing(monkeypatch):
+    # The other half of the same claim: the line is only written by a check
+    # that actually completed, so its presence means the watch is alive.
+    written = _lines(monkeypatch)
+    watch = _watch([_conversation("Cycle 724", 120, ident="c724")],
+                   {"c724": {"messages": [_reply("answered")]}}, Recorder())
+    watch.tick(now=0.0)
+    watch.tick(now=1.0)
+    assert written == []

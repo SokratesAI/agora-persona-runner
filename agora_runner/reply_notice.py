@@ -164,6 +164,20 @@ class ReplyWatch:
                 window_hours=self._window_hours)
             for note in found.notes:
                 log(f"reply notice: could not read {note}")
+            # One line per completed check, whether or not anything was
+            # found. Without it a check that ran and saw nothing is
+            # byte-identical in the log to a check that never ran -- which is
+            # exactly how the `conversation_list` ImportError below stayed
+            # invisible for six days, and that at least logged something.
+            # The counts are `Silences`' own and are not decoration: `judged`
+            # is what separates "every cycle spoke" from "the listing came
+            # back empty", and an empty listing raises nothing at all, so it
+            # is the next way this watch can go quiet without failing.
+            log(f"reply notice: checked {found.judged} thread(s) in window, "
+                f"{found.live} still inside the {self._grace_minutes}m grace, "
+                f"{found.old} older than {self._window_hours}h, "
+                f"{found.unreadable} unreadable, "
+                f"{len(found.silent)} silent")
             pending = due(found.silent, self._announced)
             if not pending:
                 return 0
