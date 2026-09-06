@@ -389,6 +389,36 @@ def test_ranked_cards_come_off_the_fenced_blocks():
     assert roadmap["ranked"][0]["board"] == "idea #73"
 
 
+def test_a_ranked_card_carries_its_board_reference_as_a_link():
+    """Issue #96: the row a card came from is a page in this app, not text.
+
+    The plain `board` string stays -- `tools.roadmap_drift` reads it -- and
+    the spans are the second copy the page renders. The href is built here
+    so nothing in the browser ever parses a number out of the text.
+    """
+    roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
+    assert roadmap["ranked"][0]["boardSpans"] == [
+        {"kind": "link", "text": "idea #73", "url": "/ideas#73"},
+    ]
+    # `issues #89, #91` is the case the journal footer's parser was written
+    # for and it must not mean something new here: the written-out reference
+    # links, and the bare `#91` after it stays plain text, because a bare
+    # number could be either board and the two are different pages.
+    both = _doc(plan_payload({"roadmap": RANKED}), "roadmap")["rankedDone"][1]
+    assert both["boardSpans"] == [
+        {"kind": "link", "text": "issues #89", "url": "/issues#89"},
+        {"kind": "text", "text": ", #91"},
+    ]
+
+
+def test_a_card_with_no_board_reference_gets_no_spans():
+    """A `board:` line the file does not carry must not invent an empty link."""
+    no_board = RANKED.replace("board: idea #73\n", "")
+    card = _doc(plan_payload({"roadmap": no_board}), "roadmap")["ranked"][0]
+    assert card["board"] == ""
+    assert card["boardSpans"] == []
+
+
 def test_a_status_always_carries_its_word_and_an_unknown_one_carries_neither():
     roadmap = _doc(plan_payload({"roadmap": RANKED}), "roadmap")
     assert roadmap["ranked"][0]["statusLabel"] == "In progress"

@@ -50,7 +50,7 @@ import re
 
 from agora_runner.md_sections import outline
 from agora_runner.nova_goal_history import GoalHistoryError, goal_key, series
-from agora_runner.nova_journal import render_blocks
+from agora_runner.nova_journal import parse_board_refs, render_blocks
 
 ROADMAP_PATH = "projects/sokrates/projects/nova/roadmap.md"
 GOALS_PATH = "projects/sokrates/projects/nova/goals.md"
@@ -307,6 +307,14 @@ def _next(lines):
         "title": row["title"],
         "claim": row.get("claim", ""),
         "board": row.get("board", ""),
+        # The same field twice, and the plain string is not redundant:
+        # `tools.roadmap_drift` reads `board` to check each block against the
+        # live boards, and it wants the text, not spans. The page wants the
+        # spans, because `issue #131` on a card is a row the owner can open
+        # and could not tap. `parse_board_refs` is the journal footer's own
+        # parser -- a `Board:` reference means the same thing here as it does
+        # on a journal card, so it must not grow a second spelling.
+        "boardSpans": parse_board_refs(row.get("board", "")),
         "statusSymbol": symbol,
         "statusLabel": label,
         "finished": status in _FINISHED_STATUSES,
