@@ -1256,6 +1256,34 @@ def test_only_a_browser_counts_as_somebody_opening_a_demo():
         assert opened_by_a_person(probe) is False, probe
 
 
+def test_my_own_headless_chromium_does_not_count_as_somebody_opening_a_demo():
+    """The proof-it-works fetch is a real browser now, and it still must not
+    count.
+
+    `prompt.md` asks a cycle to drive its own demo in phone-sized Chromium
+    before handing the link over -- an HTML file that loads says nothing
+    about the JavaScript. The string below is the live `navigator.userAgent`
+    of the browser `tools.see_page` launches, read off it on 2026-09-06, and
+    every token in it says browser. Nothing in the `Mozilla` test could tell
+    it from the phone.
+    """
+    from agora_runner.nova_demos import opened_by_a_person
+
+    see_page_chromium = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) HeadlessChrome/131.0.6778.33 Safari/537.36")
+    # The precondition: this really is the string the old rule accepted, so a
+    # future edit that stops it being a `Mozilla` agent cannot make this test
+    # pass for the wrong reason.
+    assert "Mozilla" in see_page_chromium
+    assert opened_by_a_person(see_page_chromium) is False
+
+    # A person's Chromium on a desktop differs from it in exactly one token,
+    # and it still counts.
+    assert opened_by_a_person(see_page_chromium.replace(
+        "HeadlessChrome", "Chrome")) is True
+
+
 def test_list_says_which_clock_a_row_is_on():
     """`cmd_list`'s two messages mean opposite things to whoever reads them,
     and nothing pinned which one a row gets."""
