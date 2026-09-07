@@ -17,14 +17,24 @@ from agora_runner.nova_site import PAGE_ROUTES
 from tools import see_page
 
 
-def _root(tmp_path, *, fonts=True, libdirs=True, browsers=True):
+def _root(tmp_path, *, fonts=True, libdirs=True, browsers=True, playwright=True):
+    """A browser root as `bootstrap.sh` leaves it, minus whatever is switched off.
+
+    `browsers` builds the chromium directory inside it, not just the parent:
+    the real bootstrap creates `browsers/` before it downloads anything, so a
+    root with an empty one is a rebuild that died halfway rather than a
+    finished environment.
+    """
     if libdirs:
         (tmp_path / "libdirs.txt").write_text("/sysroot/lib:/sysroot/usr/lib\n")
     if fonts:
         (tmp_path / "fontconf").mkdir()
         (tmp_path / "fontconf" / "fonts.conf").write_text("<fontconfig/>")
+    (tmp_path / "browsers").mkdir()
     if browsers:
-        (tmp_path / "browsers").mkdir()
+        (tmp_path / "browsers" / "chromium-1148").mkdir()
+    if playwright:
+        (tmp_path / "node_modules" / "playwright-core").mkdir(parents=True)
     return tmp_path
 
 
@@ -79,13 +89,74 @@ def test_render_env_carries_every_load_bearing_variable(tmp_path):
     assert env["PLAYWRIGHT_BROWSERS_PATH"] == str(tmp_path / "browsers")
 
 
-@pytest.mark.parametrize("missing", ["fonts", "libdirs", "browsers"])
+@pytest.mark.parametrize("missing", ["fonts", "libdirs", "browsers", "playwright"])
 def test_a_half_built_sysroot_says_how_to_build_it(tmp_path, missing):
     """Missing fonts must fail loudly here rather than silently render nothing."""
     root = _root(tmp_path, **{missing: False})
     with pytest.raises(see_page.BrowserMissing) as exc:
         see_page.render_env(root)
     assert "bootstrap.sh" in str(exc.value)
+
+
+def test_a_complete_root_is_missing_nothing(tmp_path):
+    """The negative above is only evidence if the positive can happen."""
+    assert see_page.missing_pieces(_root(tmp_path)) == []
+
+
+@pytest.mark.parametrize(
+    "missing,names",
+    [
+        ("libdirs", "libdirs.txt"),
+        ("fonts", "fonts.conf"),
+        ("browsers", "chromium"),
+        ("playwright", "playwright-core"),
+    ],
+)
+def test_the_message_names_the_piece_that_is_gone(tmp_path, missing, names):
+    """A cycle reading this has no memory of building the environment.
+
+    Before Cycle 1160 every incomplete root produced the same sentence, so the
+    hint told a reader to run a three-minute rebuild without saying which of
+    its five steps had not finished.
+    """
+    with pytest.raises(see_page.BrowserMissing) as exc:
+        see_page.render_env(_root(tmp_path, **{missing: False}))
+    assert names in str(exc.value)
+
+
+def test_playwright_core_is_checked_because_shot_js_requires_it(tmp_path):
+    """The exact hole measured Cycle 1160, and it is not hypothetical.
+
+    `shot.js` runs with `cwd=root`, so its `require('playwright-core')`
+    resolves out of the root's own `node_modules`. A root without one passed
+    every check here, launched node, and came back with a module-resolution
+    stack trace that named neither the environment nor `bootstrap.sh`.
+    """
+    shot = (pathlib.Path(see_page.__file__).parent / "browser" / "shot.js").read_text()
+    assert "require('playwright-core')" in shot
+    assert see_page.missing_pieces(_root(tmp_path, playwright=False)) != []
+
+
+def test_a_root_that_does_not_exist_at_all_names_all_four(tmp_path):
+    """The volume-is-gone case idea #248 is named for.
+
+    `browsers/` is absent rather than empty here, so the chromium check globs a
+    directory that is not there -- which yields nothing rather than raising, and
+    a raise would come out as something other than `BrowserMissing`.
+    """
+    gone = see_page.missing_pieces(tmp_path / "nothing-here")
+    assert len(gone) == 4
+
+
+def test_an_empty_browsers_directory_is_not_a_downloaded_chromium(tmp_path):
+    """`bootstrap.sh` step 1 creates the directory before it downloads into it.
+
+    So `browsers/` existing is what a rebuild interrupted at its first step
+    looks like, not what a finished one looks like.
+    """
+    root = _root(tmp_path, browsers=False)
+    assert (root / "browsers").is_dir()
+    assert any("chromium" in line for line in see_page.missing_pieces(root))
 
 
 def test_shot_name_matches_what_shot_js_writes():
