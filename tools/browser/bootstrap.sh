@@ -4,7 +4,10 @@
 # no apt lists, no X/GTK libraries and no fonts. Each of those is solvable without root.
 # Takes ~3 minutes and ~1.5GB under /data/workspace/nova-browser (which survives cycles).
 set -euo pipefail
-R=/data/workspace/nova-browser
+# `tools.see_page` reads NOVA_BROWSER_ROOT and falls back to this same path, so
+# the builder and the consumer cannot disagree about where the environment is.
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+R=${NOVA_BROWSER_ROOT:-/data/workspace/nova-browser}
 mkdir -p "$R"; cd "$R"
 
 # 1. playwright-core + the chromium build it pins
@@ -49,11 +52,16 @@ sed "s|<dir>/usr/share/fonts</dir>|<dir>$R/sysroot/usr/share/fonts</dir>|" \
   sysroot/etc/fonts/fonts.conf > fontconf/fonts.conf
 
 # 5. verify, don't assume: a run that renders no text must fail loudly.
-./run.sh / > /tmp/nova-browser-verify.json
-python3 - <<'PY'
-import json,sys
-r=json.load(open('/tmp/nova-browser-verify.json'))
-assert r['status']==200, r
-assert r['textLen']>500, f"page rendered {r['textLen']} chars of text — fonts are probably missing"
-print("OK", r['textLen'], "chars,", len(r['consoleErrors']), "console errors")
-PY
+#    The verification is `tools.see_page` because that is the consumer -- it
+#    builds its environment out of exactly the three things steps 1-4 lay down
+#    (browsers/, libdirs.txt, fontconf/fonts.conf) and refuses a page that laid
+#    out and drew no text, which is what a missing font looks like.
+#
+#    This step used to call `./run.sh`, and no such file has ever existed in
+#    this repo or in the built directory -- measured cycle 1130, exit 127. So
+#    under `set -e` the one step that says "verify, don't assume" took the whole
+#    rebuild down with it, after three minutes and 1.2GB of downloads, and the
+#    script that was supposed to make this environment reproducible could not
+#    reach its own last line. Anything invoked here must live in the repo.
+cd "$REPO"
+NOVA_BROWSER_ROOT="$R" python3 -m tools.see_page /
