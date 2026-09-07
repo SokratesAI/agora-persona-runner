@@ -308,6 +308,29 @@ STATIC_ROUTES = {
     "/vendor/mermaid.min.js": os.path.join("vendor", "mermaid.min.js"),
 }
 
+# The files an already-open tab is *running*. `_send_static` hashes these
+# into the copy of `/sw.js` it serves, and that stamp is the only reason
+# the "a new version of Nova is ready" banner can ever fire.
+#
+# The browser decides whether to install a new service worker by
+# byte-comparing the script it just fetched against the installed one.
+# `sw.js` is served straight off disk and its `CACHE` name is a constant,
+# so a deploy that changes only `app.js` ships a byte-identical worker:
+# nothing installs, `controllerchange` never fires, and the banner
+# runner#876 added is inert on every deploy that does not happen to edit
+# `sw.js` itself -- which is nearly all of them.
+#
+# Why these four and not `STATIC_ROUTES` entire. The banner tells him a
+# reload will get him a newer app, so the honest trigger is a change to
+# what a stale tab already has in memory: the shell, its script, its
+# stylesheet, and the worker's own source. `/vendor/mermaid.min.js` is
+# lazily fetched and never precached, so a bump there changes nothing a
+# reload would fix, and `/vendor/echarts.min.js` is 1.0 MB that would be
+# rehashed on every foreground return for a library that moves once a
+# year. Being a content hash rather than a timestamp is what keeps a pod
+# restart silent: identical files, identical stamp, no banner.
+SW_BUILD_INPUTS = ("index.html", "app.js", "style.css", "sw.js")
+
 # The page routes the server answers with the SPA shell. A module
 # constant rather than a literal inside `do_GET` because `site_check`
 # reads it: a smoke check that hand-copies this list stops testing the
@@ -3634,6 +3657,41 @@ def _int_param(query, name, default):
     return value if value >= 0 else default
 
 
+def _stamp_worker(body, public_dir=None):
+    """Append a build stamp to `/sw.js` so a deploy is installable.
+
+    A service worker is replaced only when the bytes the browser fetches
+    differ from the bytes it installed. Everything else here is served
+    off disk unchanged, so before this the worker was byte-identical
+    across any deploy that did not edit `sw.js`, and the update banner
+    could not fire. The stamp is a hash of `SW_BUILD_INPUTS`, so it moves
+    when the app moves and stands still when it does not -- a pod restart
+    or a second replica serves the same bytes as the first.
+
+    Appended as a trailing comment rather than substituted into the file,
+    because a placeholder in `sw.js` would be a second thing to keep in
+    step and a `replace` that silently does nothing when it drifts. A
+    comment is valid wherever it lands and cannot change what the worker
+    does.
+
+    A file that cannot be read contributes its name and nothing else.
+    Refusing to serve the worker because the stylesheet is missing would
+    take the whole app offline over a stamp; a missing file is also a
+    real difference from a build where it was present, so its absence
+    still moves the hash.
+    """
+    root = public_dir or PUBLIC_DIR
+    digest = hashlib.sha256()
+    for name in SW_BUILD_INPUTS:
+        digest.update(name.encode("utf-8"))
+        try:
+            with open(os.path.join(root, name), "rb") as handle:
+                digest.update(handle.read())
+        except OSError:
+            pass
+    return body + b"\n/* build " + digest.hexdigest()[:16].encode("ascii") + b" */\n"
+
+
 class NovaSiteHandler(BaseHTTPRequestHandler):
     server_version = "nova-site"
 
@@ -3837,6 +3895,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         except OSError:
             self._send_json(404, {"error": "not found"})
             return
+        if filename == "sw.js":
+            body = _stamp_worker(body)
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         if content_type.startswith("text/") or filename.endswith((".js", ".webmanifest")):
             content_type += "; charset=utf-8"

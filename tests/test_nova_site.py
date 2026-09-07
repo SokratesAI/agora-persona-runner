@@ -19,6 +19,7 @@ tests/conftest.py blocks `socket.connect` outright, deliberately.
 """
 
 import ast
+import hashlib
 import gzip
 import importlib
 import inspect
@@ -5881,3 +5882,142 @@ def test_the_throttle_counter_is_read_not_guessed(tmp_path):
     assert nova_site.cgroup_throttle(str(stat)) is None, \
         "a file with no throttled_usec is unmeasured, not unthrottled"
     assert nova_site.cgroup_throttle(str(tmp_path / "absent")) is None
+
+
+# --- The update banner needs `/sw.js` to change when the app changes -----
+#
+# runner#876 shipped "A new version of Nova is ready": `app.js` listens for
+# `controllerchange`, which fires when a newly installed service worker
+# claims the page. The browser only installs a new worker when the script
+# it fetches differs byte for byte from the one it has. `sw.js` is served
+# off disk and its `CACHE` name is a constant, so before the build stamp a
+# deploy that changed only `app.js` shipped an identical worker and the
+# banner could never fire.
+
+
+def _shell_files(root):
+    root.mkdir(parents=True, exist_ok=True)
+    for name in nova_site.SW_BUILD_INPUTS:
+        (root / name).write_bytes(b"original " + name.encode())
+    return root
+
+
+def test_worker_stamp_moves_when_app_js_moves(tmp_path):
+    root = _shell_files(tmp_path / "public")
+    before = nova_site._stamp_worker(b"var CACHE = 1;", public_dir=str(root))
+    (root / "app.js").write_bytes(b"a different build of app.js")
+    after = nova_site._stamp_worker(b"var CACHE = 1;", public_dir=str(root))
+    assert before != after
+
+
+def test_worker_stamp_moves_when_the_stylesheet_moves(tmp_path):
+    """style.css and index.html are separately in the hash.
+
+    A stamp built from `app.js` alone would leave a CSS-only or
+    markup-only deploy silent, which is the same defect one file
+    narrower.
+    """
+    root = _shell_files(tmp_path / "public")
+    before = nova_site._stamp_worker(b"x", public_dir=str(root))
+    (root / "style.css").write_bytes(b"restyled")
+    middle = nova_site._stamp_worker(b"x", public_dir=str(root))
+    (root / "index.html").write_bytes(b"remarked-up")
+    after = nova_site._stamp_worker(b"x", public_dir=str(root))
+    assert len({before, middle, after}) == 3
+
+
+def test_worker_stamp_stands_still_when_nothing_changed(tmp_path):
+    """The pod restart case, and the reason this is a hash not a clock.
+
+    A timestamp or a random value would make every restart and every
+    second replica announce a new version that does not exist, which
+    trains him to ignore the banner.
+    """
+    root = _shell_files(tmp_path / "public")
+    first = nova_site._stamp_worker(b"var CACHE = 1;", public_dir=str(root))
+    second = nova_site._stamp_worker(b"var CACHE = 1;", public_dir=str(root))
+    assert first == second
+
+
+def test_worker_stamp_keeps_the_worker_source_intact(tmp_path):
+    """The stamp is appended, so the worker still is what the file says.
+
+    Asserted with a body ending in a line comment: a stamp glued onto the
+    end without a newline would be swallowed by it, and a stamp put in
+    front of the source would comment out the first line of the worker.
+    """
+    root = _shell_files(tmp_path / "public")
+    source = b'var CACHE = "nova-v2"; // trailing line comment'
+    stamped = nova_site._stamp_worker(source, public_dir=str(root))
+    assert stamped.startswith(source)
+    assert stamped[len(source):].startswith(b"\n")
+    assert stamped.rstrip().endswith(b"*/")
+
+
+def test_worker_stamp_survives_a_missing_shell_file(tmp_path):
+    """A missing file must not take the app offline, and must still count.
+
+    Refusing to serve `/sw.js` because the stylesheet vanished would turn
+    a cosmetic problem into an uninstallable app. An absent file is also
+    a genuine difference from a build that had it, so it moves the hash
+    rather than being skipped.
+    """
+    root = _shell_files(tmp_path / "public")
+    complete = nova_site._stamp_worker(b"x", public_dir=str(root))
+    (root / "style.css").unlink()
+    partial = nova_site._stamp_worker(b"x", public_dir=str(root))
+    assert partial.rstrip().endswith(b"*/")
+    assert partial != complete
+
+
+def test_served_worker_carries_a_stamp_and_a_matching_etag():
+    """End to end, through the route the browser actually asks for.
+
+    The etag has to be taken over the stamped bytes or a returning phone
+    gets a 304 for a build it does not have -- which is the original bug
+    with an extra step.
+    """
+    status, head, worker = _get("/sw.js")
+    assert status == 200
+    assert b"/* build " in worker
+    stamp = worker.rsplit(b"/* build ", 1)[1].split(b" ", 1)[0]
+    assert len(stamp) == 16
+    etag = [
+        line.split(": ", 1)[1].strip()
+        for line in head.splitlines()
+        if line.lower().startswith("etag:")
+    ][0]
+    assert etag == '"' + hashlib.sha256(worker).hexdigest()[:16] + '"'
+
+
+def test_only_the_worker_is_stamped():
+    """`app.js` must come back as its own bytes.
+
+    Stamping anything else would break the one thing that makes the
+    stamp trustworthy -- that `/app.js` on the wire is the file on disk.
+    """
+    status, _, script = _get("/app.js")
+    assert status == 200
+    assert b"/* build " not in script.rsplit(b"\n", 2)[-1]
+    on_disk = pathlib.Path(nova_site.PUBLIC_DIR, "app.js").read_bytes()
+    assert script == on_disk
+
+
+def test_worker_stamp_separates_one_file_from_the_next(tmp_path):
+    """The filenames in the hash are separators, not decoration.
+
+    Hashing the four files' bytes end to end with nothing between them
+    makes the boundaries invisible: a byte that moves from the end of
+    `app.js` to the front of `style.css` produces the same stream and so
+    the same stamp, and that deploy would ship silently. Feeding each
+    name in before its bytes is what stops two different builds reading
+    as one.
+    """
+    root = _shell_files(tmp_path / "public")
+    (root / "app.js").write_bytes(b"AB")
+    (root / "style.css").write_bytes(b"C")
+    before = nova_site._stamp_worker(b"x", public_dir=str(root))
+    (root / "app.js").write_bytes(b"A")
+    (root / "style.css").write_bytes(b"BC")
+    after = nova_site._stamp_worker(b"x", public_dir=str(root))
+    assert before != after
