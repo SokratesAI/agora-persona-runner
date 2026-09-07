@@ -9336,6 +9336,136 @@
    * roadmap names no rows anywhere" read identically and mean different
    * things.
    */
+  /* This project's milestones, in the order the picker takes them, with
+   * the two buttons that pin one somewhere else.
+   *
+   * Milestone M4 of idea #260, and the half that had no screen. A pin has
+   * been settable since `tools.milestone_pin` and `POST
+   * /api/milestone/pin` shipped, and the ordering it overrides was drawn
+   * nowhere -- so the only way to know what he was pinning inside was to
+   * run a terminal he does not have. The list is the dial the control was
+   * missing.
+   *
+   * Two buttons rather than a drag, the same call `projectMoveControls`
+   * makes one section up and for the same measured reason: HTML5
+   * `draggable` never fires on a touch screen, and a phone is the screen
+   * he reads this page on. The pointer-event gesture beside the project
+   * standings is the working version of that, and it is written against
+   * `project-standing` rows and `sendProjectOrder`; generalising it is
+   * the last piece of M4 rather than a line of this one.
+   *
+   * A pinned milestone says so and can be unpinned. `0` is what the route
+   * takes for "back to the computed order" -- deliberately legal there
+   * and illegal on `/api/project/order`, because a project is always
+   * somewhere in his list and a milestone is pinned or it is not -- so
+   * the way back is a button and not a hand edit of a vault file.
+   */
+  function renderProjectMilestones(name, payload) {
+    var items = (payload && payload.milestones) || [];
+    // Nothing to order. One milestone is still drawn: it says what the
+    // project is grouped into, and a list that appears only at two would
+    // read as a bug on the day a second one is filed.
+    if (!items.length) return null;
+    var box = el("section", "project-milestones");
+    box.appendChild(el("h2", "project-milestones-head", "Milestones"));
+    var list = el("ol", "project-milestone-rows");
+    for (var i = 0; i < items.length; i++) {
+      list.appendChild(milestoneRow(name, items[i], i, items.length));
+    }
+    box.appendChild(list);
+    return box;
+  }
+
+  /* One milestone, its open-row count, and its move controls. */
+  function milestoneRow(name, item, index, total) {
+    var li = el("li", "project-milestone");
+    var head = el("div", "project-milestone-head");
+    head.appendChild(el("span", "project-milestone-name", item.name));
+    var open = item.open || 0;
+    head.appendChild(el("span", "project-milestone-counts",
+      open + " open row" + (open === 1 ? "" : "s")));
+    // Only on a milestone he actually pinned. The number is the position
+    // he asked for, which is not always where it sits -- a pin past the
+    // end of a shrinking list clamps -- so it is labelled as his pin
+    // rather than as this row's place in the list.
+    if (item.pin) {
+      head.appendChild(el("span", "project-milestone-pin",
+        "pinned " + item.pin));
+    }
+    li.appendChild(head);
+    li.appendChild(milestoneMoveControls(name, item, index, total));
+    return li;
+  }
+
+  /* Send one milestone to a 1-based position inside its project.
+   *
+   * The single write path for every control on the row, so a pin cannot
+   * mean two things depending on which button set it. `0` unpins.
+   */
+  function sendMilestonePin(project, milestone, position, note) {
+    note.textContent = "Saving…";
+    return fetch("/api/milestone/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project: project, milestone: milestone, position: position })
+    })
+      .then(json)
+      .then(function (result) {
+        if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+        note.textContent = "";
+        // Reload rather than swapping two rows: a pin is applied against
+        // the whole computed order, and moving one milestone up can move
+        // another one that was pinned. The page has to show what the file
+        // produces, not what the tap implied.
+        load();
+      })
+      .catch(function (err) { note.textContent = "Could not pin: " + err; });
+  }
+
+  /* Move one milestone up or down, or take its pin off.
+   *
+   * `index` is 0-based in the list drawn above, so "up" is `index`
+   * (1-based `index - 1 + 1`) and "down" is `index + 2` -- the same
+   * arithmetic `projectMoveControls` does, because it is the same
+   * 1-based scale on the other side of the request.
+   *
+   * The ends are disabled rather than hidden, for the reason written on
+   * the project arrows: a control that disappears at the top slides the
+   * other one under his thumb and he presses the wrong thing.
+   */
+  function milestoneMoveControls(project, item, index, total) {
+    var wrap = el("div", "project-milestone-move");
+    var note = el("span", "project-milestone-move-note", "");
+    function mover(label, position, enabled) {
+      var button = el("button", "project-milestone-move-btn", label);
+      button.type = "button";
+      button.setAttribute("aria-label",
+        "Move " + item.name + (label === "↑" ? " up" : " down"));
+      if (!enabled) {
+        button.disabled = true;
+        return button;
+      }
+      button.addEventListener("click", function () {
+        sendMilestonePin(project, item.name, position, note);
+      });
+      return button;
+    }
+    wrap.appendChild(mover("↑", index, index > 0));
+    wrap.appendChild(mover("↓", index + 2, index < total - 1));
+    if (item.pin) {
+      var clear = el("button", "project-milestone-unpin", "Unpin");
+      clear.type = "button";
+      clear.setAttribute("aria-label", "Unpin " + item.name);
+      clear.addEventListener("click", function () {
+        sendMilestonePin(project, item.name, 0, note);
+      });
+      wrap.appendChild(clear);
+    }
+    wrap.appendChild(note);
+    return wrap;
+  }
+
   function renderProjectRoadmap(payload) {
     var roadmap = (payload && payload.roadmap) || {};
     var items = roadmap.items || [];
@@ -9800,6 +9930,10 @@
     feed.appendChild(renderProjectLifecycle(name, payload));
     var summary = renderProjectSummary(payload);
     if (summary) feed.appendChild(summary);
+    // Directly under the bar: the bar says how far along the project is
+    // and this says what it is broken into, which is the next question.
+    var milestones = renderProjectMilestones(name, payload);
+    if (milestones) feed.appendChild(milestones);
     // Under the bar and above the tabs: the bar says how far along the
     // project is, this says what to do about it, and both belong before he
     // has chosen which board to look at.
