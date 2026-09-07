@@ -5695,3 +5695,118 @@ def test_archiving_writes_the_outdated_status_and_todays_date_into_his_row():
     # Still his row: the number, the title and the wiki-link all survive.
     assert "A row" in row and "[[#57" in row
     assert written["path"] == nova_boards.BOARD_PATHS["issues"]["edvard"]
+
+
+# Every duration in `warm_cache`'s docstring was taken by hand against the
+# live pod, inside a ~30-second window after a roll, because the warm logged
+# only its failures. Three cycles paid for that. These pin the timing lines
+# so a rename or a dropped `else:` cannot quietly take the instrument away
+# again while the warm keeps working.
+def test_the_warm_logs_what_each_payload_cost(journal_md):
+    """One line per payload, with its own seconds, plus a total."""
+    nova_site.reset_cache()
+    lines = []
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md), \
+            patch.object(nova_site, "log", side_effect=lines.append):
+        nova_site.warm_cache()
+    timed = [ln for ln in lines if ln.startswith("nova-site warm ")]
+    assert timed, "the warm logged nothing at all"
+    for name, _ in nova_site.WARM_PAYLOADS:
+        assert any(
+            re.fullmatch(rf"nova-site warm {re.escape(name)} \d+\.\d\ds", ln)
+            for ln in timed
+        ), f"no elapsed time logged for {name}: {timed}"
+    assert any(
+        re.fullmatch(
+            rf"nova-site warm done \d+\.\d\ds over {len(nova_site.WARM_PAYLOADS)} payload\(s\)",
+            ln,
+        )
+        for ln in timed
+    ), f"no total logged: {timed}"
+
+
+def test_a_warm_payload_that_fails_is_still_timed_and_does_not_stop_the_rest(journal_md):
+    """A failure keeps its own elapsed time, and the total still lands.
+
+    The failure path is the one that already logged, so the risk is the
+    opposite of the success path's: a payload that raises must not end up
+    reported as having succeeded, and it must not swallow the total.
+    """
+    nova_site.reset_cache()
+    lines = []
+    first = nova_site.WARM_PAYLOADS[0][0]
+
+    real = nova_site.cached_payload
+
+    def explode(name, build):
+        if name == first:
+            raise RuntimeError("vault unreachable")
+        return real(name, build)
+
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md), \
+            patch.object(nova_site, "cached_payload", side_effect=explode), \
+            patch.object(nova_site, "log", side_effect=lines.append):
+        nova_site.warm_cache()
+
+    assert any(
+        re.fullmatch(
+            rf"nova-site warm {re.escape(first)} failed after \d+\.\d\ds: vault unreachable",
+            ln,
+        )
+        for ln in lines
+    ), f"the failing payload lost its elapsed time: {lines}"
+    assert not any(
+        re.fullmatch(rf"nova-site warm {re.escape(first)} \d+\.\d\ds", ln) for ln in lines
+    ), "a payload that raised was logged as a clean build"
+    assert any(ln.startswith("nova-site warm done ") for ln in lines), \
+        f"one failure took the total with it: {lines}"
+    later = nova_site.WARM_PAYLOADS[1][0]
+    assert any(
+        re.fullmatch(rf"nova-site warm {re.escape(later)} \d+\.\d\ds", ln) for ln in lines
+    ), "a failure stopped the payloads after it"
+
+
+def test_the_warm_total_covers_the_whole_run_not_one_payload(journal_md):
+    """The total is measured from before the first build, not from the last.
+
+    A total taken inside the loop would read as a plausible number forever
+    -- this is the whole point of the line, so it has to be the sum rather
+    than the tail. Each payload is made to take a real, known amount of
+    time and the total is checked against their sum.
+    """
+    nova_site.reset_cache()
+    lines = []
+    per_payload = 0.02
+    real = nova_site.cached_payload
+
+    def slow(name, build):
+        time.sleep(per_payload)
+        return real(name, build)
+
+    with patch.object(nova_sources, "vault_read_path", return_value=journal_md), \
+            patch.object(nova_site, "cached_payload", side_effect=slow), \
+            patch.object(nova_site, "log", side_effect=lines.append):
+        nova_site.warm_cache()
+
+    total = [ln for ln in lines if ln.startswith("nova-site warm done ")]
+    assert len(total) == 1, f"expected exactly one total: {lines}"
+    seconds = float(re.search(r"done (\d+\.\d\d)s", total[0]).group(1))
+    floor = per_payload * len(nova_site.WARM_PAYLOADS)
+    assert seconds >= floor, (
+        f"total {seconds}s is below the {floor}s the payloads alone took -- "
+        "it is timing one payload, not the run"
+    )
+    # And each payload's own number is an elapsed time rather than a clock
+    # reading or a constant: `time.monotonic()` on this box is a six-figure
+    # number, and `0.00` is what a stopwatch that never started prints.
+    for name, _ in nova_site.WARM_PAYLOADS:
+        one = [
+            ln for ln in lines
+            if re.fullmatch(rf"nova-site warm {re.escape(name)} \d+\.\d\ds", ln)
+        ]
+        assert len(one) == 1, f"expected one timing line for {name}: {lines}"
+        took = float(re.search(r" (\d+\.\d\d)s$", one[0]).group(1))
+        assert per_payload <= took <= seconds, (
+            f"{name} logged {took}s, outside the {per_payload}s it slept and the "
+            f"{seconds}s the whole run took -- that is a clock, not a duration"
+        )

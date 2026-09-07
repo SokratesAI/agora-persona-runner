@@ -2412,8 +2412,27 @@ def warm_cache():
     not made to wait for it -- they take the cold path into the same
     `_build_lock` this is holding and get the one build it produces, which
     is the behaviour that lock already existed for.
+
+    **Every number in this docstring was taken by hand, and each one cost a
+    cycle catching the live pod inside its own warm window.** That is the
+    reason for the timing below rather than tidiness: the warm ran for a
+    month logging only its failures, so "how long does it take and which
+    payload is the cost" could only be answered by racing a `curl` against
+    a roll, at an instant nobody chose, and it was answered that way three
+    times. Each payload logs its own elapsed seconds and the run logs its
+    total, so every roll leaves the measurement in the pod log.
+
+    It is a wall-clock number and it says so by being one: it includes
+    whatever else the process was doing, and this container is CPU-limited
+    and was measured at 97.4% of its scheduling periods throttled during
+    one of these builds. So a slow line here is "this build took this long
+    on this pod", not "this build is expensive" -- and that is the
+    distinction the next decision needs, because parallelising a warm that
+    is throttled rather than waiting would make it slower.
     """
+    started = time.monotonic()
     for name, build in WARM_PAYLOADS:
+        at = time.monotonic()
         try:
             cached_payload(name, build)
         except Exception as e:
@@ -2422,7 +2441,13 @@ def warm_cache():
             # real request takes the cold path exactly as it does today.
             # Raising here would kill a daemon thread noisily and leave the
             # two payloads after this one unbuilt for no gain.
-            log(f"nova-site warm {name} failed: {e}")
+            log(f"nova-site warm {name} failed after {time.monotonic() - at:.2f}s: {e}")
+        else:
+            log(f"nova-site warm {name} {time.monotonic() - at:.2f}s")
+    log(
+        f"nova-site warm done {time.monotonic() - started:.2f}s "
+        f"over {len(WARM_PAYLOADS)} payload(s)"
+    )
 
 
 def _build_lock(name):
