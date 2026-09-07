@@ -118,8 +118,8 @@ PHONE_WIDTH = 390
 MIN_TEXT = 200
 
 BOOTSTRAP_HINT = (
-    "no browser at {root} -- run tools/browser/bootstrap.sh to build one "
-    "(~3 minutes, ~1.5GB, no root needed)"
+    "browser environment at {root} is incomplete -- {what} -- run "
+    "tools/browser/bootstrap.sh to build one (~3 minutes, ~1.5GB, no root needed)"
 )
 
 
@@ -129,6 +129,34 @@ class BrowserMissing(RuntimeError):
 
 def browser_root() -> Path:
     return Path(os.environ.get("NOVA_BROWSER_ROOT", str(DEFAULT_ROOT)))
+
+
+def missing_pieces(root: Path) -> list:
+    """The parts of the environment `shot.js` needs, that this root has not got.
+
+    Every entry is something `bootstrap.sh` lays down, and the list exists
+    because checking three of them was the same as checking none. A root
+    holding `libdirs.txt`, `fontconf/fonts.conf` and an **empty** `browsers/`
+    passed this function and then died inside node with
+    `Cannot find module 'playwright-core'` and a stack trace -- measured
+    Cycle 1160 against a scratch root. That message names neither the
+    environment nor the script that rebuilds it, which is exactly the
+    "the next cycle will not even know what it is missing" that idea #248
+    is about. `browsers/` is checked for a chromium build inside it rather
+    than for the directory, because step 1 of the bootstrap creates the
+    directory before it downloads anything.
+    """
+    gone = []
+    if not (root / "libdirs.txt").exists():
+        gone.append("no libdirs.txt (step 3: the unpacked Debian sysroot)")
+    if not (root / "fontconf" / "fonts.conf").exists():
+        gone.append("no fontconf/fonts.conf (step 4: fonts, without which nothing draws)")
+    browsers = root / "browsers"
+    if not any(browsers.glob("chromium-*")):
+        gone.append("no chromium under browsers/ (step 1: the Playwright download)")
+    if not (root / "node_modules" / "playwright-core").exists():
+        gone.append("no node_modules/playwright-core (step 1: what shot.js requires)")
+    return gone
 
 
 def render_env(root: Path) -> dict:
@@ -143,9 +171,9 @@ def render_env(root: Path) -> dict:
     """
     libdirs = root / "libdirs.txt"
     fonts = root / "fontconf" / "fonts.conf"
-    for needed in (libdirs, fonts, root / "browsers"):
-        if not needed.exists():
-            raise BrowserMissing(BOOTSTRAP_HINT.format(root=root))
+    gone = missing_pieces(root)
+    if gone:
+        raise BrowserMissing(BOOTSTRAP_HINT.format(root=root, what="; ".join(gone)))
     env = dict(os.environ)
     env.update(
         {

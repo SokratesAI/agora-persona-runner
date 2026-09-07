@@ -18,14 +18,25 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools import poke_page
+from tools import poke_page, see_page
 
 
 def _root(tmp_path):
+    """A complete browser root, as `bootstrap.sh` leaves it.
+
+    `poke_page` builds its environment with `see_page.render_env`, so this
+    fixture has to satisfy `see_page.missing_pieces` -- and it is a second
+    hand-written copy of the one in `test_see_page.py`, which is exactly the
+    kind of pair that drifts. The assertion at the end is the guard: when
+    `missing_pieces` learns about another piece of the environment, this
+    fixture fails here rather than in whichever test happens to call it.
+    """
     (tmp_path / "libdirs.txt").write_text("/sysroot/lib\n")
     (tmp_path / "fontconf").mkdir()
     (tmp_path / "fontconf" / "fonts.conf").write_text("<fontconfig/>")
-    (tmp_path / "browsers").mkdir()
+    (tmp_path / "browsers" / "chromium-1148").mkdir(parents=True)
+    (tmp_path / "node_modules" / "playwright-core").mkdir(parents=True)
+    assert see_page.missing_pieces(tmp_path) == []
     return tmp_path
 
 
