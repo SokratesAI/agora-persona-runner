@@ -97,6 +97,25 @@ loop's own restore-point archives in `/var/lib/nova-attic` for volume moves that
 had already completed. None of that is visible to a kubelet at all, so no amount
 of reading `stats/summary` harder was ever going to produce it.
 
+**And the images half of that line now carries names.** MADE OF says "14.3GiB
+of container images" and stops, which is where idea #252 started: server2's
+disk grew 2GB in two days, my own directories accounted for a tenth of it, and
+finding the rest meant reading `status.images` by hand. Measured 2026-09-07 --
+server2 holds **41 tagged copies of `ghcr.io/sokratesai/agora-persona-runner`**,
+3.7GiB inside the kubelet's own list, on the node growing +6.6GiB/day. That is
+not a leak: every merge here builds an image whose digest is new, because the
+commit sha goes into a label, and the node keeps every revision it pulls until
+the kubelet garbage-collects at 15% free. The disk fills because this loop
+merges, and it frees itself at the worst possible moment.
+
+`read_node_images()` reads that list and `report_images()` names the top few
+repositories with their copy counts. It never raises: there is no measured
+threshold for "too many images", and inventing one would be the flinch
+`personality.md` warns about. **The list is capped** at the kubelet's
+`--node-status-max-images` (50 by default) and holds the largest images only,
+so the line prints the listed sum beside what `imageFs` reports used -- 5.9GiB
+of 14.3GiB on server2 -- rather than presenting a sample as the whole store.
+
 `read_host_breakdown()` runs a read-only Job on the node and prints those
 directories biggest first, **only on a node that raised.** The condition is the
 point rather than an optimisation: a Job per node is tens of seconds, this check
@@ -348,6 +367,113 @@ def report_trend(node, kind, filesystem, trend, out=print, also=()):
 #: fixed once when server2 joined and a hardcoded `server1` went silently wrong.
 #: A second copy here is a second place to find that fix next time.
 read_node_names = oom_history.read_node_names
+
+
+def read_node_images(node, runner=subprocess.run):
+    """The image list the node's own `status.images` carries.
+
+    This is the only per-image size this loop can read: containerd's store is
+    behind a socket on the host, and `stats/summary` gives one `imageFs` total
+    with no names in it. The kubelet writes at most `--node-status-max-images`
+    entries (50 by default) and picks the largest, so this is a sample of the
+    biggest images rather than the whole store — `image_store_share()` below
+    is what says so on the page.
+    """
+    done = runner(
+        ["kubectl", "get", "node", node, "-o", "json"],
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode != 0:
+        raise OSError((done.stderr or "").strip() or "kubectl get node failed")
+    try:
+        body = json.loads(done.stdout)
+    except ValueError as exc:
+        raise OSError("the node object did not parse: %s" % exc)
+    images = (body.get("status") or {}).get("images")
+    if not isinstance(images, list):
+        raise OSError("the node object carries no status.images list")
+    return images
+
+
+def repository_of(names):
+    """The repository an image's names point at, tag and digest stripped.
+
+    An entry usually carries both `repo:tag` and `repo@sha256:...`. Prefer the
+    tagged form, because a digest-only entry is the same repository and must
+    not be counted as a separate one. A tag can only follow the last `/`, so
+    splitting on `:` has to happen after the last slash — `ghcr.io:5000/x` is
+    a registry port, not a tag.
+    """
+    for name in names or ():
+        if "@" in name:
+            continue
+        head, slash, tail = name.rpartition("/")
+        if ":" not in tail:
+            return name
+        return head + slash + tail.split(":")[0]
+    for name in names or ():
+        return name.split("@")[0]
+    return None
+
+
+def images_by_repository(images):
+    """`[(repository, bytes, copies)]`, largest first.
+
+    `copies` is how many distinct entries of that repository the node holds.
+    Every merge here builds an image whose digest is new — the commit sha goes
+    into a label — so a repository with many copies is a node keeping every
+    revision it has ever pulled, which is the shape idea #252 went looking for
+    by hand.
+    """
+    totals = {}
+    for image in images:
+        repository = repository_of(image.get("names"))
+        if repository is None:
+            continue
+        size, copies = totals.get(repository, (0, 0))
+        totals[repository] = (size + (image.get("sizeBytes") or 0), copies + 1)
+    ranked = [(repo, size, copies) for repo, (size, copies) in totals.items()]
+    ranked.sort(key=lambda row: (-row[1], row[0]))
+    return ranked
+
+
+def image_store_share(images, filesystems):
+    """`(listed bytes, imagefs used bytes)` — how much of the store this names.
+
+    The kubelet's list is capped, so the listed sum is a floor on what the
+    image store holds. Printing it without the `imageFs` total beside it would
+    be the same overclaim `MADE OF` already avoids: a real measurement written
+    up wider than it was taken.
+    """
+    listed = sum(image.get("sizeBytes") or 0 for image in images)
+    used = (filesystems.get("imagefs") or {}).get("usedBytes")
+    return listed, used
+
+
+def report_images(node, images, filesystems, out=print, top=3):
+    """Name what the image store is made of. Never raises, and returns nothing.
+
+    There is no measured threshold for "too many images" — the kubelet frees
+    them at 15% free and that is the only rule anything here can point at — so
+    this is the same kind of line as MADE OF: it names, it does not judge.
+    """
+    ranked = images_by_repository(images)
+    if not ranked:
+        out("  NO IMAGES  %s lists no images in its own status" % node)
+        return
+    listed, used = image_store_share(images, filesystems)
+    parts = [
+        "%s x%d %s" % (_measured_gib(size), copies, repository)
+        for repository, size, copies in ranked[:top]
+    ]
+    tail = ""
+    if used:
+        tail = (
+            " — the kubelet lists its largest %d image(s), summing to %s of the %s imagefs reports used"
+            % (len(images), _measured_gib(listed), _measured_gib(used))
+        )
+    out("  IMAGES     %s: %s%s" % (node, ", ".join(parts), tail))
 
 
 def read_summary(node, runner=subprocess.run):
@@ -815,7 +941,7 @@ def report_host_breakdown(node, sizes, out=print, remainder=None):
 
 
 def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=None,
-           trend=None, trend_read=True):
+           trend=None, trend_read=True, images=None, images_error=None):
     """Print one node's verdict. Returns the number of findings on it."""
     findings = 0
     filling = False
@@ -891,6 +1017,14 @@ def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=No
                 "%s, %s neither — local-path volume contents and whatever the host itself stores, which these stats cannot separate. Of %s used."
                 % (head, _measured_gib(breakdown["rest"]), _measured_gib(breakdown["used"]))
             )
+
+    # Straight after MADE OF, because it answers the next question that line
+    # provokes: the images are named as a number of gigabytes and nothing said
+    # what they were of.
+    if images_error is not None:
+        out("  CANNOT READ %s's image list — %s" % (node, images_error))
+    elif images is not None:
+        report_images(node, images, filesystems, out=out)
 
     # Only when this node actually raised. Naming the host directories costs a
     # Job on the node — tens of seconds — and on a normal morning it answers a
@@ -1008,6 +1142,16 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None,
                 capped += 1
             elif state is False:
                 uncapped += 1
+        images = None
+        images_error = None
+        try:
+            images = read_node_images(node, runner=runner)
+        # An unreadable image list is not an unreadable node: the free-space
+        # verdict above it stands on `stats/summary` and is unaffected, so this
+        # says so on its own line rather than joining `unreadable` and turning a
+        # good sweep into an incomplete one.
+        except (OSError, ValueError) as exc:
+            images_error = str(exc)
         findings += report(
             node,
             filesystems,
@@ -1017,6 +1161,8 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None,
             host_reader=host_reader,
             trend=trends.get(node),
             trend_read=trend_read,
+            images=images,
+            images_error=images_error,
         )
 
     out("== claims no Pod mounts")

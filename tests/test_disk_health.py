@@ -73,10 +73,17 @@ def _summary(volumes=(), nodefs=True, imagefs=True, node_available=NODE_AVAILABL
     return {"node": node, "pods": pods}
 
 
-def _runner(nodes=("server1",), summaries=None, node_list_rc=0, claims=(), pods=()):
+def _runner(nodes=("server1",), summaries=None, node_list_rc=0, claims=(), pods=(),
+            images=None, image_rc=0):
     summaries = summaries or {}
+    images = images or {}
 
     def run(argv, capture_output=False, text=False):
+        if argv[:3] == ["kubectl", "get", "node"]:
+            body = {"status": {"images": list(images.get(argv[3], ()))}}
+            return subprocess.CompletedProcess(
+                argv, image_rc, json.dumps(body), "Error from server: 502"
+            )
         if argv[:3] == ["kubectl", "get", "pvc"]:
             return subprocess.CompletedProcess(
                 argv, 0, json.dumps({"items": list(claims)}), ""
@@ -1182,3 +1189,96 @@ def test_the_capacity_tolerance_holds_on_both_sides_of_one_percent():
     )
     assert "TREND      " in inside[0], inside
     assert "NO TREND" in outside[0], outside
+
+
+def _image(size, *names):
+    return {"names": list(names), "sizeBytes": size}
+
+
+def test_a_digest_only_name_is_the_same_repository_as_its_tag():
+    """Every entry carries `repo:tag` and `repo@sha256:...`, and both are one repo.
+
+    A reader that keyed on the raw name would count the digest form as a
+    second repository, halving every copy count on the page — and the copy
+    count is the whole finding.
+    """
+    ranked = disk_health.images_by_repository(
+        [
+            _image(1000, "ghcr.io/x/runner:abc", "ghcr.io/x/runner@sha256:11"),
+            _image(2000, "ghcr.io/x/runner@sha256:22"),
+        ]
+    )
+    assert ranked == [("ghcr.io/x/runner", 3000, 2)]
+
+
+def test_a_registry_port_is_not_read_as_a_tag():
+    """`:5000` follows the host, not the last `/`, so it must survive.
+
+    Splitting on the first `:` would file every image on a ported registry
+    under the bare hostname, which is not a repository at all.
+    """
+    assert disk_health.repository_of(["reg.local:5000/team/app:v3"]) == (
+        "reg.local:5000/team/app"
+    )
+
+
+def test_the_image_line_names_the_copy_count_and_what_it_does_not_cover():
+    """The finding is "41 copies of one repository", and the honest half is the cap.
+
+    The kubelet writes at most `--node-status-max-images` entries, so the sum
+    of what it lists is a floor on the store. Printing the listed total alone
+    would be a real measurement written up as the whole disk.
+    """
+    printed = []
+    disk_health.report_images(
+        "server2",
+        [_image(100 * 2**20, "ghcr.io/x/runner:c%d" % n) for n in range(41)],
+        {"imagefs": {"usedBytes": 14 * 2**30}},
+        out=printed.append,
+    )
+    line = "\n".join(printed)
+    assert "x41 ghcr.io/x/runner" in line
+    assert "lists its largest 41 image(s)" in line
+    assert "summing to 4.0GiB of the 14.0GiB imagefs reports used" in line
+
+
+def test_an_unreadable_image_list_does_not_make_a_good_node_unreadable():
+    """The free-space verdict stands on `stats/summary` and is untouched by it.
+
+    Folding this into `unreadable` would turn every sweep on a node whose
+    object I cannot read into "not a clean result", which is a different and
+    false claim: the thing the check exists to judge was read fine.
+    """
+    code, printed = _lines(
+        nodes=("server1",),
+        summaries={"server1": _summary()},
+        image_rc=1,
+    )
+    assert code == 0
+    assert "CANNOT READ server1's image list" in printed
+    assert "Nothing was swept" not in printed
+    assert "  ok         server1 nodefs" in printed
+
+
+def test_the_image_line_ranks_by_bytes_and_stops_at_the_top_few():
+    """Bytes, not copy count — a hundred tiny images are not what fills a disk.
+
+    And the list is truncated on purpose: server2 carries fifty entries and a
+    line naming all of them is one nobody reads. The truncation has to be
+    pinned, or a later edit could print the whole roster and nothing would say.
+    """
+    printed = []
+    disk_health.report_images(
+        "server2",
+        [_image(9 * 2**30, "ghcr.io/x/big:v1")]
+        + [_image(2**20, "ghcr.io/x/many:v%d" % n) for n in range(20)]
+        + [_image(2**30, "ghcr.io/x/mid:v1")]
+        + [_image(2**29, "ghcr.io/x/small:v1")],
+        {"imagefs": {"usedBytes": 12 * 2**30}},
+        out=printed.append,
+        top=2,
+    )
+    line = "\n".join(printed)
+    assert "9.0GiB x1 ghcr.io/x/big, 1.0GiB x1 ghcr.io/x/mid —" in line
+    assert "ghcr.io/x/many" not in line
+    assert "ghcr.io/x/small" not in line
