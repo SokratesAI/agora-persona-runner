@@ -20,7 +20,7 @@ import urllib.parse
 
 import pytest
 
-from agora_runner import ticket_docs, ticket_store
+from agora_runner import nova_boards, ticket_docs, ticket_store
 
 from tests.test_ticket_store import BOARD
 
@@ -312,6 +312,29 @@ def test_every_row_field_is_actually_on_a_ticket():
     for ticket in records["tickets"]:
         missing = [field for field in ticket_docs.ROW_FIELDS if field not in ticket]
         assert not missing, f"ticket {ticket['number']} carries no {missing}"
+
+
+def test_every_parsed_row_field_reaches_the_projection():
+    """A column the board carries must reach the view, or the app cannot see it.
+
+    The two tests around this one are generic over `ROW_FIELDS`, so they
+    pass whatever is in it -- which is how `milestone` shipped on
+    2026-09-06 (idea #260, M4) into the markdown parser, the ticket record
+    and the picker, and never into this projection. The site serves
+    `/api/board` from this view, so his app read every Nova row with no
+    `milestone` key at all while the boards were storing one.
+
+    So the rule is stated against the parser rather than against a list
+    written out again here: whatever `parse_board` puts on a row is what a
+    list read has to be able to answer with. A new column fails this by
+    name on the day it is added.
+    """
+    parsed = nova_boards.parse_board(BOARD)
+    assert parsed["items"], "the fixture must carry rows for this to mean anything"
+    on_a_row = set()
+    for item in parsed["items"]:
+        on_a_row |= set(item)
+    assert on_a_row == set(ticket_docs.ROW_FIELDS)
 
 
 def test_the_map_function_is_generated_from_the_field_list():
