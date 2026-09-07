@@ -87,8 +87,9 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, PROJECT_META_PATH, is_relayed, parse_board,
-    parse_project_meta, status_key, unanswered_comment_bodies,
+    BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, is_relayed,
+    parse_board, parse_milestone_pins, parse_project_meta, status_key,
+    unanswered_comment_bodies,
 )
 # The ranking itself lives in `agora_runner` now, not here. The site had to
 # be able to import it and could not: `tools/` is not in the image. Same
@@ -225,6 +226,21 @@ def fetch_projects(path=PROJECTS_PATH):
     if done.stdout.lstrip().startswith("[not found:"):
         return "", True
     return done.stdout, True
+
+
+def fetch_milestone_pins(path=MILESTONE_PINS_PATH):
+    """`markdown` for `milestones.md`, or `""`.
+
+    Not split into `(text, readable)` the way `fetch_projects` is, and the
+    difference is the whole reason this is its own function. An absent
+    projects file loses the order between projects, which changes which
+    row is top; an absent pins file loses nothing but his overrides, and
+    the computed ranking underneath is a complete, correct answer on its
+    own. So there is no line to print here -- unreadable and absent both
+    mean "rank it the way I would have", which is what this tier does by
+    default anyway.
+    """
+    return _fetch(path) or ""
 
 
 def fetch_diagnoses(path=DIAGNOSES_PATH):
@@ -651,6 +667,7 @@ def _claim_footer(rows, captures, claims_readable):
 
 def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
            projects_markdown="", projects_readable=True,
+           milestone_pins_markdown="",
            diagnoses_text="", diagnoses_readable=True, cycle=None):
     """The captures first, then the ranked board. Never one without the other.
 
@@ -722,7 +739,12 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     # grouped 199 of the 201 open rows into 57 milestones and every one of
     # them was inert here -- `next_payload` passed it, so the site's page
     # ordered by it and the tool a cycle actually reads did not.
-    ranked = rank(rows, project_rank_map, milestone_ranks(rows))
+    # His pins come in here rather than into `rank`: they reorder the
+    # milestone list this tier computes and nothing else, so the one
+    # function that builds that list is the one that has to know.
+    ranked = rank(rows, project_rank_map,
+                  milestone_ranks(rows, parse_milestone_pins(
+                      milestone_pins_markdown)))
     if not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
     else:
@@ -835,6 +857,8 @@ def main(argv=None):
     ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
     ap.add_argument("--projects",
                     help="local projects.md instead of a vault fetch")
+    ap.add_argument("--milestone-pins",
+                    help="local milestones.md instead of a vault fetch")
     ap.add_argument("--diagnoses",
                     help="local satisfaction-diagnoses.json instead of a "
                          "vault fetch")
@@ -916,6 +940,9 @@ def main(argv=None):
     else:
         projects_md, projects_readable = fetch_projects()
 
+    milestone_pins_md = (open(args.milestone_pins, encoding="utf-8").read()
+                         if args.milestone_pins else fetch_milestone_pins())
+
     if args.diagnoses:
         with open(args.diagnoses, encoding="utf-8") as fh:
             diagnoses_text, diagnoses_readable = fh.read(), True
@@ -926,6 +953,7 @@ def main(argv=None):
                  closed_waiting=closed_waiting, claims_readable=claims_readable,
                  projects_markdown=projects_md,
                  projects_readable=projects_readable,
+                 milestone_pins_markdown=milestone_pins_md,
                  diagnoses_text=diagnoses_text,
                  diagnoses_readable=diagnoses_readable,
                  cycle=args.cycle))

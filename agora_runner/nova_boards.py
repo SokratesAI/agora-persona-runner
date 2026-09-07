@@ -2696,3 +2696,137 @@ def rank_projects(names, meta):
         # board the moment one project is rated Low.
         order.append((floor + 1 + rank.get(key, 3), index, name))
     return [name for _rank, _index, name in sorted(order)]
+
+
+#: Where a pinned milestone position lives. A separate document rather
+#: than a column, because a milestone is not a row in any file this loop
+#: keeps -- it exists only as a cell on the board rows that carry its
+#: name, and there is nowhere on a row to say where the whole group sits.
+MILESTONE_PINS_PATH = "projects/sokrates/projects/nova/milestones.md"
+
+_MILESTONE_PIN_WIDTH = 4
+
+_MILESTONE_PINS_HEADER = """---
+type: board
+tags: [agora, milestones, board]
+status: built
+contract: Nova writes this only when the owner pins a milestone. One row per pinned milestone; a milestone with no row here is unpinned and ranks by the computed WSJF order in nova_next.milestone_ranks. The set of milestones that exist is read off the Milestone column on issues.md and ideas.md, never from here -- a row here naming a milestone no board row carries is a pin waiting for its milestone, not a milestone.
+---
+
+# Milestone pins
+
+| Project | Milestone | Position | Updated |
+|---|---|---|---|
+"""
+
+
+def parse_milestone_pins(markdown):
+    """`milestones.md` -> `{(project, milestone) lowercased: 1-based position}`.
+
+    The one piece of persisted state milestone M4 of
+    `task-prioritization-redesign.md` asks for. Everything else at that
+    tier is recomputed each cycle from the rows themselves -- the spec is
+    explicit that this is the exception (*"The only new piece of real
+    state is [his] optional pin, checked first, which overrides the
+    computed position for that one item until removed"*).
+
+    Keyed on the pair, lowercased, the same way `milestone_ranks` keys its
+    own map: a milestone name is scoped to its project, and `Backup` in
+    Marcus and `Backup` in Infra are different milestones.
+
+    A row with a position that is not a positive integer is **dropped**
+    rather than read as zero. Zero is what an empty cell would mean if
+    positions were 0-based, and this scale is 1-based everywhere else in
+    this file, so reading a broken cell as a position would silently pin
+    something to the top.
+    """
+    out = {}
+    for line in (markdown or "").split("\n"):
+        text = line.strip()
+        if not text.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in text.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        if all(set(cell) <= set("-: ") and cell for cell in cells):
+            continue
+        project, milestone = cells[0], cells[1]
+        if not project or not milestone:
+            continue
+        if project.lower() == "project" and milestone.lower() == "milestone":
+            continue
+        try:
+            position = int(cells[2])
+        except (TypeError, ValueError):
+            continue
+        if position < 1:
+            continue
+        out[(project.lower(), milestone.lower())] = position
+    return out
+
+
+def set_milestone_pin(markdown, project, milestone, position, updated=""):
+    """Pin one milestone to `position` in its project's list, or unpin it.
+
+    `position` of 0 (or `None`, or an empty string) **removes** the row,
+    which is the "until he removes it" half of the spec and the only way
+    back to the computed order. Removing rather than writing a 0 is
+    deliberate: the file is then a list of decisions he has actually made,
+    and a milestone absent from it reads the same as a milestone he has
+    never touched, because those are the same thing.
+
+    Unlike `set_project_order` this does **not** renumber the other rows,
+    and the difference is not an oversight. His project list is a list he
+    owns end to end, so placing one project has to give the whole list an
+    order he can see. Milestones are mine by default -- *"I want the
+    ability to reorder tasks and milestones but the default is that you do
+    it"* -- so a pin is one override on top of a computed list, and
+    numbering the rest would freeze an order that is supposed to keep
+    moving as rows are rated, sized and closed.
+
+    It also does not check that the milestone exists, because it has no
+    board to check against; the caller does. Returns the new markdown, or
+    `None` if refused: an empty project or milestone, a `|` in either (it
+    would split the row into cells that are not the cells written), or a
+    position that is not a whole number at or above 0.
+    """
+    name = (project or "").strip()
+    group = (milestone or "").strip()
+    if not name or not group or "|" in name or "|" in group:
+        return None
+    if position is None or position == "":
+        position = 0
+    try:
+        position = int(position)
+    except (TypeError, ValueError):
+        return None
+    if position < 0:
+        return None
+
+    text = markdown or ""
+    if not parse_milestone_pins(text) and "| Project | Milestone |" not in text:
+        text = _MILESTONE_PINS_HEADER
+    lines = text.split("\n")
+
+    kept, rule = [], None
+    for line in lines:
+        stripped = line.strip()
+        cells = ([c.strip() for c in stripped.strip("|").split("|")]
+                 if stripped.startswith("|") else [])
+        if cells and all(set(c) <= set("-: ") and c for c in cells):
+            rule = len(kept)
+        if len(cells) >= 2 and cells[0].lower() == name.lower() \
+                and cells[1].lower() == group.lower() \
+                and not (cells[0].lower() == "project"
+                         and cells[1].lower() == "milestone"):
+            continue
+        kept.append(line)
+    if rule is None:
+        return None
+
+    if position:
+        row = [name, group, str(position), (updated or "").strip()]
+        padded = row + [""] * (_MILESTONE_PIN_WIDTH - len(row))
+        kept.insert(rule + 1,
+                    "| " + " | ".join(padded[:_MILESTONE_PIN_WIDTH]) + " |")
+    return "\n".join(kept)
