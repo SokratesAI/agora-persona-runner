@@ -154,6 +154,41 @@ def _key(metric):
     )
 
 
+def _by_key(series, combine=max):
+    """`{key: value}` for a query result, folding collisions with `combine`.
+
+    A dict comprehension over the same series drops all but the last, and that
+    is not a hypothetical here: `_key` names the pod and the container, and a
+    container that restarted has **two** cAdvisor series under that one name --
+    the dead instance and the live one, told apart only by an `id` label this
+    key does not carry. Whichever Prometheus happened to return last would win.
+
+    That is silent and it fails in the worst direction. Measured 2026-09-07:
+    `agents/agora-persona-runner` was OOMKilled at 09:11 Oslo after peaking at
+    236Mi of its 256Mi limit, and Prometheus answered the peak query with two
+    series for that one pod -- 236.4Mi for the container that died and 41.6Mi
+    for the one that replaced it. This check printed `ok` for it in the same
+    sweep that `tools.workload_health` reported the kill. So the moment a
+    container proves its limit is too low is the moment this reads cleanest,
+    which is a clean result guaranteed in advance.
+
+    `max` is right for a peak because a restart splits one container's history
+    into two series and the question is the highest it ever got, and right for
+    the age because the peak now spans every instance under the key, so the
+    oldest start is what that peak actually covers. It is deliberately NOT
+    applied to the instant `current` reading below: that one asks what the live
+    container holds right now, and an instant query only returns series
+    Prometheus has scraped recently, so a container gone longer than the
+    staleness window contributes nothing to it anyway.
+    """
+    folded = {}
+    for s in series:
+        key = _key(s["metric"])
+        value = float(s["value"][1])
+        folded[key] = combine(folded[key], value) if key in folded else value
+    return folded
+
+
 def read_containers(window_hours, base=PROMETHEUS, get=_get):
     """`[(namespace, pod, container, node, peak_rss, limit)]` for every limited container.
 
@@ -162,21 +197,17 @@ def read_containers(window_hours, base=PROMETHEUS, get=_get):
     no limit, and `tools.workload_health` owns whether one should exist.
     """
     window = "%dh" % int(window_hours) if float(window_hours).is_integer() else "%gh" % window_hours
-    limits = {
-        _key(s["metric"]): float(s["value"][1])
-        for s in query('container_spec_memory_limit_bytes{container!=""} > 0', base, get)
-    }
-    peaks = {
-        _key(s["metric"]): float(s["value"][1])
-        for s in query(
-            'max_over_time(container_memory_rss{container!=""}[%s])' % window, base, get
-        )
-    }
+    limits = _by_key(
+        query('container_spec_memory_limit_bytes{container!=""} > 0', base, get)
+    )
+    peaks = _by_key(
+        query('max_over_time(container_memory_rss{container!=""}[%s])' % window, base, get)
+    )
     ages = {
-        _key(s["metric"]): float(s["value"][1]) / 3600.0
-        for s in query(
-            'time() - container_start_time_seconds{container!=""}', base, get
-        )
+        key: seconds / 3600.0
+        for key, seconds in _by_key(
+            query('time() - container_start_time_seconds{container!=""}', base, get)
+        ).items()
     }
     currents = {
         _key(s["metric"]): float(s["value"][1])
