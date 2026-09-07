@@ -36,19 +36,38 @@ SMALL, LARGE = 8000, 32000  # a 4x step, so linear is ~4x and quadratic ~16x
 CEILING = 8.0
 
 
-def _growth_ratio(pattern, build, run):
-    """Time at LARGE divided by time at SMALL, worst of three runs each.
+REPEATS = 5
 
-    Worst-of-three rather than best-of: a scheduler hiccup inflates a
-    single reading, and inflating the *small* reading is what would make
-    a quadratic pattern look linear here.
+
+def _growth_ratio(pattern, build, run):
+    """Time at LARGE divided by time at SMALL, fastest of REPEATS runs each.
+
+    Fastest rather than slowest, on both readings. Timing noise on a shared
+    CI runner is one-sided -- a descheduled process only ever takes *longer*
+    than the work it did -- so the minimum of several readings is the closest
+    estimate of the real cost, and it is the only summary that does not carry
+    the noise into the answer.
+
+    This used to take the *worst* of three, on both readings, to stop a
+    hiccup in the SMALL reading from deflating the ratio and making a
+    quadratic pattern look linear. That reasoning is right about the
+    denominator and buys it by inflating the numerator, which is where a
+    false failure comes from: on 2026-09-07 a `main` build failed here at
+    8.27x on a pattern that measures 1.5x-4x, and the merge under it had
+    touched nothing but a workflow file. Taking the minimum answers the
+    original worry directly -- the minimum SMALL reading is the least
+    inflated one available -- rather than trading one bias for another.
+
+    The controls at the bottom of this file are what keep that honest: a
+    genuinely quadratic pattern's fastest reading is still ~16x its own
+    fastest small reading, so min/min cannot make one look linear.
     """
-    def worst(n):
-        return max(_seconds(pattern, build(n), run) for _ in range(3))
-    base = worst(SMALL)
+    def fastest(n):
+        return min(_seconds(pattern, build(n), run) for _ in range(REPEATS))
+    base = fastest(SMALL)
     if base < 1e-6:  # too fast to divide by; the pattern is not the problem
         base = 1e-6
-    return worst(LARGE) / base
+    return fastest(LARGE) / base
 
 
 MATCH = lambda pattern, subject: pattern.match(subject)
@@ -146,3 +165,29 @@ def test_wikilink_still_masks_the_pipe_it_was_written_for():
     assert nova_boards._WIKILINK_RE.findall(line) == [
         "[[#57 — More pages in the Nova app|57]]"
     ]
+
+
+def test_one_slow_reading_does_not_fail_a_linear_pattern():
+    """The regression this estimator change is for.
+
+    A single descheduled reading at LARGE used to be the answer, because the
+    ratio was worst-over-worst. Here a fake pattern costs the same at both
+    sizes -- perfectly flat, so the honest ratio is 1 -- and one reading in
+    the run is a hundred times slower. Taking the minimum reads through it.
+    """
+    calls = {"n": 0}
+
+    class FlatPattern:
+        pattern = "<flat>"
+
+        def match(self, subject):
+            calls["n"] += 1
+            # One hiccup, in the LARGE half: the SMALL readings come first.
+            time.sleep(0.02 if calls["n"] == REPEATS + 1 else 0.0002)
+
+    ratio = _growth_ratio(FlatPattern(), lambda n: "x" * n, MATCH)
+    assert calls["n"] == 2 * REPEATS, "both sizes should be sampled REPEATS times"
+    assert ratio < CEILING, (
+        f"a flat pattern with one slow reading measured {ratio:.1f}x -- the "
+        "estimator is carrying the hiccup into the answer"
+    )
