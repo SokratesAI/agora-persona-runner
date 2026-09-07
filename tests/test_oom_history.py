@@ -1,5 +1,9 @@
 """The kernel log is the one record of an OOM kill that survives the restart."""
+import io
+import json
 import subprocess
+import urllib.error
+import urllib.parse
 from datetime import datetime, timezone
 
 from tools import oom_history
@@ -24,11 +28,39 @@ GLOBAL_KILL = """\
 NOW = datetime(2026, 9, 2, 16, 30, tzinfo=timezone.utc)
 
 
-def lines(events, hours=24, pod_names=None, now=NOW, node="server1"):
+class FakeProm:
+    """Stands in for urllib.request.urlopen against Prometheus.
+
+    `series` is the list of label dicts one query answers with; passing an
+    exception instance instead makes the call fail the way an unreachable
+    Prometheus does. Records every URL so a test can assert what was asked.
+    """
+
+    def __init__(self, series=(), status="success"):
+        self.series = series
+        self.status = status
+        self.urls = []
+
+    def __call__(self, url, timeout=None):
+        self.urls.append(url)
+        if isinstance(self.series, Exception):
+            raise self.series
+        payload = {
+            "status": self.status,
+            "data": {"result": [{"metric": m, "value": [0, "1"]} for m in self.series]},
+        }
+        return io.StringIO(json.dumps(payload))
+
+
+def namer(pod_names=None, opener=None):
+    return oom_history.PodNamer(pod_names or {}, opener=opener or FakeProm())
+
+
+def lines(events, hours=24, pod_names=None, now=NOW, node="server1", opener=None):
     got = []
     status = oom_history.report(
         node, oom_history.within(events, hours, now=now), hours,
-        pod_names or {}, "swept.", out=got.append)
+        namer(pod_names, opener), "swept.", out=got.append)
     return status, "\n".join(got)
 
 
@@ -108,14 +140,97 @@ def test_a_kill_older_than_the_window_is_not_reported():
     assert "no OOM kill on server1 in the window." in text
 
 
-def test_a_live_pod_is_named_and_a_dead_one_is_left_as_its_uid():
+def test_a_live_pod_is_named_and_a_dead_one_nothing_remembers_is_left_as_its_uid():
     events = oom_history.parse_events(BRIDGE_KILL)
     uid = "2c7713fd-2aed-4fa2-a60f-f006ab94b3df"
     _, named = lines(events, pod_names={uid: "agents/agora-claude-bridge-67459f6f88-w5x2b"})
     assert "agents/agora-claude-bridge-67459f6f88-w5x2b" in named
     _, unnamed = lines(events, pod_names={})
-    assert "gone since, cannot be named" in unnamed
+    assert "Prometheus holds no cAdvisor sample" in unnamed
     assert uid in unnamed
+
+
+# --- naming a pod the API server has already lost -------------------------
+#
+# Cycle 1165. The 09:11 Oslo kill on server1 that day was a uid and nothing
+# else, because the pod was gone. cAdvisor writes the whole cgroup path into
+# its `id` label, so the uid joins onto a pod name inside Prometheus.
+
+CADVISOR = {
+    "id": ("/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-"
+           "pod2c7713fd_2aed_4fa2_a60f_f006ab94b3df.slice/cri-containerd-cab.scope"),
+    "namespace": "agents",
+    "pod": "agora-persona-runner-dcc6df8c6-mqn7z",
+    "container": "persona-runner",
+    "node": "server1",
+}
+
+
+def test_a_pod_the_api_server_lost_is_named_from_prometheus():
+    prom = FakeProm([CADVISOR])
+    _, text = lines(oom_history.parse_events(BRIDGE_KILL), opener=prom)
+    assert "agents/agora-persona-runner-dcc6df8c6-mqn7z" in text
+    assert "container persona-runner" in text
+    assert "cannot" not in text
+
+
+def test_the_query_asks_for_the_uid_the_kernel_spells_with_underscores():
+    # The kernel writes pod2c7713fd_2aed_..., Kubernetes writes 2c7713fd-2aed-...
+    # A query built from the Kubernetes spelling matches nothing at all.
+    prom = FakeProm([CADVISOR])
+    lines(oom_history.parse_events(BRIDGE_KILL), opener=prom)
+    assert len(prom.urls) == 1
+    assert "pod2c7713fd_2aed_4fa2_a60f_f006ab94b3df" in urllib.parse.unquote(prom.urls[0])
+    assert "2c7713fd-2aed" not in urllib.parse.unquote(prom.urls[0])
+
+
+def test_the_query_asks_at_the_instant_of_the_kill_not_now():
+    # A pod that died yesterday has no sample at the current instant; the
+    # series only exists around the kill.
+    prom = FakeProm([CADVISOR])
+    lines(oom_history.parse_events(BRIDGE_KILL), opener=prom)
+    asked = urllib.parse.parse_qs(urllib.parse.urlparse(prom.urls[0]).query)
+    when = oom_history.parse_events(BRIDGE_KILL)[0]["when"]
+    assert when.date() == datetime(2026, 9, 2).date()
+    assert float(asked["time"][0]) == round(when.timestamp(), 3)
+    assert float(asked["time"][0]) != NOW.timestamp()
+
+
+def test_a_live_pod_is_never_asked_about():
+    prom = FakeProm([CADVISOR])
+    uid = "2c7713fd-2aed-4fa2-a60f-f006ab94b3df"
+    lines(oom_history.parse_events(BRIDGE_KILL), pod_names={uid: "agents/live"}, opener=prom)
+    assert prom.urls == []
+
+
+def test_an_unreachable_prometheus_says_so_rather_than_reading_as_no_such_pod():
+    prom = FakeProm(urllib.error.URLError("connection refused"))
+    status, text = lines(oom_history.parse_events(BRIDGE_KILL), opener=prom)
+    assert "Prometheus could not be asked" in text
+    assert "connection refused" in text
+    # Naming is presentation. Whether a cgroup-limit kill happened does not
+    # depend on whether Prometheus answered.
+    assert status == 2
+
+
+def test_a_series_with_no_pod_label_is_not_read_as_a_name():
+    prom = FakeProm([{"id": "/kubepods.slice/whatever.slice"}])
+    _, text = lines(oom_history.parse_events(BRIDGE_KILL), opener=prom)
+    assert "holds no cAdvisor sample" in text
+
+
+def test_prometheus_is_asked_once_per_uid_however_many_kills_it_had():
+    prom = FakeProm([CADVISOR])
+    twice = oom_history.parse_events(BRIDGE_KILL + BRIDGE_KILL.replace("09:08:5", "09:09:5"))
+    _, text = lines(twice, opener=prom)
+    assert text.count("agora-persona-runner-dcc6df8c6-mqn7z") == 2
+    assert len(prom.urls) == 1
+
+
+def test_a_status_that_is_not_success_is_reported_not_read_as_no_such_pod():
+    prom = FakeProm([CADVISOR], status="error")
+    _, text = lines(oom_history.parse_events(BRIDGE_KILL), opener=prom)
+    assert "Prometheus could not be asked" in text
 
 
 def test_the_victims_rss_is_printed_so_a_kill_says_what_asked_for_the_memory():
@@ -166,7 +281,8 @@ def test_a_kill_on_the_second_node_is_found_and_raises():
     # server2 produced byte-identical output to no kill anywhere.
     runner = cluster({"server1": "", "server2": BRIDGE_KILL})
     got = []
-    assert oom_history.main([], runner=runner, out=got.append, now=NOW) == 2
+    assert oom_history.main([], runner=runner, out=got.append, now=NOW,
+                            namer_factory=namer) == 2
     text = "\n".join(got)
     assert "CGROUP LIMIT OOM on server2" in text
     assert "MainThread" in text
@@ -194,7 +310,8 @@ def test_a_node_that_cannot_be_read_makes_the_sweep_partial_not_clean():
 def test_a_real_kill_outranks_an_unreadable_node():
     runner = cluster({"server1": BRIDGE_KILL, "server2": None})
     got = []
-    assert oom_history.main([], runner=runner, out=got.append, now=NOW) == 2
+    assert oom_history.main([], runner=runner, out=got.append, now=NOW,
+                            namer_factory=namer) == 2
     assert "Could not read server2" in "\n".join(got)
 
 
