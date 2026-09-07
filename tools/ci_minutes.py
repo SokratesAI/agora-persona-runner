@@ -37,6 +37,22 @@ Free plan's included private-repo minutes; it is a constant here rather
 than a reading because no API this token can reach publishes it, and
 `--allowance` moves it if the plan changes.
 
+**The projection runs off the last few complete days, not off the whole
+month, and that is Cycle 1125's correction.** The endpoint carries a `date`
+on every row and this tool threw it away, so a month-to-date average was the
+only rate it could compute -- and an average cannot see a step change. On
+2026-09-05 `platform-config` lost its `pull_request` trigger and its private
+burn fell from 172 minutes a day to 6; the next morning the average was still
+68/day and still projecting an overrun, entirely off minutes that had already
+been spent. `tools.cadence_control` asks this same question before it may make
+the loop run more often, so a stale overrun does not just misreport -- it holds
+the cadence down on a bill that stopped. The per-day series is printed whole
+beside the rate, because a step change is the one thing a single number cannot
+show. When the window cannot be filled -- fewer than `--trailing-days` complete
+days this month, or any row with no date -- the month average is used and is
+labelled as the fallback, since a window that could not be measured must never
+read as a quiet one.
+
 **The projection needs enough month behind it to mean anything.** One day
 of data extrapolated over thirty is not a forecast, so below
 `--min-days` elapsed the run rate is printed and does not raise. Above
@@ -57,7 +73,7 @@ import collections
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 ORG = "SokratesAI"
 
@@ -69,6 +85,11 @@ FREE_PLAN_MINUTES = 2000
 #: extrapolating. Three is the point at which a single anomalous day stops
 #: dominating the average.
 MIN_DAYS_FOR_PROJECTION = 3
+
+#: Complete days of history a trailing window needs before its rate may stand in
+#: for the month-to-date average. Three, matching the floor above, because one
+#: quiet day is a weekend and must not be able to clear a real burn on its own.
+TRAILING_WINDOW_DAYS = 3
 
 
 def _gh(path, org):
@@ -138,6 +159,73 @@ def split_minutes(items, visibility):
     return private, public, unknown, net
 
 
+def daily_private_minutes(items, visibility):
+    """`(by_day, undated)` -- private Actions minutes per calendar day.
+
+    The billing endpoint carries a `date` on every row and `split_minutes`
+    throws it away, which is why this tool could only ever report one number
+    for a whole month. A day with no usage has no row rather than a zero row,
+    so an absent key is a real zero; `undated` is the minutes on rows with no
+    usable date, and a non-zero value means the series has a hole in it.
+    """
+    by_day = collections.Counter()
+    undated = 0.0
+    for item in items:
+        if item.get("unitType") != "Minutes":
+            continue
+        name = item.get("repositoryName", "")
+        if not visibility.get(name):        # public, or unlisted: not billed here
+            continue
+        qty = float(item.get("quantity", 0.0))
+        date = str(item.get("date") or "")[:10]
+        if len(date) == 10:
+            by_day[date] += qty
+        else:
+            undated += qty
+    return by_day, undated
+
+
+def trailing_rate(by_day, undated, now, window=TRAILING_WINDOW_DAYS):
+    """`(rate, reason)` -- minutes/day over the last `window` *complete* days.
+
+    Today is excluded because it is a partial day and would read as a drop
+    every morning. Returns `(None, reason)` when the window cannot be filled,
+    and the caller falls back to the month-to-date average and says so -- a
+    window that could not be measured must never read as a quiet one.
+    """
+    if undated > 0:
+        return (None, f"{undated:.0f} billable minute(s) carry no date, so the "
+                      f"per-day series is incomplete")
+    days = []
+    for back in range(1, window + 1):
+        day = now.date() - timedelta(days=back)
+        if day.month != now.month:
+            return (None, f"only {back - 1} complete day(s) of this month are behind "
+                          f"us, and the window needs {window}")
+        days.append(day.isoformat())
+    return (sum(by_day.get(d, 0.0) for d in days) / window,
+            "the last %d complete day(s): %s" % (window, ", ".join(reversed(days))))
+
+
+def resolve_rate(by_day, undated, now, used, elapsed_days,
+                 window=TRAILING_WINDOW_DAYS):
+    """`(rate, label)` -- the minutes/day figure to project the month end from.
+
+    The trailing window when the series can carry one, because the question is
+    what the *rest* of the month costs and only recent days answer that. A
+    month-to-date average cannot see a step change: on 2026-09-06 this repo's
+    private burn fell from 172 minutes a day to 6 when `platform-config` lost
+    its `pull_request` trigger, and the average went on projecting an overrun
+    off minutes that had already been spent. Falls back to the average, named
+    as such, when the window cannot be filled.
+    """
+    rate, reason = trailing_rate(by_day, undated, now, window)
+    if rate is None:
+        return (used / max(elapsed_days, 1e-9),
+                f"month to date; no trailing window because {reason}")
+    return (rate, reason)
+
+
 def month_progress(now):
     """Return (elapsed_days, days_in_month) as floats, elapsed including today."""
     days_in_month = calendar.monthrange(now.year, now.month)[1]
@@ -147,7 +235,8 @@ def month_progress(now):
 
 
 def projected_overrun(used, allowance, elapsed_days, days_in_month, net=0.0,
-                      min_days=MIN_DAYS_FOR_PROJECTION):
+                      min_days=MIN_DAYS_FOR_PROJECTION, rate=None,
+                      rate_label="month to date"):
     """`(kind, reason)` -- is the private-minute allowance past, or heading past, its ceiling?
 
     `kind` is `"charged"` (GitHub has already billed for it), `"spent"` (the
@@ -173,18 +262,19 @@ def projected_overrun(used, allowance, elapsed_days, days_in_month, net=0.0,
                 f"{used / max(elapsed_days, 1e-9):.0f} minute(s)/day with only "
                 f"{elapsed_days:.1f} day(s) behind it -- below the {min_days:g}-day "
                 f"floor, so it is not judged")
-    rate = used / elapsed_days
+    if rate is None:
+        rate = used / elapsed_days
     projected = used + rate * remaining_days
     if projected > allowance:
         headroom = allowance - used
         days_left = headroom / rate if rate > 0 else float("inf")
         return ("projected",
-                f"{rate:.0f} minute(s)/day projects to {projected:.0f} against the "
+                f"{rate:.0f} minute(s)/day ({rate_label}) projects to {projected:.0f} against the "
                 f"{allowance}-minute allowance, and the remaining {headroom:.0f} "
                 f"minute(s) last {days_left:.1f} more day(s) of the "
                 f"{remaining_days:.1f} left in the month")
     return (None,
-            f"{rate:.0f} minute(s)/day projects to {projected:.0f}, inside the "
+            f"{rate:.0f} minute(s)/day ({rate_label}) projects to {projected:.0f}, inside the "
             f"{allowance}-minute allowance")
 
 
@@ -207,7 +297,10 @@ def allowance_pressure(org=ORG, allowance=FREE_PLAN_MINUTES, now=None, gh=None):
     private, _public, _unknown, net = split_minutes(items, visibility)
     used = sum(private.values())
     elapsed, days_in_month = month_progress(now)
-    kind, reason = projected_overrun(used, allowance, elapsed, days_in_month, net)
+    by_day, undated = daily_private_minutes(items, visibility)
+    rate, label = resolve_rate(by_day, undated, now, used, elapsed)
+    kind, reason = projected_overrun(used, allowance, elapsed, days_in_month, net,
+                                     rate=rate, rate_label=label)
     return (kind is not None, reason)
 
 
@@ -216,6 +309,8 @@ def main(argv=None):
     parser.add_argument("--org", default=ORG)
     parser.add_argument("--allowance", type=int, default=FREE_PLAN_MINUTES)
     parser.add_argument("--min-days", type=float, default=MIN_DAYS_FOR_PROJECTION)
+    parser.add_argument("--trailing-days", type=int, default=TRAILING_WINDOW_DAYS,
+                        help="complete days the trailing rate is averaged over")
     args = parser.parse_args(argv)
 
     now = datetime.now(timezone.utc)
@@ -231,6 +326,9 @@ def main(argv=None):
     used = sum(private.values())
     elapsed, days_in_month = month_progress(now)
     remaining_days = days_in_month - elapsed
+    by_day, undated = daily_private_minutes(items, visibility)
+    rate, rate_label = resolve_rate(by_day, undated, now, used, elapsed,
+                                    args.trailing_days)
 
     if private:
         print("Billable minutes by repository:")
@@ -242,6 +340,17 @@ def main(argv=None):
         f"Public-repository minutes are free and are not counted here: "
         f"{sum(public.values()):.0f} minute(s) across {len(public)} public repo(s)."
     )
+    if by_day:
+        # Printed whole rather than summarised: a step change is the one thing
+        # a single rate cannot show, and this is the data the rate is made of.
+        print("Billable minutes by day (today is partial and is not projected from):")
+        for day in sorted(by_day):
+            print(f"    {day}  {by_day[day]:6.0f}")
+    if undated:
+        print(
+            f"UNREADABLE  {undated:.0f} billable minute(s) carry no date, so the per-day "
+            f"series above is incomplete and the projection falls back to the month average."
+        )
 
     status = 0
 
@@ -249,7 +358,7 @@ def main(argv=None):
     # `tools.cadence_control` asks the same question before it makes this
     # loop run more often. What stays here is the wording.
     kind, _verdict = projected_overrun(used, args.allowance, elapsed, days_in_month, net,
-                                       args.min_days)
+                                       args.min_days, rate=rate, rate_label=rate_label)
     if kind == "charged":
         print(f"ACT  GitHub has charged ${net:.2f} for Actions minutes this month -- the allowance is spent.")
         status = 2
@@ -263,9 +372,10 @@ def main(argv=None):
             f"are behind it -- below the {args.min_days:g}-day floor, so it is printed and not judged."
         )
     else:
-        rate = used / elapsed
         projected = used + rate * remaining_days
-        print(f"Run rate {rate:.0f} minute(s)/day projects to {projected:.0f} by month end.")
+        print(f"Run rate {rate:.0f} minute(s)/day over {rate_label} projects to "
+              f"{projected:.0f} by month end "
+              f"(month to date is {used / max(elapsed, 1e-9):.0f} minute(s)/day).")
         if kind == "projected":
             headroom = args.allowance - used
             days_left = headroom / rate if rate > 0 else float("inf")
