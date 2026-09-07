@@ -1,5 +1,6 @@
 """Does the dropped-firing count survive a grid that is not the fixture's?"""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from tools import heartbeat_gaps as hg
@@ -105,12 +106,19 @@ def test_unreadable_is_exit_one_and_says_so():
     assert "not a clean sweep" in text
 
 
-def test_dropped_firings_do_not_raise():
+def test_dropped_firings_a_rollout_accounts_for_do_not_raise():
+    # This used to assert that NO dropped firing raises, on the premise that
+    # the runner was `strategy: Recreate` and every drop was by design. The
+    # premise expired on 2026-09-06; the exemption survives only for slots a
+    # rollout actually landed in. Runs at 02:30, 02:15 and 01:45, so 02:00
+    # and 01:30 are the missed slots -- one rollout inside each period.
     row = hg.judge(_heartbeat(), _conversations([0, 15, 45]), NOW, 1)
-    text, status = hg.format_report([row], None, 1, 4)
-    assert status == 0
+    rolled = [NOW - timedelta(minutes=35), NOW - timedelta(minutes=65)]
+    text, status = hg.format_report([row], None, 1, 4, rolled, {"type": "Recreate"})
+    assert status == 0, text
     assert "2 firing(s) produced no run" in text
     assert "01:30" in text
+    assert "UNEXPLAINED" not in text
 
 
 def test_only_unjudged_rows_is_exit_one():
@@ -152,3 +160,119 @@ def test_fetch_conversations_reports_an_error_rather_than_an_empty_list():
     rows, error = hg.fetch_conversations(opener=boom)
     assert rows == []
     assert "could not read" in error
+
+
+# --- attributing a missed slot to a rollout ------------------------------
+#
+# The check used to end on a fixed sentence asserting the runner is
+# `strategy: Recreate` and that every dropped firing is therefore by
+# design. It moved to RollingUpdate on 2026-09-06 and the sentence did not,
+# so four lost cycles a day were being explained away by a premise that had
+# stopped being true. These fix the shape of that: read it, attribute what
+# a rollout accounts for, and charge what it does not.
+
+
+class _Proc:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+
+def _fake_kubectl(by_resource):
+    """A `subprocess.run` that answers per resource, and records the args."""
+    def run(argv, capture_output=None, text=None):
+        for key, proc in by_resource.items():
+            if key in argv:
+                return proc
+        return _Proc(returncode=1, stderr=f"unexpected: {argv}")
+    return run
+
+
+def test_a_rollout_inside_the_slots_own_period_explains_it():
+    slot = NOW
+    rollout = NOW - timedelta(minutes=10)
+    explained, unexplained = hg.attribute([slot], [rollout], 900)
+    assert explained == [slot] and unexplained == []
+
+
+def test_a_rollout_older_than_the_period_explains_nothing():
+    # The boundary matters: a rollout exactly one period back belongs to the
+    # PREVIOUS slot, and lending it forward is how every miss gets excused.
+    slot = NOW
+    explained, unexplained = hg.attribute([slot], [NOW - timedelta(seconds=900)], 900)
+    assert explained == [] and unexplained == [slot]
+
+
+def test_a_rollout_after_the_slot_explains_nothing():
+    slot = NOW - timedelta(minutes=30)
+    explained, unexplained = hg.attribute([slot], [NOW], 900)
+    assert unexplained == [slot]
+
+
+def test_an_unexplained_slot_raises_and_an_explained_one_does_not():
+    # Runs at 02:30, 02:15, 01:45, 01:30 -- 02:00 is the missed slot.
+    row = hg.judge(_heartbeat(), _conversations([0, 15, 45, 60]), NOW, 1)
+    rolled = NOW - timedelta(minutes=35)   # inside 01:45..02:00
+    text, status = hg.format_report([row], None, 1, 4, [rolled], {"type": "RollingUpdate"})
+    assert status == 0, text
+    assert "UNEXPLAINED" not in text
+
+    text, status = hg.format_report([row], None, 1, 4, [], {"type": "RollingUpdate"})
+    assert status == 2, text
+    assert "UNEXPLAINED — 1 slot(s)" in text
+
+
+def test_a_missing_slot_count_reaches_the_line_preflight_reads():
+    row = hg.judge(_heartbeat(), _conversations([0, 15, 45, 60]), NOW, 1)
+    text, _ = hg.format_report([row], None, 1, 4, [], {"type": "RollingUpdate"})
+    assert "1 of them with no rollout to explain it" in text.splitlines()[-1]
+
+
+def test_an_unreadable_rollout_shape_is_neither_clean_nor_an_excuse():
+    row = hg.judge(_heartbeat(), _conversations([0, 15, 45, 60]), NOW, 1)
+    text, status = hg.format_report(
+        [row], None, 1, 4, [], None, "kubectl failed: Forbidden"
+    )
+    assert status == 1, text
+    assert "COULD NOT READ the runner's rollout shape" in text
+    # It must not charge the slot either -- an unattributable slot is not an
+    # unexplained one.
+    assert "UNEXPLAINED" not in text
+    assert "NOT ATTRIBUTED" in text
+
+
+def test_the_shape_is_read_off_the_live_deployment_not_asserted():
+    doc = {
+        "spec": {
+            "strategy": {
+                "type": "RollingUpdate",
+                "rollingUpdate": {"maxUnavailable": 1, "maxSurge": 1},
+            },
+            "template": {"spec": {"terminationGracePeriodSeconds": 2880}},
+        }
+    }
+    shape, error = hg.read_rollout_shape(
+        _fake_kubectl({"deploy": _Proc(stdout=json.dumps(doc))})
+    )
+    assert error is None
+    assert shape["type"] == "RollingUpdate"
+    assert shape["maxUnavailable"] == 1 and shape["grace"] == 2880
+
+
+def test_an_unreadable_deployment_is_an_error_not_a_default_shape():
+    shape, error = hg.read_rollout_shape(
+        _fake_kubectl({"deploy": _Proc(returncode=1, stderr="Forbidden")})
+    )
+    assert shape is None and "Forbidden" in error
+
+
+def test_rollout_instants_come_from_replicaset_creation_times():
+    doc = {"items": [
+        {"metadata": {"creationTimestamp": "2026-09-07T21:32:38Z"}},
+        {"metadata": {"creationTimestamp": "2026-09-07T17:42:06Z"}},
+        {"metadata": {}},
+    ]}
+    times, error = hg.read_rollout_instants(
+        _fake_kubectl({"rs": _Proc(stdout=json.dumps(doc))})
+    )
+    assert error is None
+    assert [t.strftime("%H:%M") for t in times] == ["17:42", "21:32"]
