@@ -4330,6 +4330,23 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 }
 .project-standing-move-btn:disabled { opacity: 0.3; cursor: default; }
 .project-standing-move-note { color: var(--dim); font-size: 0.85rem; }
+/* The grip he drags a standing by (idea #260, M3). `touch-action: none`
+   is on this element alone: it tells the browser not to claim the
+   vertical gesture for a scroll, and putting it on the row instead would
+   make the whole list unscrollable on the phone he reads it on. Same
+   44px target as the arrows beside it. */
+.project-standing-grip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 44px;
+  color: var(--dim); font-size: 1.2rem; line-height: 1;
+  cursor: grab; touch-action: none; user-select: none;
+}
+.project-standing--dragging {
+  position: relative; z-index: 2; opacity: 0.85;
+  background: var(--card, transparent);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+.project-standing--dragging .project-standing-grip { cursor: grabbing; }
 .project-standing-track {
   margin-top: 6px;
   height: 6px;
