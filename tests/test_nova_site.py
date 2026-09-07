@@ -5713,12 +5713,13 @@ def test_the_warm_logs_what_each_payload_cost(journal_md):
     assert timed, "the warm logged nothing at all"
     for name, _ in nova_site.WARM_PAYLOADS:
         assert any(
-            re.fullmatch(rf"nova-site warm {re.escape(name)} \d+\.\d\ds", ln)
+            re.match(rf"nova-site warm {re.escape(name)} \d+\.\d\ds( |$)", ln)
             for ln in timed
         ), f"no elapsed time logged for {name}: {timed}"
     assert any(
         re.fullmatch(
-            rf"nova-site warm done \d+\.\d\ds over {len(nova_site.WARM_PAYLOADS)} payload\(s\)",
+            rf"nova-site warm done \d+\.\d\ds over {len(nova_site.WARM_PAYLOADS)} payload\(s\)"
+            rf"( \(throttling not measurable here\))?",
             ln,
         )
         for ln in timed
@@ -5756,13 +5757,13 @@ def test_a_warm_payload_that_fails_is_still_timed_and_does_not_stop_the_rest(jou
         for ln in lines
     ), f"the failing payload lost its elapsed time: {lines}"
     assert not any(
-        re.fullmatch(rf"nova-site warm {re.escape(first)} \d+\.\d\ds", ln) for ln in lines
+        re.match(rf"nova-site warm {re.escape(first)} \d+\.\d\ds( |$)", ln) for ln in lines
     ), "a payload that raised was logged as a clean build"
     assert any(ln.startswith("nova-site warm done ") for ln in lines), \
         f"one failure took the total with it: {lines}"
     later = nova_site.WARM_PAYLOADS[1][0]
     assert any(
-        re.fullmatch(rf"nova-site warm {re.escape(later)} \d+\.\d\ds", ln) for ln in lines
+        re.match(rf"nova-site warm {re.escape(later)} \d+\.\d\ds( |$)", ln) for ln in lines
     ), "a failure stopped the payloads after it"
 
 
@@ -5802,11 +5803,81 @@ def test_the_warm_total_covers_the_whole_run_not_one_payload(journal_md):
     for name, _ in nova_site.WARM_PAYLOADS:
         one = [
             ln for ln in lines
-            if re.fullmatch(rf"nova-site warm {re.escape(name)} \d+\.\d\ds", ln)
+            if re.match(rf"nova-site warm {re.escape(name)} \d+\.\d\ds( |$)", ln)
         ]
         assert len(one) == 1, f"expected one timing line for {name}: {lines}"
-        took = float(re.search(r" (\d+\.\d\d)s$", one[0]).group(1))
+        took = float(re.match(r"nova-site warm \S+ (\d+\.\d\d)s", one[0]).group(1))
         assert per_payload <= took <= seconds, (
             f"{name} logged {took}s, outside the {per_payload}s it slept and the "
             f"{seconds}s the whole run took -- that is a clock, not a duration"
         )
+
+
+def test_the_warm_line_says_how_long_the_cpu_limit_stopped_it(tmp_path):
+    """The warm's wall clock cannot answer whether to parallelise it.
+
+    62.26s of startup build with 48.10s in the journal is a wall-clock
+    number, and a wall clock is compute plus throttling plus waiting. Only
+    the middle term decides the next move: if the CPU limit is what the
+    build is spending its time on, building the five payloads concurrently
+    makes it slower, not faster. So the line has to carry it.
+    """
+    stat = tmp_path / "cpu.stat"
+    stat.write_text("nr_periods 100\nnr_throttled 10\nthrottled_usec 1500000\n")
+    lines = []
+
+    def build(name, build_fn):
+        # Halfway through this payload the counter moves: 0.75s more
+        # throttling over 5 more periods. Written from inside the build so
+        # the delta can only come from a before/after pair around it.
+        stat.write_text("nr_periods 140\nnr_throttled 15\nthrottled_usec 2250000\n")
+        return ({}, "{}", 'W/"x"')
+
+    with patch.object(nova_site, "CPU_STAT", str(stat)), \
+            patch.object(nova_site, "cached_payload", side_effect=build), \
+            patch.object(nova_site, "log", side_effect=lines.append):
+        nova_site.warm_cache()
+
+    first = next(l for l in lines if l.startswith("nova-site warm journal "))
+    assert "throttled 0.75s over 5 period(s)" in first, first
+    # The other four ran with the counter unmoving and must say so as zero
+    # rather than being dropped -- absent means unmeasurable, not idle.
+    second = next(l for l in lines if l.startswith("nova-site warm digest "))
+    assert "throttled 0.00s over 0 period(s)" in second, second
+    assert " cpu " in first, "the compute half of the split is missing"
+
+
+def test_a_warm_that_cannot_read_the_counter_prints_no_throttle_number(tmp_path):
+    """A zero and an unreadable counter mean opposite things.
+
+    "Not throttled" says parallelising is safe; "not measured" says I do
+    not know. If an unreadable counter printed 0.00s the two would be one
+    string, and the safe-looking one is the wrong one to guess.
+    """
+    lines = []
+    with patch.object(nova_site, "CPU_STAT", str(tmp_path / "absent")), \
+            patch.object(nova_site, "cached_payload",
+                         side_effect=lambda n, b: ({}, "{}", 'W/"x"')), \
+            patch.object(nova_site, "log", side_effect=lines.append):
+        nova_site.warm_cache()
+
+    assert not any("throttled" in l for l in lines if " warm journal " in l), lines
+    done = next(l for l in lines if l.startswith("nova-site warm done "))
+    assert "throttling not measurable here" in done, done
+
+
+def test_the_throttle_counter_is_read_not_guessed(tmp_path):
+    """`cgroup_throttle` converts microseconds to seconds and hands back
+    the period count beside it, and answers None on anything it cannot
+    parse rather than a pair of zeros."""
+    stat = tmp_path / "cpu.stat"
+    stat.write_text(
+        "usage_usec 1\nnr_periods 110919\nnr_throttled 8201\n"
+        "throttled_usec 438024510\nnr_bursts 0\n"
+    )
+    assert nova_site.cgroup_throttle(str(stat)) == (438.02451, 8201)
+
+    stat.write_text("nr_periods 100\nnr_throttled 3\n")
+    assert nova_site.cgroup_throttle(str(stat)) is None, \
+        "a file with no throttled_usec is unmeasured, not unthrottled"
+    assert nova_site.cgroup_throttle(str(tmp_path / "absent")) is None
