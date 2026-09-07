@@ -2331,6 +2331,49 @@ WARM_PAYLOADS = (
 )
 
 
+CPU_STAT = "/sys/fs/cgroup/cpu.stat"
+
+
+def cgroup_throttle(path=None):
+    """How long this container has been forcibly stopped by its CPU limit.
+
+    Returns `(throttled_seconds, throttled_periods)` off cgroup v2's own
+    counters, or `None` when they cannot be read.
+
+    `None` rather than zeros, deliberately, and it is the whole reason this
+    is a function rather than two `open()` calls in `warm_cache`. A container
+    that was never throttled and a kernel that does not publish the counter
+    both produce no number, and they mean opposite things: the first says
+    "parallelising this is safe", the second says "I did not measure it". A
+    zero here would read as the first while being the second, which is the
+    positive-result-guaranteed-in-advance failure `prompt.md` warns about.
+
+    Cgroup v2 only. v1 keeps the same numbers under `cpu/cpu.stat` with
+    different key names, and this cluster is v2 on both nodes, so a v1
+    fallback would be untested code guarding a case that cannot occur here.
+
+    The number covers the **whole container**, not the calling thread, so a
+    request served while a warm runs is throttled into the warm's window.
+    That is the right scope for the question this exists to answer -- "was
+    the container stopped while this build ran" -- and it is why the caller
+    reports it beside a per-thread CPU time rather than instead of one.
+    """
+    # Resolved here rather than as a default argument: a default binds
+    # the module constant once at import, so a test that points the
+    # constant at a fixture would still read the real cgroup file.
+    path = CPU_STAT if path is None else path
+    try:
+        with open(path, encoding="utf-8") as fh:
+            stat = dict(
+                (line.split()[0], line.split()[1])
+                for line in fh
+                if len(line.split()) == 2
+            )
+        return int(stat["throttled_usec"]) / 1e6, int(stat["nr_throttled"])
+    except (OSError, KeyError, ValueError, IndexError):
+        return None
+
+
 def warm_cache():
     """Build what a first visit asks for, before anyone asks for it.
 
@@ -2429,10 +2472,31 @@ def warm_cache():
     on this pod", not "this build is expensive" -- and that is the
     distinction the next decision needs, because parallelising a warm that
     is throttled rather than waiting would make it slower.
+
+    So each line now carries two more numbers beside the wall clock, and
+    together the three of them decide that. `cpu` is `time.thread_time()`,
+    which is CPU actually burnt by this thread and nothing else -- the warm
+    owns its thread, so it is this build's compute and not the process's.
+    `throttled` is the container's own cgroup counter over the same window.
+    The wall clock is the sum of three things: compute, time the kernel
+    took the CPU away, and time spent waiting on the vault. Two of them are
+    now printed, so the third is the subtraction:
+
+      wall ~= cpu           -> compute-bound; concurrency needs spare cores
+      throttled dominates   -> the CPU limit is the cost; raise it, do NOT
+                               parallelise, that makes it worse
+      the remainder dominates -> waiting on I/O; concurrency is the fix
+
+    `throttled` is omitted from the line entirely when the counter cannot
+    be read, and the run line says so once. A zero would read as "not
+    throttled" while meaning "not measured", and those point at opposite
+    decisions -- see `cgroup_throttle`.
     """
     started = time.monotonic()
     for name, build in WARM_PAYLOADS:
         at = time.monotonic()
+        cpu_at = time.thread_time()
+        throttle_at = cgroup_throttle()
         try:
             cached_payload(name, build)
         except Exception as e:
@@ -2443,11 +2507,29 @@ def warm_cache():
             # two payloads after this one unbuilt for no gain.
             log(f"nova-site warm {name} failed after {time.monotonic() - at:.2f}s: {e}")
         else:
-            log(f"nova-site warm {name} {time.monotonic() - at:.2f}s")
+            log(
+                f"nova-site warm {name} {time.monotonic() - at:.2f}s"
+                f" cpu {time.thread_time() - cpu_at:.2f}s"
+                + _throttled_since(throttle_at)
+            )
     log(
         f"nova-site warm done {time.monotonic() - started:.2f}s "
         f"over {len(WARM_PAYLOADS)} payload(s)"
+        + ("" if cgroup_throttle() else " (throttling not measurable here)")
     )
+
+
+def _throttled_since(before):
+    """The ` throttled ...` clause of a warm line, or nothing at all.
+
+    Nothing at all is the point: a payload built while the counter was
+    unreadable prints no throttle number rather than a zero, so a reader
+    can never mistake "I could not measure it" for "it was not throttled".
+    """
+    after = cgroup_throttle()
+    if before is None or after is None:
+        return ""
+    return f" throttled {after[0] - before[0]:.2f}s over {after[1] - before[1]} period(s)"
 
 
 def _build_lock(name):
