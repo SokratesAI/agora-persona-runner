@@ -350,7 +350,7 @@ _IMPORTANCE = {"immediate": 13.0, "high": 5.0, "medium": 2.0, "low": 1.0,
                "": 1.0}
 
 
-def milestone_ranks(rows):
+def milestone_ranks(rows, pins=None):
     """Open rows -> `{(project, milestone): rank}`, best first, per project.
 
     Milestone M4 of `task-prioritization-redesign.md`, and the tier that
@@ -394,6 +394,14 @@ def milestone_ranks(rows):
     returns 57 milestones against the live boards (measured 2026-09-07)
     and the tier is what orders them. A cycle reading the old sentence
     would think the milestone tier was still inert.
+
+    **`pins` is checked after the formula and overrides it**, and it is
+    the only state at this tier that is not recomputed from the rows --
+    `nova_boards.parse_milestone_pins` reads it out of `milestones.md`.
+    The spec puts the override here rather than in the formula on purpose:
+    a pin is a decision of his about one milestone, not a thumb on the
+    scale that changes what the others score. See `_apply_pins` for what
+    "position" means when the pin and the list disagree.
     """
     best = {}
     for row in rows or []:
@@ -415,7 +423,51 @@ def milestone_ranks(rows):
         scored.append((key, (0, -(carried["importance"] / cost))
                        if cost else (1, 0)))
     scored.sort(key=lambda pair: (pair[1], pair[0]))
-    return {key: position for position, (key, _) in enumerate(scored)}
+    order = [key for key, _ in scored]
+    return {key: position
+            for position, key in enumerate(_apply_pins(order, pins))}
+
+
+def _apply_pins(order, pins):
+    """Move each pinned milestone to the position he pinned it to.
+
+    The pin is applied **inside its own project** and nowhere else, which
+    is what a drag in a per-project list means: position 1 is the top of
+    that project's milestones, not the top of all 57. The slots the
+    project's milestones occupy in the global list are left exactly where
+    they were and only their contents are permuted, so pinning one
+    milestone in Marcus cannot reorder Nova's -- and with no pins at all
+    this returns `order` unchanged, so the computed ranking is the same
+    function it was before pins existed.
+
+    **A pin past the end of its project's list clamps rather than
+    disappears.** Milestones close, so a `4` he set when the project had
+    four of them means "last" once it has two, and the alternative is a
+    decision of his silently ceasing to apply. A pin naming a milestone no
+    open row carries is absent from `order` and is therefore ignored here;
+    it stays in the file, because the milestone may come back.
+
+    Two pins in one project are applied in ascending order of the position
+    he asked for, so the result does not depend on dict iteration order.
+    """
+    if not pins:
+        return order
+    wanted = {key: pins[key] for key in order if key in pins}
+    if not wanted:
+        return order
+    out = list(order)
+    for project in {key[0] for key in wanted}:
+        slots = [i for i, key in enumerate(out) if key[0] == project]
+        group = [out[i] for i in slots]
+        for key in sorted((k for k in wanted if k[0] == project),
+                          key=lambda k: (wanted[k], k)):
+            group.remove(key)
+            # `list.insert` past the end appends, which is the clamp --
+            # a `min()` here would be dead code that reads as the rule.
+            group.insert(wanted[key] - 1, key)
+        for slot, key in zip(slots, group):
+            out[slot] = key
+    return out
 
 
 _DATE_RE = re.compile(r"(\d{2})-(\d{2})\s*$")
