@@ -3569,9 +3569,42 @@ def test_a_warm_that_cannot_reach_the_vault_costs_only_the_warm():
     # list is the code under test, and a test that reads it back agrees
     # with whatever it says. A third payload added here should fail this
     # and be looked at.
-    assert attempted == ["journal", "digest", "board:issues", "board:ideas"], \
+    assert attempted == ["journal", "digest", "board:issues", "board:ideas", "next"], \
         "the payload behind the failing one was skipped"
     assert "journal" not in nova_site._cache, "a failed build must not be cached"
+
+
+def test_the_first_press_on_next_does_not_pay_for_its_own_build():
+    """`/api/next` is the slowest payload this server builds -- 7.41s cold
+    against the live pod on 2026-09-07, where every other unwarmed payload
+    was under 1.4s -- so the visitor who arrives after a roll and presses
+    Next in the sidebar is the one paying for it.
+
+    Counting builds rather than asserting the name is in `WARM_PAYLOADS`:
+    that list is the code under test, and a test that reads it back agrees
+    with whatever it says. This fails on a revert because the request does
+    the build.
+    """
+    nova_site.reset_cache()
+    builds = []
+
+    def counted(*args, **kwargs):
+        builds.append(1)
+        return {"projects": [], "waiting": []}
+
+    with patch.object(nova_site, "next_payload", side_effect=counted), \
+            patch.object(nova_site, "edvard_board_markdown", return_value=""), \
+            patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
+            patch.object(nova_site, "project_meta_markdown", return_value=""), \
+            patch.object(nova_site, "milestone_pins_markdown", return_value=""), \
+            patch.object(nova_sources, "vault_read_path", return_value=""):
+        nova_site.warm_cache()
+        assert builds, "the warm never built /api/next's payload"
+        during_warm = len(builds)
+        status, _head, _body = _get("/api/next")
+    assert status == 200
+    assert len(builds) == during_warm, \
+        "the first request rebuilt the payload the warm had already paid for"
 
 
 def test_nothing_is_warmed_that_the_request_path_will_not_read_back():

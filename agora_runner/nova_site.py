@@ -2324,6 +2324,10 @@ WARM_PAYLOADS = (
     # so the scanner in the test has a literal to compare against.
     ("board:issues", lambda: board_payload("issues")),
     ("board:ideas", lambda: board_payload("ideas")),
+    # Last, because it is the slowest and the three above it are what the
+    # landing page asks for -- a warm that spends its first seven seconds
+    # here leaves the journal cold for anyone who arrives mid-warm.
+    ("next", next_up_payload),
 )
 
 
@@ -2380,6 +2384,28 @@ def warm_cache():
     The general lesson is worth more than the two lines: **an exclusion justified by a number needs the number
     re-read, not the reasoning re-read.** Nothing here was wrong when it
     was written and nothing about it looked stale afterwards.
+
+    `next` was never on this list rather than excluded from it -- the page
+    did not exist when the list was written -- and it is now the slowest
+    thing this server builds. Measured against the live pod 2026-09-07
+    06:28 Oslo, 61 minutes into a process that had never been asked for
+    it: `/api/next` answered in **7.41s** cold and 0.10-0.21s on the four
+    requests after. Every other unwarmed payload was measured in the same
+    pass and none of them is close -- `/api/costs` 1.33s, `/api/plan`
+    0.25s, `/api/galaxy` 0.16s, `/api/retro` 0.10s, `/api/asks/chat`
+    0.33s -- so this is one outlier and not an argument for warming
+    everything. It also explains a reading nothing else did: the throttle
+    check found this container at 97.4% of its scheduling periods
+    throttled in the 20 seconds that build was running, against 0.0% over
+    the 91 seconds after it.
+
+    The counter-argument is the one written under `plans_payload` -- "nobody
+    lands here cold, it is reached from the nav" -- and it is the same
+    argument the boards were left out on. *Navigating* is exactly what
+    costs: a sidebar press into /next, seven seconds, on the first press
+    after almost any cycle merges. He asked for this page (survey
+    2026-08-30, "I have no idea on your plan for the next cycle"), so it
+    is not a page nobody opens.
 
     Sequential, on one thread, and never on the request path. Serving is
     already underway when this starts, so a visitor arriving mid-warm is
