@@ -4433,6 +4433,22 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-milestone-unpin { min-width: 0; padding: 0 12px; font-size: 0.85rem; }
 .project-milestone-move-btn:disabled { opacity: 0.3; cursor: default; }
 .project-milestone-move-note { color: var(--dim); font-size: 0.85rem; }
+/* The grip he drags a milestone by (idea #260, M4). Same rules as the
+   standing grip above and for the same reasons: `touch-action: none` on
+   this element alone, so a finger anywhere else on the row still scrolls
+   the page, and the same 44px target as the arrows beside it. */
+.project-milestone-grip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 44px;
+  color: var(--dim); font-size: 1.2rem; line-height: 1;
+  cursor: grab; touch-action: none; user-select: none;
+}
+.project-milestone--dragging {
+  position: relative; z-index: 2; opacity: 0.85;
+  background: var(--card, transparent);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+.project-milestone--dragging .project-milestone-grip { cursor: grabbing; }
 .project-roadmap-head { font-size: 0.95rem; margin: 0 0 8px; }
 .project-roadmap-rows { list-style: none; margin: 0; padding: 0; }
 .project-roadmap-row {
