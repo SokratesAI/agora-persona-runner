@@ -377,6 +377,16 @@ def run_heartbeat(heartbeat):
         # two halves may roll in either order without losing a cycle.
         log(f"heartbeat {heartbeat['name']}: claim PATCH failed (HTTP {claim_status}), "
             "run is unclaimed and may be duplicated by a restart or another replica")
+        # The spawn mark says "a claim for this lastRunAt is in flight". It
+        # is not, and it never will be: this run will not PATCH lastRunAt
+        # again until it finishes, so every due slot until then matches the
+        # mark and is dropped. `run_due_heartbeats` already recovers from
+        # this -- but only on a tick where NOTHING is in flight, and this
+        # run is in flight, for up to the full 45-minute turn cap. At an
+        # 18-minute cadence that is two more lost cycles per failed claim,
+        # and the only trace is `claim for lastRunAt=<x> not visible yet`
+        # in a pod log that dies with the pod.
+        _release_spawn_mark(heartbeat["id"], previous_run_at)
     persona = fetch_persona(heartbeat["personaId"])
     if persona is None:
         agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
@@ -659,6 +669,14 @@ _heartbeat_threads = {}
 # is not decoration -- without it a run that dies without ever moving
 # `lastRunAt` leaves a mark that matches every later tick forever, and the
 # heartbeat never runs again. See the comment at the drop site.
+#
+# That recovery only fires on an EMPTY tick, though, so it covers a run
+# that died and not one that is still going. A run whose claim PATCH came
+# back non-200 keeps running for up to the full turn cap and will not
+# touch `lastRunAt` again until it ends, so its mark suppresses every slot
+# in between while the recovery above never gets an empty tick to fire on.
+# `_release_spawn_mark` is the second half: the run itself clears its own
+# mark the moment its claim resolves as not landed.
 _heartbeat_spawn_marks = {}
 
 # "No mark recorded" — deliberately not None, because `lastRunAt` IS None on a
@@ -687,6 +705,22 @@ _NO_MARK = object()
 # POLL_INTERVAL_SECONDS (5s), so one 45-minute cycle holding the last
 # slot would print ~540 identical lines and bury the signal in itself.
 _heartbeat_dropped_ticks = {}
+
+
+def _release_spawn_mark(hb_id, mark):
+    """Forget the spawn mark `hb_id` was started against, if it is still ours.
+
+    Compare-and-clear rather than a bare `pop`: with a limit above 1 a
+    later run may already have spawned and written its own mark, and that
+    one is guarding a claim window that IS still open. Clearing it would
+    re-open the burst this mark exists to stop -- three runs for one slot.
+
+    Returns whether anything was cleared, so a caller can say so.
+    """
+    if _heartbeat_spawn_marks.get(hb_id, _NO_MARK) == mark:
+        _heartbeat_spawn_marks.pop(hb_id, None)
+        return True
+    return False
 
 
 def _drop_tick(hb_id, name, reason):

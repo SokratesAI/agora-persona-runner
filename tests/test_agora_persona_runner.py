@@ -9103,3 +9103,106 @@ def test_run_heartbeat_still_runs_when_the_claim_fails_for_any_other_reason(runn
 
         assert notify_calls, f"HTTP {status} must not abort the run"
         assert any("claim PATCH failed" in m and str(status) in m for m in logs), logs
+
+
+# ---------------------------------------------------------------------------
+# A failed claim must release its own spawn mark
+# ---------------------------------------------------------------------------
+
+def _run_heartbeat_with_claim_status(runner, status, marks, hb=None):
+    """Run `run_heartbeat` far enough to resolve its claim PATCH, no further.
+
+    `fetch_persona` returning None is the shortest legitimate exit after the
+    claim: the run gives up and PATCHes a failure. That keeps the test on the
+    claim and off the model, the bridge and the reply.
+    """
+    heartbeat = hb if hb is not None else _plain_hb()
+    with patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+         patch.object(runner.heartbeats, "fetch_persona", return_value=None), \
+         patch.object(runner.heartbeats, "log"), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(status, {})):
+        runner.run_heartbeat(heartbeat)
+    return marks
+
+
+def test_a_failed_claim_releases_the_spawn_mark_it_was_started_against(runner):
+    """The wedge `_drop_tick`'s docstring names and nothing recovered from.
+
+    `run_due_heartbeats` does drop a stale mark -- but only on a tick where
+    nothing is in flight. A run whose claim PATCH comes back non-200 keeps
+    running for up to the 45-minute turn cap and never touches `lastRunAt`
+    again until it ends, so there IS no empty tick, and every 18-minute slot
+    in between reads `mark == lastRunAt` and is declined.
+    """
+    marks = _run_heartbeat_with_claim_status(
+        runner, 503, {"hb1": "2026-08-23T19:00:00+00:00"})
+
+    assert "hb1" not in marks, "an unclaimed run kept fencing off its own heartbeat"
+
+
+def test_a_claim_that_landed_keeps_its_spawn_mark(runner):
+    """The precondition the test above would pass without.
+
+    Clearing the mark unconditionally would pass that assertion and delete
+    the burst guard: `run_heartbeat` PATCHes `lastRunAt` from its own thread,
+    and until that write is visible the mark is the only thing stopping three
+    ticks spawning three runs for one slot.
+    """
+    marks = _run_heartbeat_with_claim_status(
+        runner, 200, {"hb1": "2026-08-23T19:00:00+00:00"})
+
+    assert marks == {"hb1": "2026-08-23T19:00:00+00:00"}
+
+
+def test_a_failed_claim_leaves_a_later_runs_mark_alone(runner):
+    """Compare-and-clear, not `pop`.
+
+    With a limit of 3 a later slot can spawn and write its own mark before an
+    earlier run gets round to giving up. That mark guards a claim window that
+    is still open, and clearing it re-opens the burst.
+    """
+    marks = _run_heartbeat_with_claim_status(
+        runner, 503, {"hb1": "2026-08-23T19:18:00+00:00"})
+
+    assert marks == {"hb1": "2026-08-23T19:18:00+00:00"}
+
+
+def test_an_unclaimed_run_still_going_does_not_eat_the_next_slot(runner):
+    """The same fix from the scheduler's side, which is where it is felt.
+
+    Four of the five heartbeat slots lost on 2026-09-07 came round with
+    exactly one run in flight against a limit of 3, so the limit was not what
+    declined them. This is the shape that does: the run alive at the slot had
+    failed its own claim, so `lastRunAt` still held the value its mark was
+    written from.
+    """
+    heartbeat = _plain_hb(lastRunAt="2026-08-23T19:00:00+00:00")
+    threads = {"hb1": [_AliveStub()]}
+    marks = {}
+    created = []
+
+    def ctor(target=None, args=(), daemon=None):
+        t = _FakeThread(target=target, args=args, daemon=daemon)
+        t.is_alive = lambda: True
+        created.append(t)
+        return t
+
+    def tick():
+        with patch.object(runner.heartbeats, "_heartbeat_threads", threads), \
+             patch.object(runner.heartbeats, "_heartbeat_spawn_marks", marks), \
+             patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
+             patch.object(runner.heartbeats, "agora_internal",
+                          return_value=(200, {"heartbeats": [heartbeat]})), \
+             patch.object(runner.threading, "Thread", side_effect=ctor), \
+             patch.object(runner.heartbeats, "schedule_due", return_value=True):
+            runner.run_due_heartbeats()
+
+    tick()
+    assert len(created) == 1, "precondition: the first due slot spawns"
+
+    # That run's claim PATCH fails. It is still alive, so the empty-tick
+    # recovery in run_due_heartbeats never gets a tick to fire on.
+    _run_heartbeat_with_claim_status(runner, 503, marks)
+
+    tick()
+    assert len(created) == 2, "the next slot was declined by a mark nothing owned"
