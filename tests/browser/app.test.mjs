@@ -16383,7 +16383,7 @@ describe("the worker can retract a thread it served from its prefetch", () => {
 
 /* What the rating means, said in the popup that sets it.
  *
- * Edvard, 2026-09-07: *"Nova still uses the old priority system, letting
+ * The owner, 2026-09-07: *"Nova still uses the old priority system, letting
  * me set priority like medium and high even though we decided this is
  * deprecated."* It was not deprecated -- the redesign kept it and gave it
  * a second job as the importance term inside the milestone ranking -- and
