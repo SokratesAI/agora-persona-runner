@@ -95,7 +95,7 @@ from agora_runner.nova_boards import (
 # functions, one definition -- see `nova_next`'s docstring.
 from agora_runner.nova_next import (
     _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims, open_rows,
-    low_satisfaction, load_diagnoses,
+    low_satisfaction, load_diagnoses, milestone_ranks,
     project_ranks, rank, reserve_maintenance, row_slug, unboarded_captures,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
@@ -390,7 +390,7 @@ def closed_rows_waiting(markdown, board):
 
 
 def _project_tag(row, meta):
-    """`Marcus (project 🔴 Immediately)  `, ahead of the row's own rating.
+    """`Marcus (project 🔴 Immediately, milestone Reminders)  `, ahead of the rating.
 
     Ahead of it because it is ahead of it in the sort, which is the rule
     `_line` already follows for the unanswered-comment mark. Both ratings
@@ -400,12 +400,24 @@ def _project_tag(row, meta):
 
     An unrated project says so rather than printing nothing: it sorts last
     and a cycle should be able to see that is why.
+
+    **The milestone is on the same line for the same reason the project
+    rating is**, and it was added the cycle the milestone tier was
+    actually wired into this tool: the tier sits between the project and
+    the row's own rating, so a Medium row in a well-ranked milestone now
+    outranks a High row in a badly-ranked one *inside the same project*,
+    and a line that showed neither would read as a bug. `ungrouped` is
+    printed rather than left blank because an ungrouped row sinks behind
+    every grouped one in its project, which is a position a cycle should
+    be able to explain.
     """
     name = (row.get("project") or "").strip()
     if not name:
         return ""
     rated = (meta or {}).get(name.lower(), {}).get("priority")
-    return f"{name} (project {rated or 'unrated'})  "
+    milestone = (row.get("milestone") or "").strip()
+    group = f", milestone {milestone}" if milestone else ", ungrouped"
+    return f"{name} (project {rated or 'unrated'}{group})  "
 
 
 def _line(row, project_meta=None):
@@ -701,7 +713,16 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         out.append("🔧 MAINTENANCE RESERVATION NOT EVALUATED — pass "
                    "`--cycle <N>` and every 5th cycle is forced onto "
                    "Infra/Maintenance work.")
-    ranked = rank(rows, project_rank_map)
+    # **The milestone tier, which this tool never passed from the day the
+    # tier shipped (#837, 2026-09-06).** `rank` takes it third and
+    # defaults it to `None`,
+    # so leaving it off is silent: the ranking still comes back, still
+    # looks right, and orders rows by their own rating inside a project as
+    # though nothing had been grouped. Cycles 1105, 1108 and 1109 sized and
+    # grouped 199 of the 201 open rows into 57 milestones and every one of
+    # them was inert here -- `next_payload` passed it, so the site's page
+    # ordered by it and the tool a cycle actually reads did not.
+    ranked = rank(rows, project_rank_map, milestone_ranks(rows))
     if not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
     else:
