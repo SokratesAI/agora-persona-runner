@@ -10803,7 +10803,10 @@
    * to a poll interval and the tap reads as having done nothing. */
   function askPaintSent(container, text) {
     container.appendChild(askMessage({ sender: "Edvard", text: text }));
-    container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+    // The same loader the poll's own bubble draws, rather than a second way
+    // of saying the same thing -- this is the one he sees first, in the
+    // moment between the tap and the first poll.
+    container.appendChild(askPending(null));
   }
 
   /* --- The work behind an answer, as one line and a drawer ---------------
@@ -11525,11 +11528,35 @@
     return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
   }
 
+  /* How long a turn runs before the bubble puts a number on it.
+   *
+   * His ask, 2026-09-07: *"the 'thinking' text can also go. Only the loading
+   * css can be there and if it has run for more than 20 seconds maybe the
+   * counter can show."*
+   *
+   * The word "Thinking…" said what the loader now says by existing. The
+   * clock is different: it is there because of his issue #143 -- *"I have no
+   * idea if it broke or if its working, so i might wait forever for no
+   * response"* -- so it is not deleted, it is held back until the wait is
+   * long enough to be the thing he is actually asking about. Under twenty
+   * seconds an answer is simply on its way; past it, a number is the
+   * difference between waiting and wondering. */
+  var PENDING_CLOCK_AFTER_SECONDS = 20;
+
+  function askPendingSeconds(askedAt) {
+    if (!askedAt) return null;
+    var started = Date.parse(askedAt);
+    if (isNaN(started)) return null;
+    return Math.max(0, Math.round((Date.now() - started) / 1000));
+  }
+
   function askPending(progress) {
     var row = el("div", "ask-msg ask-theirs ask-pending");
-    var elapsed = askElapsed(progress && progress.askedAt);
-    row.appendChild(el("div", "ask-pending-head",
-      elapsed ? "Thinking… · " + elapsed : "Thinking…"));
+    var secs = askPendingSeconds(progress && progress.askedAt);
+    if (secs !== null && secs >= PENDING_CLOCK_AFTER_SECONDS) {
+      row.appendChild(el("div", "ask-pending-head",
+        askElapsed(progress.askedAt)));
+    }
     var latest = progress && progress.latest;
     if (latest) {
       var step = el("div", "ask-pending-step");

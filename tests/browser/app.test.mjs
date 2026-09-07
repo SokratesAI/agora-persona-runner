@@ -9785,8 +9785,12 @@ describe("the questions page", () => {
     assert.ok(pending.querySelector(".ask-orbit"), "no loader while it waits");
     assert.equal(pending.querySelector(".ask-pending-step"), null,
       "the sentence the loader replaced is back");
-    // The head still carries the clock, which is the half that is words.
-    assert.match(pending.querySelector(".ask-pending-head").textContent, /Thinking/);
+    /* No head at all this early: "Thinking…" is what the loader says by
+     * existing, and the clock is held back until twenty seconds (his ask,
+     * 2026-09-07). The fixture's `askedAt` is now, so this is the under-20s
+     * case; the over-20s one is the test below. */
+    assert.equal(pending.querySelector(".ask-pending-head"), null,
+      "the pending bubble is still narrating");
     // Nothing has run, so nothing claims a step count.
     assert.equal(pending.querySelector(".ask-pending-count"), null);
   });
@@ -9804,7 +9808,35 @@ describe("the questions page", () => {
     });
     const pending = window.document.querySelector(".ask-pending");
     assert.ok(pending);
-    assert.equal(pending.querySelector(".ask-pending-head").textContent, "Thinking\u2026");
+    /* With no `progress` there is no `askedAt`, so there is no honest number
+     * to show and the bubble is the loader alone -- which still answers the
+     * question the bubble exists for. */
+    assert.ok(pending.querySelector(".ask-orbit"), "no loader in the bubble");
+    assert.equal(pending.querySelector(".ask-pending-head"), null,
+      "a clock was drawn for a turn with no start time");
+  });
+
+  test("past twenty seconds the bubble puts a number on the wait", async () => {
+    /* The clock is not deleted, only held back. His issue #143 -- "I have no
+     * idea if it broke or if its working, so i might wait forever for no
+     * response" -- is about the long wait, which is exactly the case this
+     * still covers. */
+    const window = await loadAskDock({
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "q" }],
+        progress: {
+          askedAt: new Date(Date.now() - 45000).toISOString(),
+          steps: 0, latest: null,
+        },
+      }),
+    });
+    const pending = window.document.querySelector(".ask-pending");
+    assert.match(pending.querySelector(".ask-pending-head").textContent, /^4[0-9]s$/);
+    // The word is gone; the loader is still what says it is alive.
+    assert.doesNotMatch(pending.textContent, /Thinking/);
+    assert.ok(pending.querySelector(".ask-orbit"));
   });
 
 
