@@ -62,6 +62,16 @@ FINDALL = lambda pattern, subject: pattern.findall(subject)
     (nova_comments._SECTION_RE, lambda n: "## a" + "\t" * n + "b", MATCH),
     (md_sections._SECTION_RE, lambda n: "## a" + "\t" * n + "b", MATCH),
     (nova_boards._DETAIL_RE, lambda n: "## 12 — a" + "\t" * n + "b", MATCH),
+    # The same line with NO non-space character in it at all, so the match
+    # fails. This is the case the first version of this fix still had, and
+    # the case that only shows up when the pattern cannot match: `[ \t]+` and
+    # `.*` both accept a tab, so the engine tries every way of dividing the
+    # run between them before giving up. CodeQL caught it; my benchmark did
+    # not, because I had only ever timed inputs that matched.
+    (nova_boards._SECTION_RE, lambda n: "## " + "\t" * n, MATCH),
+    (nova_comments._SECTION_RE, lambda n: "## " + "\t" * n, MATCH),
+    (md_sections._SECTION_RE, lambda n: "## " + "\t" * n, MATCH),
+    (nova_boards._DETAIL_RE, lambda n: "## 12 — " + "\t" * n, MATCH),
     # A run of unclosed `[[`, which the old `[^\]]*` scanned to the end of
     # the line from every one of them.
     (nova_boards._WIKILINK_RE, lambda n: "| " + "[[" * n + " |", FINDALL),
@@ -82,6 +92,18 @@ def test_the_old_lazy_heading_shape_blows_the_ceiling():
     """
     old = re.compile(r"^(#{1,2})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
     ratio = _growth_ratio(old, lambda n: "## a" + "\t" * n + "b", MATCH)
+    assert ratio > CEILING
+
+
+def test_the_first_attempt_at_this_fix_blows_the_ceiling():
+    """The control for the case I got wrong once already.
+
+    `(.*[^ \t])` alone kills the quadratic on a line that matches and leaves
+    it standing on a line that does not. Without possessive quantifiers this
+    takes 1.1 seconds on 16,000 tabs.
+    """
+    half_fixed = re.compile(r"^(#{1,2})[ \t]+(.*[^ \t])[ \t]*$", re.MULTILINE)
+    ratio = _growth_ratio(half_fixed, lambda n: "## " + "\t" * n, MATCH)
     assert ratio > CEILING
 
 

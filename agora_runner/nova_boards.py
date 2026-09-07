@@ -57,14 +57,19 @@ BOARD_PATHS = {
     },
 }
 
-# `(.*[^ \t])` rather than `(.+?)`: a lazy group followed by `[ \t]*$` retries
-# the trailing-whitespace split at every position it grows through, which is
-# quadratic in the line length (4.9s on a 40k-character heading, measured
-# Cycle 1117). Greedy-to-end-of-line and one backtrack to the last non-space
-# is linear and yields the same group. The one input whose answer changes is a
-# heading with nothing but whitespace after the hashes: it used to match with a
-# single space as its title and is now not a heading at all.
-_SECTION_RE = re.compile(r"^(#{1,2})[ \t]+(.*[^ \t])[ \t]*$", re.MULTILINE)
+# Two changes, and the second one is the whole fix. `(.*[^ \t])` rather than
+# `(.+?)`: a lazy group in front of `[ \t]*$` retries the trailing-whitespace
+# split at every position it grows through, which is quadratic in the line
+# length -- 4.9s on a 40,000-character heading, measured Cycle 1117. And the
+# quantifiers are possessive, because `[ \t]+` and `.*` both match a tab, so
+# on a heading with NOTHING but whitespace after the hashes the engine tries
+# every way of dividing that run between them before it gives up: still
+# quadratic, 1.1s at 16,000 tabs, and my first attempt at this fix had it.
+# `++`/`*+` never give back, which is also what the pattern means -- a title
+# does not begin or end with whitespace. 0.03ms at the same size.
+# The one input whose answer changes is that whitespace-only heading: it used
+# to match with a single space as its title and is now not a heading at all.
+_SECTION_RE = re.compile(r"^(#{1,2})[ \t]++(.*[^ \t])[ \t]*+$", re.MULTILINE)
 # `| [[#57 — More pages in the Nova app|57]] | More pages ... | 🟡 In progress | 08-11 |`
 # The wiki-link is Obsidian's, so the number is read out of the `#N`
 # rather than out of the alias after the pipe -- the alias is a display
@@ -113,7 +118,7 @@ _CAPTURE_PROJECT_RE = re.compile(
 # the owner's files: rewriting 87 headings to suit the parser is a large diff
 # through his prose to fix a regex.
 _DETAIL_RE = re.compile(
-    r"^(#{2,3})[ \t]+(#?)(\d+)[ \t]*[—–-][ \t]*((?:.*[^ \t])?)[ \t]*$",
+    r"^(#{2,3})[ \t]++(#?)(\d+)[ \t]*+[—–-][ \t]*+((?:.*[^ \t])?)[ \t]*+$",
     re.MULTILINE)
 # `- 2026-08-09 (Cycle 63) — the note itself`. Both halves optional: a
 # few of my own captures were written without either.

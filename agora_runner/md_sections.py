@@ -35,7 +35,7 @@ import re
 # neither is `### Cycle 12`.
 # `(.*[^ \t])` not `(.+?)` -- see the note on nova_boards._SECTION_RE: a lazy
 # group in front of `[ \t]*$` is quadratic in the line length.
-_SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.*[^ \t])[ \t]*$")
+_SECTION_RE = re.compile(r"^##[ \t]++(?P<name>.*[^ \t])[ \t]*+$")
 
 # A level-one title line. The second character must be whitespace, so `##`
 # is not a title -- the two patterns partition the headings rather than

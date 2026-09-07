@@ -219,7 +219,7 @@ def _heading_label(cycle, project=None, entry=None):
 
 # `(.*[^ \t])` not `(.+?)` -- see the note on nova_boards._SECTION_RE: a lazy
 # group in front of `[ \t]*$` is quadratic in the line length.
-_SECTION_RE = re.compile(r"^##[ \t]+(?P<name>.*[^ \t])[ \t]*$")
+_SECTION_RE = re.compile(r"^##[ \t]++(?P<name>.*[^ \t])[ \t]*+$")
 
 # `#### Nova · 2026-08-10 14:12` -- Nova's reply, inside the comment it
 # answers. Four hashes rather than three so it can never be mistaken for a
