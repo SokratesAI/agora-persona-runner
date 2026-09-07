@@ -370,3 +370,80 @@ def test_the_instant_reading_is_asked_of_prometheus():
 
     lh.report(24.0, base="http://fake", get=spy, out=lambda _line: None)
     assert 'container_memory_rss{container!=""}' in seen
+
+
+def test_a_restarted_container_keeps_the_dead_instances_peak():
+    """cAdvisor keeps a killed container's series; `_key` cannot tell it apart.
+
+    The two series carry the same namespace/pod/container/node and differ only
+    by an `id` label this module does not read, so a dict comprehension keeps
+    whichever Prometheus returned last. The low one is deliberately last here,
+    because that is the ordering under which the old code was wrong.
+    """
+    rows = lh.read_containers(
+        24.0,
+        base="http://fake",
+        get=fake_get(
+            limits=[("agents", "runner-1", "runner", "server1", 256 * MIB)],
+            peaks=[
+                ("agents", "runner-1", "runner", "server1", 236 * MIB),
+                ("agents", "runner-1", "runner", "server1", 41 * MIB),
+            ],
+        ),
+    )
+    assert len(rows) == 1
+    assert rows[0][4] == 236 * MIB
+
+
+def test_the_runner_oom_would_have_raised():
+    """The exact reading this check printed `ok` for on 2026-09-07."""
+    code, text = run(
+        limits=[("agents", "agora-persona-runner-x", "persona-runner", "server1", 256 * MIB)],
+        peaks=[
+            ("agents", "agora-persona-runner-x", "persona-runner", "server1", 236.4 * MIB),
+            ("agents", "agora-persona-runner-x", "persona-runner", "server1", 41.6 * MIB),
+        ],
+    )
+    assert code == 2
+    assert "persona-runner" in text
+
+
+def test_a_restarted_containers_age_covers_the_whole_peak():
+    """The peak now spans both instances, so the age has to as well.
+
+    Reading the fresh instance's age against a peak taken from the dead one
+    would file a real raise under YOUNG SERIES, which is the same miss one
+    layer down.
+    """
+    rows = lh.read_containers(
+        24.0,
+        base="http://fake",
+        get=fake_get(
+            limits=[("agents", "runner-1", "runner", "server1", 256 * MIB)],
+            peaks=[("agents", "runner-1", "runner", "server1", 236 * MIB)],
+            ages=[
+                ("agents", "runner-1", "runner", "server1", 30.0),
+                ("agents", "runner-1", "runner", "server1", 0.3),
+            ],
+        ),
+    )
+    assert rows[0][6] == 30.0
+
+
+def test_the_instant_reading_is_not_folded_to_the_maximum():
+    """`current` answers what the live container holds, not what any did.
+
+    An instant query only returns recently scraped series, so a dead instance
+    is normally absent; if one is still inside the staleness window it must not
+    be reported as what the container holds now.
+    """
+    folded = lh._by_key(
+        [
+            {"metric": {"namespace": "agents", "pod": "p", "container": "c", "node": "n"},
+             "value": [0, "10"]},
+            {"metric": {"namespace": "agents", "pod": "p", "container": "c", "node": "n"},
+             "value": [0, "90"]},
+        ],
+        combine=min,
+    )
+    assert folded[("agents", "p", "c", "n")] == 10
