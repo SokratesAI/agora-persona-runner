@@ -1321,6 +1321,10 @@ body.nav-open { overflow: hidden; }
   .step-backdrop, .step-backdrop--entering,
   .chat-extras-backdrop, .chat-extras-backdrop--entering,
   .chat-dock, .chat-dock--closed { transition: none; }
+  /* The waiting loader stops moving, but stays on screen: it is the only
+     thing saying the turn is alive, so hiding it would answer "is this
+     working" with nothing at all. */
+  .ask-orbit-core, .ask-orbit-body { animation: none; }
 }
 
 .tabs, .filters {
@@ -2903,6 +2907,81 @@ body.has-full-chart { overflow: hidden; }
    not hidden: it is real text and he asked to see the work as it happens. */
 .ask-partial { opacity: 0.75; }
 
+/* The waiting loader: `/galaxy` in miniature.
+ *
+ * Replaces the "Your question is in. No tool calls yet." line (his ask,
+ * 2026-09-07). The colours are the ones `drawGalaxy` uses on the canvas --
+ * the white-into-violet core and the pale-blue bodies -- so the two read as
+ * the same object at two sizes rather than as a spinner that happens to be
+ * purple.
+ *
+ * The core pulses on its own and the bodies orbit at different speeds and
+ * radii; nothing here is driven by JavaScript, so a bubble repainted every
+ * four seconds by the poll costs nothing to keep alive. */
+.ask-orbit {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  margin-top: 0.35rem;
+}
+.ask-orbit-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    rgba(255, 255, 255, 0.95) 0%,
+    rgba(180, 160, 255, 0.65) 35%,
+    rgba(120, 90, 255, 0) 100%);
+  animation: ask-orbit-pulse 1.9s ease-in-out infinite;
+}
+.ask-orbit-body {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  animation: ask-orbit-spin 2.4s linear infinite;
+}
+/* The body itself is the pseudo-element, so the wrapper can rotate around
+   the centre while the dot keeps its own size. */
+.ask-orbit-body::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: #cfd6ff;
+}
+/* The second one is further in, slower, and half a turn behind, so the two
+   are never on top of each other. */
+.ask-orbit-body-b {
+  animation-duration: 3.6s;
+  animation-direction: reverse;
+  padding: 5px;
+  top: 0;
+  left: 0;
+  width: calc(100% - 10px);
+  height: calc(100% - 10px);
+  margin: 5px;
+}
+.ask-orbit-body-b::after { opacity: 0.7; }
+
+@keyframes ask-orbit-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes ask-orbit-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.35); opacity: 1; }
+}
+
 /* --- The work behind an answer: one collapsed line, and a bottom sheet ---
  *
  * His capture, `issues.md` 2026-09-01, with four screenshots attached:
@@ -3735,7 +3814,12 @@ body.chat-open { overflow: hidden; }
      * it starts, and dragging only adds a way to make it smaller. */
     inset: auto 0 0 0;
     width: auto;
-    height: 92vh;
+    /* `vh` first as the fallback, then `dvh` for engines that have it --
+     * see SHEET_UNIT in app.js for why the two differ and which one is
+     * right here. This is only the height before `app.js` writes one; the
+     * drag and the open both set it in the same unit. */
+    height: 100vh;
+    height: 100dvh;
     border-radius: 16px 16px 0 0;
     /* No side or bottom borders -- those are hairlines along the edge of
      * the screen. The top edge is now a real edge he can see and grab, so

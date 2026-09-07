@@ -125,8 +125,24 @@ self.addEventListener("fetch", function (event) {
  */
 var THREAD_PATH = "/api/conversations/thread";
 
+/* The page's first page size, `PAGE_STEP` in app.js.
+ *
+ * It has to be here, and it has to match, for the reason the comment above
+ * gives: the cache is keyed on the whole URL. `&limit=` was added to the
+ * page's fetch when paging shipped and this was never updated, so from that
+ * day every push prefetch was parked under a URL nothing ever asked for --
+ * a guaranteed miss, on the one path whose entire job is to make a
+ * notification open instantly, and invisible because a miss is
+ * indistinguishable from a cold cache. Found 2026-09-07 from his report
+ * that a notification still took seconds to open.
+ *
+ * tests/browser/sw.test.mjs pins the two together, so the next change to
+ * either one fails rather than going quiet. */
+var THREAD_PAGE_LIMIT = 40;
+
 function threadUrl(conversationId) {
-  return THREAD_PATH + "?id=" + encodeURIComponent(conversationId);
+  return THREAD_PATH + "?id=" + encodeURIComponent(conversationId)
+    + "&limit=" + THREAD_PAGE_LIMIT;
 }
 
 /* How long the network gets before the cache answers instead.

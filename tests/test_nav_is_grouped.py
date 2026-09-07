@@ -243,8 +243,16 @@ def test_the_chats_page_is_gone_and_the_thread_view_is_not():
         "`/conversation/<id>` is gone -- that is the URL a push notification "
         "opens, not part of the deleted page"
     )
-    assert "function openConversationById" in app_js, (
-        "the deep-link opener went with the listing"
+    # 2026-09-07: the deep link opens the chat dock now, not a page. His
+    # ask -- "I only use that chat modal for the conversations... lets cut
+    # the page with the conversations and only keep the modal" -- took the
+    # page's own thread view with it, so what has to survive is the seam
+    # into the dock rather than `openConversationById`.
+    assert "window.novaOpenChat" in app_js, (
+        "nothing opens the dock, so a notification tap lands nowhere"
+    )
+    assert "function openConversation" not in app_js, (
+        "the page's own thread view is back -- the dock is the only one"
     )
     assert '"/api/conversations"' in SITE.read_text(encoding="utf-8"), (
         "`/api/conversations` is gone from nova_site.py -- the chat dock and "
