@@ -51,11 +51,31 @@ whose `kern.log` cannot be read exits 1 and is named in the summary, so a
 partial sweep can never be read as a clean one, and a cgroup-limit kill on
 any node still outranks that.
 
+**A pod deleted since its kill is named from Prometheus, not from the
+API server.** Cycle 1165: the 09:11 Oslo kill on server1 that day carried
+a uid no Kubernetes object held any more, and the report said so and
+stopped. Two records I had assumed were the only ones are not: the
+kubelet's `/var/log/pods/<ns>_<name>_<uid>` directories are garbage
+collected with the pod (56 of them on a node running 54 pods, measured
+before this was written, so they answer for minutes and not for the 24h
+window), and kube-state-metrics is not deployed here, so `kube_pod_info`
+returns nothing. What does answer is the kubelet cAdvisor scrape, which
+Prometheus keeps: every `container_memory_working_set_bytes` series
+carries the pod's full cgroup path in its `id` label — uid and all, with
+the dashes written as underscores exactly as the kernel writes them —
+beside `namespace`, `pod` and `container` labels. So the uid in
+`kern.log` joins straight onto a pod name at the instant of the kill.
+That named the 09:11 kill `agents/agora-persona-runner-dcc6df8c6-mqn7z`.
+Two honest limits, both printed rather than assumed away: Prometheus's
+data volume is an `emptyDir`, so a restart takes the history with it and
+a kill older than the restart is still unnameable; and the lookup is
+presentation only — it never changes the exit status, because whether a
+cgroup-limit kill happened does not depend on whether I can name it.
+
 Scope it prints for itself: the node keeps `kern.log` for as long as
 logrotate keeps it and this reads the current file only, so a window
 longer than that rotation silently holds fewer days than it asks for —
-the report says which timestamps it actually saw. A pod deleted since
-its kill cannot be named, only its uid.
+the report says which timestamps it actually saw.
 """
 
 import argparse
@@ -63,10 +83,16 @@ import json
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 OSLO = ZoneInfo("Europe/Oslo")
+
+PROMETHEUS = "http://prometheus.infra.svc.cluster.local:9090"
+PROM_TIMEOUT = 20
 
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d)\s")
 EVENT = re.compile(r"oom-kill:constraint=(?P<constraint>\w+),")
@@ -189,7 +215,7 @@ def _oslo(when):
     return when.astimezone(OSLO).strftime("%Y-%m-%d %H:%M:%S Oslo")
 
 
-def report(node, events, hours, pod_names, seen_from, out=print):
+def report(node, events, hours, namer, seen_from, out=print):
     """Print one node's window and return the exit status it earns."""
     limit = [e for e in events if e["constraint"] == "CONSTRAINT_MEMCG"]
     node_wide = [e for e in events if e["constraint"] != "CONSTRAINT_MEMCG"]
@@ -203,7 +229,7 @@ def report(node, events, hours, pod_names, seen_from, out=print):
             % (node, len(limit), hours)
         )
         for event in limit:
-            out("  %s  %s" % (_oslo(event["when"]), _pod_label(event, pod_names)))
+            out("  %s  %s" % (_oslo(event["when"]), _pod_label(event, namer)))
             for victim in event["victims"]:
                 out(
                     "      killed %s (pid %d), %dMi resident of %dMi virtual"
@@ -223,11 +249,11 @@ def report(node, events, hours, pod_names, seen_from, out=print):
         )
         for event in node_wide:
             names = ", ".join(v["name"] for v in event["victims"]) or "no victim named"
-            out("  %s  %s -- %s" % (_oslo(event["when"]), _pod_label(event, pod_names), names))
+            out("  %s  %s -- %s" % (_oslo(event["when"]), _pod_label(event, namer), names))
 
     out(
         "%s: read that node's own kern.log through nodes/proxy, not a Kubernetes object. "
-        "%s Window %dh; a pod deleted since its kill can only be named by uid."
+        "%s Window %dh; a pod deleted since its kill is named from Prometheus's cAdvisor scrape, which its emptyDir loses on a restart."
         % (node, seen_from, hours)
     )
     if not limit and not node_wide:
@@ -235,15 +261,71 @@ def report(node, events, hours, pod_names, seen_from, out=print):
     return 2 if limit else 0
 
 
-def _pod_label(event, pod_names):
+def _prom_query(expr, when, base=PROMETHEUS, opener=urllib.request.urlopen):
+    """One instant query. Raises on anything that is not a successful answer."""
+    params = {"query": expr}
+    if when is not None:
+        params["time"] = "%.3f" % when.timestamp()
+    url = base + "/api/v1/query?" + urllib.parse.urlencode(params)
+    with opener(url, timeout=PROM_TIMEOUT) as response:
+        payload = json.load(response)
+    if payload.get("status") != "success":
+        raise ValueError("prometheus answered status=%r" % payload.get("status"))
+    return payload.get("data", {}).get("result", [])
+
+
+class PodNamer:
+    """uid -> 'namespace/name', asking Prometheus only for uids the API server lost.
+
+    Caches per uid, including the misses: two kills in one pod cost one query,
+    and an unreachable Prometheus is reported once rather than per event.
+    """
+
+    def __init__(self, pod_names, base=PROMETHEUS, opener=urllib.request.urlopen):
+        self._live = pod_names
+        self._base = base
+        self._opener = opener
+        self._found = {}
+
+    def name(self, uid, when):
+        live = self._live.get(uid)
+        if live:
+            return live
+        if uid in self._found:
+            return self._found[uid]
+        # The kernel writes the uid with underscores inside the cgroup path.
+        expr = 'container_memory_working_set_bytes{id=~".*pod%s.*"}' % uid.replace("-", "_")
+        try:
+            result = _prom_query(expr, when, base=self._base, opener=self._opener)
+        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as problem:
+            answer = ("pod %s (gone since; Prometheus could not be asked: %s)"
+                      % (uid, problem))
+            self._found[uid] = answer
+            return answer
+        answer = None
+        for entry in result:
+            labels = entry.get("metric") or {}
+            if labels.get("namespace") and labels.get("pod"):
+                answer = "%s/%s" % (labels["namespace"], labels["pod"])
+                if labels.get("container"):
+                    answer += " (container %s)" % labels["container"]
+                break
+        if answer is None:
+            answer = ("pod %s (gone since, and Prometheus holds no cAdvisor sample "
+                      "for it -- its data volume is an emptyDir, so a restart since "
+                      "the kill takes the name with it)" % uid)
+        self._found[uid] = answer
+        return answer
+
+
+def _pod_label(event, namer):
     uid = event["pod_uid"]
     if uid is None:
         return "outside every pod cgroup (a host process)"
-    name = pod_names.get(uid)
-    return name if name else "pod %s (gone since, cannot be named)" % uid
+    return namer.name(uid, event.get("when"))
 
 
-def sweep_one(node, hours, pod_names, runner=subprocess.run, out=print, now=None):
+def sweep_one(node, hours, namer, runner=subprocess.run, out=print, now=None):
     """One node's verdict. 1 means it could not be read, which is never clean."""
     try:
         text = read_kern_log(node, runner=runner)
@@ -263,10 +345,10 @@ def sweep_one(node, hours, pod_names, runner=subprocess.run, out=print, now=None
         if stamps
         else "The current kern.log holds no OOM event at all."
     )
-    return report(node, within(events, hours, now=now), hours, pod_names, seen_from, out=out)
+    return report(node, within(events, hours, now=now), hours, namer, seen_from, out=out)
 
 
-def main(argv=None, runner=subprocess.run, out=print, now=None):
+def main(argv=None, runner=subprocess.run, out=print, now=None, namer_factory=PodNamer):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--node", default=None,
                         help="one node instead of every node in the cluster")
@@ -276,12 +358,13 @@ def main(argv=None, runner=subprocess.run, out=print, now=None):
     try:
         nodes = [args.node] if args.node else read_node_names(runner=runner)
         pod_names = read_pod_names(runner=runner)
+        namer = namer_factory(pod_names)
     except (OSError, ValueError) as problem:
         out("UNREADABLE -- %s. A window nothing could be read from is not a clean one." % problem)
         return 1
 
     statuses = [
-        sweep_one(node, args.hours, pod_names, runner=runner, out=out, now=now)
+        sweep_one(node, args.hours, namer, runner=runner, out=out, now=now)
         for node in nodes
     ]
     unread = [node for node, status in zip(nodes, statuses) if status == 1]
