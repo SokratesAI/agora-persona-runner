@@ -2510,6 +2510,20 @@ body.has-full-chart { overflow: hidden; }
   display: none;
 }
 
+/* The sentence saying what this rating does, above the four choices. It
+ * has to read as explanation rather than as a fifth option, which is why
+ * it is smaller, dimmer and separated by a rule rather than sitting flush
+ * in the same stack -- the popup is a bare list of four look-alike rows
+ * and a paragraph styled like them would be a thing to tap. */
+.prio-caption {
+  margin: 0.1rem 0.3rem 0.35rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .prio-option {
   display: block;
   width: 100%;

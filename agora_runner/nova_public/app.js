@@ -4436,7 +4436,10 @@
     { key: "filed", label: "Filed", value: function (i) { return i.index; } },
     {
       key: "priority",
-      label: "Priority",
+      // The sort key stays `priority` -- it is in the URL hash and in the
+      // board payload, so renaming it would silently drop a bookmarked
+      // sort back to Filed. Only the word he reads changes.
+      label: "Importance",
       value: function (i) { return PRIORITY_RANK[i.priorityKey] || 0; },
       unrated: function (i) { return !i.priority; },
     },
@@ -4709,6 +4712,27 @@
     function openMenu() {
       var menu = getPrioMenuOverlay();
       menu.textContent = "";
+      /* What this rating actually does, said where it is being set.
+       *
+       * The owner, 2026-09-07: *"Nova still uses the old priority system,
+       * letting me set priority like medium and high even though we decided
+       * this is deprecated."* The rating was not deprecated -- it was kept
+       * and quietly given a second job as the importance term inside the
+       * milestone ranking -- and the defect he was pointing at is that the
+       * app never said so. One label, four jobs, and the UI showed the name
+       * it had when it was the only lever. So each caller passes the
+       * sentence that is true where it sits. All four callers pass one and
+       * there is no branch for a caller that does not: the overlay is
+       * shared and rebuilt on every open, so an optional caption would
+       * leave `aria-describedby` pointing at an id the last picker
+       * removed. A new caller owes a sentence. */
+      var caption = el("p", "prio-caption", opts.caption);
+      // Not `role="option"`: the listbox's children are the choices, and a
+      // paragraph announced as a selectable one would be a fifth rating.
+      // It describes the box instead.
+      caption.id = "prio-menu-caption";
+      menu.setAttribute("aria-describedby", caption.id);
+      menu.appendChild(caption);
       PRIORITIES.forEach(function (label) {
         var item = document.createElement("button");
         item.type = "button";
@@ -4776,7 +4800,15 @@
   function renderPriorityPicker(board, item, note) {
     return buildPrioPicker({
       current: item.priority || "",
-      ariaLabel: "Priority of #" + item.number,
+      ariaLabel: "Importance of #" + item.number,
+      // The three things `nova_next.rank_rows` actually does with this
+      // value, in the order it does them. Immediately is `_SKIP_TO_TOP`
+      // and sorts ahead of the project tier; the rest is the row's place
+      // inside its milestone, and `milestone_ranks` takes the best rating
+      // any open row in the group carries as that milestone's importance.
+      caption: "Importance: where this row sits in its milestone, and the "
+        + "best one in a milestone lifts the whole milestone. Immediately "
+        + "still jumps the whole board.",
       chipStyle: true,
       onPick: function (chosen) {
         note.textContent = "Saving…";
@@ -5857,7 +5889,11 @@
       // making every capture share one label changes no behaviour, because
       // the document-level outside-click handler closes the open menu
       // before the second trigger's own handler ever reads `openFor`.
-      ariaLabel: "Priority of capture " + (index + 1),
+      ariaLabel: "Importance of capture " + (index + 1),
+      // A capture is in no project and no milestone yet, so the sentence
+      // the board row gets would be false here -- this is the rating the
+      // row inherits when the bullet is boarded, and nothing more.
+      caption: "Importance the row inherits when this capture is boarded.",
       chipStyle: true,
       onPick: function (label) {
         /* The reason goes on screen, not just into a reverted chip. Every
@@ -9746,7 +9782,7 @@
 
   function renderProjectPriority(name, payload) {
     var row = el("div", "project-prio");
-    row.appendChild(el("span", "project-prio-label", "Project priority"));
+    row.appendChild(el("span", "project-prio-label", "Project importance"));
     var note = el("span", "project-prio-note", "");
     var rated = ((payload && payload.projectPriority) || {})[name.toLowerCase()];
     // `.el` -- `buildPrioPicker` answers `{el, getValue, setValue}`, not a
@@ -9754,7 +9790,18 @@
     // same control a board row's rating uses, not a `<select>`.
     row.appendChild(buildPrioPicker({
       current: (rated && rated.priority) || "",
-      ariaLabel: "Priority of the " + name + " project",
+      ariaLabel: "Importance of the " + name + " project",
+      // The second instance of the same gap, found by auditing M1-M6 for
+      // it: M3's plan called the ordered project list "an explicit order
+      // field **replacing** the unused priority labels in projects.md",
+      // and `nova_next.project_ranks` did not replace them -- it layered.
+      // A placed project ranks by its position; an unplaced one still
+      // ranks by this rating. Measured 2026-09-07: the `Order` column is
+      // empty for all eight projects, so this rating is the entire live
+      // project order today, while the drag handle beside it looks like
+      // the thing in charge.
+      caption: "Importance ranks a project only while the project list is "
+        + "unordered. Drag a project into place and its position wins.",
       chipStyle: true,
       onPick: function (chosen) {
         note.textContent = "Saving…";
@@ -13221,7 +13268,8 @@
      * here; the composer only remembers the choice until send() reads it. */
     var prioPicker = buildPrioPicker({
       current: "",
-      ariaLabel: "Priority",
+      ariaLabel: "Importance",
+      caption: "Importance the row inherits when this capture is boarded.",
       triggerClass: "capture-prio",
       triggerId: "capture-prio",
       onPick: function () {},
