@@ -8,30 +8,45 @@ for the first time: Nova's own `every@15m` heartbeat produced 70 runs in
 the 20 hours to 04:30 Oslo, against 80 slots on its own grid. Ten firings
 happened in no pod.
 
-That is not a scheduler fault. The runner Deployment is `strategy:
-Recreate` with `terminationGracePeriodSeconds: 2880`, and while it drains
+Some of those firings are dropped on purpose. While the runner drains,
 `agora_runner.main._serve_while_draining` deliberately passes
 `start_heartbeats=False` --- a run started inside a drain would be
 SIGKILLed at the deadline, which is the regression the drain exists to
-prevent. So between a rollout landing and the replacement pod polling,
-every slot on the grid is dropped on purpose. Roughly twelve image-changing
-merges a day, roughly one dropped slot each.
+prevent. So a slot whose period contains a rollout can genuinely have had
+no pod to fire in.
 
-**This check does not raise on that number and must not.** I have no
-measured line for how many dropped slots is too many, and the remedy is a
-design decision that nobody can take from a threshold: either overlap two
-pollers (which needs a compare-and-swap on the heartbeat claim --- it is a
-blind PATCH today, see `heartbeats.run_heartbeat`) or shorten the grace
-below one tick (which cuts a live cycle off mid-sentence). Inventing an N
-here would be the flinch `personality.md` names. Same contract as
-`disk_health`'s slope: the number sits beside the verdict as context.
+**A slot whose period contains no rollout has no such excuse, and this
+check used to hand one to it anyway.** Until 2026-09-08 the report ended
+on a fixed sentence saying the runner is `strategy: Recreate` and that a
+dropped firing is therefore context rather than a finding. Both halves of
+that were stale within a day of being written: the Deployment moved to
+`RollingUpdate` on 2026-09-06, and the compare-and-swap this file names as
+the blocker on overlapping two pollers shipped the same day (agora#89 and
+runner#806 --- `ifLastRunAt`, 409 to the loser). Measured 2026-09-08 on
+Nova's own `every@18m`: 5 of 88 slots produced no run, and **four of the
+five had no rollout anywhere in their own period.** The sentence was
+explaining away four lost cycles a day with a premise that had stopped
+being true.
+
+So the shape is not `Recreate` or otherwise by hardcoded assertion any
+more --- it is read off the live Deployment, and each missed slot is
+attributed or it is not:
+
+* **explained** --- a ReplicaSet for the runner was created inside that
+  slot's own period, so a rollout was in flight when the slot came round.
+* **unexplained** --- no rollout in that period. That is a lost cycle with
+  no known cause, and it is what this check now raises on.
+
+The attribution window is the schedule's own period, not a tolerance I
+picked. That is deliberately generous: it over-attributes rather than
+under-attributes, so an *unexplained* slot is a claim this can defend.
 
     python3 -m tools.heartbeat_gaps [--hours 24]
 
-**Exit 0 means it read the record; exit 1 means it could not.** Unreadable
-never reads as clean, and there is no exit 2 --- there is nothing here for
-a cycle to act on that is not already a decision written down in the
-handoff.
+**Exit 0 means every missed slot was attributable; exit 2 means at least
+one was not; exit 1 means it could not read the record --- including the
+Deployment, since a shape it could not read must not read as a shape that
+excuses nothing.** Unreadable never reads as clean.
 
 **A firing is counted by the conversation it created, not by `lastRunAt`.**
 A heartbeat row carries only its newest run, so the row cannot answer a
@@ -54,6 +69,7 @@ manufacture a gap out of an hour's offset.
 
 import argparse
 import json
+import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -144,6 +160,89 @@ def missed_slots(run_times, period_seconds, window_start, now):
     return missed
 
 
+#: The workload whose rollouts can legitimately eat a heartbeat slot. Only
+#: this one: a draining persona-runner is the single reason a scheduled
+#: firing can land in no pod, and naming it here keeps the excuse narrow.
+_RUNNER_NAMESPACE = "agents"
+_RUNNER_NAME = "agora-persona-runner"
+
+
+def _kubectl(args, runner=subprocess.run):
+    """`(parsed json, error)` --- never raises, never a partial read."""
+    try:
+        proc = runner(["kubectl"] + args, capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl failed: {exc}"
+    if proc.returncode != 0:
+        return None, f"kubectl failed: {(proc.stderr or proc.stdout or '').strip()}"
+    try:
+        return json.loads(proc.stdout), None
+    except (ValueError, TypeError) as exc:
+        return None, f"kubectl returned something that is not JSON: {exc}"
+
+
+def read_rollout_shape(runner=subprocess.run):
+    """`(shape, error)` --- how the runner Deployment replaces its pod.
+
+    Read live rather than asserted, because the last thing that asserted it
+    here was wrong two days after it was written.
+    """
+    doc, error = _kubectl(
+        ["get", "deploy", _RUNNER_NAME, "-n", _RUNNER_NAMESPACE, "-o", "json"], runner
+    )
+    if error:
+        return None, error
+    spec = (doc or {}).get("spec") or {}
+    strategy = spec.get("strategy") or {}
+    rolling = strategy.get("rollingUpdate") or {}
+    return {
+        "type": strategy.get("type") or "RollingUpdate",
+        "maxUnavailable": rolling.get("maxUnavailable"),
+        "maxSurge": rolling.get("maxSurge"),
+        "grace": ((spec.get("template") or {}).get("spec") or {}).get(
+            "terminationGracePeriodSeconds"
+        ),
+    }, None
+
+
+def read_rollout_instants(runner=subprocess.run):
+    """`(times, error)` --- when each of the runner's ReplicaSets was created.
+
+    A new ReplicaSet is the instant a rollout starts, which is also the
+    instant the outgoing pod is signalled and stops starting runs.
+    """
+    doc, error = _kubectl(
+        ["get", "rs", "-n", _RUNNER_NAMESPACE, "-l", f"app={_RUNNER_NAME}", "-o", "json"],
+        runner,
+    )
+    if error:
+        return None, error
+    times = []
+    for item in (doc or {}).get("items", []):
+        stamp = _parse_stamp(((item or {}).get("metadata") or {}).get("creationTimestamp"))
+        if stamp is not None:
+            times.append(stamp)
+    return sorted(times), None
+
+
+def attribute(missed, rollouts, period_seconds):
+    """`(explained, unexplained)` --- which missed slots a rollout accounts for.
+
+    A slot is explained when a rollout began inside that slot's own period,
+    i.e. in `(slot - period, slot]`. The period is the schedule's, not a
+    tolerance chosen here, and it is the generous reading on purpose: an
+    unexplained slot is then a claim worth making.
+    """
+    period = timedelta(seconds=period_seconds)
+    explained, unexplained = [], []
+    for slot in missed:
+        if any(slot - period < r <= slot for r in rollouts):
+            explained.append(slot)
+        else:
+            unexplained.append(slot)
+    return explained, unexplained
+
+
 def judge(heartbeat, conversations, now, window_hours):
     """One row's verdict --- a dict, never a raise."""
     name = heartbeat.get("name") or heartbeat.get("id") or "<unnamed>"
@@ -189,7 +288,8 @@ def judge(heartbeat, conversations, now, window_hours):
     return row
 
 
-def format_report(results, error, window_hours, listed):
+def format_report(results, error, window_hours, listed,
+                  rollouts=None, shape=None, rollout_error=None):
     """`(text, status)` --- the report and its exit code."""
     lines = []
     if error:
@@ -214,6 +314,35 @@ def format_report(results, error, window_hours, listed):
             )
             more = "" if len(row["missed"]) <= 12 else f", and {len(row['missed']) - 12} more"
             lines.append(f"    missed slot(s), UTC: {stamps}{more}")
+            explained, unexplained = ([], []) if rollout_error else attribute(
+                row["missed"], rollouts or [], row["period_seconds"]
+            )
+            row["explained"], row["unexplained"] = explained, unexplained
+            if rollout_error:
+                lines.append(
+                    "    NOT ATTRIBUTED — could not read the runner's rollouts, so "
+                    "no slot here is excused and none is charged either"
+                )
+            else:
+                if explained:
+                    lines.append(
+                        f"    {len(explained)} of them had a runner rollout inside their own "
+                        "period, so there was a draining pod that starts no run: "
+                        + ", ".join(
+                            t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                            for t in explained[:12]
+                        )
+                    )
+                if unexplained:
+                    lines.append(
+                        f"    UNEXPLAINED — {len(unexplained)} slot(s) had no rollout anywhere "
+                        "in their own period, so a runner was up and the cycle was lost "
+                        "anyway: "
+                        + ", ".join(
+                            t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                            for t in unexplained[:12]
+                        )
+                    )
         if row["oldest_run"] and row["oldest_run"] > row["window_start"] + timedelta(
             seconds=row["period_seconds"] * 2
         ):
@@ -238,22 +367,39 @@ def format_report(results, error, window_hours, listed):
     lines.append(
         f"Read {listed} conversation(s) and {len(results)} heartbeat(s) from {AGORA_PUBLIC}."
     )
-    lines.append(
-        "A dropped firing is context, not a finding: the runner is strategy Recreate, "
-        "and a pod draining a live cycle starts no new run on purpose. Nothing here "
-        "raises, because the remedy is a design decision and not a threshold."
-    )
+    if rollout_error:
+        lines.append(f"COULD NOT READ the runner's rollout shape — {rollout_error}")
+    elif shape:
+        detail = shape.get("type")
+        if detail == "RollingUpdate":
+            detail += (
+                f" (maxUnavailable {shape.get('maxUnavailable')}, "
+                f"maxSurge {shape.get('maxSurge')})"
+            )
+        lines.append(
+            f"Runner rollout shape, read live: strategy {detail}, "
+            f"terminationGracePeriodSeconds {shape.get('grace')}. "
+            f"{len(rollouts or [])} ReplicaSet(s) carry a creation time to attribute against."
+        )
     # Last, and carrying digits, because `tools.preflight.summary_line` takes
     # the last line with a number in it -- and the number worth carrying for
     # the rest of a cycle is the loss, not how many rows were read.
     dropped = sum(len(r["missed"]) for r in judged)
     slots = sum(r["expected"] for r in judged)
+    unexplained_total = sum(len(r.get("unexplained") or []) for r in judged)
     lines.append(
         f"{dropped} of {slots} scheduled firing(s) in the last {window_hours}h produced "
-        f"no run, across {len(judged)} judged heartbeat(s) and {len(unjudged)} unjudged."
+        f"no run, {unexplained_total} of them with no rollout to explain it, across "
+        f"{len(judged)} judged heartbeat(s) and {len(unjudged)} unjudged."
     )
     if unjudged and not judged:
         return "\n".join(lines), 1
+    if rollout_error:
+        # A shape it could not read must not read as a shape that excuses
+        # nothing, and must not read as clean either.
+        return "\n".join(lines), 1
+    if any(r.get("unexplained") for r in judged):
+        return "\n".join(lines), 2
     return "\n".join(lines), 0
 
 
@@ -269,7 +415,13 @@ def main(argv=None):
         conversations, error = fetch_conversations()
     now = datetime.now(timezone.utc)
     results = [] if error else [judge(h, conversations, now, args.hours) for h in heartbeats]
-    report, status = format_report(results, error, args.hours, len(conversations))
+    shape, rollout_error = read_rollout_shape()
+    rollouts = []
+    if not rollout_error:
+        rollouts, rollout_error = read_rollout_instants()
+    report, status = format_report(
+        results, error, args.hours, len(conversations), rollouts, shape, rollout_error
+    )
     print(report)
     return status
 
