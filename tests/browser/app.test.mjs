@@ -11227,7 +11227,14 @@ describe("the device page", () => {
       .find((k) => k.textContent === "Priority popup, opened").nextElementSibling.textContent;
     assert.match(reading, /skipped/, `the measurement ran over an open picker: ${reading}`);
     assert.ok(!popup.hidden, "the picker he opened was closed by the measurement");
-    assert.equal(popup.children.length, 5, "the picker he opened had its options replaced under him");
+    // The options, not `children`: the popup carries a caption above them
+    // now, so a count of every child would move whenever that copy changes
+    // and would say nothing about the thing this guards -- his five
+    // choices still being the five he opened.
+    assert.equal(popup.querySelectorAll(".prio-option").length, 5,
+      "the picker he opened had its options replaced under him");
+    assert.ok(popup.querySelector(".prio-caption"),
+      "the picker he opened lost the sentence saying what the rating does");
     assert.equal(window.document.getElementById("capture-prio").getAttribute("aria-expanded"), "true",
       "the trigger was left claiming a popup that is no longer open");
   });
@@ -16371,5 +16378,90 @@ describe("the worker can retract a thread it served from its prefetch", () => {
 
     assert.equal(asked(), before);
     assert.match(window.document.querySelector(".ask-text").textContent, /thinking about it/);
+  });
+});
+
+/* What the rating means, said in the popup that sets it.
+ *
+ * Edvard, 2026-09-07: *"Nova still uses the old priority system, letting
+ * me set priority like medium and high even though we decided this is
+ * deprecated."* It was not deprecated -- the redesign kept it and gave it
+ * a second job as the importance term inside the milestone ranking -- and
+ * the defect is that the app went on calling it "Priority" and said
+ * nothing about the change. These hold the two halves that are actually
+ * observable from where he stands: the word, and the sentence. */
+describe("the rating picker says what the rating does", () => {
+  const RATED_PROJECT = {
+    projects: ["Nova"],
+    name: "Nova",
+    asked: "Nova",
+    boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } },
+    projectPriority: { nova: { priority: "⚪ Low", priorityKey: "low" } },
+  };
+
+  const caption = (w) => w.document.querySelector(".prio-menu .prio-caption");
+
+  test("a board row's picker names all three jobs the rating now has", async () => {
+    const window = await loadSite("/issues");
+    const row = window.document.getElementById("item-" + payload.board.items[0].number);
+    const trigger = row.querySelector(".item-meta-row > .chip.prio");
+    // Asserted before the click, so a caption test can never pass because
+    // the picker it was aimed at had been renamed out from under it.
+    assert.ok(trigger, "the board row has no rating trigger to open");
+    assert.equal(caption(window), null, "the caption was on screen before the popup opened");
+    click(window, trigger);
+    const text = caption(window).textContent;
+    assert.match(text, /^Importance:/, "the caption does not lead with the field's new name: " + text);
+    assert.match(text, /milestone/, "the caption does not say the rating is scoped to a milestone: " + text);
+    assert.match(text, /Immediately still jumps the whole board/,
+      "the caption drops the one job that is still global: " + text);
+  });
+
+  test("the caption is described, not offered — it is no fifth rating", async () => {
+    const window = await loadSite("/issues");
+    const row = window.document.getElementById("item-" + payload.board.items[0].number);
+    click(window, row.querySelector(".item-meta-row > .chip.prio"));
+    const menu = window.document.querySelector(".prio-menu");
+    const node = caption(window);
+    assert.equal(node.getAttribute("role"), null, "the caption announces as a selectable option");
+    assert.equal(menu.getAttribute("aria-describedby"), node.id,
+      "the listbox does not point at its own caption");
+    // Four ratings and Unrated, and the caption is none of them: a
+    // paragraph that had been appended as a `.prio-option` would still
+    // satisfy every assertion above.
+    assert.equal(window.document.querySelectorAll(".prio-menu .prio-option").length, 5);
+    assert.ok(![...window.document.querySelectorAll(".prio-menu .prio-option")]
+      .some((o) => /Importance/.test(o.textContent)), "the caption is one of the choices");
+  });
+
+  test("the project picker says the hand-ordered list wins over the rating", async () => {
+    /* The second instance of the same gap, found by auditing M1-M6 for
+     * it. M3 shipped an order field described as *replacing* the priority
+     * labels in `projects.md`; `project_ranks` layered instead -- a placed
+     * project ranks by position, an unplaced one by this rating. So the
+     * sentence here is a different one from the board row's, and a shared
+     * caption would be wrong on both pages. */
+    const window = await loadSite("/project/Nova", { project: () => RATED_PROJECT });
+    const trigger = window.document.querySelector(".project-prio .chip.prio");
+    assert.ok(trigger, "the project page has no rating trigger to open");
+    click(window, trigger);
+    const text = caption(window).textContent;
+    assert.match(text, /unordered/, "the project caption does not say when the rating applies: " + text);
+    assert.match(text, /position wins/, "the project caption does not say what outranks it: " + text);
+    assert.equal(window.document.querySelector(".project-prio-label").textContent,
+      "Project importance", "the project page still calls the field Priority");
+  });
+
+  test("the board's sort control offers Importance, and the sort key is untouched", async () => {
+    /* The word changes; `priority` does not. It is the value in the URL
+     * hash and in the saved board state, so renaming the key would drop a
+     * bookmarked sort silently back to Filed. */
+    const window = await loadSite("/issues");
+    const options = [...window.document.querySelectorAll(".board-sort-select option")];
+    assert.ok(options.length, "the sort control rendered no options");
+    const importance = options.find((o) => o.textContent === "Importance");
+    assert.ok(importance, "the sort control still says Priority: "
+      + options.map((o) => o.textContent).join(", "));
+    assert.equal(importance.value, "priority", "the sort key was renamed along with the label");
   });
 });
