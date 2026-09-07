@@ -15590,7 +15590,11 @@
           // the server to echo it, for `pollConv`'s reason: a box that has
           // gone blank with nothing to show for it reads as a lost message.
           thread.appendChild(askMessage({ sender: "Edvard", text: body }));
-          thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+          // The dock's own optimistic bubble, and the third place this app
+          // painted the word. Same loader as the other two -- missing this
+          // one shipped "Thinking…" to the surface he actually uses while
+          // the other two were already the loader.
+          thread.appendChild(askPending(null));
           // Sending is him asking to be at the bottom, whatever he was
           // rereading a second ago -- so the answer to this question lands on
           // his screen rather than below it.
