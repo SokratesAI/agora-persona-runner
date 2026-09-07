@@ -6,7 +6,7 @@ repositories, which are not billed, and reports a crisis every month.
 Most of these tests are about that split rather than about arithmetic.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -50,8 +50,22 @@ def test_storage_rows_are_not_minutes():
     assert sum(private.values()) == 12
 
 
-def _run(monkeypatch, items, now, argv=()):
-    monkeypatch.setattr(ci_minutes, "fetch_usage", lambda org, y, m: items)
+def _run(monkeypatch, items, now, argv=(), prior=()):
+    # Answers for `now`'s own month and hands `prior` to the month before it,
+    # because the trailing window reaches into the previous calendar month for
+    # the first week of every month. A fake that answered every month with the
+    # same rows would count the same minutes twice; one that answered the
+    # previous month with nothing would make merging it in unobservable.
+    previous = (now.replace(day=1) - timedelta(days=1))
+
+    def _usage(org, year, month, gh=None):
+        if (year, month) == (now.year, now.month):
+            return items
+        if (year, month) == (previous.year, previous.month):
+            return list(prior)
+        return []
+
+    monkeypatch.setattr(ci_minutes, "fetch_usage", _usage)
     monkeypatch.setattr(ci_minutes, "fetch_visibility", lambda org: VISIBILITY)
 
     class _FrozenNow(datetime):
@@ -108,7 +122,7 @@ def test_unlisted_repository_makes_the_run_unreadable(monkeypatch, capsys):
 
 
 def test_unreadable_endpoint_is_exit_one(monkeypatch, capsys):
-    def _boom(org, y, m):
+    def _boom(org, y, m, gh=None):
         raise RuntimeError("gh api ...: HTTP 403")
 
     monkeypatch.setattr(ci_minutes, "fetch_usage", _boom)
@@ -197,6 +211,54 @@ def test_allowance_pressure_is_clear_on_a_small_bill():
     assert blocked is False, reason
 
 
+def _gh_by_month(rows_by_month):
+    """A `gh` stub that answers each billing month separately, with dates.
+
+    `_gh_stub` above hands the same undated rows to every month, which makes
+    the trailing window refuse the series outright -- so it can pin nothing
+    about which months were fetched or whether they were merged.
+    """
+    def gh(path, org):
+        if "usage" in path or "billing" in path:
+            year = int(path.split("year=")[1].split("&")[0])
+            month = int(path.split("month=")[1].split("&")[0])
+            return {"usageItems": rows_by_month.get((year, month), [])}
+        return [{"name": "secret-repo", "private": True}]
+    return gh
+
+
+def test_allowance_pressure_counts_the_previous_month_inside_its_window():
+    # `tools.cadence_control` asks this function whether the loop may be made to
+    # run more often, and it never passes `--trailing-days` -- so the reach back
+    # into the previous month has to work here and not only in `main`. 700
+    # minutes on 31 August is inside a seven-day window taken on 7 September.
+    rows = {
+        (2026, 9): [_dated("secret-repo", q, d) for q, d in
+                    ((41, "2026-09-01"), (23, "2026-09-02"), (89, "2026-09-03"),
+                     (172, "2026-09-04"), (89, "2026-09-05"), (6, "2026-09-06"),
+                     (7, "2026-09-07"))],
+        (2026, 8): [_dated("secret-repo", 700, "2026-08-31")],
+    }
+    blocked, reason = ci_minutes.allowance_pressure(now=MONDAY, gh=_gh_by_month(rows))
+    assert blocked is True, reason
+    assert "160 minute(s)/day" in reason           # (420 + 700) / 7
+
+
+def test_allowance_pressure_is_clear_on_the_same_week_without_that_burn():
+    # The control: identical September, empty August, and the seven-day window
+    # reads 60 minutes/day. A stub that answered August with September's rows
+    # would make the test above pass for the wrong reason.
+    rows = {
+        (2026, 9): [_dated("secret-repo", q, d) for q, d in
+                    ((41, "2026-09-01"), (23, "2026-09-02"), (89, "2026-09-03"),
+                     (172, "2026-09-04"), (89, "2026-09-05"), (6, "2026-09-06"),
+                     (7, "2026-09-07"))],
+    }
+    blocked, reason = ci_minutes.allowance_pressure(now=MONDAY, gh=_gh_by_month(rows))
+    assert blocked is False, reason
+    assert "60 minute(s)/day" in reason
+
+
 # --- the per-day series, and the step change a month-to-date average cannot see ---
 
 
@@ -236,21 +298,33 @@ def test_trailing_rate_refuses_an_incomplete_series():
 def test_trailing_rate_excludes_today():
     # Today is partial: counting it reads as a drop every morning.
     by_day = {"2026-09-06": 6, "2026-09-07": 6, "2026-09-08": 6, "2026-09-09": 1}
-    rate, reason = ci_minutes.trailing_rate(by_day, 0, DAY9)
+    rate, reason = ci_minutes.trailing_rate(by_day, 0, DAY9, window=3)
     assert rate == 6
     assert "2026-09-09" not in reason
 
 
 def test_trailing_rate_reads_a_missing_day_as_zero():
     # The endpoint emits no row for a day with no usage, so absent is a real zero.
-    rate, _reason = ci_minutes.trailing_rate({"2026-09-06": 9}, 0, DAY9)
+    rate, _reason = ci_minutes.trailing_rate({"2026-09-06": 9}, 0, DAY9, window=3)
     assert rate == 3
 
 
-def test_trailing_rate_refuses_to_reach_into_last_month():
+def test_trailing_rate_refuses_to_reach_past_what_was_fetched():
+    # An absent day is a real zero only inside the span somebody looked at.
+    # Default `earliest` is the first of this month, which is all a caller that
+    # fetched one month may claim.
     rate, reason = ci_minutes.trailing_rate({"2026-09-01": 40}, 0, DAY2)
     assert rate is None
-    assert "complete day(s) of this month" in reason
+    assert "back to 2026-09-01" in reason
+
+
+def test_trailing_rate_uses_a_day_before_the_month_when_it_was_fetched():
+    # The complement: the same window is answerable once `earliest` says the
+    # previous month is covered, and a day absent from *that* span is a zero.
+    rate, reason = ci_minutes.trailing_rate(
+        {"2026-08-31": 14}, 0, DAY2, window=2, earliest=date(2026, 8, 1))
+    assert rate == 7
+    assert "2026-08-31" in reason
 
 
 def test_resolve_rate_falls_back_to_the_month_average_and_says_so():
@@ -279,26 +353,33 @@ STEP_CHANGE = [
 #: A ceiling the real September burn projects past on the month average alone.
 #: The data stays as measured; only the allowance moves, which is what
 #: `--allowance` is for.
-STEP_CHANGE_ALLOWANCE = 1200
+STEP_CHANGE_ALLOWANCE = 800
+
+#: Far enough past the 5 September step that a seven-day window is entirely on
+#: the far side of it. Cycle 1170 widened the window from three days to a whole
+#: week, so the point at which the trailing rate has cleared a step moved with
+#: it -- that is the cost of the wider window and it belongs in the fixture
+#: rather than in a comment somewhere else.
+DAY13 = datetime(2026, 9, 13, 6, 0, tzinfo=timezone.utc)   # 12.25 days elapsed
 
 
 def test_the_month_average_still_projects_an_overrun_on_the_step_change():
     # The precondition for the test below: without the trailing window this
     # data raises, so the clean verdict there is the change and not the fixture.
     used = sum(r["quantity"] for r in STEP_CHANGE)
-    elapsed, days_in_month = ci_minutes.month_progress(DAY9)
+    elapsed, days_in_month = ci_minutes.month_progress(DAY13)
     kind, _reason = ci_minutes.projected_overrun(used, STEP_CHANGE_ALLOWANCE, elapsed,
                                                  days_in_month)
     assert kind == "projected"
 
 
 def test_a_burn_that_has_already_stopped_is_not_projected_forward(monkeypatch, capsys):
-    status = _run(monkeypatch, STEP_CHANGE, DAY9,
+    status = _run(monkeypatch, STEP_CHANGE, DAY13,
                   argv=["--allowance", str(STEP_CHANGE_ALLOWANCE)])
     out = capsys.readouterr().out
     assert status == 0, out
     assert "2026-09-04     172" in out          # the series is printed whole
-    assert "the last 3 complete day(s)" in out
+    assert "the last 7 complete day(s)" in out
 
 
 def test_the_series_is_printed_even_when_the_projection_raises(monkeypatch, capsys):
@@ -308,3 +389,95 @@ def test_the_series_is_printed_even_when_the_projection_raises(monkeypatch, caps
     out = capsys.readouterr().out
     assert status == 2
     assert "Billable minutes by day" in out
+
+
+#: 2026-09-07 was a Monday, and the three days behind it were Friday, Saturday
+#: and Sunday. This is that week as it actually happened, and the row for the
+#: Monday itself is the partial day the projection must not read.
+WEEKEND_WINDOW = [
+    _dated("secret-repo", 41, "2026-09-01"),
+    _dated("secret-repo", 23, "2026-09-02"),
+    _dated("secret-repo", 89, "2026-09-03"),
+    _dated("secret-repo", 172, "2026-09-04"),   # Friday
+    _dated("secret-repo", 89, "2026-09-05"),    # Saturday
+    _dated("secret-repo", 6, "2026-09-06"),     # Sunday
+    _dated("secret-repo", 7, "2026-09-07"),     # Monday, partial
+]
+
+MONDAY = datetime(2026, 9, 7, 18, 0, tzinfo=timezone.utc)   # 6.75 days elapsed
+
+
+def test_a_three_day_window_on_a_monday_is_one_weekday_and_a_weekend(monkeypatch, capsys):
+    # The precondition, and the live reading Cycle 1170 took: three days back
+    # from a Monday is Friday plus the weekend, so one busy weekday sets the
+    # rate for the rest of the month. 172 + 89 + 6 reads as 89 minutes/day.
+    status = _run(monkeypatch, WEEKEND_WINDOW, MONDAY, argv=["--trailing-days", "3"])
+    out = capsys.readouterr().out
+    assert status == 2, out
+    assert "past the 2000-minute allowance" in out
+
+
+def test_the_default_window_is_a_whole_week(monkeypatch, capsys):
+    # Same data, same day, seven days: five weekdays and two weekend days
+    # whichever day it is asked, and the same minutes read as 60/day.
+    status = _run(monkeypatch, WEEKEND_WINDOW, MONDAY)
+    out = capsys.readouterr().out
+    assert status == 0, out
+    assert "the last 7 complete day(s)" in out
+    assert "2026-08-31" in out       # it reached into the previous month to fill
+
+
+def test_usage_before_month_fetches_back_as_far_as_the_window_needs(monkeypatch):
+    asked = []
+
+    def _usage(org, year, month, gh=None):
+        asked.append((year, month))
+        return [_dated("secret-repo", 14, "2026-08-31")]
+
+    monkeypatch.setattr(ci_minutes, "fetch_usage", _usage)
+    extra, earliest = ci_minutes.usage_before_month("O", MONDAY, 7)
+    assert asked == [(2026, 8)]
+    assert earliest == date(2026, 8, 1)
+    assert len(extra) == 1
+
+
+def test_usage_before_month_keeps_reaching_back_for_a_long_window(monkeypatch):
+    # `--trailing-days` is settable, and one step back is only enough for a
+    # window shorter than a month. With 45 days behind 7 September the loop has
+    # to reach August and then July, and say July is where the span starts.
+    asked = []
+
+    def _usage(org, year, month, gh=None):
+        asked.append((year, month))
+        return []
+
+    monkeypatch.setattr(ci_minutes, "fetch_usage", _usage)
+    _extra, earliest = ci_minutes.usage_before_month("O", MONDAY, 45)
+    assert asked == [(2026, 8), (2026, 7)]
+    assert earliest == date(2026, 7, 1)
+
+
+def test_usage_before_month_costs_no_call_when_the_window_fits(monkeypatch):
+    # The complement, and the common case: three weeks into the month there is
+    # nothing to reach back for, and a second billing call would be waste.
+    asked = []
+    monkeypatch.setattr(ci_minutes, "fetch_usage",
+                        lambda org, y, m, gh=None: asked.append((y, m)) or [])
+    later = datetime(2026, 9, 20, 6, 0, tzinfo=timezone.utc)
+    extra, earliest = ci_minutes.usage_before_month("O", later, 7)
+    assert asked == []
+    assert extra == []
+    assert earliest == date(2026, 9, 1)
+
+
+def test_minutes_from_the_previous_month_inside_the_window_are_counted(monkeypatch, capsys):
+    # The complement of the test above, and what makes reaching back worth the
+    # extra call: 31 August is inside a seven-day window taken on 7 September,
+    # so a burn there sets the rate. Drop it and the same run reads 60/day and
+    # comes back clean.
+    status = _run(monkeypatch, WEEKEND_WINDOW, MONDAY,
+                  prior=[_dated("secret-repo", 700, "2026-08-31")])
+    out = capsys.readouterr().out
+    assert status == 2, out
+    assert "2026-08-31     700" in out          # printed in the series, not just used
+    assert "160 minute(s)/day" in out           # (420 + 700) / 7
