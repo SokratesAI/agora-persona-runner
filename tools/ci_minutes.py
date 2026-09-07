@@ -48,10 +48,26 @@ been spent. `tools.cadence_control` asks this same question before it may make
 the loop run more often, so a stale overrun does not just misreport -- it holds
 the cadence down on a bill that stopped. The per-day series is printed whole
 beside the rate, because a step change is the one thing a single number cannot
-show. When the window cannot be filled -- fewer than `--trailing-days` complete
-days this month, or any row with no date -- the month average is used and is
-labelled as the fallback, since a window that could not be measured must never
-read as a quiet one.
+show. When the window cannot be filled -- fewer complete days than
+`--trailing-days` are readable, or any row with no date -- the month average is
+used and is labelled as the fallback, since a window that could not be measured
+must never read as a quiet one.
+
+**The window is a week, and Cycle 1170 measured why it has to be.** Cycle 1125
+set it to three days and guarded one direction only: a quiet weekend must not be
+able to clear a real burn. Three days is a different mix of weekdays and weekend
+days depending on which day of the week the tool is run, so the converse went
+unguarded -- run it on a Monday and the window is Friday, Saturday, Sunday. On
+2026-09-07 that read 172 + 89 + 6 as 89 minutes/day and printed `ACT ... projects
+to 2495` against a 2000-minute allowance, off one Friday, while Monday itself sat
+at 7 minutes with 85% of the day already gone. Seven days is five weekdays and
+two weekend days whichever day it is asked, so the rate stops depending on the
+clock: the same data reads 60 minutes/day and projects 1821, inside the
+allowance. Filling a seven-day window means reaching into the previous calendar
+month for the first week of every month, and the billing endpoint is per-month,
+so `usage_before_month` fetches back as far as the window needs. Without it a
+quarter of the year falls back to the month-to-date average -- the exact average
+the window exists to replace.
 
 **The projection needs enough month behind it to mean anything.** One day
 of data extrapolated over thirty is not a forecast, so below
@@ -87,9 +103,19 @@ FREE_PLAN_MINUTES = 2000
 MIN_DAYS_FOR_PROJECTION = 3
 
 #: Complete days of history a trailing window needs before its rate may stand in
-#: for the month-to-date average. Three, matching the floor above, because one
-#: quiet day is a weekend and must not be able to clear a real burn on its own.
-TRAILING_WINDOW_DAYS = 3
+#: for the month-to-date average. **Seven, and the whole point is that it is a
+#: whole number of weeks.** Cycle 1125 set this to three so a step change could
+#: not hide behind a month-to-date average, and wrote beside it that "one quiet
+#: day is a weekend and must not be able to clear a real burn on its own" -- but
+#: it only guarded that direction. Three days is a different mix of weekdays and
+#: weekend days depending on which day of the week you ask, so the converse was
+#: unguarded: run it on a Monday and the window is Friday, Saturday, Sunday, and
+#: one busy weekday sets the rate for the month. Measured Cycle 1170: 172 + 89 +
+#: 6 over that exact window read as 89 minutes/day and projected 2495 against a
+#: 2000-minute allowance, while Monday itself sat at 7 minutes with 85% of the
+#: day gone. A seven-day window contains five weekdays and two weekend days
+#: whichever day it is run, so the rate stops depending on the clock.
+TRAILING_WINDOW_DAYS = 7
 
 
 def _gh(path, org):
@@ -131,6 +157,28 @@ def fetch_visibility(org, gh=None):
     gh = gh or _gh
     repos = gh(f"/orgs/{org}/repos?per_page=100", org)
     return {r["name"]: bool(r["private"]) for r in repos}
+
+
+def usage_before_month(org, now, window, gh=None):
+    """`(items, earliest)` -- usage rows from months *before* `now`'s, enough to
+    cover a `window`-day trailing window, plus the first date they cover.
+
+    The billing endpoint is per calendar month and a seven-day window reaches
+    back into the previous one for the first week of every month -- which is a
+    quarter of the year spent falling back to the month-to-date average, the
+    exact average the window exists to replace. Returns `([], first of this
+    month)` when the window fits inside this month, so the common case costs no
+    extra call. `earliest` is what makes the fetched span explicit to
+    `trailing_rate`: an absent day is a real zero only where somebody looked.
+    """
+    extra = []
+    earliest = now.date().replace(day=1)
+    need = now.date() - timedelta(days=window)
+    while need < earliest:
+        last_of_prev = earliest - timedelta(days=1)
+        extra.extend(fetch_usage(org, last_of_prev.year, last_of_prev.month, gh=gh))
+        earliest = last_of_prev.replace(day=1)
+    return extra, earliest
 
 
 def split_minutes(items, visibility):
@@ -185,30 +233,38 @@ def daily_private_minutes(items, visibility):
     return by_day, undated
 
 
-def trailing_rate(by_day, undated, now, window=TRAILING_WINDOW_DAYS):
+def trailing_rate(by_day, undated, now, window=TRAILING_WINDOW_DAYS, earliest=None):
     """`(rate, reason)` -- minutes/day over the last `window` *complete* days.
 
     Today is excluded because it is a partial day and would read as a drop
     every morning. Returns `(None, reason)` when the window cannot be filled,
     and the caller falls back to the month-to-date average and says so -- a
     window that could not be measured must never read as a quiet one.
+
+    `earliest` is the first date `by_day` is authoritative for, and it has to
+    be passed rather than inferred: a day with no usage has no row, so an
+    absent key is a real zero and a day nobody fetched is indistinguishable
+    from a quiet one. It defaults to the first of `now`'s month, which is what
+    a caller that fetched only this month's usage may claim.
     """
     if undated > 0:
         return (None, f"{undated:.0f} billable minute(s) carry no date, so the "
                       f"per-day series is incomplete")
+    if earliest is None:
+        earliest = now.date().replace(day=1)
     days = []
     for back in range(1, window + 1):
         day = now.date() - timedelta(days=back)
-        if day.month != now.month:
-            return (None, f"only {back - 1} complete day(s) of this month are behind "
-                          f"us, and the window needs {window}")
+        if day < earliest:
+            return (None, f"only {back - 1} complete day(s) back to {earliest.isoformat()} "
+                          f"are readable, and the window needs {window}")
         days.append(day.isoformat())
     return (sum(by_day.get(d, 0.0) for d in days) / window,
             "the last %d complete day(s): %s" % (window, ", ".join(reversed(days))))
 
 
 def resolve_rate(by_day, undated, now, used, elapsed_days,
-                 window=TRAILING_WINDOW_DAYS):
+                 window=TRAILING_WINDOW_DAYS, earliest=None):
     """`(rate, label)` -- the minutes/day figure to project the month end from.
 
     The trailing window when the series can carry one, because the question is
@@ -219,7 +275,7 @@ def resolve_rate(by_day, undated, now, used, elapsed_days,
     off minutes that had already been spent. Falls back to the average, named
     as such, when the window cannot be filled.
     """
-    rate, reason = trailing_rate(by_day, undated, now, window)
+    rate, reason = trailing_rate(by_day, undated, now, window, earliest)
     if rate is None:
         return (used / max(elapsed_days, 1e-9),
                 f"month to date; no trailing window because {reason}")
@@ -292,13 +348,15 @@ def allowance_pressure(org=ORG, allowance=FREE_PLAN_MINUTES, now=None, gh=None):
     try:
         items = fetch_usage(org, now.year, now.month, gh=gh)
         visibility = fetch_visibility(org, gh=gh)
+        earlier, earliest = usage_before_month(org, now, TRAILING_WINDOW_DAYS, gh=gh)
     except RuntimeError as exc:
         return (True, f"the Actions allowance could not be read ({exc})")
     private, _public, _unknown, net = split_minutes(items, visibility)
     used = sum(private.values())
     elapsed, days_in_month = month_progress(now)
-    by_day, undated = daily_private_minutes(items, visibility)
-    rate, label = resolve_rate(by_day, undated, now, used, elapsed)
+    by_day, undated = daily_private_minutes(items + earlier, visibility)
+    rate, label = resolve_rate(by_day, undated, now, used, elapsed,
+                               TRAILING_WINDOW_DAYS, earliest)
     kind, reason = projected_overrun(used, allowance, elapsed, days_in_month, net,
                                      rate=rate, rate_label=label)
     return (kind is not None, reason)
@@ -317,6 +375,7 @@ def main(argv=None):
     try:
         items = fetch_usage(args.org, now.year, now.month)
         visibility = fetch_visibility(args.org)
+        earlier, earliest = usage_before_month(args.org, now, args.trailing_days)
     except RuntimeError as exc:
         print(f"UNREADABLE  {exc}")
         print("Could not measure the allowance; this is not a clean result.")
@@ -326,9 +385,9 @@ def main(argv=None):
     used = sum(private.values())
     elapsed, days_in_month = month_progress(now)
     remaining_days = days_in_month - elapsed
-    by_day, undated = daily_private_minutes(items, visibility)
+    by_day, undated = daily_private_minutes(items + earlier, visibility)
     rate, rate_label = resolve_rate(by_day, undated, now, used, elapsed,
-                                    args.trailing_days)
+                                    args.trailing_days, earliest)
 
     if private:
         print("Billable minutes by repository:")
@@ -344,7 +403,9 @@ def main(argv=None):
         # Printed whole rather than summarised: a step change is the one thing
         # a single rate cannot show, and this is the data the rate is made of.
         print("Billable minutes by day (today is partial and is not projected from):")
-        for day in sorted(by_day):
+        first_shown = min(now.date().replace(day=1),
+                          now.date() - timedelta(days=args.trailing_days)).isoformat()
+        for day in sorted(d for d in by_day if d >= first_shown):
             print(f"    {day}  {by_day[day]:6.0f}")
     if undated:
         print(
@@ -391,6 +452,21 @@ def main(argv=None):
             f"UNREADABLE  {len(unknown)} repo(s) spent minutes and are in no listing of {args.org}, "
             f"so whether those minutes are billed is unknown: "
             + ", ".join(f"{n} ({m:.0f}m)" for n, m in unknown.most_common())
+        )
+        status = max(status, 1) if status != 2 else status
+
+    # The same contract one month back. `daily_private_minutes` reads an
+    # unlisted repository as not-private and drops it, so minutes spent in the
+    # part of the window that lies in the previous month would go missing from
+    # the rate silently -- and missing minutes make the rate read *low*, which
+    # is the direction that turns an unreadable run into a clean one.
+    window_unknown = split_minutes(earlier, visibility)[2] if earlier else {}
+    if window_unknown:
+        print(
+            f"UNREADABLE  {len(window_unknown)} repo(s) spent minutes inside the trailing "
+            f"window but in an earlier month, and are in no listing of {args.org}, so the "
+            f"run rate above is missing them: "
+            + ", ".join(f"{n} ({m:.0f}m)" for n, m in window_unknown.most_common())
         )
         status = max(status, 1) if status != 2 else status
 
