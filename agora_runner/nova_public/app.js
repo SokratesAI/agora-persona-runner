@@ -8844,6 +8844,7 @@
         shown[s].name, shown[s].summary, shown[s].rating, s, shown.length));
     }
     if (!list.childNodes.length) return null;
+    attachProjectDrag(list);
     var box = el("section", "project-standings");
     box.appendChild(list);
     return box;
@@ -8917,16 +8918,48 @@
     return li;
   }
 
+  /* Send one project to a 1-based position in his ordered list.
+   *
+   * The one write path for both controls below -- the two arrows and the
+   * drag gesture -- so a reorder cannot mean two different things
+   * depending on how he did it. `note` is where the outcome is said; the
+   * caller owns it because both controls hang off the same row.
+   */
+  function sendProjectOrder(name, position, note) {
+    note.textContent = "Saving\u2026";
+    return fetch("/api/project/order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: name, position: position })
+    })
+      .then(json)
+      .then(function (result) {
+        if (!result || !result.ok) throw new Error((result && result.message) || "failed");
+        note.textContent = "";
+        // Reload rather than swapping two nodes: the order he just set
+        // is the order the picker will use, and the page has to show
+        // what the file says rather than what the click implied.
+        load();
+      })
+      .catch(function (err) { note.textContent = "Could not move: " + err; });
+  }
+
   /* Move one project up or down his ordered list.
    *
    * `index` is 0-based within the list drawn above, so "up" is
    * `index` (1-based `index - 1 + 1`) and "down" is `index + 2`. The ends
    * are disabled rather than hidden: a button that disappears at the top
    * moves the other button under his thumb, and he taps the wrong one.
+   *
+   * The arrows stay now that the drag gesture exists, and that is a
+   * decision rather than an oversight: a drag has no keyboard and no
+   * screen-reader equivalent, so deleting them would take the ordering
+   * away from every input except a finger.
    */
   function projectMoveControls(name, index, total) {
     var wrap = el("div", "project-standing-move");
     var note = el("span", "project-standing-move-note", "");
+    wrap.appendChild(projectDragHandle(name));
     function mover(label, position, enabled) {
       var button = el("button", "project-standing-move-btn", label);
       button.type = "button";
@@ -8937,22 +8970,7 @@
         return button;
       }
       button.addEventListener("click", function () {
-        note.textContent = "Saving\u2026";
-        fetch("/api/project/order", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ project: name, position: position })
-        })
-          .then(json)
-          .then(function (result) {
-            if (!result || !result.ok) throw new Error((result && result.message) || "failed");
-            note.textContent = "";
-            // Reload rather than swapping two nodes: the order he just set
-            // is the order the picker will use, and the page has to show
-            // what the file says rather than what the click implied.
-            load();
-          })
-          .catch(function (err) { note.textContent = "Could not move: " + err; });
+        sendProjectOrder(name, position, note);
       });
       return button;
     }
@@ -8960,6 +8978,146 @@
     wrap.appendChild(mover("\u2193", index + 2, index < total - 1));
     wrap.appendChild(note);
     return wrap;
+  }
+
+  /* The grip he drags a project by -- milestone M3 of idea #260, the half
+   * the two arrows above deliberately shipped without.
+   *
+   * A handle rather than the whole row, for two reasons that are both
+   * about a phone. The row holds a link to the project page, and a row
+   * that starts dragging under a finger is a row he can no longer tap to
+   * open. And a list whose every row swallows a vertical drag is a list
+   * he cannot scroll -- `touch-action: none` is set on this element only,
+   * so a finger anywhere else on the standing still scrolls the page.
+   *
+   * It is `aria-hidden` and not focusable on purpose: the two arrows
+   * beside it already carry the same action with a real accessible name,
+   * so exposing a third control that a screen reader cannot actually
+   * operate would announce an ability it does not have.
+   */
+  function projectDragHandle(name) {
+    var grip = el("span", "project-standing-grip", "\u2807");
+    grip.setAttribute("aria-hidden", "true");
+    grip.setAttribute("data-project", name);
+    return grip;
+  }
+
+  /* Drag one standing to a new place with a finger.
+   *
+   * The gesture is pointer events rather than HTML5 `draggable`, which is
+   * the reason M3 shipped as two buttons in the first place: `dragstart`
+   * never fires on a touch screen, and a touch screen is what he reads
+   * this page on.
+   *
+   * Where it lands is decided against the row centres measured once, at
+   * `pointerdown`, rather than re-measured while the finger moves. The
+   * dragged row is translated rather than re-parented, so the rows under
+   * it never move and a mid-drag measurement would read the same numbers
+   * anyway -- and measuring once means the target cannot oscillate when a
+   * row is taller than the one it is passing.
+   *
+   * Three behaviours worth stating because each is a decision:
+   *  - nothing is sent when the drag ends on the row's own index, so
+   *    resting a thumb on the grip cannot renumber his whole table;
+   *  - the drag only starts after `DRAG_SLOP` pixels, so a tap that
+   *    wobbles is still a tap;
+   *  - `pointercancel` (the browser taking the gesture back for a scroll)
+   *    puts the row back and sends nothing, which is not the same event
+   *    as letting go.
+   */
+  var DRAG_SLOP = 8;
+
+  function attachProjectDrag(list) {
+    var drag = null;
+
+    function rows() {
+      var out = [];
+      var kids = list.childNodes;
+      for (var i = 0; i < kids.length; i++) {
+        if (kids[i].className === "project-standing") out.push(kids[i]);
+      }
+      return out;
+    }
+
+    /* The index the dragged row would take if the finger let go now.
+     * `centres` is the y-midpoint of each row at drag start; the dragged
+     * row's own centre has moved by `dy`. Walking outwards from the
+     * origin rather than sorting keeps a row from jumping past two
+     * neighbours at once when the list is not evenly spaced. */
+    function targetIndex(centres, origin, dy) {
+      var here = centres[origin] + dy;
+      var target = origin;
+      while (target > 0 && here < centres[target - 1]) target--;
+      while (target < centres.length - 1 && here > centres[target + 1]) target++;
+      return target;
+    }
+
+    function centreOf(node) {
+      var rect = node.getBoundingClientRect();
+      return rect.top + (rect.height / 2);
+    }
+
+    function reset() {
+      if (!drag) return;
+      drag.row.style.transform = "";
+      drag.row.classList.remove("project-standing--dragging");
+      drag = null;
+    }
+
+    list.addEventListener("pointerdown", function (event) {
+      var grip = event.target;
+      if (!grip || grip.className !== "project-standing-grip") return;
+      var row = grip.parentNode;
+      while (row && row.className !== "project-standing") row = row.parentNode;
+      if (!row) return;
+      var all = rows();
+      var origin = all.indexOf(row);
+      if (origin < 0 || all.length < 2) return;
+      var centres = [];
+      for (var i = 0; i < all.length; i++) centres.push(centreOf(all[i]));
+      drag = {
+        row: row,
+        name: grip.getAttribute("data-project"),
+        origin: origin,
+        centres: centres,
+        startY: event.clientY,
+        moved: false,
+        target: origin
+      };
+      // Without capture the gesture ends the moment the finger leaves the
+      // grip, which on a 44px control is immediately.
+      if (grip.setPointerCapture && event.pointerId !== undefined) {
+        try { grip.setPointerCapture(event.pointerId); } catch (err) { /* not supported */ }
+      }
+    });
+
+    list.addEventListener("pointermove", function (event) {
+      if (!drag) return;
+      var dy = event.clientY - drag.startY;
+      if (!drag.moved) {
+        if (Math.abs(dy) < DRAG_SLOP) return;
+        drag.moved = true;
+        drag.row.classList.add("project-standing--dragging");
+      }
+      // The page must not scroll under a drag it has already started.
+      if (event.preventDefault) event.preventDefault();
+      drag.row.style.transform = "translateY(" + dy + "px)";
+      drag.target = targetIndex(drag.centres, drag.origin, dy);
+    });
+
+    list.addEventListener("pointerup", function () {
+      if (!drag) return;
+      var moved = drag.moved;
+      var target = drag.target;
+      var origin = drag.origin;
+      var name = drag.name;
+      var note = drag.row.querySelector(".project-standing-move-note");
+      reset();
+      if (!moved || target === origin || !note) return;
+      sendProjectOrder(name, target + 1, note);
+    });
+
+    list.addEventListener("pointercancel", function () { reset(); });
   }
 
   /* The rating of one project, as something the owner can change --

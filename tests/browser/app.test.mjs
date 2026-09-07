@@ -14108,6 +14108,162 @@ describe("the project page", () => {
     assert.deepEqual(window.posted.at(-1).body, { project: "Nova", position: 1 });
   });
 
+  /* The drag gesture -- the open half of milestone M3 of idea #260. Two
+   * arrows shipped first because HTML5 `draggable` fires nothing on a
+   * touch screen; this is the pointer-event version of the same write.
+   *
+   * jsdom lays nothing out, so every rect is zero and a hit test against
+   * real geometry would pass on any arithmetic at all. These give each
+   * row its own rect, which is the only way the target index is being
+   * tested rather than the constant 0 jsdom would otherwise hand back. */
+  const THREE = {
+    ...STANDING,
+    projects: ["Marcus", "Nova", "Agora"],
+    projectSummary: {
+      ...STANDING.projectSummary,
+      agora: {
+        total: 8, done: 2, dropped: 0, open: 6, blocked: 0, percentDone: 25,
+        priorities: [{ key: "low", label: "⚪ Low", count: 6 }],
+      },
+    },
+  };
+
+  // 40px rows starting at y=0, so the centres are 20, 60 and 100.
+  const layOut = (rows) =>
+    rows.forEach((row, i) => {
+      row.getBoundingClientRect = () => ({
+        top: i * 40, bottom: (i * 40) + 40, height: 40, left: 0, right: 100, width: 100,
+      });
+    });
+
+  const pointer = (window, node, type, clientY) =>
+    node.dispatchEvent(new window.MouseEvent(type, {
+      bubbles: true, cancelable: true, clientY,
+    }));
+
+  const grip = (row) => row.querySelector(".project-standing-grip");
+
+  test("each standing carries a drag grip the screen reader is not offered", async () => {
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const rows = standings(window);
+    assert.equal(grip(rows[0]).getAttribute("data-project"), "Marcus");
+    // The two arrows beside it already announce the same action with a
+    // real name; a third control a screen reader cannot drag would be an
+    // ability announced and not delivered.
+    assert.equal(grip(rows[0]).getAttribute("aria-hidden"), "true");
+  });
+
+  test("dragging a project down two places sends its new 1-based position", async () => {
+    const window = await loadSite("/projects", { project: () => THREE });
+    const rows = standings(window);
+    assert.equal(rows.length, 3);
+    layOut(rows);
+    pointer(window, grip(rows[0]), "pointerdown", 20);
+    pointer(window, grip(rows[0]), "pointermove", 105);
+    pointer(window, grip(rows[0]), "pointerup", 105);
+    await new Promise((r) => setTimeout(r, 0));
+    const sent = window.posted.at(-1);
+    assert.equal(sent.url, "/api/project/order");
+    // Marcus's centre moved from 20 to 105, past Agora's 100, so it lands
+    // third -- position 3, the same 1-based number the arrows send.
+    assert.deepEqual(sent.body, { project: "Marcus", position: 3 });
+  });
+
+  test("dragging a project up sends the place it landed on, not the one it left", async () => {
+    const window = await loadSite("/projects", { project: () => THREE });
+    const rows = standings(window);
+    layOut(rows);
+    pointer(window, grip(rows[2]), "pointerdown", 100);
+    pointer(window, grip(rows[2]), "pointermove", 55);
+    pointer(window, grip(rows[2]), "pointerup", 55);
+    await new Promise((r) => setTimeout(r, 0));
+    // 100 - 45 = 55, which is above Nova's centre of 60 and below
+    // Marcus's 20, so Agora lands second.
+    assert.deepEqual(window.posted.at(-1).body, { project: "Agora", position: 2 });
+  });
+
+  test("a drag that ends where it started writes nothing", async () => {
+    const window = await loadSite("/projects", { project: () => THREE });
+    const rows = standings(window);
+    layOut(rows);
+    const before = window.posted.length;
+    pointer(window, grip(rows[1]), "pointerdown", 60);
+    pointer(window, grip(rows[1]), "pointermove", 72);
+    pointer(window, grip(rows[1]), "pointerup", 72);
+    await new Promise((r) => setTimeout(r, 0));
+    // 72 is past the 8px slop, so this really was a drag -- it just did
+    // not cross a neighbour's centre. Renumbering his whole table for
+    // that would make resting a thumb on the grip a write.
+    assert.equal(window.posted.length, before);
+    assert.equal(rows[1].style.transform, "", "the row was left mid-drag");
+  });
+
+  test("a tap that wobbles under the slop is not a drag", async () => {
+    const window = await loadSite("/projects", { project: () => THREE });
+    const rows = standings(window);
+    layOut(rows);
+    const before = window.posted.length;
+    pointer(window, grip(rows[0]), "pointerdown", 20);
+    pointer(window, grip(rows[0]), "pointermove", 25);
+    // Asserted mid-gesture, before the pointer is lifted: `pointerup`
+    // clears this class whether or not the drag ever started, so the
+    // same assertion after it would pass on a slop of zero.
+    assert.equal(
+      rows[0].classList.contains("project-standing--dragging"), false,
+      "5px lifted the row, so the slop is not being applied");
+    pointer(window, grip(rows[0]), "pointerup", 25);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(window.posted.length, before);
+  });
+
+  test("the browser taking the gesture back cancels the move", async () => {
+    const window = await loadSite("/projects", { project: () => THREE });
+    const rows = standings(window);
+    layOut(rows);
+    const before = window.posted.length;
+    pointer(window, grip(rows[0]), "pointerdown", 20);
+    pointer(window, grip(rows[0]), "pointermove", 105);
+    assert.equal(
+      rows[0].classList.contains("project-standing--dragging"), true,
+      "the row never lifted, so this test proves nothing about cancelling");
+    pointer(window, grip(rows[0]), "pointercancel", 105);
+    await new Promise((r) => setTimeout(r, 0));
+    // A cancel is the browser reclaiming the gesture for a scroll. It is
+    // not letting go, and it must not be read as one.
+    assert.equal(window.posted.length, before);
+    assert.equal(rows[0].style.transform, "");
+  });
+
+  test("a drag started anywhere but the grip is not a drag", async () => {
+    const window = await loadSite("/projects", { project: () => THREE });
+    const rows = standings(window);
+    layOut(rows);
+    const before = window.posted.length;
+    // The row holds a link to the project page; a row that drags from
+    // anywhere is a row he cannot tap, and a list he cannot scroll.
+    const name = rows[0].querySelector(".project-standing-name");
+    pointer(window, name, "pointerdown", 20);
+    pointer(window, name, "pointermove", 105);
+    pointer(window, name, "pointerup", 105);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(window.posted.length, before);
+  });
+
+  test("a failed drag says so on the row it was dragged from", async () => {
+    const window = await loadSite("/projects", { project: () => THREE });
+    window.postReply = { ok: false, message: "no such project" };
+    const rows = standings(window);
+    layOut(rows);
+    pointer(window, grip(rows[0]), "pointerdown", 20);
+    pointer(window, grip(rows[0]), "pointermove", 105);
+    pointer(window, grip(rows[0]), "pointerup", 105);
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.match(
+      rows[0].querySelector(".project-standing-move-note").textContent,
+      /Could not move/);
+  });
+
   test("a project page still draws the pills and no standings", async () => {
     const window = await loadSite("/project/Nova", {
       project: () => ({ ...STANDING, name: "Nova", asked: "Nova" }),
