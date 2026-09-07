@@ -12,7 +12,9 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 `nova_comments`, which do no I/O at all; this module is only the fetch.
 """
 
-from agora_runner.nova_boards import BOARD_PATHS, PROJECT_META_PATH
+from agora_runner.nova_boards import (
+    BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH,
+)
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_catalog import CATALOG_PATH
 from agora_runner.nova_recap import RECAP_PATH
@@ -249,6 +251,21 @@ def project_meta_markdown():
     call cannot tell the two apart and does not pretend to.
     """
     return vault_read_path(PROJECT_META_PATH) or ""
+
+
+def milestone_pins_markdown():
+    """`milestones.md`, raw -- the milestones he has pinned by hand.
+
+    Fifth small file on this page, and the only one whose absence is a
+    normal steady state rather than a first-use state: a pin is an
+    override on a computed order, so no file means the formula stands,
+    which is exactly what `milestone_ranks` does when handed no pins.
+
+    `""` when the document does not exist, for `project_meta_markdown`'s
+    reason one function up -- this call cannot tell absent from
+    unreadable and does not pretend to.
+    """
+    return vault_read_path(MILESTONE_PINS_PATH) or ""
 
 
 def edvard_board_markdown(name):

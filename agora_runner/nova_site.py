@@ -141,6 +141,7 @@ from agora_runner.nova_capture import (
     set_priority,
     set_project,
     set_project_priority,
+    pin_milestone,
     set_project_order,
     set_project_satisfaction,
     resolve_project_lifecycle,
@@ -260,6 +261,7 @@ from agora_runner.nova_galaxy import galaxy_payload
 from agora_runner.nova_sources import (
     claims_ledger_json,
     edvard_board_markdown,
+    milestone_pins_markdown,
     project_meta_markdown,
     nova_board_markdown,
     catalog_markdown,
@@ -1865,6 +1867,7 @@ def next_up_payload():
         claims_ledger_json(),
         datetime.now(OSLO),
         projects_markdown=project_meta_markdown(),
+        milestones_markdown=milestone_pins_markdown(),
     )
 
 
@@ -4990,6 +4993,69 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_milestone_pin(self, payload):
+        """`POST /api/milestone/pin` -- he overrides where a milestone sits.
+
+        Milestone M4 of idea #260: *"I want the ability to reorder tasks
+        and milestones but the default is that you do it."* The computed
+        order is `nova_next.milestone_ranks`; this is the one thing that
+        beats it, and until now the only way to set one was a cycle
+        running `tools.milestone_pin` from a terminal he does not have.
+
+        `position` is checked as an `int` here rather than coerced, the
+        same call `_post_project_order` makes one function up and for the
+        same reason. **Zero is legal here and is not legal there**, which
+        is the one difference worth stating: a project always sits
+        somewhere in his list, so there is no "unplaced"; a milestone is
+        pinned or it is not, and `0` is how he takes a pin back off.
+
+        Everything else the write can refuse -- a `|` in either name, a
+        document with no table -- is `set_milestone_pin`'s to answer,
+        because those are facts about the document rather than about the
+        request. **A milestone that names nothing is deliberately not
+        refused here**: the CLI checks the name against the open board
+        rows because a cycle types it, and he does not type it -- the UI
+        sends back a name it read off this page, so a check would cost
+        two board fetches on every press to catch a case only a
+        hand-rolled `curl` can produce.
+        """
+        project = payload.get("project")
+        milestone = payload.get("milestone")
+        position = payload.get("position")
+        if not isinstance(project, str) or not project.strip():
+            self._send_json(400, {"error": "project must be a non-empty string"})
+            return
+        if not isinstance(milestone, str) or not milestone.strip():
+            self._send_json(400, {"error": "milestone must be a non-empty string"})
+            return
+        if not isinstance(position, int) or isinstance(position, bool) or position < 0:
+            self._send_json(
+                400, {"error": "position must be an integer of 0 or more"})
+            return
+
+        try:
+            ok, message = pin_milestone(
+                project.strip(), milestone.strip(), position)
+        except Exception as e:
+            log(f"nova-site milestone pin failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        # Nothing to invalidate, the same as the project order beside it:
+        # the next-up payload reads this file on every build, and its own
+        # 15-second cache is short enough that a pin shows up while he is
+        # still looking at the page he set it on.
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Pin milestone {milestone.strip()} \u00b7 {'ok' if ok else message}",
+            after=f"{project.strip()} #{position}",
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def _post_project_lifecycle(self, payload):
         """`POST /api/project/lifecycle` -- he answers a lifecycle proposal.
 
@@ -5901,7 +5967,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/board/priority", "/api/board/project",
             "/api/project/priority", "/api/project/order",
             "/api/project/satisfaction",
-            "/api/project/lifecycle",
+            "/api/project/lifecycle", "/api/milestone/pin",
             "/api/board/edit", "/api/board/delete", "/api/board/archive",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
@@ -5999,6 +6065,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/project/lifecycle":
             self._post_project_lifecycle(payload)
+            return
+        if path == "/api/milestone/pin":
+            self._post_milestone_pin(payload)
             return
         if path in ("/api/board/edit", "/api/board/delete"):
             self._post_board_amend(payload, delete=path.endswith("delete"))

@@ -54,8 +54,10 @@ from agora_runner.nova_boards import (
     add_row,
     CAPTURE_PRIORITY_SEP,
     PRIORITY_LABELS,
+    MILESTONE_PINS_PATH,
     PROJECT_META_PATH,
     parse_project_meta,
+    set_milestone_pin as _set_milestone_pin_md,
     set_project_priority as _set_project_priority_md,
     set_project_order as _set_project_order_md,
     set_project_satisfaction as _set_project_satisfaction_md,
@@ -901,6 +903,52 @@ def set_project_order(project, position):
             break
     log(f"nova-capture failed placing project {project!r}: {result}")
     return False, f"could not write project order: {result}"
+
+
+def pin_milestone(project, milestone, position):
+    """Pin one milestone to a position inside its project. Returns (ok, message).
+
+    Milestone M4 of idea #260, and the write end of the override half:
+    *"I want the ability to reorder tasks and milestones but the default
+    is that you do it"*. The formula in `nova_next.milestone_ranks` is
+    the default; this is him saying otherwise about one milestone.
+
+    Same read-modify-write and same 409 retry as `set_project_order`
+    above, and for the same reason -- a cycle running `tools.milestone_pin`
+    against the same document is the concurrent writer -- but against
+    `MILESTONE_PINS_PATH` rather than `projects.md`, because a pin is a
+    decision about a milestone and not a column on a project.
+
+    **A missing file is created here, unlike a position and like a
+    rating.** The distinction is not arbitrary: `projects.md` is a list,
+    and a list nobody has written has no positions in it, so placing a
+    project into nothing is a refusal. `milestones.md` is a set of
+    overrides, and the first override has to be able to land somewhere.
+    `set_milestone_pin` writes the header itself when handed `""`.
+
+    **`position` 0 removes the row**, which is the only way back to the
+    computed order, so the message says "unpinned" rather than "#0" --
+    a position of zero is not a place in a list.
+    """
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(MILESTONE_PINS_PATH)
+        updated = _set_milestone_pin_md(
+            current or "", project, milestone, position,
+            updated=datetime.now(OSLO).strftime("%m-%d"))
+        if updated is None:
+            return False, f"cannot pin {milestone!r} at {position!r}"
+        result = vault_write_path(MILESTONE_PINS_PATH, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture pinned milestone {milestone!r} "
+                f"of {project!r} at {position}")
+            if position:
+                return True, f"{milestone} is now #{position} in {project}"
+            return True, f"{milestone} is unpinned"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed pinning milestone {milestone!r}: {result}")
+    return False, f"could not write milestone pins: {result}"
 
 
 def set_project_satisfaction(project, score):
