@@ -57,7 +57,19 @@ BOARD_PATHS = {
     },
 }
 
-_SECTION_RE = re.compile(r"^(#{1,2})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+# Two changes, and the second one is the whole fix. `(.*[^ \t])` rather than
+# `(.+?)`: a lazy group in front of `[ \t]*$` retries the trailing-whitespace
+# split at every position it grows through, which is quadratic in the line
+# length -- 4.9s on a 40,000-character heading, measured Cycle 1117. And the
+# quantifiers are possessive, because `[ \t]+` and `.*` both match a tab, so
+# on a heading with NOTHING but whitespace after the hashes the engine tries
+# every way of dividing that run between them before it gives up: still
+# quadratic, 1.1s at 16,000 tabs, and my first attempt at this fix had it.
+# `++`/`*+` never give back, which is also what the pattern means -- a title
+# does not begin or end with whitespace. 0.03ms at the same size.
+# The one input whose answer changes is that whitespace-only heading: it used
+# to match with a single space as its title and is now not a heading at all.
+_SECTION_RE = re.compile(r"^(#{1,2})[ \t]++(.*[^ \t])[ \t]*+$", re.MULTILINE)
 # `| [[#57 — More pages in the Nova app|57]] | More pages ... | 🟡 In progress | 08-11 |`
 # The wiki-link is Obsidian's, so the number is read out of the `#N`
 # rather than out of the alias after the pipe -- the alias is a display
@@ -106,7 +118,8 @@ _CAPTURE_PROJECT_RE = re.compile(
 # the owner's files: rewriting 87 headings to suit the parser is a large diff
 # through his prose to fix a regex.
 _DETAIL_RE = re.compile(
-    r"^(#{2,3})[ \t]+(#?)(\d+)[ \t]*[—–-][ \t]*(.*?)[ \t]*$", re.MULTILINE)
+    r"^(#{2,3})[ \t]++(#?)(\d+)[ \t]*+[—–-][ \t]*+((?:.*[^ \t])?)[ \t]*+$",
+    re.MULTILINE)
 # `- 2026-08-09 (Cycle 63) — the note itself`. Both halves optional: a
 # few of my own captures were written without either.
 _NOTE_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})?[ \t]*(?:\(Cycle[ \t]+(?P<cycle>\d+)\))?"
@@ -376,7 +389,10 @@ def priority_key(priority):
 # than parsed with a smarter splitter, because the link is the only
 # construct in these files that can contain the delimiter.
 _ALIAS_PIPE = "\x00"
-_WIKILINK_RE = re.compile(r"\[\[[^\]]*\]\]")
+# `[^\[\]]` rather than `[^\]]`: a run of `[` made the old class scan to the
+# end of the line from every start position, which is quadratic. A wiki-link
+# body cannot contain `[` anyway, so excluding it is also the truer pattern.
+_WIKILINK_RE = re.compile(r"\[\[[^\[\]]*\]\]")
 
 
 def _table_rows(body):

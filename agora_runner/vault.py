@@ -1580,7 +1580,15 @@ def _gh_api_get(query):
         return None, "no token configured (GITHUB_READONLY_TOKEN not set)"
     env = dict(os.environ)
     env["GH_TOKEN"] = GITHUB_READONLY_TOKEN
-    cmd = ["gh", "api", query]
+    # `--` so the endpoint is always read as the positional argument and never
+    # as a flag. There is no shell here and never was -- this is a list, so the
+    # only injection available was argument injection, and today every caller
+    # builds `query` as `repos/<VAULT_BACKUP_REPO>/...` so none is reachable.
+    # The separator is what keeps that true for a caller written later.
+    # Measured: `gh api -- --version` asks GitHub for the `--version` endpoint
+    # and gets a 404, so `--` really does end flag parsing here.
+    # (CodeQL py/command-line-injection alert #36.)
+    cmd = ["gh", "api", "--", query]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=env)
     except FileNotFoundError:
