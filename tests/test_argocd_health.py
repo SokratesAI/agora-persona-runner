@@ -38,11 +38,13 @@ def app(name, sync="Synced", health="Healthy", since="", cronjobs=(), sealed=())
     }
 
 
-def sealed_secret(name, namespace="infra", synced="True", message=""):
+def sealed_secret(name, namespace="infra", synced="True", message="",
+                  since="2026-08-26T01:30:00Z"):
     return {
         "metadata": {"name": name, "namespace": namespace},
         "status": {"conditions": [
-            {"type": "Synced", "status": synced, "message": message}]},
+            {"type": "Synced", "status": synced, "message": message,
+             "lastTransitionTime": since}]},
     }
 
 
@@ -532,3 +534,55 @@ def test_a_healthy_application_never_prints_a_remedy():
     lines, status = report_for([app("infra")], [], [])
     assert status == 0
     assert not any("kubectl annotate" in l for l in lines)
+
+
+# --- how long the takeover has been waiting -------------------------
+
+UNOWNED = 'Resource "repo-read-token" already exists and is not managed by SealedSecret'
+
+
+def _takeover_lines(since):
+    lines, _ = report_for(
+        [app("infra", health="Degraded",
+             sealed=[("infra", "repo-read-token")])],
+        [],
+        [sealed_secret("repo-read-token", synced="False", message=UNOWNED,
+                       since=since)],
+    )
+    return lines
+
+
+def test_read_sealed_secrets_carries_the_condition_timestamp():
+    # The message alone cannot say whether this is new. Without the stamp
+    # a six-week-old outage and one that started an hour ago print the
+    # same line, and four cycles read the old one as fresh.
+    runner = fake_kubectl(sealed=[
+        sealed_secret("repo-read-token", synced="False", message=UNOWNED,
+                      since="2026-07-22T19:34:56Z")])
+    broken, why = argocd_health.read_sealed_secrets(runner)
+    assert why is None
+    assert broken[("infra", "repo-read-token")] == {
+        "why": UNOWNED, "since": "2026-07-22T19:34:56Z"}
+
+
+def test_a_takeover_remedy_says_how_long_it_has_been_waiting():
+    lines = _takeover_lines("2026-07-22T19:34:56Z")
+    assert any("it has been failing for 35d, since 2026-07-22T19:34:56Z" in l
+               for l in lines)
+
+
+def test_the_waiting_line_is_measured_not_a_constant():
+    # A different stamp has to move the number, or the line is decoration.
+    lines = _takeover_lines("2026-08-26T01:30:00Z")
+    assert any("it has been failing for 1d, since 2026-08-26T01:30:00Z" in l
+               for l in lines)
+    assert not any("35d" in l for l in lines)
+
+
+def test_an_unreadable_stamp_costs_the_age_and_not_the_remedy():
+    # `_age` never raises, and a missing stamp must not take the finding
+    # down with it — the remedy is the part a cycle acts on.
+    lines = _takeover_lines("")
+    assert any("the remedy is a cluster write this loop is refused" in l
+               for l in lines)
+    assert not any("it has been failing for" in l for l in lines)
