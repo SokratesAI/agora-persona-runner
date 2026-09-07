@@ -33,7 +33,7 @@ from agora_runner.nova_boards import (
     BLOCKED_STATUS, PROJECT_SATISFACTION_MAX, _CLOSED_STATUS_KEYS,
     boarded_capture_rows,
     capture_match_key, is_relayed, parse_board, parse_project_meta,
-    near_miss_done_marker, split_capture_done,
+    near_miss_done_marker, parse_milestone_pins, split_capture_done,
     split_capture_priority, status_key,
     unanswered_comment_bodies,
 )
@@ -588,7 +588,7 @@ def rank(rows, projects=None, milestones=None):
 
 
 def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
-                 projects_markdown=""):
+                 projects_markdown="", milestones_markdown=""):
     """What a cycle waking up now would take, in the order it would take it.
 
     Three lists, and the order between them is `prompt.md` step 2's, not
@@ -636,8 +636,16 @@ def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
         claims_readable = False
         ledger = {"claims": []}
     apply_claims(rows, live)
+    # His pins go in here, not just into `tools.top_board_rows`. The
+    # picker read `milestones.md` from the day the store shipped and
+    # this call did not, so a milestone he pinned moved the terminal
+    # ranking and left the page he pinned it on showing the old one --
+    # two answers to one question, which is the drift this module
+    # exists to avoid. Defaulting to `""` keeps every caller that has
+    # no pins to pass byte-identical to what it was.
     ranked = rank(rows, project_ranks(projects_markdown),
-                  milestone_ranks(rows))
+                  milestone_ranks(rows,
+                                  parse_milestone_pins(milestones_markdown)))
 
     active = []
     for slug, cycle in sorted(live.items(), key=lambda pair: pair[1], reverse=True):
