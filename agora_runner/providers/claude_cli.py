@@ -68,7 +68,7 @@ import base64
 import json
 
 from agora_runner.config import (CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN,
-                                 CLAUDE_CLI_CONCURRENT, RUNNER_SELF_URL)
+                                 CLAUDE_CLI_CONCURRENT, RUNNER_CALLBACK_URL)
 from agora_runner.log import log
 from agora_runner.http_util import http_json, fetch_attachment_bytes
 from agora_runner.tool_activity import grant as grant_tool_activity, revoke as revoke_tool_activity
@@ -203,10 +203,15 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
     # conversation and revoked the moment the call ends -- tool_activity.py
     # explains why it is a callback here rather than the bridge posting to
     # Agora directly.
+    #
+    # Both callbacks address *this pod*, not the Service (RUNNER_CALLBACK_URL
+    # in config.py says why): the tokens below live in this process's memory,
+    # so a call that lands on the other pod of a rolling update is a 401 and
+    # the CLI comes up with no Agora tools at all.
     activity_token = None if ephemeral else grant_tool_activity(persona.get("name", ""), conversation_id)
     if activity_token:
         body["activity"] = {
-            "url": f"{RUNNER_SELF_URL}/tool-activity",
+            "url": f"{RUNNER_CALLBACK_URL}/tool-activity",
             "token": activity_token,
         }
 
@@ -218,7 +223,7 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
     mcp_token = grant_mcp(persona, caps or {}, conversation_id)
     if mcp_token:
         body["mcp"] = {
-            "url": f"{RUNNER_SELF_URL}/mcp",
+            "url": f"{RUNNER_CALLBACK_URL}/mcp",
             "token": mcp_token,
         }
 
