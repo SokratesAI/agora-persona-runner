@@ -1526,7 +1526,7 @@ def test_the_printed_line_names_the_project_and_its_rating():
         project_board((10, "a medium row", BACKLOG, "08-01",
                        PRIORITY_LABELS["medium"], "Marcus")), "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
-    assert f"Marcus (project {IMMEDIATE})" in out
+    assert f"Marcus (project {IMMEDIATE}, ungrouped)" in out
     assert PRIORITY_LABELS["medium"] in out
 
 
@@ -1608,3 +1608,137 @@ def test_the_projects_path_is_the_one_nova_boards_owns():
     time -- the same finding that pulled `BOARD_PATHS` in here."""
     from agora_runner.nova_boards import PROJECT_META_PATH
     assert top_board_rows.PROJECTS_PATH == PROJECT_META_PATH
+
+
+def grouped_board(*rows):
+    """A board carrying his `Size` and `Milestone` columns as well as `Project`.
+
+    Written as markdown rather than as row dicts, unlike
+    `test_nova_next_milestones`, because the thing under test here is the
+    tool's own wiring: a hand-built row dict would pass whether or not
+    `render` ever reads the two columns off a real file.
+    """
+    head = ["## Board", "",
+            "| # | Item | Status | Updated | Priority | Project | Size | Milestone |",
+            "|---|---|---|---|---|---|---|---|"]
+    for number, title, status, updated, priority, project, size, milestone in rows:
+        head.append(f"| [[#{number} — {title}\\|{number}]] | {title} "
+                    f"| {status} | {updated} | {priority} | {project} "
+                    f"| {size} | {milestone} |")
+    head += ["", "## Done", "", "| # | Item | Updated | Where |", "|---|---|---|---|"]
+    return "\n".join(head) + "\n"
+
+
+def _ranked_numbers(out):
+    """The row numbers on the ranked lines, in the order they are printed."""
+    numbers = []
+    for line in out.split("\n"):
+        text = line.strip()
+        # The top row is printed as `-> issue #10 ...` and the runners-up
+        # without the arrow, so the marker has to come off before the
+        # board name is matched.
+        if text.startswith("-> "):
+            text = text[3:]
+        for board in ("issue #", "idea #"):
+            if text.startswith(board):
+                numbers.append(int(text[len(board):].split()[0]))
+    return numbers
+
+
+def test_the_milestone_tier_orders_the_printed_ranking():
+    """A Medium row in a well-ranked milestone outranks a High row in a
+    badly-ranked one, inside the same project.
+
+    This is the assertion that was false for the eleven days the milestone
+    tier existed: `rank` takes it as a third argument that defaults to
+    `None`, and this tool passed two. The tier was live on the site's own
+    page and inert in the tool a cycle reads to pick its work.
+    """
+    board = grouped_board(
+        (10, "high row in a fat milestone", BACKLOG, "08-01",
+         PRIORITY_LABELS["high"], "Marcus", "XL", "haul"),
+        (11, "medium row in a lean milestone", BACKLOG, "08-01",
+         PRIORITY_LABELS["medium"], "Marcus", "S", "quick"),
+    )
+    rows = top_board_rows.open_rows(board, "issue")
+    out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
+    # medium/S scores 2.0, high/XL scores 1.0, so `quick` is the better
+    # milestone and its Medium row is the pick.
+    assert _ranked_numbers(out)[0] == 11
+
+
+def test_the_row_rating_still_decides_inside_one_milestone():
+    """The tier is between the project and the rating, not instead of it.
+
+    Same two ratings as the test above and one milestone rather than two,
+    so the only thing that can order them is the rating -- which catches a
+    wiring that ranked by milestone and then forgot to fall through.
+    """
+    board = grouped_board(
+        (10, "a high row", BACKLOG, "08-01",
+         PRIORITY_LABELS["high"], "Marcus", "XL", "one group"),
+        (11, "a medium row", BACKLOG, "08-01",
+         PRIORITY_LABELS["medium"], "Marcus", "S", "one group"),
+    )
+    rows = top_board_rows.open_rows(board, "issue")
+    out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
+    assert _ranked_numbers(out)[0] == 10
+
+
+def test_an_ungrouped_row_sinks_behind_a_grouped_one_in_its_project():
+    """`milestone_ranks` sorts an ungrouped row last within its project, and
+    the tool has to inherit that rather than re-decide it. The ungrouped row
+    carries the better rating here, so a tool ignoring the tier prints it
+    first."""
+    board = grouped_board(
+        (10, "an ungrouped high row", BACKLOG, "08-01",
+         PRIORITY_LABELS["high"], "Marcus", "S", ""),
+        (11, "a grouped medium row", BACKLOG, "08-01",
+         PRIORITY_LABELS["medium"], "Marcus", "S", "quick"),
+    )
+    rows = top_board_rows.open_rows(board, "issue")
+    out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
+    assert _ranked_numbers(out)[0] == 11
+
+
+def test_the_project_tier_still_outranks_the_milestone_tier():
+    """A lean milestone in a Low project does not jump an Immediately one.
+
+    The order of the tiers is the whole of milestone M4, so a wiring that
+    passed the milestone map in the project's slot would pass every test
+    above and fail this one.
+    """
+    board = grouped_board(
+        (10, "a marcus row in a fat milestone", BACKLOG, "08-01",
+         PRIORITY_LABELS["high"], "Marcus", "XL", "haul"),
+        (11, "a demos row in a lean milestone", BACKLOG, "08-01",
+         PRIORITY_LABELS["high"], "Demos", "S", "quick"),
+    )
+    rows = top_board_rows.open_rows(board, "issue")
+    out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
+    assert _ranked_numbers(out)[0] == 10
+
+
+def test_the_printed_line_names_the_milestone():
+    """The tier decides the position, so the line has to be able to explain
+    it -- the same rule `_project_tag` already follows for his project
+    rating."""
+    board = grouped_board(
+        (10, "a grouped row", BACKLOG, "08-01",
+         PRIORITY_LABELS["medium"], "Marcus", "S", "Reminders"),
+    )
+    rows = top_board_rows.open_rows(board, "issue")
+    out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
+    assert f"Marcus (project {IMMEDIATE}, milestone Reminders)" in out
+
+
+def test_an_ungrouped_row_says_so_rather_than_printing_nothing():
+    """An ungrouped row sinks behind every grouped one in its project, which
+    is a position a cycle should be able to explain from the line."""
+    board = grouped_board(
+        (10, "an ungrouped row", BACKLOG, "08-01",
+         PRIORITY_LABELS["medium"], "Marcus", "S", ""),
+    )
+    rows = top_board_rows.open_rows(board, "issue")
+    out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
+    assert f"Marcus (project {IMMEDIATE}, ungrouped)" in out
