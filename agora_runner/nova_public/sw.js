@@ -14,7 +14,13 @@
  * The install-time precache is still worth having: it is what makes a
  * genuinely offline first load work.
  */
-var CACHE = "nova-v1";
+/* Bumped 2026-09-07: `index.html` changed (the `+` button and the model
+ * picker moved into the composer) and a cached shell kept serving the old
+ * markup alongside the new app.js -- a page half from each build, which
+ * read on his phone as "the buttons are gone". The activate handler below
+ * deletes every cache whose key is not this one, so changing the name is
+ * what evicts the stale shell. Bump it whenever the shell files change. */
+var CACHE = "nova-v2";
 /* Where a push handler parks the thread its notification is about.
  *
  * A second cache rather than a corner of the first one, because the two

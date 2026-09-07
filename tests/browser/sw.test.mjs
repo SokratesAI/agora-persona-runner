@@ -23,6 +23,21 @@ const here = dirname(fileURLToPath(import.meta.url));
 const swPath = join(here, "..", "..", "agora_runner", "nova_public", "sw.js");
 const source = readFileSync(swPath, "utf8");
 
+/* The two cache names, read out of the worker rather than restated here.
+ *
+ * `CACHE` is bumped whenever a shell file changes -- that bump is what
+ * evicts the old markup, and it is expected to happen. A suite holding the
+ * literal `nova-v1` turned every one of those into three red tests with
+ * nothing wrong behind them (2026-09-07), which is the shape of a test
+ * asserting a value instead of a rule. */
+function constFromSource(name) {
+  const found = source.match(new RegExp(`var ${name} = "([^"]+)"`));
+  if (!found) throw new Error(`sw.js no longer declares ${name}`);
+  return found[1];
+}
+const SHELL_CACHE = constFromSource("CACHE");
+const PUSH_CACHE = constFromSource("PUSH_CACHE");
+
 /* One sandbox per test. The worker keeps module-level state (`CACHE`, the
  * registered handlers) and sharing it across tests would let one test's
  * cache answer another's request. */
@@ -79,7 +94,7 @@ function loadWorker() {
       : Promise.resolve(cacheApi(name))),
     keys: () => Promise.resolve([...stores.keys()]),
     delete: (name) => { deletedCaches.push(name); return Promise.resolve(true); },
-    match: (request) => Promise.resolve(store("nova-v1").get(key(request))),
+    match: (request) => Promise.resolve(store(SHELL_CACHE).get(key(request))),
   };
 
   const sandbox = {
@@ -95,8 +110,8 @@ function loadWorker() {
 
   return {
     handlers,
-    cache: store("nova-v1"),
-    pushCache: store("nova-push-v1"),
+    cache: store(SHELL_CACHE),
+    pushCache: store(PUSH_CACHE),
     puts,
     timers,
     posted,
@@ -453,7 +468,7 @@ describe("activating a new worker keeps the parked thread", () => {
      * installing must survive the swap, or every deploy throws away the one
      * entry that makes the next notification open instantly. */
     const worker = loadWorker();
-    worker.seedCacheNames("nova-v1", "nova-push-v1", "nova-v0");
+    worker.seedCacheNames(SHELL_CACHE, PUSH_CACHE, "nova-v0");
 
     let held = null;
     worker.handlers.activate({ waitUntil(p) { held = p; } });

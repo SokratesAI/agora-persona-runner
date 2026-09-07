@@ -71,6 +71,10 @@ ROUTE_FIXTURES = {
                                  "conversation_set_model"),
     "/api/conversations/folder": ({"name": "Nova"}, "conversation_folder_create"),
     "/api/conversations/delete": ({"id": "c1"}, "conversation_remove"),
+    # Swipe-left-to-archive, 2026-09-07. Only the id goes through
+    # `_conversation_write`'s string guard; the flag is bound in the handler,
+    # which is why there is no bool in this body.
+    "/api/conversations/archive": ({"id": "c1"}, "conversation_archive"),
 }
 
 MADE = "conv-9f2b"

@@ -213,6 +213,7 @@ from agora_runner.nova_conversations import (
     starting_name as conversation_starting_name,
     folder_create as conversation_folder_create,
     model_choice as conversation_model_choice,
+    archive as conversation_archive,
     move as conversation_move,
     remove as conversation_remove,
     rename as conversation_rename,
@@ -5637,6 +5638,26 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             ("which conversation", "which folder", "that folder does not exist"),
             lambda p: (p.get("id"), p.get("folderId") or ""))
 
+    def _post_conversation_archive(self, payload):
+        """`/api/conversations/archive` -- put a thread away, or take it back.
+
+        `archived` defaults to True because that is the swipe; sending it
+        false is what an undo does. Read with `is not False` rather than
+        truthily so a missing key archives and an explicit `false` restores,
+        and nothing in between silently picks one.
+        """
+        # The flag is bound here rather than passed through `args_of`:
+        # `_conversation_write` requires every argument it forwards to be a
+        # string, which is a guard the other five writes want and this one
+        # must not weaken just because it carries a bool.
+        archived = (payload or {}).get("archived") is not False
+        self._conversation_write(
+            payload,
+            lambda conversation_id: conversation_archive(conversation_id, archived),
+            "archive",
+            ("which conversation",),
+            lambda p: (p.get("id"),))
+
     def _post_conversation_folder(self, payload):
         """`/api/conversations/folder` -- a new folder for the switcher."""
         self._conversation_write(
@@ -6125,6 +6146,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/conversations/watching", "/api/conversations/rename",
             "/api/conversations/autotitle",
             "/api/conversations/move", "/api/conversations/delete",
+            "/api/conversations/archive",
             "/api/conversations/folder", "/api/conversations/model",
             "/api/heartbeats/enabled", "/api/heartbeats/run",
             "/api/pool/decide", "/api/pool/comment", "/api/pool/generate",
@@ -6164,6 +6186,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/move":
             self._post_conversation_move(payload)
+            return
+        if path == "/api/conversations/archive":
+            self._post_conversation_archive(payload)
             return
         if path == "/api/conversations/folder":
             self._post_conversation_folder(payload)

@@ -13023,10 +13023,15 @@ describe("the chat dock folds the heartbeat threads away", () => {
 
   test("his own threads are open, the heartbeats are shut, and both say how many", async () => {
     const window = await openSwitcher();
+    /* Ordered by what is in them, newest first -- his ask, 2026-09-07:
+     * "make also the folder with the latest messages be the folder on top".
+     * In this fixture the newest heartbeat (08-26 07:00) is ahead of the
+     * newest loose thread (08-25 20:00), so Heartbeats leads. Which fold is
+     * *open* is unchanged and still says whose threads they are. */
     assert.deepEqual(folds(window), [
-      { name: "Conversations", count: "1", open: true, rows: ["Roofing"] },
       { name: "Heartbeats", count: "2", open: false,
         rows: ["Nova — Cycle 471", "Nova — Cycle 470"] },
+      { name: "Conversations", count: "1", open: true, rows: ["Roofing"] },
     ]);
     // Ask Nova stays pinned above both folds rather than falling into one.
     // The first child of the list is the "new conversation" control, which
@@ -13034,7 +13039,7 @@ describe("the chat dock folds the heartbeat threads away", () => {
     const first = window.document.querySelector("#chat-list .chat-list-row");
     assert.equal(first.querySelector(".chat-list-name").textContent, "Ask Nova");
     assert.equal(window.document.querySelector("#chat-list > *").className,
-      "chat-list-new", "the new-conversation control is not above the list");
+      "chat-list-fab", "the new-conversation control is not above the list");
   });
 
   test("a folded heartbeat is still one tap away, not filtered out", async () => {
@@ -13046,7 +13051,9 @@ describe("the chat dock folds the heartbeat threads away", () => {
           messages: [{ id: "9", sender: "Nova", text: "Merged it." }] };
       },
     });
-    const beats = window.document.querySelectorAll("#chat-list .chat-list-fold")[1];
+    // Index 0: the folds sort by recency and this fixture's heartbeats are
+    // the newest thing in it.
+    const beats = window.document.querySelectorAll("#chat-list .chat-list-fold")[0];
     const rows = [...beats.querySelectorAll(".chat-list-row")];
     assert.equal(rows.length, 2, "the heartbeat fold rendered no rows to tap");
     rows[1].dispatchEvent(new window.Event("click"));
@@ -13071,10 +13078,10 @@ describe("the chat dock folds the heartbeat threads away", () => {
       "Nova — Cycle 471", "the dock did not open on the remembered heartbeat");
     tap(window, "chat-menu");
     await tick();
-    const beats = folds(window)[1];
+    const beats = folds(window)[0];
     assert.equal(beats.name, "Heartbeats");
     assert.equal(beats.open, true, "the switcher opened without the current thread on screen");
-    assert.equal(folds(window)[0].open, true);
+    assert.equal(folds(window)[1].open, true);
   });
 
   test("no fold is drawn for a group with nothing in it", async () => {
@@ -13302,28 +13309,46 @@ describe("holding a conversation in the switcher opens edit options", () => {
       [["/api/conversations/delete", { id: "c-1" }]]);
   });
 
-  test("the new-conversation control starts a thread and opens it", async () => {
+  test("the floating + starts a thread in one tap and opens it", async () => {
+    /* Rewritten 2026-09-07. The control was a full-width "+ New
+     * conversation" row that opened a form asking for an optional name;
+     * his ask was Claude's floating `+`, and *"it should just start a
+     * conversation"*. The form had one good answer -- leave it blank --
+     * because the thread renames itself from his first message anyway. */
     const window = await openSwitcher({
       convThread: () => ({ messages: [], waiting: false }),
     });
-    window.postReply = { ok: true, result: "c-9" };
-    window.document.querySelector("#chat-list .chat-list-new")
+    window.postReply = { ok: true, result: { id: "c-9", name: "New chat" } };
+    const fab = window.document.querySelector("#chat-list .chat-list-fab");
+    assert.ok(fab, "no floating new-conversation button");
+    fab.dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    // No form in between: one tap, one write.
+    assert.equal(window.document.querySelector("#chat-list .chat-row-edit"), null,
+      "the + opened a form instead of starting a thread");
+    assert.deepEqual(window.posted.map((p) => p.url), ["/api/conversations/new"]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "New chat");
+  });
+
+  test("the default name steps aside for one already taken", async () => {
+    /* "New chat", then "New chat - 2". Both still count as untitled to
+     * `autotitle` (`is_untitled` server-side), so a numbered one still
+     * renames itself from his first message rather than keeping the
+     * placeholder forever. */
+    const window = await openSwitcher({
+      convList: () => ({
+        conversations: [{ id: "c-1", name: "New chat", tags: [], updatedAt: "" }],
+        folders: [], models: [],
+      }),
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    window.postReply = { ok: true, result: { id: "c-9", name: "New chat - 2" } };
+    window.document.querySelector("#chat-list .chat-list-fab")
       .dispatchEvent(new window.Event("click"));
     await tick();
-    const form = window.document.querySelector("#chat-list .chat-row-edit");
-    assert.ok(form, "the new-conversation control opened no form");
-    // #119 again: no persona control in the switcher's form either, and the
-    // Start button is live immediately rather than waiting on a list that is
-    // no longer fetched.
-    assert.equal(form.querySelector(".chat-row-edit-folder"), null,
-      "the switcher form should offer no persona");
-    assert.equal(form.querySelector(".chat-row-edit-save").disabled, false);
-    form.querySelector(".chat-row-edit-name").value = "Gutters";
-    form.querySelector(".chat-row-edit-save").dispatchEvent(new window.Event("click"));
-    await tick();
-    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
-      [["/api/conversations/new", { name: "Gutters" }]]);
-    assert.equal(window.document.getElementById("chat-title").textContent, "Gutters");
+    assert.deepEqual(window.posted.map((p) => p.body),
+      [{ name: "New chat - 2" }]);
   });
 
   /* The other half of issue #141's cache: a change he just made must never
@@ -15345,18 +15370,38 @@ describe("the thoughts-and-tools drawer", () => {
     assert.ok(parseFloat(sheet(window).style.height) <= 92);
   });
 
-  test("dragging down stops short of a sheet he cannot grab again", async () => {
+  test("dragging a little way down springs back to the resting floor", async () => {
     /* The other end of the clamp, and it is here because a floor-only or
      * ceiling-only assertion is the shape that let a previous cycle's
-     * mutation raise a cap to 8GiB with every test still green. */
+     * mutation raise a cap to 8GiB with every test still green.
+     *
+     * Rewritten 2026-09-07: dragging all the way down closes the sheet now
+     * (his ask, "make it close when i drag it all the way down/out of the
+     * screen"), so the floor is where it *rests* when he lets go early
+     * rather than a wall he cannot drag past. The dismiss is the test
+     * below. */
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    const grip = window.document.querySelector(".step-grip");
+    grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 100 }));
+    // Down, but not past the dismiss point: 55vh - ~20vh is still above it.
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 250 }));
+    window.dispatchEvent(new window.MouseEvent("pointerup", { clientY: 250 }));
+    const height = parseFloat(sheet(window).style.height);
+    assert.ok(height >= 25, `the sheet collapsed to ${height}vh`);
+    assert.ok(height <= 40, `the sheet did not shrink at all (${height}vh)`);
+    assert.equal(sheet(window).hasAttribute("hidden"), false,
+      "a short drag closed the sheet");
+  });
+
+  test("dragging it off the bottom closes it", async () => {
     const window = await openDock();
     click(window, lines(window)[0]);
     const grip = window.document.querySelector(".step-grip");
     grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 100 }));
     window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 9000 }));
-    const height = parseFloat(sheet(window).style.height);
-    assert.ok(height >= 25, `the sheet collapsed to ${height}vh`);
-    assert.ok(height <= 30, `the sheet did not shrink at all (${height}vh)`);
+    assert.equal(sheet(window).hasAttribute("hidden"), true,
+      "dragging the sheet off the bottom left it on screen");
   });
 
   test("the pointer stops moving the sheet once he lets go", async () => {
@@ -15370,6 +15415,36 @@ describe("the thoughts-and-tools drawer", () => {
     window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 100 }));
     assert.equal(parseFloat(sheet(window).style.height), held,
       "the sheet kept following the pointer after he let go");
+  });
+
+  test("a cancelled drag stops moving the sheet and the next drag still works", async () => {
+    /* His own report: "stuck halfway on the side and i can't slide it up
+     * and down". A phone hands a drag to native scrolling as `pointercancel`
+     * rather than `pointerup` whenever it decides the gesture is ambiguous
+     * -- unhandled, that left the sheet listening forever on a drag that
+     * never really ended, and the grip's own next pointerdown did nothing
+     * because nothing ever cleared the guard that stops two drags
+     * overlapping. Both halves of that have to be tested, or a fix that
+     * clears the guard without also ignoring further moves from the dead
+     * gesture would pass this test while still being broken. */
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    const grip = window.document.querySelector(".step-grip");
+    grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 600 }));
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 400 }));
+    const held = parseFloat(sheet(window).style.height);
+    window.dispatchEvent(new window.MouseEvent("pointercancel", { clientY: 400 }));
+    // The dead gesture must not keep steering the sheet.
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 100 }));
+    assert.equal(parseFloat(sheet(window).style.height), held,
+      "a cancelled drag kept moving the sheet");
+    // And the grip must not be jammed -- a fresh pointerdown starts a real
+    // new drag rather than being silently ignored by a guard that never
+    // reset.
+    grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 400 }));
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 200 }));
+    assert.ok(parseFloat(sheet(window).style.height) > held,
+      "the next drag after a cancel did not move the sheet at all");
   });
 
   test("a turn still running is its line alone, with no empty bubble", async () => {
@@ -15909,8 +15984,13 @@ describe("the model picker on a thread", () => {
     const window = await openDock({
       model: "claude-cli:claude-sonnet-5", models: CATALOG, found: true,
     });
+    /* "(CLI)" is stripped from the label (it says which lane the model runs
+     * on, which is about this loop's plumbing, not about the model, and it
+     * cost about a fifth of the pill's width). "(metered)" is NOT, and the
+     * pair in one assertion is the point: one of these is furniture and the
+     * other is a money warning. */
     assert.deepEqual([...pickerIn(window).options].map((o) => o.textContent),
-      ["Claude Sonnet 5 (CLI)", "Claude Opus 5 (metered)"]);
+      ["Claude Sonnet 5", "Claude Opus 5 (metered)"]);
   });
 
   test("a model the catalog no longer lists is still the selected option", async () => {
@@ -15947,7 +16027,10 @@ describe("the model picker on a thread", () => {
     await tick();
     await tick();
     assert.equal(pick.value, "claude-cli:claude-sonnet-5");
-    assert.match(window.document.querySelector(".model-pick-note").textContent,
+    /* The message moved out of the row and into a toast, 2026-09-07: it was
+     * a span beside the picker, so a long failure pushed Send off the edge
+     * of a 360px screen -- the error took away the button he needed. */
+    assert.match(window.document.getElementById("nova-toast").textContent,
       /could not switch/);
     assert.equal(pick.disabled, false, "the control was left disabled");
   });
@@ -15967,7 +16050,7 @@ describe("the model picker on a thread", () => {
     const pick = pickerIn(window);
     assert.equal(barIn(window).hidden, false);
     assert.equal(pick.value, "");
-    assert.equal(pick.options[0].textContent, "Model (unset)");
+    assert.equal(pick.options[0].textContent, "Model");
   });
 
   test("no catalog, no picker -- a select that cannot change anything is not a control",

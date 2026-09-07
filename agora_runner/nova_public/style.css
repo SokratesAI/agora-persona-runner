@@ -1312,6 +1312,15 @@ body.nav-open { overflow: hidden; }
    * this sheet, so a rule that lives anywhere else is a rule nothing
    * checks the selector list of. */
   .nav-group::after, .chat-list-group::after { transition: none; }
+  /* The three drawers, both directions of each -- a phone set to reduce
+     motion gets the sheet, just not the journey. Listing only the resting
+     class would suppress the close and leave the open at full length,
+     which is the bug the `.nav.open` pair above exists to stop. */
+  .step-sheet, .step-sheet--entering,
+  .chat-extras, .chat-extras--entering,
+  .step-backdrop, .step-backdrop--entering,
+  .chat-extras-backdrop, .chat-extras-backdrop--entering,
+  .chat-dock, .chat-dock--closed { transition: none; }
 }
 
 .tabs, .filters {
@@ -2861,6 +2870,9 @@ body.has-full-chart { overflow: hidden; }
  * status sits left and the paperclip sits against Send. It keeps the 44px
  * target the rest of this file holds every button to. */
 .chat-actions .attach-btn { margin-left: auto; }
+/* ...except the `+`, which opens the drawer the others now live in and
+   belongs on the left of the model pill (his ask, 2026-09-07). */
+.chat-actions .chat-plus { margin-left: 0; margin-right: 0.1rem; font-size: 1.5rem; }
 /* The two voice buttons (ideas.md #221) sit in the same right-hand group.
    The `auto` margin has to land on the first control that is actually on
    screen, and both of these are hidden on a browser with no speech API --
@@ -2872,7 +2884,11 @@ body.has-full-chart { overflow: hidden; }
 /* Pressed is a real state here rather than a hover flourish: the mic stays
    pressed while it is listening and the speaker while it is switched on, and
    on a phone there is no hover to tell him either. */
-.chat-voice[aria-pressed="true"] { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* Pressed is still a real state -- the mic while it listens, the speaker
+ * while it is on -- drawn as a filled disc now the resting button has no
+ * ring to recolour. */
+.chat-voice[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
+.chat-voice[aria-pressed="true"] .chat-glyph { filter: none; opacity: 1; }
 
 .ask-pending { color: var(--dim); font-style: italic; }
 /* The pending bubble carries three lines now (issues.md, 2026-08-30): the
@@ -2925,18 +2941,18 @@ body.has-full-chart { overflow: hidden; }
 .ask-msg-steps { align-self: flex-start; max-width: 92%; }
 .ask-msg-steps .ask-steps { margin-bottom: 0; }
 
-.step-backdrop {
+.step-backdrop, .chat-extras-backdrop {
   position: fixed;
   inset: 0;
   z-index: 40;
   background: rgba(0, 0, 0, 0.45);
 }
-.step-backdrop[hidden] { display: none; }
+.step-backdrop[hidden], .chat-extras-backdrop[hidden] { display: none; }
 
 /* The sheet. Anchored to the bottom and sized in `vh` by `app.js`, because
  * the drag he asked for writes a height onto the node -- so the height is
  * deliberately absent here and this rule must not grow one. */
-.step-sheet {
+.step-sheet, .chat-extras {
   position: fixed;
   left: 0;
   right: 0;
@@ -2949,31 +2965,95 @@ body.has-full-chart { overflow: hidden; }
   border-radius: 16px 16px 0 0;
   box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.35);
 }
-.step-sheet[hidden] { display: none; }
+.step-sheet[hidden], .chat-extras[hidden] { display: none; }
+
+/* Sliding in from the bottom -- his ask, 2026-09-07. On `transform` and
+ * deliberately not on `height`: the drag writes a new height on every
+ * pointermove, and a transition on that property would make the sheet lag
+ * a whole animation behind his finger. Transform is untouched by the drag,
+ * so the two cannot fight. */
+.step-sheet, .chat-extras { transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1); }
+/* The frame before the transition starts: fully below its own bottom edge.
+ * `openStepSheet` puts this on, forces a reflow, and takes it off. */
+.step-sheet--entering, .chat-extras--entering { transform: translateY(100%); }
+.step-backdrop, .chat-extras-backdrop { transition: opacity 260ms ease; }
+.step-backdrop--entering, .chat-extras-backdrop--entering { opacity: 0; }
+
+
+/* The `+` drawer's contents: Claude's Camera/Photos/Files grid, with the
+ * three things this composer actually has behind that button. The tiles are
+ * the same <button> elements that used to sit in the composer row -- moved,
+ * not rebuilt -- so `.attach-btn`'s own rules still apply and only the box
+ * around them is new. */
+.extras-body { padding-top: 0.2rem; }
+.extras-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.6rem;
+}
+.chat-extras .extras-tile {
+  /* Overrides `.attach-btn`'s round 44px: in here they are cards. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 5.2rem;
+  width: auto;
+  margin: 0;
+  padding: 0.6rem 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--text);
+}
+.chat-extras .extras-tile:hover:not(:disabled) { border-color: var(--accent); }
+.extras-label { font-size: 0.8rem; line-height: 1.2; color: var(--dim); }
+.chat-extras .extras-tile[aria-pressed="true"] { border-color: var(--accent); }
+.chat-extras .extras-tile[aria-pressed="true"] .extras-label { color: var(--bg); }
+/* The tray of picked files lives in the composer, not in here -- it is
+   what he has already attached, and it has to stay visible after the
+   drawer closes. */
 
 /* The grab handle, and the only part of the sheet that is a drag target.
  * `touch-action: none` is what stops the phone scrolling the page instead of
  * handing the pointer moves to the drag. */
-.step-grip {
+/* The strip is the touch target; the pill inside it is what he sees.
+ * They were the same 44x4px box until 2026-09-07, which drew correctly and
+ * could not be grabbed: a fingertip covers about 40px and the target was
+ * four pixels tall, so the drag he reported as "stuck" was a drag that
+ * almost never started. The visible pill keeps its old size. */
+.step-grip, .chat-extras-grip, .chat-grip {
   flex: none;
-  width: 44px;
-  height: 4px;
-  margin: 0.55rem auto 0.15rem;
-  border-radius: 2px;
-  background: var(--line);
+  width: 100%;
+  height: 30px;
+  position: relative;
   cursor: ns-resize;
   touch-action: none;
 }
+.step-grip::after, .chat-extras-grip::after, .chat-grip::after {
+  content: "";
+  position: absolute;
+  top: 11px;
+  left: 50%;
+  width: 44px;
+  height: 4px;
+  margin-left: -22px;
+  border-radius: 2px;
+  background: var(--line);
+}
 
-.step-head {
+.step-head, .chat-extras-head {
   flex: none;
   position: relative;
+  /* It is a drag handle as well as a header -- without this the phone
+     scrolls the page instead of handing the moves to the drag. */
+  touch-action: none;
   display: flex;
   align-items: center;
   min-height: 44px;
   padding: 0.2rem 0.6rem 0.5rem;
 }
-.step-titles {
+.step-titles, .chat-extras-titles {
   /* Centred on the sheet rather than in the space the buttons leave, so the
    * title does not shift sideways when the back arrow appears. */
   position: absolute;
@@ -2981,11 +3061,14 @@ body.has-full-chart { overflow: hidden; }
   right: 3.2rem;
   text-align: center;
 }
-.step-title { margin: 0; font-size: 1rem; }
+.step-title, .chat-extras-title { margin: 0; font-size: 1rem; }
 .step-sub { color: var(--dim); font-size: 0.8rem; }
 .step-sub[hidden] { display: none; }
 
-.step-back, .step-close {
+/* One close button for both drawers -- his ask, 2026-09-07: "make the
+ * button equal for both models". The chat dock's × was a different size and
+ * a dimmer colour, which on a phone is two controls doing one job. */
+.step-back, .step-close, .chat-close, .chat-extras-close {
   min-width: 44px;
   min-height: 44px;
   background: none;
@@ -2996,9 +3079,12 @@ body.has-full-chart { overflow: hidden; }
   line-height: 1;
   cursor: pointer;
 }
+/* On the right in both, which is where the chat's has always been. The
+ * back arrow keeps the left, so the two never collide. */
+.step-close, .chat-close, .chat-extras-close { margin-left: auto; }
 .step-back[hidden] { display: none; }
 
-.step-body {
+.step-body, .chat-extras-body {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 0 0.9rem 1.2rem;
@@ -3121,23 +3207,31 @@ body.has-full-chart { overflow: hidden; }
  * pills each name a destination and this one does not go anywhere — it
  * writes a line into the box above it. A glyph with an `aria-label` is
  * what that difference looks like. */
+/* Plain glyphs, no rings. Four circular outlines in a row is four boxes
+ * competing with the composer's own; Claude draws the same controls as bare
+ * icons and lets the card be the only frame. The 44px tap target stays --
+ * it just stops being drawn. */
 .attach-btn {
   flex: none;
   min-width: 44px;
   min-height: 44px;
   background: none;
-  color: var(--accent);
-  border: 1px solid var(--line);
+  color: var(--dim);
+  border: 0;
   border-radius: 999px;
   padding: 0;
   font: inherit;
-  font-size: 1.05rem;
+  font-size: 1.25rem;
   line-height: 1;
   text-align: center;
   cursor: pointer;
 }
 
-.attach-btn:hover:not(:disabled) { border-color: var(--accent); }
+.attach-btn:hover:not(:disabled) { color: var(--text); }
+/* The emoji in these two carry their own colour, which no `color` can
+ * reach -- the speaker renders bright blue beside two monochrome glyphs.
+ * Desaturating is the one thing that makes the row read as one set. */
+.chat-glyph { filter: grayscale(1); opacity: 0.85; font-size: 1.05rem; }
 .attach-btn:disabled { color: var(--dim); cursor: default; }
 
 /* The tray of things picked and not yet sent (Cycle 377).
@@ -3566,6 +3660,32 @@ body.has-full-chart { overflow: hidden; }
  * than the attribute; every attribute assertion in the suite passed. */
 .chat-dock[hidden] { display: none; }
 
+/* Opening and closing, and the motion is different on the two shapes this
+ * panel has -- his ask, 2026-09-07, "not sure what makes sense".
+ *
+ * On a wide screen it is a small panel sitting directly above its own
+ * launcher, so it scales up out of that corner: a panel that size sliding
+ * the height of the screen would be motion with nothing to say. On a phone
+ * the same element is a full-screen sheet (`inset: 0`, below), so it rises
+ * from the bottom edge -- the same gesture-shaped motion as the tool
+ * drawer, because at that size it is the same kind of object.
+ *
+ * `transform` and `opacity` only: both are composited, and neither is a
+ * property anything else on this panel writes. */
+.chat-dock {
+  transform-origin: bottom right;
+  transition: transform 220ms cubic-bezier(0.32, 0.72, 0, 1),
+              opacity 160ms ease;
+}
+.chat-dock--closed {
+  opacity: 0;
+  transform: scale(0.96) translateY(6px);
+}
+@media (max-width: 30rem) {
+  /* The full-screen shape: down past its own bottom edge, not scaled. */
+  .chat-dock--closed { opacity: 1; transform: translateY(100%); }
+}
+
 /* The page behind the sheet is frozen while the sheet is up.
  *
  * The owner, `issues.md` 2026-08-31: *"When i have the chat modal open, i
@@ -3598,15 +3718,30 @@ body.chat-open { overflow: hidden; }
  * A fixed element pinned to all four edges has no such gap. It also covers
  * the launcher button, which is why nothing hides it -- the sheet paints
  * over it at the same z-index by document order. */
+/* The grab handle only means something on the shape that can be dragged --
+ * the phone sheet below. On a wide screen the dock is a fixed panel above
+ * its launcher, so drawing a handle there would offer a gesture that does
+ * nothing. */
+.chat-grip { display: none; }
+
 @media (max-width: 30rem) {
   .chat-dock {
-    inset: 0;
+    /* A drawer rather than a full-screen page -- his ask, 2026-09-07:
+     * "make the chat modal a draggable drawer like the tools modal".
+     * `inset: 0` became bottom-anchored with a height `app.js` writes, the
+     * same shape as `.step-sheet`. It still OPENS at 92vh, because his
+     * earlier capture on this panel (2026-08-25, "make the new chat modal
+     * full height, atleast for mobile, it feels so small") is about where
+     * it starts, and dragging only adds a way to make it smaller. */
+    inset: auto 0 0 0;
     width: auto;
-    height: auto;
-    border-radius: 0;
-    /* All four borders, not just the sides: with `inset: 0` a top or bottom
-     * border is a hairline drawn along the edge of the screen. */
+    height: 92vh;
+    border-radius: 16px 16px 0 0;
+    /* No side or bottom borders -- those are hairlines along the edge of
+     * the screen. The top edge is now a real edge he can see and grab, so
+     * it keeps its line. */
     border: none;
+    border-top: 1px solid var(--line);
     padding-top: max(0.7rem, env(safe-area-inset-top));
     padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
   }
@@ -3620,6 +3755,8 @@ body.chat-open { overflow: hidden; }
    * jsdom resolves no media queries. What a test *can* see is the class,
    * and that is pinned below. */
   body.chat-open .menu-btn { display: none; }
+
+  .chat-grip { display: block; }
 }
 
 .chat-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
@@ -3685,6 +3822,14 @@ body.chat-open { overflow: hidden; }
   cursor: pointer;
 }
 .chat-list-row.current { border-color: var(--accent); }
+/* Swipe-left-to-archive. `touch-action: pan-y` is what lets the list still
+ * scroll under the gesture while the horizontal moves come here -- without
+ * it the browser claims the whole pointer and the row never travels. The
+ * red edge appears only once the swipe is far enough to actually fire, so
+ * the row says what will happen before he lets go. */
+.chat-list-row { touch-action: pan-y; position: relative; }
+.chat-list-row--sliding { transition: none; }
+.chat-list-row--armed { border-color: var(--bad, #c0392b); }
 .chat-list-name { font-size: 0.9rem; }
 .chat-list-meta { font-size: 0.75rem; color: var(--dim); margin-top: 0.15rem; }
 
@@ -3737,16 +3882,7 @@ body.chat-open { overflow: hidden; }
   transform: translateY(1px) rotate(-135deg);
 }
 .chat-list-fold[open] > .chat-list-group { color: var(--text); }
-.chat-close {
-  flex: none;
-  background: none;
-  border: none;
-  color: var(--dim);
-  font-size: 1.3rem;
-  line-height: 1;
-  padding: 0 0.2rem;
-  cursor: pointer;
-}
+.chat-close { flex: none; padding: 0; }
 
 /* The thread is the only part that scrolls, so the composer stays on
  * screen while he reads back -- `.capture textarea`'s finding, that a box
@@ -3760,13 +3896,28 @@ body.chat-open { overflow: hidden; }
 
 .chat-form { flex: none; }
 
+/* One rounded container holding the box and its controls, rather than a
+ * bordered box with a separate row of bordered buttons under it -- his ask,
+ * 2026-09-07, against a Claude screenshot: the composer there is a single
+ * card with the text on top and `+`, the model pill and the mic along the
+ * bottom of the same card. Only the frame moves; nothing the controls do
+ * changes. */
+.chat-form {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 0.5rem 0.6rem 0.45rem;
+}
+.chat-form:focus-within { border-color: var(--accent); }
+
 .chat-box {
   width: 100%;
-  background: var(--card);
+  /* Transparent and borderless: the card around it is the box now. */
+  background: none;
   color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0.55rem 0.65rem;
+  border: 0;
+  border-radius: 0;
+  padding: 0.2rem 0.25rem;
   font: inherit;
   /* The height is JavaScript's now -- one line at rest, growing with the
    * text to a ten-line cap (`growChatBox`). A drag handle would fight it:
@@ -3778,9 +3929,15 @@ body.chat-open { overflow: hidden; }
   line-height: 1.4;
 }
 
-.chat-box:focus { outline: none; border-color: var(--accent); }
+.chat-box:focus { outline: none; }
 
-.chat-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-top: 0.45rem; }
+/* `+` and the model pill sit together on the left, Send on the right --
+ * his ask, 2026-09-07: "the modal picker pill needs to float next to the +
+ * button, now its in the middle". `space-between` spread the row's members
+ * evenly, which put the pill in the middle of the gap the moment the mic
+ * and speaker moved out of this row and into the `+` drawer. */
+.chat-actions { display: flex; align-items: center; justify-content: flex-start; gap: 0.4rem; margin-top: 0.45rem; }
+.chat-actions .chat-send { margin-left: auto; }
 .chat-status { margin: 0; font-size: 0.76rem; color: var(--dim); }
 .chat-send {
   flex: none;
@@ -3793,7 +3950,64 @@ body.chat-open { overflow: hidden; }
   font-size: 0.85rem;
   cursor: pointer;
 }
-.chat-send:disabled { opacity: 0.55; cursor: default; }
+.chat-send:disabled { opacity: 0.45; cursor: default; }
+
+/* The model picker, in the composer instead of across the top of the panel.
+ * A compact pill beside `+`, the way Claude shows "Sonnet 5" -- it was a
+ * full-width bordered dropdown above the thread, which is a lot of furniture
+ * for something changed rarely. */
+#chat-model-host { flex: none; min-width: 0; }
+/* The toast: over everything, out of the layout, gone in four seconds.
+ * Nothing in a composer row may be sized by a sentence -- see `toast()` in
+ * app.js for the screenshot that made that a rule here. */
+.toast {
+  position: fixed;
+  top: max(0.6rem, env(safe-area-inset-top));
+  left: 50%;
+  transform: translate(-50%, -0.6rem);
+  z-index: 60;
+  max-width: min(26rem, calc(100vw - 1.6rem));
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 0.85rem;
+  text-align: center;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  /* Not `hidden`: it has to be able to fade, and it must never take a tap
+     from the thing behind it. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.toast--on { opacity: 1; transform: translate(-50%, 0); }
+.toast--error { border-color: var(--accent); }
+
+/* The note this replaced. Kept in the DOM -- it is what a couple of tests
+   read -- but it no longer takes space in the composer row. */
+.model-pick-note { display: none; }
+
+#chat-model-host select {
+  /* No arrow. The native one costs about 1.5rem of width on a control that
+   * is already the widest thing in the row, and his ask was the width --
+   * the pill still opens the same native list on tap. */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  text-overflow: ellipsis;
+  max-width: 12rem;
+  /* `width` is written by `fitModelPick`; this is only the ceiling. */
+  width: auto;
+  background: var(--line);
+  color: var(--text);
+  border: 0;
+  border-radius: 999px;
+  padding: 0.3rem 0.6rem;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
 
 /* ---- The Conversations page --------------------------------------------
  *
@@ -4099,6 +4313,38 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 /* Its own class rather than a second `.chat-list-row`: the switcher's rows
  * are the conversations, and a control that is not one of them must not be
  * counted as one -- by a stylesheet or by anything reading the list. */
+/* The floating `+`, bottom-right of the panel -- his ask, 2026-09-07,
+ * against Claude's list. Fixed to the dock rather than placed in the
+ * scrolling list: the point of it is that it is reachable without scrolling
+ * back to the top, which a row in the list can never be. `.chat-dock` is
+ * the positioned ancestor on a phone (`inset: auto 0 0 0`) and the corner
+ * panel on a wide screen, so one rule puts it in the right corner of both. */
+.chat-list-fab {
+  position: absolute;
+  right: 0.9rem;
+  bottom: 0.9rem;
+  z-index: 2;
+  width: 3.1rem;
+  height: 3.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--accent);
+  color: var(--bg);
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 1.75rem;
+  line-height: 1;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+.chat-list-fab:disabled { opacity: 0.6; cursor: default; }
+/* Only while the switcher is up: it starts a thread from the list, and on
+   the thread itself the composer is what he wants under his thumb. */
+.chat-dock:not(.list-open) .chat-list-fab { display: none; }
+
 .chat-list-new {
   display: block;
   width: 100%;
@@ -4143,10 +4389,13 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   padding: 0.3rem 0.6rem;
   cursor: pointer;
 }
-.chat-row-edit-save { border-color: var(--accent); }
+/* The `auto` margin moved here with the button: it is what puts the
+ * primary action against the right edge, and leaving it on Delete would
+ * have swapped the DOM order and drawn them in the old places anyway. */
+.chat-row-edit-save { border-color: var(--accent); margin-left: auto; }
 /* Delete is the only irreversible control in the dock, so it is the only
  * one that reads as a warning. It still asks before it acts. */
-.chat-row-edit-delete { margin-left: auto; color: var(--bad, #c0392b); }
+.chat-row-edit-delete { color: var(--bad, #c0392b); }
 .chat-row-edit-note { font-size: 0.75rem; color: var(--dim); margin: 0; }
 .chat-row-edit-note:empty { display: none; }
 
