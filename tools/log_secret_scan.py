@@ -90,7 +90,10 @@ PATTERNS = (
     # A password inside a URL. The userinfo has to hold a colon and neither
     # half may contain `/`, `@` or whitespace, which is what keeps this off
     # ordinary `http://host:8080/path` lines: a port has no `@` after it.
-    ("credential in a url", re.compile(r"://[^/\s@:]+:[^/\s@]+@[^/\s]+")),
+    # The username half is `*` rather than `+` on purpose -- `redis://:pw@host`
+    # is the ordinary shape for a password-only service and a `+` there would
+    # walk straight past it.
+    ("credential in a url", re.compile(r"://[^/\s@:]*:[^/\s@]+@[^/\s]+")),
 )
 
 

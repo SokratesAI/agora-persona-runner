@@ -108,6 +108,13 @@ def test_a_short_prefixed_word_is_not_a_token():
     assert mod.scan_text("sk-" + "ant-" + "abc") == []
 
 
+def test_a_password_only_url_is_matched():
+    # `redis://:pw@host` has no username at all, which is the ordinary shape
+    # for a service that authenticates on a password alone.
+    assert mod.scan_text("redis://:s3cr3t@redis.agents.svc.cluster.local:6379/0") == [
+        ("credential in a url", 1)]
+
+
 def test_a_port_after_a_host_is_not_read_as_a_password():
     # The URL rule is the one most likely to cry wolf: every log here is full
     # of `host:port`. What separates a credential is the `@` after the colon.
