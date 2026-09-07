@@ -226,26 +226,6 @@ def report(base: str = PROMETHEUS, found: dict | None = None) -> tuple[int, list
     return status, lines
 
 
-def _distinct_firing(found: dict) -> list[dict]:
-    """Firing alerts, minus the ones that only restate a target already reported down.
-
-    `TargetDown` is the alert form of `up == 0`, and `collect` already reports
-    the same outage as an unhealthy target the moment it starts -- ten minutes
-    before the rule's `for:` elapses. So one machine going down produces the
-    target line first and then, at the next cycle, the target line *and* the
-    alert. Left alone that is two different page keys for one incident, and the
-    six-hour dedupe never sees the second one coming: he gets paged twice,
-    twenty minutes apart, for one server. It is also two lines in one message
-    saying the same thing.
-    """
-    if not found.get("unhealthy"):
-        return list(found.get("firing", []))
-    return [
-        a for a in found.get("firing", [])
-        if (dict(a.get("labels") or {})).get("alertname") != "TargetDown"
-    ]
-
-
 def paging(found: dict) -> tuple[bool, bool, str]:
     """(worth telling him, may wake him, the message) from a `collect` result.
 
@@ -258,9 +238,29 @@ def paging(found: dict) -> tuple[bool, bool, str]:
       to teach him to ignore the channel.
     * A pending alert does not page. `for:` has not elapsed, so the condition
       may still be a spike -- the same call `report` already makes.
-    * A scrape target that is down **is** urgent, because a kubelet that
-      stopped answering is the "one server is down" case in his own words,
-      and `TargetDown` cannot fire on a job that discovered nothing.
+    * **A scrape target that is down does not page on its own.** `TargetDown`
+      pages instead, and it carries `for: 10m`, so a target has to stay down
+      for ten minutes before his phone hears about it. This module used to
+      read `unhealthy` directly and page on the first failed scrape, which
+      meant the grace period the rule declares was dead for the one channel
+      that needed it. Measured against Prometheus on 2026-09-07, over the
+      three days he was being paged: **84 scrape outages, every one of them
+      1 to 3 minutes, and `TargetDown` fired exactly zero times.** So every
+      target-down message he got in that window was for something that had
+      already fixed itself, which is what he wrote to say on Telegram at
+      19:17 that day -- *"This alert is spamming me. I do not want alerts of
+      pods like these are down. This gives me alertfatigue."*
+
+      `report` is deliberately unchanged and still prints `TARGET DOWN` on
+      the first failed scrape: a cycle reading preflight wants the twitch,
+      his phone wants the ten minutes. The sensitivity of the instrument and
+      the patience of the pager are two different settings, and merging them
+      is what produced 84 pages worth of nothing.
+
+      The one thing that still pages instantly is a job with **no targets at
+      all**, because `up == 0` needs an `up` series and a job that discovered
+      nothing publishes none -- no rule can grow a `for:` over a series that
+      does not exist.
     """
     if found.get("unreadable") or found.get("no_rules"):
         return False, False, ""
@@ -271,15 +271,9 @@ def paging(found: dict) -> tuple[bool, bool, str]:
     if not found["active"]:
         reasons.append("Prometheus has NO scrape targets at all.")
         urgent = True
-    for target in found["unhealthy"]:
-        reasons.append(
-            f"Target down: {target.get('scrapePool')} {target.get('scrapeUrl')} "
-            f"{(target.get('lastError') or '')[:120]}".strip()
-        )
-        urgent = True
     for pool in found["missing"]:
         reasons.append(f"Scrape job '{pool}' discovered no targets, so nothing watches it.")
-    for alert in _distinct_firing(found):
+    for alert in found.get("firing", []):
         labels = dict(alert.get("labels") or {})
         severity = labels.get("severity", "")
         if severity in URGENT_SEVERITIES:
@@ -365,13 +359,12 @@ def _page_key(found: dict) -> str:
     therefore be a new message every eighteen minutes.
     """
     names = sorted(
-        (dict(a.get("labels") or {})).get("alertname", "?") for a in _distinct_firing(found)
+        (dict(a.get("labels") or {})).get("alertname", "?") for a in found.get("firing", [])
     )
-    downs = sorted(str(t.get("scrapeUrl")) for t in found.get("unhealthy", []))
     missing = sorted(found.get("missing", []))
     if not found.get("active"):
         names = ["no-targets"] + names
-    return "alerts:" + "|".join(names + downs + missing)
+    return "alerts:" + "|".join(names + missing)
 
 
 if __name__ == "__main__":

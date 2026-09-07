@@ -171,14 +171,25 @@ def test_a_medium_severity_alert_is_worth_telling_him_but_not_at_night():
     assert worth is True and urgent is False
 
 
-def test_a_down_scrape_target_is_urgent_on_its_own():
-    # His words were "if one server is down"; a kubelet that stopped answering
-    # is that case, and TargetDown cannot fire for a job discovering nothing.
+def test_a_down_scrape_target_does_not_page_on_its_own():
+    # Measured 2026-09-07 over the three days he was being paged: 84 scrape
+    # outages, all 1-3 minutes, and TargetDown fired zero times. A single
+    # failed scrape must reach the report and not his phone; TargetDown's
+    # `for: 10m` is what decides whether it is real.
     found = _found(unhealthy=[{"scrapePool": "kubelet", "scrapeUrl": "http://n2/metrics",
                                "lastError": "connection refused", "health": "down"}])
     worth, urgent, text = alerts.paging(found)
-    assert worth is True and urgent is True
-    assert "http://n2/metrics" in text
+    assert worth is False and urgent is False and text == ""
+
+
+def test_the_report_still_names_a_down_target_immediately():
+    # The precondition of the test above: the twitch is not thrown away, it is
+    # routed. A cycle reading preflight sees it on the first failed scrape.
+    found = _found(unhealthy=[{"scrapePool": "kubelet", "scrapeUrl": "http://n2/metrics",
+                               "lastError": "connection refused", "health": "down"}])
+    status, lines = alerts.report("http://p", found)
+    assert status == 2
+    assert any("TARGET DOWN" in line and "http://n2/metrics" in line for line in lines)
 
 
 def test_no_targets_at_all_is_urgent():
@@ -225,26 +236,44 @@ def test_report_renders_a_reading_it_was_handed_without_querying(monkeypatch):
     assert any("FIRING" in line for line in lines)
 
 
-def test_a_target_that_goes_down_pages_once_not_twice():
-    # The real lifecycle of one machine going down: collect() reports the
-    # unhealthy target immediately, and TargetDown's `for: 10m` makes the same
-    # outage appear a second time as a firing alert one cycle later. Two keys
-    # for one incident means the six-hour dedupe never sees the repeat.
+def test_a_target_down_past_the_grace_period_does_page():
+    # The whole point of routing the page through TargetDown: an outage that
+    # outlives `for: 10m` still reaches him, and it reaches him once.
     target = {"scrapePool": "kubelet", "scrapeUrl": "http://n2/metrics",
               "lastError": "connection refused", "health": "down"}
-    just_down = _found(unhealthy=[target])
     ten_minutes_later = _found(unhealthy=[target], firing=[_alert("TargetDown", "high")])
-    assert alerts._page_key(just_down) == alerts._page_key(ten_minutes_later)
-    # and the message does not say it twice either
-    assert alerts.paging(ten_minutes_later)[2].count("TargetDown") == 0
+    worth, urgent, text = alerts.paging(ten_minutes_later)
+    assert worth is True and urgent is True
+    assert text.count("TargetDown") == 1
+
+
+def test_a_flapping_target_does_not_change_the_key_of_a_real_alert():
+    # `unhealthy` is off the page key as well as off the message. Otherwise a
+    # kubelet blinking for one minute mints a new key for an unrelated disk
+    # alert and re-pages an outage he has already been told about.
+    disk = _alert("NodeDiskCritical", "high")
+    quiet = _found(firing=[disk])
+    blinking = _found(firing=[disk], unhealthy=[
+        {"scrapePool": "kubelet", "scrapeUrl": "http://n2/metrics", "health": "down"}])
+    assert alerts._page_key(quiet) == alerts._page_key(blinking)
 
 
 def test_targetdown_still_pages_when_no_target_is_reported_unhealthy():
-    # The suppression is only ever a de-duplication of one fact. With nothing
-    # in `unhealthy` there is nothing to duplicate, and the alert must stand.
+    # A firing TargetDown whose target has come back between the rule
+    # evaluation and this read is still a ten-minute outage that happened.
     found = _found(firing=[_alert("TargetDown", "high")])
     worth, urgent, text = alerts.paging(found)
     assert worth is True and urgent is True and "TargetDown" in text
+
+
+def test_a_job_that_discovered_nothing_still_pages_with_every_target_healthy():
+    # The one instant page that survives, and the reason it has to: `up == 0`
+    # needs an `up` series, so no `for:` can ever grow over a job with no
+    # targets. Asserted with `unhealthy` empty so it cannot pass by accident
+    # on the path this cycle removed.
+    found = _found(missing=["kubelet-cadvisor"], unhealthy=[])
+    worth, _, text = alerts.paging(found)
+    assert worth is True and "kubelet-cadvisor" in text
 
 
 def test_notify_is_called_with_the_paging_verdict(monkeypatch, capsys):
