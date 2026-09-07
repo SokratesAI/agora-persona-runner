@@ -864,7 +864,10 @@
     // allowlist here only ever hid his own files from him.
     input.hidden = true;
 
-    var button = el("button", "attach-btn " + (opts.buttonClass || ""), "📎");
+    // `+` rather than a paperclip: the glyph Claude's composer uses for the
+    // same control, and the one thing in this row that is not an emoji
+    // rendering at a different weight to its neighbours.
+    var button = el("button", "attach-btn " + (opts.buttonClass || ""), "+");
     button.type = "button";
     button.title = "Attach a file";
     button.setAttribute("aria-label", "Attach a file");
@@ -10937,12 +10940,6 @@
     stepSheetBack.setAttribute("aria-label", "Back to the list");
     stepSheetBack.hidden = true;
     head.appendChild(stepSheetBack);
-    stepSheetClose = el("button", "step-close", "✕");
-    stepSheetClose.type = "button";
-    stepSheetClose.title = "Close";
-    stepSheetClose.setAttribute("aria-label", "Close");
-    stepSheetClose.addEventListener("click", closeStepSheet);
-    head.appendChild(stepSheetClose);
     var titles = el("div", "step-titles");
     stepSheetTitle = el("h2", "step-title", "");
     titles.appendChild(stepSheetTitle);
@@ -10950,12 +10947,24 @@
     stepSheetSub.hidden = true;
     titles.appendChild(stepSheetSub);
     head.appendChild(titles);
+    /* Appended last so it sits on the right -- his ask, 2026-09-07, and the
+     * side the chat dock's × has always been on. The two panels are the
+     * same object on a phone and a control that swaps sides between them is
+     * one he has to look for twice. */
+    stepSheetClose = el("button", "step-close", "✕");
+    stepSheetClose.type = "button";
+    stepSheetClose.title = "Close";
+    stepSheetClose.setAttribute("aria-label", "Close");
+    stepSheetClose.addEventListener("click", closeStepSheet);
+    head.appendChild(stepSheetClose);
     stepSheet.appendChild(head);
 
     stepSheetBody = el("div", "step-body");
     stepSheet.appendChild(stepSheetBody);
     document.body.appendChild(stepSheet);
-    dragStepSheet(grip);
+    // The header drags too: the grip alone is a thin strip to aim at on a
+    // phone, and every sheet he has used elsewhere drags by its whole top.
+    dragStepSheet([grip, head]);
     return stepSheet;
   }
 
@@ -10974,36 +10983,98 @@
   var STEP_SHEET_OPEN_VH = 55;
   var STEP_SHEET_MIN_VH = 25;
   var STEP_SHEET_MAX_VH = 92;
-  function dragStepSheet(grip) {
+  // Dragged below this, the sheet closes rather than sitting there --
+  // his ask, 2026-09-07: "Make it close when i drag it all the way
+  // down/out of the screen at the bottom." It is under MIN on purpose:
+  // MIN is where the sheet *rests* if he lets go early, and this is the
+  // point past which he has clearly meant to throw it away.
+  var STEP_SHEET_DISMISS_VH = 14;
+  /* One drag, two drawers.
+   *
+   * The tool sheet and the chat dock are the same object on a phone -- a
+   * panel pinned to the bottom whose height he sets with his thumb -- so
+   * they share this rather than carrying two copies that drift. `spec`
+   * names the four heights and what closing means; everything the two
+   * differ on is in there and nothing else is.
+   *
+   *   node()      the element being resized, or null when it is not on
+   *               screen. A function because the tool sheet builds its
+   *               node lazily.
+   *   openVh      what `current()` answers before anything has been set.
+   *   minVh       where it rests if he lets go early.
+   *   maxVh       the ceiling.
+   *   dismissVh   drag below this and `onDismiss` runs instead. Under
+   *               minVh on purpose: min is a resting place, this is the
+   *               point past which he has clearly meant to throw it away.
+   *   enabled()   optional; false means the handles do nothing, which is
+   *               how the chat dock stays a fixed panel on a wide screen.
+   */
+  function dragSheet(handles, spec) {
     var from = 0;
     var startVh = 0;
     var dragging = false;
+
+    function current() {
+      var node = spec.node();
+      var raw = parseFloat((node && node.style.height) || "");
+      return isNaN(raw) ? spec.openVh : raw;
+    }
+
+    function setHeight(vh, floorVh) {
+      var node = spec.node();
+      if (!node) return spec.openVh;
+      var floor = floorVh === undefined ? spec.minVh : floorVh;
+      var clamped = Math.max(floor, Math.min(spec.maxVh, vh));
+      node.style.height = clamped + "vh";
+      return clamped;
+    }
+
     function move(e) {
       if (!dragging) return;
       var vh = window.innerHeight || 1;
       var next = startVh + ((from - e.clientY) / vh) * 100;
-      setStepSheetHeight(next);
+      if (next < spec.dismissVh) {
+        // Thrown away rather than resized. `end` first, so the listeners
+        // are gone before the panel is hidden and a stray move cannot
+        // resize something he can no longer see.
+        end();
+        spec.onDismiss();
+        return;
+      }
+      setHeight(next, spec.dismissVh);
     }
+
     function end() {
       dragging = false;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
       window.removeEventListener("pointercancel", end);
+      // Let go short of the dismiss point and it springs back to the
+      // resting floor, rather than staying at a height too small to read
+      // or to grab again.
+      var node = spec.node();
+      if (node && !node.hidden && current() < spec.minVh) setHeight(spec.minVh);
     }
-    grip.addEventListener("pointerdown", function (e) {
+
+    function onDown(e) {
+      if (spec.enabled && !spec.enabled()) return;
+      // A tap on the close, back or menu button is a tap on that button,
+      // not a grab of the panel behind it.
+      if (e.target && e.target.closest && e.target.closest("button")) return;
       // One drag at a time -- the same guard `attachRowDrag` uses for the
       // project/milestone lists, so a second finger landing on the grip
       // cannot restart the gesture mid-drag.
       if (dragging) return;
       dragging = true;
       from = e.clientY;
-      startVh = currentStepSheetHeight();
+      startVh = current();
       // Without capture the gesture is the phone's to take back the moment
       // it decides to -- see the comment on `pointercancel` below, and
       // `attachRowDrag` above, where the same call fixed the same class of
       // bug for the drag lists.
-      if (grip.setPointerCapture && e.pointerId !== undefined) {
-        try { grip.setPointerCapture(e.pointerId); } catch (err) { /* not supported */ }
+      var node = e.currentTarget;
+      if (node && node.setPointerCapture && e.pointerId !== undefined) {
+        try { node.setPointerCapture(e.pointerId); } catch (err) { /* not supported */ }
       }
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", end);
@@ -11012,10 +11083,26 @@
       // measured on his own issue, "stuck halfway... can't slide up and
       // down". Without this, that cancellation left `move`/`end` listening
       // forever: `dragging` was never cleared, so the grip's own next
-      // `pointerdown` was ignored by the guard above, and the sheet read
+      // `pointerdown` was ignored by the guard above, and the panel read
       // as jammed at whatever height the aborted drag left it.
       window.addEventListener("pointercancel", end);
       if (e.preventDefault) e.preventDefault();
+    }
+
+    for (var i = 0; i < handles.length; i++) {
+      handles[i].addEventListener("pointerdown", onDown);
+    }
+    return { setHeight: setHeight, current: current };
+  }
+
+  function dragStepSheet(handles) {
+    dragSheet(handles, {
+      node: function () { return stepSheet; },
+      openVh: STEP_SHEET_OPEN_VH,
+      minVh: STEP_SHEET_MIN_VH,
+      maxVh: STEP_SHEET_MAX_VH,
+      dismissVh: STEP_SHEET_DISMISS_VH,
+      onDismiss: closeStepSheet
     });
   }
 
@@ -11024,17 +11111,38 @@
     return isNaN(raw) ? STEP_SHEET_OPEN_VH : raw;
   }
 
-  function setStepSheetHeight(vh) {
-    var clamped = Math.max(STEP_SHEET_MIN_VH, Math.min(STEP_SHEET_MAX_VH, vh));
+  function setStepSheetHeight(vh, floorVh) {
+    var floor = floorVh === undefined ? STEP_SHEET_MIN_VH : floorVh;
+    var clamped = Math.max(floor, Math.min(STEP_SHEET_MAX_VH, vh));
     stepSheet.style.height = clamped + "vh";
     return clamped;
   }
 
 
+
+  var stepSheetHide = null;
+
   function closeStepSheet() {
     if (!stepSheet || stepSheet.hidden) return;
-    stepSheet.hidden = true;
-    stepSheetBackdrop.hidden = true;
+    /* Slid out rather than switched off. `hidden` is `display: none` and a
+     * display change cancels a transition outright, so the attribute waits
+     * for the animation -- the same deferral, and the same cancel-on-reopen
+     * guard, as the chat dock's. */
+    stepSheet.classList.add("step-sheet--entering");
+    stepSheetBackdrop.classList.add("step-backdrop--entering");
+    if (stepSheetHide) clearTimeout(stepSheetHide);
+    function hideStepSheet() {
+      stepSheetHide = null;
+      // Guarded: he may have reopened it while this was waiting, and
+      // `openStepSheet` takes the class off again.
+      if (stepSheet.classList.contains("step-sheet--entering")) {
+        stepSheet.hidden = true;
+        stepSheetBackdrop.hidden = true;
+      }
+    }
+    var stepWait = transitionMs(stepSheet);
+    if (stepWait) stepSheetHide = setTimeout(hideStepSheet, stepWait + 20);
+    else hideStepSheet();
     /* Deliberately not clearing `stepSheetOn` here. `refreshStepSheet` reads
      * `stepSheet.hidden` first and `openStepSheet` overwrites the whole
      * record, so a second guard would be one nothing can fail on -- I wrote
@@ -11292,8 +11400,21 @@
                     opened: steps.map(stepIdentity) };
     paintStepList(conversationId, steps, limit);
     setStepSheetHeight(STEP_SHEET_OPEN_VH);
+    /* Unhidden already off-screen, then let back up on the next frame, so
+     * the browser has a start value to animate *from*. Setting `hidden`
+     * and the final position in the same frame is the shape that renders
+     * as an instant appearance with the transition silently skipped. */
+    if (stepSheetHide) { clearTimeout(stepSheetHide); stepSheetHide = null; }
+    stepSheet.classList.add("step-sheet--entering");
+    stepSheetBackdrop.classList.add("step-backdrop--entering");
     stepSheetBackdrop.hidden = false;
     stepSheet.hidden = false;
+    // Reading a layout property is what forces the reflow; the value is
+    // deliberately unused. Without it the two class changes coalesce into
+    // one style recalculation and nothing moves.
+    void stepSheet.offsetHeight;
+    stepSheet.classList.remove("step-sheet--entering");
+    stepSheetBackdrop.classList.remove("step-backdrop--entering");
     document.addEventListener("keydown", onStepSheetKey, true);
     stepSheetClose.focus();
   }
@@ -11426,6 +11547,160 @@
     return node;
   }
 
+  /* A message that says its piece and leaves.
+   *
+   * His report, 2026-09-07, with a screenshot: a failed model switch wrote
+   * "could not switch: ..." into a span inside the composer row, which
+   * pushed Send off the edge of a 360px screen -- the error took away the
+   * button he needed. Anything that can be one line of unpredictable length
+   * does not belong in a row that also holds controls, so it goes over the
+   * top of the page instead and clears itself after four seconds. */
+  /* How long this node's own transition actually is, in ms.
+   *
+   * A close has to wait for the slide before `hidden` lands, because
+   * `display: none` cancels a transition outright -- but where there is no
+   * transition to wait for there is nothing to wait *on*, and the wait
+   * becomes a quarter-second of a panel sitting on screen after he closed
+   * it. That is a phone set to reduce motion (the sheet rules above are
+   * switched off for it) and it is jsdom, which runs no transitions at all.
+   * Both get the synchronous close they should have had. */
+  function transitionMs(node) {
+    try {
+      var raw = window.getComputedStyle(node).transitionDuration || "";
+      var longest = 0;
+      raw.split(",").forEach(function (part) {
+        part = part.trim();
+        var n = parseFloat(part);
+        if (isNaN(n)) return;
+        longest = Math.max(longest, part.indexOf("ms") > -1 ? n : n * 1000);
+      });
+      return longest;
+    } catch (err) {
+      return 0;
+    }
+  }
+
+  var TOAST_MS = 4000;
+  var toastTimer = null;
+  function toast(text, isError) {
+    if (!text) return;
+    var host = document.getElementById("nova-toast");
+    if (!host) {
+      host = el("div", "toast");
+      host.id = "nova-toast";
+      // Announced, not just drawn: this is the only place some failures
+      // are ever reported.
+      host.setAttribute("role", "status");
+      host.setAttribute("aria-live", "polite");
+      document.body.appendChild(host);
+    }
+    host.textContent = text;
+    host.classList.toggle("toast--error", !!isError);
+    host.classList.add("toast--on");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toastTimer = null;
+      host.classList.remove("toast--on");
+    }, TOAST_MS);
+  }
+
+  /* The catalog, kept between opens.
+   *
+   * His report, 2026-09-07: *"it takes some time for it to appear almost as
+   * it must load every time... The button should be displayed when i open
+   * the model like the rest of the other buttons."* The picker was hidden
+   * until `/api/conversations/model` answered, so on every open the composer
+   * drew `+` and Send immediately and the pill arrived a beat later -- one
+   * row assembling itself in two steps.
+   *
+   * The catalog is the same list for every thread and changes about never,
+   * so it survives a reload in `localStorage`; which model a given thread is
+   * on is per-thread and is remembered for the session only. Both are drawn
+   * straight away and then corrected by the fetch that was happening
+   * anyway -- so a stale cache costs a redraw, never a wrong write: the
+   * change handler still posts to the server and still puts the control back
+   * if the server refuses.
+   */
+  var MODEL_CATALOG_KEY = "nova.modelCatalog.v1";
+  var modelCatalog = null;
+  var modelChoices = {};
+
+  function loadModelCatalog() {
+    if (modelCatalog) return modelCatalog;
+    var store = localStore();
+    if (!store) return null;
+    try {
+      var raw = store.getItem(MODEL_CATALOG_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (parsed && parsed.length) modelCatalog = parsed;
+    } catch (err) { /* unreadable cache is no cache */ }
+    return modelCatalog;
+  }
+
+  function saveModelCatalog(models) {
+    if (!models || !models.length) return;
+    modelCatalog = models;
+    var store = localStore();
+    if (!store) return;
+    try {
+      store.setItem(MODEL_CATALOG_KEY, JSON.stringify(models));
+    } catch (err) { /* full or disabled: the picker still works */ }
+  }
+
+  /* Options for one catalog, selected on `current`. Returns whether the
+   * model the thread is on was in the list -- the caller adds it if not, so
+   * the picker can never silently repoint a thread at something else. */
+  function fillModelOptions(pick, models, current) {
+    pick.textContent = "";
+    var listed = false;
+    (models || []).forEach(function (m) {
+      if (m.id === current) listed = true;
+      pick.appendChild(modelOption(
+        m.id, modelLabel(m.label) + (m.metered ? " (metered)" : "")));
+    });
+    if (current && !listed) {
+      pick.insertBefore(modelOption(current, modelLabel(current)), pick.firstChild);
+    }
+    if (!current) {
+      pick.insertBefore(modelOption("", "Model"), pick.firstChild);
+    }
+    pick.value = current || "";
+    fitModelPick(pick);
+    return listed;
+  }
+
+  /* "(CLI)" says which lane the model runs on, which is a thing about this
+   * loop's plumbing and not a thing about the model. It cost about a fifth
+   * of the pill's width to say it. */
+  function modelLabel(label) {
+    return String(label || "").replace(/\s*\(CLI\)\s*/i, " ").trim();
+  }
+
+  /* The pill is as wide as the name it is showing, not as wide as the
+   * longest name in the list -- which is what a <select> does by default,
+   * and what he reported as "still very wide". Measured in a canvas rather
+   * than with a hidden node so nothing is added to the layout to size the
+   * thing that is in the layout. */
+  var modelFitCanvas = null;
+  function fitModelPick(pick) {
+    if (!pick || !pick.options || !pick.options.length) return;
+    var chosen = pick.options[pick.selectedIndex];
+    if (!chosen) return;
+    try {
+      if (!modelFitCanvas) modelFitCanvas = document.createElement("canvas");
+      var ctx = modelFitCanvas.getContext("2d");
+      if (!ctx) return;
+      var style = window.getComputedStyle(pick);
+      ctx.font = style.fontWeight + " " + style.fontSize + " " + style.fontFamily;
+      var text = ctx.measureText(chosen.text || "").width;
+      // The measured text, plus the padding the rule gives it. No arrow to
+      // leave room for -- that came off in the same pass.
+      var pad = parseFloat(style.paddingLeft || 0) + parseFloat(style.paddingRight || 0);
+      pick.style.width = Math.ceil(text + pad + 2) + "px";
+    } catch (err) { /* no canvas: the select keeps its default width */ }
+  }
+
   function modelPicker(conversationId) {
     var wrap = el("div", "model-pick-bar");
     /* Hidden until the answer lands, and it stays hidden on every path that
@@ -11441,6 +11716,15 @@
     wrap.appendChild(note);
     if (!conversationId) return wrap;
     var current = "";
+    /* On screen now if anything is known, rather than after a round trip.
+     * `modelChoices` is what this thread was last seen on; the catalog is
+     * shared. Both are replaced by the answer below when it lands. */
+    var cachedModels = loadModelCatalog();
+    if (cachedModels && cachedModels.length) {
+      current = modelChoices[conversationId] || "";
+      fillModelOptions(pick, cachedModels, current);
+      wrap.hidden = false;
+    }
     fetchPage("/api/conversations/model?id=" + encodeURIComponent(conversationId))
       .then(function (payload) {
         var models = payload.models || [];
@@ -11450,24 +11734,21 @@
          * `nova_conversations.model_choice`. No catalog, no picker either:
          * a select holding only the model the thread already has cannot
          * change anything. */
-        if (!payload.found || !models.length) return;
+        // A thread Agora no longer holds hides the picker again rather
+        // than leaving the cached guess on screen: `found` false and "no
+        // model" are different answers, and only one of them is a picker.
+        if (!payload.found || !models.length) {
+          wrap.hidden = true;
+          return;
+        }
         current = payload.model || "";
-        var listed = false;
-        models.forEach(function (m) {
-          if (m.id === current) listed = true;
-          pick.appendChild(modelOption(
-            m.id, m.label + (m.metered ? " (metered)" : "")));
-        });
-        if (current && !listed) {
-          pick.insertBefore(modelOption(current, current), pick.firstChild);
-        }
-        if (!current) {
-          pick.insertBefore(modelOption("", "Model (unset)"), pick.firstChild);
-        }
-        // After the options exist, never with `selected` on each one --
-        // `rowEditor` carries the measurement, and the failure is a picker
-        // that opens on a model the thread is not on.
-        pick.value = current;
+        saveModelCatalog(models);
+        modelChoices[conversationId] = current;
+        // Options rebuilt from the server's list, and the value set after
+        // they exist rather than with `selected` on each one -- `rowEditor`
+        // carries the measurement, and the failure is a picker that opens
+        // on a model the thread is not on.
+        fillModelOptions(pick, models, current);
         wrap.hidden = false;
       })
       .catch(function () { /* no picker; the messages are what he came for */ });
@@ -11476,7 +11757,7 @@
       var wanted = pick.value;
       if (!wanted || wanted === current) return;
       pick.disabled = true;
-      note.textContent = "switching…";
+      toast("switching model…");
       fetch("/api/conversations/model", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -11488,7 +11769,9 @@
             throw new Error((result && (result.message || result.error)) || "failed");
           }
           current = wanted;
-          note.textContent = "";
+          modelChoices[conversationId] = wanted;
+          fitModelPick(pick);
+          toast("switched to " + (pick.options[pick.selectedIndex] || {}).text);
         })
         .catch(function (err) {
           /* Put the control back on the model the thread is actually on.
@@ -11496,7 +11779,8 @@
            * app keeps filing against itself -- a page reporting a write that
            * never happened. */
           pick.value = current;
-          note.textContent = "could not switch: " + err.message;
+          fitModelPick(pick);
+          toast("could not switch: " + err.message, true);
         })
         .then(function () { pick.disabled = false; });
     });
@@ -13737,7 +14021,117 @@
     });
     box.parentNode.insertBefore(attach.tray, box.nextSibling);
     form.appendChild(attach.input);
-    send.parentNode.insertBefore(attach.button, send);
+
+    /* The `+` drawer -- his ask, 2026-09-07, against Claude's "Add context"
+     * sheet: the composer keeps `+` and the model pill, and everything else
+     * moves behind the `+`.
+     *
+     * The three controls are MOVED here, not rebuilt: `attach.button` and
+     * the two voice buttons already carry their own listeners and their own
+     * state (`aria-pressed` while the mic is listening), and a second copy
+     * would be a second set of both. Only their parent changes.
+     *
+     * It borrows `.step-sheet` and friends wholesale rather than growing a
+     * third set of drawer styles -- same shape, same grip, same slide, and
+     * `dragSheet` is already the one drag both other drawers use. */
+    var extrasBackdrop = el("div", "chat-extras-backdrop");
+    extrasBackdrop.hidden = true;
+    document.body.appendChild(extrasBackdrop);
+
+    /* Its own classes, not the tool sheet's. Sharing `.step-sheet` made
+     * `document.querySelector(".step-sheet")` find whichever was built
+     * first -- which is this one, since the dock is set up before any tool
+     * drawer opens. The look is still shared, from one rule list in the
+     * stylesheet; only the identity is separate. */
+    var extras = el("div", "chat-extras");
+    extras.id = "chat-extras";
+    extras.hidden = true;
+    extras.setAttribute("role", "dialog");
+    extras.setAttribute("aria-modal", "true");
+    extras.setAttribute("aria-label", "Add context");
+
+    var extrasGrip = el("div", "chat-extras-grip");
+    extrasGrip.setAttribute("aria-hidden", "true");
+    extras.appendChild(extrasGrip);
+
+    var extrasHead = el("div", "chat-extras-head");
+    var extrasTitles = el("div", "chat-extras-titles");
+    extrasTitles.appendChild(el("h2", "chat-extras-title", "Add context"));
+    extrasHead.appendChild(extrasTitles);
+    var extrasClose = el("button", "chat-extras-close", "✕");
+    extrasClose.type = "button";
+    extrasClose.title = "Close";
+    extrasClose.setAttribute("aria-label", "Close");
+    extrasHead.appendChild(extrasClose);
+    extras.appendChild(extrasHead);
+
+    var extrasBody = el("div", "chat-extras-body extras-body");
+    var extrasGrid = el("div", "extras-grid");
+    extrasBody.appendChild(extrasGrid);
+    extras.appendChild(extrasBody);
+    document.body.appendChild(extras);
+
+    /* A label under each glyph, the way Claude's Camera/Photos/Files read.
+     * Appending a child leaves every listener on the button untouched. */
+    function asTile(button, label) {
+      if (!button) return;
+      button.classList.add("extras-tile");
+      button.appendChild(el("span", "extras-label", label));
+      extrasGrid.appendChild(button);
+    }
+    asTile(attach.button, "Files");
+    asTile(document.getElementById("chat-mic"), "Speak");
+    asTile(document.getElementById("chat-speak"), "Read aloud");
+
+    var plusBtn = document.getElementById("chat-plus");
+    var extrasHide = null;
+
+    function setExtras(open) {
+      if (extrasHide) { clearTimeout(extrasHide); extrasHide = null; }
+      if (plusBtn) plusBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) {
+        extras.style.height = "";
+        extras.classList.add("chat-extras--entering");
+        extrasBackdrop.classList.add("chat-extras-backdrop--entering");
+        extrasBackdrop.hidden = false;
+        extras.hidden = false;
+        void extras.offsetHeight;
+        extras.classList.remove("chat-extras--entering");
+        extrasBackdrop.classList.remove("chat-extras-backdrop--entering");
+        return;
+      }
+      extras.classList.add("chat-extras--entering");
+      extrasBackdrop.classList.add("chat-extras-backdrop--entering");
+      function hideExtras() {
+        extrasHide = null;
+        if (extras.classList.contains("chat-extras--entering")) {
+          extras.hidden = true;
+          extrasBackdrop.hidden = true;
+        }
+      }
+      var extrasWait = transitionMs(extras);
+      if (extrasWait) extrasHide = setTimeout(hideExtras, extrasWait + 20);
+      else hideExtras();
+    }
+
+    if (plusBtn) {
+      plusBtn.addEventListener("click", function () { setExtras(extras.hidden); });
+    }
+    extrasClose.addEventListener("click", function () { setExtras(false); });
+    extrasBackdrop.addEventListener("click", function () { setExtras(false); });
+    // Picking a file closes the sheet: the picker takes over the screen and
+    // coming back to a drawer still sitting there is a second thing to shut.
+    if (attach.button) {
+      attach.button.addEventListener("click", function () { setExtras(false); });
+    }
+    dragSheet([extrasGrip, extrasHead], {
+      node: function () { return extras; },
+      openVh: 42,
+      minVh: 24,
+      maxVh: 80,
+      dismissVh: 14,
+      onDismiss: function () { setExtras(false); }
+    });
 
     /* Talking to Nova instead of typing at her -- his `ideas.md` #221:
      * *"I do have a goal of being able to talk to you instead of writing
@@ -14218,6 +14612,113 @@
       return row;
     }
 
+    /* Swipe a row left to archive it -- his ask, 2026-09-07.
+     *
+     * `archived` is a flag Agora has always carried and the listing has
+     * always filtered on; `POST /api/conversations/archive` is the write
+     * that sets it, and it is deliberately a different route from `delete`.
+     * A gesture this cheap to make by accident must not be able to reach an
+     * irreversible write, which is why this archives and offers an undo
+     * rather than asking him to confirm a delete.
+     *
+     * Left only. A row that follows a finger in both directions reads as a
+     * carousel, and there is nothing to the right of it.
+     */
+    var SWIPE_ARM_PX = 12;
+    var SWIPE_ARCHIVE_PX = 96;
+
+    function swipeToArchive(row, conv) {
+      var startX = 0;
+      var startY = 0;
+      var dx = 0;
+      var sliding = false;
+      var decided = false;
+
+      function reset() {
+        row.style.transition = "transform 160ms ease";
+        row.style.transform = "";
+        row.classList.remove("chat-list-row--sliding");
+        setTimeout(function () { row.style.transition = ""; }, 180);
+        sliding = false;
+        decided = false;
+        dx = 0;
+      }
+
+      function move(e) {
+        if (!sliding) return;
+        dx = e.clientX - startX;
+        if (!decided) {
+          // Vertical wins ties: this list scrolls, and a scroll that turns
+          // into an archive because the finger drifted is the failure that
+          // matters here.
+          var dy = Math.abs(e.clientY - startY);
+          if (Math.abs(dx) < SWIPE_ARM_PX && dy < SWIPE_ARM_PX) return;
+          if (dy > Math.abs(dx)) { end(); return; }
+          decided = true;
+          row.classList.add("chat-list-row--sliding");
+        }
+        if (e.preventDefault) e.preventDefault();
+        // Rightward travel is pinned at 0 rather than followed.
+        row.style.transform = "translateX(" + Math.min(0, dx) + "px)";
+        row.classList.toggle("chat-list-row--armed", dx <= -SWIPE_ARCHIVE_PX);
+      }
+
+      function end() {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        var far = dx <= -SWIPE_ARCHIVE_PX;
+        row.classList.remove("chat-list-row--armed");
+        if (!far) { reset(); return; }
+        // Off the edge first, then the write: the row leaving is the
+        // feedback, and waiting for a round trip to start it makes the
+        // gesture feel like it did not take.
+        row.style.transition = "transform 160ms ease, opacity 160ms ease";
+        row.style.transform = "translateX(-110%)";
+        row.style.opacity = "0";
+        chatWrite("/api/conversations/archive", { id: conv.id })
+          .then(function () {
+            toast("Archived “" + conv.name + "”");
+            loadList(true);
+          })
+          .catch(function (err) {
+            // It is still there, so it comes back rather than vanishing on
+            // a write that did not happen.
+            row.style.opacity = "";
+            reset();
+            toast("could not archive: " + err.message, true);
+          });
+        sliding = false;
+        decided = false;
+      }
+
+      row.addEventListener("pointerdown", function (e) {
+        if (sliding) return;
+        // A held row opens the editor; that gesture owns the row once it
+        // fires, and this one must not also be running underneath it.
+        if (row.classList.contains("chat-row-edit")) return;
+        sliding = true;
+        decided = false;
+        dx = 0;
+        startX = e.clientX;
+        startY = e.clientY;
+        if (row.setPointerCapture && e.pointerId !== undefined) {
+          try { row.setPointerCapture(e.pointerId); } catch (err) { /* not supported */ }
+        }
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", end);
+        window.addEventListener("pointercancel", end);
+      });
+
+      // A row that travelled is not a row that was tapped.
+      row.addEventListener("click", function (e) {
+        if (Math.abs(dx) >= SWIPE_ARM_PX) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      }, true);
+    }
+
     /* One write against a conversation, resolved or thrown.
      *
      * The four routes answer `{ok, message}` and a refusal he can fix
@@ -14373,9 +14874,13 @@
       cancel.setAttribute("type", "button");
       var drop = el("button", "chat-row-edit-delete", "Delete");
       drop.setAttribute("type", "button");
-      foot.appendChild(save);
-      foot.appendChild(cancel);
+      /* Delete on the left, Save on the right -- his ask, 2026-09-07, and
+       * the safer arrangement of the two: the destructive button moves off
+       * the corner his thumb rests on, and Save lands where every other
+       * primary action in this panel already is (Send, directly below it). */
       foot.appendChild(drop);
+      foot.appendChild(cancel);
+      foot.appendChild(save);
       wrap.appendChild(foot);
       wrap.appendChild(note);
 
@@ -14494,6 +14999,58 @@
       }, true);
     }
 
+    /* When he last opened each thread, so the list can put the ones he
+     * actually uses at the top -- his ask, 2026-09-07: *"the sorting of the
+     * conversation should be based on which conversation i opened last and
+     * which one gave me a notification last."*
+     *
+     * The second half of that is already on the row: `updatedAt` is when the
+     * thread last moved, which is the same event that raises a notification.
+     * The first half is not on the row and cannot be -- the server has no
+     * session and no idea which browser is his (the same reason
+     * `CHAT_SOURCE_KEY` above is per-device), so it is kept here and merged
+     * into the sort rather than sent anywhere.
+     */
+    var CHAT_OPENED_KEY = "nova.convOpened.v1";
+    var openedAt = null;
+
+    function loadOpened() {
+      if (openedAt) return openedAt;
+      openedAt = {};
+      var store = localStore();
+      if (!store) return openedAt;
+      try {
+        var raw = store.getItem(CHAT_OPENED_KEY);
+        var parsed = raw ? JSON.parse(raw) : null;
+        if (parsed && typeof parsed === "object") openedAt = parsed;
+      } catch (err) { /* unreadable is the same as never opened */ }
+      return openedAt;
+    }
+
+    function markOpened(id) {
+      if (!id) return;
+      var map = loadOpened();
+      map[id] = Date.now();
+      var store = localStore();
+      if (!store) return;
+      try {
+        store.setItem(CHAT_OPENED_KEY, JSON.stringify(map));
+      } catch (err) { /* full or disabled: the list falls back to updatedAt */ }
+    }
+
+    /* One number per row: the later of "he opened it" and "it moved".
+     *
+     * Both are wanted and neither wins on principle -- a thread he opened an
+     * hour ago should sit above one he has never opened that moved two hours
+     * ago, and a thread that answered a minute ago should sit above one he
+     * opened yesterday. Taking the max of the two is what says that. */
+    function rowRank(row) {
+      var map = loadOpened();
+      var mine = map[row.id] || 0;
+      var moved = Date.parse(row.updatedAt || "") || 0;
+      return Math.max(mine, moved);
+    }
+
     function switchTo(next) {
       // Tapping the row he is already reading closes the list and leaves
       // the thread alone -- reloading it would blank a painted thread and
@@ -14505,6 +15062,7 @@
       source = next;
       sourceToken += 1;
       rememberSource();
+      if (next.kind === "conv") markOpened(next.id);
       stopChatPoll();
       // A fresh thread has its own message count, and `loaded` is what stops
       // the first paint of it lighting the unread dot on a thread he is
@@ -14673,8 +15231,60 @@
     var listCache = null;
     var listToken = 0;
 
+    /* ...and the same payload survives a reload, which the in-memory cache
+     * above could not.
+     *
+     * His report, 2026-09-07: *"When i open the list its loading the
+     * conversations and i have to wait for some time, every time."* The
+     * cache above already fixed the second and ninth open of one page load;
+     * it did nothing for the first, and on a phone that is reopened all day
+     * the first open is most of them. So the last answer goes to
+     * `localStorage` and is painted before the fetch is even sent.
+     *
+     * The trade is unchanged and is the one the comment above argues: the
+     * request still goes out every single time and nothing is suppressed, so
+     * a reply he is waiting for cannot go unreported -- a stale list costs
+     * one repaint a moment later.
+     *
+     * Capped, because this payload grows with his history and a
+     * multi-megabyte synchronous write on every open would cost more than
+     * the wait it removes. Over the cap it simply is not persisted; the
+     * in-memory cache still works for the rest of that page load. */
+    var LIST_CACHE_KEY = "nova.convList.v1";
+    var LIST_CACHE_MAX = 400000;
+
+    function loadCachedList() {
+      var store = localStore();
+      if (!store) return null;
+      try {
+        var raw = store.getItem(LIST_CACHE_KEY);
+        if (!raw) return null;
+        var parsed = JSON.parse(raw);
+        return (parsed && parsed.conversations) ? parsed : null;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function saveCachedList(payload) {
+      var store = localStore();
+      if (!store || !payload) return;
+      try {
+        var raw = JSON.stringify(payload);
+        if (raw.length > LIST_CACHE_MAX) {
+          store.removeItem(LIST_CACHE_KEY);
+          return;
+        }
+        store.setItem(LIST_CACHE_KEY, raw);
+      } catch (err) { /* full or disabled: the list still loads */ }
+    }
+
     function loadList(fresh) {
       if (fresh) listCache = null;
+      // The stored copy is only ever read to fill an empty first open --
+      // `fresh` means something just changed the list, and a cache written
+      // before that change must not be drawn over the top of it.
+      if (!listCache && !fresh) listCache = loadCachedList();
       // Open, shut, open leaves two fetches in flight, and without this the
       // older one could land second and become the cache -- which used to
       // cost one wrong repaint and would now cost every later open too.
@@ -14689,6 +15299,7 @@
         .then(function (payload) {
           if (token !== listToken) return;
           listCache = payload;
+          saveCachedList(payload);
           // He can hold a row and open its editor while the refresh is in
           // flight now, which was impossible when the list was empty until
           // the fetch landed. Repainting would throw away what he is typing;
@@ -14716,20 +15327,65 @@
       // that class means "a conversation is called this", and anything
       // reading the list -- a stylesheet, a test, a future feature counting
       // threads -- would be right to treat a node carrying it as a thread.
-      var start = el("button", "chat-list-new", "+ New conversation");
+      /* Starting a thread is one tap on a floating button now -- his ask,
+       * 2026-09-07, against a screenshot of Claude's list: a round `+` in
+       * the bottom-right corner, and no form.
+       *
+       * `newForm` asked for an optional name first. That question had one
+       * good answer -- leave it blank -- because the thread renames itself
+       * from his first message anyway (`autotitle`), so the form was a step
+       * between him and typing, to collect something he had no reason to
+       * fill in. It stays in the file for the editor path; nothing here
+       * calls it.
+       */
+      var start = el("button", "chat-list-fab", "+");
       start.setAttribute("type", "button");
+      start.title = "New conversation";
+      start.setAttribute("aria-label", "New conversation");
       start.addEventListener("click", function () {
-        if (listEl.querySelector(".chat-row-edit")) return;
-        var form = newForm(function (changed) {
-          if (changed) loadList(true);
-          else if (form.parentNode) listEl.replaceChild(start, form);
-        });
-        listEl.replaceChild(form, start);
+        if (start.disabled) return;
+        start.disabled = true;
+        chatWriteFull("/api/conversations/new", { name: nextUntitledName() })
+          .then(function (answer) {
+            var made = answer.result || {};
+            if (!made.id) throw new Error("no conversation came back");
+            // Straight into it: he tapped `+` to start talking, not to
+            // watch a list redraw. `switchTo` shuts the switcher for us.
+            switchTo({ kind: "conv", id: made.id, name: made.name || UNTITLED_LABEL });
+            listCache = null;
+          })
+          .catch(function (err) { toast("could not start: " + err.message, true); })
+          .then(function () { start.disabled = false; });
       });
       listEl.appendChild(start);
       listEl.appendChild(listRow("Ask Nova", "", source.kind === "ask", function () {
         switchTo({ kind: "ask", id: null, name: "Ask Nova" });
       }));
+    }
+
+    /* "New chat", or the first free "New chat - N".
+     *
+     * Server-side `starting_name` already defaults an empty name to "New
+     * chat"; this only picks the suffix, from the listing the switcher is
+     * already holding. Both spellings stay untitled as far as `autotitle`
+     * is concerned (`is_untitled`), so a numbered one still renames itself
+     * from his first message.
+     *
+     * Best-effort by design: with no listing cached yet it sends the bare
+     * default and two threads called "New chat" is a cosmetic collision,
+     * not a broken one. */
+    var UNTITLED_LABEL = "New chat";
+
+    function nextUntitledName() {
+      var rows = (listCache && listCache.conversations) || [];
+      var taken = {};
+      rows.forEach(function (row) { taken[(row.name || "").trim()] = true; });
+      if (!taken[UNTITLED_LABEL]) return "";
+      for (var n = 2; n < 500; n += 1) {
+        var candidate = UNTITLED_LABEL + " - " + n;
+        if (!taken[candidate]) return candidate;
+      }
+      return "";
     }
 
     function renderList(payload) {
@@ -14746,6 +15402,10 @@
       // `cycleThread` is `nova_conversations.conversations()`'s own flag
       // for an `evolve-cycle:` tag. Reading the tag here as well would
       // be a second copy of that rule in a second language.
+      // Newest-first on that combined rank, inside every group. The
+      // grouping itself is unchanged -- folders, loose threads and the
+      // heartbeat folds are still the folds; this is the order within them.
+      rows = rows.slice().sort(function (a, b) { return rowRank(b) - rowRank(a); });
       var beats = rows.filter(function (row) { return !!row.cycleThread; });
       var loose = rows.filter(function (row) { return !row.cycleThread; });
 
@@ -14759,6 +15419,7 @@
             function () {
               switchTo({ kind: "conv", id: row.id, name: row.name });
             });
+          swipeToArchive(node, row);
           holdToEdit(node, function () {
             if (listEl.querySelector(".chat-row-edit")) return;
             var editor = rowEditor(row, folders, models, function (changed) {
@@ -14794,32 +15455,120 @@
         return !row.folderId || !filed[row.folderId];
       });
 
-      folders.forEach(function (folder) {
-        var group = filed[folder.id];
-        var current = source.kind === "conv" && group.some(function (row) {
+      /* The folds themselves are ordered by what is in them -- his ask,
+       * 2026-09-07: *"make also the folder with the latest messages be the
+       * folder on top"*. A fold ranks as its newest row, on the same
+       * combined "opened or moved" rank the rows inside it are sorted by,
+       * so the two orders cannot disagree with each other.
+       *
+       * `Conversations` and `Heartbeats` are ranked with the named folders
+       * rather than pinned under them: a folder he last touched in August
+       * sitting above the thread that answered a minute ago is the same
+       * complaint one level up.
+       *
+       * An empty folder ranks 0 and sinks, but is still drawn -- that is
+       * the rule the comment above states, and sorting must not quietly
+       * turn "last" into "gone". */
+      function foldRank(group) {
+        return (group || []).reduce(function (best, row) {
+          return Math.max(best, rowRank(row));
+        }, 0);
+      }
+      function holdsCurrent(group) {
+        return source.kind === "conv" && (group || []).some(function (row) {
           return row.id === source.id;
         });
-        fill(listFold(folder.name, group.length, current), group);
+      }
+
+      var folds = folders.map(function (folder) {
+        var group = filed[folder.id];
+        return { name: folder.name, group: group, open: holdsCurrent(group) };
       });
       // Open on the threads he starts, shut on the ones the loop starts
       // for itself -- and open a fold anyway when it holds the thread he
       // is reading, so the switcher never opens without the current row
       // on screen.
-      if (top.length) fill(listFold("Conversations", top.length, true), top);
+      if (top.length) folds.push({ name: "Conversations", group: top, open: true });
       if (beats.length) {
-        var current = source.kind === "conv" && beats.some(function (row) {
-          return row.id === source.id;
-        });
-        fill(listFold("Heartbeats", beats.length, current), beats);
+        folds.push({ name: "Heartbeats", group: beats, open: holdsCurrent(beats) });
       }
+
+      folds.sort(function (a, b) { return foldRank(b.group) - foldRank(a.group); });
+      folds.forEach(function (fold) {
+        fill(listFold(fold.name, fold.group.length, fold.open), fold.group);
+      });
     }
+
+    /* The close animation has to finish before `hidden` lands, because
+     * `[hidden]` is `display: none` and a display change cancels a
+     * transition outright. So the attribute is deferred, and the handle is
+     * kept so re-opening mid-close can cancel it -- without that, a quick
+     * shut-then-open leaves a timer that hides a dock he has just
+     * reopened. */
+    var DOCK_ANIM_MS = 240;
+    var pendingHide = null;
+
+    /* The dock is a draggable drawer on a phone -- his ask, 2026-09-07:
+     * "make the chat modal a draggable drawer like the tools modal". Same
+     * `dragSheet` the tool sheet uses, so there is one drag in this file
+     * and not two.
+     *
+     * `enabled` is the breakpoint: above 30rem the dock is a fixed panel
+     * over its launcher (see `.chat-dock` in style.css) and dragging it
+     * taller would resize something anchored to a corner. The query is
+     * read per gesture rather than cached, because a phone that turns
+     * sideways crosses it without reloading the page. */
+    var DOCK_OPEN_VH = 92;
+    var DOCK_MIN_VH = 30;
+    var DOCK_DISMISS_VH = 16;
+    function dockIsDrawer() {
+      return !!(window.matchMedia
+                && window.matchMedia("(max-width: 30rem)").matches);
+    }
+    var dockDrag = dragSheet(
+      [document.getElementById("chat-grip"), dock.querySelector(".chat-head")]
+        .filter(Boolean),
+      {
+        node: function () { return dock; },
+        openVh: DOCK_OPEN_VH,
+        minVh: DOCK_MIN_VH,
+        maxVh: DOCK_OPEN_VH,
+        dismissVh: DOCK_DISMISS_VH,
+        enabled: dockIsDrawer,
+        onDismiss: function () { setOpen(false); }
+      });
 
     function setOpen(next) {
       isOpen = !!next;
       btn.setAttribute("aria-expanded", isOpen ? "true" : "false");
       dock.setAttribute("aria-hidden", isOpen ? "false" : "true");
-      if (isOpen) dock.removeAttribute("hidden");
-      else dock.setAttribute("hidden", "");
+      if (pendingHide) { clearTimeout(pendingHide); pendingHide = null; }
+      if (isOpen) {
+        // Unhidden already in its closed position, then released on the
+        // next frame -- same reason the tool sheet does this: setting
+        // `hidden` and the final position in one frame renders as an
+        // instant appearance with the transition skipped.
+        dock.classList.add("chat-dock--closed");
+        dock.removeAttribute("hidden");
+        // Back to full height on every open. Without this, a dock he
+        // dragged shut at 16vh would reopen at 16vh -- the drag would have
+        // quietly become a setting.
+        if (dockIsDrawer()) dockDrag.setHeight(DOCK_OPEN_VH);
+        else dock.style.height = "";
+        void dock.offsetHeight;
+        dock.classList.remove("chat-dock--closed");
+      } else {
+        dock.classList.add("chat-dock--closed");
+        function hideDock() {
+          pendingHide = null;
+          // Guarded: `isOpen` is the live answer, and it may have flipped
+          // back while this was waiting.
+          if (!isOpen) dock.setAttribute("hidden", "");
+        }
+        var dockWait = Math.min(transitionMs(dock), DOCK_ANIM_MS);
+        if (dockWait) pendingHide = setTimeout(hideDock, dockWait + 20);
+        else hideDock();
+      }
       dock.classList.toggle("open", isOpen);
       btn.classList.toggle("open", isOpen);
       // The full-screen sheet has to hide the hamburger, and CSS cannot

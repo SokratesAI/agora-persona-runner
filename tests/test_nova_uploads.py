@@ -261,7 +261,12 @@ def test_attach_button_is_wired_into_every_composer():
 
     # The dock's Send button lives in static markup, so its paperclip is
     # placed relative to that rather than appended to a node this file made.
-    assert "send.parentNode.insertBefore(attach.button, send)" in source
+    # The dock's attach control moved out of the composer row and into the
+    # `+` drawer on 2026-09-07 (his ask, against Claude's "Add context"
+    # sheet), so it is appended as a tile rather than placed beside Send.
+    # What this asserts is unchanged: the button this file builds has to
+    # reach the DOM somewhere.
+    assert "asTile(attach.button" in source
     assert "box.parentNode.insertBefore(attach.tray, box.nextSibling)" in source
 
 

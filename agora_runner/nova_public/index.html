@@ -156,6 +156,7 @@
 </button>
 
 <section id="chat-dock" class="chat-dock" aria-label="Chat with Nova" aria-hidden="true" hidden>
+  <div id="chat-grip" class="chat-grip" aria-hidden="true"></div>
   <div class="chat-head">
     <button id="chat-menu" class="chat-menu" type="button"
             aria-label="Switch conversation" aria-expanded="false" aria-controls="chat-list">
@@ -164,7 +165,6 @@
     <p id="chat-title" class="chat-title">Ask Nova</p>
     <button id="chat-close" class="chat-close" type="button" aria-label="Close chat">&#215;</button>
   </div>
-  <div id="chat-model-host"></div>
   <div id="chat-list" class="chat-list" aria-label="Your conversations" hidden></div>
   <div id="chat-thread" class="ask-thread chat-thread"></div>
   <form id="chat-form" class="chat-form">
@@ -172,17 +172,21 @@
     <textarea id="chat-box" class="chat-box" rows="1" placeholder="Ask anything&#8230;"
               autocapitalize="sentences" autocomplete="off"></textarea>
     <div class="chat-actions">
+      <button id="chat-plus" class="attach-btn chat-plus" type="button"
+              title="Add context" aria-label="Add context"
+              aria-expanded="false" aria-controls="chat-extras">+</button>
+      <div id="chat-model-host"></div>
       <p id="chat-status" class="chat-status" role="status" aria-live="polite"></p>
       <!-- Both start hidden and app.js reveals whichever of the two speech
            APIs this browser actually has (ideas.md #221). A control that
            cannot do anything is worse than no control. -->
       <button id="chat-mic" class="attach-btn chat-voice" type="button" hidden
               title="Speak your question" aria-label="Speak your question" aria-pressed="false">
-        <span aria-hidden="true">&#127908;</span>
+        <span class="chat-glyph" aria-hidden="true">&#127908;</span>
       </button>
       <button id="chat-speak" class="attach-btn chat-voice" type="button" hidden
               title="Read answers aloud" aria-label="Read answers aloud" aria-pressed="false">
-        <span aria-hidden="true">&#128266;</span>
+        <span class="chat-glyph" aria-hidden="true">&#128266;</span>
       </button>
       <button id="chat-send" class="chat-send" type="submit">Send</button>
     </div>

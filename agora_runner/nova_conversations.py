@@ -70,6 +70,17 @@ MAX_NAME_CHARS = 200
 # first message."* This is the exact string `autotitle` will overwrite and
 # nothing else -- a thread he named himself is never renamed under him.
 UNTITLED_NAME = "New chat"
+#: `New chat`, and the numbered ones the app hands out when that name is
+#: already taken (`New chat - 2`). They are all still untitled as far as
+#: `autotitle` is concerned -- a thread called `New chat - 3` has no more of
+#: a name than the first one does, and losing the auto-rename because the
+#: default collided would be a worse bug than the collision.
+_UNTITLED_RE = re.compile(r"^" + re.escape(UNTITLED_NAME) + r"(?: - \d+)?$")
+
+
+def is_untitled(name):
+    """Whether this is one of the names the app gives a thread nobody named."""
+    return bool(_UNTITLED_RE.match((name or "").strip()))
 
 # What Agora puts in `sender` for a message the owner typed. Three places
 # in this module already keyed on the literal and `nova_chat_answers` is a
@@ -641,7 +652,7 @@ def autotitle(conversation_id, current_name, text, recent=None):
     """
     if not conversation_id:
         return False, "which conversation?"
-    if current_name != UNTITLED_NAME:
+    if not is_untitled(current_name):
         if not title_is_derived(current_name, recent):
             return False, "that conversation already has a name"
         if not topic_moved(current_name, recent, text):
@@ -938,6 +949,36 @@ def folder_create(name):
         log("nova_conversations: folder create answered without an id")
         return False, "the conversation store answered without a folder id"
     return True, new_id
+
+
+def archive(conversation_id, archived=True):
+    """(ok, message). Put a thread away, or take it back out.
+
+    His ask, 2026-09-07: *"when i slide a conversation in the list to the
+    left, it should be archived."*
+
+    `archived` is a flag Agora has carried all along and `conversations()`
+    above has always filtered on -- so this needed a way to *set* it and
+    nothing else. It is deliberately a separate call from `remove` rather
+    than a gentler mode of it: that one is irreversible and says so, this
+    one is a swipe, and a gesture that easy to make by accident must not be
+    able to reach the irreversible write. `archived=False` is the same call
+    with the flag the other way, which is what an undo sends.
+
+    PATCH through `agora_internal`, the same shape and the same failure
+    handling as `move` above.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    status, _body = agora_internal(
+        "PATCH", f"/conversations/{conversation_id}",
+        {"archived": bool(archived)})
+    if status != 200:
+        log(f"nova_conversations: archive failed HTTP {status}")
+        if status == 404:
+            return False, "that conversation is gone"
+        return False, "could not archive the conversation"
+    return True, "archived" if archived else "restored"
 
 
 def remove(conversation_id):
