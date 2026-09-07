@@ -9438,6 +9438,104 @@ async function loadAskDock(options) {
  * and the journal card's ask, so these tests open the dock and the button they
  * assert on is the same button all three get.
  */
+/* The stop button -- his capture, 2026-09-07: *"the send button should
+ * become a filled square while you're running, so I can cancel the current
+ * turn ... When I stop you, the spinner should be replaced by the text
+ * 'stopped'"*. It is one button in two shapes rather than two buttons,
+ * which is why every test here asserts on `#chat-send` itself.
+ */
+describe("stopping a turn", () => {
+  const running = {
+    conversationId: "c-run",
+    waiting: true,
+    messages: [{ id: "1", sender: "Edvard", text: "do the big thing" }],
+  };
+  const idle = { conversationId: "c-run", waiting: false, messages: running.messages };
+
+  test("the send button becomes a stop square while a turn is running", async () => {
+    const window = await loadAskDock({ ask: running });
+    const send = window.document.querySelector("#chat-send");
+    assert.ok(send.classList.contains("chat-send--stop"), "the button is still a Send button");
+    assert.equal(send.type, "button",
+      "left as a submit it would send as well as stop, because the form listener still fires");
+    assert.equal(send.textContent, "");
+    assert.equal(send.getAttribute("aria-label"), "Stop");
+    assert.equal(send.disabled, false, "a stop button he cannot press is not a stop button");
+  });
+
+  test("it is an ordinary Send button when nothing is running", async () => {
+    const window = await loadAskDock({ ask: idle });
+    const send = window.document.querySelector("#chat-send");
+    assert.equal(send.classList.contains("chat-send--stop"), false);
+    assert.equal(send.type, "submit");
+    assert.equal(send.textContent, "Send");
+  });
+
+  test("pressing it posts the running conversation to the cancel route", async () => {
+    const window = await loadAskDock({ ask: running });
+    window.document.querySelector("#chat-send").dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/cancel", { conversationId: "c-run" }]]);
+  });
+
+  /* The id comes off the payload, not the composer. Ask Nova has no id of
+   * its own -- the server finds its conversation from a tag -- so a stop
+   * built on `source.id` would be dead on the surface he actually uses. */
+  test("it works on the Ask surface, which has no conversation id of its own", async () => {
+    const window = await loadAskDock({ ask: running });
+    assert.equal(window.document.querySelector("#chat-send").disabled, false,
+      "the stop button is disabled on the Ask surface");
+    window.document.querySelector("#chat-send").dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 1, "nothing was posted");
+  });
+
+  test("the spinner is replaced by the word stopped", async () => {
+    const window = await loadAskDock({ ask: running });
+    assert.ok(window.document.querySelector(".ask-pending"), "the fixture is not running a turn");
+    window.document.querySelector("#chat-send").dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const stopped = window.document.querySelector(".ask-stopped");
+    assert.ok(stopped, "the loader is still spinning after a stop that worked");
+    assert.equal(stopped.textContent, "stopped");
+  });
+
+  test("the button goes back to Send once the stop lands", async () => {
+    const window = await loadAskDock({ ask: running });
+    window.document.querySelector("#chat-send").dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const send = window.document.querySelector("#chat-send");
+    assert.equal(send.textContent, "Send");
+    assert.equal(send.type, "submit");
+    assert.equal(window.document.querySelector("#chat-status").textContent, "");
+  });
+
+  test("a stop that failed says so and leaves the stop button pressable", async () => {
+    const window = await loadAskDock({ ask: running });
+    window.postReply = { ok: false, message: "could not reach the bridge" };
+    window.document.querySelector("#chat-send").dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(window.document.querySelector("#chat-status").textContent,
+      /could not stop: could not reach the bridge/);
+    const send = window.document.querySelector("#chat-send");
+    assert.ok(send.classList.contains("chat-send--stop"),
+      "it went back to Send over a turn that is still burning");
+    assert.equal(send.disabled, false, "he cannot try the stop again");
+    assert.ok(window.document.querySelector(".ask-pending"),
+      "the loader was cleared even though the turn is still running");
+  });
+
+  test("a stop in flight cannot be double-tapped", async () => {
+    const window = await loadAskDock({ ask: running });
+    const send = window.document.querySelector("#chat-send");
+    send.dispatchEvent(new window.Event("click"));
+    send.dispatchEvent(new window.Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.posted.length, 1, "two stops went out for one press");
+  });
+});
+
 describe("copying a message", () => {
   const withClipboard = (window, writeText) => {
     Object.defineProperty(window.navigator, "clipboard", {

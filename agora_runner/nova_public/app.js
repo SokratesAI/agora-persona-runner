@@ -13893,8 +13893,82 @@
      * twice. So both set a flag and one function reads them. */
     var uploading = false;
     var sending = false;
+    /* Whether Nova is answering right now. Read off `payload.waiting` at the
+     * paint below rather than tracked here from the send: the server is the
+     * only thing that knows a turn is still running, and a locally-held flag
+     * would be wrong every time he reloads the page mid-turn or opens the
+     * dock on a thread that was already busy. */
+    var turnRunning = false;
+    var stopping = false;
+    /* Which thread the running turn belongs to, off the same payload. Not
+     * `source.id`: the Ask Nova surface has no id of its own -- the server
+     * finds its conversation from the `nova-ask` tag -- so reading the id
+     * from the composer would leave the stop button dead on the one surface
+     * he uses most. */
+    var runningConversationId = "";
 
-    function syncSend() { send.disabled = uploading || sending; }
+    /* One button, two jobs -- his ask, 2026-09-07: *"the send button should
+     * become a filled square while you're running, so I can cancel the
+     * current turn"*. A separate stop button beside Send would sit dead for
+     * all but a few minutes of the day and take composer width forever.
+     *
+     * `type` is what actually switches the behaviour, not the click handler:
+     * as a `submit` the form's own listener sends, as a `button` it does
+     * nothing and the click handler below takes it. Leaving it a submit and
+     * branching inside the handler would fire the form listener too.
+     *
+     * Enter still sends while a turn is running, deliberately -- he asked
+     * for the stop so he could "give you more context and re-ask", and
+     * taking away the one thing that already worked mid-turn would be a
+     * strange way to grant that. */
+    function syncSend() {
+      var stop = turnRunning && !sending;
+      send.classList.toggle("chat-send--stop", stop);
+      send.type = stop ? "button" : "submit";
+      send.textContent = stop ? "" : "Send";
+      send.setAttribute("aria-label", stop ? "Stop" : "Send");
+      send.disabled = stop ? stopping : (uploading || sending);
+    }
+
+    send.addEventListener("click", function (event) {
+      // The send path is the form's `submit` listener; this only ever runs
+      // for the stop shape, which is a plain button and submits nothing.
+      if (send.type !== "button") return;
+      event.preventDefault();
+      if (stopping || !runningConversationId) return;
+      stopping = true;
+      syncSend();
+      status.textContent = "stopping\u2026";
+      fetch("/api/conversations/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: runningConversationId }),
+      })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (result) {
+          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
+          stopping = false;
+          turnRunning = false;
+          syncSend();
+          status.textContent = "";
+          /* The word he asked for, in place of the loader. Painted here
+           * rather than waited for: the next poll is up to four seconds
+           * away, and a spinner still spinning after a stop that worked is
+           * the thing he is trying to get rid of. The poll repaints over
+           * this from the server's own answer, so if the turn did NOT stop
+           * the loader comes back -- which is the truth. */
+          var pending = thread.querySelector(".ask-pending");
+          if (pending) {
+            pending.textContent = "stopped";
+            pending.classList.add("ask-stopped");
+          }
+        })
+        .catch(function (err) {
+          stopping = false;
+          syncSend();
+          status.textContent = "could not stop: " + err.message;
+        });
+    });
 
     var attach = buildAttach({
       onBusy: function (isBusy) { uploading = isBusy; syncSend(); },
@@ -14235,6 +14309,13 @@
       var was = thread.scrollTop;
       var grewFrom = pendingAnchor;
       pendingAnchor = null;
+      /* The composer's stop shape follows the same flag the loader does, so
+       * the button and the spinner can never disagree about whether a turn
+       * is running. */
+      turnRunning = !!(payload && payload.waiting);
+      runningConversationId = (payload && payload.conversationId)
+        || (source.kind === "conv" ? source.id : "");
+      syncSend();
       renderAskThread(thread, payload, function (text) {
         askPaintSent(thread, text);
         // Same three lines the composer runs, and for the same reasons:

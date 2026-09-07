@@ -5015,3 +5015,28 @@ X that summarizes the last 12
   font-size: 0.78rem;
   color: var(--dim);
 }
+
+/* The composer's stop shape -- his ask, 2026-09-07: "the send button should
+ * become a filled square while you're running". The square is a pseudo-
+ * element rather than a glyph so it is a real filled block at any font, and
+ * the button goes circular because a pill with nothing in it reads as a
+ * button that lost its label. `currentColor` keeps it correct in both
+ * themes without a second rule. */
+.chat-send--stop {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.chat-send--stop::before {
+  content: "";
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 2px;
+  background: currentColor;
+}
+/* What replaces the orbiting loader once a stop lands. Dim, because it is a
+ * statement about a turn that produced nothing, not a message from Nova. */
+.ask-stopped { color: var(--dim); font-size: 0.85rem; }
