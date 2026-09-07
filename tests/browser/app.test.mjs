@@ -15372,6 +15372,36 @@ describe("the thoughts-and-tools drawer", () => {
       "the sheet kept following the pointer after he let go");
   });
 
+  test("a cancelled drag stops moving the sheet and the next drag still works", async () => {
+    /* His own report: "stuck halfway on the side and i can't slide it up
+     * and down". A phone hands a drag to native scrolling as `pointercancel`
+     * rather than `pointerup` whenever it decides the gesture is ambiguous
+     * -- unhandled, that left the sheet listening forever on a drag that
+     * never really ended, and the grip's own next pointerdown did nothing
+     * because nothing ever cleared the guard that stops two drags
+     * overlapping. Both halves of that have to be tested, or a fix that
+     * clears the guard without also ignoring further moves from the dead
+     * gesture would pass this test while still being broken. */
+    const window = await openDock();
+    click(window, lines(window)[0]);
+    const grip = window.document.querySelector(".step-grip");
+    grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 600 }));
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 400 }));
+    const held = parseFloat(sheet(window).style.height);
+    window.dispatchEvent(new window.MouseEvent("pointercancel", { clientY: 400 }));
+    // The dead gesture must not keep steering the sheet.
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 100 }));
+    assert.equal(parseFloat(sheet(window).style.height), held,
+      "a cancelled drag kept moving the sheet");
+    // And the grip must not be jammed -- a fresh pointerdown starts a real
+    // new drag rather than being silently ignored by a guard that never
+    // reset.
+    grip.dispatchEvent(new window.MouseEvent("pointerdown", { clientY: 400 }));
+    window.dispatchEvent(new window.MouseEvent("pointermove", { clientY: 200 }));
+    assert.ok(parseFloat(sheet(window).style.height) > held,
+      "the next drag after a cancel did not move the sheet at all");
+  });
+
   test("a turn still running is its line alone, with no empty bubble", async () => {
     /* `stepsOnly` is the server's row for work with no answer under it yet.
      * Issue #129 put those passages on the page and was right to; drawing

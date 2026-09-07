@@ -10977,20 +10977,44 @@
   function dragStepSheet(grip) {
     var from = 0;
     var startVh = 0;
+    var dragging = false;
     function move(e) {
+      if (!dragging) return;
       var vh = window.innerHeight || 1;
       var next = startVh + ((from - e.clientY) / vh) * 100;
       setStepSheetHeight(next);
     }
     function end() {
+      dragging = false;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
     }
     grip.addEventListener("pointerdown", function (e) {
+      // One drag at a time -- the same guard `attachRowDrag` uses for the
+      // project/milestone lists, so a second finger landing on the grip
+      // cannot restart the gesture mid-drag.
+      if (dragging) return;
+      dragging = true;
       from = e.clientY;
       startVh = currentStepSheetHeight();
+      // Without capture the gesture is the phone's to take back the moment
+      // it decides to -- see the comment on `pointercancel` below, and
+      // `attachRowDrag` above, where the same call fixed the same class of
+      // bug for the drag lists.
+      if (grip.setPointerCapture && e.pointerId !== undefined) {
+        try { grip.setPointerCapture(e.pointerId); } catch (err) { /* not supported */ }
+      }
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", end);
+      // The phone hands a drag to native scrolling/zooming as "cancelled"
+      // rather than "up" whenever it decides the gesture is ambiguous --
+      // measured on his own issue, "stuck halfway... can't slide up and
+      // down". Without this, that cancellation left `move`/`end` listening
+      // forever: `dragging` was never cleared, so the grip's own next
+      // `pointerdown` was ignored by the guard above, and the sheet read
+      // as jammed at whatever height the aborted drag left it.
+      window.addEventListener("pointercancel", end);
       if (e.preventDefault) e.preventDefault();
     });
   }
