@@ -367,9 +367,17 @@ def push_markdown(path, source, source_rev=None):
 # time `ticket_store` renames one -- and it would fail silently, because a
 # CouchDB view emitting `undefined` is a row with a missing key, not an
 # error.
+# Every cell `nova_boards.parse_board` puts on a row belongs here, and
+# `test_every_parsed_row_field_reaches_the_projection` fails by name when a
+# new column does not. `milestone` was missing for the whole of its first
+# day: idea #260's M4 added the column to the markdown parser, the picker
+# and the row record, and the site's board payload -- which is served from
+# this view -- carried no `milestone` key at all, so the app could not draw
+# a cell the boards were already storing.
 ROW_FIELDS = (
     "number", "title", "status", "statusKey", "updated",
-    "priority", "priorityKey", "project", "size", "sizeKey", "where", "done",
+    "priority", "priorityKey", "project", "size", "sizeKey", "milestone",
+    "where", "done",
 )
 
 ROWS_DDOC_ID = "_design/rows"
