@@ -13858,6 +13858,94 @@ describe("the project page", () => {
     },
   };
 
+  /* The milestone list, and the buttons that pin one -- milestone M4 of
+   * idea #260. The pin was settable from a terminal he does not have and
+   * the order it overrides was drawn nowhere, so this is the dial the
+   * control was missing. The server owns the order (`project_milestones`);
+   * these hold that the page draws what it is sent, and that a press
+   * sends the 1-based position on the other side of that request. */
+  const MILESTONED = {
+    ...NOVA,
+    milestones: [
+      { name: "small", open: 2, pin: 0 },
+      { name: "big", open: 1, pin: 3 },
+    ],
+  };
+
+  const milestoneRows = (w) =>
+    [...w.document.querySelectorAll(".project-milestone")];
+
+  test("the milestones are drawn in the order the server sent", async () => {
+    const window = await loadSite("/project/Nova", { project: () => MILESTONED });
+    const rows = milestoneRows(window);
+    assert.deepEqual(
+      rows.map((r) => r.querySelector(".project-milestone-name").textContent),
+      ["small", "big"]);
+    assert.equal(rows[0].querySelector(".project-milestone-counts").textContent,
+      "2 open rows");
+    assert.equal(rows[1].querySelector(".project-milestone-counts").textContent,
+      "1 open row");
+  });
+
+  test("only a pinned milestone says so, and it says the pin he wrote", async () => {
+    const window = await loadSite("/project/Nova", { project: () => MILESTONED });
+    const rows = milestoneRows(window);
+    assert.equal(rows[0].querySelector(".project-milestone-pin"), null);
+    // `big` is drawn second and pinned 3: a pin past the end clamps, and
+    // the page must show what he asked for rather than where it landed.
+    assert.equal(rows[1].querySelector(".project-milestone-pin").textContent,
+      "pinned 3");
+  });
+
+  test("moving a milestone down sends its new 1-based position", async () => {
+    const window = await loadSite("/project/Nova", { project: () => MILESTONED });
+    const rows = milestoneRows(window);
+    rows[0].querySelectorAll(".project-milestone-move-btn")[1].click();
+    await new Promise((r) => setTimeout(r, 0));
+    const sent = window.posted.at(-1);
+    assert.equal(sent.url, "/api/milestone/pin");
+    assert.deepEqual(sent.body,
+      { project: "Nova", milestone: "small", position: 2 });
+  });
+
+  test("moving a milestone up sends the position above it", async () => {
+    const window = await loadSite("/project/Nova", { project: () => MILESTONED });
+    milestoneRows(window)[1]
+      .querySelectorAll(".project-milestone-move-btn")[0].click();
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(window.posted.at(-1).body,
+      { project: "Nova", milestone: "big", position: 1 });
+  });
+
+  test("the ends are disabled rather than absent", async () => {
+    const window = await loadSite("/project/Nova", { project: () => MILESTONED });
+    const rows = milestoneRows(window);
+    const buttons = (r) => [...r.querySelectorAll(".project-milestone-move-btn")];
+    assert.equal(buttons(rows[0]).length, 2);
+    assert.equal(buttons(rows[0])[0].disabled, true);
+    assert.equal(buttons(rows[0])[1].disabled, false);
+    assert.equal(buttons(rows[1])[0].disabled, false);
+    assert.equal(buttons(rows[1])[1].disabled, true);
+    assert.equal(buttons(rows[1])[0].getAttribute("aria-label"), "Move big up");
+  });
+
+  test("unpin appears only on a pinned milestone and sends zero", async () => {
+    const window = await loadSite("/project/Nova", { project: () => MILESTONED });
+    const rows = milestoneRows(window);
+    assert.equal(rows[0].querySelector(".project-milestone-unpin"), null);
+    rows[1].querySelector(".project-milestone-unpin").click();
+    await new Promise((r) => setTimeout(r, 0));
+    // `0` is legal on this route and illegal on `/api/project/order`: a
+    // milestone is pinned or it is not, and this is the way back.
+    assert.deepEqual(window.posted.at(-1).body,
+      { project: "Nova", milestone: "big", position: 0 });
+  });
+
+  test("a project with no grouped rows draws no milestone section", async () => {
+    const window = await loadSite("/project/Nova", { project: () => NOVA });
+    assert.equal(window.document.querySelector(".project-milestones"), null);
+  });
+
   test("the index chips only the projects that carry a rating", async () => {
     const window = await loadSite("/project/Nova", { project: () => RATED });
     const pills = [...window.document.querySelectorAll(".project-pill")];

@@ -107,6 +107,10 @@ def _backlog(monkeypatch, items):
     monkeypatch.setattr(nova_site, "comments_markdown", lambda: "")
     monkeypatch.setattr(nova_site, "project_priorities", dict)
     monkeypatch.setattr(nova_site, "plans_payload", lambda: {"documents": []})
+    # `milestones.md`, added when the project page grew the milestone list
+    # his pin acts on (idea #260, M4). No pins: these tests are about the
+    # backlog order, and a pin does not touch it.
+    monkeypatch.setattr(nova_site, "milestone_pins_markdown", lambda: "")
     return nova_site.project_payload("Nova")["backlog"]
 
 
@@ -168,5 +172,9 @@ def test_the_page_orders_the_real_payload_by_the_question_he_asked(monkeypatch):
     monkeypatch.setattr(nova_site, "comments_markdown", lambda: "")
     monkeypatch.setattr(nova_site, "project_priorities", dict)
     monkeypatch.setattr(nova_site, "plans_payload", lambda: {"documents": []})
+    # `milestones.md`, added when the project page grew the milestone list
+    # his pin acts on (idea #260, M4). No pins: these tests are about the
+    # backlog order, and a pin does not touch it.
+    monkeypatch.setattr(nova_site, "milestone_pins_markdown", lambda: "")
     backlog = nova_site.project_payload("Nova")["backlog"]
     assert [row["number"] for row in backlog] == [1, 2, 3]

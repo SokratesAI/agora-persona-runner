@@ -82,6 +82,11 @@ def _boards(monkeypatch):
     # about the regrouping, and the roadmap has its own block at the foot
     # of this file.
     monkeypatch.setattr(nova_site, "plans_payload", lambda: {"documents": []})
+    # `milestones.md` is the fifth live vault read, added when the project
+    # page grew the milestone list his pin acts on (idea #260, M4). No
+    # pins by default, which is the steady state -- a pin is an override,
+    # so an absent file means the computed order stands.
+    monkeypatch.setattr(nova_site, "milestone_pins_markdown", lambda: "")
 
 
 def test_index_lists_every_project_both_boards_name():
@@ -749,3 +754,68 @@ class TestIndexStandings:
         """The pills and the index list are drawn on the project page too."""
         payload = nova_site.project_payload("Agora")
         assert payload["projectSummary"]["agora"]["open"] == 1
+
+
+class TestProjectMilestones:
+    """The milestone list on the page, and the pins it draws.
+
+    Milestone M4 of idea #260. `nova_next.project_milestones` owns the
+    ordering and `test_project_milestones.py` holds it to that; these two
+    are about the wiring, which is where the same feature broke one layer
+    up last time -- cycle 1112 found `next_payload` computing the ranking
+    with no pins at all, so a pin moved the terminal ranking and left his
+    page on the old order. So the assertions here are that the payload
+    carries the list at all, and that a pin in `milestones.md` reaches it.
+    """
+
+    def _rows(self, monkeypatch):
+        rows = [
+            dict(_row(20, "Big", "⚪ Backlog", "backlog", "Nova"),
+                 size="XL", sizeKey="xl", milestone="big"),
+            dict(_row(21, "Small", "⚪ Backlog", "backlog", "Nova"),
+                 size="S", sizeKey="s", milestone="small"),
+        ]
+        monkeypatch.setattr(
+            nova_site, "board_payload",
+            lambda name: {"items": rows if name == "issues" else []})
+        return rows
+
+    def test_the_page_carries_its_projects_milestones(self, monkeypatch):
+        """Both groups are High; `small` is one point of work and `big` is
+        five, so the divide puts `small` first -- the same order the
+        picker takes them in."""
+        self._rows(monkeypatch)
+        payload = nova_site.project_payload("Nova")
+        assert [m["name"] for m in payload["milestones"]] == ["small", "big"]
+        assert [m["open"] for m in payload["milestones"]] == [1, 1]
+        assert [m["pin"] for m in payload["milestones"]] == [0, 0]
+
+    def test_a_pin_in_the_file_reaches_the_page(self, monkeypatch):
+        """The wiring that was missing one tier up. A pin the picker
+        obeys and the page does not is two answers to one question."""
+        self._rows(monkeypatch)
+        monkeypatch.setattr(
+            nova_site, "milestone_pins_markdown",
+            lambda: "| Project | Milestone | Position |\n"
+                    "|---|---|---|\n| Nova | big | 1 |\n")
+        payload = nova_site.project_payload("Nova")
+        assert [m["name"] for m in payload["milestones"]] == ["big", "small"]
+        assert [m["pin"] for m in payload["milestones"]] == [1, 0]
+
+    def test_the_index_does_not_pay_for_a_milestone_read(self, monkeypatch):
+        """`/projects` asks for no name and draws no milestone list, so
+        the vault read must not happen -- the fixture's stub would hide a
+        real one, so this asserts the call itself."""
+        self._rows(monkeypatch)
+        calls = []
+
+        def _counted():
+            calls.append(1)
+            return ""
+
+        monkeypatch.setattr(nova_site, "milestone_pins_markdown", _counted)
+        payload = nova_site.project_payload()
+        assert "milestones" not in payload
+        assert calls == []
+        nova_site.project_payload("Nova")
+        assert calls == [1]

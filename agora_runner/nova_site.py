@@ -250,13 +250,13 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
-from agora_runner.nova_next import next_payload, rank
+from agora_runner.nova_next import next_payload, project_milestones, rank
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
 from agora_runner.nova_push import store_subscription, vapid_key
 from agora_runner.nova_plan import plan_payload as shape_plan
 from agora_runner.nova_retro import retros_payload as shape_retros
 from agora_runner.nova_runtimes import attach_runtimes
-from agora_runner.nova_boards import BOARD_PATHS
+from agora_runner.nova_boards import BOARD_PATHS, parse_milestone_pins
 from agora_runner.nova_galaxy import galaxy_payload
 from agora_runner.nova_sources import (
     claims_ledger_json,
@@ -1785,6 +1785,23 @@ def project_payload(name=None):
     # build is the bug the board comment above describes, one page down.
     plan, _plan_body, _plan_etag = cached_payload("plan", plans_payload)
     result["roadmap"] = _project_roadmap(matched_rows, plan)
+    # The milestones this project's open rows are grouped into, in the
+    # order the picker uses -- milestone M4 of idea #260, and the list his
+    # pin is a pin *inside*. Built from every open row on both boards
+    # rather than from `matched_rows`, because `milestone_ranks` scores
+    # each milestone against all of them and `nova_next` owns the cut to
+    # one project; handing it a pre-filtered list would put half that rule
+    # here as well.
+    open_everywhere = [
+        item
+        for board in ("issues", "ideas")
+        for item in (boards[board].get("items") or [])
+        if not item.get("done")
+        and (item.get("statusKey") or "") not in _CLOSED_STATUS_KEYS
+    ]
+    result["milestones"] = project_milestones(
+        open_everywhere, matched or wanted,
+        parse_milestone_pins(milestone_pins_markdown()))
     return result
 
 

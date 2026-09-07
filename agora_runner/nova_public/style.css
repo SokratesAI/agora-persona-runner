@@ -4399,6 +4399,40 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 }
 
 .project-roadmap { margin: 16px 0; }
+/* This project's milestones, in picker order, with the buttons that pin
+   one (idea #260, M4). Deliberately the same shape as `.project-standing`
+   one section up rather than a new one: it is the same act -- moving an
+   item in an ordered list he owns -- one tier down, and two visual
+   languages for one gesture is a thing to learn twice. Same 44px targets
+   for the same reason: this is a phone control. */
+.project-milestones { margin: 4px 0 16px; }
+.project-milestones-head { font-size: 0.95rem; margin: 0 0 8px; }
+.project-milestone-rows { list-style: none; margin: 0; padding: 0; }
+.project-milestone { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.project-milestone:last-child { border-bottom: 0; }
+.project-milestone-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.project-milestone-name { font-weight: 600; }
+.project-milestone-counts { color: var(--dim); font-size: 0.85rem; margin-left: auto; }
+/* Said in words, never by the row's position alone: the number is the
+   pin he asked for, and a pin past the end of a shrinking list sits
+   somewhere else. */
+.project-milestone-pin {
+  font-size: 0.8rem;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.project-milestone-move { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
+.project-milestone-move-btn,
+.project-milestone-unpin {
+  min-width: 44px; min-height: 44px; border-radius: 8px;
+  border: 1px solid var(--line); background: transparent; color: var(--text);
+  font-size: 1rem; cursor: pointer;
+}
+.project-milestone-unpin { min-width: 0; padding: 0 12px; font-size: 0.85rem; }
+.project-milestone-move-btn:disabled { opacity: 0.3; cursor: default; }
+.project-milestone-move-note { color: var(--dim); font-size: 0.85rem; }
 .project-roadmap-head { font-size: 0.95rem; margin: 0 0 8px; }
 .project-roadmap-rows { list-style: none; margin: 0; padding: 0; }
 .project-roadmap-row {

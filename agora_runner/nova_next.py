@@ -878,3 +878,60 @@ def reserve_maintenance(projects, rows, cycle, every=MAINTENANCE_EVERY):
         + " and ".join(p.capitalize() for p in MAINTENANCE_PROJECTS)
         + f", ahead of the owner's project order. {len(queue)} row(s) are in "
         "that queue. Take the top row below; it is a maintenance row.")
+
+
+def project_milestones(rows, project, pins=None):
+    """One project's milestones, in the order `milestone_ranks` puts them.
+
+    The rendering half of milestone M4 of
+    `task-prioritization-redesign.md`. `milestone_ranks` above computes a
+    position for all 57 milestones across every project and applies his
+    pins to it; `tools.top_board_rows` and the picker read that map, and
+    until this function existed nothing drew it. So he could pin a
+    milestone -- `tools.milestone_pin`, or `POST /api/milestone/pin` --
+    without ever having seen the list he was pinning inside, which is a
+    control with no dial next to it.
+
+    The order comes straight out of `milestone_ranks`, filtered to this
+    project and sorted by the rank it assigned, so the page and the
+    picker can never disagree about where a milestone sits. Computing a
+    per-project order here instead would be the second answer to one
+    question that this repo keeps paying for.
+
+    `pin` is the 1-based position he pinned this milestone to, or `0` for
+    one he has never pinned -- the same `0`-means-unset the project order
+    uses in `projectPriority`, and the same `0` that `POST
+    /api/milestone/pin` accepts as "back to the computed order". A pin is
+    reported as he wrote it, not as it landed: `_apply_pins` clamps a pin
+    past the end of a shrinking list, and showing the clamped number
+    would quietly rewrite his file on the next press of a button that
+    echoes what the page displayed.
+
+    `name` is the spelling on the rows rather than the lowercased key,
+    because that is what he typed into the cell and what the board shows;
+    the first row that names it wins, the same rule `board_projects`
+    applies to a project name.
+    """
+    wanted = (project or "").strip().lower()
+    if not wanted:
+        return []
+    ranks = milestone_ranks(rows, pins)
+    spelling = {}
+    counts = {}
+    for row in rows or []:
+        name = (row.get("milestone") or "").strip()
+        if not name:
+            continue
+        if (row.get("project") or "").strip().lower() != wanted:
+            continue
+        key = (wanted, name.lower())
+        spelling.setdefault(key, name)
+        counts[key] = counts.get(key, 0) + 1
+    out = []
+    for key in sorted(spelling, key=lambda k: (ranks.get(k, len(ranks)), k)):
+        out.append({
+            "name": spelling[key],
+            "open": counts[key],
+            "pin": int((pins or {}).get(key) or 0),
+        })
+    return out
