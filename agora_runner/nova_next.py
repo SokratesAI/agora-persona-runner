@@ -385,9 +385,15 @@ def milestone_ranks(rows):
     not sizing things. Counting only what is known makes it a floor, which
     is the honest direction to be wrong in.
 
-    Every board is empty of milestones today, so this returns `{}` for the
-    live files and nothing reshuffles on the day it ships -- the same call
-    M1 and M3 made about their own fields.
+    This returned `{}` for the live files on the day it shipped, because
+    every board was ungrouped then and nothing reshuffled -- the same call
+    M1 and M3 made about their own fields. That is history now: cycles
+    1105, 1108 and 1109 grouped 199 of the 201 open rows across all
+    eleven projects -- the two left are Agora rows marked `Outdated`, on
+    which an estimate of remaining work would mean nothing -- so this
+    returns 57 milestones against the live boards (measured 2026-09-07)
+    and the tier is what orders them. A cycle reading the old sentence
+    would think the milestone tier was still inert.
     """
     best = {}
     for row in rows or []:
