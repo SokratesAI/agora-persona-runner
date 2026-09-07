@@ -11191,6 +11191,20 @@
    * A thought is text and is not clickable: it is the whole of what there is
    * to say, and a tap target that opens nothing is worse than none. A tool is
    * a button, because there is an input and an output behind it. */
+  /* A step's clock time, or "" when the server could not date it.
+   *
+   * Seconds are in it deliberately: two calls in the same minute is the
+   * ordinary case in a turn, and a list where six rows all read "14:22"
+   * answers nothing about their order or their spacing. */
+  function stepTime(at) {
+    if (!at) return "";
+    var ms = Date.parse(at);
+    if (isNaN(ms)) return "";
+    return new Date(ms).toLocaleTimeString(undefined, {
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+  }
+
   function stepRow(step, onOpen) {
     if (step.kind !== "tool") {
       var passage = el("div", "step-thought");
@@ -11205,6 +11219,13 @@
       row.appendChild(el("span", "step-tool-state step-tool-" + step.status,
         step.status === "failed" ? "failed" : "running"));
     }
+    /* When it ran -- his ask, 2026-09-07. Clock time only: every call in
+     * one drawer happened within a turn, so the date would be the same on
+     * every row and is what `fmtStamp` would spend half the width saying.
+     * A step the server could not date draws nothing rather than a
+     * plausible wrong time. */
+    var at = stepTime(step.at);
+    if (at) row.appendChild(el("span", "step-tool-at", at));
     row.addEventListener("click", function () { onOpen(step); });
     return row;
   }
@@ -11550,6 +11571,61 @@
     return Math.max(0, Math.round((Date.now() - started) / 1000));
   }
 
+  /* The loader, and the reason it is built here rather than left to CSS
+   * alone.
+   *
+   * His report, 2026-09-07: *"I want the planets to circle continuously
+   * around, not stopping midway and restarting at the top as they do now."*
+   * The keyframes were never the problem -- `0deg -> 360deg` linear is
+   * already seamless. The element's lifetime was: `renderAskThread` clears
+   * the thread and rebuilds every row on each poll, `ASK_POLL_MS` is 4000,
+   * and an orbit of 7s or 11s therefore never finished one. Every four
+   * seconds the node was thrown away and a new one started at the top,
+   * which is exactly the restart he was watching.
+   *
+   * So the phase is computed rather than owned by the element: a negative
+   * `animation-delay` starts a freshly built body at the angle it would
+   * have been at had it been turning since `ORBIT_EPOCH`. Two nodes built
+   * four seconds apart are then at the same angle to the millisecond, and
+   * there is no frame at which anything jumps -- the animation is
+   * continuous across a node that is not.
+   *
+   * The durations live here rather than in the stylesheet because the delay
+   * has to be taken modulo the period, and one of the two has to be the
+   * source. `animation-name` and the timing function stay in CSS, so the
+   * reduced-motion block's `animation: none` still wins -- inline duration
+   * and delay cannot reintroduce a name it has switched off.
+   *
+   * Inner faster than outer, at his ask, which is also the way real orbits
+   * go: a shorter radius is a shorter year. Same direction for both, for
+   * the same reason -- the two periods are unrelated enough that they drift
+   * apart on their own without being sent opposite ways. */
+  var ORBIT_EPOCH = Date.now();
+  var ORBIT_OUTER_SECONDS = 12;
+  var ORBIT_INNER_SECONDS = 4.5;
+  var ORBIT_PULSE_SECONDS = 3.4;
+
+  function orbitPhase(node, seconds) {
+    node.style.animationDuration = seconds + "s";
+    // Modulo the period, so the delay stays small however long the tab has
+    // been open -- a delay of minus four hours is legal and works, but it
+    // is not a number anything reading this element should have to hold.
+    var elapsed = ((Date.now() - ORBIT_EPOCH) / 1000) % seconds;
+    node.style.animationDelay = "-" + elapsed.toFixed(3) + "s";
+    return node;
+  }
+
+  function askOrbit() {
+    var orbit = el("div", "ask-orbit");
+    orbit.setAttribute("aria-hidden", "true");
+    orbit.appendChild(orbitPhase(el("span", "ask-orbit-core"), ORBIT_PULSE_SECONDS));
+    orbit.appendChild(orbitPhase(
+      el("span", "ask-orbit-body ask-orbit-body-a"), ORBIT_OUTER_SECONDS));
+    orbit.appendChild(orbitPhase(
+      el("span", "ask-orbit-body ask-orbit-body-b"), ORBIT_INNER_SECONDS));
+    return orbit;
+  }
+
   function askPending(progress) {
     var row = el("div", "ask-msg ask-theirs ask-pending");
     var secs = askPendingSeconds(progress && progress.askedAt);
@@ -11577,12 +11653,7 @@
        * orbiting it. CSS rather than a second canvas -- this sits in a
        * message bubble, it repaints on a four-second poll, and a canvas per
        * pending turn would be an animation frame loop with no off switch. */
-      var orbit = el("div", "ask-orbit");
-      orbit.setAttribute("aria-hidden", "true");
-      orbit.appendChild(el("span", "ask-orbit-core"));
-      orbit.appendChild(el("span", "ask-orbit-body ask-orbit-body-a"));
-      orbit.appendChild(el("span", "ask-orbit-body ask-orbit-body-b"));
-      row.appendChild(orbit);
+      row.appendChild(askOrbit());
     }
     return row;
   }

@@ -9816,6 +9816,53 @@ describe("the questions page", () => {
       "a clock was drawn for a turn with no start time");
   });
 
+  test("a rebuilt loader picks the orbit up where it left off", async () => {
+    /* The seam he reported, 2026-09-07: *"the planets... stopping midway
+     * and restarting at the top"*. The keyframes were always seamless --
+     * `0deg` to `360deg` linear is continuous by construction. What was not
+     * is the element: `renderAskThread` clears the thread and rebuilds
+     * every row on each poll, four seconds apart, so a 7s orbit was thrown
+     * away and restarted at the top before it had ever finished one.
+     *
+     * The fix is a negative `animation-delay` computed from a fixed epoch,
+     * so a body built later starts at the angle it would have reached. This
+     * asserts the delay exists, is negative, and MOVES between two builds
+     * -- a fixed delay would pass a "is it set" check while pinning every
+     * rebuild to the same angle, which is the bug wearing a hat. */
+    let timers;
+    const window = await loadAskDock({
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "q" }],
+        progress: { askedAt: new Date().toISOString(), steps: 0, latest: null },
+      }),
+      install: (win) => { timers = captureTimers(win); },
+    });
+    const delayOf = () => window.document
+      .querySelector(".ask-orbit-body-a").style.animationDelay;
+    const first = delayOf();
+    assert.match(first, /^-\d/, "no negative delay, so a rebuild restarts at the top");
+    assert.equal(window.document.querySelector(".ask-orbit-body-a").style.animationDuration,
+      "12s");
+    // The inner body is the faster one, which is his ask and also how
+    // orbits work: a shorter radius is a shorter year.
+    assert.equal(window.document.querySelector(".ask-orbit-body-b").style.animationDuration,
+      "4.5s");
+
+    /* The half that matters, and it has to be a real repaint rather than a
+     * second call to a helper: the bug was that the poll rebuilds the node,
+     * so the poll is what this drives. A fixed delay would satisfy the
+     * assertions above while still pinning every rebuild to the same angle,
+     * which is the bug wearing a hat. */
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await timers.fire();
+    const second = delayOf();
+    assert.match(second, /^-\d/);
+    assert.notEqual(second, first,
+      "the rebuilt loader started at the same angle, so the orbit still jumps");
+  });
+
   test("past twenty seconds the bubble puts a number on the wait", async () => {
     /* The clock is not deleted, only held back. His issue #143 -- "I have no
      * idea if it broke or if its working, so i might wait forever for no
@@ -15298,6 +15345,48 @@ describe("the thoughts-and-tools drawer", () => {
     assert.deepEqual(
       [...window.document.querySelectorAll(".step-tool-state")].map((n) => n.textContent),
       ["running", "failed"]);
+  });
+
+  test("every call says when it ran", async () => {
+    /* His ask, 2026-09-07. The server dates each step from the message it
+     * came off (`_steps` reads `ts` or `createdAt`, the same pair
+     * `visible_rows` reads); this is the half that draws it. Clock time
+     * with seconds, because two calls in the same minute is the ordinary
+     * case in a turn and six rows all reading "14:22" say nothing about
+     * their order. */
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, messages: [
+        { id: "2", sender: "Nova", text: "Done.", steps: [
+          { kind: "tool", capability: "Bash", input: "pytest", id: "a",
+            status: "done", at: "2026-09-07T14:22:05.000Z" },
+          { kind: "tool", capability: "Read", input: "/x", id: "b",
+            status: "done", at: "2026-09-07T14:22:41.000Z" },
+        ] },
+      ] },
+    });
+    click(window, lines(window)[0]);
+    const stamps = [...window.document.querySelectorAll(".step-tool-at")]
+      .map((n) => n.textContent);
+    assert.equal(stamps.length, 2, "not every call carried a time");
+    // Rendered in the reader's own zone, so the assertion is on the shape
+    // and on the two being different rather than on a literal.
+    stamps.forEach((t) => assert.match(t, /\d{1,2}:\d{2}:\d{2}/));
+    assert.notEqual(stamps[0], stamps[1]);
+  });
+
+  test("a call the server could not date draws no time at all", async () => {
+    /* Rather than a plausible wrong one. An undated step is a real case --
+     * Agora leaves the stamp off some rows -- and inventing "now" for it
+     * would put a time on the screen that never happened. */
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, messages: [
+        { id: "2", sender: "Nova", text: "Done.", steps: [
+          { kind: "tool", capability: "Bash", input: "pytest", id: "a", status: "done" },
+        ] },
+      ] },
+    });
+    click(window, lines(window)[0]);
+    assert.equal(window.document.querySelector(".step-tool-at"), null);
   });
 });
 

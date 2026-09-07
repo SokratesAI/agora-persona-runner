@@ -154,9 +154,22 @@ def _steps(pending, message):
         # still narration and is still dropped -- there is simply nothing in
         # it to put in the drawer.
         return
+    # When it happened. His ask, 2026-09-07: *"I want timestamps on every
+    # tool call that shows up."* Read the same way `visible_rows` reads a
+    # message's own stamp below -- Agora's `/messages` calls it `ts` and
+    # some rows carry `createdAt` instead, and a step with neither is
+    # dated "" rather than guessed at, which the page draws as no time
+    # rather than as a wrong one.
+    at = message.get("ts") or message.get("createdAt") or ""
     passage = narration_passage(message)
     if passage is not None:
-        pending.append({"kind": "thought", "text": passage})
+        step = {"kind": "thought", "text": passage}
+        # Only when there is one. An `at: ""` on every undated step is a key
+        # per step saying nothing, and the page reads a missing field and an
+        # empty one identically.
+        if at:
+            step["at"] = at
+        pending.append(step)
         return
     capability = (activity.get("capability") or "").strip()
     if not capability:
@@ -173,8 +186,16 @@ def _steps(pending, message):
                 if detail and not step["input"]:
                     step["input"] = detail
                 step["status"] = _step_status(activity)
+                # The stamp stays the one from the half that STARTED the
+                # call. The second half is when it returned, and a row
+                # that re-dated itself on completion would tell him when
+                # the call finished under a heading that says when things
+                # happened -- so a long call would appear to have started
+                # late. `endedAt` carries that instead.
+                if at:
+                    step["endedAt"] = at
                 return
-    pending.append({
+    step = {
         "kind": "tool",
         "capability": capability,
         # What the call was given. Named `input` rather than `detail`
@@ -182,7 +203,10 @@ def _steps(pending, message):
         "input": detail,
         "id": tool_use_id,
         "status": _step_status(activity),
-    })
+    }
+    if at:
+        step["at"] = at
+    pending.append(step)
 
 
 def visible_rows(messages):
