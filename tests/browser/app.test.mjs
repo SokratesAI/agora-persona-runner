@@ -5291,263 +5291,68 @@ describe("a notification tap opens the thread it names", () => {
  * the app understands. `/conversation/<id>` did not exist before this, and
  * a route the server serves but app.js does not read renders the journal --
  * which would look like the same bug he reported. */
-describe("the /conversation/<id> URL opens one thread", () => {
-  const TWO_CONVS = {
+describe("the conversation URL opens the dock, not a page of its own", () => {
+  /* Rewritten 2026-09-07. This block covered the Conversations page -- its
+   * own thread view, its own poller, its own model picker, its own scroll
+   * handling: a second, differently-shaped rendering of what the dock
+   * already showed. His ask: *"I only use that chat modal for the
+   * conversations, never the /chat page... lets cut the page with the
+   * conversations and only keep the modal."*
+   *
+   * `/conversation/<id>` deliberately still resolves. Notifications already
+   * delivered to his phone point at it, and a dead link in a notification
+   * is worse than a route that outlives its page -- it opens the dock on
+   * that thread and puts the address bar back to `/`. */
+  const ONE = {
     conversations: [
-      { id: "c-1", name: "Roofing", personaName: "Claude", tags: [],
+      { id: "c-1", name: "Roofing", personaName: "Claude",
+        model: "claude-cli:claude-sonnet-5", tags: [],
         updatedAt: "2026-08-25T20:00:00.000Z", cycleThread: false },
-      { id: "c-2", name: "Nova — Cycle 656", personaName: "Nova", tags: [],
-        updatedAt: "2026-08-25T19:00:00.000Z", cycleThread: true },
     ],
+    folders: [], models: [],
   };
-  const THREAD = { conversationId: "c-2", waiting: false, messages: [
-    { id: "m", sender: "Nova", text: "the entry is written" },
-  ] };
 
-  test("the thread is on screen, with no row tapped first", async () => {
-    const asked = [];
-    const window = await loadSite("/conversation/c-2", {
-      convList: TWO_CONVS,
-      convThread: (url) => { asked.push(url); return THREAD; },
+  test("it opens the dock on that thread and leaves the URL at the root", async () => {
+    const window = await loadSite("/conversation/c-1", {
+      convList: ONE,
+      convThread: () => ({ conversationId: "c-1", waiting: false,
+        messages: [{ id: "9", sender: "Claude", text: "Two coats." }] }),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.match(window.document.querySelector(".ask-text").textContent,
-      /the entry is written/);
-    assert.equal(asked.length, 1);
-    assert.match(asked[0], /id=c-2/);
-    // Not the listing: landing on the list is the failure he reported,
-    // one page over.
-    assert.equal(window.document.querySelectorAll(".conv-row").length, 0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(window.document.getElementById("chat-dock").hasAttribute("hidden"),
+      false, "the notification URL did not open the dock");
+    assert.equal(window.document.getElementById("chat-title").textContent, "Roofing");
+    assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
+      .map((n) => n.textContent), ["Two coats."]);
+    // Put back, so a reload or a back-button does not reopen the panel over
+    // whatever he navigated to afterwards.
+    assert.equal(window.location.pathname, "/");
   });
 
-  test("the thread is headed by its own name, read off the listing", async () => {
-    const window = await loadSite("/conversation/c-2", {
-      convList: TWO_CONVS, convThread: () => THREAD,
+  test("the feed still loads behind it rather than an empty page", async () => {
+    const window = await loadSite("/conversation/c-1", {
+      convList: ONE,
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(window.document.querySelector("#status .status-line").textContent,
-      "Nova — Cycle 656");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(window.document.querySelectorAll(".entry").length > 0,
+      "the journal did not load behind the dock");
   });
 
-  /* The one thing his 2026-09-01 capture is about: the messages must not
-   * wait on the name.
-   *
-   * `openConversationById` used to call `openConversation` from inside the
-   * listing's `.then`, so the thread fetch could not even start until the
-   * listing came back. Measured the same day against the live site from
-   * inside the cluster, so with no tailnet leg in it: `/api/conversations`
-   * answered in 0.62s, 0.84s and 1.19s over three reads while the shell and
-   * `app.js` answered in 3-5ms -- a whole serial round trip, spent on one
-   * string, in front of the message a push notification had just told him
-   * about.
-   *
-   * Holding the listing open forever is what makes the difference visible.
-   * On the old code nothing is on screen at all; there is no arrangement of
-   * fixture bodies that separates the two, because both orders end with the
-   * same page once both requests land. */
-  test("the messages render while the name lookup is still in flight", async () => {
-    let release;
-    const held = new Promise((resolve) => { release = resolve; });
-    const window = await loadSite("/conversation/c-2", {
-      convList: () => held.then(() => res(TWO_CONVS)),
-      convThread: () => THREAD,
+  test("no page-shaped thread view is drawn anywhere", async () => {
+    /* The Conversations page had its own composer and its own thread
+     * container outside the dock. Either one reappearing means the page
+     * came back under another name. */
+    const window = await loadSite("/conversation/c-1", {
+      convList: ONE,
+      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.match(window.document.querySelector(".ask-text").textContent,
-      /the entry is written/);
-    // Empty rather than absent: the heading is drawn straight away and the
-    // name drops into it, so nothing on the page moves when it arrives.
-    assert.equal(window.document.querySelector("#status .status-line").textContent, "");
-    release();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(window.document.querySelector("#status .status-line").textContent,
-      "Nova — Cycle 656");
-  });
-
-  /* He can back out and open another thread while the first listing is still
-   * in flight, and now that the answer arrives after the page is painted, a
-   * late one could relabel a thread it is not about. */
-  test("a late name lookup does not relabel the thread he moved to", async () => {
-    let release;
-    const held = new Promise((resolve) => { release = resolve; });
-    // Both opens hit the same URL, so the only thing that can tell them
-    // apart is the order they arrive in: c-2 asks first and is held, c-1
-    // asks second and answers straight away.
-    let asks = 0;
-    const window = await loadSite("/conversation/c-2", {
-      convList: () => (asks++ === 0 ? held.then(() => res(TWO_CONVS)) : res(TWO_CONVS)),
-      convThread: () => THREAD,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    // Land on a different thread, which names itself, and only then let
-    // c-2's listing answer.
-    window.history.pushState(null, "", "/conversation/c-1");
-    window.dispatchEvent(new window.Event("popstate"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(asks, 2, "the second open has to have asked, or the guard is never reached");
-    assert.equal(window.document.querySelector("#status .status-line").textContent,
-      "Roofing", "the second open names itself before the first one answers");
-    release();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(window.document.querySelector("#status .status-line").textContent,
-      "Roofing");
-  });
-
-  /* The name is a label and the messages are the thing he tapped for, so a
-   * listing that fails must not cost him the thread. */
-  test("a listing that fails still opens the thread", async () => {
-    const window = await loadSite("/conversation/c-2", {
-      convListStatus: 500, convList: TWO_CONVS, convThread: () => THREAD,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.match(window.document.querySelector(".ask-text").textContent,
-      /the entry is written/);
-  });
-
-  test("an id the listing does not carry still opens the thread", async () => {
-    const window = await loadSite("/conversation/c-9", {
-      convList: TWO_CONVS,
-      convThread: () => ({ conversationId: "c-9", waiting: false, messages: [
-        { id: "m", sender: "Nova", text: "still here" },
-      ] }),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.match(window.document.querySelector(".ask-text").textContent, /still here/);
-  });
-
-  /* The Chats listing this used to back out to is deleted. Beats is the
-   * only page left that lists threads, and it is a real destination on a
-   * cold load from a notification, which `history.back()` is not. */
-  test("backing out lands on Beats and leaves the deep link behind", async () => {
-    const window = await loadSite("/conversation/c-2", {
-      convList: TWO_CONVS, convThread: () => THREAD,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    click(window, window.document.querySelector(".conv-back"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    // Without this a reload from here drops him straight back into the
-    // thread he just backed out of.
-    assert.equal(window.location.pathname, "/heartbeats");
-    assert.equal(window.document.querySelectorAll(".conv-back").length, 0,
-      "the thread is still on screen under a Beats URL");
-  });
-
-  /* His `issues.md` #140: *"Chat auto-scrolls to the bottom every time a new
-   * message arrives even if I've scrolled up to reread something -- annoying,
-   * should only stick to bottom if I was already near it."* Cycle 568 fixed
-   * that in the chat dock and left this page alone, where the same repaint
-   * does something worse: `.ask-thread` carries no `overflow` in `style.css`,
-   * so here the *document* is the scroll container, emptying the container
-   * collapses it, and the browser clamps him to the top of the page.
-   *
-   * These need faked layout and would be worthless without it. jsdom runs no
-   * layout, so `documentElement.scrollHeight` is 0, `pageAtBottom` answers
-   * true at every offset, and a test written against the real numbers passes
-   * identically on the old code that restored nothing. This hands the
-   * document what a browser would have measured -- 2000px of page in the
-   * 768px viewport jsdom reports, so the bottom is offset 1232 -- and makes
-   * `window.scrollTo` move the offset the way a browser would. */
-  function scrollablePage(window, scrollHeight) {
-    const doc = window.document.documentElement;
-    Object.defineProperty(doc, "scrollHeight",
-      { configurable: true, get: () => scrollHeight });
-    const scrolls = [];
-    window.scrollTo = (x, y) => { scrolls.push(y); doc.scrollTop = y; };
-    return { doc, scrolls };
-  }
-
-  /** A thread one message longer on every poll, and never done, so a repaint
-   *  is guaranteed to have happened between two `fire()` calls. */
-  function growingConvThread() {
-    let turn = 0;
-    return () => {
-      turn += 1;
-      const messages = [{ id: "q", sender: "Edvard", text: "q" }];
-      for (let i = 0; i < turn; i += 1) {
-        messages.push({ id: "a" + i, sender: "Nova", text: "answer " + i });
-      }
-      return { conversationId: "c-2", waiting: true, messages };
-    };
-  }
-
-  const painted = (window) => window.document.querySelectorAll(".ask-text").length;
-
-  test("an answer arriving while he has scrolled up leaves him where he was", async () => {
-    let timers;
-    const window = await loadSite("/conversation/c-2", {
-      install: (win) => { timers = captureTimers(win); },
-      convList: TWO_CONVS, convThread: growingConvThread(),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const { doc, scrolls } = scrollablePage(window, 2000);
-    const before = painted(window);
-    doc.scrollTop = 450;
-    await timers.fire();
-    assert.ok(painted(window) > before,
-      "no new message was painted, so this test could not have failed");
-    /* The *call* is the assertion, not the resting offset. jsdom stores
-     * `scrollTop` as a plain number and never clamps it when the document
-     * shrinks, so emptying the container leaves 450 sitting there either way
-     * and a state-only check passes on code that restores nothing. A real
-     * browser does clamp, which is the whole bug. */
-    assert.deepEqual(scrolls, [450],
-      "the repaint did not put him back on the message he was rereading");
-    assert.equal(doc.scrollTop, 450);
-  });
-
-  test("an answer arriving while he is at the bottom still follows it down", async () => {
-    let timers;
-    const window = await loadSite("/conversation/c-2", {
-      install: (win) => { timers = captureTimers(win); },
-      convList: TWO_CONVS, convThread: growingConvThread(),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const { doc, scrolls } = scrollablePage(window, 2000);
-    const before = painted(window);
-    doc.scrollTop = 1232;
-    await timers.fire();
-    assert.ok(painted(window) > before,
-      "no new message was painted, so this test could not have failed");
-    assert.deepEqual(scrolls, [2000],
-      "the answer he was waiting for arrived off screen");
-    assert.equal(doc.scrollTop, 2000);
-  });
-
-  /* The direction that makes this page's bug worse than the dock's, and the
-   * one a fix that merely dropped the jump would have shipped. */
-  test("a poll does not throw him to the top of the page either", async () => {
-    let timers;
-    const window = await loadSite("/conversation/c-2", {
-      install: (win) => { timers = captureTimers(win); },
-      convList: TWO_CONVS, convThread: growingConvThread(),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const { doc, scrolls } = scrollablePage(window, 2000);
-    doc.scrollTop = 450;
-    await timers.fire();
-    assert.ok(scrolls.length, "the repaint scrolled him nowhere, so the browser's own clamp to the top of the collapsed page is what he is left with");
-    assert.notEqual(scrolls[scrolls.length - 1], 0, "the repaint put him at the top of the page");
-    assert.notEqual(doc.scrollTop, 0);
-  });
-
-  /* Half the ways in here are a tap on a push notification about the newest
-   * message, and the composer sits above the thread, so that message is at
-   * the very bottom of the document. This is also what makes the `follow`
-   * branch above reachable at all: open at the top and every later answer is
-   * correctly held there, forever. */
-  test("opening the thread lands on the newest message, not the oldest", async () => {
-    const scrolls = [];
-    const window = await loadSite("/conversation/c-2", {
-      install: (win) => { win.scrollTo = (x, y) => scrolls.push(y); },
-      convList: TWO_CONVS, convThread: () => THREAD,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(scrolls.length, "nothing scrolled the page at all");
-    // jsdom lays nothing out, so the value cannot be asserted -- what is
-    // checkable is that it asked for the bottom of the document rather than
-    // a fixed offset.
-    assert.equal(scrolls[scrolls.length - 1],
-      window.document.documentElement.scrollHeight);
+    assert.equal(window.document.querySelector("#feed .ask-thread"), null);
+    assert.equal(window.document.querySelector("#feed .ask-form"), null);
   });
 });
 
@@ -9973,7 +9778,19 @@ describe("the questions page", () => {
       }),
     });
     const pending = window.document.querySelector(".ask-pending");
-    assert.match(pending.querySelector(".ask-pending-step").textContent, /Your question is in/);
+    /* Before the first tool call the bubble draws the loader rather than a
+     * sentence (his ask, 2026-09-07). The old line said "Your question is
+     * in. No tool calls yet." -- two lines of text to say nothing has
+     * happened yet, which is what a loader says by existing. */
+    assert.ok(pending.querySelector(".ask-orbit"), "no loader while it waits");
+    assert.equal(pending.querySelector(".ask-pending-step"), null,
+      "the sentence the loader replaced is back");
+    /* No head at all this early: "Thinking…" is what the loader says by
+     * existing, and the clock is held back until twenty seconds (his ask,
+     * 2026-09-07). The fixture's `askedAt` is now, so this is the under-20s
+     * case; the over-20s one is the test below. */
+    assert.equal(pending.querySelector(".ask-pending-head"), null,
+      "the pending bubble is still narrating");
     // Nothing has run, so nothing claims a step count.
     assert.equal(pending.querySelector(".ask-pending-count"), null);
   });
@@ -9991,7 +9808,35 @@ describe("the questions page", () => {
     });
     const pending = window.document.querySelector(".ask-pending");
     assert.ok(pending);
-    assert.equal(pending.querySelector(".ask-pending-head").textContent, "Thinking\u2026");
+    /* With no `progress` there is no `askedAt`, so there is no honest number
+     * to show and the bubble is the loader alone -- which still answers the
+     * question the bubble exists for. */
+    assert.ok(pending.querySelector(".ask-orbit"), "no loader in the bubble");
+    assert.equal(pending.querySelector(".ask-pending-head"), null,
+      "a clock was drawn for a turn with no start time");
+  });
+
+  test("past twenty seconds the bubble puts a number on the wait", async () => {
+    /* The clock is not deleted, only held back. His issue #143 -- "I have no
+     * idea if it broke or if its working, so i might wait forever for no
+     * response" -- is about the long wait, which is exactly the case this
+     * still covers. */
+    const window = await loadAskDock({
+      ask: () => ({
+        conversationId: "c",
+        waiting: true,
+        messages: [{ id: "1", sender: "Edvard", text: "q" }],
+        progress: {
+          askedAt: new Date(Date.now() - 45000).toISOString(),
+          steps: 0, latest: null,
+        },
+      }),
+    });
+    const pending = window.document.querySelector(".ask-pending");
+    assert.match(pending.querySelector(".ask-pending-head").textContent, /^4[0-9]s$/);
+    // The word is gone; the loader is still what says it is alive.
+    assert.doesNotMatch(pending.textContent, /Thinking/);
+    assert.ok(pending.querySelector(".ask-orbit"));
   });
 
 
@@ -12380,59 +12225,6 @@ describe("unread replies are counted on the card and in the header", () => {
  * opens and what a Beats card opens. Deleting those with the listing would
  * have taken his chat down with a page he never opened.
  */
-describe("the chats page is gone and its thread view is not", () => {
-  const TWO = {
-    conversations: [
-      { id: "c-1", name: "Roofing", personaName: "Claude",
-        model: "claude-cli:claude-sonnet-5", tags: [],
-        updatedAt: "2026-08-25T20:00:00.000Z", cycleThread: false },
-      { id: "c-2", name: "Nova \u2014 Cycle 439", personaName: "Nova",
-        model: "claude-cli:claude-opus-5", tags: ["evolve-cycle:abc"],
-        updatedAt: "2026-08-25T19:00:00.000Z", cycleThread: true },
-    ],
-  };
-
-  test("the client no longer routes /conversations anywhere of its own", async () => {
-    const window = await loadSite("/conversations", { convList: TWO });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    // The listing, its rows and its new-conversation composer are all gone.
-    // A page that still drew any of them would be the Chats page under a
-    // different name.
-    assert.equal(window.document.querySelector(".conv-list"), null);
-    assert.equal(window.document.querySelectorAll(".conv-row").length, 0);
-    assert.equal(window.document.querySelector(".conv-new"), null);
-  });
-
-  test("no link anywhere in the app points at the deleted page", async () => {
-    const window = await loadSite("/", {});
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const hrefs = [...window.document.querySelectorAll("a[href]")]
-      .map((a) => a.getAttribute("href"));
-    assert.equal(hrefs.filter((h) => h === "/conversations").length, 0);
-    assert.equal(hrefs.filter((h) => (h || "").toLowerCase().includes("chat")).length, 0);
-  });
-
-  test("a thread opened by URL still sends into that conversation", async () => {
-    // This is the half that survives, and the id is the whole of it: a send
-    // that dropped it would post his message into whichever thread the
-    // server guessed at, and the screen would look like it had worked.
-    const window = await loadSite("/conversation/c-1", {
-      convList: TWO,
-      convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    window.document.querySelector(".ask-box").value = "  when is it done?  ";
-    window.document.querySelector(".ask-form").dispatchEvent(new window.Event("submit"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
-      [["/api/conversations/send",
-        { conversationId: "c-1", text: "when is it done?" }]]);
-    assert.ok(window.document.querySelector(".ask-pending"),
-      "nothing says an answer is coming");
-  });
-});
 
 /* The heartbeats page.
  *
@@ -12508,14 +12300,22 @@ describe("the heartbeats page", () => {
    * without moving the URL the thread paints once and never refreshes.
    * `/conversations` was that URL until the Chats page was deleted;
    * `/conversation/<id>` is the one that also survives a reload. */
-  test("opening a heartbeat's thread moves to that thread's own URL", async () => {
+  test("opening a heartbeat's thread opens the dock over this page", async () => {
+    /* It used to navigate to `/conversation/<id>`, which was the
+     * Conversations page. That page is deleted (2026-09-07) and the dock is
+     * the only thread view, so the page he is on stays where it is and the
+     * panel opens over it -- the same thing every other way into a thread
+     * now does. */
     const window = await loadSite("/heartbeats", {
       hbList: TWO,
+      convList: { conversations: [], folders: [], models: [] },
       convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
     });
     const rows = [...window.document.querySelectorAll(".hb-row")];
     click(window, [...rows[0].querySelectorAll(".hb-btn")].find((b) => b.textContent === "Open thread"));
-    assert.equal(window.location.pathname, "/conversation/c-1");
+    assert.equal(window.location.pathname, "/heartbeats", "it navigated away");
+    assert.equal(window.document.getElementById("chat-dock").hasAttribute("hidden"),
+      false, "the dock did not open");
     // A heartbeat with no conversation has nothing to open.
     assert.equal([...rows[1].querySelectorAll(".hb-btn")].some((b) => b.textContent === "Open thread"), false);
   });
@@ -12606,14 +12406,17 @@ describe("the heartbeats page", () => {
     assert.doesNotMatch(window.document.querySelector("#status").textContent, /Current thread/);
   });
 
-  test("opening one from the drawer moves to that thread's own URL", async () => {
+  test("opening one from the drawer opens the dock too", async () => {
     const window = await loadSite("/heartbeats", {
       hbList: WITH_THREADS,
+      convList: { conversations: [], folders: [], models: [] },
       convThread: () => ({ conversationId: "c-0", waiting: false, messages: [] }),
     });
     const older = [...window.document.querySelectorAll(".hb-thread")][1];
     click(window, older);
-    assert.equal(window.location.pathname, "/conversation/c-0");
+    assert.equal(window.location.pathname, "/heartbeats", "it navigated away");
+    assert.equal(window.document.getElementById("chat-dock").hasAttribute("hidden"),
+      false, "the dock did not open");
   });
 });
 
@@ -12752,11 +12555,16 @@ describe("the chat dock's conversation switcher", () => {
     return window;
   }
 
-  test("the hamburger lists Ask Nova plus every other thread, and the ask thread only once", async () => {
+  test("the hamburger lists every thread, and the ask thread not at all", async () => {
+    /* "Ask Nova" was removed from the switcher on 2026-09-07 at his ask. It
+     * was the last pointer at the legacy single thread the deleted `/ask`
+     * page owned, drawn above every real conversation as if it were the
+     * first of them. `kind: "ask"` still works everywhere else -- a device
+     * that remembers it still opens on it -- it is just not offered here. */
     const window = await openSwitcher();
     const names = [...window.document.querySelectorAll("#chat-list .chat-list-name")]
       .map((n) => n.textContent);
-    assert.deepEqual(names, ["Ask Nova", "Roofing"]);
+    assert.deepEqual(names, ["Roofing"]);
     assert.equal(window.document.getElementById("chat-list").hasAttribute("hidden"), false);
     assert.equal(window.document.getElementById("chat-menu").getAttribute("aria-expanded"), "true");
     // The list takes the thread's place; the composer must not be typeable
@@ -12793,7 +12601,7 @@ describe("the chat dock's conversation switcher", () => {
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .chat-list-name")]
         .map((n) => n.textContent),
-      ["Ask Nova", "Roofing"],
+      ["Roofing"],
       "the second open blanked the list while its refresh was in flight");
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .empty")]
@@ -12809,7 +12617,7 @@ describe("the chat dock's conversation switcher", () => {
         .map((n) => n.textContent), ["loading\u2026"]);
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .chat-list-name")]
-        .map((n) => n.textContent), ["Ask Nova"]);
+        .map((n) => n.textContent), []);
   });
 
   test("the refresh behind the old list still repaints it", async () => {
@@ -12831,7 +12639,7 @@ describe("the chat dock's conversation switcher", () => {
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .chat-list-name")]
         .map((n) => n.textContent),
-      ["Ask Nova", "Gutters"],
+      ["Gutters"],
       "the refresh answered and the switcher kept showing the old rows");
   });
 
@@ -12853,7 +12661,7 @@ describe("the chat dock's conversation switcher", () => {
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .chat-list-name")]
         .map((n) => n.textContent),
-      ["Ask Nova", "Roofing"]);
+      ["Roofing"]);
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .empty")]
         .map((n) => n.textContent), []);
@@ -12872,8 +12680,8 @@ describe("the chat dock's conversation switcher", () => {
     // never rendered the row, because `[...][1]` of an empty list is
     // undefined and the tap would throw rather than assert.
     const rows = [...window.document.querySelectorAll("#chat-list .chat-list-row")];
-    assert.equal(rows.length, 2, "the switcher did not render the conversation row");
-    rows[1].dispatchEvent(new window.Event("click"));
+    assert.equal(rows.length, 1, "the switcher did not render the conversation row");
+    rows[0].dispatchEvent(new window.Event("click"));
     await tick();
     assert.deepEqual(asked, ["/api/conversations/thread?id=c-1&limit=40"]);
     assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
@@ -12887,7 +12695,7 @@ describe("the chat dock's conversation switcher", () => {
     const window = await openSwitcher({
       convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
     });
-    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][0]
       .dispatchEvent(new window.Event("click"));
     await tick();
     window.document.getElementById("chat-box").value = "when can you start?";
@@ -12932,7 +12740,7 @@ describe("the chat dock's conversation switcher", () => {
     const window = await openSwitcher({
       convThread: () => ({ conversationId: "c-1", waiting: false, messages: [] }),
     });
-    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][0]
       .dispatchEvent(new window.Event("click"));
     await tick();
     assert.deepEqual(JSON.parse(window.localStorage.getItem("nova.chatSource.v1")),
@@ -12955,9 +12763,10 @@ describe("the chat dock's conversation switcher", () => {
     const window = await openSwitcher({ convStatus: 500 });
     assert.match(window.document.querySelector("#chat-list .empty").textContent,
       /Could not load your conversations/);
-    // Ask Nova is drawn locally, so it must still be there to go back to.
+    // Nothing else is drawn: the failure line is the whole list now that
+    // the locally-drawn ask row is gone.
     assert.deepEqual([...window.document.querySelectorAll("#chat-list .chat-list-name")]
-      .map((n) => n.textContent), ["Ask Nova"]);
+      .map((n) => n.textContent), []);
   });
 });
 
@@ -13033,11 +12842,8 @@ describe("the chat dock folds the heartbeat threads away", () => {
         rows: ["Nova — Cycle 471", "Nova — Cycle 470"] },
       { name: "Conversations", count: "1", open: true, rows: ["Roofing"] },
     ]);
-    // Ask Nova stays pinned above both folds rather than falling into one.
     // The first child of the list is the "new conversation" control, which
     // is deliberately not a `.chat-list-row` -- the rows are the threads.
-    const first = window.document.querySelector("#chat-list .chat-list-row");
-    assert.equal(first.querySelector(".chat-list-name").textContent, "Ask Nova");
     assert.equal(window.document.querySelector("#chat-list > *").className,
       "chat-list-fab", "the new-conversation control is not above the list");
   });
@@ -13375,7 +13181,7 @@ describe("holding a conversation in the switcher opens edit options", () => {
     assert.equal(calls, 2, "saving the rename did not refresh the list");
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .chat-list-name")]
-        .map((n) => n.textContent), ["Ask Nova"],
+        .map((n) => n.textContent), [],
       "the switcher repainted its cached rows over a rename he had just made");
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .empty")]
@@ -13441,13 +13247,13 @@ describe("holding a conversation in the switcher opens edit options", () => {
     assert.equal(calls, 3);
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .chat-list-name")]
-        .map((n) => n.textContent), ["Ask Nova", "Gutters"]);
+        .map((n) => n.textContent), ["Gutters"]);
     // The second open's listing finally answers, stale.
     settleSecond(res(LIST));
     await tick();
     assert.deepEqual(
       [...window.document.querySelectorAll("#chat-list .chat-list-name")]
-        .map((n) => n.textContent), ["Ask Nova", "Gutters"],
+        .map((n) => n.textContent), ["Gutters"],
       "an older listing landed last and repainted the switcher with it");
   });
 });
@@ -13782,7 +13588,7 @@ describe("the chat dock paints the thread it last read", () => {
     await tick();
     tap(window, "chat-menu");
     await tick();
-    [...window.document.querySelectorAll("#chat-list .chat-list-row")][1]
+    [...window.document.querySelectorAll("#chat-list .chat-list-row")][0]
       .dispatchEvent(new window.Event("click"));
     await tick();
   }
@@ -16098,22 +15904,6 @@ describe("the model picker on a thread", () => {
         "the previous thread's options were still selectable");
     });
 
-  test("the conversation page draws its own picker, for the thread in the URL", async () => {
-    const asked = [];
-    const window = await loadSite("/conversation/c-9", {
-      convThread: () => ({ conversationId: "c-9", waiting: false, messages: [] }),
-      convList: { conversations: [], folders: [], models: [] },
-      convModel: (url) => {
-        asked.push(url);
-        return { model: "anthropic:claude-opus-5", models: CATALOG, found: true };
-      },
-    });
-    await tick();
-    assert.deepEqual(asked, ["/api/conversations/model?id=c-9"]);
-    const pick = window.document.querySelector("#feed .model-pick");
-    assert.ok(pick, "the conversation page drew no picker");
-    assert.equal(pick.value, "anthropic:claude-opus-5");
-  });
 });
 
 

@@ -241,7 +241,10 @@ def test_attach_button_is_wired_into_every_composer():
     # The definition matches `buildAttach(` too, so it is subtracted rather
     # than pattern-dodged -- this counts call sites, and there are five.
     calls = source.count("buildAttach(") - source.count("function buildAttach(")
-    assert calls == 5, f"expected every composer to build one, found {calls}"
+    # Four, not five: the Conversations page's composer went with the page on
+    # 2026-09-07 (his ask -- the dock is the only thread view now). The dock's
+    # own is the one he uses for a conversation.
+    assert calls == 4, f"expected every composer to build one, found {calls}"
 
     # Defined once, and the returned button actually reaches the DOM.
     assert source.count("function buildAttach(") == 1

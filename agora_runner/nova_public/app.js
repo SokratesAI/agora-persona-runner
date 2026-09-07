@@ -10803,7 +10803,10 @@
    * to a poll interval and the tap reads as having done nothing. */
   function askPaintSent(container, text) {
     container.appendChild(askMessage({ sender: "Edvard", text: text }));
-    container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
+    // The same loader the poll's own bubble draws, rather than a second way
+    // of saying the same thing -- this is the one he sees first, in the
+    // moment between the tap and the first poll.
+    container.appendChild(askPending(null));
   }
 
   /* --- The work behind an answer, as one line and a drawer ---------------
@@ -11009,6 +11012,29 @@
    *   enabled()   optional; false means the handles do nothing, which is
    *               how the chat dock stays a fixed panel on a wide screen.
    */
+  /* `dvh`, not `vh`, for anything sized against the screen here.
+   *
+   * His report, 2026-09-07: the chat drawer went full height in the browser
+   * and stopped short of the top in the installed PWA. `vh` is the *largest*
+   * viewport -- the one with the URL bar scrolled away -- so in a browser a
+   * 92vh drawer is taller than the visible area and reads as full height,
+   * while in a PWA (where the viewport already is the screen, and nothing is
+   * hiding) the same 92% leaves a visible strip of page above it. `dvh`
+   * tracks the viewport that is actually on screen, so one number means the
+   * same thing in both.
+   *
+   * Feature-detected rather than assumed: an engine without `dvh` gets the
+   * old behaviour instead of a height it cannot parse, which would leave the
+   * drawer with no height at all. */
+  var SHEET_UNIT = (function () {
+    try {
+      if (window.CSS && window.CSS.supports && window.CSS.supports("height", "1dvh")) {
+        return "dvh";
+      }
+    } catch (err) { /* fall through */ }
+    return "vh";
+  }());
+
   function dragSheet(handles, spec) {
     var from = 0;
     var startVh = 0;
@@ -11025,7 +11051,7 @@
       if (!node) return spec.openVh;
       var floor = floorVh === undefined ? spec.minVh : floorVh;
       var clamped = Math.max(floor, Math.min(spec.maxVh, vh));
-      node.style.height = clamped + "vh";
+      node.style.height = clamped + SHEET_UNIT;
       return clamped;
     }
 
@@ -11114,7 +11140,7 @@
   function setStepSheetHeight(vh, floorVh) {
     var floor = floorVh === undefined ? STEP_SHEET_MIN_VH : floorVh;
     var clamped = Math.max(floor, Math.min(STEP_SHEET_MAX_VH, vh));
-    stepSheet.style.height = clamped + "vh";
+    stepSheet.style.height = clamped + SHEET_UNIT;
     return clamped;
   }
 
@@ -11502,11 +11528,35 @@
     return Math.floor(secs / 60) + "m " + (secs % 60) + "s";
   }
 
+  /* How long a turn runs before the bubble puts a number on it.
+   *
+   * His ask, 2026-09-07: *"the 'thinking' text can also go. Only the loading
+   * css can be there and if it has run for more than 20 seconds maybe the
+   * counter can show."*
+   *
+   * The word "Thinking…" said what the loader now says by existing. The
+   * clock is different: it is there because of his issue #143 -- *"I have no
+   * idea if it broke or if its working, so i might wait forever for no
+   * response"* -- so it is not deleted, it is held back until the wait is
+   * long enough to be the thing he is actually asking about. Under twenty
+   * seconds an answer is simply on its way; past it, a number is the
+   * difference between waiting and wondering. */
+  var PENDING_CLOCK_AFTER_SECONDS = 20;
+
+  function askPendingSeconds(askedAt) {
+    if (!askedAt) return null;
+    var started = Date.parse(askedAt);
+    if (isNaN(started)) return null;
+    return Math.max(0, Math.round((Date.now() - started) / 1000));
+  }
+
   function askPending(progress) {
     var row = el("div", "ask-msg ask-theirs ask-pending");
-    var elapsed = askElapsed(progress && progress.askedAt);
-    row.appendChild(el("div", "ask-pending-head",
-      elapsed ? "Thinking… · " + elapsed : "Thinking…"));
+    var secs = askPendingSeconds(progress && progress.askedAt);
+    if (secs !== null && secs >= PENDING_CLOCK_AFTER_SECONDS) {
+      row.appendChild(el("div", "ask-pending-head",
+        askElapsed(progress.askedAt)));
+    }
     var latest = progress && progress.latest;
     if (latest) {
       var step = el("div", "ask-pending-step");
@@ -11517,7 +11567,22 @@
         row.appendChild(el("div", "ask-pending-count", progress.steps + " steps so far"));
       }
     } else {
-      row.appendChild(el("div", "ask-pending-step", "Your question is in. No tool calls yet."));
+      /* Before the first tool call there is nothing true to say about what
+       * it is doing, and the sentence that used to sit here -- "Your
+       * question is in. No tool calls yet." -- spent two lines saying that.
+       * His ask, 2026-09-07: a loader instead, in the galaxy's language.
+       *
+       * The same thing `/galaxy` draws, in miniature: a violet-white core
+       * that pulses because the loop is running either way, and two bodies
+       * orbiting it. CSS rather than a second canvas -- this sits in a
+       * message bubble, it repaints on a four-second poll, and a canvas per
+       * pending turn would be an animation frame loop with no off switch. */
+      var orbit = el("div", "ask-orbit");
+      orbit.setAttribute("aria-hidden", "true");
+      orbit.appendChild(el("span", "ask-orbit-core"));
+      orbit.appendChild(el("span", "ask-orbit-body ask-orbit-body-a"));
+      orbit.appendChild(el("span", "ask-orbit-body ask-orbit-body-b"));
+      row.appendChild(orbit);
     }
     return row;
   }
@@ -11831,275 +11896,18 @@
     if (payload.waiting) container.appendChild(askPending(payload.progress));
   }
 
-  /* The Conversations page.
+  /* The Conversations page is gone -- his ask, 2026-09-07: *"I only use
+   * that chat modal for the conversations, never the /chat page. So
+   * actually, lets cut the /ask page or whatever the path is for the page
+   * with the conversations and only keep the modal."*
    *
-   * His capture, `ideas.md` 2026-08-25: *"its basicly a chat app with
-   * multiple conversations history and i can start new ones etc."* The
-   * chat dock in the corner talks to one thread; this is every thread.
-   *
-   * Two views on one route rather than two routes, and `convOpenId` is
-   * what says which. A conversation id in the URL would be a nicer link,
-   * but it would also mean `PAGE_ROUTE_PREFIXES` grows a second member and
-   * the server starts pattern-matching a uuid -- and nothing links at a
-   * single thread yet, so that is machinery with no reader. If something
-   * ever does link at one, this is the place it changes.
-   */
-  var convOpenId = null;
-  var convOpenName = "";
-  /* The container `openConversation` painted the messages into.
-   *
-   * Held so that something outside the page can ask for a repaint -- which
-   * today is exactly one caller, the service worker telling us the thread it
-   * prefetched for a notification has moved since. `convOpenId` alone is not
-   * enough: every repaint path here also needs the element, and rebuilding
-   * the page instead would throw away his scroll position and anything he
-   * had half-typed into the composer.
-   */
-  var convOpenThread = null;
+   * `/conversation/<id>` still resolves, because notifications already
+   * delivered to his phone point at it and a dead link in a notification is
+   * worse than a redundant route. It opens the dock now (see the router)
+   * rather than a second, differently-shaped rendering of the same thread.
+   * `renderConvThread`, `openConversation`, `pollConv` and the rest went
+   * with the page; the dock's own versions were always the ones he used. */
 
-  function renderConvThread(container, payload, afterSend) {
-    container.textContent = "";
-    var messages = payload.messages || [];
-    if (!messages.length) {
-      container.appendChild(el("p", "empty", "Nothing said here yet."));
-      return;
-    }
-    askPaintThread(container, payload, afterSend);
-    if (payload.waiting) container.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
-  }
-
-  /* Poll one conversation for an answer that is still being written.
-   *
-   * The route guard lives in the `.then` and nowhere else. An earlier
-   * version checked in the timer body too, and a mutation pass showed the
-   * pair could not both be tested: removing either one alone left the
-   * other covering it, so both mutations passed and the navigation test
-   * pinned nothing. The `.then` is the copy that has to stay -- it is what
-   * catches a fetch still in flight when the owner taps another tab.
-   *
-   * The extra guard here is `convOpenId` --
-   * he can tap back to the list and open a different thread without the
-   * route changing, and a poll from the old thread must not paint over
-   * the new one. */
-  /* The conversation page's repaint after a message goes out, shared by the
-   * composer's own path and the Ask-again button so the two cannot drift. */
-  function convAfterSend(container, id) {
-    return function (text) {
-      askPaintSent(container, text);
-      scrollPageToBottom();
-      pollConv(container, id, 0);
-    };
-  }
-
-  /* Repaint an open thread from a payload, keeping him where he was reading.
-   *
-   * Extracted from `pollConv` because the service worker can now ask for the
-   * same repaint (see the `message` listener at the bottom of this file), and
-   * a second copy of the scroll handling is a second place for it to be got
-   * wrong. Returns whether it actually painted, which is what lets the poll
-   * tell "the answer moved on" from "he has navigated away".
-   *
-   * Both measurements are taken **before** the repaint and neither can be
-   * taken after it: `renderConvThread` empties the container, which collapses
-   * the document, and the browser clamps the scroll offset to the shorter
-   * page. So by the time the messages are back he is somewhere near the top
-   * and there is nothing left to read.
-   *
-   * His capture, `issues.md` #140: *"Chat auto-scrolls to the bottom every
-   * time a new message arrives even if I've scrolled up to reread
-   * something."* Cycle 568 fixed that in the chat dock and this page was
-   * never touched, where it is worse rather than the same -- the dock jumped
-   * him to the newest message, this threw him to the oldest one.
-   */
-  function repaintConvThread(container, conversationId, payload) {
-    if (route(window.location.pathname).view !== "conversations") return false;
-    if (convOpenId !== conversationId) return false;
-    var follow = pageAtBottom();
-    var was = pageScrollTop();
-    renderConvThread(container, payload, convAfterSend(container, conversationId));
-    if (follow) scrollPageToBottom();
-    else window.scrollTo(0, was);
-    return true;
-  }
-
-  function pollConv(container, conversationId, attempts) {
-    if (attempts >= ASK_POLL_MAX) return;
-    livePolls.push(setTimeout(function () {
-      fetchPage("/api/conversations/thread?id=" + encodeURIComponent(conversationId))
-        .then(function (payload) {
-          if (!repaintConvThread(container, conversationId, payload)) return;
-          if (payload.waiting) pollConv(container, conversationId, attempts + 1);
-        })
-        .catch(function () { pollConv(container, conversationId, attempts + 1); });
-    }, ASK_POLL_MS));
-  }
-
-  function openConversation(id, name) {
-    convOpenId = id;
-    convOpenName = name || "";
-    stopPolling();
-    markNav();
-    statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
-    statusEl.appendChild(el("p", "status-line", convOpenName));
-    feed.textContent = "";
-
-    var back = el("button", "conv-back", "← Beats");
-    back.setAttribute("type", "button");
-    back.addEventListener("click", function () {
-      convOpenId = null;
-      // The URL moves too, or a reload from here re-opens the thread he
-      // just backed out of. Beats rather than a listing: the Chats page is
-      // deleted (his capture, *"Delete the chats page entirely -- never use
-      // it"*), and the heartbeat cards are the only place left in this app
-      // that lists threads. `history.back()` is not the answer -- half the
-      // ways in here are a cold load from a push notification, where there
-      // is no back entry to return to.
-      history.pushState(null, "", "/heartbeats");
-      load();
-    });
-    feed.appendChild(back);
-    // The page knows its own id up front, unlike the dock's Ask row, so this
-    // goes out beside the thread fetch rather than after it -- the heading's
-    // reason, one screen up: nothing he came here to read waits on it.
-    var modelHost = el("div", "model-pick-host");
-    feed.appendChild(modelHost);
-    paintModelPicker(modelHost, id);
-
-    var thread = el("div", "ask-thread");
-    convOpenThread = thread;
-    var form = el("form", "ask-form");
-    var box = el("textarea", "ask-box");
-    box.setAttribute("rows", "3");
-    box.setAttribute("placeholder", "Say something…");
-    box.setAttribute("aria-label", "Your message");
-    var send = el("button", "ask-send", "Send");
-    send.setAttribute("type", "submit");
-    var status = el("p", "ask-status");
-    var uploading = false;
-    var sending = false;
-    function syncSend() { send.disabled = uploading || sending; }
-    var attach = buildAttach({
-      onBusy: function (isBusy) { uploading = isBusy; syncSend(); },
-      onStatus: function (text) { status.textContent = text; },
-    });
-    form.appendChild(box);
-    form.appendChild(attach.tray);
-    form.appendChild(attach.input);
-    form.appendChild(attach.button);
-    form.appendChild(send);
-    form.appendChild(status);
-    feed.appendChild(form);
-    feed.appendChild(thread);
-
-    thread.appendChild(el("p", "empty", "loading…"));
-    fetchPage("/api/conversations/thread?id=" + encodeURIComponent(id))
-      .then(function (payload) {
-        if (convOpenId !== id) return;
-        renderConvThread(thread, payload, convAfterSend(thread, id));
-        /* The composer is above the thread on this page, so the newest
-         * message is at the very bottom of the document. Half the ways in
-         * here are a tap on a push notification about that message, and
-         * without this the page opens on the oldest one instead. It is also
-         * what makes the poll's `follow` branch reachable at all: land at
-         * the top and every later answer is correctly held there. */
-        scrollPageToBottom();
-        if (payload.waiting) pollConv(thread, id, 0);
-      })
-      .catch(function (err) {
-        if (convOpenId !== id) return;
-        thread.textContent = "";
-        thread.appendChild(el("p", "empty", "Could not load this conversation: " + err));
-      });
-
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      var text = box.value.trim();
-      if (!text && !attach.count()) return;
-      var body = [text, attach.markdown()].filter(Boolean).join("\n\n");
-      sending = true;
-      syncSend();
-      status.textContent = "sending…";
-      fetch("/api/conversations/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: id, text: body }),
-      })
-        .then(function (r) { return r.json().catch(function () { return {}; }); })
-        .then(function (result) {
-          if (!result || !result.ok) throw new Error((result && (result.message || result.error)) || "failed");
-          box.value = "";
-          attach.clear();
-          status.textContent = "";
-          sending = false;
-          syncSend();
-          // Paint it immediately: the send is the one moment the page knows
-          // something happened, and four seconds of a box that has gone
-          // blank reads as a lost message.
-          thread.appendChild(askMessage({ sender: "Edvard", text: body }));
-          thread.appendChild(el("div", "ask-msg ask-theirs ask-pending", "Thinking…"));
-          // Sending is him asking to be at the bottom, whatever he was
-          // rereading a second ago -- the same call the dock makes, and
-          // without it his own message lands below the fold of a long
-          // thread and the answer to it lands further below that.
-          scrollPageToBottom();
-          pollConv(thread, id, 0);
-        })
-        .catch(function (err) {
-          sending = false;
-          syncSend();
-          status.textContent = "could not send: " + err.message;
-        });
-    });
-  }
-
-  /* The thread's heading, filled in after its messages rather than before.
-   *
-   * Guarded on `convOpenId` and not on the URL because he can back out and
-   * open a different thread while the listing is still in flight, and a late
-   * answer must not relabel the one he is looking at now. `convOpenId` is
-   * set synchronously by `openConversation`, so it is already correct by the
-   * time any of these promises resolve.
-   */
-  function setConvName(id, name) {
-    if (convOpenId !== id) return;
-    convOpenName = name;
-    var line = statusEl.querySelector(".status-line");
-    if (line) line.textContent = name;
-  }
-
-  /* Open one thread straight from a URL, with no listing tapped first.
-   *
-   * The thread endpoint answers with messages and no name, and the name is
-   * the line above them, so it is resolved from the listing. That lookup
-   * used to be *in front of* the thread fetch -- `openConversation` was
-   * called from inside the listing's `.then` -- so the message he tapped a
-   * notification to read waited on a whole extra round trip for one string.
-   *
-   * Measured 2026-09-01 against the live site from inside the cluster, so
-   * with no tailnet leg in the numbers: `/api/conversations` answered in
-   * 0.62s, 0.84s and 1.19s over three reads, while `/`, `/app.js` and
-   * `/style.css` each answered in 3-6ms and the thread itself in 0.17-0.40s.
-   * On the one path a push notification opens, the name lookup was the
-   * largest single thing on the critical path and every millisecond of it
-   * was spent before the thread fetch was allowed to start.
-   *
-   * So both go out together and the heading fills in behind the messages.
-   * A failed lookup still opens the thread, which was already true here and
-   * is now true by construction rather than by a `catch` branch: a missing
-   * label is worth far less than the message.
-   */
-  function openConversationById(id) {
-    openConversation(id, "");
-    fetchPage("/api/conversations")
-      .then(function (payload) {
-        var rows = payload.conversations || [];
-        for (var i = 0; i < rows.length; i++) {
-          if (rows[i].id === id) return setConvName(id, rows[i].name || "");
-        }
-      })
-      .catch(function () { /* the thread is already on screen */ });
-  }
 
   /* The Heartbeats page.
    *
@@ -12264,14 +12072,11 @@
         var open = el("button", "hb-btn", "Open thread");
         open.setAttribute("type", "button");
         open.addEventListener("click", function () {
-          // The URL has to move first. `openConversation` renders into the
-          // same feed either way, but its poller guards on
-          // `route(location.pathname).view === "conversations"`, so opened
-          // from `/heartbeats` the thread would paint once and never
-          // refresh. `/conversations` was that URL until the Chats page was
-          // deleted; `/conversation/<id>` is the one that survives a reload.
-          history.pushState(null, "", "/conversation/" + encodeURIComponent(row.conversationId));
-          openConversation(row.conversationId, row.name);
+          // Into the dock, which is the only thread view now (2026-09-07).
+          // No `pushState`: the page he is on stays where it is and the
+          // panel opens over it, which is what every other way into a
+          // thread does.
+          if (window.novaOpenChat) window.novaOpenChat(row.conversationId);
         });
         actions.appendChild(open);
       }
@@ -12306,10 +12111,8 @@
           var tw = conv.updatedAt ? Date.parse(conv.updatedAt) : NaN;
           if (!isNaN(tw)) btn.appendChild(el("span", "hb-thread-when", fmtStamp(tw)));
           btn.addEventListener("click", function () {
-            // Same reason as "Open thread" above: the poller guards on the
-            // URL saying `conversations`, so the URL moves before the render.
-            history.pushState(null, "", "/conversation/" + encodeURIComponent(conv.id));
-            openConversation(conv.id, conv.name || row.name);
+            // Same as "Open thread" above: the dock, over this page.
+            if (window.novaOpenChat) window.novaOpenChat(conv.id);
           });
           tlist.appendChild(btn);
         });
@@ -13279,8 +13082,18 @@
       return;
     }
     if (here.view === "conversations") {
-      openConversationById(here.conversationId);
-      return;
+      /* The URL still exists -- notifications already delivered to his
+       * phone point at it -- but it is a way into the dock now rather than
+       * a page of its own. The address bar is put back to `/` so a reload,
+       * or a back-button, does not reopen the panel over whatever he
+       * navigated to afterwards. */
+      if (typeof window.novaOpenChat === "function") {
+        window.novaOpenChat(here.conversationId);
+        try { history.replaceState(null, "", "/"); } catch (err) { /* no history */ }
+        // Deliberately no `return`: the address bar now says `/`, so this
+        // falls through to the journal below and the feed loads behind the
+        // open dock. Returning here would leave the page empty under it.
+      }
     }
     if (here.view === "heartbeats") {
       loadHeartbeats();
@@ -13809,12 +13622,9 @@
     navigator.serviceWorker.addEventListener("message", function (event) {
       var msg = event.data || {};
       if (msg.type !== "nova-thread-updated" || !msg.conversationId) return;
-      if (!convOpenThread || convOpenId !== msg.conversationId) return;
-      var container = convOpenThread;
-      var id = msg.conversationId;
-      fetchPage("/api/conversations/thread?id=" + encodeURIComponent(id))
-        .then(function (payload) { repaintConvThread(container, id, payload); })
-        .catch(function () { /* the messages on screen are still real */ });
+      // The dock decides whether it is showing that thread; this no longer
+      // knows, because the page that used to is gone.
+      if (window.novaThreadUpdated) window.novaThreadUpdated(msg.conversationId);
     });
   }
 
@@ -15011,6 +14821,11 @@
      * `CHAT_SOURCE_KEY` above is per-device), so it is kept here and merged
      * into the sort rather than sent anywhere.
      */
+    /* What the header says while the listing that knows the real name is
+     * still in flight. A uuid would be worse and an empty header reads as
+     * broken, so it is briefly generic and then replaced. */
+    var UNNAMED_THREAD = "Conversation";
+
     var CHAT_OPENED_KEY = "nova.convOpened.v1";
     var openedAt = null;
 
@@ -15300,6 +15115,19 @@
           if (token !== listToken) return;
           listCache = payload;
           saveCachedList(payload);
+          /* Only ever replaces the placeholder, never a name already on
+           * screen: a thread he is mid-rename on must not be relabelled by
+           * a listing that predates the rename. */
+          if (source.kind === "conv" && source.name === UNNAMED_THREAD) {
+            var named = (payload.conversations || []).filter(function (row) {
+              return row.id === source.id;
+            })[0];
+            if (named && named.name) {
+              source.name = named.name;
+              titleEl.textContent = named.name;
+              rememberSource();
+            }
+          }
           // He can hold a row and open its editor while the refresh is in
           // flight now, which was impossible when the list was empty until
           // the fetch landed. Repainting would throw away what he is typing;
@@ -15358,9 +15186,15 @@
           .then(function () { start.disabled = false; });
       });
       listEl.appendChild(start);
-      listEl.appendChild(listRow("Ask Nova", "", source.kind === "ask", function () {
-        switchTo({ kind: "ask", id: null, name: "Ask Nova" });
-      }));
+      /* No "Ask Nova" row -- his ask, 2026-09-07. It was the last thing
+       * pointing at the legacy single thread the deleted `/ask` page used to
+       * own, sitting above every real conversation as if it were the first
+       * of them.
+       *
+       * `kind: "ask"` is deliberately still handled everywhere else: a
+       * device whose remembered source is that thread still opens on it and
+       * still reads it, and the server route is untouched. What is gone is
+       * the row that offered it as somewhere to go. */
     }
 
     /* "New chat", or the first free "New chat - N".
@@ -15518,7 +15352,11 @@
      * taller would resize something anchored to a corner. The query is
      * read per gesture rather than cached, because a phone that turns
      * sideways crosses it without reloading the page. */
-    var DOCK_OPEN_VH = 92;
+    // 100, not 92: in the PWA the missing 8% was visible as a strip of page
+    // above the drawer. His earlier capture on this panel -- "make the new
+    // chat modal full height, atleast for mobile. It feels so small" -- is
+    // the reason it opens at the ceiling at all.
+    var DOCK_OPEN_VH = 100;
     var DOCK_MIN_VH = 30;
     var DOCK_DISMISS_VH = 16;
     function dockIsDrawer() {
@@ -15537,6 +15375,45 @@
         enabled: dockIsDrawer,
         onDismiss: function () { setOpen(false); }
       });
+
+    /* The one way in from outside this closure.
+     *
+     * A push notification's URL used to render the Conversations *page*;
+     * his ask, 2026-09-07: *"when i click the Nova notification it opens the
+     * /ask page or something, not the chat modal... I only use that chat
+     * modal for the conversations."* So the router calls this instead, and
+     * the tap lands in the panel he actually reads.
+     *
+     * The name is looked up from the listing when it is cached and falls
+     * back to a placeholder the first paint replaces -- a title is worth
+     * being briefly generic for, and guessing one from the id would put a
+     * uuid in the header. */
+    window.novaOpenChat = function (conversationId) {
+      if (!conversationId) return;
+      var known = ((listCache && listCache.conversations) || []).filter(
+        function (row) { return row.id === conversationId; })[0];
+      setOpen(true);
+      switchTo({ kind: "conv", id: conversationId,
+                 name: (known && known.name) || UNNAMED_THREAD });
+      // Nothing is cached on a cold start -- which is exactly the case a
+      // notification tap is -- so the listing is fetched for the name
+      // alone. `loadList` caches it, so this costs the request the next
+      // switcher open would have made anyway.
+      if (!known) loadList();
+    };
+
+    /* The service worker's retract, landing in the dock instead of the page.
+     *
+     * `sw.js` hands back a parked thread on a notification tap, then
+     * refetches behind that answer and posts when the two differ. The page
+     * that used to repaint on it is deleted; the dock is where the thread is
+     * now, so it reloads if it is showing that conversation and ignores the
+     * message otherwise. */
+    window.novaThreadUpdated = function (conversationId) {
+      if (!conversationId) return;
+      if (source.kind !== "conv" || source.id !== conversationId) return;
+      loadThread();
+    };
 
     function setOpen(next) {
       isOpen = !!next;

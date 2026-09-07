@@ -31,7 +31,7 @@ const source = readFileSync(swPath, "utf8");
  * nothing wrong behind them (2026-09-07), which is the shape of a test
  * asserting a value instead of a rule. */
 function constFromSource(name) {
-  const found = source.match(new RegExp(`var ${name} = "([^"]+)"`));
+  const found = source.match(new RegExp(`var ${name} = "?([^";]+)"?;`));
   if (!found) throw new Error(`sw.js no longer declares ${name}`);
   return found[1];
 }
@@ -118,6 +118,9 @@ function loadWorker() {
     shown,
     client,
     seedCacheNames(...names) { names.forEach((n) => store(n)); },
+    // The worker's own URL builder, so a test can compare it with the
+    // page's rather than restating either.
+    threadUrl: (id) => sandbox.threadUrl(id),
     breakCaches() { cachesBroken = true; },
     deletedCaches: () => deletedCaches,
     clearedCount: () => cleared,
@@ -275,7 +278,20 @@ function drain() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-const THREAD = "https://nova.example/api/conversations/thread?id=c-1";
+/* Built the way the page builds it rather than typed out here.
+ *
+ * This was a literal, and that is how the bug it exists to catch survived:
+ * `&limit=` was added to app.js's fetch when paging shipped, the worker was
+ * never updated, and this test happily went on pinning the worker to the
+ * URL it already used. A test that restates the value it is checking cannot
+ * fail when the two sides drift -- it only fails when someone edits the
+ * test. Read from app.js, it fails on the drift itself. */
+const PAGE_STEP = Number(
+  (readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..",
+                     "agora_runner", "nova_public", "app.js"), "utf8")
+    .match(/var PAGE_STEP = (\d+);/) || [])[1]);
+const THREAD = "https://nova.example/api/conversations/thread?id=c-1"
+  + "&limit=" + PAGE_STEP;
 
 describe("a push notification brings its own conversation with it", () => {
   test("the thread is parked under the exact URL app.js will ask for", async () => {
@@ -490,5 +506,43 @@ describe("a browser without a usable Cache API still loads a thread", () => {
 
     const response = await fetchEvent(worker, req(THREAD));
     assert.equal(await response.text(), "live body");
+  });
+});
+
+
+/* The prefetch is keyed on a URL, so the two halves have to build the same
+ * one. They did not: `&limit=` was added to the page's fetch when paging
+ * shipped and the worker was never updated, so every push parked its
+ * prefetch under a URL the page never asked for. A guaranteed miss, on the
+ * one path whose whole job is to make a notification open instantly, and
+ * silent -- a miss reads exactly like a cold cache.
+ *
+ * Both numbers are read out of the real files rather than restated here,
+ * which is the point: this fails when either side moves, not when this test
+ * gets out of date. */
+describe("the worker prefetches the URL the page actually asks for", () => {
+  const appSource = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..",
+         "agora_runner", "nova_public", "app.js"), "utf8");
+
+  test("the worker's page size is the page's own PAGE_STEP", () => {
+    const workerLimit = Number(constFromSource("THREAD_PAGE_LIMIT"));
+    const pageStep = Number((appSource.match(/var PAGE_STEP = (\d+);/) || [])[1]);
+    assert.ok(pageStep, "app.js no longer declares PAGE_STEP");
+    assert.equal(workerLimit, pageStep,
+      "the worker prefetches a page size the dock never asks for");
+  });
+
+  test("the two build byte-identical thread URLs", () => {
+    /* The worker's builder, run for real; the page's, reproduced from the
+     * one line in app.js that writes it. A cache key is the whole string,
+     * so this compares the whole string. */
+    const worker = loadWorker();
+    const id = "c-7 &weird";
+    const fromWorker = worker.threadUrl(id);
+    const pageStep = Number((appSource.match(/var PAGE_STEP = (\d+);/) || [])[1]);
+    const fromPage = "/api/conversations/thread?id=" + encodeURIComponent(id)
+      + "&limit=" + pageStep;
+    assert.equal(fromWorker, fromPage);
   });
 });
