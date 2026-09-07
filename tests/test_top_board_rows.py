@@ -1649,9 +1649,9 @@ def test_the_milestone_tier_orders_the_printed_ranking():
     """A Medium row in a well-ranked milestone outranks a High row in a
     badly-ranked one, inside the same project.
 
-    This is the assertion that was false for the eleven days the milestone
-    tier existed: `rank` takes it as a third argument that defaults to
-    `None`, and this tool passed two. The tier was live on the site's own
+    This is the assertion that was false from the day the milestone tier
+    shipped (#837, 2026-09-06): `rank` takes it as a third argument that
+    defaults to `None`, and this tool passed two. The tier was live on the site's own
     page and inert in the tool a cycle reads to pick its work.
     """
     board = grouped_board(

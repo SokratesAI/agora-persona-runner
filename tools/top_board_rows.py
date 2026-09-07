@@ -713,8 +713,9 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         out.append("🔧 MAINTENANCE RESERVATION NOT EVALUATED — pass "
                    "`--cycle <N>` and every 5th cycle is forced onto "
                    "Infra/Maintenance work.")
-    # **The milestone tier, which this tool did not pass for the eleven days
-    # the tier existed.** `rank` takes it third and defaults it to `None`,
+    # **The milestone tier, which this tool never passed from the day the
+    # tier shipped (#837, 2026-09-06).** `rank` takes it third and
+    # defaults it to `None`,
     # so leaving it off is silent: the ranking still comes back, still
     # looks right, and orders rows by their own rating inside a project as
     # though nothing had been grouped. Cycles 1105, 1108 and 1109 sized and
