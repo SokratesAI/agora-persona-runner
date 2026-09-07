@@ -135,7 +135,10 @@ def test_a_mid_turn_passage_is_not_the_newest(monkeypatch):
     out = nova_conversations.thread("c1")
     assert [m["partial"] for m in out["messages"]] == [False, True]
     assert out["messages"][1]["steps"] == [
-        {"kind": "thought", "text": "half an answer"}]
+        # `at` is when the passage was written (2026-09-07: timestamps on
+        # every step).
+        {"kind": "thought", "text": "half an answer",
+         "at": "2026-08-29T11:00:00Z"}]
     assert out["newestAt"] == "2026-08-29T10:00:00Z"
 
 

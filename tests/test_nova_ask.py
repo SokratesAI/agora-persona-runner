@@ -161,8 +161,12 @@ def test_the_ask_page_folds_a_streamed_passage():
     assert working["stepsOnly"] is True
     # One thought, not three prefixes of each other -- and the retracted
     # "text-2" stream, which turned out to be the reply, is not here twice.
+    # `at` is when the step happened -- his ask, 2026-09-07, for timestamps
+    # on every call. A folded passage carries the stamp of the message the
+    # fold ended on, which is the one the text is read off.
     assert working["steps"] == [
-        {"kind": "thought", "text": "Let me look.\n\nChecking the namespace."}]
+        {"kind": "thought", "text": "Let me look.\n\nChecking the namespace.",
+         "at": "t2"}]
 
 
 def test_waiting_is_true_only_while_an_answer_is_owed():
@@ -280,9 +284,12 @@ def test_the_thread_keeps_the_work_the_answer_is_being_written_in():
     payload, _ = _run(nova_ask.thread, TAGGED, messages)
     assert [m["id"] for m in payload["messages"]] == ["1", ""]
     assert payload["messages"][1]["steps"] == [
+        # The call keeps the stamp of the half that STARTED it; the second
+        # half sets `endedAt` instead, so a long call is not re-dated to
+        # when it returned.
         {"kind": "tool", "capability": "Bash", "input": "kubectl get pods",
-         "id": "t-a", "status": "running"},
-        {"kind": "thought", "text": "Counting."},
+         "id": "t-a", "status": "running", "at": "t2"},
+        {"kind": "thought", "text": "Counting.", "at": "t3"},
     ]
     # And the page must keep polling: the turn is still running.
     assert payload["waiting"] is True

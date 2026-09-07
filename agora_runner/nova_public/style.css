@@ -2936,7 +2936,13 @@ body.has-full-chart { overflow: hidden; }
     rgba(255, 255, 255, 0.95) 0%,
     rgba(180, 160, 255, 0.65) 35%,
     rgba(120, 90, 255, 0) 100%);
-  animation: ask-orbit-pulse 3.4s ease-in-out infinite;
+  /* Duration comes from `orbitPhase` in app.js, together with the negative
+     delay that keeps it in phase across a repaint -- see `askOrbit` there.
+     Name and timing stay here so `prefers-reduced-motion`'s `animation:
+     none` still wins over an inline duration. */
+  animation-name: ask-orbit-pulse;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
 }
 .ask-orbit-body {
   position: absolute;
@@ -2946,8 +2952,12 @@ body.has-full-chart { overflow: hidden; }
   height: 100%;
   /* Slow, at his ask (2026-09-07: "run for longer before it restarts"). A
      two-second orbit reads as a spinner working hard; this reads as
-     something turning, which is what the wait actually is. */
-  animation: ask-orbit-spin 7s linear infinite;
+     something turning, which is what the wait actually is. The period is
+     set by `orbitPhase` in app.js, with the negative delay that keeps it
+     in phase across a repaint. */
+  animation-name: ask-orbit-spin;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
 }
 /* The body itself is the pseudo-element, so the wrapper can rotate around
    the centre while the dot keeps its own size. */
@@ -2965,10 +2975,11 @@ body.has-full-chart { overflow: hidden; }
 /* The second one is further in, slower, and half a turn behind, so the two
    are never on top of each other. */
 .ask-orbit-body-b {
-  /* Not a multiple of the outer one, so the two do not line back up on a
-     short cycle and the whole figure keeps changing. */
-  animation-duration: 11s;
-  animation-direction: reverse;
+  /* Faster than the outer one, at his ask -- which is also how orbits
+     work: a shorter radius is a shorter year. Both turn the same way now;
+     12s against 4.5s drifts apart on its own, and sending one backwards to
+     keep them separated was solving that twice. The period itself comes
+     from `orbitPhase`. */
   padding: 5px;
   top: 0;
   left: 0;
@@ -3215,6 +3226,17 @@ body.has-full-chart { overflow: hidden; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* The time it ran, hard right. `margin-left: auto` on whichever of these
+   two is present -- a running call shows its state and a finished one
+   shows nothing there, so the stamp cannot rely on being the only one. */
+.step-tool-at {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+.step-tool-state ~ .step-tool-at { margin-left: 0.5rem; }
 .step-tool-state { flex: none; margin-left: auto; font-size: 0.75rem; }
 .step-tool-running { color: var(--dim); }
 .step-tool-failed { color: var(--warn); }
