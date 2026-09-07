@@ -127,6 +127,7 @@ from zoneinfo import ZoneInfo
 CHECKS = (
     "cadence_control",
     "security_alerts",
+    "scanning_alerts",
     "agentic_health",
     "doc_integrity",
     "redact_coverage",
@@ -236,6 +237,7 @@ SUBJECT = {
     "source_revision":   ("on-box",  "this checkout"),
     "cadence_control":   ("on-box",  "my own heartbeat and burn rate"),
     "security_alerts":   ("off-box", "GitHub advisories"),
+    "scanning_alerts":   ("off-box", "GitHub code- and secret-scanning alerts"),
     "agentic_health":    ("off-box", "GitHub workflow history"),
     "doc_integrity":     ("on-box",  "the vault, served by CouchDB here"),
     "redact_coverage":   ("on-box",  "workloads in this cluster"),
@@ -377,6 +379,7 @@ CADENCE_HOURS = {
     "main_build": 0.0,
     # Daily -- GitHub's meters, upstream releases, my own history.
     "security_alerts": 24.0,
+    "scanning_alerts": 24.0,
     "agentic_health": 24.0,
     "cli_pin": 24.0,
     "pin_drift": 24.0,
