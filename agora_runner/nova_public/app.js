@@ -8996,13 +8996,36 @@
    * operate would announce an ability it does not have.
    */
   function projectDragHandle(name) {
-    var grip = el("span", "project-standing-grip", "\u2807");
+    return dragHandle("project-standing-grip", "data-project", name);
+  }
+
+  /* The same grip for a milestone -- milestone M4 of idea #260, the last
+   * piece of it. The attribute differs on purpose: `data-project` on a
+   * milestone row would name the wrong thing, since a milestone drag
+   * sends a milestone name inside a project that the page already knows.
+   */
+  function milestoneDragHandle(name) {
+    return dragHandle("project-milestone-grip", "data-milestone", name);
+  }
+
+  /* One grip, whatever it drags. `aria-hidden` and not focusable for the
+   * reason written above: the two arrows beside it already carry the same
+   * action with a real accessible name, and a third control a screen
+   * reader cannot operate announces an ability it does not have. */
+  function dragHandle(gripClass, attr, name) {
+    var grip = el("span", gripClass, "\u2807");
     grip.setAttribute("aria-hidden", "true");
-    grip.setAttribute("data-project", name);
+    grip.setAttribute(attr, name);
     return grip;
   }
 
-  /* Drag one standing to a new place with a finger.
+  /* Drag one row of an ordered list to a new place with a finger.
+   *
+   * `attachRowDrag` is the gesture and it knows nothing about what it is
+   * dragging: the two wrappers below hand it the class names of their own
+   * rows and the function that writes the result. The project standings
+   * (M3) and the project's milestones (M4) are both ordered lists with a
+   * grip, two arrows and a note, so one gesture serves both.
    *
    * The gesture is pointer events rather than HTML5 `draggable`, which is
    * the reason M3 shipped as two buttons in the first place: `dragstart`
@@ -9028,13 +9051,52 @@
   var DRAG_SLOP = 8;
 
   function attachProjectDrag(list) {
+    attachRowDrag(list, {
+      rowClass: "project-standing",
+      gripClass: "project-standing-grip",
+      nameAttr: "data-project",
+      draggingClass: "project-standing--dragging",
+      noteSelector: ".project-standing-move-note",
+      send: sendProjectOrder
+    });
+  }
+
+  /* The same gesture on the milestone list -- milestone M4 of idea #260,
+   * and the last piece of it.
+   *
+   * `project` is closed over rather than read off the row, because a
+   * milestone position is only meaningful inside one project and the page
+   * already knows which one it is drawing. The grip therefore carries the
+   * milestone name and nothing else.
+   *
+   * There is no `attachMilestoneDrag`-shaped difference from the project
+   * version beyond that and the class names, which is the whole reason
+   * this shipped as one function: two copies of a pointer gesture is two
+   * places for the slop, the capture and the `pointercancel` reset to
+   * drift apart, and the drift would be invisible on the list nobody
+   * happened to test that week.
+   */
+  function attachMilestoneDrag(list, project) {
+    attachRowDrag(list, {
+      rowClass: "project-milestone",
+      gripClass: "project-milestone-grip",
+      nameAttr: "data-milestone",
+      draggingClass: "project-milestone--dragging",
+      noteSelector: ".project-milestone-move-note",
+      send: function (name, position, note) {
+        sendMilestonePin(project, name, position, note);
+      }
+    });
+  }
+
+  function attachRowDrag(list, spec) {
     var drag = null;
 
     function rows() {
       var out = [];
       var kids = list.childNodes;
       for (var i = 0; i < kids.length; i++) {
-        if (kids[i].className === "project-standing") out.push(kids[i]);
+        if (kids[i].className === spec.rowClass) out.push(kids[i]);
       }
       return out;
     }
@@ -9060,7 +9122,7 @@
     function reset() {
       if (!drag) return;
       drag.row.style.transform = "";
-      drag.row.classList.remove("project-standing--dragging");
+      drag.row.classList.remove(spec.draggingClass);
       drag = null;
     }
 
@@ -9070,9 +9132,9 @@
       // transform still on, until the next load repainted the list.
       if (drag) return;
       var grip = event.target;
-      if (!grip || grip.className !== "project-standing-grip") return;
+      if (!grip || grip.className !== spec.gripClass) return;
       var row = grip.parentNode;
-      while (row && row.className !== "project-standing") row = row.parentNode;
+      while (row && row.className !== spec.rowClass) row = row.parentNode;
       if (!row) return;
       var all = rows();
       var origin = all.indexOf(row);
@@ -9081,7 +9143,7 @@
       for (var i = 0; i < all.length; i++) centres.push(centreOf(all[i]));
       drag = {
         row: row,
-        name: grip.getAttribute("data-project"),
+        name: grip.getAttribute(spec.nameAttr),
         origin: origin,
         centres: centres,
         startY: event.clientY,
@@ -9101,7 +9163,7 @@
       if (!drag.moved) {
         if (Math.abs(dy) < DRAG_SLOP) return;
         drag.moved = true;
-        drag.row.classList.add("project-standing--dragging");
+        drag.row.classList.add(spec.draggingClass);
       }
       // The page must not scroll under a drag it has already started.
       if (event.preventDefault) event.preventDefault();
@@ -9115,10 +9177,10 @@
       var target = drag.target;
       var origin = drag.origin;
       var name = drag.name;
-      var note = drag.row.querySelector(".project-standing-move-note");
+      var note = drag.row.querySelector(spec.noteSelector);
       reset();
       if (!moved || target === origin || !note) return;
-      sendProjectOrder(name, target + 1, note);
+      spec.send(name, target + 1, note);
     });
 
     list.addEventListener("pointercancel", function () { reset(); });
@@ -9346,13 +9408,16 @@
    * run a terminal he does not have. The list is the dial the control was
    * missing.
    *
-   * Two buttons rather than a drag, the same call `projectMoveControls`
-   * makes one section up and for the same measured reason: HTML5
-   * `draggable` never fires on a touch screen, and a phone is the screen
-   * he reads this page on. The pointer-event gesture beside the project
-   * standings is the working version of that, and it is written against
-   * `project-standing` rows and `sendProjectOrder`; generalising it is
-   * the last piece of M4 rather than a line of this one.
+   * Two buttons *and* a grip, the same pair `projectMoveControls` draws
+   * one section up. The buttons are not the fallback and the drag is not
+   * the upgrade: a drag has no keyboard and nothing a screen reader can
+   * operate, so deleting the arrows would take the ordering away from
+   * every input except a finger. Both write through `sendMilestonePin`,
+   * so a pin cannot mean two things depending on which control set it.
+   *
+   * The gesture is `attachRowDrag`, the same function the standings use
+   * -- HTML5 `draggable` fires nothing on a touch screen, and a phone is
+   * the screen he reads this page on.
    *
    * A pinned milestone says so and can be unpinned. `0` is what the route
    * takes for "back to the computed order" -- deliberately legal there
@@ -9372,6 +9437,7 @@
     for (var i = 0; i < items.length; i++) {
       list.appendChild(milestoneRow(name, items[i], i, items.length));
     }
+    attachMilestoneDrag(list, name);
     box.appendChild(list);
     return box;
   }
@@ -9437,6 +9503,7 @@
   function milestoneMoveControls(project, item, index, total) {
     var wrap = el("div", "project-milestone-move");
     var note = el("span", "project-milestone-move-note", "");
+    wrap.appendChild(milestoneDragHandle(item.name));
     function mover(label, position, enabled) {
       var button = el("button", "project-milestone-move-btn", label);
       button.type = "button";

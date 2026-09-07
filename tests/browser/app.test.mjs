@@ -13946,6 +13946,151 @@ describe("the project page", () => {
     assert.equal(window.document.querySelector(".project-milestones"), null);
   });
 
+  /* The milestone drag -- the last open piece of milestone M4 of idea
+   * #260, and the same pointer gesture the project standings carry. It is
+   * `attachRowDrag` now, one function driving both lists, so what these
+   * hold is the wiring: the right grip, the right name on it, and the
+   * right route on the other side of the drop.
+   *
+   * jsdom lays nothing out, so every rect is zero and a hit test against
+   * real geometry would pass on any arithmetic at all. `layOutRows` gives
+   * each row its own rect, which is the only way the target index is
+   * being tested rather than the constant 0 jsdom hands back. */
+  const THREE_MILESTONES = {
+    ...NOVA,
+    milestones: [
+      { name: "small", open: 2, pin: 0 },
+      { name: "middle", open: 4, pin: 0 },
+      { name: "big", open: 1, pin: 3 },
+    ],
+  };
+
+  // 40px rows starting at y=0, so the centres are 20, 60 and 100.
+  const layOutRows = (rows) =>
+    rows.forEach((row, i) => {
+      row.getBoundingClientRect = () => ({
+        top: i * 40, bottom: (i * 40) + 40, height: 40, left: 0, right: 100, width: 100,
+      });
+    });
+
+  const point = (window, node, type, clientY) =>
+    node.dispatchEvent(new window.MouseEvent(type, {
+      bubbles: true, cancelable: true, clientY,
+    }));
+
+  const mGrip = (row) => row.querySelector(".project-milestone-grip");
+
+  test("each milestone carries a grip naming the milestone, not the project", async () => {
+    const window = await loadSite("/project/Nova", { project: () => MILESTONED });
+    const rows = milestoneRows(window);
+    // `data-project` would name the wrong thing here: the project is
+    // already known from the page, the milestone is what moves.
+    assert.equal(mGrip(rows[0]).getAttribute("data-milestone"), "small");
+    assert.equal(mGrip(rows[0]).getAttribute("data-project"), null);
+    // The two arrows beside it already announce the same action with a
+    // real name; a third control a screen reader cannot drag would be an
+    // ability announced and not delivered.
+    assert.equal(mGrip(rows[0]).getAttribute("aria-hidden"), "true");
+  });
+
+  test("dragging a milestone down two places pins it at its new position", async () => {
+    const window = await loadSite("/project/Nova", { project: () => THREE_MILESTONES });
+    const rows = milestoneRows(window);
+    assert.equal(rows.length, 3);
+    layOutRows(rows);
+    point(window, mGrip(rows[0]), "pointerdown", 20);
+    point(window, mGrip(rows[0]), "pointermove", 105);
+    point(window, mGrip(rows[0]), "pointerup", 105);
+    await new Promise((r) => setTimeout(r, 0));
+    const sent = window.posted.at(-1);
+    assert.equal(sent.url, "/api/milestone/pin");
+    assert.deepEqual(sent.body,
+      { project: "Nova", milestone: "small", position: 3 });
+  });
+
+  test("dragging a milestone up sends the place it landed on", async () => {
+    const window = await loadSite("/project/Nova", { project: () => THREE_MILESTONES });
+    const rows = milestoneRows(window);
+    layOutRows(rows);
+    point(window, mGrip(rows[2]), "pointerdown", 100);
+    point(window, mGrip(rows[2]), "pointermove", 55);
+    point(window, mGrip(rows[2]), "pointerup", 55);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(window.posted.at(-1).body,
+      { project: "Nova", milestone: "big", position: 2 });
+  });
+
+  test("a milestone drag that ends where it started writes nothing", async () => {
+    const window = await loadSite("/project/Nova", { project: () => THREE_MILESTONES });
+    const rows = milestoneRows(window);
+    layOutRows(rows);
+    const before = window.posted.length;
+    point(window, mGrip(rows[1]), "pointerdown", 60);
+    point(window, mGrip(rows[1]), "pointermove", 72);
+    point(window, mGrip(rows[1]), "pointerup", 72);
+    await new Promise((r) => setTimeout(r, 0));
+    // 72 is past the 8px slop, so this really was a drag -- it just did
+    // not leave its own slot, and pinning a milestone where it already
+    // sits would make resting a thumb on the grip a write to his file.
+    assert.equal(window.posted.length, before, "a drag to nowhere posted");
+    assert.equal(rows[1].style.transform, "", "the row was left mid-drag");
+  });
+
+  test("a milestone tap that wobbles under the slop is not a drag", async () => {
+    const window = await loadSite("/project/Nova", { project: () => THREE_MILESTONES });
+    const rows = milestoneRows(window);
+    layOutRows(rows);
+    const before = window.posted.length;
+    point(window, mGrip(rows[0]), "pointerdown", 20);
+    point(window, mGrip(rows[0]), "pointermove", 25);
+    assert.equal(
+      rows[0].classList.contains("project-milestone--dragging"), false,
+      "5px is under the slop and must not start a drag");
+    point(window, mGrip(rows[0]), "pointerup", 25);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(window.posted.length, before);
+  });
+
+  test("a cancelled milestone drag puts the row back and sends nothing", async () => {
+    const window = await loadSite("/project/Nova", { project: () => THREE_MILESTONES });
+    const rows = milestoneRows(window);
+    layOutRows(rows);
+    const before = window.posted.length;
+    point(window, mGrip(rows[0]), "pointerdown", 20);
+    point(window, mGrip(rows[0]), "pointermove", 105);
+    assert.notEqual(rows[0].style.transform, "", "the drag never started");
+    // The positive half of the slop test below, and it has to be here:
+    // that one only asserts the class is *absent* under the slop, which
+    // is true of any class name at all, including the standings' one.
+    assert.equal(
+      rows[0].classList.contains("project-milestone--dragging"), true,
+      "a milestone under the finger must carry the milestone dragging class");
+    // The browser taking the gesture back for a scroll is not the same
+    // event as letting go, and must not write.
+    point(window, mGrip(rows[0]), "pointercancel", 105);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(window.posted.length, before, "a cancelled drag posted");
+    assert.equal(rows[0].style.transform, "");
+    assert.equal(rows[0].classList.contains("project-milestone--dragging"), false);
+  });
+
+  test("a milestone drag cannot start on the standings grip and vice versa", async () => {
+    const window = await loadSite("/project/Nova", { project: () => THREE_MILESTONES });
+    const rows = milestoneRows(window);
+    layOutRows(rows);
+    const before = window.posted.length;
+    // The two lists run the same function with different class names. A
+    // grip whose class belongs to the other list must be ignored, or one
+    // page's gesture would post to the other page's route.
+    const wrong = mGrip(rows[0]);
+    wrong.className = "project-standing-grip";
+    point(window, wrong, "pointerdown", 20);
+    point(window, wrong, "pointermove", 105);
+    point(window, wrong, "pointerup", 105);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(window.posted.length, before);
+  });
+
   test("the index chips only the projects that carry a rating", async () => {
     const window = await loadSite("/project/Nova", { project: () => RATED });
     const pills = [...window.document.querySelectorAll(".project-pill")];
