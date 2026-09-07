@@ -175,10 +175,17 @@ def read_jobs(runner=subprocess.run):
 def read_sealed_secrets(runner=subprocess.run):
     """Every SealedSecret, keyed by (namespace, name). (dict, None) or (None, why).
 
-    The value is the `Synced` condition's message when that condition is
-    anything but True, and None when the SealedSecret is fine. A
-    SealedSecret with no conditions at all has not been reconciled yet and
-    is not a finding — the controller writes them on its first pass.
+    The value is `{"why": <the Synced condition's message>, "since": <its
+    lastTransitionTime>}` when that condition is anything but True, and the
+    key is absent when the SealedSecret is fine. A SealedSecret with no
+    conditions at all has not been reconciled yet and is not a finding — the
+    controller writes them on its first pass.
+
+    `since` is carried because the message alone says nothing about whether
+    this is new. The four this fires on today last transitioned on
+    2026-07-22 and 2026-07-27, so they have never once synced — and every
+    cycle that read the bare message read a six-week-old outage as a fresh
+    one, and went looking for what changed.
     """
     body, why = _run(runner, ["kubectl", "get", "sealedsecrets", "-A", "-o", "json"])
     if why:
@@ -193,11 +200,14 @@ def read_sealed_secrets(runner=subprocess.run):
                 continue
             if condition.get("status") == "True":
                 continue
-            broken[key] = (
-                condition.get("message")
-                or condition.get("reason")
-                or "Synced is not True"
-            )
+            broken[key] = {
+                "why": (
+                    condition.get("message")
+                    or condition.get("reason")
+                    or "Synced is not True"
+                ),
+                "since": condition.get("lastTransitionTime") or "",
+            }
     return broken, None
 
 
@@ -239,13 +249,14 @@ def unhealthy_children(app, broken_sealed):
     """
     rows = []
     for key in app.get("sealed") or []:
-        message = broken_sealed.get(key)
-        if message:
+        broken = broken_sealed.get(key)
+        if broken:
             rows.append({
                 "kind": "SealedSecret",
                 "namespace": key[0],
                 "name": key[1],
-                "why": message,
+                "why": broken["why"],
+                "since": broken.get("since") or "",
             })
     return rows
 
@@ -356,6 +367,12 @@ def report(apps, jobs_by_owner, now, broken_sealed=None):
                     "             it overwrites the live Secret with what git "
                     "holds, and this account cannot read either to compare "
                     "them, so it is the owner's call to run")
+                waited = _age(row.get("since"), now)
+                if waited:
+                    lines.append(
+                        f"             it has been failing for {waited}, since "
+                        f"{row['since']} — nothing here has moved it and "
+                        "nothing here can, so the wait is on the owner")
         for row in live:
             lines.append(
                 f"           {row['namespace']}/{row['job']} failed and "
