@@ -1317,6 +1317,8 @@ body.nav-open { overflow: hidden; }
      class would suppress the close and leave the open at full length,
      which is the bug the `.nav.open` pair above exists to stop. */
   .step-sheet, .step-sheet--entering,
+  .msg-sheet, .msg-sheet--entering,
+  .msg-sheet-backdrop, .msg-sheet-backdrop--entering,
   .chat-extras, .chat-extras--entering,
   .step-backdrop, .step-backdrop--entering,
   .chat-extras-backdrop, .chat-extras-backdrop--entering,
@@ -3036,18 +3038,18 @@ body.has-full-chart { overflow: hidden; }
 .ask-msg-steps { align-self: flex-start; max-width: 92%; }
 .ask-msg-steps .ask-steps { margin-bottom: 0; }
 
-.step-backdrop, .chat-extras-backdrop {
+.step-backdrop, .chat-extras-backdrop, .msg-sheet-backdrop {
   position: fixed;
   inset: 0;
   z-index: 40;
   background: rgba(0, 0, 0, 0.45);
 }
-.step-backdrop[hidden], .chat-extras-backdrop[hidden] { display: none; }
+.step-backdrop[hidden], .chat-extras-backdrop[hidden], .msg-sheet-backdrop[hidden] { display: none; }
 
 /* The sheet. Anchored to the bottom and sized in `vh` by `app.js`, because
  * the drag he asked for writes a height onto the node -- so the height is
  * deliberately absent here and this rule must not grow one. */
-.step-sheet, .chat-extras {
+.step-sheet, .chat-extras, .msg-sheet {
   position: fixed;
   left: 0;
   right: 0;
@@ -3060,19 +3062,19 @@ body.has-full-chart { overflow: hidden; }
   border-radius: 16px 16px 0 0;
   box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.35);
 }
-.step-sheet[hidden], .chat-extras[hidden] { display: none; }
+.step-sheet[hidden], .chat-extras[hidden], .msg-sheet[hidden] { display: none; }
 
 /* Sliding in from the bottom -- his ask, 2026-09-07. On `transform` and
  * deliberately not on `height`: the drag writes a new height on every
  * pointermove, and a transition on that property would make the sheet lag
  * a whole animation behind his finger. Transform is untouched by the drag,
  * so the two cannot fight. */
-.step-sheet, .chat-extras { transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1); }
+.step-sheet, .chat-extras, .msg-sheet { transition: transform 260ms cubic-bezier(0.32, 0.72, 0, 1); }
 /* The frame before the transition starts: fully below its own bottom edge.
  * `openStepSheet` puts this on, forces a reflow, and takes it off. */
-.step-sheet--entering, .chat-extras--entering { transform: translateY(100%); }
-.step-backdrop, .chat-extras-backdrop { transition: opacity 260ms ease; }
-.step-backdrop--entering, .chat-extras-backdrop--entering { opacity: 0; }
+.step-sheet--entering, .chat-extras--entering, .msg-sheet--entering { transform: translateY(100%); }
+.step-backdrop, .chat-extras-backdrop, .msg-sheet-backdrop { transition: opacity 260ms ease; }
+.step-backdrop--entering, .chat-extras-backdrop--entering, .msg-sheet-backdrop--entering { opacity: 0; }
 
 
 /* The `+` drawer's contents: Claude's Camera/Photos/Files grid, with the
@@ -3117,7 +3119,7 @@ body.has-full-chart { overflow: hidden; }
  * could not be grabbed: a fingertip covers about 40px and the target was
  * four pixels tall, so the drag he reported as "stuck" was a drag that
  * almost never started. The visible pill keeps its old size. */
-.step-grip, .chat-extras-grip, .chat-grip {
+.step-grip, .chat-extras-grip, .chat-grip, .msg-sheet-grip {
   flex: none;
   width: 100%;
   height: 30px;
@@ -3125,7 +3127,7 @@ body.has-full-chart { overflow: hidden; }
   cursor: ns-resize;
   touch-action: none;
 }
-.step-grip::after, .chat-extras-grip::after, .chat-grip::after {
+.step-grip::after, .chat-extras-grip::after, .chat-grip::after, .msg-sheet-grip::after {
   content: "";
   position: absolute;
   top: 11px;
@@ -3137,7 +3139,7 @@ body.has-full-chart { overflow: hidden; }
   background: var(--line);
 }
 
-.step-head, .chat-extras-head {
+.step-head, .chat-extras-head, .msg-sheet-head {
   flex: none;
   position: relative;
   /* It is a drag handle as well as a header -- without this the phone
@@ -3148,7 +3150,7 @@ body.has-full-chart { overflow: hidden; }
   min-height: 44px;
   padding: 0.2rem 0.6rem 0.5rem;
 }
-.step-titles, .chat-extras-titles {
+.step-titles, .chat-extras-titles, .msg-sheet-titles {
   /* Centred on the sheet rather than in the space the buttons leave, so the
    * title does not shift sideways when the back arrow appears. */
   position: absolute;
@@ -3156,14 +3158,14 @@ body.has-full-chart { overflow: hidden; }
   right: 3.2rem;
   text-align: center;
 }
-.step-title, .chat-extras-title { margin: 0; font-size: 1rem; }
+.step-title, .chat-extras-title, .msg-sheet-title { margin: 0; font-size: 1rem; }
 .step-sub { color: var(--dim); font-size: 0.8rem; }
 .step-sub[hidden] { display: none; }
 
 /* One close button for both drawers -- his ask, 2026-09-07: "make the
  * button equal for both models". The chat dock's × was a different size and
  * a dimmer colour, which on a phone is two controls doing one job. */
-.step-back, .step-close, .chat-close, .chat-extras-close {
+.step-back, .step-close, .chat-close, .chat-extras-close, .msg-sheet-close {
   min-width: 44px;
   min-height: 44px;
   background: none;
@@ -3176,10 +3178,10 @@ body.has-full-chart { overflow: hidden; }
 }
 /* On the right in both, which is where the chat's has always been. The
  * back arrow keeps the left, so the two never collide. */
-.step-close, .chat-close, .chat-extras-close { margin-left: auto; }
+.step-close, .chat-close, .chat-extras-close, .msg-sheet-close { margin-left: auto; }
 .step-back[hidden] { display: none; }
 
-.step-body, .chat-extras-body {
+.step-body, .chat-extras-body, .msg-sheet-body {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 0 0.9rem 1.2rem;
@@ -4094,6 +4096,44 @@ body.chat-open { overflow: hidden; }
 }
 .toast--on { opacity: 1; transform: translate(-50%, 0); }
 .toast--error { border-color: var(--accent); }
+
+/* "A new version is ready", at the top of the screen until he acts on it.
+ * Not the toast above: that one says something happened and takes itself
+ * away, this one is an offer that has to still be there when he looks up.
+ * Same corner though, and above the drawers -- a reload is worth
+ * interrupting whatever panel is open. */
+.update-banner {
+  position: fixed;
+  top: max(0.6rem, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 61;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  max-width: min(26rem, calc(100vw - 1.6rem));
+  padding: 0.5rem 0.6rem 0.5rem 0.9rem;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 0.85rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.update-banner[hidden] { display: none; }
+.update-banner-text { min-width: 0; }
+.update-banner-btn {
+  flex: none;
+  min-height: 32px;
+  padding: 0.25rem 0.8rem;
+  background: var(--accent);
+  color: var(--bg);
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
 
 /* The note this replaced. Kept in the DOM -- it is what a couple of tests
    read -- but it no longer takes space in the composer row. */
@@ -5040,3 +5080,37 @@ X that summarizes the last 12
 /* What replaces the orbiting loader once a stop lands. Dim, because it is a
  * statement about a turn that produced nothing, not a message from Nova. */
 .ask-stopped { color: var(--dim); font-size: 0.85rem; }
+
+/* The message-actions drawer's contents. `ask-copy` and `ask-retry` are the
+   same buttons that used to sit under every bubble -- moved, not rebuilt --
+   so this only changes the box around them. */
+.msg-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.3rem;
+}
+.msg-sheet-body .ask-copy,
+.msg-sheet-body .ask-retry {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* His words, 2026-09-07: "I still want the default text selection on my
+   phone so i can copy just a line of text". The prose stays selectable and
+   keeps the OS callout; the furniture around it does not, so a hold there
+   is unambiguously the drawer's gesture rather than a selection that fights
+   it. */
+.ask-msg .ask-text { -webkit-user-select: text; user-select: text; }
+.ask-msg .ask-who { -webkit-user-select: none; user-select: none; }

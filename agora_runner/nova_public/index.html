@@ -155,6 +155,15 @@
   <span id="chat-dot" class="chat-dot" hidden aria-hidden="true"></span>
 </button>
 
+<!-- A deploy is invisible to an already-open app: the new worker installs and
+     takes over, but this page keeps running the app.js it loaded. Marcus has
+     carried this banner since its own deploys started going unnoticed; this is
+     the same shape. -->
+<div id="update-banner" class="update-banner" role="status" aria-live="polite" hidden>
+  <span class="update-banner-text">A new version of Nova is ready.</span>
+  <button type="button" id="update-reload" class="update-banner-btn">Reload</button>
+</div>
+
 <section id="chat-dock" class="chat-dock" aria-label="Chat with Nova" aria-hidden="true" hidden>
   <div id="chat-grip" class="chat-grip" aria-hidden="true"></div>
   <div class="chat-head">

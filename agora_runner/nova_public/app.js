@@ -11507,17 +11507,26 @@
     var body = el("div", "ask-text");
     appendRichText(body, null, message.text);
     row.appendChild(body);
-    /* No button on a message with nothing to copy -- an attachment-only line
-     * has an empty `text`, and a Copy that yields an empty clipboard reads as
-     * broken rather than as empty. */
-    if (message.text) row.appendChild(askCopyButton(message.text));
-    /* Only on an answer, and only when there is a question above it to send
-     * again. A partial answer is one still being written, and re-asking a
-     * question that has not finished being answered spends a turn to race
-     * the one already running. */
-    if (!mine && !message.partial && conversationId && retry && retry.question) {
-      row.appendChild(askRetryButton(conversationId, retry.question, retry.afterSend));
-    }
+    /* Copy and "Ask again" are behind a press-and-hold now -- his ask,
+     * 2026-09-07. They were two buttons under every bubble, which is two
+     * controls per message in a column he mostly reads.
+     *
+     * The conditions on them are unchanged and still decided here, at the
+     * point that knows the message: no Copy on a line with nothing to copy
+     * (an attachment-only message has empty `text`, and a Copy that yields
+     * an empty clipboard reads as broken rather than as empty), and no
+     * re-ask unless there is a finished answer with a question above it --
+     * re-asking a question still being answered spends a turn to race the
+     * one already running. A hold on a bubble with neither opens nothing,
+     * rather than an empty drawer. */
+    holdForActions(row, function () {
+      var actions = [];
+      if (message.text) actions.push(askCopyButton(message.text));
+      if (!mine && !message.partial && conversationId && retry && retry.question) {
+        actions.push(askRetryButton(conversationId, retry.question, retry.afterSend));
+      }
+      return actions;
+    });
     return row;
   }
 
@@ -11624,6 +11633,142 @@
     orbit.appendChild(orbitPhase(
       el("span", "ask-orbit-body ask-orbit-body-b"), ORBIT_INNER_SECONDS));
     return orbit;
+  }
+
+  /* Press and hold a bubble to get its actions -- his ask, 2026-09-07.
+   *
+   * **A hold that starts on the text is not this gesture.** He was explicit:
+   * *"I still want the default text selection on my phone so i can copy just
+   * a line of text and not having to copy the entire bubble."* The browser's
+   * own selection is a better tool than anything here for taking one
+   * sentence out of an answer, and a long-press is exactly how it is
+   * started -- so a hold whose target is inside `.ask-text` is left alone
+   * entirely. The name row above the prose, and the bubble's own padding,
+   * are what open the drawer.
+   *
+   * `HOLD_MS` is the same second the switcher's row editor uses; two
+   * different hold lengths in one app is a thing to get wrong rather than a
+   * thing to tune.
+   */
+  function holdForActions(row, build) {
+    var timer = null;
+
+    function cancel() {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+
+    function start(event) {
+      // The text is the browser's. Anything else on the bubble is ours.
+      if (event.target && event.target.closest
+          && event.target.closest(".ask-text")) return;
+      cancel();
+      timer = setTimeout(function () {
+        timer = null;
+        var actions = build();
+        if (actions.length) openMessageActions(actions);
+      }, HOLD_MS);
+    }
+
+    ["mousedown", "touchstart"].forEach(function (name) {
+      row.addEventListener(name, start);
+    });
+    ["mouseup", "mouseleave", "touchend", "touchcancel", "touchmove", "scroll"]
+      .forEach(function (name) { row.addEventListener(name, cancel); });
+  }
+
+  /* The drawer those actions open in.
+   *
+   * One sheet reused, appended to <body>, the same reasoning as the tool
+   * drawer's: a sheet per message would be a hundred hidden dialogs in a
+   * long thread and only one can ever be open. It borrows the tool
+   * drawer's look through the shared rule list in the stylesheet and its
+   * drag through `dragSheet`, so there is one drawer in this app wearing
+   * three hats rather than three drawers. */
+  var msgSheet = null;
+  var msgSheetBackdrop = null;
+  var msgSheetBody = null;
+  var msgSheetHide = null;
+
+  function buildMessageSheet() {
+    if (msgSheet) return msgSheet;
+    msgSheetBackdrop = el("div", "msg-sheet-backdrop");
+    msgSheetBackdrop.hidden = true;
+    msgSheetBackdrop.addEventListener("click", closeMessageActions);
+    document.body.appendChild(msgSheetBackdrop);
+
+    msgSheet = el("div", "msg-sheet");
+    msgSheet.hidden = true;
+    msgSheet.setAttribute("role", "dialog");
+    msgSheet.setAttribute("aria-modal", "true");
+    msgSheet.setAttribute("aria-label", "Message actions");
+
+    var grip = el("div", "msg-sheet-grip");
+    grip.setAttribute("aria-hidden", "true");
+    msgSheet.appendChild(grip);
+
+    var head = el("div", "msg-sheet-head");
+    var titles = el("div", "msg-sheet-titles");
+    titles.appendChild(el("h2", "msg-sheet-title", "Message"));
+    head.appendChild(titles);
+    var close = el("button", "msg-sheet-close", "✕");
+    close.type = "button";
+    close.title = "Close";
+    close.setAttribute("aria-label", "Close");
+    close.addEventListener("click", closeMessageActions);
+    head.appendChild(close);
+    msgSheet.appendChild(head);
+
+    msgSheetBody = el("div", "msg-sheet-body");
+    msgSheet.appendChild(msgSheetBody);
+    document.body.appendChild(msgSheet);
+
+    dragSheet([grip, head], {
+      node: function () { return msgSheet; },
+      openVh: 30,
+      minVh: 20,
+      maxVh: 60,
+      dismissVh: 12,
+      onDismiss: closeMessageActions
+    });
+    return msgSheet;
+  }
+
+  function openMessageActions(actions) {
+    buildMessageSheet();
+    msgSheetBody.textContent = "";
+    actions.forEach(function (button) {
+      // The buttons keep their own classes and their own handlers; only the
+      // box around them is new. A tap on one closes the drawer, because
+      // every action in here is finished the moment it is taken.
+      button.addEventListener("click", function () { closeMessageActions(); });
+      msgSheetBody.appendChild(button);
+    });
+    if (msgSheetHide) { clearTimeout(msgSheetHide); msgSheetHide = null; }
+    msgSheet.style.height = "";
+    msgSheet.classList.add("msg-sheet--entering");
+    msgSheetBackdrop.classList.add("msg-sheet-backdrop--entering");
+    msgSheetBackdrop.hidden = false;
+    msgSheet.hidden = false;
+    void msgSheet.offsetHeight;
+    msgSheet.classList.remove("msg-sheet--entering");
+    msgSheetBackdrop.classList.remove("msg-sheet-backdrop--entering");
+  }
+
+  function closeMessageActions() {
+    if (!msgSheet || msgSheet.hidden) return;
+    msgSheet.classList.add("msg-sheet--entering");
+    msgSheetBackdrop.classList.add("msg-sheet-backdrop--entering");
+    function hide() {
+      msgSheetHide = null;
+      if (msgSheet.classList.contains("msg-sheet--entering")) {
+        msgSheet.hidden = true;
+        msgSheetBackdrop.hidden = true;
+      }
+    }
+    var wait = transitionMs(msgSheet);
+    if (msgSheetHide) clearTimeout(msgSheetHide);
+    if (wait) msgSheetHide = setTimeout(hide, wait + 20);
+    else hide();
   }
 
   function askPending(progress) {
@@ -13672,8 +13817,60 @@
     window.scrollTo(0, 0);
   });
 
+  /* "A new version is ready" -- his ask, 2026-09-07, pointing at Marcus,
+   * which has carried this since its own deploys started going unnoticed.
+   *
+   * A deploy is invisible to an app that is already open: `sw.js` calls
+   * `skipWaiting` and `clients.claim`, so the new worker takes over, but
+   * this page goes on running the `app.js` it loaded. `controllerchange` is
+   * the moment of that swap.
+   *
+   * `hadController` is what keeps a first visit silent -- the very first
+   * worker claiming the page fires the same event, and announcing "a new
+   * version" to someone who just opened the app for the first time is a
+   * banner that means nothing. It is set after the first event rather than
+   * only read, because a second deploy in the same sitting IS a real update
+   * and has to announce itself. */
+  function watchForUpdate(sw, onUpdate) {
+    if (!sw || typeof sw.addEventListener !== "function") return;
+    var hadController = !!sw.controller;
+    sw.addEventListener("controllerchange", function () {
+      if (hadController) onUpdate();
+      hadController = true;
+    });
+  }
+
+  /* The browser only re-checks `sw.js` on a navigation, and an installed PWA
+   * that is left open and switched back to never navigates -- which is
+   * exactly how he uses this. Asking on every return to the foreground is
+   * what makes the banner appear without him reloading first, which would
+   * rather defeat it. */
+  function recheckOnVisible(registration) {
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState !== "visible") return;
+      try {
+        Promise.resolve(registration.update()).catch(function () {});
+      } catch (err) { /* a browser that throws synchronously */ }
+    });
+  }
+
+  function showUpdateBanner() {
+    var host = document.getElementById("update-banner");
+    if (host) host.hidden = false;
+  }
+
+  var updateReload = document.getElementById("update-reload");
+  if (updateReload) {
+    updateReload.addEventListener("click", function () { window.location.reload(); });
+  }
+
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").then(subscribeToPush).catch(function () {});
+    navigator.serviceWorker.register("/sw.js").then(function (registration) {
+      subscribeToPush(registration);
+      if (registration) recheckOnVisible(registration);
+      return registration;
+    }).catch(function () {});
+    watchForUpdate(navigator.serviceWorker, showUpdateBanner);
     /* The worker retracting a thread it served him out of its prefetch cache.
      *
      * `sw.js` parks the conversation a push notification is about, then hands

@@ -3963,6 +3963,36 @@ describe("an unsent comment survives a re-render", () => {
  * These drive the real router, so what is being checked is what a cold
  * load of `/issues` actually renders, not that a function exists. */
 const rows = (window) => [...window.document.querySelectorAll(".item")];
+
+/* Press and hold a bubble, then find one of its actions in the drawer.
+ *
+ * Copy and "Ask again" left the bubble on 2026-09-07 -- his ask -- and live
+ * in a sheet a one-second hold opens. Returns null when the gesture offers
+ * nothing, which is a real answer: a message with no text and no question
+ * above it opens no drawer at all rather than an empty one.
+ *
+ * The hold starts on the bubble itself and NOT on `.ask-text`, because that
+ * is the rule the feature turns on: the prose belongs to the browser's own
+ * selection, which is how he takes one line out of an answer. A helper that
+ * pressed the text would pass while the real gesture did nothing. */
+async function holdFor(window, row, selector) {
+  const open = window.document.querySelector(".msg-sheet");
+  if (open) open.hidden = true;
+  row.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+  // The real timer, waited out rather than faked: the gesture is a second
+  // long because that is what the app asks of him, and a helper that
+  // shortened it would be testing a gesture nobody makes.
+  await new Promise((resolve) => setTimeout(resolve, HOLD_TEST_MS));
+  const sheet = window.document.querySelector(".msg-sheet");
+  if (!sheet || sheet.hidden) return null;
+  return sheet.querySelector(selector);
+}
+
+// `HOLD_MS` in app.js. Read from the source so the two cannot drift.
+const HOLD_TEST_MS = Number(
+  (readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..",
+                     "agora_runner", "nova_public", "app.js"), "utf8")
+    .match(/var HOLD_MS = (\d+);/) || [])[1]) + 60;
 const rowNumbers = (window) =>
   rows(window).map((row) => row.querySelector(".item-number").textContent);
 
@@ -9558,9 +9588,83 @@ describe("copying a message", () => {
     });
     const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
     assert.equal(rows.length, 3, "the fixture did not render");
-    assert.deepEqual(rows.map((r) => !!r.querySelector(".ask-copy")), [true, true, false],
+    /* Copy moved behind a press-and-hold on 2026-09-07, so this asks the
+     * gesture rather than the bubble. Which messages offer it is unchanged
+     * and is still the point: an attachment-only line has nothing to copy,
+     * and a Copy that yields an empty clipboard reads as broken. */
+    const offered = [];
+    for (const row of rows) offered.push(!!(await holdFor(window, row, ".ask-copy")));
+    assert.deepEqual(offered, [true, true, false],
       "an attachment-only line would copy an empty clipboard, which reads as broken");
-    assert.equal(rows[0].querySelector(".ask-copy").textContent, "Copy");
+    assert.equal((await holdFor(window, rows[0], ".ask-copy")).textContent, "Copy");
+  });
+
+  test("a bubble with nothing to offer opens no drawer at all", async () => {
+    /* An attachment-only line of his own has neither action: nothing to
+     * copy, and his own message re-asks itself. The drawer must then not
+     * open, rather than sliding up empty -- a sheet with no buttons in it
+     * reads as a feature that broke.
+     *
+     * This is a separate test because the ones above cannot see it. They
+     * ask the drawer for a button and get `null` either way, so an empty
+     * drawer and no drawer are the same answer to them; only the sheet's
+     * own `hidden` separates the two. */
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [
+          { id: "1", sender: "Edvard", text: "how many pods?" },
+          { id: "2", sender: "Edvard", text: "" },
+        ],
+      },
+    });
+    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    assert.equal(rows.length, 2, "the fixture did not render");
+
+    // The bubble above it does open one, so a drawer that never works
+    // cannot carry the assertion that matters.
+    assert.ok(await holdFor(window, rows[0], ".ask-copy"),
+      "no bubble in this thread opens the drawer, so the check below proves nothing");
+
+    const sheet = window.document.querySelector(".msg-sheet");
+    if (sheet) sheet.hidden = true;
+    rows[1].dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, HOLD_TEST_MS));
+    const opened = window.document.querySelector(".msg-sheet");
+    assert.ok(!opened || opened.hidden,
+      "holding a message with no actions slid up an empty drawer");
+  });
+
+  test("a hold on the prose is the browser's, not the drawer's", async () => {
+    /* The whole condition he put on this, 2026-09-07: *"I still want the
+     * default text selection on my phone so i can copy just a line of text
+     * and not having to copy the entire bubble."* A long-press is how a
+     * phone starts a selection, so a hold that begins inside `.ask-text`
+     * must do nothing here and fall through to the OS.
+     *
+     * This is the assertion the feature turns on: without the exclusion the
+     * drawer opens over the selection he was making, and Copy-the-whole-
+     * bubble is the only copy left. */
+    const window = await loadAskDock({
+      ask: {
+        conversationId: "c-copy",
+        waiting: false,
+        messages: [{ id: "1", sender: "Nova Answers", text: "Seven pods." }],
+      },
+    });
+    const bubble = window.document.querySelector("#chat-thread .ask-msg");
+    const prose = bubble.querySelector(".ask-text");
+    prose.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, HOLD_TEST_MS));
+    const sheet = window.document.querySelector(".msg-sheet");
+    assert.ok(!sheet || sheet.hidden,
+      "holding the text opened the drawer, which takes his selection away");
+
+    // ...and the same bubble still offers the drawer when held anywhere else,
+    // or this test would pass on a feature that simply never works.
+    assert.ok(await holdFor(window, bubble, ".ask-copy"),
+      "the bubble offers no actions at all, so the check above proves nothing");
   });
 
   /* The assertion that matters, and the reason the source is passed to the
@@ -9578,7 +9682,10 @@ describe("copying a message", () => {
       },
     });
     withClipboard(window, (text) => { copied.push(text); return Promise.resolve(); });
-    const button = window.document.querySelector("#chat-thread .ask-copy");
+    const button = await holdFor(window,
+      [...window.document.querySelectorAll("#chat-thread .ask-msg")].filter((r) => r.classList.contains("ask-theirs")).pop()
+        || window.document.querySelector("#chat-thread .ask-msg"),
+      ".ask-copy");
     button.dispatchEvent(new window.Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -9604,7 +9711,10 @@ describe("copying a message", () => {
       seen = { command, value: scratch && scratch.value };
       return true;
     };
-    const button = window.document.querySelector("#chat-thread .ask-copy");
+    const button = await holdFor(window,
+      [...window.document.querySelectorAll("#chat-thread .ask-msg")].filter((r) => r.classList.contains("ask-theirs")).pop()
+        || window.document.querySelector("#chat-thread .ask-msg"),
+      ".ask-copy");
     button.dispatchEvent(new window.Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -9623,7 +9733,10 @@ describe("copying a message", () => {
       },
     });
     withClipboard(window, () => Promise.reject(new Error("denied by permissions policy")));
-    const button = window.document.querySelector("#chat-thread .ask-copy");
+    const button = await holdFor(window,
+      [...window.document.querySelectorAll("#chat-thread .ask-msg")].filter((r) => r.classList.contains("ask-theirs")).pop()
+        || window.document.querySelector("#chat-thread .ask-msg"),
+      ".ask-copy");
     button.dispatchEvent(new window.Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -9639,7 +9752,10 @@ describe("copying a message", () => {
       },
     });
     withClipboard(window, () => Promise.resolve());
-    const button = window.document.querySelector("#chat-thread .ask-copy");
+    const button = await holdFor(window,
+      [...window.document.querySelectorAll("#chat-thread .ask-msg")].filter((r) => r.classList.contains("ask-theirs")).pop()
+        || window.document.querySelector("#chat-thread .ask-msg"),
+      ".ask-copy");
     button.dispatchEvent(new window.Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(button.textContent, "Copied");
@@ -9673,9 +9789,11 @@ describe("asking a question again", () => {
     const window = await loadAskDock({ ask: thread });
     const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
     assert.equal(rows.length, 4, "the fixture did not render");
-    assert.deepEqual(rows.map((r) => !!r.querySelector(".ask-retry")), [false, false, true, true],
+    const offers = [];
+    for (const row of rows) offers.push(!!(await holdFor(window, row, ".ask-retry")));
+    assert.deepEqual(offers, [false, false, true, true],
       "his own message re-asks itself, and the first answer has no question to re-ask");
-    assert.equal(rows[2].querySelector(".ask-retry").textContent, "Ask again");
+    assert.equal((await holdFor(window, rows[2], ".ask-retry")).textContent, "Ask again");
   });
 
   /* The answer is not finished being written; sending its question again would
@@ -9693,13 +9811,15 @@ describe("asking a question again", () => {
     });
     const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
     assert.equal(rows.length, 2, "the fixture did not render");
-    assert.equal(rows[1].querySelector(".ask-retry"), null);
+    assert.equal(await holdFor(window, rows[1], ".ask-retry"), null,
+      "a partial answer offered a re-ask, which races the turn already running");
   });
 
   test("it sends the question above the answer, into this thread", async () => {
     const window = await loadAskDock({ ask: thread });
     const before = window.posted.length;
-    window.document.querySelectorAll("#chat-thread .ask-retry")[0]
+    const bubbles = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    (await holdFor(window, bubbles[2], ".ask-retry"))
       .dispatchEvent(new window.Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -9716,7 +9836,8 @@ describe("asking a question again", () => {
   test("an answer that follows another answer re-asks the same question", async () => {
     const window = await loadAskDock({ ask: thread });
     const before = window.posted.length;
-    window.document.querySelectorAll("#chat-thread .ask-retry")[1]
+    const later = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
+    (await holdFor(window, later[3], ".ask-retry"))
       .dispatchEvent(new window.Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -9725,7 +9846,10 @@ describe("asking a question again", () => {
 
   test("the question and a pending row appear straight away, and the button stays spent", async () => {
     const window = await loadAskDock({ ask: thread });
-    const button = window.document.querySelector("#chat-thread .ask-retry");
+    const button = await holdFor(window,
+      [...window.document.querySelectorAll("#chat-thread .ask-msg")].filter((r) => r.classList.contains("ask-theirs")).pop()
+        || window.document.querySelector("#chat-thread .ask-msg"),
+      ".ask-retry");
     button.dispatchEvent(new window.Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -9740,7 +9864,10 @@ describe("asking a question again", () => {
   test("a refused send says so and lets him try again", async () => {
     const window = await loadAskDock({ ask: thread });
     window.postReply = { ok: false, message: "502 from Agora" };
-    const button = window.document.querySelector("#chat-thread .ask-retry");
+    const button = await holdFor(window,
+      [...window.document.querySelectorAll("#chat-thread .ask-msg")].filter((r) => r.classList.contains("ask-theirs")).pop()
+        || window.document.querySelector("#chat-thread .ask-msg"),
+      ".ask-retry");
     button.dispatchEvent(new window.Event("click"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -16438,6 +16565,105 @@ describe("the worker can retract a thread it served from its prefetch", () => {
 
     assert.equal(asked(), before);
     assert.match(window.document.querySelector(".ask-text").textContent, /thinking about it/);
+  });
+});
+
+/* "A new version of Nova is ready" -- his ask, 2026-09-07, pointing at
+ * Marcus, which has carried the same banner since its own deploys started
+ * going unnoticed.
+ *
+ * A deploy is invisible to an app that is already open. `sw.js` calls
+ * `skipWaiting` and `clients.claim`, so the new worker takes over the page
+ * immediately -- but the page goes on running the `app.js` it loaded hours
+ * ago, and nothing on screen says so. `controllerchange` is the moment of
+ * that swap and the only signal the page gets.
+ *
+ * These are the three behaviours that decide whether the banner is worth
+ * having: it appears on an update, it stays quiet on a first visit, and the
+ * browser is asked to look for an update at all -- which it otherwise only
+ * does on a navigation, and an installed PWA he switches back to never
+ * navigates.
+ */
+describe("a deploy announces itself to an app that is already open", () => {
+  /* jsdom has no `navigator.serviceWorker`, so this is the whole surface
+   * app.js talks to. `controller` is what a page already under a worker
+   * looks like; `update` is counted rather than stubbed away, because
+   * "did the page ask" is the assertion in the third test. */
+  function withWorker(captured, { controller = null } = {}) {
+    const registration = { pushManager: null, updates: 0 };
+    registration.update = () => { registration.updates += 1; return Promise.resolve(); };
+    captured.registration = registration;
+    return (window) => {
+      Object.defineProperty(window.navigator, "serviceWorker", {
+        configurable: true,
+        value: {
+          controller,
+          register: () => Promise.resolve(registration),
+          addEventListener(name, fn) { (captured[name] = captured[name] || []).push(fn); },
+        },
+      });
+    };
+  }
+
+  async function open(options) {
+    const captured = {};
+    const window = await loadSite("/", { install: withWorker(captured, options) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { window, captured };
+  }
+
+  const banner = (window) => window.document.getElementById("update-banner");
+
+  test("a worker taking over a page that already had one raises the banner", async () => {
+    const { window, captured } = await open({ controller: {} });
+    // Asserted before the event, or a banner that shipped visible would
+    // pass this test without the feature working at all.
+    assert.ok(banner(window), "the page has no update banner to raise");
+    assert.equal(banner(window).hidden, true, "the banner was already on screen before any deploy");
+
+    assert.ok(captured.controllerchange, "app.js never listened for the worker swap");
+    captured.controllerchange.forEach((fn) => fn());
+
+    assert.equal(banner(window).hidden, false, "a deploy landed and the page said nothing");
+    assert.match(banner(window).textContent, /new version/i);
+    assert.ok(window.document.getElementById("update-reload"), "the banner offers no way to take the update");
+  });
+
+  test("the first worker a first visit installs says nothing", async () => {
+    /* The same event fires when the very first worker claims a page that
+     * had none -- someone opening the app for the first time. Telling them
+     * "a new version is ready" is a banner that means nothing, and it would
+     * fire on every genuinely new install forever. */
+    const { window, captured } = await open({ controller: null });
+    captured.controllerchange.forEach((fn) => fn());
+    assert.equal(banner(window).hidden, true,
+      "a first install announced itself as an update");
+
+    // ...and the next swap in the same sitting IS a real deploy. Without
+    // this the test above passes on a banner wired to nothing.
+    captured.controllerchange.forEach((fn) => fn());
+    assert.equal(banner(window).hidden, false,
+      "a deploy after a first install stayed silent, so the flag never rearms");
+  });
+
+  test("coming back to the app asks the browser to look for a new worker", async () => {
+    /* The browser re-checks `sw.js` on a navigation. An installed PWA that
+     * is left open and switched back to never navigates, which is exactly
+     * how he uses this -- so without this the banner would only ever appear
+     * after the reload it exists to save him. */
+    const { window, captured } = await open({ controller: {} });
+    const registration = captured.registration;
+    assert.equal(registration.updates, 0, "the page re-checked before he had gone anywhere");
+
+    Object.defineProperty(window.document, "visibilityState",
+      { configurable: true, get: () => "hidden" });
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    assert.equal(registration.updates, 0, "leaving the app spent a check on the way out");
+
+    Object.defineProperty(window.document, "visibilityState",
+      { configurable: true, get: () => "visible" });
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    assert.equal(registration.updates, 1, "returning to the app never asked for a new worker");
   });
 });
 
