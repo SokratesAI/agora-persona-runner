@@ -455,6 +455,21 @@ def main(argv=None):
         )
         status = max(status, 1) if status != 2 else status
 
+    # The same contract one month back. `daily_private_minutes` reads an
+    # unlisted repository as not-private and drops it, so minutes spent in the
+    # part of the window that lies in the previous month would go missing from
+    # the rate silently -- and missing minutes make the rate read *low*, which
+    # is the direction that turns an unreadable run into a clean one.
+    window_unknown = split_minutes(earlier, visibility)[2] if earlier else {}
+    if window_unknown:
+        print(
+            f"UNREADABLE  {len(window_unknown)} repo(s) spent minutes inside the trailing "
+            f"window but in an earlier month, and are in no listing of {args.org}, so the "
+            f"run rate above is missing them: "
+            + ", ".join(f"{n} ({m:.0f}m)" for n, m in window_unknown.most_common())
+        )
+        status = max(status, 1) if status != 2 else status
+
     if status == 0:
         print(f"Nothing to act on. Swept {len(private) + len(public)} repo(s) with Actions minutes.")
 

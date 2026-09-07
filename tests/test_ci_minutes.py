@@ -481,3 +481,29 @@ def test_minutes_from_the_previous_month_inside_the_window_are_counted(monkeypat
     assert status == 2, out
     assert "2026-08-31     700" in out          # printed in the series, not just used
     assert "160 minute(s)/day" in out           # (420 + 700) / 7
+
+
+def test_an_unlisted_repo_in_the_previous_month_is_unreadable(monkeypatch, capsys):
+    # `daily_private_minutes` reads an unlisted repo as not-private and drops
+    # it, so its minutes would leave the rate silently low -- the direction
+    # that turns "I could not read this" into "nothing to act on".
+    status = _run(monkeypatch, WEEKEND_WINDOW, MONDAY,
+                  prior=[_dated("ghost", 300, "2026-08-31")])
+    out = capsys.readouterr().out
+    assert status == 1, out
+    assert "inside the trailing window but in an earlier month" in out
+    assert "ghost (300m)" in out
+
+
+def test_a_listed_repo_in_the_previous_month_is_not_unreadable(monkeypatch, capsys):
+    # The control: the same shape of row from a repo that *is* in the listing
+    # counts toward the rate and raises nothing.
+    # The allowance is lifted clear of the projection on purpose: this test is
+    # about the UNREADABLE line, and it must not pass or fail on arithmetic.
+    status = _run(monkeypatch, WEEKEND_WINDOW, MONDAY,
+                  argv=["--allowance", "9000"],
+                  prior=[_dated("secret-repo", 300, "2026-08-31")])
+    out = capsys.readouterr().out
+    assert status == 0, out
+    assert "earlier month" not in out
+    assert "103 minute(s)/day" in out           # (420 + 300) / 7
