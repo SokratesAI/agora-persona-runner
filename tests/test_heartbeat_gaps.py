@@ -276,3 +276,80 @@ def test_rollout_instants_come_from_replicaset_creation_times():
     )
     assert error is None
     assert [t.strftime("%H:%M") for t in times] == ["17:42", "21:32"]
+
+
+def _conversations_with_ends(pairs, folder="f1"):
+    """`[(start_offset, last_message_offset)]` in minutes before NOW."""
+    rows = []
+    for i, (start, end) in enumerate(pairs):
+        rows.append({
+            "id": "c0" if i == 0 else f"c{i}",
+            "folderId": folder,
+            "createdAt": (NOW - timedelta(minutes=start)).isoformat().replace("+00:00", "Z"),
+            "lastMessageAt": (NOW - timedelta(minutes=end)).isoformat().replace("+00:00", "Z"),
+        })
+    return rows
+
+
+def test_a_slot_inside_a_running_cycle_is_covered_not_idle():
+    slot = NOW - timedelta(minutes=30)
+    intervals = [(NOW - timedelta(minutes=45), NOW - timedelta(minutes=20))]
+    covered, idle = hg.split_by_in_flight([slot], intervals)
+    assert covered == [slot] and idle == []
+
+
+def test_a_slot_after_the_last_word_of_every_run_is_idle():
+    slot = NOW - timedelta(minutes=30)
+    # The run ended five minutes BEFORE the slot came round, so nothing was
+    # in flight and the poller had an idle loop when it dropped the tick.
+    intervals = [(NOW - timedelta(minutes=60), NOW - timedelta(minutes=35))]
+    covered, idle = hg.split_by_in_flight([slot], intervals)
+    assert idle == [slot] and covered == []
+
+
+def test_a_runs_own_start_does_not_cover_its_own_slot():
+    # Otherwise every firing that DID produce a run would read as covered by
+    # the run it produced, and the split would say "covered" for everything.
+    slot = NOW - timedelta(minutes=45)
+    intervals = [(slot, NOW - timedelta(minutes=20))]
+    covered, idle = hg.split_by_in_flight([slot], intervals)
+    assert idle == [slot] and covered == []
+
+
+def test_a_run_that_has_said_nothing_covers_no_slot():
+    # `lastMessageAt` absent must not become an open-ended interval that
+    # swallows every later slot -- covering a slot needs evidence.
+    convs = _conversations([0, 15, 45, 60])
+    row = hg.judge(_heartbeat(), convs, NOW, 1)
+    covered, idle = hg.split_by_in_flight(row["missed"], row["intervals"])
+    assert covered == [] and idle == row["missed"]
+
+
+def test_the_report_separates_a_covered_slot_from_an_idle_one():
+    # Runs at 02:30, 02:15, 01:45, 01:30; 02:00 is missed, and the 01:45 run
+    # was still talking at 02:05, so it was in flight when 02:00 came round.
+    convs = _conversations_with_ends([(0, 0), (15, 10), (45, 25), (60, 50)])
+    row = hg.judge(_heartbeat(), convs, NOW, 1)
+    text, status = hg.format_report([row], None, 1, 4, [], {"type": "RollingUpdate"})
+    assert status == 2, text
+    assert "1 of them came round with an earlier run still going" in text
+    assert "came round with nothing running at all" not in text
+
+
+def test_a_covered_slot_is_still_charged():
+    # A run in flight is not an excuse: the concurrency limit is 3, so a slot
+    # dropped with one run going is a tick the poller had room to take.
+    convs = _conversations_with_ends([(0, 0), (15, 10), (45, 25), (60, 50)])
+    row = hg.judge(_heartbeat(), convs, NOW, 1)
+    text, status = hg.format_report([row], None, 1, 4, [], {"type": "RollingUpdate"})
+    assert status == 2
+    assert "1 of them with no rollout to explain it" in text.splitlines()[-1]
+
+
+def test_a_slot_on_a_runs_last_word_is_still_covered():
+    # The boundary is closed at the end on purpose: a run whose newest
+    # message lands exactly on the slot was demonstrably alive at it.
+    slot = NOW - timedelta(minutes=30)
+    intervals = [(NOW - timedelta(minutes=45), slot)]
+    covered, idle = hg.split_by_in_flight([slot], intervals)
+    assert covered == [slot] and idle == []

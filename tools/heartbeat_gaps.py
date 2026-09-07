@@ -37,6 +37,19 @@ attributed or it is not:
 * **unexplained** --- no rollout in that period. That is a lost cycle with
   no known cause, and it is what this check now raises on.
 
+An unexplained slot is split one step further, because "no known cause"
+was hiding two different bugs behind one number. Measured 2026-09-08 on
+Nova's own heartbeat: **four of the five unexplained slots came round with
+an earlier cycle still running, and exactly one run was in flight at each
+of them --- against a concurrency limit of 3.** So those four are the
+poller declining a tick it had room to take, not a busy loop. The fifth
+had nothing running at all, which is a different failure: the poll loop
+is fully sequential and blocking, so a tick it never reached is a tick
+that was never judged. Both keep raising --- this splits the finding, it
+does not excuse either half. The interval a run covers is `createdAt` to
+`lastMessageAt` on its own conversation, open at the start so a firing
+never reads as covered by the run it produced.
+
 The attribution window is the schedule's own period, not a tolerance I
 picked. That is deliberately generous: it over-attributes rather than
 under-attributes, so an *unexplained* slot is a claim this can defend.
@@ -243,6 +256,32 @@ def attribute(missed, rollouts, period_seconds):
     return explained, unexplained
 
 
+def split_by_in_flight(slots, intervals):
+    """`(covered, idle)` --- which of these slots had a run already going.
+
+    A slot is *covered* when some earlier run had started and had not yet
+    said its last word when the slot came round. That is not an excuse and
+    this does not treat it as one: the runner's concurrency limit is 3 and
+    only one run was ever in flight at any of the slots this has judged, so
+    a covered slot is a firing the poller declined while it had room. It is
+    printed apart from an *idle* one because the two are different bugs --
+    a slot lost with a cycle running is the scheduler declining a tick it
+    could have taken, and a slot lost with nothing running is the poll loop
+    not looking.
+
+    `intervals` are `(start, last_message)` pairs. A run's own slot is not
+    counted against it: the interval is treated as open at the start, so
+    the firing that produced a run never reads as covered by it.
+    """
+    covered, idle = [], []
+    for slot in slots:
+        if any(start < slot <= end for start, end in intervals):
+            covered.append(slot)
+        else:
+            idle.append(slot)
+    return covered, idle
+
+
 def judge(heartbeat, conversations, now, window_hours):
     """One row's verdict --- a dict, never a raise."""
     name = heartbeat.get("name") or heartbeat.get("id") or "<unnamed>"
@@ -269,18 +308,27 @@ def judge(heartbeat, conversations, now, window_hours):
         return row
     window_start = now - timedelta(hours=window_hours)
     runs = []
+    intervals = []
     for conv in conversations:
         if conv.get("folderId") != folder:
             continue
         stamp = _parse_stamp(conv.get("createdAt"))
-        if stamp is not None and stamp >= window_start:
-            runs.append(stamp)
+        if stamp is None or stamp < window_start:
+            continue
+        runs.append(stamp)
+        # `lastMessageAt` is the newest thing said in that run's own
+        # conversation, which is the closest thing Agora keeps to "when the
+        # run stopped". A run that has said nothing yet is a zero-length
+        # interval rather than an open-ended one -- covering a slot needs
+        # evidence, and absence of evidence must not manufacture it.
+        intervals.append((stamp, _parse_stamp(conv.get("lastMessageAt")) or stamp))
     missed = missed_slots(runs, period, window_start, now)
     row.update(
         verdict="judged",
         period_seconds=period,
         runs=len(runs),
         missed=missed,
+        intervals=intervals,
         expected=len(runs) + len(missed),
         oldest_run=min(runs) if runs else None,
         window_start=window_start,
@@ -343,6 +391,28 @@ def format_report(results, error, window_hours, listed,
                             for t in unexplained[:12]
                         )
                     )
+                    covered, idle = split_by_in_flight(
+                        unexplained, row.get("intervals") or []
+                    )
+                    if covered:
+                        lines.append(
+                            f"        {len(covered)} of them came round with an earlier "
+                            "run still going, so the poller declined a tick it had room "
+                            "for: "
+                            + ", ".join(
+                                t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                                for t in covered[:12]
+                            )
+                        )
+                    if idle:
+                        lines.append(
+                            f"        {len(idle)} of them came round with nothing running "
+                            "at all: "
+                            + ", ".join(
+                                t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                                for t in idle[:12]
+                            )
+                        )
         if row["oldest_run"] and row["oldest_run"] > row["window_start"] + timedelta(
             seconds=row["period_seconds"] * 2
         ):
