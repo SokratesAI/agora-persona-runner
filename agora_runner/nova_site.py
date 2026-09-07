@@ -217,6 +217,7 @@ from agora_runner.nova_conversations import (
     move as conversation_move,
     remove as conversation_remove,
     rename as conversation_rename,
+    cancel as conversation_cancel,
     send as conversation_send,
     set_model as conversation_set_model,
     step_output as conversation_step_output,
@@ -5529,6 +5530,42 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         self._send_json(200 if ok else (400 if bad_text else 502),
                         {"ok": ok, "message": message})
 
+    def _post_conversation_cancel(self, payload):
+        """`/api/conversations/cancel` -- stop the turn running right now.
+
+        His stop button. Until this existed the only way to end a turn that
+        had gone the wrong way was to wait it out: a follow-up message is
+        answered on the *next* turn and does not touch the current one, so a
+        45-minute cycle spent on the wrong thing burned all 45 minutes.
+
+        Audited like a send, and for the same reason: this is a write that
+        destroys work in flight, so which thread it hit and whether it found
+        anything belongs in the trail.
+        """
+        conversation_id = payload.get("conversationId")
+        if not isinstance(conversation_id, str):
+            self._send_json(400, {"error": "conversationId must be a string"})
+            return
+        try:
+            ok, message = conversation_cancel(conversation_id)
+        except Exception as e:
+            log(f"nova-site conversations/cancel failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Turn stopped · {message}",
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        # `which conversation?` is the one refusal a retry cannot fix --
+        # `_post_conversation_send`'s split, same reasoning.
+        bad_request = not ok and message.startswith("which conversation")
+        self._send_json(200 if ok else (400 if bad_request else 502),
+                        {"ok": ok, "message": message})
+
     def _post_conversation_new(self, payload):
         """`/api/conversations/new` -- start a thread with Nova.
 
@@ -6142,7 +6179,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/board/edit", "/api/board/delete", "/api/board/archive",
             "/api/capture/comment",
             "/api/board/comment", "/api/ask", "/api/ask/watching",
-            "/api/conversations/send", "/api/conversations/new",
+            "/api/conversations/send", "/api/conversations/cancel",
+            "/api/conversations/new",
             "/api/conversations/watching", "/api/conversations/rename",
             "/api/conversations/autotitle",
             "/api/conversations/move", "/api/conversations/delete",
@@ -6171,6 +6209,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/send":
             self._post_conversation_send(payload)
+            return
+        if path == "/api/conversations/cancel":
+            self._post_conversation_cancel(payload)
             return
         if path == "/api/conversations/new":
             self._post_conversation_new(payload)

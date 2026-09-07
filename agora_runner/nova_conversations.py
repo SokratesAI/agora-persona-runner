@@ -27,10 +27,14 @@ convention: `decide_turn` speaks only when the last visible message came
 from him, so any other sender writes a message nothing ever answers.
 """
 
+import json
 import re
+import urllib.request
 
 from agora_runner.audit import fold_text_streams, narration_passage
-from agora_runner.config import NOVA_PERSONA_ID
+from agora_runner.config import (
+    CLAUDE_BRIDGE_TOKEN, CLAUDE_BRIDGE_URL, NOVA_PERSONA_ID,
+)
 from agora_runner.http_util import agora_get, agora_internal, agora_public
 from agora_runner.log import log
 from agora_runner.nova_conversation_reads import is_unread, load_reads
@@ -61,6 +65,13 @@ MAX_THREAD_CEILING = 500
 ANSWER_PERSONA_ID = "8972a54d-cafa-4f07-a527-d8686cea51ca"
 
 MAX_MESSAGE_CHARS = 4000
+
+# How long to wait for the bridge to answer POST /cancel. It SIGTERMs, then
+# waits up to its own 5-second grace before SIGKILL, so 15s is that plus
+# room for the round trip -- a number derived from the thing it waits on
+# rather than picked. Shorter and a stop that is working reads as a failure
+# on his screen while the kill is still landing.
+CANCEL_TIMEOUT_SECONDS = 15
 MAX_NAME_CHARS = 200
 
 # What a thread is called before it has been about anything. His capture,
@@ -510,6 +521,46 @@ def send(conversation_id, text):
         log(f"nova_conversations: notify failed HTTP {status}")
         return False, "could not post the message"
     return True, message_id
+
+
+def cancel(conversation_id):
+    """(ok, message). Stop the turn currently running for this thread.
+
+    Straight to the bridge, not through Agora. The bridge is the only
+    process that holds the CLI subprocess, Agora is blocked inside its own
+    call to it, and adding a hop through a service that is mid-request would
+    only make the stop wait for the thing it is trying to stop.
+
+    "Nothing was running" is a success, not a 404. The turn may have
+    finished in the moment between him pressing stop and this arriving, and
+    telling him the stop failed would be wrong about the only thing he
+    cares about: there is nothing running now.
+
+    No bridge configured is a real failure and says so. Returning ok here
+    would paint the composer back to Send over a turn that is still
+    burning, which is the one outcome worse than the button doing nothing.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    if not CLAUDE_BRIDGE_URL:
+        return False, "no bridge to stop"
+    headers = {"Content-Type": "application/json"}
+    if CLAUDE_BRIDGE_TOKEN:
+        headers["x-bridge-token"] = CLAUDE_BRIDGE_TOKEN
+    body = json.dumps({"conversation_id": conversation_id}).encode()
+    request = urllib.request.Request(
+        CLAUDE_BRIDGE_URL.rstrip("/") + "/cancel", data=body, headers=headers,
+        method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=CANCEL_TIMEOUT_SECONDS) as response:
+            answer = json.loads(response.read() or b"{}")
+    except Exception as e:
+        log(f"nova_conversations: cancel failed: {type(e).__name__}: {e}")
+        return False, "could not reach the bridge"
+    stopped = answer.get("cancelled")
+    if not isinstance(stopped, int):
+        return False, "the bridge did not say what it stopped"
+    return True, "stopped" if stopped else "nothing was running"
 
 
 def starting_name(name):
