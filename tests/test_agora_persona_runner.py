@@ -5088,6 +5088,34 @@ def test_vault_git_revision_history_lists_commits(runner):
     assert "fix stuff" in result
 
 
+def test_vault_git_revision_history_ends_gh_flag_parsing(runner):
+    """The endpoint reaches `gh api` after a `--`, so it cannot be a flag.
+
+    CodeQL rates this critical (py/command-line-injection #36). There is no
+    shell -- the argv is a list -- so the only thing available was argument
+    injection, and every caller today prefixes `repos/<mirror>/`. The `--`
+    is what keeps that true if a caller is written later that does not.
+    """
+    seen = {}
+
+    def fake_run(cmd, capture_output, text, timeout, env):
+        seen["cmd"] = cmd
+
+        class R:
+            stdout = "[]"
+            stderr = ""
+            returncode = 0
+        return R()
+
+    with patch.object(runner.vault, "GITHUB_READONLY_TOKEN", "fake-token"), \
+         patch.object(runner.subprocess, "run", side_effect=fake_run):
+        runner.vault_git_revision_history(path="--version")
+    cmd = seen["cmd"]
+    assert cmd[:3] == ["gh", "api", "--"], cmd
+    # and the caller-supplied half is still inside the one positional it left
+    assert len(cmd) == 4 and cmd[3].startswith("repos/"), cmd
+
+
 def test_vault_git_revision_history_sha_mode_returns_diff(runner):
     def fake_run(cmd, capture_output, text, timeout, env):
         class R:
@@ -5116,7 +5144,8 @@ def test_vault_summarize_recent_agent_work_expands_recent_commits(runner):
         class R:
             returncode = 0
             stderr = ""
-            if "/commits/" in cmd[2]:
+            # `cmd[-1]`, not `cmd[2]`: the endpoint sits behind a `--` now.
+            if "/commits/" in cmd[-1]:
                 stdout = json.dumps({"files": [{"filename": "notes/a.md"}]})
             else:
                 stdout = json.dumps([
