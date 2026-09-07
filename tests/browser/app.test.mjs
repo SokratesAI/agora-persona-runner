@@ -14234,6 +14234,22 @@ describe("the project page", () => {
     assert.equal(rows[0].style.transform, "");
   });
 
+  test("a second finger mid-drag does not strand the first row", async () => {
+    const window = await loadSite("/projects", { project: () => THREE });
+    const rows = standings(window);
+    layOut(rows);
+    pointer(window, grip(rows[0]), "pointerdown", 20);
+    pointer(window, grip(rows[0]), "pointermove", 105);
+    // A second grip taken while the first is still held. Without the
+    // guard this replaces the drag, and the first row keeps its
+    // translate until something repaints the list.
+    pointer(window, grip(rows[2]), "pointerdown", 100);
+    pointer(window, grip(rows[0]), "pointerup", 105);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(rows[0].style.transform, "");
+    assert.deepEqual(window.posted.at(-1).body, { project: "Marcus", position: 3 });
+  });
+
   test("a drag started anywhere but the grip is not a drag", async () => {
     const window = await loadSite("/projects", { project: () => THREE });
     const rows = standings(window);

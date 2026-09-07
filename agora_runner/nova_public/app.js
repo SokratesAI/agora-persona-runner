@@ -9065,6 +9065,10 @@
     }
 
     list.addEventListener("pointerdown", function (event) {
+      // One drag at a time. A second finger landing on another grip
+      // would otherwise replace `drag` and strand the first row with its
+      // transform still on, until the next load repainted the list.
+      if (drag) return;
       var grip = event.target;
       if (!grip || grip.className !== "project-standing-grip") return;
       var row = grip.parentNode;
