@@ -2,7 +2,8 @@
 # Rebuild a working headless Chromium inside the BRIDGE pod (Bash tool), from nothing.
 # Why this exists: the bridge pod has node+npx and a route to nova-site:8083, but no root,
 # no apt lists, no X/GTK libraries and no fonts. Each of those is solvable without root.
-# Takes ~3 minutes and ~1.5GB under /data/workspace/nova-browser (which survives cycles).
+# Takes ~3 minutes and 1.2GB under $NOVA_BROWSER_ROOT, default /data/workspace/nova-browser
+# (which survives cycles). Measured cycle 1130 on a full rebuild from nothing.
 set -euo pipefail
 # `tools.see_page` reads NOVA_BROWSER_ROOT and falls back to this same path, so
 # the builder and the consumer cannot disagree about where the environment is.
