@@ -97,7 +97,7 @@ def test_adjacent_alphabet_neighbours_still_split():
     assert "V" < mid < "W"
 
 
-@pytest.mark.parametrize("count", [1, 2, 3, 61, 62, 63, 400, 1000])
+@pytest.mark.parametrize("count", [1, 2, 3, 61, 62, 63, 400, 1000, 2000])
 def test_sequence_is_ascending_unique_and_valid(count):
     keys = sequence(count)
     assert len(keys) == count
