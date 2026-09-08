@@ -640,3 +640,96 @@ def test_no_report_still_claims_the_poller_declined_a_tick_it_had_room_for():
             records, error,
         )
         assert "declined a tick it had room for" not in text
+
+
+# --- a scheduler pass that raised ----------------------------------------
+
+
+def _fail(at, error="RuntimeError: agora unreachable", n=1):
+    return {"at": at.isoformat(), "error": error,
+            "errorType": error.split(":")[0], "failedSinceHealthy": n}
+
+
+def test_a_failure_record_is_matched_to_the_slot_it_was_written_in():
+    slot = NOW - timedelta(minutes=30)
+    found = hg.reasons_for([slot], [_fail(slot + timedelta(minutes=5))], 900,
+                           field="error")
+    assert found[slot] == ["RuntimeError: agora unreachable"]
+
+
+def test_a_failure_record_from_the_next_slot_is_not_lent_backwards():
+    slot = NOW - timedelta(minutes=30)
+    found = hg.reasons_for([slot], [_fail(slot + timedelta(seconds=900))], 900,
+                           field="error")
+    assert found[slot] == []
+
+
+def test_the_report_names_a_raised_pass_instead_of_calling_it_unevaluated():
+    # The whole point: with no failure ledger this same slot reads as
+    # `unevaluated`, which is the name of the poller sleeping through it.
+    missed = NOW - timedelta(minutes=30)
+    text, status = hg.format_report(
+        [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [_drop(NOW - timedelta(minutes=50))], None, [], None,
+        [_fail(missed + timedelta(minutes=2))], None, NOW,
+    )
+    assert status == 2, text
+    assert "had a scheduler pass raise inside their own period" in text
+    assert "RuntimeError: agora unreachable" in text
+    assert "never evaluated rather than declined" not in text
+
+
+def test_without_the_failure_ledger_that_same_slot_still_reads_unevaluated():
+    # The control for the test above: the fixture really does land in the
+    # bucket the failure record moves it out of, so the assertion above is
+    # measuring the change and not a slot that was never there.
+    text, _ = hg.format_report(
+        [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [_drop(NOW - timedelta(minutes=50))], None, [], None,
+        [], None, NOW,
+    )
+    assert "the tick was never evaluated rather than declined" in text
+    assert "had a scheduler pass raise inside their own period" not in text
+
+
+def test_a_failure_outside_the_slot_does_not_reclassify_it():
+    missed = NOW - timedelta(minutes=30)
+    text, _ = hg.format_report(
+        [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [_drop(NOW - timedelta(minutes=50))], None, [], None,
+        [_fail(missed - timedelta(minutes=20))], None, NOW,
+    )
+    assert "had a scheduler pass raise inside their own period" not in text
+    assert "the tick was never evaluated rather than declined" in text
+
+
+def test_a_healthy_scheduler_prints_no_failure_line():
+    summary = hg.failure_summary([], NOW, 24)
+    assert summary is None
+
+
+def test_the_failure_summary_quotes_the_newest_error():
+    records = [_fail(NOW - timedelta(hours=2), "ValueError: old"),
+               _fail(NOW - timedelta(minutes=5), "RuntimeError: new")]
+    summary = hg.failure_summary(records, NOW, 24)
+    assert "2 recorded" in summary
+    assert "RuntimeError: new" in summary
+    assert "ValueError: old" not in summary
+
+
+def test_a_failure_older_than_the_window_is_not_counted():
+    assert hg.failure_summary([_fail(NOW - timedelta(hours=30))], NOW, 24) is None
+
+
+def test_an_undated_failure_is_counted_not_dropped():
+    summary = hg.failure_summary([{"error": "boom"}], NOW, 24)
+    assert "1 recorded" in summary
+    assert "no readable timestamp" in summary
+
+
+def test_an_unreadable_failure_ledger_is_named_not_treated_as_clean():
+    text, _ = hg.format_report(
+        [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [], None, [], None, [], "scheduler-failures.json is not JSON", NOW,
+    )
+    assert "NO SCHEDULER FAILURES READ" in text

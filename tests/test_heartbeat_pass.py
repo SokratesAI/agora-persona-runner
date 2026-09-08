@@ -29,7 +29,7 @@ def test_pass_once_runs_due_heartbeats(monkeypatch):
     monkeypatch.setattr("agora_runner.heartbeats.run_due_heartbeats",
                         lambda *a, **k: calls.append((a, k)))
 
-    assert heartbeat_pass.pass_once() is True
+    assert heartbeat_pass.pass_once() is None
     # No listing argument: this thread fetches its own, which is one cheap
     # GET and keeps it independent of whatever the conversation loop read.
     assert calls == [((), {})]
@@ -45,7 +45,11 @@ def test_pass_once_swallows_a_failure_and_says_so(monkeypatch):
     monkeypatch.setattr("agora_runner.heartbeats.run_due_heartbeats", boom)
     monkeypatch.setattr(heartbeat_pass, "log", logged.append)
 
-    assert heartbeat_pass.pass_once() is False
+    # The exception itself comes back, not a bare `False`: the loop has to
+    # record WHICH error, and swallowing used to leave the only copy of that
+    # in a log that dies with the container.
+    returned = heartbeat_pass.pass_once()
+    assert isinstance(returned, RuntimeError) and str(returned) == "agora is down"
     assert logged and "agora is down" in logged[0]
 
 
@@ -166,3 +170,53 @@ def test_a_slow_conversation_tick_no_longer_delays_a_firing(monkeypatch):
 
     assert during >= 2, (
         f"the scheduler took {during} pass(es) while one reply was generating")
+
+
+# --- a pass that raised leaves a record -----------------------------------
+
+
+def _reset_failures():
+    heartbeat_pass._failed_since_healthy = 0
+
+
+def test_a_failed_pass_is_recorded():
+    _reset_failures()
+    seen = []
+    error = RuntimeError("agora unreachable")
+    heartbeat_pass.note_failure(error, record=lambda *a: seen.append(a))
+    assert seen == [(error, 1)]
+
+
+def test_a_healthy_pass_records_nothing_and_resets_the_counter():
+    _reset_failures()
+    seen = []
+    heartbeat_pass.note_failure(RuntimeError("one"), record=lambda *a: seen.append(a))
+    assert heartbeat_pass.note_failure(None, record=lambda *a: seen.append(a)) is None
+    assert len(seen) == 1
+    assert heartbeat_pass._failed_since_healthy == 0
+    # The counter really reset: the next failure is the FIRST again, which is
+    # a doubling and therefore writes.
+    heartbeat_pass.note_failure(RuntimeError("two"), record=lambda *a: seen.append(a))
+    assert [a[1] for a in seen] == [1, 1]
+
+
+def test_a_run_of_failures_writes_at_the_doublings_only():
+    _reset_failures()
+    seen = []
+    for _ in range(9):
+        heartbeat_pass.note_failure(RuntimeError("x"), record=lambda *a: seen.append(a))
+    assert [a[1] for a in seen] == [1, 2, 4, 8]
+
+
+def test_lateness_and_failure_are_counted_separately():
+    # A punctual scheduler that raises on every pass must still be reported:
+    # sharing one counter would let a healthy-pass reset on one silence the
+    # other.
+    _reset_failures()
+    heartbeat_pass._late_since_healthy = 0
+    seen = []
+    heartbeat_pass.note_failure(RuntimeError("x"), record=lambda *a: seen.append(a))
+    heartbeat_pass.note_pass(1.0, 0.1, interval_seconds=5.0, record=lambda *a: seen.append(a))
+    heartbeat_pass.note_failure(RuntimeError("x"), record=lambda *a: seen.append(a))
+    assert len(seen) == 2  # the two failures; the on-time pass wrote nothing
+    assert heartbeat_pass._failed_since_healthy == 2
