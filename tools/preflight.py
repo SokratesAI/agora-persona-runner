@@ -369,6 +369,10 @@ CADENCE_HOURS = {
     # NEVER_COLLAPSE: "unchanged since last sweep" is the worst possible reason
     # to stop looking at an unanswered message.
     "telegram_inbox": 0.0,
+    # Every sweep -- the card it watches goes stale after 3h, so a 24h cadence
+    # let it read clean on the sweep where the staleness actually began. Same
+    # reason it is in NEVER_COLLAPSE.
+    "recap_health": 0.0,
     # Every sweep -- files I rewrite in my own wrap-up, so the previous cycle is
     # exactly who could have broken them.
     "doc_integrity": 0.0,
@@ -409,7 +413,6 @@ CADENCE_HOURS = {
     "backup_health": 24.0,
     "rollback_watch": 24.0,
     "trace_health": 24.0,
-    "recap_health": 24.0,
     "roadmap_drift": 24.0,
     "survey": 24.0,
     "nas_health": 24.0,
@@ -690,10 +693,27 @@ REPRINT_HOURS = 24.0
 #: three quarter hours later. Nothing was broken -- the collapse did exactly
 #: what it was written to do, to the one check where doing it is the failure.
 #:
-#: Keep this set small and keep the bar explicit: a check belongs here only if
-#: its finding is a person waiting on a reply. Everything else -- an alert, a
-#: full disk, a stale pin -- is a fact, and a fact can be read once a day.
-NEVER_COLLAPSE = frozenset({"telegram_inbox"})
+#: `recap_health` joined it on 2026-09-08, and its case is the same one under
+#: a different name. The card it watches is the twelve-hour summary at the top
+#: of the owner's Journal page; it goes stale after three hours and I rewrite
+#: it in one command. On 2026-09-08 06:32 that card had been stale for 52.9
+#: hours, covering cycles that had ended two days earlier, and the owner filed
+#: it 🔴 Immediately: *"The Journal box for the last 12 hours summary has not
+#: been updated for over 24 hours."* The check was raising the whole time and
+#: every one of those sweeps collapsed it, because `finding_shape` blinds
+#: digits -- so `3.1h ago` and `52.9h ago` are the same fingerprint, and the
+#: one number that says how bad it has got is the one number the collapse
+#: cannot see. That is `telegram_inbox` again: the text is unchanged precisely
+#: because nobody has dealt with it, and here the person waiting is waiting at
+#: a page rather than at a reply.
+#:
+#: Keep this set small and keep the bar explicit, and the bar is now two
+#: clauses rather than one: a check belongs here if its finding is **someone
+#: waiting on me**, and if **the wait itself is the number the fingerprint
+#: blinds**. Everything else -- an alert, a full disk, a stale pin -- is a
+#: standing fact about the cluster that I cannot close from this loop, and a
+#: fact can be read once a day.
+NEVER_COLLAPSE = frozenset({"telegram_inbox", "recap_health"})
 
 #: Where the "have I already printed this" record lives. Not in the checkout:
 #: concurrent cycles each get their own `git worktree`, so a per-tree file
