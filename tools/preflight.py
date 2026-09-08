@@ -187,6 +187,7 @@ CHECKS = (
     "roadmap_drift",
     "recap_health",
     "browser_env_health",
+    "marcus_reminder",
 )
 
 #: Checks that must not run while the rest of the sweep is running, because
@@ -319,6 +320,7 @@ SUBJECT = {
     "recap_health":      ("on-box",  "the recap card's own file in the vault"),
     "browser_env_health": ("on-box",  "the browser environment on this pod's own volume"),
     "marcus_capacity":   ("on-box",  "Marcus's state document, read over the cluster network"),
+    "marcus_reminder":   ("on-box",  "the Marcus reminder Job's own log, in this cluster"),
 }
 
 
@@ -380,6 +382,11 @@ CADENCE_HOURS = {
     # let it read clean on the sweep where the staleness actually began. Same
     # reason it is in NEVER_COLLAPSE.
     "recap_health": 0.0,
+    # Twelve hours -- its subject is one CronJob run a night at 20:00 Oslo, so a
+    # cadence past 24h would step over a night entirely, and anything shorter
+    # re-reads a log that cannot have changed. A verdict that raises is due
+    # every sweep regardless of what this says.
+    "marcus_reminder": 12.0,
     # Every sweep -- a directory on a volume any cycle can tidy, and the check
     # is a handful of stat calls. A 24h cadence would let the sweep that first
     # sees the loss be the one that collapses it.
