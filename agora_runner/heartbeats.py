@@ -4,7 +4,7 @@ import os
 import threading
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from agora_runner.config import (
     FETCH_LIMIT,
@@ -19,7 +19,9 @@ from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.audit import audit
 from agora_runner.agora_api import fetch_persona
 from agora_runner.vault import fetch_vault_context
-from agora_runner.turns import build_system, merge_history, pending_user_turn, schedule_due
+from agora_runner.turns import (build_system, last_anchored_occurrence, merge_history,
+                                 parse_iso, pending_user_turn, schedule_due,
+                                 schedule_minutes)
 from agora_runner.reply import generate_reply
 from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
@@ -938,6 +940,61 @@ def _finish(heartbeat, claimed_at, result):
     return status
 
 
+# A due tick that is DECLINED reaches `_drop_tick` and now leaves a record.
+# A due tick the poller never evaluated leaves nothing at all, and that is a
+# different loss with the same symptom. `schedule_due` asks only about the
+# MOST RECENT anchored occurrence -- `last_anchored_occurrence(...) > floor` --
+# so if the poll loop is busy across two slot boundaries, the older slot is
+# never asked about, never declined, and never logged. It is simply gone.
+#
+# Measured 2026-09-08: `tools.heartbeat_gaps` reported four missed Nova
+# firings in 24h with no rollout to explain any of them, and the runs either
+# side of each one show the poller arriving late -- the 13:12 slot spawned at
+# 13:20:35 and the 13:36 slot produced nothing, while the only run alive was
+# one of three allowed. Nothing was declined. The tick was never taken.
+#
+# This does not change whether anything fires. It names the loss, once, on the
+# run that finally does spawn, so a slot the poller slept through stops
+# reading as unexplained.
+_MAX_SKIPPED_REPORTED = 64
+
+
+def _skipped_occurrences(schedule, last_run_iso, created_iso, now_utc):
+    """Anchored slots strictly between the floor and the one due now.
+
+    Oldest first. Empty for a schedule with no anchor, because only an
+    anchored grid has slots that exist independently of when the last run
+    happened -- `every@24m` with no anchor means "24 minutes after the
+    floor", so there is no earlier slot to have missed.
+
+    The walk is capped at `_MAX_SKIPPED_REPORTED`: a heartbeat left
+    disabled for a week has a real floor a thousand slots back, and none
+    of those were losses. The cap is on the walk rather than on the
+    report, so the caller is told the count is a floor and not a total.
+    """
+    if not schedule.startswith("every@"):
+        return []
+    minutes = schedule_minutes(schedule)
+    if minutes is None:
+        return []
+    _amount, _, anchor = schedule[len("every@"):].partition("@")
+    if not anchor:
+        return []
+    floor = parse_iso(last_run_iso or created_iso)
+    if floor is None:
+        return []
+    delta = timedelta(minutes=minutes)
+    occurrence = last_anchored_occurrence(anchor, delta, now_utc)
+    skipped = []
+    while len(skipped) < _MAX_SKIPPED_REPORTED:
+        occurrence = last_anchored_occurrence(anchor, delta, occurrence - delta)
+        if occurrence <= floor:
+            break
+        skipped.append(occurrence)
+    skipped.reverse()
+    return skipped
+
+
 def _drop_tick(hb_id, name, reason):
     """Record a due tick that did not spawn a run, and say so on a doubling.
 
@@ -1269,5 +1326,18 @@ def run_due_heartbeats(heartbeats_list=None):
                 f"(limit {limit})"
                 + (f", {dropped} due tick(s) dropped since the last start"
                    if dropped else ""))
+            # forceRun is exempt: "run now" is not a slot, so an old
+            # lastRunAt behind it is not a slot anybody lost.
+            if not heartbeat.get("forceRun"):
+                skipped = _skipped_occurrences(
+                    heartbeat.get("schedule", ""), heartbeat.get("lastRunAt"),
+                    heartbeat.get("createdAt", now.isoformat()), now)
+                if skipped:
+                    at_least = " at least" if len(skipped) >= _MAX_SKIPPED_REPORTED else ""
+                    reason = (f"the poller did not evaluate{at_least} "
+                              f"{len(skipped)} earlier slot(s) before this one: "
+                              + ", ".join(s.isoformat() for s in skipped))
+                    log(f"heartbeat {name}: {reason}")
+                    dropped_ticks.record(hb_id, name, reason, len(skipped))
         except Exception as e:
             log(f"heartbeat {heartbeat.get('name')} scheduling error: {e}")

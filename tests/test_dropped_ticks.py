@@ -248,3 +248,132 @@ def test_the_recorded_reason_is_the_one_the_poller_gave(monkeypatch):
     _drop(1, lambda *a, **k: calls.append(a))
 
     assert calls[0][:3] == ("hb1", "Nova", "claim not visible yet")
+
+
+# ---- a slot the poller never evaluated -------------------------------------
+#
+# The tests above cover a tick that was DECLINED. These cover the other loss
+# with the same symptom: `schedule_due` asks only about the most recent
+# anchored occurrence, so a poll loop busy across two boundaries never asks
+# about the older slot at all. Nothing declines it and nothing logs it.
+
+OSLO_ANCHOR = "every@24m@16:00"
+
+
+def _utc(h, m, s=0, day=8):
+    return datetime(2026, 9, day, h, m, s, tzinfo=timezone.utc)
+
+
+def test_the_slots_between_the_last_run_and_the_due_one_are_named():
+    """Ran at 11:12 UTC, poller next looks at 12:01: 11:36 and 12:00 both
+    came and went. The 12:00 one is the one firing now, so 11:36 is the loss."""
+    skipped = heartbeats._skipped_occurrences(
+        OSLO_ANCHOR, _utc(11, 12).isoformat(), _utc(6, 0).isoformat(), _utc(12, 1))
+
+    assert [s.isoformat() for s in skipped] == [_utc(11, 36).isoformat()]
+
+
+def test_a_slot_that_fires_on_time_reports_nothing():
+    """The precondition the assertion above would pass without: if this
+    returned a slot on an ordinary firing, every run would file a loss."""
+    assert heartbeats._skipped_occurrences(
+        OSLO_ANCHOR, _utc(11, 36).isoformat(), _utc(6, 0).isoformat(), _utc(12, 0, 6)) == []
+
+
+def test_several_slept_through_slots_come_back_oldest_first():
+    skipped = heartbeats._skipped_occurrences(
+        OSLO_ANCHOR, _utc(10, 0).isoformat(), _utc(6, 0).isoformat(), _utc(11, 15))
+
+    assert [s.isoformat() for s in skipped] == [
+        _utc(10, 24).isoformat(), _utc(10, 48).isoformat()]
+
+
+def test_a_schedule_with_no_anchor_has_no_earlier_slot_to_have_missed():
+    """`every@24m` means 24 minutes after the floor, so the grid moves with
+    the runs and there is no slot that existed independently of them."""
+    assert heartbeats._skipped_occurrences(
+        "every@24m", _utc(10, 0).isoformat(), _utc(6, 0).isoformat(), _utc(11, 15)) == []
+
+
+def test_a_heartbeat_idle_for_a_week_does_not_walk_a_thousand_slots():
+    """A disabled heartbeat has a real floor days back and lost nothing. The
+    cap is on the walk, and the caller is told the count is a floor."""
+    skipped = heartbeats._skipped_occurrences(
+        OSLO_ANCHOR, _utc(12, 0, day=1).isoformat(), _utc(6, 0, day=1).isoformat(),
+        _utc(12, 0, day=8))
+
+    assert len(skipped) == heartbeats._MAX_SKIPPED_REPORTED
+    assert skipped == sorted(skipped)
+
+
+def test_an_unparseable_schedule_is_not_a_crash_in_the_poll_loop():
+    for schedule in ("", "every@abc@16:00", "every@0m@16:00", "cron@0 * * * *"):
+        assert heartbeats._skipped_occurrences(
+            schedule, _utc(10, 0).isoformat(), _utc(6, 0).isoformat(), _utc(11, 15)) == []
+
+
+def _spawn(heartbeat, now, recorder):
+    """One pass of the poller against one heartbeat, with the run stubbed out."""
+    heartbeats._heartbeat_threads.pop(heartbeat["id"], None)
+    heartbeats._heartbeat_spawn_marks.pop(heartbeat["id"], None)
+    started = []
+
+    class FakeThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self.target, self.args = target, args
+
+        def start(self):
+            started.append(self.args)
+
+        def is_alive(self):
+            return False
+
+    with patch.object(heartbeats, "log"), patch.object(heartbeats, "debug_log"), \
+         patch.object(heartbeats, "threading") as fake_threading, \
+         patch.object(heartbeats, "datetime") as fake_datetime, \
+         patch.object(dropped_ticks, "record", recorder):
+        fake_threading.Thread = FakeThread
+        fake_datetime.now.return_value = now
+        heartbeats.run_due_heartbeats([heartbeat])
+    heartbeats._heartbeat_threads.pop(heartbeat["id"], None)
+    heartbeats._heartbeat_spawn_marks.pop(heartbeat["id"], None)
+    return started
+
+
+def _hb(**over):
+    hb = {"id": "hb1", "name": "Nova", "enabled": True, "schedule": OSLO_ANCHOR,
+          "lastRunAt": _utc(11, 12).isoformat(), "createdAt": _utc(6, 0).isoformat()}
+    hb.update(over)
+    return hb
+
+
+def test_the_run_that_finally_spawns_files_the_slot_that_was_slept_through():
+    calls = []
+    started = _spawn(_hb(), _utc(12, 1), lambda *a, **k: calls.append(a))
+
+    assert started, "the poller still has to start the run"
+    assert len(calls) == 1
+    assert calls[0][0] == "hb1"
+    assert calls[0][3] == 1
+    assert "did not evaluate 1 earlier slot(s)" in calls[0][2]
+    assert _utc(11, 36).isoformat() in calls[0][2]
+
+
+def test_an_on_time_run_files_nothing():
+    calls = []
+    started = _spawn(_hb(lastRunAt=_utc(11, 36).isoformat()), _utc(12, 0, 6),
+                     lambda *a, **k: calls.append(a))
+
+    assert started, "the poller still has to start the run"
+    assert calls == []
+
+
+def test_run_now_is_not_a_slot_and_files_nothing():
+    """forceRun with a stale lastRunAt behind it is the owner pressing a
+    button, not a grid of slots the poller lost."""
+    calls = []
+    started = _spawn(_hb(enabled=False, forceRun=True), _utc(12, 1),
+                     lambda *a, **k: calls.append(a))
+
+    assert started, "forceRun must still start the run"
+    assert calls == []
