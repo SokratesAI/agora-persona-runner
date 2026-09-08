@@ -618,9 +618,15 @@ def _capture_board_help(captures):
         return []
     out = ["  Board one — python3 -m tools.board_capture --file <his file on disk> "
            "--index N --priority low|medium|high|immediate "
-           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD",
+           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD "
+           "--projects-from <the OTHER board on disk>",
            "  It adds the row AND cuts the bullet, so the item is in one place. "
-           "Board highest --index first: the indices renumber after each cut."]
+           "Board highest --index first: the indices renumber after each cut.",
+           "  --projects-from is what makes the project he picked in the app "
+           "reach the cell: the picker offers the projects on BOTH boards and "
+           "board_capture can only see the one file you hand it, so without it "
+           "a project with no row on this board resolves to nothing and the "
+           "#slug stays in the title."]
     for capture in sorted(captures, key=lambda c: -c["index"]):
         board = "notes" if capture["board"] == "note" else capture["board"] + "s"
         out.append(f"     --index {capture['index']}  ({board})  ->  {capture['text'][:70]}")
