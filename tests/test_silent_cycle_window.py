@@ -176,3 +176,101 @@ def test_a_healthy_run_still_posts_the_opening_chip_before_the_model_call(runner
     assert kinds == ["chip", "model", "chip"], order
     assert "every@18m" in order[0][1]
     assert "replied" in order[-1][1]
+
+
+# --- What a `failed:` record actually says -------------------------------
+#
+# Moving the `try` up here (above) is only half of "the next silent cycle
+# names its own bug". The other half is what the record then holds:
+# `lastResult` was `f"failed: {e}"`, and for the exception types this window
+# raises that identifies nothing. `str(KeyError("schedule"))` is `"'schedule'"`
+# -- no type, no file, no line -- and the traceback that did hold the line
+# was never printed anywhere but a pod log, which dies with the pod. That is
+# why 1145, 1146, 1148, 1166 and 1181 are undiagnosable today.
+
+
+def test_raising_frame_names_the_innermost_line(runner):
+    """The line that raised, not the call path above it."""
+    def inner():
+        raise ValueError("boom")
+
+    def outer():
+        inner()
+
+    try:
+        outer()
+    except ValueError as error:
+        where = runner.heartbeats.raising_frame(error)
+
+    assert where.startswith("test_silent_cycle_window.py:"), where
+    # `inner` raised; `outer` only called it.
+    assert where.endswith(" in inner"), where
+    # Basename, not an absolute path -- `lastResult` has 200 characters and
+    # the directory layout is the same on every pod.
+    assert "/" not in where, where
+
+
+def test_raising_frame_survives_an_exception_that_never_raised(runner):
+    """It is called from a failure path, so it may not fail there itself."""
+    assert runner.heartbeats.raising_frame(ValueError("never raised")) == "no traceback"
+
+
+def _run_with_named_exploder(runner, error):
+    """Same window failure as above, but raised from a function this file
+    owns, so the frame the record names is one the test can assert on."""
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    patches = []
+
+    def exploding_health_note(*_args, **_kwargs):
+        raise error
+
+    def fake_agora_internal(method, path, payload=None):
+        if method == "PATCH" and path == "/heartbeats/hb1":
+            patches.append(payload)
+        return 200, {}
+
+    with patch.object(runner.heartbeats, "fetch_persona",
+                      return_value=_nova_persona(runner)), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "rotate_cycle_conversation",
+                      return_value=ROTATED_INTO), \
+         patch.object(runner.heartbeats, "nova_health_note",
+                      side_effect=exploding_health_note), \
+         patch.object(runner.heartbeats, "generate_reply", return_value="unreached"), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.heartbeats, "audit", return_value=(200, "chip")), \
+         patch.object(runner.heartbeats, "agora_internal",
+                      side_effect=fake_agora_internal), \
+         patch.object(cycle_stub, "write_stub") as stub:
+        runner.run_heartbeat(_nova_heartbeat())
+    return patches[-1]["lastResult"], stub
+
+
+def test_the_record_names_the_line_that_raised(runner):
+    """A `KeyError` is the case the old format lost completely."""
+    last_result, stub = _run_with_named_exploder(runner, KeyError("schedule"))
+
+    assert "test_silent_cycle_window.py:" in last_result, last_result
+    assert "in exploding_health_note" in last_result, last_result
+    # `!r`, not `str`: `str(KeyError("schedule"))` is `"'schedule'"` and does
+    # not carry the type, which is half the diagnosis.
+    assert "KeyError" in last_result, last_result
+    # The marker on the feed says the same thing as the heartbeat record --
+    # one text, so the two cannot drift into two paraphrases.
+    assert stub.call_args.args[0] == last_result
+
+
+def test_where_it_raised_survives_the_200_character_cap(runner):
+    """`lastResult` is capped, so the location goes in front of the message.
+
+    A long message used to be the whole 200 characters. If the frame were
+    appended instead of prefixed, the one part that identifies the bug would
+    be the first thing truncation ate -- which is the failure this is about,
+    one layer down.
+    """
+    last_result, _stub = _run_with_named_exploder(
+        runner, RuntimeError("x" * 500))
+
+    assert len(last_result) == 200, len(last_result)
+    assert "test_silent_cycle_window.py:" in last_result, last_result
+    assert "in exploding_health_note" in last_result, last_result

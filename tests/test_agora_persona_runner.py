@@ -3102,7 +3102,14 @@ def test_run_heartbeat_closes_the_run_even_when_it_fails(runner):
 
     assert len(chips) == 2
     assert chips[1].startswith("Nova finished in ")
-    assert "failed: bridge 503" in chips[1]
+    # The runner's own words, and where they came from. The `failed: ` record
+    # carries the raising frame in front of the message now (idea #267), so
+    # this asserts both halves rather than one fixed prefix -- a chip that
+    # said only "failed: bridge 503" identified no line, which is the whole
+    # reason the silent cycles could not be diagnosed.
+    assert "failed: " in chips[1]
+    assert "bridge 503" in chips[1]
+    assert "in fake_generate_reply" in chips[1], chips[1]
 
 
 def test_run_heartbeat_leaves_a_silent_monitoring_run_silent(runner):
@@ -3129,7 +3136,8 @@ def test_run_heartbeat_reports_a_crashed_monitoring_run(runner):
         system_extra=runner.HEARTBEAT_NO_REPORT_SENTINEL)
 
     assert len(chips) == 1
-    assert "failed: boom" in chips[0]
+    assert "failed: " in chips[0]
+    assert "boom" in chips[0]
 
 
 def _rotating_heartbeat_run(runner, old_messages, persona_name="Test", older=None,
