@@ -4148,12 +4148,10 @@ def test_poll_once_skips_workflow_bound_conversations_but_still_runs_heartbeats(
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
-         patch.object(runner.poll, "acknowledge_deferred"), \
-         patch.object(runner.poll, "run_due_heartbeats") as mock_run_due:
+         patch.object(runner.poll, "acknowledge_deferred"):
         runner.poll_once()
 
     assert polled == ["c2"]  # c1 skipped (workflow-bound), c2 gets ordinary turn-taking
-    mock_run_due.assert_called_once_with(heartbeats_body["heartbeats"])
 
 
 def test_cycle_bound_conversation_ids_only_counts_enabled_rotating_heartbeats(runner):
@@ -4205,12 +4203,10 @@ def test_poll_once_answers_live_cycle_conversation_and_a_plain_heartbeats(runner
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
-         patch.object(runner.poll, "acknowledge_deferred"), \
-         patch.object(runner.poll, "run_due_heartbeats") as mock_run_due:
+         patch.object(runner.poll, "acknowledge_deferred"):
         runner.poll_once()
 
     assert polled == ["cycle9", "sentinel", "chat"]
-    mock_run_due.assert_called_once_with(heartbeats_body["heartbeats"])
 
 
 @contextlib.contextmanager
@@ -4286,8 +4282,7 @@ def test_poll_once_answers_a_retired_cycle_conversation_too(runner):
     with patch.object(runner.poll, "agora_get", side_effect=fake_agora_get), \
          patch.object(runner.poll, "agora_internal", side_effect=fake_agora_internal), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
-         patch.object(runner.poll, "acknowledge_deferred"), \
-         patch.object(runner.poll, "run_due_heartbeats"):
+         patch.object(runner.poll, "acknowledge_deferred"):
         runner.poll_once()
 
     assert polled == ["cycle9", "cycle8", "cycle3", "chat"]
@@ -4326,8 +4321,7 @@ def test_message_in_an_in_flight_cycle_conversation_still_reaches_the_next_trigg
          patch.object(runner.poll, "agora_internal",
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation", side_effect=lambda s: polled.append(s["id"])), \
-         patch.object(runner.poll, "acknowledge_deferred"), \
-         patch.object(runner.poll, "run_due_heartbeats"):
+         patch.object(runner.poll, "acknowledge_deferred"):
         runner.poll_once()
 
     # The transcript its own cycle is writing into is left alone; the
@@ -4373,8 +4367,7 @@ def test_every_cycle_conversation_answers_edvard_on_the_spot(runner):
          patch.object(runner.poll, "acknowledge_deferred",
                       side_effect=lambda s: acked.append(s["id"])), \
          patch.object(runner.poll, "mark_answered_live",
-                      side_effect=lambda s: chipped.append(s["id"])), \
-         patch.object(runner.poll, "run_due_heartbeats"):
+                      side_effect=lambda s: chipped.append(s["id"])):
         runner.poll_once()
 
     assert polled == ["c-live", "c-old"]   # the workflow one stays skipped
@@ -4402,8 +4395,7 @@ def test_no_answered_live_chip_when_the_turn_did_not_speak(runner):
          patch.object(runner.poll, "poll_conversation", return_value=None), \
          patch.object(runner.poll, "acknowledge_deferred"), \
          patch.object(runner.poll, "mark_answered_live",
-                      side_effect=lambda s: chipped.append(s["id"])), \
-         patch.object(runner.poll, "run_due_heartbeats"):
+                      side_effect=lambda s: chipped.append(s["id"])):
         runner.poll_once()
 
     assert chipped == []
@@ -6260,9 +6252,16 @@ def drainable_main():
     # wire itself is asserted in tests/test_catalog_refresh.py.
     previous_refresh = main_module.start_catalog_refresh
     main_module.start_catalog_refresh = lambda: None
+    # Same reason, for the scheduler thread (Cycle 1235): `main()` starts it
+    # too, and a drain test that let it run would have a live thread polling
+    # Agora past its own patches. The wire is asserted in
+    # tests/test_heartbeat_pass.py.
+    previous_pass = main_module.start_heartbeat_pass
+    main_module.start_heartbeat_pass = lambda _should_stop: None
     try:
         yield main_module
     finally:
+        main_module.start_heartbeat_pass = previous_pass
         main_module.start_catalog_refresh = previous_refresh
         main_module.POLL_INTERVAL_SECONDS = previous_interval
         main_module._shutdown_requested = previous_flag
@@ -7289,8 +7288,7 @@ def test_poll_once_acknowledges_a_cycle_thread_but_never_a_workflow_one(runner):
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation"), \
          patch.object(runner.poll, "acknowledge_deferred",
-                      side_effect=lambda s: acked.append(s["id"])), \
-         patch.object(runner.poll, "run_due_heartbeats"):
+                      side_effect=lambda s: acked.append(s["id"])):
         runner.poll_once()
 
     assert acked == ["cycle10"]
@@ -7311,8 +7309,7 @@ def test_an_archived_cycle_thread_is_not_acknowledged(runner):
                       side_effect=lambda m, p, payload=None: (200, heartbeats_body)), \
          patch.object(runner.poll, "poll_conversation"), \
          patch.object(runner.poll, "acknowledge_deferred",
-                      side_effect=lambda s: acked.append(s["id"])), \
-         patch.object(runner.poll, "run_due_heartbeats"):
+                      side_effect=lambda s: acked.append(s["id"])):
         runner.poll_once()
 
     assert acked == []
@@ -8620,8 +8617,7 @@ def test_a_running_cycle_keeps_its_own_conversation_out_of_the_live_set(runner):
                           side_effect=lambda s: polled_into.append(s["id"]) or True), \
              patch.object(runner.poll, "acknowledge_deferred",
                           side_effect=lambda s: acked_into.append(s["id"])), \
-             patch.object(runner.poll, "mark_answered_live"), \
-             patch.object(runner.poll, "run_due_heartbeats"):
+             patch.object(runner.poll, "mark_answered_live"):
             runner.poll_once()
 
     runner.heartbeats._heartbeat_threads["hb1"] = [_StillRunning()]

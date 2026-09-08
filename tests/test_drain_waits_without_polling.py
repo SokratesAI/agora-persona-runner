@@ -98,12 +98,21 @@ def test_drain_does_not_sleep(monkeypatch, _threads):
     assert slept == [], "sleeping holds the replacement pod out for nothing"
 
 
-def test_poll_once_always_starts_due_heartbeats(monkeypatch):
-    """There is no conversations-only variant any more. A caller that wants
-    a tick without heartbeats must not poll at all."""
+def test_poll_once_does_not_start_due_heartbeats(monkeypatch):
+    """The scheduler is not on this thread any more.
+
+    `speak` generates a reply on its caller's thread and a claude-cli reply
+    takes minutes, so while `run_due_heartbeats` was the last thing this
+    function did, one chat message delayed every scheduled firing behind it.
+    `agora_runner.heartbeat_pass` owns the scheduler now. There is still no
+    keyword to control it -- a caller that wants a tick without conversations
+    must not poll at all.
+    """
     poll_mod = importlib.import_module("agora_runner.poll")
 
-    started = []
+    assert not hasattr(poll_mod, "run_due_heartbeats"), (
+        "poll.py importing the scheduler is how the coupling comes back")
+
     monkeypatch.setattr(poll_mod, "clear_persona_cache", lambda: None)
     monkeypatch.setattr(poll_mod, "agora_get", lambda _p: (200, {"conversations": []}))
     monkeypatch.setattr(poll_mod, "agora_internal", lambda *a, **k: (200, {"heartbeats": []}))
@@ -111,10 +120,14 @@ def test_poll_once_always_starts_due_heartbeats(monkeypatch):
     monkeypatch.setattr(poll_mod, "workflow_bound_conversation_ids", lambda _h: set())
     monkeypatch.setattr(poll_mod, "cycle_bound_conversation_ids", lambda _h, _c: set())
     monkeypatch.setattr(poll_mod, "in_flight_cycle_conversation_ids", lambda _h: set())
-    monkeypatch.setattr(poll_mod, "run_due_heartbeats", lambda h: started.append(h))
+
+    started = []
+    monkeypatch.setattr(
+        "agora_runner.heartbeats.run_due_heartbeats",
+        lambda *a, **k: started.append(a))
 
     poll_mod.poll_once()
-    assert started == [[]], "the ordinary tick must start due heartbeats"
+    assert started == [], "the conversation tick must not start heartbeat runs"
 
     with pytest.raises(TypeError):
         poll_mod.poll_once(start_heartbeats=False)
