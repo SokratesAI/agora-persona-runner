@@ -273,19 +273,63 @@ def current_number(heartbeat_id, conversation_id=None):
     cannot read its number must be told so, not handed a plausible one that
     quietly reintroduces the drift this module exists to remove.
     """
+    return current_number_with_source(heartbeat_id, conversation_id)[0]
+
+
+def current_number_with_source(heartbeat_id, conversation_id=None):
+    """`(number, source)` -- the same number, plus how it was actually derived.
+
+    `source` is one of:
+
+    * `"conversation"` -- the given id named a conversation and this is its
+      number. The only source a live cycle should ever act on.
+    * `"highest"` -- no id was given, so this is the highest number that
+      exists. Right whenever one cycle is running, and `main` says so.
+    * `"unknown-conversation"` -- **an id was given and Agora knows no
+      conversation by it**, so the number beside it answers a different
+      question than the one the caller asked.
+    * `"unreachable"` -- Agora did not answer; the number is `None`.
+
+    The fourth case exists because the third one was silent for three weeks
+    and cost a journal entry. `current_number`'s own docstring said the
+    fallback was safe because *"`main` says out loud which of the two it
+    used"*, and the test that pinned the fallback said the same thing in its
+    docstring -- but `main` printed its warning only when no id was given at
+    all, so the one caller who *had* an id and got it wrong was the one told
+    nothing. Measured on cycle 1183 (2026-09-07): it ran
+    `cycle_number <heartbeat-id> 08ffac94-7c4a-4506-897f-968c592358cb`,
+    passing Nova's **personaId** -- the id the session prompt hands every
+    cycle for `create_heartbeat` -- where the conversation id belongs. No
+    conversation carries that id, so it fell through to the highest, which at
+    22:48:38Z was 1184 because cycle 1184's conversation had been created six
+    minutes earlier. Cycle 1183 then filed its entry as `cycle-1184.md`, and
+    two things went missing at once: `cycle_postmortem` reports 1183 as
+    *"ran and left no record"* when the record exists one number up, and
+    cycle 1184 -- which really did run 28m and write nothing -- is reported
+    as fine, because a file with its name is sitting there.
+
+    So the distinction is kept here rather than collapsed into `None`: the
+    caller that passed an id needs to know its id was not used, and that is
+    a different instruction ("check the id") from an unreachable Agora
+    ("retry, then fall back"). `current_number` keeps returning the plausible
+    number for every other caller, because a library that hands back `None`
+    on a bad id would make a rotation bug the reason a cycle does not run.
+    """
     try:
         status, listing = agora_get("/conversations")
     except Exception:
-        return None
+        return None, "unreachable"
     if status != 200:
-        return None
+        return None, "unreachable"
     conversations = listing.get("conversations", [])
+    numbers = numbers_in(conversations, cycle_tag(heartbeat_id))
+    highest = numbers[-1] if numbers else None
     if conversation_id:
         mine = number_of(conversations, conversation_id)
         if mine is not None:
-            return mine
-    numbers = numbers_in(conversations, cycle_tag(heartbeat_id))
-    return numbers[-1] if numbers else None
+            return mine, "conversation"
+        return highest, "unknown-conversation"
+    return highest, "highest"
 
 
 def main():
@@ -304,6 +348,10 @@ def main():
 
     Only `stdout` carries the number; everything about *how* it was derived
     goes to `stderr`, so `$(...)` around this stays exactly one integer.
+
+    Exit 0 with the number, 1 if Agora could not be read, 2 on bad arguments,
+    and **3 if a conversation id was given that names no conversation** -- see
+    `current_number_with_source` for the cycle that cost.
     """
     import sys
 
@@ -312,11 +360,22 @@ def main():
               file=sys.stderr)
         return 2
     conversation_id = sys.argv[2] if len(sys.argv) == 3 else ""
-    number = current_number(sys.argv[1], conversation_id or None)
+    number, source = current_number_with_source(sys.argv[1], conversation_id or None)
+    if source == "unknown-conversation":
+        # Refused rather than warned, and nothing on stdout. The caller passed
+        # an id because it believed it had one; the highest number is an answer
+        # to a question it did not ask, and a cycle writes its number into a
+        # document that is never edited afterwards. Retrying does not help
+        # here, which is why this is not exit 1 -- a different id does.
+        print(f"'{conversation_id}' names no conversation Agora knows, so the cycle "
+              "number was not derived from it. Check $AGORA_CONVERSATION_ID in the "
+              "bridge shell -- a persona id is not a conversation id.",
+              file=sys.stderr)
+        return 3
     if number is None:
         print("could not read the cycle number from Agora", file=sys.stderr)
         return 1
-    if not conversation_id:
+    if source == "highest":
         print("warning: no conversation id given, so this is the highest number that "
               "exists, not necessarily yours -- concurrent cycles will collide on it",
               file=sys.stderr)

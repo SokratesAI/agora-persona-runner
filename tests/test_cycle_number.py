@@ -262,8 +262,13 @@ def test_a_cycle_that_knows_its_conversation_gets_its_own_number_not_the_newest(
 
 
 def test_an_id_that_names_no_conversation_falls_back_to_the_highest(monkeypatch):
-    """Falling back is right -- the alternative is handing a cycle no number
-    at all -- and `main` is what says out loud that it happened."""
+    """The library keeps falling back -- the alternative is handing a caller
+    no number at all -- and `main` is what refuses on the caller's behalf.
+
+    This docstring used to say `main` "says out loud that it happened", and
+    for three weeks it did not: the warning was printed only when no id was
+    given, so the caller who had one and got it wrong was told nothing. See
+    `test_main_refuses_an_id_that_names_no_conversation`."""
     monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
         200, {"conversations": [conv("Nova — Cycle 9", id="conv-9")]}
     ))
@@ -329,6 +334,64 @@ def test_main_without_a_conversation_id_warns_that_the_number_may_not_be_yours(m
     out = capsys.readouterr()
     assert out.out.strip() == "380"
     assert "concurrent cycles will collide" in out.err
+
+
+def test_current_number_with_source_names_how_it_got_the_number(monkeypatch):
+    """The three live sources are distinguishable, which is the whole point --
+    `current_number` alone cannot tell "this is yours" from "this is somebody
+    else's newest"."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 378", id="conv-378"),
+            conv("Nova — Cycle 380", id="conv-380"),
+        ]}
+    ))
+    assert cycle_number.current_number_with_source("hb-1", "conv-378") == (378, "conversation")
+    assert cycle_number.current_number_with_source("hb-1") == (380, "highest")
+    assert cycle_number.current_number_with_source(
+        "hb-1", "not-a-conversation") == (380, "unknown-conversation")
+
+
+def test_current_number_with_source_says_unreachable_rather_than_unknown(monkeypatch):
+    """An id that could not be checked is not an id that was checked and
+    failed -- `main` retries one and refuses the other."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (503, {}))
+    assert cycle_number.current_number_with_source("hb-1", "conv-1") == (None, "unreachable")
+
+
+def test_main_refuses_an_id_that_names_no_conversation(monkeypatch, capsys):
+    """Cycle 1183, 2026-09-07: it passed Nova's personaId where the
+    conversation id goes, no conversation carried that id, and it silently
+    got the highest number -- 1184, because cycle 1184's conversation had
+    been created six minutes earlier. Its journal entry is filed as
+    `cycle-1184.md` to this day, which reports 1183 as having left no record
+    and 1184 as fine when 1184 also wrote nothing."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [
+            conv("Nova — Cycle 1183", id="conv-1183"),
+            conv("Nova — Cycle 1184", id="conv-1184"),
+        ]}
+    ))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["cycle_number", "hb-1", "08ffac94-7c4a-4506-897f-968c592358cb"])
+    assert cycle_number.main() == 3
+    out = capsys.readouterr()
+    # Nothing on stdout: `$(...)` around this must not capture 1184.
+    assert out.out.strip() == ""
+    assert "1184" not in out.out
+    assert "08ffac94-7c4a-4506-897f-968c592358cb" in out.err
+    assert "AGORA_CONVERSATION_ID" in out.err
+
+
+def test_main_still_exits_1_when_agora_cannot_be_read_with_an_id(monkeypatch, capsys):
+    """Exit 3 is "your id is wrong" and exit 1 is "I could not look" -- the
+    fix for one is a different id and the fix for the other is a retry, so
+    the unreachable case must not be swallowed by the new refusal."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (503, {}))
+    monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1", "conv-1"])
+    assert cycle_number.main() == 1
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_main_rejects_too_many_arguments(monkeypatch):
