@@ -12,6 +12,7 @@ conversation on 2026-08-29, not one invented to match the regex.
 import pytest
 
 from tools.cycle_postmortem import (
+    apply_misfiled,
     conversations_by_cycle,
     format_report,
     judge,
@@ -583,3 +584,95 @@ def test_only_the_reply_counts_not_the_whole_transcript():
         {"text": "Merged and live. The banner works now (#877)."},
         {"text": "heartbeat: Nova finished in 28m 22s — replied 2053 chars"},
     ]) == frozenset({877})
+
+
+# --- a located entry is not a lost one ---------------------------------
+
+def test_a_lost_cycle_whose_entry_was_located_stops_raising():
+    """`lost` raises because the gap is unexplained. Once `find_misfiled`
+    has named where the entry is, the gap is explained in the same report
+    -- and on 2026-09-08 the live run printed exactly that explanation
+    twelve lines under an exit 2."""
+    results = [row(1183, "lost")]
+    apply_misfiled(results, [(1183, 1184)])
+    text, status = format_report(results, 1230, None)
+    assert status == 0
+    assert "filed as cycle 1184" in text
+
+
+def test_a_lost_cycle_nothing_located_still_raises():
+    """The downgrade is not a blanket amnesty on `lost` -- without a pair
+    naming it, the row is untouched and still red. Without this the first
+    test above passes on a `format_report` that never raises at all."""
+    results = [row(580, "lost")]
+    apply_misfiled(results, [(1183, 1184)])
+    assert results[0]["verdict"] == "lost"
+    assert format_report(results, 1230, None)[1] == 2
+
+
+def test_only_a_lost_row_is_downgraded():
+    """A `failed` cycle can share a number with nothing, but the guard is
+    cheap and the wrong one would erase a recorded reason."""
+    results = [row(1035, "failed")]
+    apply_misfiled(results, [(1035, 1036)])
+    assert results[0]["verdict"] == "failed"
+
+
+def test_the_downgrade_keeps_what_the_run_actually_did():
+    """The detail is appended to, not replaced: "ran 26m 45s and replied
+    1715 chars" is the evidence that the work happened at all."""
+    results = [{"number": 1183, "verdict": "lost", "recent": True, "messages": 186,
+                "detail": "ran 26m 45s and replied 1715 chars"}]
+    apply_misfiled(results, [(1183, 1184)])
+    assert results[0]["detail"] == (
+        "ran 26m 45s and replied 1715 chars; the entry is filed as cycle 1184")
+
+
+def test_main_searches_before_it_grades_not_after(monkeypatch, capsys):
+    """The bug this closes lives in the ORDER, not in `apply_misfiled`.
+
+    `format_report` decides the exit status off the verdicts it is handed,
+    so a search run after it prints the explanation under a red status --
+    which is what the 2026-09-08 run did with cycle 1183. Call the search
+    late again and this test goes red while every unit above it stays
+    green.
+    """
+    results = [row(1183, "lost")]
+    monkeypatch.setattr("tools.cycle_postmortem.collect",
+                        lambda window=None: (results, 1230, None, {}, []))
+    monkeypatch.setattr("tools.cycle_postmortem.find_misfiled",
+                        lambda *a, **k: [(1183, 1184)])
+    status = postmortem_main([])
+    out = capsys.readouterr().out
+    assert status == 0
+    assert "FILED UNDER THE WRONG NUMBER" in out
+    assert "filed as cycle 1184" in out
+
+
+def test_all_does_not_raise_on_a_misfiled_cycle():
+    """`--all` widens the window, it does not change what a verdict means.
+
+    `misfiled` is non-raising only by being absent from `RAISING_VERDICTS`,
+    so nothing else pins it -- a special case under `raise_all` would go
+    uncaught. My reviewer found this hole."""
+    results = [row(366, "misfiled", recent=False)]
+    assert format_report(results, 1230, None, raise_all=True)[1] == 0
+
+
+def test_the_rate_split_counts_a_misfiled_cycle_as_a_gap_and_names_the_cause():
+    """`apply_misfiled` mutates the list `--split-at` then reads, so the
+    idea #170 rate is downstream of the downgrade. The gap COUNT must not
+    move -- a misfiled cycle still has no entry under its own number, and
+    that is what the rate measures -- while the verdict breakdown must,
+    because that docstring keeps the causes apart on purpose and `lost`
+    and `misfiled` are different causes. My reviewer found this."""
+    results = [row(1183, "lost")]
+    conversations = {1183: {"createdAt": "2026-09-08T09:00:00Z"},
+                     1184: {"createdAt": "2026-09-08T10:00:00Z"}}
+    split = datetime(2026, 9, 8, 8, 0, tzinfo=timezone.utc)
+    before = rate_split(results, conversations, split, 1230)
+    apply_misfiled(results, [(1183, 1184)])
+    after = rate_split(results, conversations, split, 1230)
+    assert before["after"]["gaps"] == after["after"]["gaps"] == 1
+    assert before["after"]["verdicts"]["lost"] == 1
+    assert after["after"]["verdicts"] == {"misfiled": 1}

@@ -38,6 +38,12 @@ work happen**:
   worked example: it replied 2,458 characters opening *"Cycle 579
   done"*, so it wrote its entry under another cycle's number and 580
   reads as missing forever.
+* `misfiled` --- `lost`, except `find_misfiled` found the entry, one
+  number up. The record has the work; the number on it is wrong, and
+  historical entries are never renumbered, so there is nothing to go and
+  do. This is a downgrade of `lost` applied after the search rather than
+  a verdict `judge` can reach on its own -- it takes reading the entry
+  and the reply of two different cycles to know.
 * `silent` --- a conversation exists and the heartbeat never spoke in
   it. Agora's own system notices about other cycles do not count as
   speaking; see `run_messages`.
@@ -51,7 +57,7 @@ outcome yet, and it spoke a moment ago -- three cycles overlap, so the
 newest few legitimately have none).
 
 **`lost`, `cut off` and `unjudged` raise the exit status; `failed`,
-`silent`, `absent` and `still running` do not.** The line is whether the
+`misfiled`, `silent`, `absent` and `still running` do not.** The line is whether the
 gap is *explained*: the three that raise each leave a real question open,
 and the four that do not are Agora giving a definite answer that the run
 did not complete, or has not finished yet. A check that goes red on
@@ -688,10 +694,43 @@ def format_misfiled(pairs):
     return lines
 
 
+def apply_misfiled(results, pairs):
+    """Downgrade every `lost` row whose entry `find_misfiled` located.
+
+    `lost` says "the work happened and the journal does not have it", and it
+    raises the exit status because that gap is unexplained. For the head of a
+    misfiled chain both halves of that are false: the journal does have the
+    entry, one number up, and the same report names where. Measured
+    2026-09-08: five of the sixteen `lost` cycles -- 366, 870, 968, 985 and
+    1183 -- were located by the block printed twelve lines below them, and
+    1183 is inside the window, so the run exited 2 on a gap it had explained
+    itself.
+
+    Only the head of a chain is touched, because only the head is `lost`;
+    every later link has an entry filed under its own number (somebody else's
+    work) and never reaches `results` at all. Mutates and returns `results`
+    so the caller's list is the one the report is built from.
+    """
+    located = dict(pairs or ())
+    for row in results:
+        if row["verdict"] != "lost":
+            continue
+        filed_as = located.get(row["number"])
+        if filed_as is None:
+            continue
+        row["verdict"] = "misfiled"
+        row["detail"] = f"{row['detail']}; the entry is filed as cycle {filed_as}"
+    return results
+
+
 #: The verdicts that mean "this gap is not explained, or the work it did
 #: is not in the record". `failed`, `silent` and `absent` are all Agora
 #: giving a definite answer that the run did not complete, so there is
-#: nothing to go and find; the three below each leave a real question
+#: nothing to go and find. `misfiled` is the one non-raising verdict where
+#: the run DID complete and its work IS in the record -- under the next
+#: cycle's number, which is where `find_misfiled` says it is, and which
+#: historical entries are never renumbered to correct. `still running` is
+#: not an outcome at all. The three below each leave a real question
 #: open. The docstring's contract is that 0 means every gap in the window
 #: is explained, and `unjudged` is by its own name the opposite of that --
 #: my reviewer found it exiting 0, which would make the day Agora grows a
@@ -700,6 +739,8 @@ RAISING_VERDICTS = ("lost", "cut off", "unjudged")
 
 _HEADINGS = (
     ("lost", "RAN AND LEFT NO RECORD — the work happened and the journal does not have it"),
+    ("misfiled", "FILED ONE NUMBER UP — the work is in the record, under the next "
+                 "cycle's number"),
     ("failed", "ENDED ON A RECORDED FAILURE — nothing to recover, the reason is Agora's own"),
     ("cut off", "STOPPED WITH NO CLOSING LINE — Agora never wrote an outcome for these"),
     ("silent", "NEVER SPOKE — a conversation with no message in it at all"),
@@ -775,11 +816,16 @@ def main(argv=None):
         if split_at.tzinfo is None:
             split_at = split_at.replace(tzinfo=timezone.utc)
     results, newest, error, conversations, paths = collect(window=args.window)
+    # Located before the report is built, not after: `format_report` decides
+    # the exit status from the verdicts, so a `lost` row this can explain has
+    # to stop being `lost` first. Printing the explanation under a red status
+    # is what the run on 2026-09-08 did.
+    pairs = [] if error else find_misfiled(results, conversations, paths)
+    apply_misfiled(results, pairs)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all)
     if not error:
-        report = "\n".join([report] + format_misfiled(
-            find_misfiled(results, conversations, paths)))
+        report = "\n".join([report] + format_misfiled(pairs))
     print(report)
     if split_at is not None and not error:
         print()
