@@ -67,10 +67,31 @@ nothing in this repo to fix. An unattributed one is weaker than it looks
 and says so: `lastState` carries only the most recent termination of each
 container, so it can rule out a *recent* restart and never every restart,
 and a cycle killed two restarts ago reads the same as a cycle that reached
-the end of its turn and never spoke. Reading the history can also fail,
-and that is printed as its own third answer rather than collapsed into the
-absence, because "I could not look" is not "I looked and there was
-nothing". Attribution runs only on the branch that
+the end of its turn and never spoke.
+
+**A rollout is the second cause, and `lastState` is structurally blind to
+it** (cycle 1245). Four cycles went silent on 2026-09-08 -- 1217, 1221,
+1224 and 1225 -- and all four printed the unattributed line. The bridge
+Deployment had started a ReplicaSet at `12:56:06Z`, and cycle 1224's last
+message is stamped `12:56:06.858Z`: three of the four last spoke inside
+the 45-minute window before it, so a bridge deploy landed on top of them.
+The reason no cycle had ever seen this is not that the call is expensive,
+it is that a rollout *replaces the Pod* rather than restarting its
+container -- the replacement comes up with `restartCount: 0` and an empty
+`lastState`, and the outgoing Pod is deleted with its status -- so the one
+place attribution looked can never hold it, and no amount of re-reading
+`lastState` would have found it. So `bridge_rollouts` reads the
+Deployment's ReplicaSet creation instants alongside it. The two answers
+are kept apart because they need different responses: a kill is an outage
+to absorb, while a rollout is *this loop deploying over itself*, which is
+a scheduling problem a cycle can actually act on. The unattributed line
+now names both horizons rather than only one.
+
+Either reader can also fail, and that is printed as its own answer rather
+than collapsed into the absence, because "I could not look" is not "I
+looked and there was nothing" -- and that holds when only *one* of the two
+is blind, so an unreadable rollout history never prints as "no rollout is
+recorded". Attribution runs only on the branch that
 has already decided to exit 2, so it can never turn a silence into a pass
 or a pass into a silence.
 
@@ -119,12 +140,19 @@ BRIDGE_SELECTOR = "app=agora-claude-bridge"
 # older than that when the thing that killed it arrives. Anything further
 # back is a different cycle's death, not this one's.
 ATTRIBUTION_MINUTES = 45
+# `creationTimestamp` is truncated to the second, so a rollout recorded at
+# T started somewhere in [T, T+1s) and a message inside that same second can
+# still be the rollout's victim. This is the timestamp's precision, not a
+# tuned tolerance -- see `attribute_rollout` for why the Pod's 48-minute
+# termination grace is the wrong bound to use instead.
+_STAMP_RESOLUTION = timedelta(seconds=1)
 
 # Re-exported so a reader of this module sees the whole rule from here and
 # `tests/test_reply_health.py` keeps testing it through the tool it names.
 __all__ = ["cycle_threads", "judge", "last_narration", "replied", "sweep",
            "main", "SITE", "GRACE_MINUTES", "WINDOW_HOURS", "THREAD_LIMIT",
-           "bridge_kills", "attribute", "BRIDGE_NAMESPACE", "BRIDGE_SELECTOR",
+           "bridge_kills", "attribute", "bridge_rollouts",
+           "attribute_rollout", "BRIDGE_NAMESPACE", "BRIDGE_SELECTOR",
            "ATTRIBUTION_MINUTES"]
 
 
@@ -195,28 +223,145 @@ def attribute(spoke_at, kills):
     return None
 
 
-def _why(silence, kills, unread):
-    """One line saying whether the bridge container took this cycle with it."""
-    if unread:
-        return ("could not read the bridge Pod's restart history "
-                f"({unread}), so whether a container kill took this one is "
-                "unmeasured rather than ruled out.")
+def bridge_rollouts(run=_kubectl):
+    """Every rollout of the bridge Deployment, newest first.
+
+    Returns `(rollouts, note)` with the same contract as `bridge_kills`: a
+    non-empty `note` means the history could not be read, which is not the
+    answer "no rollout happened".
+
+    A new ReplicaSet is the instant a rollout starts, which is also the
+    instant the outgoing pod is signalled and every turn inside it stops.
+    This is a separate reader from `bridge_kills` because it has to be:
+    `lastState` describes an *in-place* container restart, and a rollout
+    does not restart a container -- it replaces the whole Pod, so the
+    replacement comes up with `restartCount: 0` and an empty `lastState`
+    and the outgoing Pod is gone with its status. A rollout therefore
+    leaves *no* trace in the only place attribution used to look, which is
+    why three of the four silences on 2026-09-08 read as unattributed while
+    the ReplicaSet created at 12:56:06Z sat one call away.
+    """
+    try:
+        raw = run(["get", "rs", "-n", BRIDGE_NAMESPACE,
+                   "-l", BRIDGE_SELECTOR, "-o", "json"])
+        payload = json.loads(raw)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        return [], f"{type(error).__name__}: {error}"
+
+    rollouts = []
+    for item in payload.get("items", []):
+        meta = item.get("metadata", {})
+        started = _parse_stamp(meta.get("creationTimestamp"))
+        if started is None:
+            continue
+        rollouts.append({"replicaset": meta.get("name", "?"), "at": started})
+    rollouts.sort(key=lambda rollout: rollout["at"], reverse=True)
+    return rollouts, ""
+
+
+def attribute_rollout(spoke_at, rollouts):
+    """The bridge rollout that plausibly took a cycle that last spoke then.
+
+    Same 45-minute turn cap as `attribute`, with one second of slack on the
+    other side. That second is the ReplicaSet timestamp's own resolution
+    and nothing else: `creationTimestamp` is truncated to the second, so a
+    rollout recorded at `12:56:06Z` actually started somewhere in
+    `[12:56:06, 12:56:07)`, and cycle 1224's last message at
+    `12:56:06.858Z` sits inside that same second. Without the slack it read
+    as unattributed while the rollout that took it was already in the list.
+
+    The bridge's configured `terminationGracePeriodSeconds` is 2880 -- 48
+    minutes, deliberately longer than the 45-minute turn cap so a live
+    cycle can finish -- and it is emphatically *not* the bound to use here.
+    Allowing 48 minutes of slack would attribute nearly every silence to
+    any rollout in a 93-minute span, which is a rubber stamp rather than an
+    attribution. It is also not what happens: on 2026-09-08 the
+    replacement Pod started five seconds after the rollout began, so the
+    outgoing container exited on SIGTERM instead of draining and the grace
+    bought the turns inside it nothing.
+    """
+    if spoke_at is None:
+        return None
+    for rollout in sorted(rollouts, key=lambda rollout: rollout["at"]):
+        gap = rollout["at"] - spoke_at
+        if -_STAMP_RESOLUTION <= gap <= timedelta(minutes=ATTRIBUTION_MINUTES):
+            return rollout
+    return None
+
+
+def _why(silence, kills, unread, rollouts=(), rollouts_unread=""):
+    """One line saying whether the bridge took this cycle with it.
+
+    Two readers, and each can fail on its own. Neither failure may be
+    reported as an absence: "I could not look" is not "I looked and there
+    was nothing", and that holds when only one of the two is blind.
+    """
     spoke_at = _parse_stamp(silence.updated_at)
     if spoke_at is None:
         return (f"cannot place {silence.updated_at!r} on a clock, so this one "
                 "is unattributed.")
-    kill = attribute(spoke_at, kills)
-    if kill is None:
-        return ("unattributed: no bridge container death is recorded in the "
-                f"{ATTRIBUTION_MINUTES}m after that message. `lastState` "
-                "holds only the newest termination of each container, so a "
-                "kill older than that one leaves no trace here -- this rules "
-                "out a recent restart, not every restart.")
-    gap = int((kill["at"] - spoke_at).total_seconds() // 60)
-    return (f"killed with the pod: {kill['pod']}'s container terminated "
-            f"({kill['reason']}, exit {kill['exit_code']}) at "
-            f"{kill['at'].isoformat().replace('+00:00', 'Z')}, {gap}m after "
-            "that message.")
+    kill = attribute(spoke_at, kills) if not unread else None
+    if kill is not None:
+        gap = int((kill["at"] - spoke_at).total_seconds() // 60)
+        return (f"killed with the pod: {kill['pod']}'s container terminated "
+                f"({kill['reason']}, exit {kill['exit_code']}) at "
+                f"{kill['at'].isoformat().replace('+00:00', 'Z')}, {gap}m "
+                "after that message.")
+    rollout = (attribute_rollout(spoke_at, rollouts)
+               if not rollouts_unread else None)
+    if rollout is not None:
+        return ("rolled out from under it: the bridge Deployment started "
+                f"ReplicaSet {rollout['replicaset']} at "
+                f"{rollout['at'].isoformat().replace('+00:00', 'Z')}, "
+                f"{_when(rollout['at'] - spoke_at)}, which signals the "
+                "outgoing Pod and ends every turn inside it. Nothing in the "
+                "cycle's own logic failed; a bridge deploy landed on top of "
+                "it.")
+    if unread and rollouts_unread:
+        return ("could not read the bridge Pod's restart history "
+                f"({unread}) or its rollout history ({rollouts_unread}), so "
+                "whether the bridge took this one is unmeasured rather than "
+                "ruled out.")
+    if unread:
+        return ("no bridge rollout is recorded in the "
+                f"{ATTRIBUTION_MINUTES}m after that message, and the Pod's "
+                f"restart history could not be read ({unread}) -- so a "
+                "container kill is unmeasured here rather than ruled out.")
+    if rollouts_unread:
+        return ("no bridge container death is recorded in the "
+                f"{ATTRIBUTION_MINUTES}m after that message, and the rollout "
+                f"history could not be read ({rollouts_unread}) -- so a Pod "
+                "replacement is unmeasured here rather than ruled out.")
+    return ("unattributed: no bridge container death and no bridge rollout is "
+            f"recorded in the {ATTRIBUTION_MINUTES}m after that message. Both "
+            "instruments have a horizon: `lastState` holds only the newest "
+            "termination of each container, and the ReplicaSet list reaches "
+            "back only as far as `revisionHistoryLimit` keeps it"
+            f"{_horizon(rollouts, unread, rollouts_unread)}. "
+            "This rules out a recent bridge event, not every one.")
+
+
+def _when(gap):
+    """How long after the message, in units a reader can act on.
+
+    Never renders a negative minute count. A rollout inside the same second
+    as the message is a timestamp-resolution artefact rather than an event
+    that preceded it, and `-1m after that message` read as nonsense.
+    """
+    seconds = gap.total_seconds()
+    if seconds < 0:
+        return "inside the same second as that message"
+    if seconds < 60:
+        return f"{seconds:.0f}s after that message"
+    return f"{seconds / 60:.0f}m after that message"
+
+
+def _horizon(rollouts, unread, rollouts_unread):
+    """The measured back-edge of the rollout history, when there is one."""
+    if rollouts_unread or not rollouts:
+        return ""
+    oldest = min(rollout["at"] for rollout in rollouts)
+    return f" (oldest on record {oldest.isoformat().replace('+00:00', 'Z')})"
 
 
 def sweep(site=SITE, grace_minutes=GRACE_MINUTES, window_hours=WINDOW_HOURS,
@@ -249,10 +394,12 @@ def sweep(site=SITE, grace_minutes=GRACE_MINUTES, window_hours=WINDOW_HOURS,
                      "the cycle did in your own reply, and say the previous "
                      "one never reached them.")
         kills, unread = bridge_kills(run=run)
+        rollouts, rollouts_unread = bridge_rollouts(run=run)
         for silence in found.silent:
             lines.append(f"  {silence.name} \u2014 last said "
                          f"{silence.narration!r} at {silence.updated_at}")
-            lines.append("      " + _why(silence, kills, unread))
+            lines.append("      " + _why(silence, kills, unread,
+                                          rollouts, rollouts_unread))
     lines.append(f"Read {len(threads)} cycle thread(s) from nova-site: "
                  f"{found.judged} judged, {found.live} still inside the "
                  f"{grace_minutes}m grace, {found.old} older than "
