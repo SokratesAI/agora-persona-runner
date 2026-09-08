@@ -59,6 +59,27 @@ MAX_THREAD = 40
 # on one fetch, not on what he can read -- the page pages.
 MAX_THREAD_CEILING = 500
 
+# The ceiling on the *narration* fetch, which is a different question from
+# how much transcript his phone is handed. His capture, `issues.md`
+# 2026-09-08: *"The tool-call count in a chat message keeps changing -- 69
+# tools during a run, 36 after refreshing the app ... a long turn still
+# saturates it: measured 2026-09-08, one thread was at 232 steps out of 501
+# raw rows, so the earliest calls of a long turn still fall out."*
+#
+# Every tool call spends two raw rows, so a turn making more than ~250 calls
+# fills `MAX_THREAD_CEILING` on its own and the front of its own step list
+# falls off the back of the window while it runs. That is the count he
+# watched go up and then down. Raising `MAX_THREAD_CEILING` would fix it and
+# would also widen the message payload, which is the thing that ceiling is
+# there to bound -- so the running turn gets its own budget instead, and only
+# when the whole window is one turn narrating.
+#
+# 2000 rather than a round guess: a call is two rows, so this admits a turn
+# of a thousand tool calls, four times the longest turn measured on 09-08
+# (232 steps). It is still a bound, and a turn that outruns it loses its
+# earliest steps rather than the fetch growing without end.
+MAX_NARRATION_CEILING = 2000
+
 # The one persona this app talks to. `nova_ask` re-exports it under its
 # own name; it lives here because `nova_ask` already imports from this
 # module and the other direction would be a cycle.
@@ -301,7 +322,7 @@ def step_output(conversation_id, tool_use_id, limit=None):
     """
     if not conversation_id or not tool_use_id:
         return None
-    limit = clamp_thread_limit(limit)
+    limit = clamp_thread_limit(limit, ceiling=MAX_NARRATION_CEILING)
     status, detail = agora_get(
         f"/conversations/{conversation_id}/messages?limit={limit + 1}")
     if status != 200:
@@ -428,12 +449,19 @@ def conversations():
             "models": _model_rows()}
 
 
-def clamp_thread_limit(limit):
+def clamp_thread_limit(limit, ceiling=MAX_THREAD_CEILING):
     """A `?limit=` off the wire, made into a number this app will fetch.
 
     Anything unreadable falls back to `MAX_THREAD` rather than raising: the
     caller is the page asking for a thread, and a typo in a query string
     should show him the thread, not an error.
+
+    `ceiling` is `MAX_THREAD_CEILING` for the thread itself. `step_output`
+    passes `MAX_NARRATION_CEILING`, because `thread` echoes back the raw
+    window a widening actually used and a step the widening is what put on
+    the screen has to be findable in the same window it came from -- clamp
+    that read to the narrower number and every step past row 500 of a long
+    turn opens to a 404.
     """
     try:
         wanted = int(limit)
@@ -441,7 +469,7 @@ def clamp_thread_limit(limit):
         return MAX_THREAD
     if wanted < MAX_THREAD:
         return MAX_THREAD
-    return min(wanted, MAX_THREAD_CEILING)
+    return min(wanted, ceiling)
 
 
 def thread(conversation_id, limit=MAX_THREAD):
@@ -511,6 +539,22 @@ def thread(conversation_id, limit=MAX_THREAD):
     # 500-row turn to reach rather than a 41-row one.
     if has_more and len(messages) < limit and raw_limit < MAX_THREAD_CEILING:
         raw_limit = MAX_THREAD_CEILING
+        raw = fetch()
+        has_more, messages = window(raw)
+    # And the level above that, which is the case he measured on 09-08: the
+    # widened window is *still* nothing but one turn narrating, so the turn
+    # started before the oldest row Agora handed back and the earliest tool
+    # calls of the run he is watching are not in this payload at all. That is
+    # the count that climbs to 69 and then reads 36.
+    #
+    # The test is the visible list, not the raw one, and it is exact: a
+    # window holding a single `stepsOnly` row is a window in which no message
+    # -- his or mine -- survives to mark where this turn began. One visible
+    # message anywhere in it and the turn's own start is inside the window,
+    # so the step list is already whole and there is nothing to widen for.
+    if (has_more and len(messages) == 1 and messages[0].get("stepsOnly")
+            and raw_limit < MAX_NARRATION_CEILING):
+        raw_limit = MAX_NARRATION_CEILING
         raw = fetch()
         has_more, messages = window(raw)
     # Blind to the steps-only row `visible_rows` emits for a turn with nothing
