@@ -36,13 +36,30 @@ CYCLE_LOOKBACK = 5
 PENDING_CHARS_CAP = 4000
 
 
-def raising_frame(error):
-    """`'heartbeats.py:512 in run_heartbeat'` -- where an exception came from.
+# Everything this repo ships, so a frame can be told from a stdlib one. The
+# package directory's parent, not a name: the checkout is `/app` on the pod
+# and `.../agora-persona-runner` here, and hardcoding either is a path that
+# goes stale the first time somebody moves it.
+OWN_CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    The innermost frame, because that is the line that raised; the frames
-    above it are the call path, which a reader of the record already knows.
-    Basename only: an absolute path spends 40 of the 200 characters
-    `lastResult` allows on a directory layout that is the same on every pod.
+
+def _frame_label(frame):
+    """`'heartbeats.py:512 in run_heartbeat'`. Basename only: an absolute
+    path spends 40 of the 200 characters `lastResult` allows on a directory
+    layout that is the same on every pod."""
+    return f"{os.path.basename(frame.filename)}:{frame.lineno} in {frame.name}"
+
+
+def _is_ours(frame):
+    return os.path.abspath(frame.filename).startswith(OWN_CODE_ROOT + os.sep)
+
+
+def raising_frame(error):
+    """`'heartbeats.py:512 in run_heartbeat'` -- the line that raised.
+
+    The innermost frame, and nothing else: this is the one fact about a
+    failure that must never be truncated away, so it stays short and it
+    goes first in the record. `own_call_path` below is the other half.
 
     Returns `'no traceback'` rather than raising when there is none -- this
     is called from a failure path, and a helper that can itself fail there
@@ -53,8 +70,33 @@ def raising_frame(error):
     frames = traceback.extract_tb(getattr(error, "__traceback__", None))
     if not frames:
         return "no traceback"
-    frame = frames[-1]
-    return f"{os.path.basename(frame.filename)}:{frame.lineno} in {frame.name}"
+    return _frame_label(frames[-1])
+
+
+def own_call_path(error):
+    """`'heartbeats.py:501 in run_heartbeat > http_util.py:45 in http_json'`
+    -- our own frames, outermost first, or `''`.
+
+    **A frame in somebody else's code names nothing about us**, and that is
+    what cycles 1213 and 1215 recorded on 2026-09-08: both died 32s into
+    their window and both wrote `socket.py:720 in readinto:
+    TimeoutError('timed out')`. Every HTTP read timeout raised anywhere in
+    this window produces that exact string -- reproduced Cycle 1222 against
+    a hanging socket, twelve frames, nine of them stdlib -- so the record
+    named the one part of the stack that could not vary. Which of our calls
+    hung is in the frames above it, and those exist nowhere but a traceback
+    printed to a pod log that dies with the pod, which is exactly why 1145,
+    1146, 1148, 1166 and 1181 are undiagnosable today.
+
+    Empty when the raising frame is already ours, because then
+    `raising_frame` has answered and repeating the path costs characters
+    the record does not have. Empty too when nothing in the stack is ours,
+    which leaves the raiser as the whole answer rather than nothing.
+    """
+    frames = traceback.extract_tb(getattr(error, "__traceback__", None))
+    if not frames or _is_ours(frames[-1]):
+        return ""
+    return " > ".join(_frame_label(f) for f in frames if _is_ours(f))
 
 
 def _elapsed(seconds):
@@ -637,7 +679,13 @@ def run_heartbeat(heartbeat):
         # at 200 characters and a long message would otherwise push the one
         # part that says where out of the record. `!r` rather than `str`,
         # because the type is half the diagnosis.
-        result = f"failed: {raising_frame(e)}: {e!r}"[:200]
+        record = f"failed: {raising_frame(e)}: {e!r}"
+        # The path goes behind the repr, not in front of it, because this
+        # line truncates and the type is half the diagnosis. Losing the
+        # tail of a call path still leaves the outermost frames, which are
+        # the ones that say which subsystem the run was in.
+        path = own_call_path(e)
+        result = (f"{record} via {path}" if path else record)[:200]
         log(f"heartbeat {heartbeat['name']} failed: {result}\n{traceback.format_exc()}")
         # Sokrates' proposal on the owner's `issues.md`, 2026-08-24: a run that
         # dies leaves `lastResult` on the heartbeat and a line in a log

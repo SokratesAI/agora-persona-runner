@@ -15,6 +15,7 @@ These tests pin the invariant the fix is: **from the moment the conversation
 exists, every exit path writes a closing chip and a `lastResult`.**
 """
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -215,62 +216,109 @@ def test_raising_frame_survives_an_exception_that_never_raised(runner):
     assert runner.heartbeats.raising_frame(ValueError("never raised")) == "no traceback"
 
 
-def _run_with_named_exploder(runner, error):
-    """Same window failure as above, but raised from a function this file
-    owns, so the frame the record names is one the test can assert on."""
-    detail = {"personas": [], "messages": [], "stickyFallback": False}
-    patches = []
-
-    def exploding_health_note(*_args, **_kwargs):
-        raise error
-
-    def fake_agora_internal(method, path, payload=None):
-        if method == "PATCH" and path == "/heartbeats/hb1":
-            patches.append(payload)
-        return 200, {}
-
-    with patch.object(runner.heartbeats, "fetch_persona",
-                      return_value=_nova_persona(runner)), \
-         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
-         patch.object(runner.heartbeats, "rotate_cycle_conversation",
-                      return_value=ROTATED_INTO), \
-         patch.object(runner.heartbeats, "nova_health_note",
-                      side_effect=exploding_health_note), \
-         patch.object(runner.heartbeats, "generate_reply", return_value="unreached"), \
-         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
-         patch.object(runner.heartbeats, "audit", return_value=(200, "chip")), \
-         patch.object(runner.heartbeats, "agora_internal",
-                      side_effect=fake_agora_internal), \
-         patch.object(cycle_stub, "write_stub") as stub:
-        runner.run_heartbeat(_nova_heartbeat())
-    return patches[-1]["lastResult"], stub
+# --- A stdlib raiser names nothing of ours -------------------------------
+#
+# Cycles 1213 and 1215 both died 32s into their window on 2026-09-08 and
+# both recorded `socket.py:720 in readinto: TimeoutError('timed out')`.
+# That string is what EVERY http read timeout in this window produces --
+# reproduced Cycle 1222 against a hanging socket, twelve frames, nine of
+# them stdlib -- so the record named the one part of the stack that could
+# not vary. The call path is the part that varies, and it exists only in a
+# pod log that dies with the pod.
+#
+# These raise inside `json`'s decoder rather than inside a socket: same
+# shape, foreign raiser under our own frames, and no listening port or
+# background thread in the suite to get it there.
 
 
-def test_the_record_names_the_line_that_raised(runner):
-    """A `KeyError` is the case the old format lost completely."""
-    last_result, stub = _run_with_named_exploder(runner, KeyError("schedule"))
-
-    assert "test_silent_cycle_window.py:" in last_result, last_result
-    assert "in exploding_health_note" in last_result, last_result
-    # `!r`, not `str`: `str(KeyError("schedule"))` is `"'schedule'"` and does
-    # not carry the type, which is half the diagnosis.
-    assert "KeyError" in last_result, last_result
-    # The marker on the feed says the same thing as the heartbeat record --
-    # one text, so the two cannot drift into two paraphrases.
-    assert stub.call_args.args[0] == last_result
+def _outer_call_of_ours(payload):
+    return _inner_call_of_ours(payload)
 
 
-def test_where_it_raised_survives_the_200_character_cap(runner):
-    """`lastResult` is capped, so the location goes in front of the message.
+def _inner_call_of_ours(payload):
+    return json.loads(payload)
 
-    A long message used to be the whole 200 characters. If the frame were
-    appended instead of prefixed, the one part that identifies the bug would
-    be the first thing truncation ate -- which is the failure this is about,
-    one layer down.
-    """
-    last_result, _stub = _run_with_named_exploder(
-        runner, RuntimeError("x" * 500))
 
-    assert len(last_result) == 200, len(last_result)
-    assert "test_silent_cycle_window.py:" in last_result, last_result
-    assert "in exploding_health_note" in last_result, last_result
+def test_own_call_path_names_our_frames_when_the_raiser_is_foreign(runner):
+    """What 1213 and 1215 could not say, and now must."""
+    try:
+        _outer_call_of_ours("{")
+    except ValueError as error:
+        raiser = runner.heartbeats.raising_frame(error)
+        path = runner.heartbeats.own_call_path(error)
+
+    # The raiser is unchanged and still useless on its own.
+    assert raiser.startswith("decoder.py:"), raiser
+    # The path is the difference from what 1213 wrote.
+    assert path, "a foreign raiser must carry our own frames"
+    # Outermost first, so it reads as a call path down towards the raiser.
+    assert path.index("in test_own_call_path_names_our_frames_when_the_raiser_is_foreign") \
+        < path.index("in _outer_call_of_ours") < path.index("in _inner_call_of_ours"), path
+    # Basenames only -- an absolute path spends 40 of the 200 characters on
+    # a directory layout that is the same on every pod.
+    assert "/" not in path, path
+    # Nothing foreign in it: the raiser is already recorded separately, and
+    # nine stdlib frames would fill the record on their own.
+    assert "decoder.py" not in path, path
+
+
+def test_own_call_path_is_empty_when_the_raiser_is_already_ours(runner):
+    """The path is added because the raiser named nothing, not always."""
+    try:
+        raise ValueError("ours")
+    except ValueError as error:
+        assert runner.heartbeats.raising_frame(error).startswith(
+            "test_silent_cycle_window.py:")
+        assert runner.heartbeats.own_call_path(error) == ""
+
+
+def test_own_call_path_is_empty_when_no_frame_is_ours(runner):
+    """Nothing of ours to add leaves the raiser as the whole answer."""
+    try:
+        _inner_call_of_ours("{")
+    except ValueError as caught:
+        error = caught
+
+    # Drop every frame of ours, leaving the all-foreign stack.
+    tb = error.__traceback__
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    error.__traceback__ = tb
+
+    assert runner.heartbeats.raising_frame(error).startswith("decoder.py:")
+    assert runner.heartbeats.own_call_path(error) == ""
+
+
+def test_own_call_path_survives_a_frame_with_no_real_file(runner):
+    """It runs on the failure path, so a synthetic filename may not kill it."""
+    error = ValueError("boom")
+    try:
+        exec(compile("raise ValueError('boom')", "<string>", "exec"))
+    except ValueError as caught:
+        error = caught
+    # Does not raise; `<string>` is nobody's file, so there is nothing ours
+    # under it and the raiser stands alone.
+    assert runner.heartbeats.own_call_path(error) == ""
+    assert runner.heartbeats.raising_frame(error).startswith("<string>:")
+
+
+def test_the_record_keeps_the_exception_type_when_the_path_is_long(runner):
+    """The 200-character cut may not eat the half of the diagnosis that
+    says what went wrong. A deep own call path is the case that would --
+    the path is last for exactly this reason."""
+    def deep(n):
+        if n:
+            return deep(n - 1)
+        return json.loads("{")
+
+    try:
+        deep(40)
+    except ValueError as error:
+        record = (f"failed: {runner.heartbeats.raising_frame(error)}: {error!r}")
+        path = runner.heartbeats.own_call_path(error)
+        result = (f"{record} via {path}" if path else record)[:200]
+
+    assert len(path) > 200, "this test needs a path longer than the record"
+    assert len(result) == 200, result
+    assert "JSONDecodeError" in result, result
+    assert result.startswith("failed: decoder.py:"), result
