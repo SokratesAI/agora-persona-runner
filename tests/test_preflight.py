@@ -1089,11 +1089,25 @@ def test_a_solo_check_never_runs_while_another_check_is_running(tmp_path, monkey
     # what the mutation that drops the `not in SOLO` filter does.
     calls = []
 
+    # The two pooled checks meet here instead of sleeping past each other.
+    # A `time.sleep(0.05)` used to stand in for the overlap, and on 2026-09-08
+    # it lost the race on a GitHub runner: the first thread entered, slept and
+    # left before the second was scheduled, so the precondition below read
+    # "this sweep was serial" and main went red on a green change. The pool is
+    # six workers wide and both of these are submitted to it, so a barrier of
+    # two is always met -- and if it ever is not, this raises rather than
+    # passing. Named explicitly rather than via `SOLO`, so the mutation that
+    # drops the `not in SOLO` filter changes what the assertions see and not
+    # what the barrier does.
+    pooled = ("nas_ports", "workload_health")
+    overlap = threading.Barrier(len(pooled), timeout=10)
+
     def fake(name):
         with lock:
             calls.append((name, set(in_flight)))
             in_flight.add(name)
-        time.sleep(0.05)
+        if name in pooled:
+            overlap.wait()
         with lock:
             in_flight.discard(name)
         return (name, 0, f"{name} swept 1 thing\n", 0.1)
@@ -1106,7 +1120,9 @@ def test_a_solo_check_never_runs_while_another_check_is_running(tmp_path, monkey
     assert solo_calls[0] == set()
     # The precondition: the pool really did overlap the other two, so "nothing
     # was alongside cpu_throttle" is a fact about SOLO and not about a sweep
-    # that happened to be serial.
+    # that happened to be serial. The barrier above is what makes this a fact
+    # rather than a coin toss -- the second thread cannot record an empty set,
+    # because the first is still standing at the barrier when it does.
     assert any(alongside for name, alongside in calls if name != "cpu_throttle")
 
     out = capfd.readouterr().out
