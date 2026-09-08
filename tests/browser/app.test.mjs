@@ -5380,7 +5380,7 @@ describe("the conversation URL opens the dock, not a page of its own", () => {
 });
 
 describe("the service worker says so when it answers from its cache", () => {
-  function runFetchHandler({ networkFails, cached }) {
+  function runFetchHandler({ networkFails, cached, url, headers }) {
     const listeners = {};
     const workerSelf = {
       addEventListener: (name, fn) => { listeners[name] = fn; },
@@ -5402,12 +5402,31 @@ describe("the service worker says so when it answers from its cache", () => {
 
     let answered;
     listeners.fetch({
-      request: { method: "GET", url: "https://nova.example/api/journal?limit=20", mode: "cors" },
+      request: {
+        method: "GET",
+        url: url || "https://nova.example/api/board?name=issues",
+        mode: "cors",
+        headers: { get: (name) => (headers ? headers[name] || null : null) },
+      },
       respondWith: (p) => { answered = p; },
+      // Deliberately absent until now, and the worker survives it -- the
+      // stale-while-revalidate path parks its refetch on `waitUntil` inside a
+      // try/catch precisely because a browser that has not got one must not
+      // take the response down with it. Supplied here so this harness
+      // exercises the ordinary path rather than that fallback.
+      waitUntil: () => {},
     });
     return answered;
   }
 
+  /* On `/api/board` rather than on `/api/journal`, which is where these were
+   * written. A journal or digest GET carrying no `If-None-Match` is now
+   * answered from the worker's cache first -- that is the reopen fix, and
+   * `tests/browser/sw.test.mjs` covers it. A board is not, for the reason the
+   * worker's own comment gives: nothing polls it, so nothing would come back
+   * to correct a cached copy, and this stamp is the page's only basis for
+   * saying so. Moved rather than deleted -- the rule still holds, on the
+   * routes it still governs. */
   test("a cache hit is stamped, and still carries the body it cached", async () => {
     const response = await runFetchHandler({
       networkFails: true,
@@ -5416,6 +5435,19 @@ describe("the service worker says so when it answers from its cache", () => {
     assert.equal(response.headers.get("X-Nova-Replayed"), "1");
     assert.equal(response.status, 200);
     assert.equal(await response.text(), '{"cached":true}');
+  });
+
+  test("a polled payload the page has an etag for is still network-first", async () => {
+    /* The 30-second poll. It sends `If-None-Match` out of memory, and the
+     * worker leaves that request alone -- so a dead network on a page that
+     * has already loaded is stamped exactly as it always was. */
+    const response = await runFetchHandler({
+      networkFails: true,
+      cached: new Response('{"cached":true}', { status: 200 }),
+      url: "https://nova.example/api/journal?limit=20",
+      headers: { "If-None-Match": 'W/"abc"' },
+    });
+    assert.equal(response.headers.get("X-Nova-Replayed"), "1");
   });
 
   test("a live answer is not stamped", async () => {
