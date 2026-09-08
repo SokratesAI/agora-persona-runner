@@ -380,7 +380,7 @@ def test_split_at_never_moves_the_exit_status(monkeypatch, capsys):
     own, so `preflight` cannot be turned red by a measurement."""
     conversations = _hourly(600, 6)
     monkeypatch.setattr("tools.cycle_postmortem.collect",
-                        lambda window=None: ([], 605, None, conversations))
+                        lambda window=None: ([], 605, None, conversations, []))
     status = postmortem_main(["--split-at", "2026-08-28T03:00:00Z"])
     assert status == 0
     assert "ENTRYLESS RATE" in capsys.readouterr().out
@@ -454,3 +454,132 @@ def test_truncation_is_judged_on_what_agora_returned_not_what_survives():
                 [dict(NOTICE)] + [message("Bash: ...")] * (MESSAGE_LIMIT - 1))
     assert row["verdict"] == "unreadable"
     assert row["messages"] == MESSAGE_LIMIT
+
+
+# --- an entry filed under the wrong cycle number (idea #267) ----------
+
+from tools.cycle_postmortem import (  # noqa: E402
+    entry_pr_numbers, find_misfiled, format_misfiled, misfiled_entries,
+    reply_numbers,
+)
+
+
+def _said(*numbers):
+    return frozenset(numbers)
+
+
+def test_the_entry_one_number_up_is_attributed_to_the_cycle_that_announced_it():
+    """Measured 2026-09-08: cycle 1183 replied announcing runner#876 and left
+    no entry; `1238-cycle-1184.md` carries `PR: agora-persona-runner#876` and
+    cycle 1184's own reply announced #877. `judge` calls 1183 lost and 1184
+    fine, and 1184 is holding 1183's entry."""
+    pairs = misfiled_entries(
+        [1183],
+        {1184: _said(876), 1185: _said(877)},
+        {1183: _said(876), 1184: _said(877), 1185: _said(878)},
+    )
+    assert (1183, 1184) in pairs
+
+
+def test_the_shift_is_followed_forward_because_it_cascades():
+    """Every cycle that overruns the heartbeat interval and asks without its
+    conversation id gets the same wrong answer, so the entries shift as a
+    run rather than singly -- 1183 through 1187 on 2026-09-08."""
+    pairs = misfiled_entries(
+        [1183],
+        {1184: _said(876), 1185: _said(877), 1186: _said(878), 1187: _said(879)},
+        {1183: _said(876), 1184: _said(877), 1185: _said(878), 1186: _said(879),
+         1187: _said(880)},
+    )
+    assert pairs == [(1183, 1184), (1184, 1185), (1185, 1186), (1186, 1187)]
+
+
+def test_a_cycle_that_announced_its_own_entrys_pr_is_left_alone():
+    """The second condition, and it is what keeps a coincidence out: if the
+    run the entry is filed under named that pull request too, the pair is
+    ambiguous and this says nothing rather than picking one."""
+    assert misfiled_entries(
+        [1183],
+        {1184: _said(876)},
+        {1183: _said(876), 1184: _said(876, 877)},
+    ) == []
+
+
+def test_an_entry_with_no_pull_request_is_never_attributed():
+    """`PR: none` is the honest footer for a cycle that shipped nothing, and
+    an empty set is a subset of everything -- so without this the tool would
+    hand every no-op entry to whichever cycle ran before it."""
+    assert misfiled_entries([1183], {1184: frozenset()},
+                            {1183: _said(876), 1184: _said(877)}) == []
+
+
+def test_an_unreadable_run_stops_the_chain_rather_than_extending_it():
+    """`None` means the conversation would not answer. Reading that as "it
+    named nothing" would satisfy the second condition for free, which is a
+    positive result guaranteed in advance."""
+    assert misfiled_entries([1183], {1184: _said(876)},
+                            {1183: _said(876), 1184: None}) == []
+
+
+def test_a_lost_cycle_that_said_nothing_readable_claims_no_entry():
+    assert misfiled_entries([1183], {1184: _said(876)}, {1184: _said(877)}) == []
+
+
+def test_the_footer_board_number_is_not_read_as_a_pull_request():
+    """`PR: marcus#82 | Board: idea #187 | Outcome: merged` -- only the field
+    before the first pipe is the pull request."""
+    assert entry_pr_numbers(
+        "PR: marcus#82 | Board: idea #187 | Outcome: merged") == frozenset({82})
+
+
+def test_agoras_own_notices_are_not_the_runs_own_words():
+    """Same reason `judge` filters them: a notice is about another cycle, so
+    a pull request number inside one is not something this run announced."""
+    assert reply_numbers([
+        {"text": "merged #876"},
+        {"text": "cycle 900 never replied, see #999", "system": True},
+    ]) == frozenset({876})
+
+
+def test_nothing_is_read_at_all_when_no_cycle_came_back_lost():
+    """`lost` is the only verdict that can mean the entry is somewhere else,
+    so a healthy sweep must not spend a vault read per gap."""
+    def refuse(_):
+        raise AssertionError("read anyway")
+    assert find_misfiled([{"number": 1, "verdict": "silent"}], {}, ["x"],
+                         read_entry=refuse, fetch=refuse) == []
+
+
+def test_find_misfiled_reads_the_entry_and_the_reply_and_names_the_pair():
+    paths = ["projects/x/journal/1238-cycle-1184.md",
+             "projects/x/journal/1239-cycle-1185.md"]
+    entries = {paths[0]: "### Cycle 1184\n\n---\nPR: agora-persona-runner#876 | Outcome: merged\n",
+               paths[1]: "### Cycle 1185\n\n---\nPR: agora-persona-runner#877 | Outcome: merged\n"}
+    replies = {"c1183": [{"text": "merged runner#876"}],
+               "c1184": [{"text": "merged runner#877"}],
+               "c1185": [{"text": "merged runner#878"}]}
+    pairs = find_misfiled(
+        [{"number": 1183, "verdict": "lost"}],
+        {1183: {"id": "c1183"}, 1184: {"id": "c1184"}, 1185: {"id": "c1185"}},
+        paths,
+        read_entry=entries.get,
+        fetch=lambda cid: replies[cid],
+    )
+    assert pairs == [(1183, 1184), (1184, 1185)]
+    block = format_misfiled(pairs)
+    assert any("Cycle 1183's work is in the entry filed as cycle 1184" in line
+               for line in block)
+    assert format_misfiled([]) == []
+
+
+def test_only_the_reply_counts_not_the_whole_transcript():
+    """The first version of `reply_numbers` read every message and could not
+    work: a cycle reads the digest, so its transcript names the pull request
+    the cycle before it shipped, which makes `misfiled_entries`' first
+    condition true for free and its second false for free. Measured against
+    cycle 1183: 300-odd numbers off the transcript, one off the reply."""
+    assert reply_numbers([
+        {"text": "the digest says cycle 1183 merged #876"},
+        {"text": "Merged and live. The banner works now (#877)."},
+        {"text": "heartbeat: Nova finished in 28m 22s — replied 2053 chars"},
+    ]) == frozenset({877})
