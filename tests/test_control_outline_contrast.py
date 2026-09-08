@@ -41,12 +41,22 @@ NON_TEXT_MINIMUM = 3.0
 # violation, and widening the list is a one-line change when one shows up.
 CONTROL_SELECTOR = re.compile(
     r"(^|[\s,>])(input|textarea|select|button|summary)\b"
-    r"|-btn\b|\bbtn-|-input\b|-select\b|\.chip\b|\.tab\b",
+    r"|-btn\b|\bbtn-|-input\b|-select\b|\.chip\b|\.tab\b"
+    # The priority chip is a <button>; its state classes set border-color on
+    # their own, so the base .chip rule moving is not enough. Named one by one
+    # rather than by a `.prio-` prefix, because .prio-caption is a divider,
+    # .prio-menu is the sheet itself and .project-summary-prio is a static
+    # <span> label -- none of the three is a component 1.4.11 reaches.
+    r"|\.capture-prio\b|\.prio-(?:low|medium|high|immediate)\b",
     re.IGNORECASE,
 )
 
+# `var(--line)` and `var(--line, #3a3a3a)` are the same declaration, and the
+# fallback form is how `.capture-prio` survived the first migration: the
+# pattern ended at the closing paren, so a rule with a fallback colour did
+# not look like a `--line` border to either the migration or this test.
 BORDER_LINE = re.compile(
-    r"border(?:-(?:top|right|bottom|left))?(?:-color)?\s*:\s*[^;{}]*?var\(--line\)"
+    r"border(?:-(?:top|right|bottom|left))?(?:-color)?\s*:\s*[^;{}]*?var\(\s*--line\s*[,)]"
 )
 
 RULE = re.compile(r"([^{}]*)\{([^{}]*)\}")
@@ -95,6 +105,10 @@ def test_the_detector_can_see_a_violation():
 
     divider = ".item-comment { border-top: 1px solid var(--line); }"
     assert _control_rules_on_line(divider) == []
+
+    # A fallback colour is still a --line border.
+    with_fallback = ".capture-prio { border: 1px solid var(--line, #3a3a3a); }"
+    assert _control_rules_on_line(with_fallback) == [".capture-prio"]
 
 
 def test_outline_token_meets_non_text_contrast():
