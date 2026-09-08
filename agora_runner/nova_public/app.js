@@ -11382,9 +11382,31 @@
   function stepsForOpenSheet(messages) {
     var i;
     for (i = 0; i < messages.length; i += 1) {
-      if (stepMessageKey(messages[i]) === stepSheetOn.key) {
-        return messages[i].steps || [];
-      }
+      if (stepMessageKey(messages[i]) !== stepSheetOn.key) continue;
+      /* An exact key match is only trustworthy when the key identifies one
+       * block, and the pending key does not: `stepMessageKey` hands the same
+       * sentinel to EVERY steps-only row, because the server invents those
+       * rows and they have no id to be told apart by.
+       *
+       * His report, 2026-09-08, with three screenshots: *"When i open the
+       * tools drawer, it displayed an older tools run from earlier ... It
+       * says that it has ran 21 tools, i open the drawer and still it says
+       * 21 tools. Then suddenly after 4 seconds or so it switches to say 12
+       * tools."* Two runs were narrating into one thread that morning, and
+       * the thread is served from the worker's cache first (#898) so the
+       * paint he opened on and the paint a round trip later were different
+       * blocks. Both answered to the sentinel, so this loop handed the sheet
+       * whichever came first and swapped the drawer under him.
+       *
+       * So the sentinel has to earn its match on content as well: the block
+       * must still lead with the steps he opened. If it does not, fall
+       * through to the search below, which looks for that block wherever it
+       * ended up -- and if it is nowhere in this payload, `refreshStepSheet`
+       * leaves the sheet exactly as it is rather than showing him somebody
+       * else's work. */
+      if (stepSheetOn.key === STEP_SHEET_PENDING_KEY
+          && !openedStepsLeadWith(messages[i].steps)) break;
+      return messages[i].steps || [];
     }
     if (stepSheetOn.key !== STEP_SHEET_PENDING_KEY) return null;
     /* The steps he is reading are the ones that moved, so the message that
