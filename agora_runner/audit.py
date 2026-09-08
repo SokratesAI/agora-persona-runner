@@ -92,13 +92,14 @@ def fold_text_streams(messages):
     bridge sent whole -- which is every passage written before streaming
     existed, and every one from an older bridge -- and is untouched.
     """
+    keys = _stream_keys(messages)
+
     streams = {}
-    for message in messages:
-        stream_id = _stream_id(message)
-        if not stream_id:
+    for message, key in zip(messages, keys):
+        if key is None:
             continue
         stream = streams.setdefault(
-            stream_id, {"anchor": None, "latest": None, "retracted": False})
+            key, {"anchor": None, "latest": None, "retracted": False})
         if message.get("activity", {}).get("retracted"):
             stream["retracted"] = True
         else:
@@ -107,12 +108,11 @@ def fold_text_streams(messages):
             stream["latest"] = message
 
     folded = []
-    for message in messages:
-        stream_id = _stream_id(message)
-        if not stream_id:
+    for message, key in zip(messages, keys):
+        if key is None:
             folded.append(message)
             continue
-        stream = streams[stream_id]
+        stream = streams[key]
         # The reply bubble is carrying this text, so the thread must not.
         if stream["retracted"]:
             continue
@@ -125,6 +125,41 @@ def fold_text_streams(messages):
                         detail=stream["latest"]["activity"].get("detail"))
         folded.append(dict(message, activity=activity))
     return folded
+
+
+def _stream_keys(messages):
+    """One key per message: `(turn, stream_id)`, or None for anything that
+    is not a streamed passage.
+
+    **The turn half is what stops a whole window of narration disappearing.**
+    Measured against his own live thread on 2026-09-08: 501 rows carried 41
+    passages and exactly two stream ids between them -- `text-1` and
+    `text-2` -- because the bridge numbers them per turn and starts again at
+    one on the next. `fold_text_streams` keyed on that id alone, so every
+    passage in the window belonged to one of two streams; and the last
+    passage of a turn is the reply, which arrives `retracted`. One
+    retraction anywhere therefore withdrew every passage sharing the id,
+    across every turn in the window. All 41 were dropped, which is why he
+    saw *"69 tools but generated no text output for me to understand what
+    you are actually doing"*.
+
+    A turn ends at a message that is not narration of the machinery -- his
+    line, or the reply. That is the boundary this counts, and it is the same
+    one `visible_rows` uses to decide which message a block of steps belongs
+    to.
+    """
+    keys = []
+    turn = 0
+    for message in messages:
+        if not isinstance(message.get("activity"), dict):
+            # A real message: whatever comes after it belongs to the next
+            # turn, and cannot fold into a stream from the last one.
+            turn += 1
+            keys.append(None)
+            continue
+        stream_id = _stream_id(message)
+        keys.append((turn, stream_id) if stream_id else None)
+    return keys
 
 
 def _stream_id(message):
