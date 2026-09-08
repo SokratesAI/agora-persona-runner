@@ -98,6 +98,93 @@ from agora_runner.heartbeat_liveness import (  # noqa: E402
     interval_seconds,
 )
 
+#: Where the runner records a due tick it declined, and the only copy of
+#: that reason that outlives the Pod. `agora_runner.dropped_ticks` writes it;
+#: this reads it, because this tool runs on the bridge Pod where
+#: `agora_runner.vault` has no working credentials.
+DROP_LEDGER = "projects/sokrates/projects/agora/nova/resources/dropped-ticks.json"
+
+#: `vault_tool.py`, which exists on the bridge Pod only. Same constant and
+#: same reason as `tools.roll_health`.
+VAULT_TOOL = "/app/bridge/vault_tool.py"
+
+
+def _vault_get(path, runner=subprocess.run):
+    """The document as text, or `None` if it did not really return one.
+
+    `get` prints `[not found: <path>]` on stdout and exits 0, so a return
+    code alone reads a vanished ledger as an empty one --- which here would
+    report "no reason was recorded" for a slot whose reason was recorded and
+    then lost. Same shape as `roll_health._fetch`, for the same reason.
+    """
+    try:
+        done = runner([sys.executable, VAULT_TOOL, "get", path],
+                      capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    if not done.stdout.strip() or done.stdout.lstrip().startswith("[not found:"):
+        return None
+    return done.stdout
+
+
+def read_drop_records(runner=subprocess.run):
+    """`(records, error)` --- what the runner said about the ticks it dropped.
+
+    `([], None)` is a real measurement: the ledger exists and holds nothing,
+    or does not exist yet because nothing has been dropped since it shipped.
+    An error is never an empty list, for the reason the module docstring
+    gives about unreadable never reading as clean --- except that this one
+    does not raise the exit status on its own. It is an explanation attached
+    to a slot that is already being reported, not a finding of its own, and a
+    missing explanation must not turn a healthy sweep red.
+    """
+    raw = _vault_get(DROP_LEDGER, runner=runner)
+    if raw is None:
+        return [], None
+    try:
+        records = json.loads(raw)
+    except ValueError:
+        return [], f"{DROP_LEDGER} is not JSON"
+    if not isinstance(records, list):
+        return [], f"{DROP_LEDGER} does not hold a list"
+    return records, None
+
+
+def reasons_for(slots, records, period_seconds, heartbeat_id=None):
+    """`{slot: [reason, ...]}` --- why the poller declined each slot.
+
+    A record is matched to the slot whose own period contains the moment it
+    was written, which is the same window `attribute` uses for a rollout: a
+    due tick is dropped *during* the slot it belongs to. Records carrying no
+    readable timestamp are skipped rather than guessed at --- a reason beside
+    the wrong slot is worse than no reason, because this exists to be
+    believed.
+
+    `heartbeat_id` filters to one heartbeat when it is known; a record
+    written before the field existed carries none and is never dropped for
+    it, since the alternative is silently discarding the history this was
+    built to keep.
+    """
+    period = timedelta(seconds=period_seconds)
+    found = {slot: [] for slot in slots}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if heartbeat_id and record.get("heartbeatId") not in (None, heartbeat_id):
+            continue
+        at = _parse_stamp(record.get("at"))
+        if at is None:
+            continue
+        for slot in slots:
+            if slot <= at < slot + period:
+                reason = record.get("reason") or "no reason recorded"
+                if reason not in found[slot]:
+                    found[slot].append(reason)
+    return found
+
+
 #: How close to a slot a run has to land to count as that slot's run. Half
 #: the period, so every run belongs to exactly one slot and no run can be
 #: claimed by two. Not a tolerance to tune --- it is the midpoint.
@@ -285,7 +372,8 @@ def split_by_in_flight(slots, intervals):
 def judge(heartbeat, conversations, now, window_hours):
     """One row's verdict --- a dict, never a raise."""
     name = heartbeat.get("name") or heartbeat.get("id") or "<unnamed>"
-    row = {"name": name, "schedule": heartbeat.get("schedule") or "", "verdict": "unjudged"}
+    row = {"name": name, "id": heartbeat.get("id"),
+           "schedule": heartbeat.get("schedule") or "", "verdict": "unjudged"}
     if not heartbeat.get("enabled"):
         row["detail"] = "disabled, so it is meant to fire never"
         return row
@@ -337,7 +425,8 @@ def judge(heartbeat, conversations, now, window_hours):
 
 
 def format_report(results, error, window_hours, listed,
-                  rollouts=None, shape=None, rollout_error=None):
+                  rollouts=None, shape=None, rollout_error=None,
+                  drop_records=None, drop_error=None):
     """`(text, status)` --- the report and its exit code."""
     lines = []
     if error:
@@ -413,6 +502,28 @@ def format_report(results, error, window_hours, listed,
                                 for t in idle[:12]
                             )
                         )
+                    # The poller knew why it declined each of these and used
+                    # to print it to stdout only, which is collected with the
+                    # Pod -- so a slot lost yesterday could never be
+                    # explained. `agora_runner.dropped_ticks` writes the same
+                    # reason to the vault now; this is where it comes back.
+                    if drop_error:
+                        lines.append(
+                            f"        NO REASONS READ — {drop_error}, so the "
+                            "runner's own account of these slots is missing rather "
+                            "than empty"
+                        )
+                    else:
+                        named = reasons_for(unexplained, drop_records or [],
+                                            row["period_seconds"], row.get("id"))
+                        for slot in unexplained[:12]:
+                            if named.get(slot):
+                                lines.append(
+                                    "        "
+                                    + slot.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                                    + " — the poller said: "
+                                    + "; ".join(named[slot])
+                                )
         if row["oldest_run"] and row["oldest_run"] > row["window_start"] + timedelta(
             seconds=row["period_seconds"] * 2
         ):
@@ -489,8 +600,10 @@ def main(argv=None):
     rollouts = []
     if not rollout_error:
         rollouts, rollout_error = read_rollout_instants()
+    drop_records, drop_error = read_drop_records()
     report, status = format_report(
-        results, error, args.hours, len(conversations), rollouts, shape, rollout_error
+        results, error, args.hours, len(conversations), rollouts, shape,
+        rollout_error, drop_records, drop_error
     )
     print(report)
     return status

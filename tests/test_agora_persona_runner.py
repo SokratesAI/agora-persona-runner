@@ -3515,6 +3515,17 @@ def test_run_heartbeat_sentinel_match_is_whitespace_and_case_tolerant(runner):
 # args, never gated by persona.capabilities.vaultWrite).
 # ---------------------------------------------------------------------------
 
+def _no_drop_records():
+    """`_drop_tick`'s vault write is not what the tests below measure.
+
+    It hands the write to its own daemon thread, and every test here patches
+    `threading.Thread` globally to count the threads `run_due_heartbeats`
+    starts -- so without this the recorder's thread is counted as a heartbeat
+    run and the assertions read one too many. What that write must actually
+    do is in `tests/test_dropped_ticks.py`.
+    """
+    return patch("agora_runner.dropped_ticks.record")
+
 class _FakeThread:
     """Stand-in for threading.Thread that runs nothing — just records how
     it was constructed and whether .start() was called, so the concurrency
@@ -3575,6 +3586,7 @@ def test_run_due_heartbeats_skips_already_running_workflow(runner):
 
     with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb1": [_AliveThread()]}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
+         _no_drop_records(), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor:
         runner.run_due_heartbeats()
 
@@ -3642,6 +3654,7 @@ def test_a_fourth_concurrent_run_is_refused(runner):
          patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
          patch.object(runner.heartbeats, "agora_internal",
                       return_value=(200, {"heartbeats": [heartbeat]})), \
+         _no_drop_records(), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor, \
          patch.object(runner.heartbeats, "schedule_due", return_value=True):
         runner.run_due_heartbeats()
@@ -3671,6 +3684,7 @@ def test_one_slot_cannot_spawn_twice_before_its_claim_lands(runner):
          patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
          patch.object(runner.heartbeats, "agora_internal",
                       return_value=(200, {"heartbeats": [heartbeat]})), \
+         _no_drop_records(), \
          patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
          patch.object(runner.heartbeats, "schedule_due", return_value=True):
         runner.run_due_heartbeats()   # spawns for this slot
@@ -3760,6 +3774,7 @@ def _scheduler_lines(runner, heartbeat, threads, marks, drops, limit=3,
          patch.object(runner.heartbeats, "log", side_effect=printed.append), \
          patch.object(runner.heartbeats, "agora_internal",
                       return_value=(200, {"heartbeats": [heartbeat]})), \
+         _no_drop_records(), \
          patch.object(runner.threading, "Thread", side_effect=ctor), \
          patch.object(runner.heartbeats, "schedule_due", return_value=True):
         for _ in range(ticks):
@@ -3879,6 +3894,7 @@ def test_a_workflow_heartbeat_never_overlaps_itself(runner):
          patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
          patch.object(runner.heartbeats, "agora_internal",
                       return_value=(200, {"heartbeats": [heartbeat]})), \
+         _no_drop_records(), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor, \
          patch.object(runner.heartbeats, "schedule_due", return_value=True):
         runner.run_due_heartbeats()
@@ -3967,6 +3983,7 @@ def test_the_spawn_mark_still_guards_a_never_run_heartbeat(runner):
          patch.object(runner.heartbeats, "HEARTBEAT_MAX_CONCURRENT", 3), \
          patch.object(runner.heartbeats, "agora_internal",
                       return_value=(200, {"heartbeats": [heartbeat]})), \
+         _no_drop_records(), \
          patch.object(runner.threading, "Thread", side_effect=fake_thread_ctor), \
          patch.object(runner.heartbeats, "schedule_due", return_value=True):
         marks["hb-new"] = None  # this slot was already spawned against None
@@ -4055,6 +4072,7 @@ def test_run_due_heartbeats_skips_a_plain_heartbeat_already_running(runner):
 
     with patch.object(runner.heartbeats, "_heartbeat_threads", {"hb2": [_AliveThread()]}), \
          patch.object(runner.heartbeats, "agora_internal", return_value=(200, {"heartbeats": [heartbeat]})), \
+         _no_drop_records(), \
          patch.object(runner.threading, "Thread") as mock_thread_ctor, \
          patch.object(runner.heartbeats, "run_heartbeat") as mock_run_hb:
         runner.run_due_heartbeats()
