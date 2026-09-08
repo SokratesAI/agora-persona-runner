@@ -537,6 +537,46 @@ def run_heartbeat(heartbeat):
         # elapsed since the previous run, which is how one of them ends up
         # reasoning about "six hours of vault changes" over a twelve-minute gap.
         manual = bool(heartbeat.get("forceRun"))
+        # The opening chip says which of the two started this run, so the thread
+        # itself records what the owner did rather than only what the clock did.
+        started_chip = f"{heartbeat['name']} ({'manual trigger' if manual else heartbeat['schedule']})"
+
+        # Posted HERE, before the health note and the vault fetch, and not
+        # ninety lines down where it used to sit -- for Nova's own cycle
+        # heartbeat only. #903 wrapped this window in a handler so a raise in
+        # it names its own line; a handler cannot cover the other way a run
+        # dies here, which is the process going away underneath it. The runner
+        # Deployment is maxSurge 1 / maxUnavailable 0 with a 2880s grace, so a
+        # rollout leaves two pods polling and then SIGKILLs the old one at grace
+        # expiry whatever it is holding; an OOM kill and a node eviction land
+        # the same way. None of those raise, so none of them write a chip, a
+        # closing line, a `lastResult` or a stub -- and the conversation is
+        # already created, numbered and tagged by the line above, which is
+        # exactly `cycle_postmortem`'s undiagnosable `silent` verdict.
+        #
+        # A chip on the thread is the one record that survives the process, so
+        # it goes first: a death after it lands as `cut off` instead, which
+        # carries a timestamp and a chip to read. What I measured rather than
+        # inferred, on cycle 1217: its conversation was created at
+        # 2026-09-08T09:20:49Z, off its own 24m cadence, inside the window
+        # between two runner ReplicaSets (09:10:56Z and 09:36:16Z), and it
+        # holds no message at all. I did not read the kill itself -- every pod
+        # from that window is gone, which is the second half of the problem.
+        #
+        # Scoped by `nova_cycle_heartbeats`, the predicate `cycle_health` and
+        # `stall_notice` already share, rather than by the sentinel test below:
+        # a monitoring heartbeat opts into silence precisely so a clean run
+        # leaves the chat untouched, and `may_go_silent` cannot be decided
+        # until `system` is built out of the very work this hoist skips ahead
+        # of. Nova's cycle heartbeat is never silent -- it writes a reply and a
+        # journal entry every run -- so for it the two orders differ only in
+        # when the chip lands, and it is the only heartbeat with a silent-cycle
+        # problem.
+        from agora_runner.cycle_health import nova_cycle_heartbeats
+        chip_posted = bool(nova_cycle_heartbeats([heartbeat]))
+        if chip_posted:
+            audit(persona["name"], conversation_id, "heartbeat", started_chip)
+
         origin = ("a manual trigger — Edvard started this run himself just now "
                   f"rather than waiting for the {heartbeat['schedule']} schedule"
                   if manual else
@@ -631,11 +671,9 @@ def run_heartbeat(heartbeat):
         # channel for that is the system prompt, so that is what we test.
         # Those heartbeats keep the old end-of-run chip, unchanged.
         may_go_silent = HEARTBEAT_NO_REPORT_SENTINEL in system
-        # The opening chip says which of the two started this run, so the thread
-        # itself records what the owner did rather than only what the clock did.
-        started_chip = f"{heartbeat['name']} ({'manual trigger' if manual else heartbeat['schedule']})"
-        if not may_go_silent:
+        if not may_go_silent and not chip_posted:
             audit(persona["name"], conversation_id, "heartbeat", started_chip)
+            chip_posted = True
 
         # 2026-07-24: heartbeats always run non-sticky regardless of the
         # bound conversation's own stickyFallback setting -- a scheduled
@@ -672,10 +710,13 @@ def run_heartbeat(heartbeat):
             push = heartbeat.get("pushNotifications") is not False
             notify(conversation_id, reply, persona["name"], push=push)
             result = f"replied {len(reply)} chars"
-            if may_go_silent:
+            if not chip_posted:
                 # Chip was withheld up front because this run might have
                 # ended in silence. It didn't, so post it now — exactly
-                # the old behaviour, for exactly the old reason.
+                # the old behaviour, for exactly the old reason. Keyed on
+                # whether it went out rather than on `may_go_silent`, so a
+                # heartbeat that is BOTH Nova's cycle and sentinel-carrying
+                # gets one chip and not two.
                 audit(persona["name"], conversation_id, "heartbeat", started_chip)
     except Exception as e:
         # `f"failed: {e}"` was the whole record, and for the exception types
