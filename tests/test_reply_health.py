@@ -275,3 +275,174 @@ def test_a_pod_that_has_never_restarted_contributes_no_kill():
     kills, note = reply_health.bridge_kills(run=_kubectl([pod]))
     assert note == ""
     assert kills == []
+
+
+# --- the second cause: a rollout, which `lastState` cannot see at all ---
+
+def _rs(name, created_at):
+    return {"metadata": {"name": name, "creationTimestamp": created_at}}
+
+
+def _kubectl_split(pods=(), replicasets=(), pods_error=None, rs_error=None):
+    """A fake that answers `get pods` and `get rs` separately.
+
+    The older `_kubectl` returns one payload for every call, which would let
+    a rollout test pass while the tool asked the wrong resource.
+    """
+    def run(args, timeout=30):
+        if "rs" in args:
+            if rs_error is not None:
+                raise rs_error
+            return json.dumps({"items": list(replicasets)})
+        if pods_error is not None:
+            raise pods_error
+        return json.dumps({"items": list(pods)})
+    return run
+
+
+def _fresh_pod(name="bridge-new"):
+    """What a replacement Pod actually looks like: no `lastState` at all.
+
+    This is the precondition the whole rollout reader exists for. If this
+    fixture ever grows a termination the kill reader could see, the test
+    below stops measuring anything.
+    """
+    return {"metadata": {"name": name},
+            "status": {"containerStatuses": [
+                {"name": "agora-claude-bridge", "restartCount": 0,
+                 "lastState": {}}]}}
+
+
+def test_a_rollout_explains_a_silence_that_the_kill_reader_cannot_see():
+    """Cycle 1245's finding, as a test: a replacement Pod holds no kill."""
+    listing = _listing(_conversation("Nova — Cycle 1225", 90, ident="c1225"))
+    threads = {"c1225": _thread(_narration("Now the deploy health-check."))}
+    fresh = _fresh_pod()
+    # The precondition: the kill reader is genuinely blind to this Pod.
+    kills, note = reply_health.bridge_kills(run=_kubectl_split(pods=[fresh]))
+    assert (kills, note) == ([], "")
+    status, lines = _sweep(
+        listing, threads,
+        run=_kubectl_split(pods=[fresh],
+                           replicasets=[_rs("bridge-85df9958f9", _stamp(88))]))
+    assert status == 2
+    said = "\n".join(lines)
+    assert "rolled out from under it" in said
+    assert "bridge-85df9958f9" in said
+    assert "2m after that message" in said
+    assert "unattributed" not in said
+
+
+def test_a_rollout_in_the_same_second_as_the_message_still_explains_it():
+    """Cycle 1224: the ReplicaSet stamp is truncated to the second."""
+    spoke = NOW - timedelta(minutes=90)
+    rollout = {"replicaset": "bridge-85df9958f9",
+               "at": spoke - timedelta(milliseconds=858)}
+    assert reply_health.attribute_rollout(spoke, [rollout]) is rollout
+
+
+def test_a_rollout_a_full_second_before_the_message_does_not_explain_it():
+    """The slack is the timestamp's resolution, not a widened window."""
+    spoke = NOW - timedelta(minutes=90)
+    rollout = {"replicaset": "bridge-85df9958f9",
+               "at": spoke - timedelta(seconds=1, milliseconds=1)}
+    assert reply_health.attribute_rollout(spoke, [rollout]) is None
+
+
+def test_a_rollout_past_the_turn_cap_does_not_explain_it():
+    spoke = NOW - timedelta(minutes=200)
+    rollout = {"replicaset": "bridge-85df9958f9",
+               "at": spoke + timedelta(minutes=46)}
+    assert reply_health.attribute_rollout(spoke, [rollout]) is None
+
+
+def test_a_rollout_never_renders_a_negative_gap():
+    """`-1m after that message` read as nonsense on the real 1224 row.
+
+    The conversation's own stamp carries the milliseconds, so the rollout
+    second genuinely precedes it -- an end-to-end test whose ReplicaSet
+    stamp merely *equalled* the message would render `0s` and pass without
+    ever reaching the branch it names.
+    """
+    spoke = NOW - timedelta(minutes=90)
+    conversation = _conversation("Nova — Cycle 1224", 90, ident="c1224")
+    conversation["updatedAt"] = (
+        (spoke + timedelta(milliseconds=858)).isoformat()
+        .replace("+00:00", "Z"))
+    threads = {"c1224": _thread(_narration("Now the deploy health-check."))}
+    status, lines = _sweep(
+        _listing(conversation), threads,
+        run=_kubectl_split(pods=[_fresh_pod()],
+                           replicasets=[_rs("bridge-85df9958f9",
+                                            _stamp(90))]))
+    said = "\n".join(lines)
+    assert "rolled out from under it" in said
+    assert "inside the same second as that message" in said
+    assert "-1m" not in said and "-0m" not in said and "-1s" not in said
+
+
+def test_when_renders_each_side_of_the_boundary():
+    """The renderer, directly: seconds, minutes, and the negative case."""
+    assert reply_health._when(timedelta(seconds=-0.858)) == (
+        "inside the same second as that message")
+    assert reply_health._when(timedelta(0)) == "0s after that message"
+    assert reply_health._when(timedelta(seconds=59)) == "59s after that message"
+    assert reply_health._when(timedelta(seconds=60)) == "1m after that message"
+
+
+def test_a_named_kill_outranks_a_rollout_in_the_same_window():
+    """A kill carries a reason and an exit code; a rollout carries neither."""
+    listing = _listing(_conversation("Nova — Cycle 796", 90, ident="c796"))
+    threads = {"c796": _thread(_narration("Still working."))}
+    status, lines = _sweep(
+        listing, threads,
+        run=_kubectl_split(pods=[_pod("bridge-w5x2b", _stamp(88))],
+                           replicasets=[_rs("bridge-abc", _stamp(88))]))
+    said = "\n".join(lines)
+    assert "killed with the pod" in said
+    assert "rolled out from under it" not in said
+
+
+def test_an_unreadable_rollout_history_is_not_reported_as_no_rollout():
+    """One blind reader must not be printed as the other's absence."""
+    listing = _listing(_conversation("Nova — Cycle 796", 90, ident="c796"))
+    threads = {"c796": _thread(_narration("Still working."))}
+    status, lines = _sweep(
+        listing, threads,
+        run=_kubectl_split(pods=[_fresh_pod()],
+                           rs_error=OSError("kubectl: not found")))
+    assert status == 2
+    said = "\n".join(lines)
+    assert "the rollout history could not be read" in said
+    assert "no bridge rollout is recorded" not in said
+
+
+def test_an_unreadable_pod_history_still_reports_a_readable_rollout():
+    """A rollout is named even when `lastState` could not be read at all."""
+    listing = _listing(_conversation("Nova — Cycle 796", 90, ident="c796"))
+    threads = {"c796": _thread(_narration("Still working."))}
+    status, lines = _sweep(
+        listing, threads,
+        run=_kubectl_split(pods_error=OSError("kubectl: not found"),
+                           replicasets=[_rs("bridge-abc", _stamp(88))]))
+    said = "\n".join(lines)
+    assert "rolled out from under it" in said
+
+
+def test_bridge_rollouts_reads_the_newest_first_and_skips_a_stampless_one():
+    run = _kubectl_split(replicasets=[
+        _rs("older", _stamp(300)), _rs("newer", _stamp(10)),
+        {"metadata": {"name": "no-stamp"}}])
+    rollouts, note = reply_health.bridge_rollouts(run=run)
+    assert note == ""
+    assert [r["replicaset"] for r in rollouts] == ["newer", "older"]
+
+
+def test_a_rollout_never_turns_a_replied_cycle_into_a_silence():
+    listing = _listing(_conversation("Nova — Cycle 796", 90, ident="c796"))
+    threads = {"c796": _thread(_narration("Working."), _reply("Done."))}
+    status, lines = _sweep(
+        listing, threads,
+        run=_kubectl_split(replicasets=[_rs("bridge-abc", _stamp(88))]))
+    assert status == 0
+    assert "rolled out from under it" not in "\n".join(lines)
