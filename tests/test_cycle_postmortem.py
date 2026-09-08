@@ -744,6 +744,10 @@ def test_the_two_causes_get_separate_headings_and_both_still_raise():
     assert "RAN AND LEFT NO RECORD" in report
     assert "DIED ON A MODEL-CALL ERROR" in report
     assert status == 2
+    # And on its own, so that dropping `api error` from RAISING_VERDICTS
+    # shows up here -- `lost` raises by itself and would carry this for free.
+    _, alone = format_report([row(839, "api error")], 1243, None)
+    assert alone == 2
 
 
 def test_the_lost_heading_says_where_the_reply_still_is():

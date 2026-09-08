@@ -159,10 +159,13 @@ _REPLIED_RE = re.compile(r"^replied\s+(\d+)\s+chars", re.I)
 _FAILED_RE = re.compile(r"^failed:\s*(.*)$", re.I | re.S)
 #: The Claude Code CLI posts its own transport failures into the
 #: conversation as an ordinary assistant message, so Agora's closing line
-#: counts them as a reply of N chars like any other. Anchored at the start
-#: because that is where the CLI writes it and because the phrase appears
-#: inside real replies that discuss it -- this very cycle's does.
-_API_ERROR_RE = re.compile(r"^\s*API Error:", re.I)
+#: counts them as a reply of N chars like any other. It is read with
+#: `.match`, which is where the anchoring lives: the phrase appears
+#: inside real replies that discuss it, this very cycle's included, and
+#: a `^` in the pattern too would be a second copy of that one decision
+#: -- removing either alone then leaves the behaviour unchanged, so
+#: neither is testable.
+_API_ERROR_RE = re.compile(r"\s*API Error:", re.I)
 
 DEFAULT_WINDOW = 48
 
