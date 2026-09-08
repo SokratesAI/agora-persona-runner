@@ -8,10 +8,14 @@ established prior art -- rather than dense 1..N, so moving one row writes
 one document."*
 
 The thing it replaces is `nova_boards.set_project_order`, which renumbers
-every row in the table on every move. On a store that keeps a `_rev` per
-document that is the widest possible conflict window for the smallest
-possible change: three cycles overlap now, and two of them reordering
-different projects in the same second is a lost write today.
+every row in the table on every move. **That costs nothing today** and the
+first draft of this docstring wrongly said it did: a board is one markdown
+document with one `_rev`, so moving one row and renumbering forty are the
+same single write to the same document either way. The narrower conflict
+window is a property of the per-row store this feeds, where a move that
+touches one document instead of four hundred is the difference between two
+overlapping cycles reordering different projects cleanly and one of them
+losing its write.
 
 **Nothing calls this yet, and that is deliberate rather than an oversight.**
 The spec is explicit that the store, the migration and all 29 readers move
@@ -21,21 +25,40 @@ change needs and can be checked on its own; the store lands on top of it.
 
 ## Which of the two prior arts this is
 
-Fractional indexing, in the shape Figma published and the `fractional-indexing`
-npm package implements, not LexoRank. Both give sparse keys; the difference
-is that LexoRank carries a bucket prefix and a rebalancing daemon, and a
-board of four hundred rows edited by hand a few times a day will never need
-one. What is kept from that library is the invariant that makes the scheme
-work at all, and it is easy to lose: **a key never ends in the smallest
-digit.** Without it there are pairs of adjacent keys with nothing strictly
-between them -- "V" and "V0" are adjacent in this alphabet, and a midpoint
-of them would have to be "V0" again -- so a row could become unmovable with
-no error anywhere. Every function here refuses a key that breaks it rather
-than returning a key that silently collides.
+Fractional indexing rather than LexoRank -- but **only the fractional half
+of it**, and the half that is missing has a measurable cost, so it is stated
+here rather than in a follow-up nobody reads. The `fractional-indexing`
+package carries a variable-length *integer part* in front of the fraction and
+appends by incrementing that, in constant time and constant length; this
+module has no integer part, so `between(last, None)` walks into the
+fractional fallback that library treats as a last resort. The keys stay
+correct and stay ordered, and they **grow about one character every five
+appends to the tail**. Adding the integer part is the optimisation, and it is
+boarded; a board that gains a few rows a day is thousands of appends away
+from the length mattering.
 
-Ordering is plain lexicographic byte order on the strings, which is what
-CouchDB's own view collation gives for strings of this alphabet, so a
-sorted-by-rank query needs no comparator.
+What is kept from that library is the invariant that makes the scheme work at
+all, and it is easy to lose: **a key never ends in the smallest digit.**
+Without it there are pairs of adjacent keys with nothing strictly between
+them -- "V" and "V0" are adjacent in this alphabet, and a midpoint of them
+would have to be "V0" again -- so a row could become unmovable with no error
+anywhere. Every function here refuses a key that breaks it rather than
+returning a key that silently collides.
+
+## Two things the store on top of this has to do, which this cannot
+
+**Sort with a byte comparator, not CouchDB's default.** Ordering here is
+plain lexicographic byte order. CouchDB's view collation is ICU, which
+interleaves case (`a < A < aa < b`) rather than running digits, then
+uppercase, then lowercase -- so a view keyed on `rank` under the default
+collation does *not* reproduce the order these functions define. An earlier
+draft of this docstring claimed the opposite; it was wrong, and it would have
+sent whoever built the view looking for the bug somewhere else.
+
+**Detect a duplicate key and retry.** `between` is a pure function, so two
+writers inserting into the same gap at the same moment get the *same* string
+back. That is inherent to every scheme of this family and it is the store's
+problem, not this module's -- but nothing here will warn you about it.
 """
 
 from __future__ import annotations
@@ -88,30 +111,47 @@ def between(before: str | None, after: str | None) -> str:
 def _midpoint(before: str, after: str | None) -> str:
     """The published `midpoint`, with `""` for -inf and `None` for +inf.
 
-    Kept as its own function because `between` validates and this recurses:
-    the recursive calls pass suffixes, and a suffix legitimately may end in
-    the smallest digit even though a whole key may not.
+    **Iterative, and that is not a style choice.** Written with the obvious
+    recursion this takes one stack frame per leading character it agrees on,
+    so `between(key, None)` -- appending a row to the bottom of a board, the
+    most ordinary call there is -- raised `RecursionError` once the key
+    reached 998 characters, which is the 5,987th consecutive append. The
+    tests could not see it: they appended two hundred times, two orders of
+    magnitude short. Reviewer finding, cycle 1239, reproduced before fixing.
+
+    Kept as its own function because `between` validates the whole keys and
+    this walks suffixes, and a suffix legitimately may end in the smallest
+    digit even though a whole key may not.
     """
-    if after is not None:
-        shared = 0
-        while shared < len(after):
-            mine = before[shared] if shared < len(before) else SMALLEST
-            if mine != after[shared]:
-                break
-            shared += 1
-        if shared > 0:
-            return after[:shared] + _midpoint(before[shared:], after[shared:])
+    out = []
+    while True:
+        if after is not None:
+            shared = 0
+            while shared < len(after):
+                mine = before[shared] if shared < len(before) else SMALLEST
+                if mine != after[shared]:
+                    break
+                shared += 1
+            if shared > 0:
+                out.append(after[:shared])
+                before, after = before[shared:], after[shared:]
+                continue
 
-    low = DIGITS.index(before[0]) if before else 0
-    high = DIGITS.index(after[0]) if after else len(DIGITS)
+        low = DIGITS.index(before[0]) if before else 0
+        high = DIGITS.index(after[0]) if after else len(DIGITS)
 
-    if high - low > 1:
-        return DIGITS[(low + high) // 2]
-    if after is not None and len(after) > 1:
-        # The gap at this position is closed, but `after` continues, so the
-        # whole of `after`'s first digit is available one level down.
-        return after[:1]
-    return DIGITS[low] + _midpoint(before[1:], None)
+        if high - low > 1:
+            out.append(DIGITS[(low + high) // 2])
+            return "".join(out)
+        if after is not None and len(after) > 1:
+            # The gap at this position is closed, but `after` continues, so
+            # the whole of `after`'s first digit is available one level down.
+            out.append(after[:1])
+            return "".join(out)
+        # Nothing fits here. Keep this digit and look one place further in,
+        # with no upper neighbour left to respect.
+        out.append(DIGITS[low])
+        before, after = before[1:], None
 
 
 def sequence(count: int) -> list[str]:

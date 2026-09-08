@@ -153,3 +153,20 @@ def test_refuses_a_pair_that_is_not_in_order():
         between("W", "V")
     with pytest.raises(RankError):
         between("V", "V")
+
+
+def test_a_board_can_be_appended_to_forever():
+    """The reviewer's finding, cycle 1239, as a test that can actually see it.
+
+    `between(key, None)` is how a new row goes to the bottom of a board. With
+    a recursive midpoint this raised `RecursionError` on append 5,987, when
+    the key reached 998 characters -- and the 200-append test above passed
+    the whole time, two orders of magnitude short of it.
+    """
+    key = between(None, None)
+    previous = key
+    for _ in range(20000):
+        key = between(previous, None)
+        assert previous < key
+        previous = key
+    assert is_valid(key)
