@@ -252,3 +252,103 @@ def test_a_call_this_thread_does_not_hold_is_a_404_not_an_empty_output():
     _args, status, body = _step_route("/api/conversations/step?id=c-1&tool=gone")
     assert status == 404
     assert "error" in body
+
+
+def _calls(count, start=0):
+    """`count` tool calls as Agora stores them -- two raw rows each."""
+    rows = []
+    for i in range(start, start + count):
+        for half in ("start", "end"):
+            rows.append({
+                "id": f"a-{i}-{half}", "sender": "Nova Answers", "text": "",
+                "ts": "2026-09-08T05:00:00.000Z",
+                "activity": {"capability": "Bash", "detail": f"call {i}",
+                             "toolUseId": f"toolu_{i}"},
+            })
+    return rows
+
+
+def test_a_running_turn_that_fills_the_window_gets_its_own_budget():
+    """His capture, 2026-09-08: the tool count climbs to 69 and then reads 36.
+
+    A tool call spends two raw rows, so a turn past ~250 calls fills
+    `MAX_THREAD_CEILING` on its own and the front of its own step list falls
+    off the back of the window while the turn is still running. Widening the
+    thread ceiling would fix it and would also widen what his phone is handed
+    -- so the narration gets its own ceiling, and the step list stops sharing
+    a row budget with the message history.
+    """
+    stored = _messages(10) + _calls(400)
+    payload, path = _thread(stored, convs.MAX_THREAD)
+    assert path.endswith(f"limit={convs.MAX_NARRATION_CEILING + 1}"), (
+        "the turn's narration was never fetched past the thread ceiling, so "
+        "the drawer is still counting whatever fitted in 500 rows")
+    block = payload["messages"][-1]
+    assert block["stepsOnly"] is True
+    assert len(block["steps"]) == 400, (
+        "the earliest calls of the running turn are still cut")
+    assert block["steps"][0]["input"] == "call 0"
+    assert payload["limit"] == convs.MAX_NARRATION_CEILING
+
+
+def test_a_window_holding_a_message_is_not_widened_again():
+    """One visible message in the window means the turn's start is in it.
+
+    That is the whole test for "were the earliest steps cut" -- with a
+    message to mark where the turn began, the step list is already whole and
+    a third upstream fetch would buy nothing and cost a round trip.
+    """
+    seen = []
+
+    def fake_get(path):
+        seen.append(path)
+        wanted = int(path.split("limit=")[1])
+        return 200, {"messages": stored[-wanted:]}
+
+    # The window has to be FULL for this to prove anything -- a widened
+    # window with room to spare would not be widened again whatever the test
+    # said, so the escalation would look guarded while guarding nothing.
+    # 802 rows against a 501-row window, with two messages inside it.
+    stored = _messages(200) + _calls(200) + _messages(2) + _calls(200)
+    with patch.object(convs, "agora_get", side_effect=fake_get):
+        payload = convs.thread("c-1", convs.MAX_THREAD)
+    assert payload["hasMore"] is True, (
+        "the widened window was not full, so nothing here is being refused")
+    assert len(seen) == 2, f"expected the one widening, got {seen}"
+    assert seen[-1].endswith(f"limit={convs.MAX_THREAD_CEILING + 1}")
+    block = payload["messages"][-1]
+    assert block["stepsOnly"] is True and len(block["steps"]) == 200
+
+
+def test_a_step_past_the_thread_ceiling_still_opens():
+    """The drawer asks for a step inside the window the thread echoed back.
+
+    After the narration widening that window is `MAX_NARRATION_CEILING`, so
+    clamping this read to the thread ceiling would 404 every call the
+    widening is what put on his screen.
+    """
+    stored = _calls(400)
+    asked = []
+
+    def fake_get(path):
+        asked.append(path)
+        wanted = int(path.split("limit=")[1])
+        return 200, {"messages": stored[-wanted:]}
+
+    with patch.object(convs, "agora_get", side_effect=fake_get):
+        found = convs.step_output("c-1", "toolu_0",
+                                  limit=convs.MAX_NARRATION_CEILING)
+    assert asked[-1].endswith(f"limit={convs.MAX_NARRATION_CEILING + 1}")
+    assert found is not None, "the oldest call of the turn opened to a 404"
+
+
+def test_the_thread_ceiling_still_bounds_a_limit_off_the_wire():
+    """The narration ceiling is the server's escalation, not a bigger `?limit=`.
+
+    `clamp_thread_limit` is what a query string reaches, and raising what it
+    admits would hand his phone four times the transcript -- which is the
+    thing `MAX_THREAD_CEILING` exists to stop.
+    """
+    assert convs.clamp_thread_limit(convs.MAX_NARRATION_CEILING) == \
+        convs.MAX_THREAD_CEILING
+    assert convs.MAX_NARRATION_CEILING > convs.MAX_THREAD_CEILING
