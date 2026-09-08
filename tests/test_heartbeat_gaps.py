@@ -733,3 +733,61 @@ def test_an_unreadable_failure_ledger_is_named_not_treated_as_clean():
         [], None, [], None, [], "scheduler-failures.json is not JSON", NOW,
     )
     assert "NO SCHEDULER FAILURES READ" in text
+
+
+def test_runs_in_flight_counts_every_overlapping_run_not_just_one():
+    # The number `split_by_in_flight` throws away. Three runs alive at the
+    # slot is the case where the concurrency limit could genuinely have taken
+    # the tick; one alive is the case where it could not, and `any` reads the
+    # same in both.
+    slot = NOW - timedelta(minutes=30)
+    intervals = [
+        (NOW - timedelta(minutes=50), NOW - timedelta(minutes=10)),
+        (NOW - timedelta(minutes=45), NOW - timedelta(minutes=20)),
+        (NOW - timedelta(minutes=40), NOW - timedelta(minutes=25)),
+    ]
+    assert hg.runs_in_flight(slot, intervals) == 3
+    # The precondition this asserts against: `split_by_in_flight` cannot tell
+    # the three-run case from the one-run case, which is why the count exists.
+    one = intervals[:1]
+    assert hg.split_by_in_flight([slot], intervals)[0] == [slot]
+    assert hg.split_by_in_flight([slot], one)[0] == [slot]
+    assert hg.runs_in_flight(slot, one) == 1
+
+
+def test_runs_in_flight_excludes_a_run_that_had_ended_and_the_slots_own_run():
+    slot = NOW - timedelta(minutes=30)
+    intervals = [
+        (NOW - timedelta(minutes=60), NOW - timedelta(minutes=35)),  # ended first
+        (slot, NOW - timedelta(minutes=10)),                          # this slot's own run
+    ]
+    assert hg.runs_in_flight(slot, intervals) == 0
+
+
+def test_the_report_prints_how_many_runs_were_in_flight_at_a_lost_slot():
+    # Exactly the fixture of `test_the_report_separates_a_covered_slot_from_
+    # an_idle_one` above, whose line said "an earlier run still going" and
+    # never said how many. One run covers 02:00, so the count is 1.
+    convs = _conversations_with_ends([(0, 0), (15, 10), (45, 25), (60, 50)])
+    row = hg.judge(_heartbeat(), convs, NOW, 1)
+    text, status = hg.format_report([row], None, 1, 4, [], {"type": "RollingUpdate"})
+    assert status == 2, text
+    assert "(1 in flight)" in text, text
+
+
+def test_runs_in_flight_counts_a_run_whose_last_word_lands_on_the_slot():
+    # Same closed-at-the-end boundary as `split_by_in_flight`, asserted
+    # separately because the count is its own function: a run whose newest
+    # message is exactly the slot was demonstrably alive at it.
+    slot = NOW - timedelta(minutes=30)
+    assert hg.runs_in_flight(slot, [(NOW - timedelta(minutes=45), slot)]) == 1
+
+
+def test_the_slot_list_caps_the_slots_it_prints_and_counts_each_one():
+    # The cap is what stops one wedged heartbeat printing hundreds of slots
+    # on a line. Thirteen covered slots, one run over all of them.
+    slots = [NOW - timedelta(minutes=m) for m in range(10, 75, 5)]
+    assert len(slots) == 13
+    intervals = [(NOW - timedelta(minutes=90), NOW)]
+    printed = hg._with_in_flight(slots, intervals)
+    assert printed.count("(1 in flight)") == 12

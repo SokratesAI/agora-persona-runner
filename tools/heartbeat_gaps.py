@@ -494,9 +494,13 @@ def split_by_in_flight(slots, intervals):
     running are different failures.
 
     What a covered slot is NOT is proof that the poller declined anything.
-    This function knows only that a run overlapped the slot; the concurrency
-    limit is 3, so the tick had room, and a tick with room that produced no
-    run was either declined for another reason or never evaluated at all
+    This function knows only that a run overlapped the slot -- `any`, not how
+    many. Whether the tick had room is `runs_in_flight` below, which counts
+    them; this docstring used to answer it with the sentence "the concurrency
+    limit is 3, so the tick had room", which was a cycle's hand measurement
+    frozen into prose and would have stayed there unchanged the first time
+    three cycles overlapped. A tick with room that produced no run was either
+    declined for another reason or never evaluated at all
     (`_skipped_occurrences`, runner#916). Those are different bugs with
     different fixes and only the runner's own drop-record ledger separates
     them -- see `split_by_drop_record`, which this hands its result to.
@@ -512,6 +516,52 @@ def split_by_in_flight(slots, intervals):
         else:
             idle.append(slot)
     return covered, idle
+
+
+def runs_in_flight(slot, intervals):
+    """How many runs were already going when this slot came round.
+
+    `split_by_in_flight` above answers "was anything running" with `any`,
+    and that is the whole question it needs. This answers "how many", which
+    is a different question and the one that decides whether the
+    concurrency limit could have taken the tick at all: a slot lost with one
+    run alive against a limit of three had room, and a slot lost with three
+    alive did not.
+
+    That number has been in this module since 2026-09-08 and was never
+    computed. `split_by_in_flight`'s own docstring asserts *"the concurrency
+    limit is 3, so the tick had room"*, and the module header says *"exactly
+    one run was in flight at each of them"* -- both true when a cycle
+    measured them by hand, both frozen into prose the tool cannot re-derive,
+    and both quietly wrong the first time three cycles overlap. Counting it
+    here is the same fix `tools.oom_rank` needed: a hand-measured number
+    copied into a comment is a number that goes stale without anything
+    noticing.
+
+    Deliberately does NOT compare against the limit. `HEARTBEAT_MAX_CONCURRENT`
+    is derived from the runner Pod's environment and this tool runs on the
+    bridge Pod, so reading it here would report the wrong Pod's setting with
+    full confidence. The count is the fact; the comparison belongs to a
+    reader who knows which Pod they are asking about.
+
+    Same half-open interval as `split_by_in_flight`, for the same reason: a
+    run never counts as in flight at the slot that produced it.
+    """
+    return sum(1 for start, end in intervals if start < slot <= end)
+
+
+def _with_in_flight(slots, intervals, cap=12):
+    """The slot list a covered-slot line prints, each with its own count.
+
+    One string rather than three copies of the same comprehension: the three
+    covered buckets (declined / unevaluated / unattributed) differ in what
+    the ledger says about them, not in how a slot is written down.
+    """
+    return ", ".join(
+        slot.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+        + f" ({runs_in_flight(slot, intervals)} in flight)"
+        for slot in slots[:cap]
+    )
 
 
 def ledger_start(records):
@@ -722,10 +772,7 @@ def format_report(results, error, window_hours, listed,
                                 "earlier run still going and the poller recorded "
                                 "declining them, so a guard took the tick (reason "
                                 "below): "
-                                + ", ".join(
-                                    t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
-                                    for t in declined[:12]
-                                )
+                                + _with_in_flight(declined, row.get("intervals") or [])
                             )
                         if unevaluated:
                             lines.append(
@@ -734,10 +781,7 @@ def format_report(results, error, window_hours, listed,
                                 "declining nothing, so the tick was never evaluated "
                                 "rather than declined -- the skipped-occurrence path, "
                                 "not the concurrency limit: "
-                                + ", ".join(
-                                    t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
-                                    for t in unevaluated[:12]
-                                )
+                                + _with_in_flight(unevaluated, row.get("intervals") or [])
                             )
                         if unattributed:
                             lines.append(
@@ -745,10 +789,7 @@ def format_report(results, error, window_hours, listed,
                                 "earlier run still going, and the drop-record ledger "
                                 "does not reach back that far, so a declined tick and "
                                 "one that was never evaluated look the same here: "
-                                + ", ".join(
-                                    t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
-                                    for t in unattributed[:12]
-                                )
+                                + _with_in_flight(unattributed, row.get("intervals") or [])
                             )
                     if idle:
                         lines.append(
