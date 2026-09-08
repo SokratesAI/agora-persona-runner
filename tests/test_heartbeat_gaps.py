@@ -353,3 +353,102 @@ def test_a_slot_on_a_runs_last_word_is_still_covered():
     intervals = [(NOW - timedelta(minutes=45), slot)]
     covered, idle = hg.split_by_in_flight([slot], intervals)
     assert covered == [slot] and idle == []
+
+
+# --- the poller's own reason for a slot it declined (idea #267) --------------
+#
+# The reason a due tick was dropped used to exist only in the runner's stdout,
+# which is collected with the Pod, so a slot lost yesterday could be counted
+# and never explained. `agora_runner.dropped_ticks` writes it to the vault;
+# these hold the half that reads it back.
+
+
+def _drop(at, reason="3 run(s) in flight, limit 3", hb="hb"):
+    return {"at": at.isoformat(), "heartbeatId": hb, "heartbeat": "Nova",
+            "reason": reason, "dropsSinceLastStart": 1}
+
+
+def test_a_drop_record_is_matched_to_the_slot_it_was_written_in():
+    slot = NOW - timedelta(minutes=30)
+    found = hg.reasons_for([slot], [_drop(slot + timedelta(minutes=5))], 900)
+    assert found[slot] == ["3 run(s) in flight, limit 3"]
+
+
+def test_a_drop_record_from_the_next_slot_is_not_lent_backwards():
+    # Same boundary `attribute` is tested at, for the same reason: a reason
+    # printed against the wrong slot is worse than no reason at all.
+    slot = NOW - timedelta(minutes=30)
+    found = hg.reasons_for([slot], [_drop(slot + timedelta(seconds=900))], 900)
+    assert found[slot] == []
+
+
+def test_a_drop_record_from_another_heartbeat_is_not_borrowed():
+    slot = NOW - timedelta(minutes=30)
+    records = [_drop(slot + timedelta(minutes=1), hb="somebody-else")]
+    assert hg.reasons_for([slot], records, 900, "hb")[slot] == []
+
+
+def test_a_drop_record_with_no_heartbeat_id_is_still_used():
+    # Records written before the field existed must not be silently dropped:
+    # the history is the whole reason this ledger is kept.
+    slot = NOW - timedelta(minutes=30)
+    records = [{"at": (slot + timedelta(minutes=1)).isoformat(), "reason": "old"}]
+    assert hg.reasons_for([slot], records, 900, "hb")[slot] == ["old"]
+
+
+def test_a_record_with_an_unreadable_timestamp_is_skipped_not_guessed():
+    slot = NOW - timedelta(minutes=30)
+    records = [{"at": "not a time", "heartbeatId": "hb", "reason": "why"}]
+    assert hg.reasons_for([slot], records, 900, "hb")[slot] == []
+
+
+def test_the_reason_reaches_the_report_under_the_slot_it_explains():
+    row = hg.judge(_heartbeat(), _conversations([0, 15, 45, 60]), NOW, 1)
+    missed = NOW - timedelta(minutes=30)
+    text, status = hg.format_report(
+        [row], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [_drop(missed + timedelta(minutes=2), "claim for lastRunAt=X not visible yet")],
+        None,
+    )
+    assert status == 2, text
+    assert "the poller said: claim for lastRunAt=X not visible yet" in text
+
+
+def test_a_slot_with_no_recorded_reason_says_nothing_rather_than_guessing():
+    row = hg.judge(_heartbeat(), _conversations([0, 15, 45, 60]), NOW, 1)
+    text, _ = hg.format_report(
+        [row], None, 1, 4, [], {"type": "RollingUpdate"}, None, [], None)
+    assert "the poller said" not in text
+
+
+def test_an_unreadable_ledger_says_so_rather_than_reading_as_no_reasons():
+    row = hg.judge(_heartbeat(), _conversations([0, 15, 45, 60]), NOW, 1)
+    text, _ = hg.format_report(
+        [row], None, 1, 4, [], {"type": "RollingUpdate"}, None, [], "ledger is not JSON")
+    assert "NO REASONS READ — ledger is not JSON" in text
+
+
+def test_a_ledger_that_does_not_exist_yet_is_an_empty_measurement():
+    # Nothing has been dropped since this shipped. That is not an error, and
+    # reporting it as one would make every clean sweep carry a scary line.
+    def run(argv, capture_output=None, text=None, timeout=None):
+        return _Proc(returncode=0, stdout=f"[not found: {hg.DROP_LEDGER}]\n")
+
+    assert hg.read_drop_records(runner=run) == ([], None)
+
+
+def test_a_ledger_holding_something_other_than_json_is_an_error():
+    def run(argv, capture_output=None, text=None, timeout=None):
+        return _Proc(returncode=0, stdout="{not json")
+
+    records, error = hg.read_drop_records(runner=run)
+    assert records == [] and "not JSON" in error
+
+
+def test_a_ledger_holding_a_list_is_returned_verbatim():
+    stored = [_drop(NOW)]
+
+    def run(argv, capture_output=None, text=None, timeout=None):
+        return _Proc(returncode=0, stdout=json.dumps(stored) + "\n")
+
+    assert hg.read_drop_records(runner=run) == (stored, None)

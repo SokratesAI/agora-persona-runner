@@ -25,6 +25,7 @@ from agora_runner.conversations import notify
 from agora_runner.workflows import run_workflow_heartbeat
 from agora_runner.conversation_rotation import cycle_tag, rotate_cycle_conversation
 from agora_runner.deferred import ANSWERED_LIVE_CAPABILITY
+from agora_runner import dropped_ticks
 
 # How many previous cycle-conversations the pending-message lookback may
 # walk back through, and how much of the owner's text it may carry into one
@@ -952,11 +953,23 @@ def _drop_tick(hb_id, name, reason):
     Doubling keeps a wedged heartbeat talking for as long as it is wedged
     -- about ten lines per 45-minute cycle instead of 540 -- and it needs
     no interval invented for it.
+
+    The same doublings are written to the vault by `dropped_ticks.record`,
+    because this log line was the ONLY place the reason a slot was declined
+    ever existed, and it goes to stdout, which is collected with the Pod. On
+    2026-09-08 `tools.heartbeat_gaps` reported four missed firings in 24h
+    with no rollout to explain them and nothing could say why: the answer had
+    been printed here and then thrown away with the ReplicaSet. That is the
+    still-open half of idea #267. The write happens on its own daemon thread
+    and swallows its own failures -- this function runs on the poll loop that
+    decides whether anything fires at all, and a diagnostic that can stall it
+    would cost more cycles than it explains.
     """
     n = _heartbeat_dropped_ticks.get(hb_id, 0) + 1
     _heartbeat_dropped_ticks[hb_id] = n
     if n & (n - 1) == 0:  # 1, 2, 4, 8, ... — never silent, never a flood
         log(f"heartbeat {name}: {n} due tick(s) dropped since the last start ({reason})")
+        dropped_ticks.record(hb_id, name, reason, n)
     else:
         debug_log(f"heartbeat {name}: due tick dropped ({reason}), {n} since last start")
 
