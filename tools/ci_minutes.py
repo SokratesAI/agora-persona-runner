@@ -117,6 +117,38 @@ MIN_DAYS_FOR_PROJECTION = 3
 #: whichever day it is run, so the rate stops depending on the clock.
 TRAILING_WINDOW_DAYS = 7
 
+#: The board row this check is the trip-wire for, named on every raising run.
+#: `idea #74` is "one public ci-builder repo, so private repos stop burning
+#: Actions minutes", and on 2026-09-08 I parked it: five cycles in a row had
+#: ranked it top of the maintenance queue, re-measured the same burn, found
+#: 6-7 billable minutes a day against a 2000-minute allowance, and written
+#: another paragraph saying there was nothing to build. That is the failure
+#: `tools.top_board_rows` exists to end -- a top-of-board that teaches the
+#: next cycle to walk past the top of the board.
+#:
+#: **Parking a row only stays honest if something brings it back.** The
+#: condition that makes a public builder worth building is exactly the one
+#: this tool measures, so the pointer belongs here rather than in a paragraph
+#: a cycle has to remember to re-read. It is a hard-coded row number on
+#: purpose: the boards never renumber a row, and a lookup that derived it
+#: would be this tool guessing at which row somebody meant.
+PARKED_ROW = "idea #74"
+
+PARKED_ROW_TITLE = "one public ci-builder repo, so private repos stop burning Actions minutes"
+
+
+def parked_row_note(kind):
+    """The un-park line for a `projected_overrun` verdict, or `None`.
+
+    Any of the three raising verdicts means private minutes are costing
+    something again, which is the whole premise of the parked row -- so the
+    line is keyed off `kind is not None` rather than off one of them.
+    """
+    if kind is None:
+        return None
+    return (f"Private minutes are billing again, which is the condition {PARKED_ROW} "
+            f"was parked on: {PARKED_ROW_TITLE}. Set it back to Backlog.")
+
 
 def _gh(path, org):
     """Return the parsed JSON of a `gh api` call, or raise RuntimeError.
@@ -472,6 +504,14 @@ def main(argv=None):
 
     if status == 0:
         print(f"Nothing to act on. Swept {len(private) + len(public)} repo(s) with Actions minutes.")
+
+    # Before the reading line below, not after it: this line carries a `#74`
+    # and `tools.preflight` collapses a check to its last line carrying a
+    # digit, so printing it last would make the row number the summary and
+    # hide the measurement.
+    note = parked_row_note(kind)
+    if note:
+        print(note)
 
     # Last, because `tools.preflight` collapses a check to its last line
     # carrying a digit: that line has to be the reading, not a footnote.
