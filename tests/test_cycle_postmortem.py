@@ -472,8 +472,8 @@ def test_truncation_is_judged_on_what_agora_returned_not_what_survives():
 # --- an entry filed under the wrong cycle number (idea #267) ----------
 
 from tools.cycle_postmortem import (  # noqa: E402
-    entry_pr_numbers, find_misfiled, format_misfiled, misfiled_entries,
-    reply_numbers,
+    entry_pr_numbers, find_misfiled, format_misfiled, keep_still_lost,
+    merge_misfiled, misfiled_entries, reply_numbers,
 )
 
 
@@ -1090,3 +1090,75 @@ def test_a_footer_the_lost_run_never_announced_is_not_attributed():
     replies = {**_DOUBLED_REPLIES, 454: frozenset({531, 535})}
     assert cycle_postmortem.doubled_entries(
         [455], entries, replies, _doubled_paths()) == [(455, "j/517-cycle-454.md")]
+
+
+def test_an_entry_filed_one_number_down_is_found_with_the_same_two_conditions():
+    """Measured live 2026-09-09: cycle 87's reply announces `#75`, and `#75`
+    is the footer of `093-cycle-86.md`. Reading only `+1` left that cycle in
+    RAN AND LEFT NO RECORD for four months with the entry in the folder."""
+    assert misfiled_entries([87], {86: _said(75)},
+                            {87: _said(75), 86: _said(74)}, step=-1) == [(87, 86)]
+
+
+def test_the_downward_walk_follows_the_chain_it_finds():
+    """The same shift that displaces one entry displaces the one before it:
+    the live chain runs 87 -> 86 -> 85 -> 84 -> 83 -> 82."""
+    assert misfiled_entries(
+        [87],
+        {86: _said(75), 85: _said(74), 84: _said(73)},
+        {87: _said(75), 86: _said(74), 85: _said(73), 84: _said(72)},
+        step=-1,
+    ) == [(87, 86), (86, 85), (85, 84)]
+
+
+def test_the_downward_walk_keeps_the_second_condition():
+    """A neighbour that announced the entry's own pull request is ambiguous
+    in this direction too, and the pair is dropped rather than guessed."""
+    assert misfiled_entries([87], {86: _said(75)},
+                            {87: _said(75), 86: _said(75, 74)}, step=-1) == []
+
+
+def test_the_default_direction_is_still_up():
+    """`step` defaults to `1`, so every existing caller is unchanged and a
+    downward pair is invisible to a caller that did not ask for it."""
+    assert misfiled_entries([87], {86: _said(75)},
+                            {87: _said(75), 86: _said(74)}) == []
+
+
+def test_a_pair_the_two_directions_disagree_about_is_dropped():
+    """Two lost cycles either side of one entry is a guess between two
+    answers, and `doubled_entries` makes the same call for the same reason."""
+    assert merge_misfiled([(85, 86)], [(87, 86)]) == []
+    assert merge_misfiled([(85, 86)], [(87, 88)]) == [(85, 86), (87, 88)]
+
+
+def test_one_lost_cycle_handed_two_entries_is_dropped():
+    """It cannot have written both, so neither claim is trustworthy."""
+    assert merge_misfiled([(87, 88)], [(87, 86)]) == []
+
+
+def test_the_downward_search_yields_to_a_block_that_named_a_document():
+    """`find_misfiled` keeps one path per cycle number, so on a number that
+    carries two documents it answers with an arbitrary one of them. Cycle
+    455 is that case live -- `doubled` names `517-cycle-454.md` and this
+    would only have said "filed as cycle 454" -- so the head of a downward
+    chain that another block already explained is dropped."""
+    results = [{"number": 455, "verdict": "doubled"},
+               {"number": 580, "verdict": "lost"}]
+    assert keep_still_lost(results, [(455, 454), (580, 579)]) == [(580, 579)]
+
+
+def test_a_chain_link_below_the_head_is_not_in_results_and_survives():
+    """Only the head of a chain is ever `lost`; every later link has an entry
+    under its own number and never reaches `results` at all."""
+    assert keep_still_lost([{"number": 87, "verdict": "lost"}],
+                           [(87, 86), (86, 85)]) == [(87, 86), (86, 85)]
+
+
+def test_the_block_says_which_way_the_entry_moved():
+    """A reader has to know whether to look at the cycle before or the cycle
+    after, and the pair alone does not say it out loud."""
+    up = format_misfiled([(1183, 1184)])
+    down = format_misfiled([(87, 86)])
+    assert any("filed as cycle 1184 (one number up)" in line for line in up)
+    assert any("filed as cycle 86 (one number down)" in line for line in down)
