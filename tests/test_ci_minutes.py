@@ -507,3 +507,55 @@ def test_a_listed_repo_in_the_previous_month_is_not_unreadable(monkeypatch, caps
     assert status == 0, out
     assert "earlier month" not in out
     assert "103 minute(s)/day" in out           # (420 + 300) / 7
+
+
+def test_a_raising_run_names_the_parked_board_row(monkeypatch, capsys):
+    # Cycle 1195 parked idea #74 because five cycles in a row re-measured the
+    # same dead burn from the top of the maintenance queue. Parking it is only
+    # honest if the instrument that measures its condition brings it back.
+    hot = STEP_CHANGE[:5] + [_dated("secret-repo", 172, d) for d in
+                             ("2026-09-06", "2026-09-07", "2026-09-08")]
+    status = _run(monkeypatch, hot, DAY9)
+    out = capsys.readouterr().out
+    assert status == 2, out
+    assert ci_minutes.PARKED_ROW in out
+    assert "Set it back to Backlog." in out
+
+
+def test_a_clean_run_says_nothing_about_the_parked_row(monkeypatch, capsys):
+    # The mirror, and the one that matters: a row named on every run is noise,
+    # and noise is what got #74 walked past five times.
+    status = _run(monkeypatch, STEP_CHANGE, DAY13,
+                  argv=["--allowance", str(STEP_CHANGE_ALLOWANCE)])
+    out = capsys.readouterr().out
+    assert status == 0, out
+    assert ci_minutes.PARKED_ROW not in out
+
+
+def test_the_parked_row_line_is_not_the_last_line_carrying_a_digit(monkeypatch, capsys):
+    # `tools.preflight` collapses a check to its last line carrying a digit.
+    # `idea #74` carries one, so printing the note last would make the row
+    # number the summary and hide the reading it is derived from.
+    hot = STEP_CHANGE[:5] + [_dated("secret-repo", 172, d) for d in
+                             ("2026-09-06", "2026-09-07", "2026-09-08")]
+    _run(monkeypatch, hot, DAY9)
+    out = capsys.readouterr().out
+    digit_lines = [ln for ln in out.splitlines() if any(c.isdigit() for c in ln)]
+    assert ci_minutes.PARKED_ROW not in digit_lines[-1]
+    assert "billable minute(s) used in" in digit_lines[-1]
+
+
+def test_parked_row_note_is_keyed_off_every_raising_verdict():
+    # All three raising verdicts mean private minutes cost something again,
+    # which is the row's whole premise -- so none of them may be silent.
+    for kind in ("charged", "spent", "projected"):
+        assert ci_minutes.parked_row_note(kind)
+    assert ci_minutes.parked_row_note(None) is None
+
+
+def test_the_parked_row_is_spelled_the_way_the_boards_spell_it():
+    # Every other test here reads the constant, so it would agree with any
+    # spelling at all. `tools.top_board_rows` prints `idea #74` and a journal
+    # entry's `Board:` field is refused without the word and the hash, so the
+    # one thing that makes this line findable is the literal.
+    assert ci_minutes.PARKED_ROW == "idea #74"
