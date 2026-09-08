@@ -443,10 +443,11 @@ def run_heartbeat(heartbeat):
     # `previous_run_at` is the right token and not merely a convenient one:
     # it is read off the same snapshot `run_due_heartbeats` decided due-ness
     # from, so it is exactly the state the decision was made against.
+    claimed_at = datetime.now(timezone.utc).isoformat()
     claim_status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
                                      {"ifLastRunAt": previous_run_at,
                                       "forceRun": False,
-                                      "lastRunAt": datetime.now(timezone.utc).isoformat(),
+                                      "lastRunAt": claimed_at,
                                       "lastResult": "running"})
     if claim_status == 409:
         # Somebody else claimed this tick. This is the one claim failure that
@@ -474,19 +475,17 @@ def run_heartbeat(heartbeat):
         # and the only trace is `claim for lastRunAt=<x> not visible yet`
         # in a pod log that dies with the pod.
         _release_spawn_mark(heartbeat["id"], previous_run_at)
+    claimed = claim_status in (200, 201)
     persona = fetch_persona(heartbeat["personaId"])
     if persona is None:
-        agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
-                       {"forceRun": False, "lastRunAt": datetime.now(timezone.utc).isoformat(),
-                        "lastResult": "failed: persona not found"})
+        _finish(heartbeat, claimed_at if claimed else None, "failed: persona not found")
         return
     status, detail = agora_get(
         f"/conversations/{heartbeat['conversationId']}/messages?limit={FETCH_LIMIT}"
     )
     if status != 200:
-        agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
-                       {"forceRun": False, "lastRunAt": datetime.now(timezone.utc).isoformat(),
-                        "lastResult": f"failed: conversation fetch {status}"})
+        _finish(heartbeat, claimed_at if claimed else None,
+                f"failed: conversation fetch {status}")
         return
 
     # Per-cycle conversation rotation (2026-08-02, same mechanism
@@ -784,10 +783,7 @@ def run_heartbeat(heartbeat):
         audit(persona["name"], conversation_id, "heartbeat",
               f"{heartbeat['name']} finished in {_elapsed(time.monotonic() - started_at)} — {result}")
 
-    agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}",
-                   {"forceRun": False,
-                    "lastRunAt": datetime.now(timezone.utc).isoformat(),
-                    "lastResult": result})
+    _finish(heartbeat, claimed_at if claimed else None, result)
     log(f"heartbeat {heartbeat['name']}: {result}")
 
 
@@ -890,6 +886,55 @@ def _release_spawn_mark(hb_id, mark):
         _heartbeat_spawn_marks.pop(hb_id, None)
         return True
     return False
+
+
+def _finish(heartbeat, claimed_at, result):
+    """Write a run's own ending onto its heartbeat, and only its own.
+
+    The claim PATCH is a compare-and-swap on `lastRunAt` (agora#89) so two
+    pollers cannot both take one slot. The ending was not, and with a
+    concurrency limit of 3 against a 24-minute cadence and a 45-minute turn
+    cap, runs overlap by design -- so an OLDER run finishing would overwrite
+    a NEWER run's claim, unguarded, in two ways that both cost something:
+
+    * `lastResult`. The newer run's `"running"` -- or the diagnostic #903 and
+      #906 exist to leave behind when a run dies in its startup window -- is
+      replaced by the older run's result. The one field that says what
+      happened to the newest cycle ends up describing a different one.
+    * `lastRunAt`. It is moved to the older run's FINISH time, which is later
+      than the newer run's claim. The next tick reads that as the slot the
+      newer run took, so the newer run's own claim PATCH -- built from the
+      snapshot the due decision was made against -- comes back 409 and
+      `run_heartbeat` returns without running. That path logs "another poller
+      claimed this run", which is then false: no poller claimed it, an
+      unrelated finishing run moved the field, and the slot produces no
+      conversation at all. That is the shape `tools.heartbeat_gaps` reports as
+      a firing that produced no run with nothing else in flight (idea #267).
+
+    So the ending carries `ifLastRunAt=<the value this run claimed>`: it lands
+    while this run is still the newest, and 409s once it is not. A 409 is the
+    correct outcome and not a failure -- the newer run owns `lastRunAt`,
+    `lastResult` and `forceRun`, and all three of its values are the ones
+    worth keeping -- so it is logged and nothing is written.
+
+    `claimed_at` is None when the claim PATCH did not land (a transient Agora
+    blip, or an Agora too old to know `ifLastRunAt` and answering 400). There
+    is then no value of ours in the field to swap against, and guarding on one
+    would 409 every time and leave `forceRun` set, which re-fires this run
+    forever. That case keeps the old unguarded write, which is the same
+    unclaimed-and-may-be-duplicated behaviour the claim-failure log already
+    warns about.
+    """
+    body = {"forceRun": False,
+            "lastRunAt": datetime.now(timezone.utc).isoformat(),
+            "lastResult": result}
+    if claimed_at is not None:
+        body["ifLastRunAt"] = claimed_at
+    status, _ = agora_internal("PATCH", f"/heartbeats/{heartbeat['id']}", body)
+    if status == 409:
+        log(f"heartbeat {heartbeat.get('name')}: a newer run owns this heartbeat, "
+            f"leaving its lastRunAt and lastResult alone (mine was: {result})")
+    return status
 
 
 def _drop_tick(hb_id, name, reason):
