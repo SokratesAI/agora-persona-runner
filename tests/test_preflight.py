@@ -566,10 +566,45 @@ def test_an_exempt_check_records_that_it_printed_now():
     assert keep["telegram_inbox"]["printed_at"] == 1000.0 + HOUR
 
 
-def test_telegram_inbox_is_the_check_that_is_exempt():
-    # Named here rather than left implicit: the set is meant to hold checks
-    # whose finding is a person waiting on a reply, and today that is one.
-    assert preflight.NEVER_COLLAPSE == frozenset({"telegram_inbox"})
+def test_the_exempt_checks_are_named_here():
+    # Named here rather than left implicit: the set holds checks whose finding
+    # is someone waiting on me AND whose wait is the number the fingerprint
+    # blinds. Today that is two.
+    assert preflight.NEVER_COLLAPSE == frozenset({"telegram_inbox", "recap_health"})
+
+
+# `tools.recap_health` on a stale card, in the shape it prints: the verdict
+# line carrying how long it has been stale, then what the card still covers.
+def _stale_recap(hours, cycles_since):
+    return (f"STALE    the recap card was written at 01:43 Oslo, {hours}h ago, "
+            f"past the 3.0h threshold — the Journal page is already telling him so.\n"
+            f"         it covers cycles 981-1011 and carries 6 bullet(s).\n"
+            f"         {cycles_since} cycle(s) have filed a journal entry since then.\n")
+
+
+def test_a_recap_going_staler_is_one_fingerprint():
+    # Why the exemption is needed at all, and it is not obvious from the text:
+    # `finding_shape` blinds digits, so the hour count that says how bad this
+    # has got is the one thing the collapse cannot see. Three hours stale and
+    # fifty-three hours stale are the same finding to it.
+    assert (preflight.finding_shape(_stale_recap("3.1", 2))
+            == preflight.finding_shape(_stale_recap("52.9", 175)))
+
+
+def test_a_stale_recap_card_is_never_collapsed():
+    # 2026-09-08: the card had been stale 52.9h, the check raised on every
+    # sweep through it, and every sweep printed one UNCHANGED line instead --
+    # so the owner found it before I did and filed it 🔴 Immediately.
+    first = {}
+    render_with([("recap_health", 2, _stale_recap("3.1", 2), 0.2)],
+                state={}, now=1000.0, keep=first)
+    code, text = render_with([("recap_health", 2, _stale_recap("52.9", 175), 0.2)],
+                             state=first, now=1000.0 + HOUR, keep={})
+    assert code == 2
+    assert "===== recap_health" in text
+    assert "52.9h ago" in text
+    assert "UNCHANGED" not in text
+    assert "standing finding" not in text
 
 
 def test_a_clean_check_is_never_touched_by_any_of_this():
