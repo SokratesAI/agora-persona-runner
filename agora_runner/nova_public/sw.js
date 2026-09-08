@@ -149,8 +149,8 @@ self.addEventListener("fetch", function (event) {
   event.respondWith(networkFirst(request, fallback));
 });
 
-/* The four payloads `fetchAll` polls, and the reason this is a list rather
- * than the `/api/` prefix his report asked for.
+/* The three payloads `fetchAll` polls *and nothing else fetches*, and the
+ * reason this is a list rather than the `/api/` prefix his report asked for.
  *
  * Serving a stale body is only honest if something retracts it, and on
  * these four the retraction already exists: they are re-read every thirty
@@ -164,14 +164,32 @@ self.addEventListener("fetch", function (event) {
  * is the one failure this whole file is written against, so the prefix
  * would have bought his 2.85 MB by reintroducing it somewhere else.
  *
- * These four are also all of the measurement: `/api/digest` at 2.85 MB and
- * `/api/journal` at 113 KB are the bytes he reported, and the other two ride
- * the same poll.
+ * These three are also all of the measurement: `/api/digest` at 2.85 MB and
+ * `/api/journal` at 113 KB are the bytes he reported, and `/api/asks/chat`
+ * rides the same poll.
+ *
+ * **`/api/comments` is deliberately not here, and the reason is the sharper
+ * half of the same rule: a path is not a caller.** It is polled by
+ * `fetchAll` like the other three -- and *also* fetched unconditionally from
+ * three other places in `app.js`: `refreshMail`, the reply drawer's 8s wait,
+ * and the refetch that runs the moment he posts a comment. None of those
+ * ever sends `If-None-Match`, so none of them would ever leave this path
+ * again, and the last one is the expensive one: it would repaint the drawer
+ * from the snapshot taken *before* his comment existed. `fetchPage` guards
+ * against exactly that, and it guards on `X-Nova-Replayed`, which this path
+ * does not set. The comment above that guard in `app.js` says what happens
+ * next -- he sends it twice.
+ *
+ * So the rule this list encodes is not "the page polls it". It is "every
+ * caller of it sends an etag once it has one", and the only way to know that
+ * is to go and read the call sites. Found by the reviewer on runner#895; I
+ * had reasoned about which *routes* were polled and never about who else
+ * asks for them.
  *
  * Matched on the path, because `journalUrl()` and `digestUrl()` both carry a
  * query string that varies with the window he is looking at.
  */
-var POLLED_PAYLOADS = ["/api/journal", "/api/digest", "/api/comments", "/api/asks/chat"];
+var POLLED_PAYLOADS = ["/api/journal", "/api/digest", "/api/asks/chat"];
 
 function isPolledPayload(pathname) {
   return POLLED_PAYLOADS.indexOf(pathname) !== -1;

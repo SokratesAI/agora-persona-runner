@@ -712,6 +712,25 @@ describe("a reopen is answered from the cache and confirmed with an etag", () =>
     assert.deepEqual(worker.puts, [], "nothing was written over the copy on screen");
   });
 
+  test("a comments read is left on the network -- a path is not a caller", async () => {
+    /* `/api/comments` is polled by `fetchAll` exactly like the three that
+     * are on the list, and is fetched unconditionally from three other
+     * places: `refreshMail`, the reply drawer's 8s wait, and the refetch
+     * that runs the moment he posts a comment. None of those ever sends an
+     * etag, so none of them would leave this path again -- and the last one
+     * would repaint the drawer from the snapshot taken before his comment
+     * existed. `fetchPage` guards on `X-Nova-Replayed`, which the cache-first
+     * path does not set, so the guard would be dead. */
+    const worker = loadWorker();
+    const comments = "https://nova.example/api/comments";
+    worker.cache.set(comments, new Response("comments before his post", { status: 200 }));
+    worker.network(() => Promise.resolve(new Response("comments including his post", { status: 200 })));
+
+    const response = await fetchEvent(worker, req(comments));
+    assert.equal(await response.text(), "comments including his post");
+    assert.equal(response.headers.get("X-Nova-Stale"), null);
+  });
+
   test("a board is left on the network, so an offline reopen still says so", async () => {
     /* Why this is a list of four paths and not the `/api/` prefix. A board
      * is fetched once per visit and never polled, so nothing would come back
