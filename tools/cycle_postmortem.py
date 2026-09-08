@@ -157,6 +157,12 @@ _FINISHED_RE = re.compile(
 )
 _REPLIED_RE = re.compile(r"^replied\s+(\d+)\s+chars", re.I)
 _FAILED_RE = re.compile(r"^failed:\s*(.*)$", re.I | re.S)
+#: The Claude Code CLI posts its own transport failures into the
+#: conversation as an ordinary assistant message, so Agora's closing line
+#: counts them as a reply of N chars like any other. Anchored at the start
+#: because that is where the CLI writes it and because the phrase appears
+#: inside real replies that discuss it -- this very cycle's does.
+_API_ERROR_RE = re.compile(r"^\s*API Error:", re.I)
 
 DEFAULT_WINDOW = 48
 
@@ -382,6 +388,14 @@ def run_messages(messages):
     return [m for m in (messages or []) if not (m or {}).get("system")]
 
 
+def _api_error_detail(closing, reply):
+    """`(closing line, reply text)` -> the detail for an `api error` run."""
+    match = _FINISHED_RE.search(closing or "")
+    duration = match.group("duration").strip() if match else "an unknown time"
+    return (f"ran {duration} and its last message is the model call's own error, "
+            f"which Agora counted as a reply: {' '.join(reply.split())[:120]}")
+
+
 def judge(number, conversation, messages, now=None):
     """One entryless cycle -> `{number, verdict, detail, messages}`.
 
@@ -427,6 +441,12 @@ def judge(number, conversation, messages, now=None):
         return {"number": number, "verdict": "cut off", "messages": len(messages),
                 "detail": f"no closing line; the last thing said was: {last}"}
     verdict, detail = outcome
+    if verdict == "lost":
+        reply = final_reply(messages)
+        if reply is not None and _API_ERROR_RE.match(reply):
+            return {"number": number, "verdict": "api error",
+                    "messages": len(messages),
+                    "detail": _api_error_detail(messages[-1].get("text") or "", reply)}
     return {"number": number, "verdict": verdict, "detail": detail,
             "messages": len(messages)}
 
@@ -735,10 +755,18 @@ def apply_misfiled(results, pairs):
 #: is explained, and `unjudged` is by its own name the opposite of that --
 #: my reviewer found it exiting 0, which would make the day Agora grows a
 #: third outcome word a silent one.
-RAISING_VERDICTS = ("lost", "cut off", "unjudged")
+RAISING_VERDICTS = ("lost", "api error", "cut off", "unjudged")
 
 _HEADINGS = (
-    ("lost", "RAN AND LEFT NO RECORD — the work happened and the journal does not have it"),
+    ("lost", "RAN AND LEFT NO RECORD — the work happened and the journal does not have it",
+     "The run's own reply to Edvard is still in its Agora conversation, so what the "
+     "cycle did is readable without a CLI transcript -- `final_reply` on the "
+     "conversation's messages is the whole recovery."),
+    ("api error", "DIED ON A MODEL-CALL ERROR — the run's last message is the error itself, "
+                  "not a reply",
+     "Agora's closing line counts it as a reply of N chars, which is why these used "
+     "to sit above under RAN AND LEFT NO RECORD. There is no reply to recover; the "
+     "cause is upstream of this loop."),
     ("misfiled", "FILED ONE NUMBER UP — the work is in the record, under the next "
                  "cycle's number"),
     ("failed", "ENDED ON A RECORDED FAILURE — nothing to recover, the reason is Agora's own"),
@@ -764,11 +792,15 @@ def format_report(results, newest, error, window=DEFAULT_WINDOW, raise_all=False
         return "\n".join(lines), 0
 
     counts = Counter(row["verdict"] for row in results)
-    for verdict, heading in _HEADINGS:
+    for entry in _HEADINGS:
+        verdict, heading = entry[0], entry[1]
+        note = entry[2] if len(entry) > 2 else None
         rows = [row for row in results if row["verdict"] == verdict]
         if not rows:
             continue
         lines.append(f"{heading} — {len(rows)}")
+        if note:
+            lines.append(f"    {note}")
         for row in rows:
             mark = "" if row.get("recent") else "  (outside the window)"
             lines.append(f"  Cycle {row['number']}: {row['detail']}"
