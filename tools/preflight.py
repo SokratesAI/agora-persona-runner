@@ -145,6 +145,7 @@ CHECKS = (
     "heartbeat_gaps",
     "cycle_postmortem",
     "reply_health",
+    "lifecycle_health",
     "schedule_health",
     "helm_repo_health",
     "argocd_health",
@@ -261,6 +262,10 @@ SUBJECT = {
     "heartbeat_gaps":    ("on-box",  "Agora, in this cluster"),
     "cycle_postmortem":  ("on-box",  "my own journal and Agora"),
     "reply_health":      ("on-box",  "nova-site, in this cluster"),
+    #: On-box in the strongest sense -- the ledger is a file on this Pod's own
+    #: volume, written by the process this cycle runs inside. It survives the
+    #: Pod, but nothing outside this box would answer if server1 died.
+    "lifecycle_health":  ("on-box",  "the bridge's own shutdown ledger, on this Pod's volume"),
     "schedule_health":   ("off-box", "GitHub Actions scheduling"),
     "helm_repo_health":  ("on-box",  "Helm sources in this cluster"),
     "argocd_health":     ("on-box",  "ArgoCD in this cluster"),
@@ -379,6 +384,11 @@ CADENCE_HOURS = {
     # is a handful of stat calls. A 24h cadence would let the sweep that first
     # sees the loss be the one that collapses it.
     "browser_env_health": 0.0,
+    # Every sweep -- three stat calls and a JSONL read of a file on this Pod.
+    # The bridge rolls when I merge into it, which is exactly the cycle that is
+    # busy with the merge, so a 24h cadence would let the sweep that first sees
+    # a killed drain be the one that skipped it.
+    "lifecycle_health": 0.0,
     # Every sweep -- files I rewrite in my own wrap-up, so the previous cycle is
     # exactly who could have broken them.
     "doc_integrity": 0.0,
