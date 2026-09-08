@@ -93,20 +93,22 @@ def test_has_more_counts_raw_rows_not_visible_ones():
 
     Agora answers with the newest `limit + 1` rows, so narration older than
     that window is never fetched and never counted either way. The rows that
-    decide the question are the ones in the window: 41 raw rows of which 10
-    are narration leave 31 visible, so counting the visible rows says "that
-    is not a full page, the thread is finished" while Agora is holding 100
-    more messages behind it.
+    decide the question are the ones in the window.
+
+    Since 2026-09-08 a window that comes back short of visible rows is
+    refetched at the ceiling, so the case now lives one level up: a turn
+    whose narration alone outruns `MAX_THREAD_CEILING`. That leaves 501 raw
+    rows holding a handful of visible ones -- counting the visible list
+    would report "that is not a full page, the thread is finished" while
+    Agora is holding hundreds more messages behind it.
     """
-    window = []
-    for i in range(41):
-        window.append({"id": f"m-{i}", "sender": "Edvard", "text": f"message {i}",
-                       "ts": "2026-08-31T05:00:00.000Z"})
-        if i % 4 == 0:
-            window.append({"id": f"n-{i}", "sender": "Nova Answers", "text": "step",
-                           "system": True, "ts": "2026-08-31T05:00:00.000Z"})
+    window = [{"id": f"n-{i}", "sender": "Nova Answers", "text": "step",
+               "system": True, "ts": "2026-08-31T05:00:00.000Z"}
+              for i in range(600)]
     stored = _messages(100) + window
-    payload, _ = _thread(stored, convs.MAX_THREAD)
+    payload, path = _thread(stored, convs.MAX_THREAD)
+    assert path.endswith(f"limit={convs.MAX_THREAD_CEILING + 1}"), (
+        "the short first window was not widened, so this is not the case at all")
     assert len(payload["messages"]) < convs.MAX_THREAD, (
         "the filter dropped nothing, so counting either list would pass")
     assert payload["hasMore"] is True

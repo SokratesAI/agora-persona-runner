@@ -1129,3 +1129,80 @@ def test_both_agoras_answer_the_same_list():
     assert [r["id"] for r in filtered["conversations"]] == ["c-1"]
     assert ([r["id"] for r in filtered["conversations"]]
             == [r["id"] for r in ignored["conversations"]])
+
+
+def _limited_store(rows):
+    """An `agora_get` that answers like Agora: the NEWEST `?limit=` rows.
+
+    The shared `_fakes` helper hands back every message whatever the query
+    string says, which is fine for the shape tests but cannot express the
+    bug below -- the bug IS the slice.
+    """
+    asked = []
+
+    def get(path):
+        if "/messages" not in path:
+            return 404, {}
+        wanted = int(path.split("limit=")[1])
+        asked.append(wanted)
+        return 200, {"messages": rows[-wanted:]}
+
+    return get, asked
+
+
+def _narration(n, start=0):
+    return [{"id": f"a-{i}", "sender": "Nova", "text": "", "ts": "2026-09-08T05:00:00Z",
+             "activity": {"capability": "Bash", "detail": f"cd /tmp/{i}",
+                          "toolUseId": f"t-{i}", "output": "ok"}}
+            for i in range(start, start + n)]
+
+
+def test_a_turn_that_narrates_past_the_window_is_not_cut_at_forty_rows():
+    """His report, 2026-09-08: *"It started with displaying 8 toolcalls and
+    some text, then it expanded to 22, then it sank to 10 and only show a
+    list of cd commands after the subagent had ran ... and now it sits on 43
+    toolcalls but the text about the composer is gone."*
+
+    A tool call spends two raw rows and the window was counted in raw rows,
+    so a running turn pushed its own earlier steps out of the page it was
+    being drawn on. The count went up, then down, and prose he had already
+    read vanished. Measured on his live thread the same morning: 39 of the
+    newest 41 rows were narration, leaving three visible messages.
+    """
+    rows = ([{"id": "m-0", "sender": "Edvard", "text": "go", "ts": "2026-09-08T04:00:00Z"}]
+            + _narration(200))
+    get, asked = _limited_store(rows)
+    with patch.object(convs, "agora_get", side_effect=get):
+        payload = convs.thread("c-1")
+    steps = [s for m in payload["messages"] for s in (m.get("steps") or [])]
+    assert len(steps) == 200, f"the drawer lost steps to the window: {len(steps)}"
+    assert asked == [41, 501], f"expected one widening fetch, got {asked}"
+    # The prose at the top of the turn is what he watched disappear.
+    assert payload["messages"][0]["text"] == "go"
+
+
+def test_a_thread_with_real_messages_in_the_window_is_fetched_once():
+    """The widening is not free -- it is a second request for 500 rows -- so
+    it may only fire on the case that needs it. A thread whose newest page
+    is actual conversation already fills the window, and asking again would
+    be 500 rows fetched to redraw the same forty."""
+    rows = [{"id": f"m-{i}", "sender": "Edvard" if i % 2 else "Nova",
+             "text": f"line {i}", "ts": "2026-09-08T04:00:00Z"} for i in range(100)]
+    get, asked = _limited_store(rows)
+    with patch.object(convs, "agora_get", side_effect=get):
+        payload = convs.thread("c-1")
+    assert asked == [41], f"widened a page that was already full: {asked}"
+    assert len(payload["messages"]) == 40
+    assert payload["hasMore"] is True
+
+
+def test_the_echoed_limit_is_the_window_the_steps_actually_came_from():
+    """`step_output` searches raw rows inside the window the page names. So
+    after a widening the page has to be told the WIDE number: echoing the
+    narrow one would 404 every step the widening is what put on screen."""
+    rows = ([{"id": "m-0", "sender": "Edvard", "text": "go", "ts": "2026-09-08T04:00:00Z"}]
+            + _narration(200))
+    get, _asked = _limited_store(rows)
+    with patch.object(convs, "agora_get", side_effect=get):
+        payload = convs.thread("c-1")
+    assert payload["limit"] == convs.MAX_THREAD_CEILING

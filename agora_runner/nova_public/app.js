@@ -1061,7 +1061,13 @@
           if (lastError) {
             status(attached ? lastError + " (" + attached + " attached)" : lastError, true);
           } else {
-            status(attached === 1 ? "attached" : "attached " + attached + " files", false);
+            /* Nothing on success. His ask, 2026-09-08: *"when i attach an
+             * image there is a text 'attached'. This is unnecessary as i
+             * can see that the image is uploaded."* The tray below the box
+             * already shows the thumbnail -- the word was a second, worse
+             * copy of what the picture says. A FAILURE still speaks, above:
+             * that is the case with nothing on screen to see. */
+            status("", false);
           }
         });
     });
@@ -11507,26 +11513,42 @@
     var body = el("div", "ask-text");
     appendRichText(body, null, message.text);
     row.appendChild(body);
-    /* Copy and "Ask again" are behind a press-and-hold now -- his ask,
-     * 2026-09-07. They were two buttons under every bubble, which is two
-     * controls per message in a column he mostly reads.
+    /* Copy and "Ask again" open from a `⋯` at the bottom right -- his ask,
+     * 2026-09-07, replacing the press-and-hold I built first.
      *
-     * The conditions on them are unchanged and still decided here, at the
-     * point that knows the message: no Copy on a line with nothing to copy
-     * (an attachment-only message has empty `text`, and a Copy that yields
-     * an empty clipboard reads as broken rather than as empty), and no
-     * re-ask unless there is a finished answer with a question above it --
-     * re-asking a question still being answered spends a turn to race the
-     * one already running. A hold on a bubble with neither opens nothing,
-     * rather than an empty drawer. */
-    holdForActions(row, function () {
-      var actions = [];
-      if (message.text) actions.push(askCopyButton(message.text));
-      if (!mine && !message.partial && conversationId && retry && retry.question) {
-        actions.push(askRetryButton(conversationId, retry.question, retry.afterSend));
-      }
-      return actions;
-    });
+     * The hold was the wrong control and he found out the way you do:
+     * *"I tried to hold the box in between the text, but only the small top
+     * of the bubble opens the edit modal."* It had to exclude `.ask-text`
+     * to leave his selection alone, which left only the name row and a few
+     * pixels of padding as a target -- a gesture with a hit area he had to
+     * hunt for. A button has one, says it is there, and takes nothing away
+     * from the text: selection is the browser's again on the whole bubble.
+     *
+     * The conditions are unchanged and still decided here, where the
+     * message is known: no Copy on a line with nothing to copy (an
+     * attachment-only message has empty `text`, and a Copy that yields an
+     * empty clipboard reads as broken rather than as empty), and no re-ask
+     * unless there is a finished answer with a question above it --
+     * re-asking one still being answered spends a turn to race the one
+     * already running. A message with neither gets no button at all rather
+     * than one that opens an empty drawer. */
+    var actions = [];
+    if (message.text) actions.push(function () { return askCopyButton(message.text); });
+    if (!mine && !message.partial && conversationId && retry && retry.question) {
+      actions.push(function () {
+        return askRetryButton(conversationId, retry.question, retry.afterSend);
+      });
+    }
+    if (actions.length) {
+      var more = el("button", "ask-more", "\u22EF");
+      more.type = "button";
+      more.title = "Message actions";
+      more.setAttribute("aria-label", "Message actions");
+      more.addEventListener("click", function () {
+        openMessageActions(actions.map(function (make) { return make(); }));
+      });
+      row.appendChild(more);
+    }
     return row;
   }
 
@@ -11633,47 +11655,6 @@
     orbit.appendChild(orbitPhase(
       el("span", "ask-orbit-body ask-orbit-body-b"), ORBIT_INNER_SECONDS));
     return orbit;
-  }
-
-  /* Press and hold a bubble to get its actions -- his ask, 2026-09-07.
-   *
-   * **A hold that starts on the text is not this gesture.** He was explicit:
-   * *"I still want the default text selection on my phone so i can copy just
-   * a line of text and not having to copy the entire bubble."* The browser's
-   * own selection is a better tool than anything here for taking one
-   * sentence out of an answer, and a long-press is exactly how it is
-   * started -- so a hold whose target is inside `.ask-text` is left alone
-   * entirely. The name row above the prose, and the bubble's own padding,
-   * are what open the drawer.
-   *
-   * `HOLD_MS` is the same second the switcher's row editor uses; two
-   * different hold lengths in one app is a thing to get wrong rather than a
-   * thing to tune.
-   */
-  function holdForActions(row, build) {
-    var timer = null;
-
-    function cancel() {
-      if (timer) { clearTimeout(timer); timer = null; }
-    }
-
-    function start(event) {
-      // The text is the browser's. Anything else on the bubble is ours.
-      if (event.target && event.target.closest
-          && event.target.closest(".ask-text")) return;
-      cancel();
-      timer = setTimeout(function () {
-        timer = null;
-        var actions = build();
-        if (actions.length) openMessageActions(actions);
-      }, HOLD_MS);
-    }
-
-    ["mousedown", "touchstart"].forEach(function (name) {
-      row.addEventListener(name, start);
-    });
-    ["mouseup", "mouseleave", "touchend", "touchcancel", "touchmove", "scroll"]
-      .forEach(function (name) { row.addEventListener(name, cancel); });
   }
 
   /* The drawer those actions open in.
@@ -14350,6 +14331,19 @@
     asTile(attach.button, "Files");
     asTile(document.getElementById("chat-mic"), "Speak");
     asTile(document.getElementById("chat-speak"), "Read aloud");
+
+    /* The model picker joins them -- his ask, 2026-09-08. It was a pill in
+     * the composer row beside `+`, which is a control he changes rarely
+     * sitting permanently next to the one he uses constantly. In here it is
+     * a full row under the tiles rather than a fourth tile: it is a
+     * <select> with a name in it, not a glyph, and squeezing "Claude Opus
+     * 5" into a 5rem tile would either wrap or ellipsis away the one thing
+     * it says. The host is MOVED, so the picker keeps whatever it has
+     * already fetched and its change handler with it. */
+    var modelRow = el("div", "extras-model");
+    modelRow.appendChild(el("span", "extras-model-label", "Model"));
+    if (modelHost) modelRow.appendChild(modelHost);
+    extrasBody.appendChild(modelRow);
 
     var plusBtn = document.getElementById("chat-plus");
     var extrasHide = null;

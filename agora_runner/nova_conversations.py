@@ -456,22 +456,63 @@ def thread(conversation_id, limit=MAX_THREAD):
         return {"conversationId": None, "messages": [], "waiting": False,
                 "hasMore": False}
     limit = clamp_thread_limit(limit)
-    # One more than he asked for, and that extra row is the whole of
-    # `hasMore`: Agora answers with the *newest* N, so being handed N+1 means
-    # there is at least one message older than the page, and being handed
-    # fewer means the page is the whole thread.
-    status, detail = agora_get(
-        f"/conversations/{conversation_id}/messages?limit={limit + 1}")
-    if status != 200:
-        raise RuntimeError(f"conversation fetch returned {status}")
-    raw = detail.get("messages", [])
-    # Counted on the raw rows rather than the visible ones on purpose.
-    # `visible_rows` drops narration, and a page whose older half is all
-    # narration would report "nothing older" while older messages exist.
-    # The question this answers is "is another fetch worth making", which is
-    # about what Agora holds, not about what survives the filter.
-    has_more = len(raw) > limit
-    messages = visible_rows(raw)
+
+    def window(rows):
+        """(has_more, visible) for one raw fetch."""
+        # `has_more` is counted on the raw rows rather than the visible ones
+        # on purpose. `visible_rows` drops narration, and a page whose older
+        # half is all narration would report "nothing older" while older
+        # messages exist. The question this answers is "is another fetch
+        # worth making", which is about what Agora holds, not about what
+        # survives the filter.
+        return len(rows) > raw_limit, visible_rows(rows)
+
+    def fetch():
+        # One more than asked for, and that extra row is the whole of
+        # `hasMore`: Agora answers with the *newest* N, so being handed N+1
+        # means there is at least one message older than the page, and being
+        # handed fewer means the page is the whole thread.
+        status, detail = agora_get(
+            f"/conversations/{conversation_id}/messages?limit={raw_limit + 1}")
+        if status != 200:
+            raise RuntimeError(f"conversation fetch returned {status}")
+        return detail.get("messages", [])
+
+    raw_limit = limit
+    raw = fetch()
+    has_more, messages = window(raw)
+    # His report, 2026-09-08: *"It started with displaying 8 toolcalls and
+    # some text, then it expanded to 22, then it sank to 10 and only showed
+    # a list of cd commands after the subagent had run, then it expanded to
+    # 20 ... and now it sits on 43 but the text about the composer is
+    # gone."*
+    #
+    # The cause is this window, and it is not a drawer bug at all. Agora
+    # returns the newest N *raw* rows, and every tool call spends two of
+    # them. Measured against his own live thread while a turn was running
+    # (2026-09-08, from the runner pod): of the newest 41 rows, **39 were
+    # narration** -- three visible messages and a step list holding the last
+    # 19 calls of a turn that had made far more. So as the turn ran, the
+    # front of the window fell off the back end faster than the drawer
+    # gained rows: the count went up, then down, and prose he had already
+    # read disappeared. The same 41 rows are also why the thread itself
+    # looked nearly empty mid-run.
+    #
+    # So the window is counted in what he can SEE, not in what Agora
+    # stores. When narration has eaten the page, ask again for the ceiling
+    # -- at most one extra fetch, and only on a thread where the first
+    # window came back short with older rows behind it, which is exactly
+    # the mid-run case and never a quiet one. At the ceiling the same
+    # thread yielded 28 visible messages and 210 steps.
+    #
+    # The block can still be cut, by a turn whose narration alone outruns
+    # MAX_THREAD_CEILING. That bound is deliberate -- it is what stands
+    # between his phone and an unbounded fetch -- and it now takes a
+    # 500-row turn to reach rather than a 41-row one.
+    if has_more and len(messages) < limit and raw_limit < MAX_THREAD_CEILING:
+        raw_limit = MAX_THREAD_CEILING
+        raw = fetch()
+        has_more, messages = window(raw)
     # Blind to the steps-only row `visible_rows` emits for a turn with nothing
     # after it: narration arriving mid-turn is evidence the turn is still
     # running, and reading it as "answered" would stop the page polling
@@ -487,8 +528,11 @@ def thread(conversation_id, limit=MAX_THREAD):
         # can ask for a step's output inside the same one. He pages back
         # through a long thread, so a step on screen can be older than the
         # default window, and a detail view that asked with the default
-        # would report a call he is looking at as gone.
-        "limit": limit,
+        # would report a call he is looking at as gone. It is `raw_limit`
+        # and not `limit`: after a widening those are different numbers, and
+        # `step_output` searches raw rows -- echoing the narrow one would
+        # 404 every step the widening is what put on the screen.
+        "limit": raw_limit,
         # Whether scrolling to the top of the thread should fetch again.
         "hasMore": has_more,
         # What the caller stamps as seen. Settled only, for `waiting`'s

@@ -203,9 +203,6 @@
     <textarea id="chat-box" class="chat-box" rows="1" placeholder="Ask anything&#8230;"
               autocapitalize="sentences" autocomplete="off"></textarea>
     <div class="chat-actions">
-      <button id="chat-plus" class="attach-btn chat-plus" type="button"
-              title="Add context" aria-label="Add context"
-              aria-expanded="false" aria-controls="chat-extras">+</button>
       <div id="chat-model-host"></div>
       <p id="chat-status" class="chat-status" role="status" aria-live="polite"></p>
       <!-- Both start hidden and app.js reveals whichever of the two speech
@@ -219,6 +216,11 @@
               title="Read answers aloud" aria-label="Read answers aloud" aria-pressed="false">
         <span class="chat-glyph" aria-hidden="true">&#128266;</span>
       </button>
+      <!-- `+` sits here, immediately left of Send, and the model picker
+           moved into the drawer behind it (his ask, 2026-09-08). -->
+      <button id="chat-plus" class="attach-btn chat-plus" type="button"
+              title="Add context" aria-label="Add context"
+              aria-expanded="false" aria-controls="chat-extras">+</button>
       <button id="chat-send" class="chat-send" type="submit">Send</button>
     </div>
   </form>
