@@ -17,6 +17,7 @@ from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
 from agora_runner.otel import init_tracing
 from agora_runner.catalog_refresh import start_catalog_refresh
+from agora_runner.heartbeat_pass import start_heartbeat_pass
 
 # Set by the SIGTERM/SIGINT handler, read by the poll loop between ticks.
 # A plain module flag rather than a threading.Event on purpose: a signal
@@ -112,6 +113,14 @@ def main():
     # cycle's prompt because a cycle has to choose to run it, and a
     # catalog nobody regenerates is a screenshot -- see the module.
     start_catalog_refresh()
+    # The scheduler runs beside the conversation loop rather than at the end
+    # of it. `conversations.speak` generates a reply on its caller's thread,
+    # which for a claude-cli persona is minutes, and while that was the same
+    # thread as `run_due_heartbeats` a single chat message could push a
+    # scheduled cycle past its own slot -- and an anchored schedule only ever
+    # asks about the most recent occurrence, so a slot pushed past is lost
+    # rather than late. See agora_runner/heartbeat_pass.py.
+    start_heartbeat_pass(shutdown_requested)
     log(f"polling {AGORA_URL}/conversations every {POLL_INTERVAL_SECONDS}s")
     while True:
         try:

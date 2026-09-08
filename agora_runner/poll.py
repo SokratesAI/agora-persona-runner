@@ -1,4 +1,4 @@
-"""poll_once -- one tick of the main loop: every conversation, then due heartbeats."""
+"""poll_once -- one tick of the conversation loop: every active conversation."""
 
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import agora_get, agora_internal
@@ -6,7 +6,6 @@ from agora_runner.agora_api import clear_persona_cache
 from agora_runner.conversations import poll_conversation, prune_message_window_cache
 from agora_runner.deferred import acknowledge_deferred, mark_answered_live
 from agora_runner.heartbeats import (
-    run_due_heartbeats,
     workflow_bound_conversation_ids,
     cycle_bound_conversation_ids,
     in_flight_cycle_conversation_ids,
@@ -14,14 +13,22 @@ from agora_runner.heartbeats import (
 
 
 def poll_once():
-    """One tick: every conversation, then every heartbeat that is due.
+    """One tick: every conversation that owes somebody a turn.
 
-    There is no longer a "conversations only" variant. It existed from
-    2026-08-31 for the draining process, which under `strategy: Recreate`
-    was the only runner alive and would otherwise have answered nobody for
-    the length of the drain. The strategy is `RollingUpdate` now, so the
-    replacement pod is already polling and a draining one that also polled
-    would double-answer -- see main.py's `_drain_and_exit`.
+    Due heartbeats used to be started from the bottom of this function and
+    are not any more -- `agora_runner.heartbeat_pass` runs them on its own
+    thread, because `speak` below generates a reply on the calling thread
+    and a claude-cli reply takes minutes. The heartbeats listing is still
+    fetched here: this loop needs it for the skip sets regardless.
+
+    There is still no flag for calling this without doing the whole tick.
+    One existed from 2026-08-31 for the draining process, which under
+    `strategy: Recreate` was the only runner alive and would otherwise have
+    answered nobody for the length of the drain. The strategy is
+    `RollingUpdate` now, so the replacement pod is already polling and a
+    draining one that also polled would double-answer -- so a caller that
+    wants less than a full tick must not call this at all. See main.py's
+    `_drain_and_exit`.
     """
     clear_persona_cache()
     # `?active=true` -- issue #30, fix 2. This tick runs every 11 seconds and
@@ -111,7 +118,3 @@ def poll_once():
                 mark_answered_live(summary)
             except Exception as e:
                 log(f"[{summary.get('name', summary.get('id'))}] answered-live chip failed: {e}")
-    try:
-        run_due_heartbeats(heartbeats_list)
-    except Exception as e:
-        log(f"heartbeat pass failed: {e}")
