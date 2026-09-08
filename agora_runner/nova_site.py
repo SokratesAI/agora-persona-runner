@@ -4009,7 +4009,19 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             self._serve_demo(path, raw_query)
             return
         path = path.rstrip("/") or "/"
-        query = urllib.parse.parse_qs(raw_query)
+        # `keep_blank_values=True` because one parameter here means something
+        # by being present and empty. `?cycles=` is `/replies` saying "these
+        # cards, and there are none of them"; dropped, it reads as no filter
+        # at all and the page is answered with the whole archive under its
+        # own "No unread replies" line. Measured live on 2026-09-08, cycle
+        # 1221, against a unit test that had passed by calling `journal_page`
+        # directly and so never went through this line.
+        #
+        # Safe for every other reader on the same dict: `_int_param` returns
+        # its default on an unparseable value, `asks` compares against "1",
+        # and `search` is `.strip()`ed before it is used -- so a blank now
+        # reaches them and each already does with it what dropping it did.
+        query = urllib.parse.parse_qs(raw_query, keep_blank_values=True)
 
         # `/cycle/49` is a real URL so an Agora reply can link straight at
         # one entry (item 4). The server has no per-cycle view -- it serves
