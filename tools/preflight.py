@@ -185,6 +185,7 @@ CHECKS = (
     "survey",
     "roadmap_drift",
     "recap_health",
+    "browser_env_health",
 )
 
 #: Checks that must not run while the rest of the sweep is running, because
@@ -311,6 +312,7 @@ SUBJECT = {
     "survey":            ("on-box",  "this repository's own source"),
     "roadmap_drift":     ("on-box",  "the roadmap and the boards it names, in the vault"),
     "recap_health":      ("on-box",  "the recap card's own file in the vault"),
+    "browser_env_health": ("on-box",  "the browser environment on this pod's own volume"),
     "marcus_capacity":   ("on-box",  "Marcus's state document, read over the cluster network"),
 }
 
@@ -373,6 +375,10 @@ CADENCE_HOURS = {
     # let it read clean on the sweep where the staleness actually began. Same
     # reason it is in NEVER_COLLAPSE.
     "recap_health": 0.0,
+    # Every sweep -- a directory on a volume any cycle can tidy, and the check
+    # is a handful of stat calls. A 24h cadence would let the sweep that first
+    # sees the loss be the one that collapses it.
+    "browser_env_health": 0.0,
     # Every sweep -- files I rewrite in my own wrap-up, so the previous cycle is
     # exactly who could have broken them.
     "doc_integrity": 0.0,
