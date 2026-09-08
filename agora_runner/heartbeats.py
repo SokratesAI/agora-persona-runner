@@ -1338,6 +1338,20 @@ def run_due_heartbeats(heartbeats_list=None):
                               f"{len(skipped)} earlier slot(s) before this one: "
                               + ", ".join(s.isoformat() for s in skipped))
                     log(f"heartbeat {name}: {reason}")
-                    dropped_ticks.record(hb_id, name, reason, len(skipped))
+                    # Stamped at the OLDEST slot that was slept through, not
+                    # at now. `heartbeat_gaps.reasons_for` matches a record to
+                    # the slot whose own period contains the moment it was
+                    # written, and the moment this runs is inside the slot
+                    # that DID fire -- which has no gap, so the reason would
+                    # be filed against a slot nobody is asking about and the
+                    # missed one would still read as unexplained.
+                    #
+                    # One record rather than one per slot: they all share a
+                    # cause and a text, and `record` writes on its own thread
+                    # with a compare-and-swap on one document, so N of them
+                    # race each other for it. The reason names every slot, so
+                    # nothing is lost by filing it under the first.
+                    dropped_ticks.record(hb_id, name, reason, len(skipped),
+                                         now=skipped[0])
         except Exception as e:
             log(f"heartbeat {heartbeat.get('name')} scheduling error: {e}")
