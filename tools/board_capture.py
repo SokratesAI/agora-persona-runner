@@ -63,6 +63,7 @@ from agora_runner.nova_boards import (  # noqa: E402
     PRIORITY_LABELS,
     STATUS_LABELS,
     add_row,
+    board_projects,
     canonical_priority,
     capture_entries,
     parse_board,
@@ -71,6 +72,7 @@ from agora_runner.nova_boards import (  # noqa: E402
     split_capture_done,
     split_capture_priority,
     split_capture_project,
+    split_capture_project_tag,
 )
 
 # The statuses a cycle may move a capture into. `outdated` is deliberately
@@ -164,6 +166,14 @@ def promote(before, index, priority, status, dated, title=None, project=None):
     done_cycle, text = split_capture_done(text)
     own_rating, text = split_capture_priority(text)
     own_project, text = split_capture_project(text)
+    if not own_project:
+        # The app's shape, if he did not type the hand shape. The names
+        # come off this same board's `Project` cells, which is where
+        # `board_projects` says the project list lives -- so a tag can only
+        # resolve to a project that already exists, and an unknown slug
+        # stays in the title rather than inventing one.
+        own_project, text = split_capture_project_tag(
+            text, board_projects(parse_board(before).get("items") or []))
     if not text.strip():
         return None, "that capture is empty once its prefixes are stripped", None, None
 

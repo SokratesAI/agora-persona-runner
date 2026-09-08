@@ -99,6 +99,13 @@ _CAPTURE_DONE_RE = re.compile(r"^DONE\s*\(\s*(Cycle\s*\d+)[^)]*\)\s*:", re.IGNOR
 _CAPTURE_PROJECT_RE = re.compile(
     r"^\(\s*Project\s*:\s*([^)|*\n]{1,40}?)\s*\)\s*", re.IGNORECASE
 )
+
+#: `... #marcus` at the *end* of a capture -- the shape the app's project
+#: picker writes (`nova_capture.project_slug`, PR #887). Anchored to the end
+#: and to the slug alphabet that function produces, so a `#` he typed
+#: mid-sentence, a `#4` in prose, or a trailing `#` with nothing after it can
+#: never be eaten. The leading space is required: `word#marcus` is one word.
+_CAPTURE_PROJECT_TAG_RE = re.compile(r"\s+#([a-z0-9]+(?:-[a-z0-9]+)*)$")
 # A detail heading inside `# Details`, in either shape the live files use:
 # `## 57 — More pages in the Nova app` and `### #84 — Edit and delete a
 # boarded idea or issue by holding the card`.
@@ -598,6 +605,57 @@ def split_capture_project(bullet):
     if not match:
         return "", text
     return match.group(1).strip(), text[match.end():].strip()
+
+
+def split_capture_project_tag(bullet, known=()):
+    """`text #marcus` -> `("Marcus", "text")`, against the names that exist.
+
+    The *other* shape a capture carries its project in, and the one the
+    app writes. `split_capture_project` above reads `(Project: X)`, which
+    is what the owner types by hand; PR #887 gave the capture box a project
+    picker that appends `nova_capture.project_slug(name)` as a trailing
+    `#slug` instead, and nothing read it. Measured before this was
+    written: a bullet the picker produced for Marcus came back from
+    `split_capture_project` as `("", "the reminder never fires #marcus")`,
+    so boarding it put the row at the `Nova` default with `#marcus` left
+    inside the title -- which is, to the character, the defect he filed on
+    2026-09-01 across 38 rows, wearing a different tag syntax.
+
+    **A slug is only resolved against a name that already exists**, which
+    is why `known` is required rather than the slug being de-hyphenated
+    into a name. `board_projects` derives the project list from the cells,
+    so writing `marcus` into a cell would create a *second* project beside
+    `Marcus` on his page, and a capitalisation this function invented
+    would be a name he never typed. An unresolved slug is therefore left
+    exactly where it is -- in the title, project unset, no worse than
+    today -- and never guessed at. In practice it cannot happen: the
+    picker only offers names `/api/project` returned.
+
+    The tag is matched at the end for `split_capture_project`'s reason
+    inverted: the front of a bullet is taken by the rating and the `DONE`
+    marker, so the end is where `nova_capture.capture` puts this one, and
+    everything before it is his prose.
+    """
+    text = (bullet or "").strip()
+    match = _CAPTURE_PROJECT_TAG_RE.search(text)
+    if not match:
+        return "", text
+    slug = match.group(1)
+    for name in known or ():
+        candidate = (name or "").strip()
+        if candidate and _project_slug(candidate) == slug:
+            return candidate, text[:match.start()].strip()
+    return "", text
+
+
+def _project_slug(name):
+    """The app's own slug rule, so the two cannot drift apart.
+
+    Imported lazily rather than at module scope: `nova_capture` imports
+    this module, so a top-level import back would be a cycle.
+    """
+    from agora_runner.nova_capture import project_slug
+    return project_slug(name)
 
 
 def set_row_priority(markdown, number, priority):

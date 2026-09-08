@@ -238,6 +238,142 @@ def test_a_project_tag_rides_beside_a_rating_and_a_done_marker(tmp_path):
     assert new["priority"] == ""
 
 
+#: The same board with a `Project` column that already names Marcus. A slug
+#: only resolves against a project that exists, so a fixture with no
+#: `Project` cell anywhere cannot exercise the tag at all -- and a test
+#: written on `BOARD` would pass for the wrong reason, by finding nothing.
+BOARD_WITH_PROJECTS = BOARD.replace(
+    "| # | Item | Status | Updated | Priority |\n|---|------|--------|---------|---|\n"
+    "| [[#2 — The second thing\\|2]] | The second thing | 🟡 In progress | 08-25 | 🟠 High |\n"
+    "| [[#1 — The first thing\\|1]] | The first thing | ✅ Done | 08-25 |  |",
+    "| # | Item | Status | Updated | Priority | Project |\n|---|------|--------|---------|---|---|\n"
+    "| [[#2 — The second thing\\|2]] | The second thing | 🟡 In progress | 08-25 | 🟠 High | Marcus |\n"
+    "| [[#1 — The first thing\\|1]] | The first thing | ✅ Done | 08-25 |  | Sokrates Post |",
+)
+
+
+def test_the_projects_fixture_really_carries_the_column():
+    """The precondition, asserted rather than assumed.
+
+    Every test below is a negative-shaped claim about a slug resolving, and
+    a fixture whose replacement silently missed would make all of them pass
+    by finding no projects to resolve against.
+    """
+    assert BOARD_WITH_PROJECTS != BOARD
+    items = parse_board(BOARD_WITH_PROJECTS)["items"]
+    assert [item["project"] for item in items] == ["Marcus", "Sokrates Post"]
+
+
+def test_the_apps_project_tag_reaches_the_cell_too(tmp_path):
+    """The picker's shape, not the one he types by hand.
+
+    PR #887 gave the capture box a project picker that writes the choice as
+    a trailing `#slug` (`nova_capture.project_slug`). Nothing read it:
+    measured before this was written, `split_capture_project` returned
+    `("", "the reminder never fires #marcus")` for a bullet the picker had
+    produced, so the row landed at the `Nova` default with the tag stuck
+    inside its title -- the same defect he filed on 2026-09-01, in a new
+    syntax.
+    """
+    board = BOARD_WITH_PROJECTS.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- The first thing he typed. It goes on for a second sentence. #marcus",
+    )
+    code, path = _run(tmp_path, board=board, priority="medium")
+    assert code == 0
+    after = path.read_text(encoding="utf-8")
+    new = parse_board(after)["items"][0]
+    assert new["project"] == "Marcus"
+    assert new["title"] == "The first thing he typed."
+    # And the slug is gone from the file, not merely absent from the title:
+    # the write-up carries the rest of his sentence and must not keep it.
+    assert "#marcus" not in after
+
+
+def test_a_slug_with_a_hyphen_resolves_to_the_name_that_made_it(tmp_path):
+    """`Sokrates Post` -> `sokrates-post` and back. The multi-word case is
+    the one a de-hyphenating guess would get wrong."""
+    board = BOARD_WITH_PROJECTS.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- The first thing he typed. It goes on. #sokrates-post",
+    )
+    code, path = _run(tmp_path, board=board, priority="medium")
+    assert code == 0
+    new = parse_board(path.read_text(encoding="utf-8"))["items"][0]
+    assert new["project"] == "Sokrates Post"
+
+
+def test_an_unknown_slug_is_left_alone_rather_than_invented(tmp_path):
+    """The one judgement in this change, pinned.
+
+    `board_projects` derives the project list from the cells, so writing a
+    de-slugged `Recipe App` into one would create a project he never named
+    -- and a lowercase `recipe-app` would sit beside a `Recipe App` he
+    later types as a second project on the same page. So an unresolved slug
+    stays in the title, project unset: no worse than before this change,
+    and never a name I made up.
+    """
+    board = BOARD_WITH_PROJECTS.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- The first thing he typed. It goes on. #recipe-app",
+    )
+    code, path = _run(tmp_path, board=board, priority="medium")
+    assert code == 0
+    after = path.read_text(encoding="utf-8")
+    assert parse_board(after)["items"][0]["project"] == DEFAULT_PROJECT
+    assert "#recipe-app" in after
+
+
+def test_a_project_name_mid_sentence_is_prose_not_a_tag(tmp_path):
+    """The anchor, and it needs a *resolvable* slug to test anything.
+
+    I wrote this first with `#4` mid-sentence and it was worthless: drop
+    the `$` from the pattern and it still passed, because `4` resolves to
+    no project and the function returns the bullet untouched either way.
+    A negative result that was guaranteed in advance. `#marcus` resolves,
+    so an unanchored pattern eats it out of the middle of his sentence and
+    truncates the title to the two words in front of it -- which is what
+    this actually pins.
+    """
+    board = BOARD_WITH_PROJECTS.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- The #marcus reminder never fires in the evening.",
+    )
+    code, path = _run(tmp_path, board=board, priority="medium")
+    assert code == 0
+    after = path.read_text(encoding="utf-8")
+    new = parse_board(after)["items"][0]
+    assert new["project"] == DEFAULT_PROJECT
+    assert new["title"] == "The #marcus reminder never fires in the evening."
+
+
+def test_a_hash_in_his_prose_is_not_a_project_tag(tmp_path):
+    """He writes `#4` and `#267` in sentences constantly. This one cannot
+    catch a dropped anchor on its own -- see the test above for why -- but
+    it does pin that a trailing number is not read as a project."""
+    board = BOARD_WITH_PROJECTS.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- The first thing he typed. It is the same bug as #4",
+    )
+    code, path = _run(tmp_path, board=board, priority="medium")
+    assert code == 0
+    after = path.read_text(encoding="utf-8")
+    assert parse_board(after)["items"][0]["project"] == DEFAULT_PROJECT
+    assert "#4" in after
+
+
+def test_the_hand_typed_prefix_still_wins_over_a_trailing_tag(tmp_path):
+    """Both shapes on one bullet. The prefix is what he typed deliberately;
+    the tag can be left over from a picker that was on last-used."""
+    board = BOARD_WITH_PROJECTS.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        "- (Project: Sokrates Post) The first thing he typed. It goes on. #marcus",
+    )
+    code, path = _run(tmp_path, board=board, priority="medium")
+    assert code == 0
+    assert parse_board(path.read_text(encoding="utf-8"))["items"][0]["project"] == "Sokrates Post"
+
+
 def test_an_explicit_project_flag_beats_the_bullets_own_tag(tmp_path):
     board = BOARD.replace(
         "- The first thing he typed. It goes on for a second sentence.",
