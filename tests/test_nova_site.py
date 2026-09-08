@@ -6119,3 +6119,21 @@ def test_worker_stamp_separates_one_file_from_the_next(tmp_path):
     (root / "style.css").write_bytes(b"BC")
     after = nova_site._stamp_worker(b"x", public_dir=str(root))
     assert before != after
+def test_a_cycles_filter_ignores_the_window():
+    """`limit` is the feed's twenty. This is a short list he asked to see all
+    of -- the same call `asks` makes one branch up."""
+    payload = {"entries": [{"cycle": n, "title": str(n), "body": ""}
+                           for n in range(1, 40)], "status": {}}
+    page = nova_site.journal_page(payload, limit=2, cycles=list(range(1, 30)))
+    assert len(page["entries"]) == 29
+def test_the_cycles_parameter_drops_junk_rather_than_refusing_the_request():
+    """A hand-typed URL, or a page bug. The failure that matters is a feed
+    showing the wrong cards; dropping an unparseable number shows fewer
+    cards, not other ones."""
+    parse = nova_site.NovaSiteHandler._cycle_list
+    assert parse({"cycles": ["12,,x,13"]}) == [12, 13]
+    assert parse({"cycles": [""]}) is None
+    assert parse({}) is None
+    # Bounded: this is a list the page computed from its own marks.
+    assert len(parse({"cycles": [",".join(str(n) for n in range(500))]})) \
+        <= nova_site.MAX_CYCLE_LIST

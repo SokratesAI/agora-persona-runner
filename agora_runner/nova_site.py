@@ -3668,6 +3668,12 @@ def journal_descriptor(page, limit, offset, cycle, search=None, asks=False,
 # whole.
 JOURNAL_DEFAULT_LIMIT = 20
 
+# How many cycle numbers `?cycles=` will answer for. The list is one the
+# page built from its own unread marks, and he has had at most a couple of
+# dozen unread replies at a time; this is a ceiling on a hand-typed URL, not
+# a product limit.
+MAX_CYCLE_LIST = 60
+
 
 def _cycle_list(query):
     """`?cycles=1204,1198` -> `[1204, 1198]`; absent -> `None`.
@@ -3817,6 +3823,26 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         """
         _, body, etag = cached_payload(name, build)
         self._send_json_or_304(body, etag)
+
+    @staticmethod
+    def _cycle_list(query):
+        """`?cycles=41,39,12` as a list of ints, or None.
+
+        Bounded, and silently: this is a list the page computed from its own
+        local marks, so a long one is a bug or a hand-typed URL rather than
+        something to serve. Junk entries are dropped rather than 400-ing the
+        whole request -- the failure that matters is a feed showing the wrong
+        cards, and dropping one unparseable number shows fewer, not other.
+        """
+        raw = (query.get("cycles") or [""])[0]
+        if not raw:
+            return None
+        out = []
+        for chunk in raw.split(",")[:MAX_CYCLE_LIST]:
+            chunk = chunk.strip()
+            if chunk.isdigit():
+                out.append(int(chunk))
+        return out or None
 
     def _send_journal(self, query):
         """`/api/journal`, sliced to the window the client asked for.

@@ -13,7 +13,6 @@
   var feed = document.getElementById("feed");
   var statusEl = document.getElementById("status");
   var mailEl = document.getElementById("mail");
-  var changedEl = document.getElementById("changed");
 
   var navEl = document.getElementById("nav");
   var menuBtn = document.getElementById("menu-btn");
@@ -480,184 +479,23 @@
     return { count: count, cards: cards, cycle: oldest, items: items, cycles: cycles };
   }
 
-  /* "3 cycles since you last looked · 2 PRs merged", and nothing at all
-   * when there is nothing new.
+  /* "3 cycles since you last looked · 2 PRs merged" used to live here, from
+   * ideas board #115. Removed at his ask, 2026-09-08.
    *
-   * the owner, ideas board #115 (approved 08-25): *"You are asleep for nine
-   * cycles at a time and the app opens on the newest journal card with no
-   * sense of how much you missed. One line -- six cycles, two PRs merged,
-   * one thing needs your input, one board row moved -- would let you decide
-   * in two seconds whether to read or to close it."*
+   * It answered a question he had stopped having. The line existed because
+   * the app opened on the newest card with no sense of how much had been
+   * missed, back when he read it once or twice a day; he now works with the
+   * app open beside him, so it reported one cycle almost every time it said
+   * anything, and a status line that says "1" is a line asking to be
+   * ignored. `#changed`, `nova.lastSeen.v1` and the dismissal mark go with
+   * it -- an unused element and two unread storage keys are how a page
+   * accumulates furniture nobody can explain a year later.
    *
-   * Two of his four examples are deliberately not in the line, and both
-   * omissions are about not saying the same thing twice on one screen. "One
-   * thing needs your input" is already the `waiting on you` field in the
-   * header directly above, and unread replies are already the `#mail` badge
-   * directly below -- a second copy of either is the duplicate-outcome-pill
-   * complaint (`issues.md` 2026-08-23) coming back through a different door.
-   * "One board row moved" is the one I could not build here honestly: this
-   * page fetches no board payload, and a row's *previous* status is not
-   * stored anywhere on the device or the server, so there is nothing to
-   * diff against. That is a real gap and it is written down rather than
-   * guessed at.
-   *
-   * The mark lives in `localStorage` for the reason the read-reply marks do:
-   * the server has no session and no idea which device is his, so "since
-   * *you* last looked" can only be answered by the browser that looked. Per
-   * device is the honest scope -- it is his phone that has or has not seen
-   * cycle 540. */
-  var LAST_SEEN_KEY = "nova.lastSeen.v1";
+   * Nothing is left behind as a no-op: both call sites go with the
+   * functions, because a function that does nothing is one more thing the
+   * next reader has to check before they can rule it out.
+   */
 
-  /* The mark as it stood when this document loaded, held for the whole
-   * session, and the reason this is a variable rather than a `getItem` at
-   * paint time.
-   *
-   * `paintChanged` advances the stored mark the first time it draws, so a
-   * second read of storage would answer "nothing new" -- and then tapping a
-   * card and coming back, which is an in-page navigation and re-renders the
-   * header, would silently drop the line he was reading. Capturing it once
-   * means the line survives every navigation and every poll inside one open
-   * of the app, and a genuinely fresh load is what resets it. A PWA resumed
-   * from the background fires `pageshow`/`focus` and re-fetches without
-   * reloading the document, so that path keeps the line too, which is the
-   * behaviour I want: he backgrounded the app, he did not read it. */
-  var lastSeenCycle = null;
-  var lastSeenCaptured = false;
-
-  /* The newest cycle he had been told about when he tapped the line away, or
-   * null if he has not tapped it.
-   *
-   * A plain `dismissed = true` flag is what this was for one commit, and it
-   * was wrong in the case the feature exists for: he leaves the app open on
-   * his phone. The tap silenced `paintChanged` for the whole document
-   * session, so the four cycles that ran while the tab sat there never
-   * raised the line again -- the mark kept advancing underneath it and
-   * nothing ever said so. Remembering *what* he dismissed instead of *that*
-   * he dismissed means the line comes back the moment there is something in
-   * it he has not already been shown. */
-  var changedDismissedAt = null;
-
-  function loadLastSeen() {
-    var store = localStore();
-    if (!store) return null;
-    try {
-      var raw = store.getItem(LAST_SEEN_KEY);
-      var seen = parseInt(raw, 10);
-      return isNaN(seen) ? null : seen;
-    } catch (err) { return null; }
-  }
-
-  function saveLastSeen(cycle) {
-    var store = localStore();
-    if (!store) return;
-    try {
-      store.setItem(LAST_SEEN_KEY, String(cycle));
-    } catch (err) { /* quota or refused: the line degrades, the page does not */ }
-  }
-
-  /* What to say, or "" for "say nothing".
-   *
-   * `entries` is the feed's window, not the whole journal, so the counts are
-   * taken off the cards that are actually there and the line says `at least`
-   * whenever the mark predates the oldest of them. That is the only way to
-   * be exact in the common case -- he is a handful of cycles behind -- while
-   * staying true after a week away, and it is why this counts cards rather
-   * than subtracting cycle numbers: the loop has real holes in its numbering
-   * (`status.missingCycles` exists because of them), so `540 - 534` is six
-   * cycles only if all six ran.
-   *
-   * A PR counts when the footer names one *and* the outcome is `merged`.
-   * `isRealPr` alone would count a `stuck` cycle that opened a PR nobody
-   * took, which is the opposite of the reassurance the line is for. */
-  function changedLine(newest, entries, seen) {
-    if (seen === null || seen === undefined) return "";
-    if (typeof newest !== "number" || newest <= seen) return "";
-    var cycles = {};
-    var mergedCycles = {};
-    var oldest = null;
-    (entries || []).forEach(function (entry) {
-      var n = entry && entry.cycle;
-      if (typeof n !== "number") return;
-      if (oldest === null || n < oldest) oldest = n;
-      if (n <= seen) return;
-      cycles[n] = true;
-      /* Keyed by cycle and not counted per entry: a cycle that writes an
-       * addendum has two entries carrying the same `PR:` footer, and
-       * counting rows would report one merge as two. */
-      if (isRealPr(entry.pr) && /^merged$/i.test(String(entry.outcome || "").trim())) {
-        mergedCycles[n] = true;
-      }
-    });
-    var fresh = Object.keys(cycles).length;
-    var merged = Object.keys(mergedCycles).length;
-    if (!fresh) return "";
-    /* The mark is older than the oldest card on the feed, so there are new
-     * cycles this window cannot see and both counts are floors. */
-    var partial = oldest !== null && oldest > seen + 1;
-    var lead = partial ? "at least " : "";
-    var line = lead + fresh + (fresh === 1 ? " cycle" : " cycles") + " since you last looked";
-    if (merged) line += " · " + lead + merged + (merged === 1 ? " PR" : " PRs") + " merged";
-    return line;
-  }
-
-  /* Draw it, and advance the mark.
-   *
-   * Only from the journal feed, and only on a live payload. A `/cycle/N`
-   * permalink builds its status off the single entry it asked for, so
-   * `status.cycle` there is whichever old cycle he deep-linked to -- writing
-   * that as the mark would set it *backwards* and then claim a hundred
-   * cycles were new on his next open. A replayed payload is suppressed for
-   * the reason the badges beside it are: "this is what changed" is a claim
-   * about now, made from bytes the service worker cached at some unknown
-   * earlier time.
-   *
-   * The mark advances on the first paint rather than on a tap, because the
-   * common case is that he opens the app, reads the line, and closes it
-   * without touching anything -- a mark that only moved on a tap would show
-   * him the same "6 cycles" forever. The tap is a dismissal, not the
-   * acknowledgement, and it dismisses the news he was shown rather than the
-   * feature: see `changedDismissedAt`. */
-  function hideChanged() {
-    if (!changedEl) return;
-    changedEl.textContent = "";
-    changedEl.setAttribute("hidden", "");
-  }
-
-  function paintChanged(status, entries) {
-    if (!changedEl) return;
-    if (routedCycle(window.location.pathname) !== null) return;
-    /* A search answers with whichever cycles matched, from anywhere in the
-     * archive, so the entries it returns are not "the newest N" and counting
-     * them would report the shape of his query rather than what he missed. */
-    if (journalQuery.trim()) return;
-    if (!status || status.replayed) return;
-    var newest = status.cycle;
-    if (typeof newest !== "number") return;
-    if (!lastSeenCaptured) {
-      lastSeenCaptured = true;
-      lastSeenCycle = loadLastSeen();
-    }
-    /* Never backwards: a search result or a short window can hand this a
-     * `status.cycle` below the mark, and lowering it would invent news. */
-    if (lastSeenCycle === null || newest > lastSeenCycle) saveLastSeen(newest);
-    changedEl.textContent = "";
-    var stale = changedDismissedAt !== null && newest <= changedDismissedAt;
-    var text = stale ? "" : changedLine(newest, entries, lastSeenCycle);
-    if (!text) {
-      changedEl.setAttribute("hidden", "");
-      return;
-    }
-    var btn = el("button", "changed-line", text);
-    btn.type = "button";
-    btn.title = "Dismiss";
-    btn.addEventListener("click", function () {
-      changedDismissedAt = newest;
-      changedEl.textContent = "";
-      changedEl.setAttribute("hidden", "");
-    });
-    changedEl.appendChild(btn);
-    changedEl.removeAttribute("hidden");
-  }
 
   /* The unread-reply badge, in its own node outside `statusEl` so it
    * survives a page that is not the journal.
@@ -3502,9 +3340,20 @@
    * single cycle does not paint a twelve-hour summary over it. */
   function placeRecap() {
     if (!recapWanted || !recapPayload) return;
-    if (feed.querySelector(".recap")) return;
+    if (document.querySelector(".recap")) return;
     var card = renderRecap(recapPayload);
-    if (card) feed.insertBefore(card, feed.firstChild);
+    if (!card) return;
+    /* Below the search box and above the feed. It went above the box for
+     * half an hour on 2026-09-08 at his ask and came straight back at his
+     * next one -- the box collapsed to a single 44px button that morning,
+     * so the thing it was making room above stopped taking any room.
+     *
+     * Still outside the feed rather than its first child: `render` empties
+     * the feed on every paint, and a card that survives the paint is a card
+     * that does not flicker on the thirty-second poll. `placeRecap` is
+     * guarded on there being no `.recap` already, and the `recapWanted`
+     * branch in `render` takes it down. */
+    feed.parentNode.insertBefore(card, feed);
   }
 
   /* A bullet's text, with whatever it points at as a real tap target.
@@ -3546,10 +3395,30 @@
     });
   }
 
+  /* Collapsed unless he opens it, and the state does not survive the page.
+   *
+   * His ask, 2026-09-08: *"i want the 12 hours summary for the journals to
+   * be collapsable and default collapsed as it takes up a lot of space."*
+   * Default-collapsed is the whole of it -- remembering that he opened it
+   * once would put a screenful of summary back above the feed on the next
+   * load, which is the thing he is asking to get rid of. Opening it is one
+   * tap, and the heading says what is inside. */
+  var recapOpen = false;
+
   function renderRecap(recap) {
     if (!recap || !recap.bullets || !recap.bullets.length) return null;
-    var card = el("section", "recap");
-    var head = el("div", "recap-head");
+    var card = el("section", "recap" + (recapOpen ? "" : " recap--shut"));
+    /* The whole head is the control, not a chevron beside it: on a phone
+     * the title is the thing under his thumb, and a 44px target he has to
+     * aim for beside it is a target he misses. */
+    var head = el("button", "recap-head");
+    head.type = "button";
+    head.setAttribute("aria-expanded", recapOpen ? "true" : "false");
+    head.addEventListener("click", function () {
+      recapOpen = !recapOpen;
+      card.classList.toggle("recap--shut", !recapOpen);
+      head.setAttribute("aria-expanded", recapOpen ? "true" : "false");
+    });
     head.appendChild(el("h2", "recap-title", "Last 12 hours"));
     var stampText = recap.writtenLabel
       ? "as of " + recap.writtenLabel
@@ -3562,6 +3431,7 @@
     if (recap.stale) stamp.className = "recap-stamp stale";
     head.appendChild(stamp);
     card.appendChild(head);
+    var body = el("div", "recap-body");
     var list = el("ul", "recap-list");
     recap.bullets.forEach(function (bullet) {
       var item = el("li", "recap-item");
@@ -3574,12 +3444,13 @@
       paintRecapParts(item, bullet.parts, bullet.text);
       list.appendChild(item);
     });
-    card.appendChild(list);
+    body.appendChild(list);
     if (recap.stale) {
-      card.appendChild(el("p", "recap-note",
+      body.appendChild(el("p", "recap-note",
         "This was written more than " + recap.staleAfterHours
         + " hours ago, so newer cycles are not in it — the feed below is."));
     }
+    card.appendChild(body);
     return card;
   }
 
@@ -3625,7 +3496,6 @@
     // comments" and "no answer about the comments" are different, and only
     // the first one licenses the header to say he owes a reply.
     renderStatus(journal.status || {}, comments ? commentsByCycle : null);
-    paintChanged(journal.status || {}, journal.entries || []);
 
     var byCycle = {};
     ((digest && digest.lines) || []).forEach(function (line) {
@@ -3737,6 +3607,14 @@
     if (recapWanted) {
       ensureRecap();
       placeRecap();
+    } else {
+      /* Taken down by hand now that the card lives outside the feed. It
+       * used to be wiped for free by the feed's own rebuild; above the
+       * search box, nothing else clears it, and a twelve-hour summary left
+       * standing over three search hits is exactly what his 09-04 capture
+       * asked to be rid of. */
+      var stale = document.querySelector(".recap");
+      if (stale) stale.remove();
     }
     /* The comments read is tolerated on purpose -- the journal is the page,
      * and a comments failure should cost the bubbles, not the feed. But
@@ -4123,33 +4001,75 @@
     var box = el("section", "journal-search");
     box.id = "journal-search";
     var row = el("div", "journal-search-row");
+
+    /* The box is a magnifying glass until he asks for it -- his ask,
+     * 2026-09-08: *"that search input should be collapsed aswell to a
+     * button with a search icon in it. So when i click that button, the
+     * search input appears with a sliding effect both in and out."*
+     *
+     * The input is never removed or rebuilt, only slid: it holds the query,
+     * the caret and the debounce timer, and the feed repaints under it every
+     * thirty seconds. Rebuilding it on each open is the same class of bug
+     * the comment on this whole section is about. The slide is `max-width`
+     * on the input, which is what lets the glass sit still while the field
+     * grows out of it. */
+    var toggle = el("button", "journal-search-toggle", "\u2315");
+    toggle.type = "button";
+    toggle.setAttribute("aria-label", "Search the journal");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", "journal-search-input");
+
     var input = document.createElement("input");
     input.type = "search";
+    input.id = "journal-search-input";
     input.className = "journal-search-input";
     input.placeholder = "Search the journal";
     input.setAttribute("aria-label", "Search the journal");
     row.appendChild(input);
+    /* On the right, after the field -- his ask, 2026-09-08. It is the same
+     * hand that reaches for Send in the composer, and the field grows away
+     * from it towards the left edge rather than pushing it across the row. */
+    row.appendChild(toggle);
 
     // Built whether or not there is anything to clear and hidden rather
     // than absent, for the reason the board's clear button carries:
     // removing it on the last keystroke moves the caret's own neighbour
     // out from under his thumb mid-edit.
-    var clear = el("button", "journal-search-clear", "×");
-    clear.type = "button";
-    clear.hidden = true;
-    clear.setAttribute("aria-label", "Clear the search");
-    clear.addEventListener("click", function () {
-      journalQuery = "";
-      input.value = "";
-      clear.hidden = true;
-      if (journalSearchTimer) clearTimeout(journalSearchTimer);
-      windowSize = PAGE;
-      load();
-      // Synchronous, inside the tap, so the keyboard stays up.
-      input.focus();
-    });
-    row.appendChild(clear);
     box.appendChild(row);
+
+    /* Shut, and shut is also the state the clear button belongs to: an ×
+     * floating beside a magnifying glass with no field between them is a
+     * control for something that is not on screen. */
+    box.classList.add("journal-search--shut");
+    /* One button doing both jobs -- his ask, 2026-09-08: *"make it turn
+     * into the x button when the input is open to make the input close."*
+     * The separate clear × is gone with it: two ×s side by side, one
+     * emptying the field and one closing it, is a choice nobody wants to
+     * make on a phone. Closing empties it anyway. */
+    toggle.addEventListener("click", function () {
+      var opening = box.classList.contains("journal-search--shut");
+      box.classList.toggle("journal-search--shut", !opening);
+      toggle.setAttribute("aria-expanded", opening ? "true" : "false");
+      toggle.textContent = opening ? "\u00D7" : "\u2315";
+      toggle.setAttribute("aria-label",
+        opening ? "Close the search" : "Search the journal");
+      if (opening) {
+        // Synchronous, inside the tap, so the phone keyboard comes up with
+        // it rather than needing a second tap on the field.
+        input.focus();
+        return;
+      }
+      /* Closing throws the query away rather than hiding it. A filtered
+       * feed under a collapsed box is a page silently showing three of four
+       * hundred entries with nothing on screen saying why. */
+      if (journalQuery) {
+        journalQuery = "";
+        input.value = "";
+        if (journalSearchTimer) clearTimeout(journalSearchTimer);
+        windowSize = PAGE;
+        load();
+      }
+    });
 
     // `role="status"` so the count is announced when it changes rather
     // than only being visible -- the result of a search is a number, and
@@ -4161,7 +4081,6 @@
 
     input.addEventListener("input", function () {
       journalQuery = input.value;
-      clear.hidden = !input.value;
       if (journalSearchTimer) clearTimeout(journalSearchTimer);
       // The same 200ms the board search waits, and for the same reason:
       // a request per keystroke against a 400-entry substring scan, from
@@ -8858,32 +8777,20 @@
     return wrap;
   }
 
-  function renderProjectIndex(payload) {
-    var here = route(window.location.pathname);
-    var wrap = el("div", "project-index");
-    var projects = (payload && payload.projects) || [];
-    var rated = (payload && payload.projectPriority) || {};
-    for (var i = 0; i < projects.length; i++) {
-      var name = projects[i];
-      var link = el("a", "project-pill", name);
-      link.setAttribute("href", "/project/" + encodeURIComponent(name));
-      if (here.project && here.project.toLowerCase() === name.toLowerCase()) {
-        link.className = "project-pill on";
-      }
-      // The server has already put the highest-rated project first; the
-      // chip is what makes that order readable rather than mysterious.
-      // Only when there is one -- every project is unrated today, so an
-      // unconditional chip would draw an empty pill on all of them, the
-      // same call `renderProjectColumn` makes for a `## Done` row.
-      var rating = rated[name.toLowerCase()];
-      if (rating && rating.priority) {
-        link.appendChild(el(
-          "span", "chip prio prio-" + rating.priorityKey, rating.priority));
-      }
-      wrap.appendChild(link);
-    }
-    return wrap;
-  }
+  /* The row of project pills that used to sit above the ordered list is
+   * gone, 2026-09-08. His ask: *"make the draggable projects clickable
+   * instead of the project buttons above the draggable project list.
+   * Remove the current clickable project buttons."*
+   *
+   * They were two lists of the same projects stacked on one screen, and the
+   * lower one already carried the answer to every question the upper one
+   * could be asked -- how far along, how many open, what order they are in.
+   * The pills also sorted themselves by the legacy rating, which is the
+   * thing this same ask removed.
+   *
+   * The cost, stated: on a project's own page there is no longer a way to
+   * hop straight to another project. The way back is the Projects tab.
+   */
 
   /* The portfolio, not the list -- idea #228's project-manager pass.
    *
@@ -8961,22 +8868,28 @@
    */
   function projectStandingRow(name, summary, rating, index, total) {
     var li = el("li", "project-standing");
-    var head = el("div", "project-standing-head");
-    var link = el("a", "project-standing-name", name);
+    /* The whole standing opens the project -- his ask, 2026-09-08, in the
+     * same breath as deleting the pills above this list: *"make the
+     * draggable projects clickable instead of the project buttons above the
+     * draggable project list."*
+     *
+     * A real anchor wrapping the row rather than a click handler on the
+     * `<li>`, so it is a link to the browser: middle-click, long-press and
+     * a screen reader all get what they expect, and the delegated
+     * `pushState` handler at the bottom of this file already intercepts it.
+     *
+     * Safe against the drag because the drag is not on the row: it starts
+     * on `.project-standing-grip` only (`attachProjectDrag`), and the move
+     * buttons stay outside this anchor. A row-wide gesture would have made
+     * every drag end in a navigation. */
+    var link = el("a", "project-standing-link");
     link.setAttribute("href", "/project/" + encodeURIComponent(name));
-    head.appendChild(link);
-    // The project's own rating, the one he sets on its page. Only when
-    // there is one -- an unconditional chip draws an empty coloured pill
-    // on every unrated project, the call `renderProjectIndex` already
-    // makes one function up.
-    if (rating && rating.priority) {
-      head.appendChild(el(
-        "span", "chip prio prio-" + rating.priorityKey, rating.priority));
-    }
+    var head = el("div", "project-standing-head");
+    head.appendChild(el("span", "project-standing-name", name));
     var counts = summary.percentDone + "% · " + summary.open + " open";
     if (summary.blocked) counts += " · " + summary.blocked + " on you";
     head.appendChild(el("span", "project-standing-counts", counts));
-    li.appendChild(head);
+    link.appendChild(head);
     var track = el("div", "project-standing-track");
     var fill = el("div", "project-standing-fill");
     fill.style.width = summary.percentDone + "%";
@@ -8985,7 +8898,8 @@
     // a progress bar with no accessible name is a decoration.
     track.setAttribute("role", "img");
     track.setAttribute("aria-label", name + " — " + counts);
-    li.appendChild(track);
+    link.appendChild(track);
+    li.appendChild(link);
     // The projected finish, on the index as well as the page, for the same
     // reason the standing is: "which project lands first" should not cost
     // one tap per project.
@@ -9838,55 +9752,22 @@
     return button;
   }
 
-  function renderProjectPriority(name, payload) {
-    var row = el("div", "project-prio");
-    row.appendChild(el("span", "project-prio-label", "Project importance"));
-    var note = el("span", "project-prio-note", "");
-    var rated = ((payload && payload.projectPriority) || {})[name.toLowerCase()];
-    // `.el` -- `buildPrioPicker` answers `{el, getValue, setValue}`, not a
-    // node. It is a chip that opens the shared `.prio-menu` overlay, the
-    // same control a board row's rating uses, not a `<select>`.
-    row.appendChild(buildPrioPicker({
-      current: (rated && rated.priority) || "",
-      ariaLabel: "Importance of the " + name + " project",
-      // The second instance of the same gap, found by auditing M1-M6 for
-      // it: M3's plan called the ordered project list "an explicit order
-      // field **replacing** the unused priority labels in projects.md",
-      // and `nova_next.project_ranks` did not replace them -- it layered.
-      // A placed project ranks by its position; an unplaced one still
-      // ranks by this rating. Measured 2026-09-07: the `Order` column is
-      // empty for all eight projects, so this rating is the entire live
-      // project order today, while the drag handle beside it looks like
-      // the thing in charge.
-      caption: "Importance ranks a project only while the project list is "
-        + "unordered. Drag a project into place and its position wins.",
-      chipStyle: true,
-      onPick: function (chosen) {
-        note.textContent = "Saving…";
-        return fetch("/api/project/priority", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ project: name, priority: chosen })
-        })
-          .then(json)
-          .then(function (result) {
-            if (!result || !result.ok) throw new Error((result && result.message) || "failed");
-            note.textContent = "";
-            // Reload rather than patching `payload` in place: the index
-            // above is *sorted* by this value, so the visible consequence
-            // of the pick is a reorder, and patching the one field would
-            // leave the pills in the old order with a new chip on one.
-            load();
-          })
-          .catch(function (err) {
-            note.textContent = "Could not save: " + err;
-            throw err;
-          });
-      },
-    }).el);
-    row.appendChild(note);
-    return row;
-  }
+  /* The project's own importance rating is gone, 2026-09-08: *"I do not
+   * want the old priority anymore, only the placement sorting priority. So
+   * remove the legacy priority from all places."*
+   *
+   * It was already the weaker of two orderings and it had been saying so
+   * for a day: `nova_next.project_ranks` layers, so a project with a
+   * position ranks by position and only an unplaced one falls back to this
+   * rating. The ordered list is the dial now, and one dial that works beats
+   * two that disagree -- which is what the caption on this control had been
+   * apologising for.
+   *
+   * `POST /api/project/priority` is left standing on the server. Removing a
+   * route is a separate change with its own blast radius, and nothing calls
+   * it from here any more.
+   */
+
 
   /* The conversation about a project -- idea #92, phase 4.
    *
@@ -10077,7 +9958,6 @@
     statusEl.appendChild(el("p", "status-line",
       name ? name : "Projects"));
     feed.textContent = "";
-    feed.appendChild(renderProjectIndex(payload));
 
     if (!asked) {
       // The index is where he decides which project to open, so it shows
@@ -10096,7 +9976,6 @@
         "Nothing is filed under “" + asked + "” yet."));
       return;
     }
-    feed.appendChild(renderProjectPriority(name, payload));
     feed.appendChild(renderProjectTrl(name, payload));
     feed.appendChild(renderProjectSatisfaction(name, payload));
     feed.appendChild(renderProjectLifecycle(name, payload));
@@ -12263,6 +12142,10 @@
       // and two answers in a row both point at the same question.
       if (message.sender === "Edvard" && message.text) asked = message.text;
     });
+    /* Held for `askLost`, which draws after this loop and needs the same
+     * question the `⋯` menu's "Ask again" would send. One source, so the two
+     * cannot disagree about what gets re-asked. */
+    lastAskedQuestion = asked;
     // Last, and outside the loop: the sheet is one node on <body> rather
     // than something inside a message, so it is repainted once against the
     // whole payload and not once per row.
@@ -12278,8 +12161,80 @@
     }
     askPaintThread(container, payload, afterSend);
     if (payload.waiting || tailIsWorking(messages)) {
-      container.appendChild(askPending(payload.progress));
+      var lost = lostTurn(payload, messages);
+      container.appendChild(lost
+        ? askLost(payload.conversationId, lost, afterSend)
+        : askPending(payload.progress));
     }
+  }
+
+  /* How long a turn may go with nothing arriving before the page stops
+   * claiming it is running.
+   *
+   * Ten minutes and not one, because a turn legitimately goes quiet: a long
+   * Bash call, a subagent, a model thinking before it reaches for anything.
+   * The bound is on SILENCE, not on the turn -- a turn narrating steps every
+   * few seconds can run its full 45 minutes and never trip this. */
+  var LOST_TURN_AFTER_SECONDS = 600;
+
+  // The newest thing he said in the thread being painted; see `askPaintThread`.
+  var lastAskedQuestion = "";
+
+  /* Has this turn gone silent long enough to call it lost?
+   *
+   * His report, 2026-09-08: *"I sent you a message, got a warning on my
+   * phone and you never responded and was just loading forever. Your pod
+   * restarted but now you are up again."*
+   *
+   * The cause was a bridge rollout -- `strategy: Recreate` on a
+   * ReadWriteOnce volume, so the old pod is taken down before the new one
+   * starts and there is a real window with no bridge at all. That window is
+   * structural and cannot be designed away here.
+   *
+   * What can be fixed here is the lie. The loader spins on `waiting`, and
+   * `waiting` is a claim about the last message being his -- which stays
+   * true forever when the turn was never picked up. So the page told him
+   * something was happening for as long as he left it open. This is the
+   * bound at which it stops saying that.
+   *
+   * Returns the seconds of silence, or 0 for "still working". Measured from
+   * the newest thing in the thread rather than from his message: a turn that
+   * ran for twenty minutes and then died has been silent for however long it
+   * has been silent, not twenty minutes. */
+  function lostTurn(payload, messages) {
+    var newest = Date.parse((payload.progress && payload.progress.askedAt) || "");
+    (messages || []).forEach(function (message) {
+      var at = Date.parse(message.createdAt || "");
+      if (!isNaN(at) && (isNaN(newest) || at > newest)) newest = at;
+      (message.steps || []).forEach(function (step) {
+        var stepAt = Date.parse(step.endedAt || step.at || "");
+        if (!isNaN(stepAt) && (isNaN(newest) || stepAt > newest)) newest = stepAt;
+      });
+    });
+    // No usable stamp anywhere is not evidence of silence. An older payload
+    // carries none, and calling a live turn lost is the same lie pointing
+    // the other way.
+    if (isNaN(newest)) return 0;
+    var quiet = Math.round((Date.now() - newest) / 1000);
+    return quiet >= LOST_TURN_AFTER_SECONDS ? quiet : 0;
+  }
+
+  /* What the loader becomes when the turn stopped answering.
+   *
+   * It says the one thing he needs -- nothing is coming -- and offers the
+   * one action that helps. `askRetryButton` is the same control the `⋯`
+   * menu carries, so re-asking is one implementation rather than two that
+   * can disagree about what gets sent. */
+  function askLost(conversationId, quietSeconds, afterSend) {
+    var row = el("div", "ask-msg ask-theirs ask-stopped-row");
+    row.appendChild(el("div", "ask-stopped",
+      "No answer came back. Nothing has arrived for "
+      + Math.round(quietSeconds / 60) + " minutes, so the turn was lost."));
+    var asked = lastAskedQuestion;
+    if (conversationId && asked) {
+      row.appendChild(askRetryButton(conversationId, asked, afterSend));
+    }
+    return row;
   }
 
   /* How long a steps-only tail may go without a new step and still count as
@@ -13444,12 +13399,6 @@
      * badge he asked for in the header is a journal-page feature wearing a
      * header's clothes. */
     if (here.view !== "journal") refreshMail();
-    /* Every internal link on this site is a `pushState`, not a page load
-     * (see the delegated click handler at the bottom of this file), so a
-     * `#changed` line painted on the journal would otherwise still be
-     * sitting over the Issues board after one tap. `render` repaints it on
-     * the way back in. */
-    hideChanged();
     /* Answer the tap now, before anything is fetched.
      *
      * the owner, capture 2026-09-05, rated Immediately: *"The Nova app is
