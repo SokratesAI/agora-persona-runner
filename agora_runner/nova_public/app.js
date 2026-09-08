@@ -11720,16 +11720,24 @@
    * was built for. The capture box opens it with "Capture type" and
    * "Project"; a drawer whose heading says "Message" over a list of
    * projects is a drawer that reads as the wrong drawer. */
-  function openMessageActions(actions, title) {
+  /* `opts.closeOnPick` is false for a sheet that holds more than one
+   * decision. The default is true and is the older rule: a message action
+   * is finished the moment it is taken, so the drawer gets out of the way.
+   * The capture sheet is not like that -- it carries the type, the project
+   * and the importance of the line he is about to file, and closing on the
+   * first tap would make him open it three times. */
+  function openMessageActions(actions, title, opts) {
+    var closeOnPick = !(opts && opts.closeOnPick === false);
     buildMessageSheet();
     msgSheetTitle.textContent = title || "Message";
     msgSheet.setAttribute("aria-label", title || "Message actions");
     msgSheetBody.textContent = "";
     actions.forEach(function (button) {
       // The buttons keep their own classes and their own handlers; only the
-      // box around them is new. A tap on one closes the drawer, because
-      // every action in here is finished the moment it is taken.
-      button.addEventListener("click", function () { closeMessageActions(); });
+      // box around them is new.
+      if (closeOnPick) {
+        button.addEventListener("click", function () { closeMessageActions(); });
+      }
       msgSheetBody.appendChild(button);
     });
     if (msgSheetHide) { clearTimeout(msgSheetHide); msgSheetHide = null; }
@@ -13604,7 +13612,6 @@
     var captureStatus = document.getElementById("capture-status");
     var buttons = Array.prototype.slice.call(form.querySelectorAll(".capture-btn"));
     var typeBtn = document.getElementById("capture-type");
-    var projectBtn = document.getElementById("capture-project");
     var sendBtn = document.getElementById("capture-send");
     var NO_PROJECT = "No project";
     /* Last-used, not none. He files three issues about the same thing in a
@@ -13681,14 +13688,33 @@
       onStatus: setStatus,
     });
     var submitRow = document.querySelector(".capture-submit");
+    /* The picker and its label park in the same hidden host the type
+     * buttons ship in, and the sheet moves all three out of it. They have
+     * to be IN the document from load: `#capture-prio` is the trigger
+     * `/diag` opens to prove the health check leaves an open picker alone,
+     * and a control that only exists while a drawer is open is a control
+     * nothing else can reach. */
+    var typesHost = document.getElementById("capture-types");
+    var prioLabel = document.querySelector(".capture-prio-label");
+    if (typesHost) {
+      if (prioLabel) typesHost.appendChild(prioLabel);
+      typesHost.appendChild(prioPicker.el);
+    }
     form.appendChild(captureAttach.input);
     // Directly under the box he typed in, above the row of controls --
     // the thumbnails belong to the sentence, not to the buttons.
     textEl.parentNode.insertBefore(captureAttach.tray, textEl.nextSibling);
-    // Both before Submit, which stays the last child: his ask puts Submit
-    // "all the way to the right" and priority and attach "like they are".
+    /* The attach `+` immediately before Send, and nothing else in this row.
+     * His screenshot, 2026-09-08: five controls in it and the leftmost one
+     * cut off the side of a 390px screen. The type, the project and the
+     * importance are three *decisions* and they moved into one sheet
+     * together; what stays on the row is the one that opens it, the one
+     * that adds a picture, and the one that files the line.
+     *
+     * `prioPicker.el` is deliberately NOT inserted anywhere. The picker
+     * object is still what holds the value `send` reads -- only its trigger
+     * is gone, replaced by the rows the sheet draws. */
     submitRow.insertBefore(captureAttach.button, sendBtn);
-    submitRow.insertBefore(prioPicker.el, sendBtn);
 
 
     /* the owner, issues.md 2026-08-09: "the input box for the Nova pwa is too
@@ -13769,9 +13795,11 @@
       if (typeBtn) typeBtn.textContent = picked.textContent;
     }
 
+    /* The project has no button of its own on the row any more, so this
+     * only remembers it -- the sheet is where it is read back, and `send`
+     * is what does something with it. */
     function setProject(name) {
       currentProject = name || "";
-      if (projectBtn) projectBtn.textContent = currentProject || NO_PROJECT;
     }
 
     function send(target) {
@@ -13812,43 +13840,100 @@
         .then(function () { setBusy(false); });
     }
 
-    /* Choosing a type closes the sheet and updates the button. It does not
-     * submit -- that is the whole point of the rework, and the reason the
-     * old handler on these very buttons had to go. */
+    /* Choosing a type updates the button and leaves the sheet open. It does
+     * not submit -- that is the whole point of the rework, and the reason
+     * the old handler on these very buttons had to go. */
+    // Set by the sheet while it is built, so a type tap refreshes the marks
+    // in the other two groups' company. Registered once here rather than
+    // per open, which would stack a listener every time he opened it.
+    var refreshMarks = null;
     buttons.forEach(function (button) {
-      button.addEventListener("click", function () { setTarget(button.getAttribute("data-target")); });
+      button.addEventListener("click", function () {
+        setTarget(button.getAttribute("data-target"));
+        if (refreshMarks) refreshMarks();
+      });
     });
-    if (typeBtn) {
-      typeBtn.addEventListener("click", function () {
-        // The shared bottom sheet, the fourth thing to use it. The rows
-        // are the real buttons out of the HTML, moved in and moved back
-        // by `openMessageActions`'s own close handler -- so there is one
-        // set of type buttons in this document, not two that can drift.
-        openMessageActions(buttons, "Capture type");
-      });
+
+    /* One sheet for all three choices -- his ask, 2026-09-08, after the row
+     * they were spread across ran off the side of his phone.
+     *
+     * It is a list with headings rather than three buttons opening three
+     * sheets: a capture is one decision made in one place, and a sheet per
+     * field would be three opens and three closes for a line he has already
+     * typed. Nothing closes it on a tap, so he can set the type and then
+     * the project without it disappearing under him; the ✕ and the drag are
+     * what close it, the same as every other drawer.
+     *
+     * The picked row in each group carries `aria-pressed`, because a sheet
+     * he can leave open is a sheet that has to say what it is currently
+     * set to. `mark()` re-runs after every pick so all three groups stay
+     * honest.
+     *
+     * The type rows are the real buttons out of the shipped HTML, moved in
+     * -- so there is one set of type buttons in this document, not two that
+     * can drift from `CAPTURE_TARGETS`. */
+    function heading(text) {
+      return el("p", "capture-sheet-head", text);
     }
-    if (projectBtn) {
-      projectBtn.addEventListener("click", function () {
-        /* Built fresh each open, because the project list is whatever the
-         * board holds right now and a cycle can have added one since the
-         * page loaded. `loadProjects` is the same cached index the row
-         * editor's picker uses, so this costs one request per session. */
-        loadProjects().then(function (names) {
-          var rows = [];
-          var none = el("button", "capture-btn", NO_PROJECT);
-          none.type = "button";
-          none.addEventListener("click", function () { setProject(""); });
-          rows.push(none);
-          (names || []).forEach(function (name) {
-            var row = el("button", "capture-btn", name);
-            row.type = "button";
-            row.addEventListener("click", function () { setProject(name); });
-            rows.push(row);
-          });
-          openMessageActions(rows, "Project");
+
+    function optionRow(label, isPicked, onPick) {
+      var row = el("button", "capture-btn", label);
+      row.type = "button";
+      row.setAttribute("aria-pressed", isPicked ? "true" : "false");
+      row.addEventListener("click", onPick);
+      return row;
+    }
+
+    function openCaptureOptions() {
+      /* Built fresh each open, because the project list is whatever the
+       * board holds right now and a cycle can have added one since the page
+       * loaded. `loadProjects` is the same cached index the row editor's
+       * picker uses, so this costs one request per session. */
+      loadProjects().then(function (names) {
+        var rows = [];
+        var marks = [];
+
+        rows.push(heading("Type"));
+        buttons.forEach(function (button) {
+          marks.push([button, function () {
+            return button.getAttribute("data-target") === currentTarget;
+          }]);
+          rows.push(button);
         });
+
+        rows.push(heading("Project"));
+        var projects = [""].concat(names || []);
+        projects.forEach(function (name) {
+          var row = optionRow(name || NO_PROJECT, name === currentProject, function () {
+            setProject(name);
+            mark();
+          });
+          marks.push([row, function () { return name === currentProject; }]);
+          rows.push(row);
+        });
+
+        /* The real picker, moved in -- not a list rebuilt from
+         * `PRIORITIES`. It carries its own menu, its own labelling and the
+         * bookkeeping `/diag` checks (`dataset.openFor`, `aria-expanded`,
+         * the document-level dismiss), and a second set of five rows here
+         * would be a second vocabulary to keep in step with the first. All
+         * that changed is which box it sits in. */
+        rows.push(heading("Importance"));
+        if (prioLabel) rows.push(prioLabel);
+        rows.push(prioPicker.el);
+
+        function mark() {
+          marks.forEach(function (pair) {
+            pair[0].setAttribute("aria-pressed", pair[1]() ? "true" : "false");
+          });
+        }
+        refreshMarks = mark;
+        mark();
+        openMessageActions(rows, "Capture details", { closeOnPick: false });
       });
     }
+
+    if (typeBtn) typeBtn.addEventListener("click", openCaptureOptions);
     if (sendBtn) {
       sendBtn.addEventListener("click", function () { send(currentTarget); });
     }

@@ -5189,6 +5189,24 @@ X that summarizes the last 12
  * statement about a turn that produced nothing, not a message from Nova. */
 .ask-stopped { color: var(--dim); font-size: 0.85rem; }
 
+/* The capture sheet's group headings, and the tick on whichever row each
+ * group is currently set to. It is one sheet holding three decisions (his
+ * ask, 2026-09-08), and a sheet that stays open while he makes them has to
+ * say what it is set to -- otherwise the only way to read the current type
+ * back is to close it and look at the button. */
+.capture-sheet-head {
+  margin: 0.9rem 0 0.3rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.capture-sheet-head:first-child { margin-top: 0; }
+.msg-sheet .capture-btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* The message-actions drawer's contents. `ask-copy` and `ask-retry` are the
    same buttons that used to sit under every bubble -- moved, not rebuilt --
    so this only changes the box around them. */

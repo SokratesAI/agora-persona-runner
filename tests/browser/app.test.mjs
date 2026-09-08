@@ -6859,28 +6859,48 @@ describe("an attachment renders as what it is", () => {
   });
 });
 
+/* Open the capture box's one sheet and wait for it.
+ *
+ * The project list arrives a round trip after the tap -- the sheet is built
+ * inside that `then` -- so a test that read `.msg-sheet-body` straight after
+ * the click would find it empty. */
+async function openCaptureSheet(window) {
+  click(window, window.document.getElementById("capture-type"));
+  for (let i = 0; i < 40 && !window.document.querySelector(".msg-sheet-body .capture-btn"); i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 describe("the capture row does not scramble", () => {
-  test("the row runs type, project, attach, priority, submit", async () => {
+  test("the row runs type, attach, send -- and nothing else", async () => {
     const window = await loadSite("/");
     const group = window.document.querySelector(".capture-submit");
     assert.ok(group, "the buttons are no longer grouped");
     const kids = [...group.children];
-    /* His ask, 2026-09-08: the three destination buttons became one type
-     * button plus a project button, priority and attach "stay like they
-     * are", and Submit goes "all the way to the right". Still five
-     * children and still an exact count, because the point of this test
-     * has not changed: nothing appears in this row without someone
+    /* His screenshot, 2026-09-08: five controls in this row and the
+     * leftmost one cut off the side of a 390px phone. *"Maybe its better
+     * to just fold them all into one modal. So the capture box now shows 3
+     * buttons: the submit (change this to say 'send'), the + button to
+     * upload files and images and a button that opens the modal that now
+     * contains the type, project and priority selector."*
+     *
+     * Still an exact count, because the point of this test has not changed
+     * across three redesigns: nothing appears in this row without someone
      * deciding where it goes. The attach button was once prepended here
      * and every substring test in the suite stayed green. */
     assert.deepEqual(
       kids.map((el) => el.id || el.className.trim()),
-      ["capture-type", "capture-project", "attach-btn", "capture-prio", "capture-send"],
+      ["capture-type", "attach-btn", "capture-send"],
       "the capture row is scrambled",
     );
     assert.equal(
       group.lastElementChild.id, "capture-send",
-      "Submit is not the last (rightmost) item in the row",
+      "Send is not the last (rightmost) item in the row",
     );
+    assert.equal(window.document.getElementById("capture-send").textContent, "Send",
+      "the button still says Submit");
+    assert.equal(window.document.getElementById("capture-project"), null,
+      "the project button is still on the row it was folded out of");
   });
 
   test("the picker keeps a label a screen reader and a reader can both find", async () => {
@@ -7218,13 +7238,14 @@ describe("the priority picker (buildPrioPicker)", () => {
    * Submit at the right. The load-bearing half is that choosing a type no
    * longer files anything -- two submit paths that can disagree about the
    * selected type is a capture filed as the wrong kind. */
-  test("the type sheet selects without submitting", async () => {
+  test("the type sheet selects without submitting, and stays open", async () => {
     const window = await loadSite("/issues");
     const box = window.document.getElementById("capture-text");
     box.value = "ship the thing";
     box.dispatchEvent(new window.Event("input"));
-    click(window, window.document.getElementById("capture-type"));
-    const rows = [...window.document.querySelectorAll(".msg-sheet-body .capture-btn")];
+    await openCaptureSheet(window);
+    const rows = [...window.document.querySelectorAll(".msg-sheet-body .capture-btn")]
+      .filter((r) => r.dataset.target);
     assert.deepEqual(
       rows.map((r) => r.dataset.target),
       ["issues", "ideas", "notes", "projects"],
@@ -7234,6 +7255,12 @@ describe("the priority picker (buildPrioPicker)", () => {
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.length, 0, "picking a type filed something");
     assert.equal(window.document.getElementById("capture-type").textContent, "Idea");
+    /* It holds three decisions now, so a tap must not take it away: he sets
+     * the type and then the project without opening it twice. */
+    assert.equal(window.document.querySelector(".msg-sheet").hidden, false,
+      "picking a type closed a sheet that still holds the project and the rating");
+    assert.equal(rows.find((r) => r.dataset.target === "ideas").getAttribute("aria-pressed"),
+      "true", "the sheet does not say which type it is set to");
   });
 
   test("Submit posts the chosen target, not the leftmost one", async () => {
@@ -7265,23 +7292,25 @@ describe("the priority picker (buildPrioPicker)", () => {
     const box = window.document.getElementById("capture-text");
     box.value = "the tool sheet drags wrong";
     box.dispatchEvent(new window.Event("input"));
-    click(window, window.document.getElementById("capture-project"));
-    // The list arrives one round trip after the tap, so the sheet is
-    // built in a `then` -- this is what waits for it.
-    for (let i = 0; i < 40 && !window.document.querySelector(".msg-sheet-body button"); i++) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    const rows = [...window.document.querySelectorAll(".msg-sheet-body button")];
+    await openCaptureSheet(window);
+    const rows = [...window.document.querySelectorAll(".msg-sheet-body .capture-btn")]
+      .filter((r) => !r.dataset.target);
     assert.deepEqual(rows.map((r) => r.textContent), ["No project", "Marcus", "Nova app"]);
     click(window, rows.find((r) => r.textContent === "Nova app"));
-    assert.equal(window.document.getElementById("capture-project").textContent, "Nova app");
+    assert.equal(rows.find((r) => r.textContent === "Nova app").getAttribute("aria-pressed"),
+      "true", "the sheet does not say which project it is set to");
     click(window, window.document.getElementById("capture-send"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.length, 1);
     assert.equal(window.posted[0].body.project, "Nova app");
     // Last-used, deliberately: he files three issues about one thing in a
-    // row, so the project survives a send where the rating does not.
-    assert.equal(window.document.getElementById("capture-project").textContent, "Nova app");
+    // row, so the project survives a send where the rating does not. Read
+    // back off the sheet, which is the only place it is shown now.
+    await openCaptureSheet(window);
+    assert.equal(
+      [...window.document.querySelectorAll(".msg-sheet-body .capture-btn")]
+        .find((r) => r.textContent === "Nova app").getAttribute("aria-pressed"),
+      "true", "the project did not survive the send");
   });
 
   test("Submit is inert on an empty box and wakes on a keystroke", async () => {

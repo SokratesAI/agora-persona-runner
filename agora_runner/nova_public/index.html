@@ -135,18 +135,22 @@
     <div class="capture-actions">
       <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
       <div class="capture-submit">
-        <!-- One button per row of the row he types into, left to right:
-             what kind of thing this is, which project it belongs to, how
-             urgent, an image, and then Submit hard against the right
-             edge. His ask, 2026-09-08, with a screenshot. The priority
-             and attach controls are inserted between `capture-project`
-             and `capture-send` by `app.js`, which is where they have
-             always been built. -->
+        <!-- Three controls, and that is the whole row. His ask, 2026-09-08,
+             with a screenshot of the five that were there: *"the new
+             capture box buttons are out of screen. Maybe its better to
+             just fold them all into one modal. So the capture box now
+             shows 3 buttons: the submit (change this to say "send"), the
+             + button to upload files and images and a button that opens
+             the modal that now contains the type, project and priority
+             selector."*
+
+             `capture-type` is that modal's button and wears the current
+             type, because the type is the one of the three he needs to
+             read without opening anything. The attach `+` is inserted
+             before Send by `app.js`, where it has always been built. -->
         <button type="button" id="capture-type" class="capture-pick"
                 aria-haspopup="dialog" aria-expanded="false">Issue</button>
-        <button type="button" id="capture-project" class="capture-pick"
-                aria-haspopup="dialog" aria-expanded="false">No project</button>
-        <button type="button" id="capture-send" class="capture-send" disabled>Submit</button>
+        <button type="button" id="capture-send" class="capture-send" disabled>Send</button>
       </div>
     </div>
     <!-- The four types, as the buttons the bottom sheet shows. They live
