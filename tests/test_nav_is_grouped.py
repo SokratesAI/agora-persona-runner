@@ -61,9 +61,16 @@ PINNED = ["/", "/projects", "/issues", "/ideas"]
 #: 2026-08-27: *"i want them to be dropdowns and default closed so i can
 #: navigate more easily and we can easily add more pages of necessary
 #: without expanding the sidebar length too much."*
+#:
+#: `/replies` is the same shape and reached the same way: the journal with
+#: one predicate on it, linked from the unread-replies count in the header,
+#: which is drawn exactly when there is something to read there. It cannot
+#: be a sidebar row for a reason `/asks` does not have -- the predicate is
+#: this browser's read marks, so a permanent link would point at an empty
+#: page on every device that is caught up.
 from agora_runner import nova_site
 
-UNLINKED = {"/asks"}
+UNLINKED = {"/asks", "/replies"}
 
 
 def _nav_markup():

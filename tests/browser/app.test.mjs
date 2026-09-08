@@ -12365,10 +12365,11 @@ describe("unread replies are counted on the card and in the header", () => {
     assert.match(bubble(card).textContent, /^💬 1/);
     const badge = unreadBadge(window);
     assert.equal(badge.textContent, "1 new reply");
-    // A button, not a link into a card. See "the header badge opens the
-    // replies themselves" below for why that changed.
-    assert.equal(badge.tagName, "BUTTON");
-    assert.equal(badge.closest("a"), null);
+    // A link to `/replies` since 2026-09-08 -- see "the header badge is a
+    // link to /replies" below. It was a button between 08-26 and then, and
+    // an anchor into a single card before that.
+    assert.equal(badge.tagName, "A");
+    assert.equal(badge.getAttribute("href"), "/replies");
   });
 
   test("opening the drawer clears the card chip and the header badge together", async () => {
@@ -12468,7 +12469,7 @@ describe("unread replies are counted on the card and in the header", () => {
    * `spread()` is deliberately two cards rather than one -- a panel that only
    * ever holds one card's replies is the card drawer with extra steps, and the
    * failure he filed is specifically about replies scattered across cards. */
-  describe("the header badge opens the replies themselves", () => {
+  describe("the header badge is a link to /replies", () => {
     function spread() {
       const comments = JSON.parse(JSON.stringify(payload.comments));
       comments.byCycle["57"][1].replies = [
@@ -12476,82 +12477,126 @@ describe("unread replies are counted on the card and in the header", () => {
       ];
       return comments;
     }
-    const load = () =>
-      loadSite("/", {
-        comments: spread(),
-        install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
+    const marks = () =>
+      withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" });
+    const load = () => loadSite("/", { comments: spread(), install: marks() });
+
+    test("it is an anchor to /replies, not a button", async () => {
+      const window = await load();
+      const badge = unreadBadge(window);
+      assert.equal(badge.tagName, "A", "the badge is still a button");
+      assert.equal(badge.getAttribute("href"), "/replies");
+    });
+
+    test("no panel is drawn anywhere on the page", async () => {
+      /* His capture: a route *"instead of the inline panel it opens
+       * today"*. A panel left behind would be a second rendering of the
+       * same replies, which is the thing being deleted. */
+      const window = await load();
+      assert.equal(window.document.querySelector(".unread-panel"), null);
+      assert.equal(window.document.querySelector(".unread-reply"), null);
+    });
+
+    test("the badge still names the oldest card beside the count", async () => {
+      const window = await load();
+      assert.equal(unreadBadge(window).textContent, "2 new replies");
+      assert.match(window.document.getElementById("mail").textContent,
+        /oldest on cycle 55/);
+    });
+
+    test("nothing is marked read by the page the badge sits on", async () => {
+      /* The old tap marked everything read on arrival, before he had read
+       * a word of it. The marks move when a card's own drawer opens, which
+       * is the mechanism the count was always derived from. */
+      const window = await load();
+      const before = window.localStorage.getItem("nova.repliesRead.v1");
+      assert.ok(unreadBadge(window));
+      assert.equal(window.localStorage.getItem("nova.repliesRead.v1"), before);
+    });
+  });
+
+  /* `/replies` -- the route his capture of 2026-09-08 asked for.
+   *
+   * The one thing here that is unlike `/asks`: this filter cannot be
+   * computed on the server. Which replies he has seen lives in this
+   * browser's `localStorage`, so the page has to send the cycle numbers and
+   * therefore has to have the comments payload before it can ask for the
+   * journal at all. */
+  describe("the /replies route", () => {
+    function spread() {
+      const comments = JSON.parse(JSON.stringify(payload.comments));
+      comments.byCycle["57"][1].replies = [
+        { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
+      ];
+      return comments;
+    }
+    const marks = () =>
+      withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" });
+    function journalSpy() {
+      const asked = [];
+      return { asked, serve: (url) => { asked.push(url); return payload.journal; } };
+    }
+
+    test("it asks the journal for exactly the cycles that have unread replies", async () => {
+      const server = journalSpy();
+      await loadSite("/replies", {
+        comments: spread(), install: marks(), journal: server.serve,
       });
-    const panel = (window) => window.document.querySelector(".unread-panel");
-    const rows = (window) =>
-      Array.from(window.document.querySelectorAll(".unread-reply"));
-
-    test("nothing is open until he taps the badge", async () => {
-      const window = await load();
-      assert.equal(panel(window), null, "the panel drew itself uninvited");
+      assert.equal(server.asked.length, 1);
+      /* Newest card first, and both of them -- the set the badge counted.
+       * A window (`limit=`) here would be the page second-guessing a list
+       * it just computed. */
+      assert.match(server.asked[0], /\/api\/journal\?cycles=57,55$/);
     });
 
-    test("tapping it shows every unread reply, newest first", async () => {
-      const window = await load();
-      click(window, unreadBadge(window));
-      const shown = rows(window);
-      assert.equal(shown.length, 2, "the panel did not hold both cards' replies");
-      // Cycle 57's reply is stamped 16:30 and cycle 55's 13:12, so newest
-      // first means 57 leads -- the opposite of the badge, which names the
-      // oldest card because that is the one about to scroll out of the feed.
-      assert.equal(shown[0].getAttribute("href"), "/cycle/57");
-      assert.match(shown[0].textContent, /on it/);
-      assert.equal(shown[1].getAttribute("href"), "/cycle/55");
+    test("a card he has caught up on is not asked for", async () => {
+      const server = journalSpy();
+      await loadSite("/replies", {
+        comments: spread(),
+        install: withRepliesRead({ "55": "2026-08-09 13:12", "57": "2026-08-09 16:00" }),
+        journal: server.serve,
+      });
+      assert.match(server.asked[0], /\/api\/journal\?cycles=57$/);
     });
 
-    test("the reply carries the comment it answers", async () => {
-      /* A reply read outside its thread has lost its question. "on it" is not
-       * a message on its own. */
-      const window = await load();
-      click(window, unreadBadge(window));
-      const asked = rows(window)[0].querySelector(".unread-reply-asked");
-      assert.ok(asked, "the panel showed my answer with nothing it answered");
-      assert.equal(asked.textContent, spread().byCycle["57"][1].text);
+    test("it says how many cards it is showing, and offers the way back", async () => {
+      const window = await loadSite("/replies", {
+        comments: spread(), install: marks(),
+      });
+      const line = window.document.querySelector(".feed .empty");
+      assert.match(line.textContent, /cards have replies you have not read/);
+      assert.equal(window.document.querySelector(".feed a.back").getAttribute("href"), "/");
     });
 
-    test("opening it marks every one of them read, in one tap", async () => {
-      /* The half that was actually broken. Seven replies over seven cards was
-       * seven taps on seven drawers, several of them off the bottom of the
-       * feed, which is why the count stood while he had read them. */
-      const window = await load();
-      click(window, unreadBadge(window));
-      assert.equal(unreadBadge(window), null, "the badge survived him reading the replies");
-      const stored = JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"));
-      assert.equal(stored["55"], "2026-08-09 13:12");
-      assert.equal(stored["57"], "2026-08-09 16:30");
+    test("no pager, whatever the server says the total is", async () => {
+      /* Same call `/asks` makes: the page named its cards, so there is
+       * nothing older to fetch, and `total` is the cards found rather than
+       * the corpus. A pager here offers to load entries already on screen.
+       *
+       * The `total` is supplied deliberately. The default fixture predates
+       * pagination and carries none, so a test built on it draws no pager
+       * whatever the guard says -- which is a test whose result was
+       * guaranteed before it ran, and removing the guard proved it. */
+      const paged = { ...payload.journal, total: 400 };
+      const window = await loadSite("/replies", {
+        comments: spread(), install: marks(), journal: () => paged,
+      });
+      assert.equal(window.document.querySelector("button.more"), null);
     });
 
-    test("the cards' own chips clear with it", async () => {
-      /* Same tap, same marks. Leaving these lit until the next poll would be
-       * the app insisting on a reply he has open on screen, which is the
-       * complaint one feature over. */
-      const window = await load();
-      click(window, unreadBadge(window));
-      assert.equal(window.document.querySelector(".comment-unread"), null);
-      assert.equal(window.document.querySelector(".comment-toggle.has-unread"), null);
+    test("a comments read that fails says so rather than claiming he is caught up", async () => {
+      /* Everywhere else on this page a comments failure costs the bubbles
+       * and not the feed. Here it costs the feed too, because there is no
+       * set of cycles to ask for -- so it has to be said out loud. */
+      const window = await loadSite("/replies", { failComments: true, install: marks() });
+      assert.match(window.document.querySelector(".feed").textContent,
+        /Could not tell which replies are unread/);
     });
 
-    test("the panel stays up after the badge it came from is gone", async () => {
-      /* The one that decides whether this is usable at all. The tap marks
-       * everything read, so a panel rebuilt from a fresh `unreadSummary` would
-       * find nothing unread and draw empty -- over the message he just asked
-       * to see. It renders from the items captured at the tap instead. */
-      const window = await load();
-      click(window, unreadBadge(window));
-      assert.ok(panel(window), "the panel vanished with the badge");
-      assert.equal(rows(window).length, 2);
-    });
-
-    test("closing it puts the header back to a normal, caught-up line", async () => {
-      const window = await load();
-      click(window, unreadBadge(window));
-      click(window, window.document.querySelector(".unread-panel-close"));
-      assert.equal(panel(window), null, "close left the panel up");
-      assert.equal(unreadBadge(window), null, "the badge came back on replies he has read");
+    test("the search box is hidden, the same as it is on /asks", async () => {
+      const window = await loadSite("/replies", { comments: spread(), install: marks() });
+      const box = window.document.querySelector(".journal-search");
+      assert.ok(!box || box.hidden, "a second filter was offered over a filter");
     });
   });
 
@@ -12596,14 +12641,12 @@ describe("unread replies are counted on the card and in the header", () => {
       assert.equal(window.document.querySelector("#status .badge-unread"), null);
     });
 
-    test("tapping it reads the replies and marks them, off the journal too", async () => {
+    test("it links to /replies from a board page too", async () => {
+      /* The badge lives outside the header precisely so it survives a page
+       * that is not the journal; the link has to survive with it, or the
+       * count on Issues is a number pointing nowhere. */
       const window = await onIssues();
-      click(window, unreadBadge(window));
-      const rows = Array.from(window.document.querySelectorAll(".unread-reply"));
-      assert.equal(rows.length, 2, "the panel did not open on a board page");
-      assert.equal(unreadBadge(window), null, "the badge survived him reading the replies");
-      const stored = JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"));
-      assert.equal(stored["57"], "2026-08-09 16:30");
+      assert.equal(unreadBadge(window).getAttribute("href"), "/replies");
     });
 
     test("nothing unread leaves the node hidden rather than an empty gap", async () => {
