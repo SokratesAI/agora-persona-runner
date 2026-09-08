@@ -647,3 +647,32 @@ def test_main_searches_before_it_grades_not_after(monkeypatch, capsys):
     assert status == 0
     assert "FILED UNDER THE WRONG NUMBER" in out
     assert "filed as cycle 1184" in out
+
+
+def test_all_does_not_raise_on_a_misfiled_cycle():
+    """`--all` widens the window, it does not change what a verdict means.
+
+    `misfiled` is non-raising only by being absent from `RAISING_VERDICTS`,
+    so nothing else pins it -- a special case under `raise_all` would go
+    uncaught. My reviewer found this hole."""
+    results = [row(366, "misfiled", recent=False)]
+    assert format_report(results, 1230, None, raise_all=True)[1] == 0
+
+
+def test_the_rate_split_counts_a_misfiled_cycle_as_a_gap_and_names_the_cause():
+    """`apply_misfiled` mutates the list `--split-at` then reads, so the
+    idea #170 rate is downstream of the downgrade. The gap COUNT must not
+    move -- a misfiled cycle still has no entry under its own number, and
+    that is what the rate measures -- while the verdict breakdown must,
+    because that docstring keeps the causes apart on purpose and `lost`
+    and `misfiled` are different causes. My reviewer found this."""
+    results = [row(1183, "lost")]
+    conversations = {1183: {"createdAt": "2026-09-08T09:00:00Z"},
+                     1184: {"createdAt": "2026-09-08T10:00:00Z"}}
+    split = datetime(2026, 9, 8, 8, 0, tzinfo=timezone.utc)
+    before = rate_split(results, conversations, split, 1230)
+    apply_misfiled(results, [(1183, 1184)])
+    after = rate_split(results, conversations, split, 1230)
+    assert before["after"]["gaps"] == after["after"]["gaps"] == 1
+    assert before["after"]["verdicts"]["lost"] == 1
+    assert after["after"]["verdicts"] == {"misfiled": 1}

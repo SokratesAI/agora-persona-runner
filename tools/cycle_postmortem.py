@@ -726,7 +726,11 @@ def apply_misfiled(results, pairs):
 #: The verdicts that mean "this gap is not explained, or the work it did
 #: is not in the record". `failed`, `silent` and `absent` are all Agora
 #: giving a definite answer that the run did not complete, so there is
-#: nothing to go and find; the three below each leave a real question
+#: nothing to go and find. `misfiled` is the one non-raising verdict where
+#: the run DID complete and its work IS in the record -- under the next
+#: cycle's number, which is where `find_misfiled` says it is, and which
+#: historical entries are never renumbered to correct. `still running` is
+#: not an outcome at all. The three below each leave a real question
 #: open. The docstring's contract is that 0 means every gap in the window
 #: is explained, and `unjudged` is by its own name the opposite of that --
 #: my reviewer found it exiting 0, which would make the day Agora grows a
