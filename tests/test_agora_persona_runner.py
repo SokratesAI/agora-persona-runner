@@ -6652,6 +6652,52 @@ def test_a_passage_sent_whole_is_untouched():
     assert fold_text_streams(messages) == messages
 
 
+def test_a_retraction_in_one_turn_leaves_the_next_turns_narration_alone():
+    """The bug behind *"69 tools but generated no text output for me to
+    understand what you are actually doing"* (his report, 2026-09-08).
+
+    The bridge numbers streams per turn and starts again at `text-1` on the
+    next one, so an id is unique inside a turn and repeats across the
+    window. This function keyed on the id alone -- and the LAST passage of
+    every turn is the reply, which arrives retracted. So one retraction
+    withdrew every passage sharing that id in the whole window.
+
+    Measured on his live thread the same morning: 501 rows carried 41
+    passages between exactly two ids, both of which were retracted
+    somewhere. All 41 were dropped, and the drawer showed nothing but tool
+    calls.
+    """
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        # Turn one: a passage, then the reply, withdrawn because the bubble
+        # underneath is carrying it.
+        _step("m1", "reading the sheet.", "text-1"),
+        _step("m2", "", "text-1", retracted=True),
+        {"id": "reply-1", "sender": "Nova", "text": "Fixed."},
+        {"id": "his-1", "sender": "Edvard", "text": "and the other one?"},
+        # Turn two, numbering restarted. This passage is nobody's reply.
+        _step("m3", "checking the other one.", "text-1"),
+    ])
+    assert [m["id"] for m in folded] == ["reply-1", "his-1", "m3"], (
+        "a retraction in an earlier turn withdrew a later turn's narration")
+
+
+def test_a_stream_does_not_fold_across_a_turn_boundary():
+    """The other half of the same rule. Two turns' `text-1` are two
+    passages, not one passage streamed in two steps -- folding them would
+    put the second turn's prose into the first turn's slot and lose one of
+    them."""
+    from agora_runner.audit import fold_text_streams
+    folded = fold_text_streams([
+        _step("m1", "first turn.", "text-1"),
+        {"id": "reply-1", "sender": "Nova", "text": "done."},
+        _step("m2", "second turn.", "text-1"),
+    ])
+    assert [m["id"] for m in folded] == ["m1", "reply-1", "m2"]
+    assert folded[0]["activity"]["detail"] == "first turn."
+    assert folded[2]["activity"]["detail"] == "second turn."
+
+
 def test_two_passages_do_not_fold_into_each_other():
     from agora_runner.audit import fold_text_streams
     folded = fold_text_streams([
