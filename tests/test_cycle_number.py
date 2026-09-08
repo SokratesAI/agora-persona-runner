@@ -323,17 +323,65 @@ def test_main_prints_only_the_number_on_stdout(monkeypatch, capsys):
     assert out.err.strip() == ""
 
 
-def test_main_without_a_conversation_id_warns_that_the_number_may_not_be_yours(monkeypatch, capsys):
-    """The failure this fixes looked exactly like success, so the one call
-    that can still produce a duplicate says so."""
+def test_main_refuses_when_no_conversation_id_is_given_at_all(monkeypatch, capsys):
+    """The cause of the 39 misfiled entries `cycle_postmortem.misfiled_entries`
+    measured on 2026-09-08. A warning on stderr did not stop anything: a
+    `$(...)` capture drops stderr, and stdout carried a plausible integer. So
+    the number is withheld, the same way a wrong id has been withheld since
+    #907."""
     monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
         200, {"conversations": [conv("Nova — Cycle 380", id="conv-380")]}
     ))
     monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1"])
+    assert cycle_number.main() == 4
+    out = capsys.readouterr()
+    # Nothing on stdout: a caller substituting this must not capture 380.
+    assert out.out.strip() == ""
+    assert "380" not in out.out
+    assert "AGORA_CONVERSATION_ID" in out.err
+
+
+def test_main_refuses_an_empty_conversation_id_the_same_way(monkeypatch, capsys):
+    """`cycle_number hb "$AGORA_CONVERSATION_ID"` on a bridge that exports
+    nothing interpolates to an empty argument, which is the accident rather
+    than a decision -- so it takes the refusal, not the fallback."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [conv("Nova — Cycle 380", id="conv-380")]}
+    ))
+    monkeypatch.setattr("sys.argv", ["cycle_number", "hb-1", ""])
+    assert cycle_number.main() == 4
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_the_deliberate_fallback_still_answers_and_still_warns(monkeypatch, capsys):
+    """An old bridge really can have no id to give (agora-claude-bridge#72),
+    and a rotation bug must never be the reason a cycle does not run. Asked
+    for by name, the highest number is still handed over -- with the warning
+    it always carried."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [conv("Nova — Cycle 380", id="conv-380")]}
+    ))
+    monkeypatch.setattr(
+        "sys.argv", ["cycle_number", "hb-1", cycle_number.NO_CONVERSATION_ID])
     assert cycle_number.main() == 0
     out = capsys.readouterr()
     assert out.out.strip() == "380"
     assert "concurrent cycles will collide" in out.err
+
+
+def test_the_sentinel_is_not_treated_as_a_conversation_id(monkeypatch, capsys):
+    """The precondition the test above cannot assert on its own: if the
+    sentinel were passed through as an id, no conversation would carry it and
+    the run would exit 3 rather than falling back. Asserting exit 0 alone
+    passes for either reason, so the negative is named here."""
+    monkeypatch.setattr(cycle_number, "agora_get", lambda path: (
+        200, {"conversations": [conv("Nova — Cycle 380", id="conv-380")]}
+    ))
+    monkeypatch.setattr(
+        "sys.argv", ["cycle_number", "hb-1", cycle_number.NO_CONVERSATION_ID])
+    assert cycle_number.main() != 3
+    assert cycle_number.current_number_with_source(
+        "hb-1", cycle_number.NO_CONVERSATION_ID) == (380, "unknown-conversation")
 
 
 def test_current_number_with_source_names_how_it_got_the_number(monkeypatch):
