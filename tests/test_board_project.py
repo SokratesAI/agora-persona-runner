@@ -67,7 +67,7 @@ def test_setting_a_project_adds_the_header_without_renaming_the_others():
     # to be setting -- a header that is wider than the data rows renders
     # fine, and one that is narrower silently eats the last cell.
     assert header == ("| # | Idea | Status | Updated | Priority | Project "
-                      "| Size | Milestone |")
+                      "| Size | Milestone | Order |")
     assert rows(written)[57]["project"] == "Sokrates Post"
     # The `## Done` header is a different table and must not have moved.
     assert "| # | Item | Landed | Where |" in written

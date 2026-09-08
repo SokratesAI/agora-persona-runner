@@ -1666,7 +1666,9 @@ def parse_board(markdown):
     `captureReplies` is parallel to it, holding the cycle replies written
     under each bullet.
     An item is `{number, title, status, statusKey, updated, where, priority,
-    priorityKey, project, size, sizeKey, done}`;
+    priorityKey, project, size, sizeKey, milestone, order, done}`;
+    `order` is the 1-based seat inside the row's milestone, or `None` for a
+    row nobody has placed by hand;
     `where` is only ever set from the `## Done` table's fourth column,
     which names the PRs a thing landed in.
     """
@@ -1739,6 +1741,16 @@ def parse_board(markdown):
                 # and every row on both boards is one today.
                 milestone = cells[7] if (not done and len(cells) > 7) else ""
                 milestone = milestone.strip()
+                # `Order` is a ninth column, appended on the same terms as
+                # the four before it. `None` and `0` are different answers
+                # here for the same reason they are on the projects table:
+                # a row he has never dragged has no position at all and
+                # ranks by its rating, which is what leaves every row on
+                # both boards behaving exactly as it does today on the day
+                # this ships. `## Done` never carries one -- a position in
+                # a queue is a statement about work still to do.
+                order = parse_project_order_cell(
+                    cells[8] if (not done and len(cells) > 8) else "")
                 items.append({
                     "number": number,
                     "title": cells[1],
@@ -1752,6 +1764,7 @@ def parse_board(markdown):
                     "size": size,
                     "sizeKey": size_key(size),
                     "milestone": milestone,
+                    "order": order,
                     "done": done,
                 })
             continue
@@ -1851,6 +1864,18 @@ _SIZE_HEADING = "Size"
 #: `Backup` milestone and they are different milestones.
 _MILESTONE_HEADING = "Milestone"
 
+#: The ninth, on the same terms as the four before it. His capture of
+#: 2026-09-08: *"Lets me organise/sort the milestones and tasks aswell.
+#: Convert the old priority to the ordered list so high is at the top and
+#: low is at the bottom."* A position he set by hand is a decision and a
+#: rating is a description, which is why the position outranks the rating
+#: in `nova_next.rank` -- the same layering `project_ranks` has used since
+#: milestone M3. The position is scoped to the row's **milestone**, not to
+#: the board: he orders tasks inside a milestone, and a hand-maintained
+#: 1..400 ordering across a whole board is not a thing anybody would keep
+#: current.
+_ORDER_HEADING = "Order"
+
 #: The headings this module appends, in column order, starting at the fifth
 #: cell -- the first four are the owner's own and are never renamed. Named
 #: as a sequence rather than as one constant per column because
@@ -1859,13 +1884,13 @@ _MILESTONE_HEADING = "Milestone"
 #: was being appended and silently wrong the moment a second was: widening
 #: a four-cell header would have written an unlabelled `Priority` column.
 _APPENDED_HEADINGS = ("Priority", _PROJECT_HEADING, _SIZE_HEADING,
-                      _MILESTONE_HEADING)
+                      _MILESTONE_HEADING, _ORDER_HEADING)
 
 #: Where `_APPENDED_HEADINGS` starts, in zero-based cell positions.
 _FIRST_APPENDED = 4
 
-#: How wide a `## Board` row is once it carries a project, a size and a
-#: milestone.
+#: How wide a `## Board` row is once it carries a project, a size, a
+#: milestone and a hand-set position.
 _BOARD_WIDTH = _FIRST_APPENDED + len(_APPENDED_HEADINGS)
 
 
@@ -2139,6 +2164,98 @@ def parse_project_meta(markdown):
                 cells[7] if len(cells) > 7 else ""),
         }
     return out
+
+
+def set_row_order(markdown, number, position):
+    """Place one `## Board` row at `position` inside its milestone, 1-based.
+
+    His capture of 2026-09-08, the half that did not ship the same evening:
+    *"Lets me organise/sort the milestones and tasks aswell. Convert the old
+    priority to the ordered list so high is at the top and low is at the
+    bottom."* Milestones already reorder; a row had no position at all, so
+    inside a milestone the only ordering was the rating -- which is the
+    thing he is asking to stop deciding the order.
+
+    **The group is the (project, milestone) pair, not the board.** He orders
+    tasks inside a milestone, and a hand-kept 1..400 ordering across a whole
+    board is one nobody would maintain. Two projects may each have a
+    `Backup` milestone and they are different groups, the same scoping
+    `set_row_milestone` documents.
+
+    **The first placement numbers the whole group, not just the row moved,
+    and the seed is the ranking the picker used before this existed** --
+    rating first, then the order the rows already sit in. That is
+    `set_project_order`'s rule one level down, and it is also the migration
+    the spec asks for, performed per milestone at the moment he first drags
+    one: after it, "high at the top and low at the bottom" is written into
+    the cells where he can see it and edit it, rather than being re-derived
+    from a rating every time something is ranked.
+
+    Returns the new markdown, or `None` if refused: no open `## Board` row
+    carries that number, the row is closed (a position in a queue is a
+    statement about work still to do -- the same boundary `set_row_size`
+    and `set_row_milestone` draw), or `position` is outside `1..N` for the
+    group. `0` is refused rather than treated as "unplace": clearing one
+    row's position while its neighbours keep theirs leaves a group that is
+    half ordered by hand and half by rating, which is not a state anything
+    here can render honestly.
+    """
+    try:
+        position = int(position)
+    except (TypeError, ValueError):
+        return None
+
+    board = parse_board(markdown or "")
+    open_rows = [item for item in board["items"]
+                 if not item["done"]
+                 and status_key(item["status"]) not in _CLOSED_STATUS_KEYS]
+    target = next((item for item in open_rows if item["number"] == number), None)
+    if target is None:
+        return None
+
+    def group_key(item):
+        return ((item.get("project") or "").strip().lower(),
+                (item.get("milestone") or "").strip().lower())
+
+    group = [item for item in open_rows if group_key(item) == group_key(target)]
+    if position < 1 or position > len(group):
+        return None
+
+    rank = {key: index for index, key in enumerate(PRIORITY_ORDER)}
+    floor = max([item["order"] for item in group if item["order"]] or [0])
+    seeded = sorted(
+        range(len(group)),
+        # A row he has already placed keeps its seat; an unplaced one falls
+        # in behind by rating, then by the order the table already lists it
+        # in. Unrated sorts last inside the unplaced block rather than
+        # between medium and low -- unlike `rank_projects`, which had to
+        # cope with every project being unrated on the day it shipped, both
+        # boards are fully rated and an unrated row here is one nobody has
+        # looked at.
+        key=lambda i: (group[i]["order"]
+                       if group[i]["order"]
+                       else floor + 1 + rank.get(group[i]["priorityKey"],
+                                                 len(PRIORITY_ORDER))),
+    )
+
+    moving = seeded.index(next(i for i, item in enumerate(group)
+                               if item["number"] == number))
+    which = seeded.pop(moving)
+    seeded.insert(position - 1, which)
+
+    lines = (markdown or "").split("\n")
+    for seat, i in enumerate(seeded, start=1):
+        index, cells = _row_span(lines, group[i]["number"], tables=("board",))
+        if index is None:
+            return None
+        # Padded up to the new width rather than refused, the same way
+        # `set_row_milestone` pads a row that predates *its* column.
+        while len(cells) < _BOARD_WIDTH:
+            cells.append("")
+        cells[8] = str(seat)
+        lines[index] = "| " + " | ".join(cells) + " |"
+        _ensure_board_columns(lines, index)
+    return "\n".join(lines)
 
 
 def parse_project_order_cell(cell):

@@ -205,6 +205,11 @@ def open_rows(markdown, board):
             "size": item.get("size") or "",
             "sizeKey": item.get("sizeKey") or "",
             "milestone": (item.get("milestone") or "").strip(),
+            # The hand-set seat inside that milestone. Carried for the same
+            # reason `milestone` is, and the comment above is the warning:
+            # `rank` reads this, so dropping it here would leave the whole
+            # ordering tier doing nothing with no symptom on the page.
+            "order": item.get("order"),
             "slug": slug_for_row(board, item["number"]),
             # Named after his comment, not after the row -- see
             # `slug_for_comment`. `None` on a row nobody is waiting on, so
@@ -580,6 +585,17 @@ def rank(rows, projects=None, milestones=None):
             ((r.get("project") or "").strip().lower(),
              (r.get("milestone") or "").strip().lower()),
             len(milestones or {})),
+        # **The hand-set position inside the milestone, and the rating only
+        # underneath it.** His capture of 2026-09-08: *"Convert the old
+        # priority to the ordered list so high is at the top and low is at
+        # the bottom."* Same layering as the project tier three keys up --
+        # a seat he set by hand is a decision and a rating is a
+        # description -- and the same fallback, so a group he has never
+        # dragged ranks exactly as it does today. An unplaced row sinks
+        # below every placed one **in its own milestone** rather than below
+        # the whole board: the tier above has already separated the groups,
+        # so an unplaced row only ever competes with its own neighbours.
+        (0, r["order"]) if r.get("order") else (1, 0),
         _RANK.get(r["priorityKey"], len(_RANK)),
         age_key(r["updated"]),
         0 if r["board"] == "issue" else 1,
