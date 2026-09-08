@@ -109,9 +109,19 @@ def _bridge_never_took_it(exc):
     request was accepted is deliberately not in here: from this side it is
     indistinguishable from the refusal above, and retrying it would ask a
     live pod to run the same turn a second time.
+
+    `BrokenPipeError` is the third state the owner's capture names, and it
+    is safe for a narrower reason than the other two rather than the same
+    one. EPIPE is raised only by a *write* to a socket the peer has already
+    closed, and `http.client` makes no write after the request body on a
+    non-chunked POST -- so an EPIPE here means some of our bytes never
+    arrived, the bridge's Content-Length is unsatisfied, and it has no
+    complete request to run. The moment a full request has landed there is
+    nothing left for us to write, so the failure surfaces as a reset on the
+    *read* instead, which is the case above and stays out.
     """
     reason = getattr(exc, "reason", exc)
-    return isinstance(reason, (ConnectionRefusedError, socket.gaierror))
+    return isinstance(reason, (ConnectionRefusedError, BrokenPipeError, socket.gaierror))
 
 
 def _post_generate(body, headers, timeout):

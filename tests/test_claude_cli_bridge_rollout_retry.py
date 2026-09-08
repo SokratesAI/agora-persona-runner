@@ -77,6 +77,30 @@ def test_a_name_that_does_not_resolve_is_offered_the_turn_again(monkeypatch):
     assert len(calls) == 2
 
 
+def test_a_broken_pipe_while_sending_is_offered_the_turn_again(monkeypatch):
+    """The third state the owner's capture names. EPIPE is only ever raised
+    by a write, and `http.client` makes no write after the body on a
+    non-chunked POST, so the bridge's Content-Length is unsatisfied and it
+    has no complete request to run."""
+    text, calls = _generate(monkeypatch, [
+        urllib.error.URLError(BrokenPipeError(32, "Broken pipe")),
+        (200, {"text": "answered by the replacement pod"}),
+    ])
+    assert text == "answered by the replacement pod"
+    assert len(calls) == 2
+
+
+def test_a_broken_pipe_and_a_reset_are_judged_separately(monkeypatch):
+    """Both are `ConnectionError`s and it would be one line to catch the
+    base class. That line would retry a reset, which can mean a live pod is
+    running the turn -- so this asserts the two verdicts differ, which
+    catching `ConnectionError` cannot satisfy."""
+    pipe = urllib.error.URLError(BrokenPipeError(32, "Broken pipe"))
+    reset = urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+    assert claude_cli._bridge_never_took_it(pipe) is True
+    assert claude_cli._bridge_never_took_it(reset) is False
+
+
 def test_a_reset_after_the_request_was_accepted_is_not_retried(monkeypatch):
     """The failure this loop must NOT paper over. A reset can mean the pod
     took the turn and is running it, so offering it again would ask a live
