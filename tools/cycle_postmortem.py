@@ -44,6 +44,15 @@ work happen**:
   do. This is a downgrade of `lost` applied after the search rather than
   a verdict `judge` can reach on its own -- it takes reading the entry
   and the reply of two different cycles to know.
+* `unnumbered` --- `lost`, except the run's record is in the journal
+  folder under a name that is not a cycle number at all. Two of the seven
+  `lost` cycles were this on 2026-09-09: 265 and 276 each wrote an
+  eight-cycle report (`319-report-256-263.md`, `330-report-268-274.md`)
+  and no entry, and `entryless` cannot see either because it reads
+  `file_cycle`, which parses `-cycle-M` and nothing else. Located by
+  `find_unnumbered` on the document's own Oslo stamp against the run's
+  window, so the gap between 275 and 277 -- which holds two lost cycles
+  and one document -- resolves to 276 rather than to a coin toss.
 * `silent` --- a conversation exists and the heartbeat never spoke in
   it. Agora's own system notices about other cycles do not count as
   speaking; see `run_messages`.
@@ -57,9 +66,9 @@ outcome yet, and it spoke a moment ago -- three cycles overlap, so the
 newest few legitimately have none).
 
 **`lost`, `cut off` and `unjudged` raise the exit status; `failed`,
-`misfiled`, `silent`, `absent` and `still running` do not.** The line is whether the
+`misfiled`, `unnumbered`, `silent`, `absent` and `still running` do not.** The line is whether the
 gap is *explained*: the three that raise each leave a real question open,
-and the four that do not are Agora giving a definite answer that the run
+and the five that do not are Agora giving a definite answer that the run
 did not complete, or has not finished yet. A check that goes red on
 history is red forever, which is the call `security_alerts` makes on an
 already-fixed advisory and `argocd_health` makes on a stale Job failure.
@@ -130,7 +139,7 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID  # noqa: E402
 from agora_runner.conversation_rotation import cycle_tag  # noqa: E402
 from agora_runner.cycle_health import MAX_CYCLE_MINUTES, missing_cycles  # noqa: E402
-from agora_runner.nova_journal import file_cycle  # noqa: E402
+from agora_runner.nova_journal import entry_seq, file_cycle  # noqa: E402
 from agora_runner.cycle_number import _NAME_RE  # noqa: E402
 from agora_runner.heartbeat_liveness import AGORA_PUBLIC  # noqa: E402
 
@@ -513,6 +522,23 @@ def _created(conversation):
         return None
 
 
+def _spoke_last(conversation):
+    """A conversation's `lastMessageAt` as a datetime, or `None`.
+
+    The closing line Agora writes is a message, so this is the end of the
+    run as Agora saw it. Paired with `_created` it is the run's window
+    without parsing a duration string out of prose -- `find_unnumbered`
+    joins a document's own clock against it.
+    """
+    stamp = (conversation or {}).get("lastMessageAt")
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 def rate_split(results, conversations, split_at, newest):
     """Entryless rate either side of an instant, over matched-length windows.
 
@@ -706,6 +732,170 @@ def find_misfiled(results, conversations, paths, read_entry=None, fetch=None):
     return misfiled_entries(lost, _LazyMap(entry), _LazyMap(reply))
 
 
+#: The Oslo-stamped heading every document in `nova/journal/` opens with,
+#: e.g. `### 2026-08-17 14:07 (Oslo) — Report · Cycles 256–263`. Minute
+#: resolution, local time, and it is the only statement a document makes
+#: about when it was written -- the vault carries no per-document mtime
+#: this check can read.
+_DOC_STAMP_RE = re.compile(
+    r"^###\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2})\s*\(Oslo\)", re.M)
+
+#: Oslo is UTC+2 in summer and UTC+1 in winter, and every document this
+#: joins against was written in the summer half. `zoneinfo` is the honest
+#: converter and it is in the standard library, so there is no table here.
+_OSLO = "Europe/Oslo"
+
+
+def document_written_at(text):
+    """When a journal document says it was written, as UTC, or `None`.
+
+    `None` for a document with no `### <date> <time> (Oslo)` heading, and
+    that is not a fallback to guess from: a document that does not stamp
+    itself cannot be joined to a run, and saying so is the finding.
+    """
+    match = _DOC_STAMP_RE.search(text or "")
+    if not match:
+        return None
+    date, hour, minute = match.group(1), int(match.group(2)), int(match.group(3))
+    try:
+        from zoneinfo import ZoneInfo
+        local = datetime.fromisoformat(date).replace(
+            hour=hour, minute=minute, tzinfo=ZoneInfo(_OSLO))
+    except (ValueError, KeyError, ImportError):
+        return None
+    return local.astimezone(timezone.utc)
+
+
+def unnumbered_candidates(paths, lost):
+    """`{cycle number: [path, ...]}` -- documents that could be a lost cycle's.
+
+    A candidate is a journal document whose filename does **not** parse as
+    `NNN-cycle-M.md` and whose sequence number falls in the gap a lost
+    cycle sits in -- between the last numbered entry below it and the
+    first above it. The sequence prefix exists to make a lexical sort
+    chronological (`nova_journal.entry_filename`), so the gap is a real
+    time window and narrowing by it first is what keeps this to a handful
+    of vault reads instead of one per document in the folder.
+
+    Position is only the shortlist. It cannot decide *which* lost cycle
+    wrote a document, because one gap can hold two lost cycles and one
+    document -- 275 and 276 do, around `330-report-268-274.md` -- so the
+    same document is offered to both and `find_unnumbered` settles it on
+    the clock.
+    """
+    numbered = {}
+    others = []
+    for path in paths or []:
+        number = file_cycle(path)
+        if number is None:
+            others.append(path)
+        else:
+            numbered.setdefault(number, entry_seq(path))
+    if not numbered:
+        return {}
+    found = {}
+    for cycle in sorted(lost or ()):
+        below = [seq for n, seq in numbered.items() if n < cycle]
+        above = [seq for n, seq in numbered.items() if n > cycle]
+        low = max(below) if below else -1
+        high = min(above) if above else None
+        window = [path for path in others
+                  if entry_seq(path) > low
+                  and (high is None or entry_seq(path) < high)]
+        if window:
+            found[cycle] = sorted(window, key=entry_seq)
+    return found
+
+
+def find_unnumbered(results, conversations, paths, read_entry=None):
+    """`[(number, path), ...]` for `lost` cycles whose document is in the folder.
+
+    The join is the document's own Oslo stamp against the conversation's
+    `createdAt`..`lastMessageAt` -- the run's real window, straight out of
+    Agora, with no duration parsing in between. **A document matching more
+    than one lost cycle is dropped rather than assigned**, because naming
+    one of two would be a guess wearing a measurement's clothes, and the
+    positional shortlist above deliberately offers the ambiguous case to
+    both.
+
+    Measured 2026-09-09 against the live folder: of the seven `lost`
+    cycles, 265 wrote `319-report-256-263.md` (stamped 14:07 Oslo inside a
+    run that opened at 12:00:01Z) and 276 wrote `330-report-268-274.md`
+    (06:53 Oslo, inside 04:39:01Z..05:04:38Z). That second one is the case
+    position alone gets wrong: the same gap holds cycle 275, whose window
+    closed at 03:44:54Z, an hour before the document was written.
+    """
+    lost = [row["number"] for row in results if row["verdict"] == "lost"]
+    if not lost:
+        return []
+    read_entry = _read_entry if read_entry is None else read_entry
+    candidates = unnumbered_candidates(paths, lost)
+    if not candidates:
+        return []
+    stamps = {}
+    for cycle_paths in candidates.values():
+        for path in cycle_paths:
+            if path in stamps:
+                continue
+            text = read_entry(path)
+            stamps[path] = document_written_at(text) if text is not None else None
+    claims = {}
+    for cycle, cycle_paths in candidates.items():
+        conversation = conversations.get(cycle) if conversations else None
+        opened = _created(conversation)
+        closed = _spoke_last(conversation)
+        if opened is None or closed is None:
+            continue
+        for path in cycle_paths:
+            written = stamps.get(path)
+            if written is None:
+                continue
+            if opened <= written <= closed:
+                claims.setdefault(path, []).append(cycle)
+    return sorted((cycles[0], path) for path, cycles in claims.items()
+                  if len(cycles) == 1)
+
+
+def format_unnumbered(pairs):
+    """The unnumbered block, or `[]` when there is nothing to say."""
+    if not pairs:
+        return []
+    lines = ["",
+             "WROTE A DOCUMENT UNDER ANOTHER NAME — the record is in the journal "
+             f"folder, not under a cycle number — {len(pairs)}"]
+    for number, path in pairs:
+        name = path.rsplit("/", 1)[-1]
+        lines.append(f"  Cycle {number} wrote `{name}`: its own Oslo stamp falls "
+                     f"inside {number}'s run window, and no other entryless cycle "
+                     "can claim it.")
+    lines.append("  Historical documents are never renamed — this says where the "
+                 "record is, it does not ask for a repair.")
+    return lines
+
+
+def apply_unnumbered(results, pairs):
+    """Downgrade every `lost` row whose document `find_unnumbered` located.
+
+    Same call `apply_misfiled` makes one function up, for the same reason:
+    `lost` raises because the gap is unexplained, and a run whose document
+    this report has just named is explained. It is a different fix from
+    `misfiled` and gets its own verdict -- that entry is under the wrong
+    number, this one is under no number at all, and merging them would
+    print a repair instruction that does not fit either.
+    """
+    located = dict((number, path) for number, path in pairs or ())
+    for row in results:
+        if row["verdict"] != "lost":
+            continue
+        path = located.get(row["number"])
+        if path is None:
+            continue
+        row["verdict"] = "unnumbered"
+        name = path.rsplit("/", 1)[-1]
+        row["detail"] = f"{row['detail']}; it wrote `{name}` instead of an entry"
+    return results
+
+
 def format_misfiled(pairs):
     """The misfiled block, or `[]` when there is nothing to say."""
     if not pairs:
@@ -778,6 +968,8 @@ _HEADINGS = (
      "cause is upstream of this loop."),
     ("misfiled", "FILED ONE NUMBER UP — the work is in the record, under the next "
                  "cycle's number"),
+    ("unnumbered", "WROTE SOMETHING ELSE — the run's record is in the journal folder "
+                   "under a name that is not a cycle number"),
     ("failed", "ENDED ON A RECORDED FAILURE — nothing to recover, the reason is Agora's own"),
     ("cut off", "STOPPED WITH NO CLOSING LINE — Agora never wrote an outcome for these"),
     ("silent", "NEVER SPOKE — a conversation with no message in it at all"),
@@ -890,10 +1082,16 @@ def main(argv=None):
     # is what the run on 2026-09-08 did.
     pairs = [] if error else find_misfiled(results, conversations, paths)
     apply_misfiled(results, pairs)
+    # After `misfiled`, because an entry filed one number up is a stronger
+    # answer than a document with no number at all: both explain the same
+    # gap, and only one of them names an entry with this cycle's work in it.
+    unnumbered = [] if error else find_unnumbered(results, conversations, paths)
+    apply_unnumbered(results, unnumbered)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all)
     if not error:
-        report = "\n".join([report] + format_misfiled(pairs))
+        report = "\n".join([report] + format_misfiled(pairs)
+                           + format_unnumbered(unnumbered))
     print(report)
     if split_at is not None and not error:
         print()

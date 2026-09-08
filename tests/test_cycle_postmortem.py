@@ -11,6 +11,8 @@ conversation on 2026-08-29, not one invented to match the regex.
 
 import pytest
 
+from tools import cycle_postmortem
+
 from tools.cycle_postmortem import (
     apply_misfiled,
     conversations_by_cycle,
@@ -798,3 +800,151 @@ def test_a_heading_with_no_note_prints_no_blank_indent():
     report, _ = format_report([row(506, "failed")], 1243, None)
     assert "\n    \n" not in report
     assert "    None" not in report
+
+
+# --- a lost cycle whose record is in the folder under another name ---------
+#
+# Two of the seven `lost` cycles on 2026-09-09 had written an eight-cycle
+# report and no entry. `entryless` reads `file_cycle`, which only parses
+# `-cycle-M`, so a document named anything else is invisible to it and the
+# run reads as having left no record at all.
+
+_REPORT_265 = "### 2026-08-17 14:07 (Oslo) — Report · Cycles 256–263\n\nbody\n"
+_REPORT_276 = "### 2026-08-20 06:53 (Oslo) — Report · Cycles 268–274\n\nbody\n"
+
+_JOURNAL = [
+    "j/318-cycle-264.md",
+    "j/319-report-256-263.md",
+    "j/320-cycle-266.md",
+    "j/329-cycle-274.md",
+    "j/330-report-268-274.md",
+    "j/331-cycle-277.md",
+]
+
+# The real windows, straight off Agora. 275 closed an hour before the
+# document in its own gap was written; 276 was still running.
+_CONVERSATIONS = {
+    265: {"createdAt": "2026-08-17T12:00:01.016Z",
+          "lastMessageAt": "2026-08-19T17:54:23.731Z"},
+    275: {"createdAt": "2026-08-20T03:27:01.476Z",
+          "lastMessageAt": "2026-08-20T03:44:54.751Z"},
+    276: {"createdAt": "2026-08-20T04:39:01.568Z",
+          "lastMessageAt": "2026-08-20T05:04:38.220Z"},
+}
+
+
+def _lost(*numbers):
+    return [{"number": n, "verdict": "lost", "detail": f"ran and replied", "messages": 1}
+            for n in numbers]
+
+
+def _read(path):
+    return {"j/319-report-256-263.md": _REPORT_265,
+            "j/330-report-268-274.md": _REPORT_276}.get(path)
+
+
+def test_document_written_at_converts_the_oslo_stamp_to_utc():
+    at = cycle_postmortem.document_written_at(_REPORT_265)
+    assert at is not None
+    assert at.isoformat() == "2026-08-17T12:07:00+00:00"
+
+
+def test_document_with_no_oslo_stamp_is_not_guessed_at():
+    assert cycle_postmortem.document_written_at("no heading here\n") is None
+    assert cycle_postmortem.document_written_at("### 2026-08-17 14:07 — Report") is None
+
+
+def test_candidates_are_the_documents_in_a_lost_cycle_s_sequence_gap():
+    found = cycle_postmortem.unnumbered_candidates(_JOURNAL, [265, 275, 276])
+    assert found[265] == ["j/319-report-256-263.md"]
+    # One gap, two lost cycles, one document -- offered to both on purpose.
+    assert found[275] == ["j/330-report-268-274.md"]
+    assert found[276] == ["j/330-report-268-274.md"]
+
+
+def test_candidates_exclude_documents_outside_the_gap():
+    found = cycle_postmortem.unnumbered_candidates(_JOURNAL, [265])
+    assert "j/330-report-268-274.md" not in found[265]
+
+
+def test_the_clock_decides_which_of_two_lost_cycles_wrote_the_document():
+    pairs = cycle_postmortem.find_unnumbered(
+        _lost(265, 275, 276), _CONVERSATIONS, _JOURNAL, read_entry=_read)
+    assert pairs == [(265, "j/319-report-256-263.md"),
+                     (276, "j/330-report-268-274.md")]
+    # 275 is left `lost`: its run closed at 03:44:54Z and the only document
+    # in its gap was written at 04:53Z.
+    assert 275 not in dict((n, p) for n, p in pairs)
+
+
+def test_a_document_two_cycles_could_both_claim_is_dropped():
+    both = dict(_CONVERSATIONS)
+    both[275] = {"createdAt": "2026-08-20T03:27:01.476Z",
+                 "lastMessageAt": "2026-08-20T05:10:00.000Z"}
+    pairs = cycle_postmortem.find_unnumbered(
+        _lost(275, 276), both, _JOURNAL, read_entry=_read)
+    assert pairs == []
+
+
+def test_nothing_is_read_when_no_cycle_came_back_lost():
+    reads = []
+
+    def counting(path):
+        reads.append(path)
+        return _REPORT_265
+
+    rows = [{"number": 265, "verdict": "misfiled", "detail": "x", "messages": 1}]
+    assert cycle_postmortem.find_unnumbered(
+        rows, _CONVERSATIONS, _JOURNAL, read_entry=counting) == []
+    assert reads == []
+
+
+def test_apply_unnumbered_downgrades_the_row_and_names_the_document():
+    rows = _lost(265, 275)
+    cycle_postmortem.apply_unnumbered(rows, [(265, "j/319-report-256-263.md")])
+    assert rows[0]["verdict"] == "unnumbered"
+    assert "319-report-256-263.md" in rows[0]["detail"]
+    assert rows[1]["verdict"] == "lost"
+
+
+def test_unnumbered_does_not_raise_the_exit_status():
+    assert "unnumbered" not in cycle_postmortem.RAISING_VERDICTS
+
+
+def test_unnumbered_has_a_heading_so_the_rows_are_printed():
+    assert "unnumbered" in dict((h[0], h[1]) for h in cycle_postmortem._HEADINGS)
+
+
+def test_format_unnumbered_names_the_cycle_and_the_file():
+    lines = cycle_postmortem.format_unnumbered([(276, "j/330-report-268-274.md")])
+    text = "\n".join(lines)
+    assert "Cycle 276 wrote `330-report-268-274.md`" in text
+    assert "never renamed" in text
+
+
+def test_format_unnumbered_is_silent_with_nothing_to_say():
+    assert cycle_postmortem.format_unnumbered([]) == []
+
+
+def test_a_document_written_before_the_run_opened_is_not_claimed():
+    # The gap is positional and a gap reaches backwards as well as
+    # forwards: the entry below `319-report-256-263.md` is cycle 264's, so
+    # a document 264 wrote sits in 265's shortlist too. Only the window's
+    # near edge separates them.
+    late = {265: {"createdAt": "2026-08-17T13:00:00.000Z",
+                  "lastMessageAt": "2026-08-17T18:00:00.000Z"}}
+    assert cycle_postmortem.find_unnumbered(
+        _lost(265), late, _JOURNAL, read_entry=_read) == []
+
+
+def test_a_document_that_does_not_stamp_itself_is_not_claimed():
+    paths = _JOURNAL + ["j/319b-loose-note.md"]
+
+    def read(path):
+        if path == "j/319b-loose-note.md":
+            return "a note somebody dropped in the folder with no heading\n"
+        return _read(path)
+
+    pairs = cycle_postmortem.find_unnumbered(
+        _lost(265), _CONVERSATIONS, paths, read_entry=read)
+    assert pairs == [(265, "j/319-report-256-263.md")]
