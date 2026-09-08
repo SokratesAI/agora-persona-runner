@@ -6859,28 +6859,67 @@ describe("an attachment renders as what it is", () => {
   });
 });
 
+/* Open the capture box's one sheet and wait for it.
+ *
+ * The project list arrives a round trip after the tap -- the sheet is built
+ * inside that `then` -- so a test that read `.msg-sheet-body` straight after
+ * the click would find it empty. */
+async function openCaptureSheet(window) {
+  click(window, window.document.getElementById("capture-type"));
+  for (let i = 0; i < 40 && !window.document.querySelector(".msg-sheet-body .capture-btn"); i++) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/* The row in the capture sheet that opens the project drawer, and the rows
+ * that drawer offers. Two sheets are on screen at once here, so neither can
+ * be reached by `.msg-sheet-body` alone. */
+const fieldRowIn = (window, field) =>
+  window.document.querySelector(
+    `.msg-sheet:not(.msg-sheet--stacked) .msg-sheet-body [data-field="${field}"]`);
+
+const projectRowIn = (window) => fieldRowIn(window, "project");
+
+/* Tap one of the capture sheet's three rows and return the upper drawer's
+ * options. Two sheets are on screen at once here, so neither can be reached
+ * by `.msg-sheet-body` alone. */
+function openFieldDrawer(window, field) {
+  click(window, fieldRowIn(window, field));
+  return [...window.document.querySelectorAll(".msg-sheet--stacked .capture-btn")];
+}
+
+const openProjectDrawer = (window) => openFieldDrawer(window, "project");
+
 describe("the capture row does not scramble", () => {
-  test("the row runs type, project, attach, priority, submit", async () => {
+  test("the row runs type, attach, send -- and nothing else", async () => {
     const window = await loadSite("/");
     const group = window.document.querySelector(".capture-submit");
     assert.ok(group, "the buttons are no longer grouped");
     const kids = [...group.children];
-    /* His ask, 2026-09-08: the three destination buttons became one type
-     * button plus a project button, priority and attach "stay like they
-     * are", and Submit goes "all the way to the right". Still five
-     * children and still an exact count, because the point of this test
-     * has not changed: nothing appears in this row without someone
+    /* His screenshot, 2026-09-08: five controls in this row and the
+     * leftmost one cut off the side of a 390px phone. *"Maybe its better
+     * to just fold them all into one modal. So the capture box now shows 3
+     * buttons: the submit (change this to say 'send'), the + button to
+     * upload files and images and a button that opens the modal that now
+     * contains the type, project and priority selector."*
+     *
+     * Still an exact count, because the point of this test has not changed
+     * across three redesigns: nothing appears in this row without someone
      * deciding where it goes. The attach button was once prepended here
      * and every substring test in the suite stayed green. */
     assert.deepEqual(
       kids.map((el) => el.id || el.className.trim()),
-      ["capture-type", "capture-project", "attach-btn", "capture-prio", "capture-send"],
+      ["capture-type", "attach-btn", "capture-send"],
       "the capture row is scrambled",
     );
     assert.equal(
       group.lastElementChild.id, "capture-send",
-      "Submit is not the last (rightmost) item in the row",
+      "Send is not the last (rightmost) item in the row",
     );
+    assert.equal(window.document.getElementById("capture-send").textContent, "Send",
+      "the button still says Submit");
+    assert.equal(window.document.getElementById("capture-project"), null,
+      "the project button is still on the row it was folded out of");
   });
 
   test("the picker keeps a label a screen reader and a reader can both find", async () => {
@@ -7218,31 +7257,79 @@ describe("the priority picker (buildPrioPicker)", () => {
    * Submit at the right. The load-bearing half is that choosing a type no
    * longer files anything -- two submit paths that can disagree about the
    * selected type is a capture filed as the wrong kind. */
-  test("the type sheet selects without submitting", async () => {
+  test("the type list is its own drawer, and picking one submits nothing", async () => {
+    /* His ask, 2026-09-08: *"Make the types (issue, idea...) also open as a
+     * drawer modal like the project list."* The load-bearing half is older
+     * and unchanged: choosing a type must not file anything. Two submit
+     * paths that can disagree about the selected type is a capture filed as
+     * the wrong kind. */
     const window = await loadSite("/issues");
     const box = window.document.getElementById("capture-text");
     box.value = "ship the thing";
     box.dispatchEvent(new window.Event("input"));
-    click(window, window.document.getElementById("capture-type"));
-    const rows = [...window.document.querySelectorAll(".msg-sheet-body .capture-btn")];
+    await openCaptureSheet(window);
+    const lower = window.document.querySelector(".msg-sheet:not(.msg-sheet--stacked)");
+    const rows = openFieldDrawer(window, "type");
     assert.deepEqual(
       rows.map((r) => r.dataset.target),
       ["issues", "ideas", "notes", "projects"],
-      "the sheet is not showing the four capture targets",
+      "the upper drawer is not showing the four capture targets",
     );
+    assert.equal(lower.hidden, false, "the capture sheet closed under the type list");
     click(window, rows.find((r) => r.dataset.target === "ideas"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.length, 0, "picking a type filed something");
     assert.equal(window.document.getElementById("capture-type").textContent, "Idea");
+    // The sheet he lands back on has to have caught up: it is the only
+    // thing on screen once the upper drawer goes, and a row still reading
+    // "Issue" would be the wrong answer in the one place he can see it.
+    assert.equal(fieldRowIn(window, "type").textContent, "Idea",
+      "the capture sheet still names the type he changed away from");
   });
 
-  test("Submit posts the chosen target, not the leftmost one", async () => {
+  test("the rating is a drawer too, and the sheet reads it back", async () => {
+    // His ask, 2026-09-08: *"make the priority a drawer modal like the
+    // rest."* It opened `.prio-menu`, a popup over the sheet, which was the
+    // one control here that did not behave like the others.
+    const window = await loadSite("/issues");
+    await openCaptureSheet(window);
+    assert.equal(fieldRowIn(window, "priority").textContent, "Unrated");
+    const rows = openFieldDrawer(window, "priority");
+    assert.deepEqual(rows.map((r) => r.textContent),
+      ["– Unrated", "⚪ Low", "🔵 Medium", "🟠 High", "🔴 Immediately"],
+      "the drawer does not spell out the five ratings");
+    click(window, rows.find((r) => r.textContent === "🟠 High"));
+    assert.equal(fieldRowIn(window, "priority").textContent, "🟠 High");
+  });
+
+  test("the project list is sorted by name", async () => {
+    /* His ask, 2026-09-08. The board's own order is a priority ranking --
+     * right on the board, wrong in a list he is scanning for a name he
+     * already has in mind. */
+    const window = await loadSite("/issues");
+    const real = window.fetch;
+    window.fetch = (url, options) => {
+      if (String(url).startsWith("/api/project")) {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: () => Promise.resolve({ projects: ["Nova", "agora", "Marcus", "NAS"] }),
+        });
+      }
+      return real(url, options);
+    };
+    await openCaptureSheet(window);
+    assert.deepEqual(openProjectDrawer(window).map((r) => r.textContent),
+      ["No project", "agora", "Marcus", "NAS", "Nova"],
+      "the project list is not in name order (case-insensitively, as a reader reads it)");
+  });
+
+  test("Send posts the chosen target, not the leftmost one", async () => {
     const window = await loadSite("/issues");
     const box = window.document.getElementById("capture-text");
     box.value = "a project I want";
     box.dispatchEvent(new window.Event("input"));
-    click(window, window.document.getElementById("capture-type"));
-    click(window, [...window.document.querySelectorAll(".msg-sheet-body .capture-btn")]
+    await openCaptureSheet(window);
+    click(window, openFieldDrawer(window, "type")
       .find((r) => r.dataset.target === "projects"));
     click(window, window.document.getElementById("capture-send"));
     await new Promise((r) => window.setTimeout(r, 0));
@@ -7265,23 +7352,141 @@ describe("the priority picker (buildPrioPicker)", () => {
     const box = window.document.getElementById("capture-text");
     box.value = "the tool sheet drags wrong";
     box.dispatchEvent(new window.Event("input"));
-    click(window, window.document.getElementById("capture-project"));
-    // The list arrives one round trip after the tap, so the sheet is
-    // built in a `then` -- this is what waits for it.
-    for (let i = 0; i < 40 && !window.document.querySelector(".msg-sheet-body button"); i++) {
-      await new Promise((r) => setTimeout(r, 5));
-    }
-    const rows = [...window.document.querySelectorAll(".msg-sheet-body button")];
+    await openCaptureSheet(window);
+    const rows = openProjectDrawer(window);
     assert.deepEqual(rows.map((r) => r.textContent), ["No project", "Marcus", "Nova app"]);
     click(window, rows.find((r) => r.textContent === "Nova app"));
-    assert.equal(window.document.getElementById("capture-project").textContent, "Nova app");
+    assert.equal(projectRowIn(window).textContent, "Nova app",
+      "the sheet underneath does not say which project it is set to");
     click(window, window.document.getElementById("capture-send"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.length, 1);
     assert.equal(window.posted[0].body.project, "Nova app");
     // Last-used, deliberately: he files three issues about one thing in a
-    // row, so the project survives a send where the rating does not.
-    assert.equal(window.document.getElementById("capture-project").textContent, "Nova app");
+    // row, so the project survives a send where the rating does not. Read
+    // back off the sheet, which is the only place it is shown now.
+    await openCaptureSheet(window);
+    assert.equal(projectRowIn(window).textContent, "Nova app",
+      "the project did not survive the send");
+  });
+
+  test("both drawers open at a height of their own, not their content's", async () => {
+    /* His report, 2026-09-08: *"The capture box drawer modal is very buggy
+     * when i try to drag it up and down. It jumps around on the screen ...
+     * The project list modal also just flies off screen."*
+     *
+     * One missing line behind both. `open` cleared the height instead of
+     * setting one, so a sheet anchored to the bottom was as tall as its
+     * contents -- and thirteen projects are taller than a phone, which is
+     * a drawer that grows off the top of the screen with its own grip and
+     * title above the viewport. The jumping is the same fact through the
+     * drag: `dragSheet.current()` falls back to `openVh` when the node
+     * carries no height, so the first pointermove computed from 30 while
+     * the sheet rendered at 200-odd and snapped to meet it.
+     *
+     * Asserted as "some explicit vh", not as a number: the sizes are a
+     * judgement that will be tuned, and a test that pinned 55 would fail
+     * on a nicer 50 while the bug it exists for is having none at all. */
+    const window = await loadSite("/issues");
+    const real = window.fetch;
+    window.fetch = (url, options) => {
+      if (String(url).startsWith("/api/project")) {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: () => Promise.resolve({ projects: ["Marcus", "Nova", "Agora", "NAS"] }),
+        });
+      }
+      return real(url, options);
+    };
+    await openCaptureSheet(window);
+    const lower = window.document.querySelector(".msg-sheet:not(.msg-sheet--stacked)");
+    assert.match(lower.style.height, /^[\d.]+d?vh$/,
+      `the capture drawer opened with no height of its own: "${lower.style.height}"`);
+    openProjectDrawer(window);
+    const upper = window.document.querySelector(".msg-sheet--stacked");
+    assert.match(upper.style.height, /^[\d.]+d?vh$/,
+      `the project drawer opened with no height of its own: "${upper.style.height}"`);
+  });
+
+  test("the `+` is ringed like the controls beside it, in both composers", () => {
+    /* His ask, 2026-09-08: *"make the + button have a border like the rest.
+     * Do that in the chat capture box aswell."* `.attach-btn` sets
+     * `border: 0` for every use of it, which is right in the `+` drawer
+     * (a card) and in the comment box (it stands alone) and wrong in the
+     * two rows where it is the one control in a line of outlined ones.
+     *
+     * Read off the sheet: jsdom applies no cascade worth trusting here, and
+     * what can break is that one of the two rows gets the rule and the
+     * other does not -- which is exactly the shape of the bug he reported. */
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    for (const row of [".capture-submit", ".chat-actions"]) {
+      /* Every rule for that row's `+`, not the first one: both rows already
+       * had one before this (the auto margin that pushes the group right),
+       * and matching only the first would read the wrong declaration and
+       * say nothing about the border. */
+      const bodies = [...sheet.matchAll(
+        new RegExp(row.replace(".", "\\.") + " \\.attach-btn[^{]*\\{([^}]*)\\}", "g"))]
+        .map((m) => m[1]);
+      const rule = [null, bodies.find((b) => /border:/.test(b))];
+      assert.ok(rule[1], `the \`+\` in ${row} has no border of its own`);
+      /* `--outline`, not `--line`. The first version of this used `--line`
+       * in the chat row to match `.chat-send` beside it, and
+       * `test_no_control_borders_its_edge_with_the_divider_token` failed it
+       * in CI: that token is 1.2:1 against `--card`, which is a divider's
+       * contrast and not a control's, and #890 holds every control edge to
+       * WCAG SC 1.4.11's 3:1. Matching a neighbour was the weaker argument
+       * -- `.chat-send` is filled, and carries its contrast in the fill. */
+      assert.match(rule[1], /border:\s*1px solid var\(--outline\)/,
+        `the \`+\` in ${row} is edged in something other than --outline`);
+    }
+  });
+
+  test("the type button carries no caret", () => {
+    // His ask, 2026-09-08. The second caret off a control this week: on a
+    // 44px pill it costs width the label needs, and the button opens a
+    // drawer that announces itself by sliding up the screen.
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.doesNotMatch(sheet, /\.capture-pick::after/,
+      "the type button still draws an arrow after its label");
+  });
+
+  test("the project list is a second drawer over the first, not inside it", async () => {
+    /* His ask, 2026-09-08: *"Make the project picker be another modal on
+     * top of the other modal. They should both be drawers like what we did
+     * for the chat."*
+     *
+     * Two separate elements is the load-bearing half -- the list was
+     * inlined into the one sheet before this, and a version that merely
+     * swapped that sheet's contents for the project list would look right
+     * in a screenshot and lose the type and the rating the moment he
+     * tapped. So: the lower sheet is still open and still showing its own
+     * groups while the upper one is up. */
+    const window = await loadSite("/issues");
+    const real = window.fetch;
+    window.fetch = (url, options) => {
+      if (String(url).startsWith("/api/project")) {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: () => Promise.resolve({ projects: ["Marcus"] }),
+        });
+      }
+      return real(url, options);
+    };
+    await openCaptureSheet(window);
+    const lower = window.document.querySelector(".msg-sheet:not(.msg-sheet--stacked)");
+    assert.equal(lower.hidden, false, "the capture sheet did not open");
+    openProjectDrawer(window);
+    const upper = window.document.querySelector(".msg-sheet--stacked");
+    assert.ok(upper && !upper.hidden, "the project list opened no second drawer");
+    assert.equal(lower.hidden, false,
+      "the capture sheet closed under the project list instead of staying behind it");
+    assert.ok(lower.querySelector(".msg-sheet-grip") && upper.querySelector(".msg-sheet-grip"),
+      "one of the two is not a draggable drawer");
+    // It is one decision, so it does get out of the way when he makes it --
+    // unlike the sheet underneath, which holds three.
+    click(window, [...upper.querySelectorAll(".capture-btn")]
+      .find((r) => r.textContent === "Marcus"));
+    assert.equal(lower.hidden, false, "picking a project closed the sheet underneath");
   });
 
   test("Submit is inert on an empty box and wakes on a keystroke", async () => {

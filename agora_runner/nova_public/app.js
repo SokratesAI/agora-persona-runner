@@ -11041,6 +11041,16 @@
     return "vh";
   }());
 
+  /* What the capture sheet opens at, taller than the tool drawer's 55.
+   * His screenshot, 2026-09-08: the Importance row was cut in half by the
+   * bottom of the screen -- *"open a bit more by default as the buttons are
+   * just slightly out of screen."* Its content is known and fixed (three
+   * headings and three rows), unlike the tool drawer's, so this is a height
+   * chosen to fit it rather than a compromise: 68 clears the third row with
+   * room to see it is the last one, and still leaves the box he typed in
+   * visible above the sheet. */
+  var CAPTURE_SHEET_OPEN_VH = 68;
+
   function dragSheet(handles, spec) {
     var from = 0;
     var startVh = 0;
@@ -11659,106 +11669,204 @@
 
   /* The drawer those actions open in.
    *
-   * One sheet reused, appended to <body>, the same reasoning as the tool
-   * drawer's: a sheet per message would be a hundred hidden dialogs in a
-   * long thread and only one can ever be open. It borrows the tool
-   * drawer's look through the shared rule list in the stylesheet and its
-   * drag through `dragSheet`, so there is one drawer in this app wearing
-   * three hats rather than three drawers. */
-  var msgSheet = null;
-  var msgSheetBackdrop = null;
-  var msgSheetBody = null;
-  var msgSheetTitle = null;
-  var msgSheetHide = null;
+   * A sheet per message would be a hundred hidden dialogs in a long thread
+   * and only one can ever be open, so the sheets here are reused and
+   * appended to <body> -- the same reasoning as the tool drawer's.
+   *
+   * One drawer implementation, instantiated twice.
+   *
+   * It was a single sheet and a set of module-level `msgSheet*` variables
+   * until 2026-09-08, when his ask made a second one necessary: *"Make the
+   * project picker be another modal on top of the other modal. They should
+   * both be drawers like what we did for the chat."* The capture sheet
+   * holds the type, the project and the importance; the project list is
+   * long and belongs in its own drawer over the top of it, not inlined
+   * into a sheet he then has to scroll past to reach the rating.
+   *
+   * A factory rather than a second copy of forty lines: the two differ by
+   * a z-index and nothing else, and a hand-written twin is where the drag,
+   * the slide and the backdrop quietly drift apart. Each instance owns its
+   * own element, its own backdrop and its own hide timer, so opening the
+   * upper one cannot close the lower one -- which is the whole point of
+   * stacking them.
+   *
+   * They borrow the tool drawer's look through the shared rule list in the
+   * stylesheet and their drag through `dragSheet`, so there is still one
+   * drawer in this app wearing several hats rather than several drawers.
+   */
+  function makeActionSheet(opts) {
+    var extra = (opts && opts.className) || "";
+    /* The four numbers the drag works in, in `SHEET_UNIT`. They default to
+     * what the message-actions drawer has always used -- two buttons do
+     * not want half a screen -- and the two capture drawers pass the tool
+     * sheet's instead, because a capture sheet carries three groups and a
+     * project list carries a row per project.
+     *
+     * `open` and the drag spec MUST read the same `openVh`: `current()`
+     * falls back to it when the node has no height, so a second copy that
+     * drifted would put back the jump this is here to stop. */
+    var openVh = (opts && opts.openVh) || 30;
+    var minVh = (opts && opts.minVh) || 20;
+    var maxVh = (opts && opts.maxVh) || 60;
+    var dismissVh = (opts && opts.dismissVh) || 12;
+    var sheet = null;
+    var backdrop = null;
+    var body = null;
+    var titleEl = null;
+    var hideTimer = null;
+    var dragger = null;
 
-  function buildMessageSheet() {
-    if (msgSheet) return msgSheet;
-    msgSheetBackdrop = el("div", "msg-sheet-backdrop");
-    msgSheetBackdrop.hidden = true;
-    msgSheetBackdrop.addEventListener("click", closeMessageActions);
-    document.body.appendChild(msgSheetBackdrop);
+    function build() {
+      if (sheet) return sheet;
+      backdrop = el("div", "msg-sheet-backdrop" + (extra ? " " + extra + "-backdrop" : ""));
+      backdrop.hidden = true;
+      backdrop.addEventListener("click", close);
+      document.body.appendChild(backdrop);
 
-    msgSheet = el("div", "msg-sheet");
-    msgSheet.hidden = true;
-    msgSheet.setAttribute("role", "dialog");
-    msgSheet.setAttribute("aria-modal", "true");
-    msgSheet.setAttribute("aria-label", "Message actions");
+      sheet = el("div", "msg-sheet" + (extra ? " " + extra : ""));
+      sheet.hidden = true;
+      sheet.setAttribute("role", "dialog");
+      sheet.setAttribute("aria-modal", "true");
+      sheet.setAttribute("aria-label", "Message actions");
 
-    var grip = el("div", "msg-sheet-grip");
-    grip.setAttribute("aria-hidden", "true");
-    msgSheet.appendChild(grip);
+      var grip = el("div", "msg-sheet-grip");
+      grip.setAttribute("aria-hidden", "true");
+      sheet.appendChild(grip);
 
-    var head = el("div", "msg-sheet-head");
-    var titles = el("div", "msg-sheet-titles");
-    msgSheetTitle = el("h2", "msg-sheet-title", "Message");
-    titles.appendChild(msgSheetTitle);
-    head.appendChild(titles);
-    var close = el("button", "msg-sheet-close", "✕");
-    close.type = "button";
-    close.title = "Close";
-    close.setAttribute("aria-label", "Close");
-    close.addEventListener("click", closeMessageActions);
-    head.appendChild(close);
-    msgSheet.appendChild(head);
+      var head = el("div", "msg-sheet-head");
+      var titles = el("div", "msg-sheet-titles");
+      titleEl = el("h2", "msg-sheet-title", "Message");
+      titles.appendChild(titleEl);
+      head.appendChild(titles);
+      var closeBtn = el("button", "msg-sheet-close", "\u2715");
+      closeBtn.type = "button";
+      closeBtn.title = "Close";
+      closeBtn.setAttribute("aria-label", "Close");
+      closeBtn.addEventListener("click", close);
+      head.appendChild(closeBtn);
+      sheet.appendChild(head);
 
-    msgSheetBody = el("div", "msg-sheet-body");
-    msgSheet.appendChild(msgSheetBody);
-    document.body.appendChild(msgSheet);
+      body = el("div", "msg-sheet-body");
+      sheet.appendChild(body);
+      document.body.appendChild(sheet);
 
-    dragSheet([grip, head], {
-      node: function () { return msgSheet; },
-      openVh: 30,
-      minVh: 20,
-      maxVh: 60,
-      dismissVh: 12,
-      onDismiss: closeMessageActions
-    });
-    return msgSheet;
-  }
-
-  /* `title` is optional and defaults to the message actions this sheet
-   * was built for. The capture box opens it with "Capture type" and
-   * "Project"; a drawer whose heading says "Message" over a list of
-   * projects is a drawer that reads as the wrong drawer. */
-  function openMessageActions(actions, title) {
-    buildMessageSheet();
-    msgSheetTitle.textContent = title || "Message";
-    msgSheet.setAttribute("aria-label", title || "Message actions");
-    msgSheetBody.textContent = "";
-    actions.forEach(function (button) {
-      // The buttons keep their own classes and their own handlers; only the
-      // box around them is new. A tap on one closes the drawer, because
-      // every action in here is finished the moment it is taken.
-      button.addEventListener("click", function () { closeMessageActions(); });
-      msgSheetBody.appendChild(button);
-    });
-    if (msgSheetHide) { clearTimeout(msgSheetHide); msgSheetHide = null; }
-    msgSheet.style.height = "";
-    msgSheet.classList.add("msg-sheet--entering");
-    msgSheetBackdrop.classList.add("msg-sheet-backdrop--entering");
-    msgSheetBackdrop.hidden = false;
-    msgSheet.hidden = false;
-    void msgSheet.offsetHeight;
-    msgSheet.classList.remove("msg-sheet--entering");
-    msgSheetBackdrop.classList.remove("msg-sheet-backdrop--entering");
-  }
-
-  function closeMessageActions() {
-    if (!msgSheet || msgSheet.hidden) return;
-    msgSheet.classList.add("msg-sheet--entering");
-    msgSheetBackdrop.classList.add("msg-sheet-backdrop--entering");
-    function hide() {
-      msgSheetHide = null;
-      if (msgSheet.classList.contains("msg-sheet--entering")) {
-        msgSheet.hidden = true;
-        msgSheetBackdrop.hidden = true;
-      }
+      dragger = dragSheet([grip, head], {
+        node: function () { return sheet; },
+        openVh: openVh,
+        minVh: minVh,
+        maxVh: maxVh,
+        dismissVh: dismissVh,
+        onDismiss: close
+      });
+      return sheet;
     }
-    var wait = transitionMs(msgSheet);
-    if (msgSheetHide) clearTimeout(msgSheetHide);
-    if (wait) msgSheetHide = setTimeout(hide, wait + 20);
-    else hide();
+
+    /* `opts.closeOnPick` is false for a sheet that holds more than one
+     * decision. The default is true and is the older rule: a message action
+     * is finished the moment it is taken, so the drawer gets out of the
+     * way. The capture sheet is not like that -- it carries the type, the
+     * project and the importance of the line he is about to file, and
+     * closing on the first tap would make him open it three times. */
+    function open(actions, title, openOpts) {
+      var closeOnPick = !(openOpts && openOpts.closeOnPick === false);
+      /* Per-open, because one instance serves two contents: the same
+       * drawer holds a message's two actions and the capture box's three
+       * groups, and half a screen is right for exactly one of those. The
+       * drag's floor, ceiling and dismiss point stay the instance's -- he
+       * can always pull either one taller. */
+      var height = (openOpts && openOpts.openVh) || openVh;
+      build();
+      titleEl.textContent = title || "Message";
+      sheet.setAttribute("aria-label", title || "Message actions");
+      body.textContent = "";
+      actions.forEach(function (button) {
+        // The buttons keep their own classes and their own handlers; only
+        // the box around them is new.
+        if (closeOnPick) {
+          button.addEventListener("click", function () { close(); });
+        }
+        body.appendChild(button);
+      });
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      /* An explicit height, the way `openStepSheet` does it -- NOT
+       * `style.height = ""`, which is what this was.
+       *
+       * His report, 2026-09-08: *"The capture box drawer modal is very
+       * buggy when i try to drag it up and down. It jumps around on the
+       * screen ... The project list modal also just flies off screen."*
+       * Both are the same missing line. Left with no height the sheet is
+       * as tall as its contents, and a list of thirteen projects is taller
+       * than the phone -- so a drawer anchored to the bottom grew straight
+       * off the top, grip, title and all (his screenshot: the list filling
+       * the screen with no drawer around it).
+       *
+       * The jumping is the same fact seen through `dragSheet`. `current()`
+       * reads the height off the node and falls back to `openVh` when
+       * there is none, so the first pointermove computed its delta from 30
+       * while the sheet was rendering at whatever its content measured --
+       * the sheet snapped to the number the drag believed before it
+       * started following his finger.
+       *
+       * The message-actions sheet survived this for a day because two
+       * buttons happen to be shorter than a screen. That is a fixture, not
+       * a design. */
+      if (dragger) dragger.setHeight(height);
+      sheet.classList.add("msg-sheet--entering");
+      backdrop.classList.add("msg-sheet-backdrop--entering");
+      backdrop.hidden = false;
+      sheet.hidden = false;
+      void sheet.offsetHeight;
+      sheet.classList.remove("msg-sheet--entering");
+      backdrop.classList.remove("msg-sheet-backdrop--entering");
+    }
+
+    function close() {
+      if (!sheet || sheet.hidden) return;
+      sheet.classList.add("msg-sheet--entering");
+      backdrop.classList.add("msg-sheet-backdrop--entering");
+      function hide() {
+        hideTimer = null;
+        if (sheet.classList.contains("msg-sheet--entering")) {
+          sheet.hidden = true;
+          backdrop.hidden = true;
+        }
+      }
+      var wait = transitionMs(sheet);
+      if (hideTimer) clearTimeout(hideTimer);
+      if (wait) hideTimer = setTimeout(hide, wait + 20);
+      else hide();
+    }
+
+    return { open: open, close: close, node: function () { return sheet; } };
   }
+
+  /* The lower drawer: message actions, the capture sheet, the type list.
+   * Every caller that existed before there were two of these. */
+  var actionSheet = makeActionSheet({
+    // Opens small -- two buttons -- but with the tool sheet's room to be
+    // dragged, since the capture box opens this same drawer with three
+    // groups in it and passes its own opening height.
+    openVh: 30,
+    minVh: STEP_SHEET_MIN_VH,
+    maxVh: STEP_SHEET_MAX_VH,
+    dismissVh: STEP_SHEET_DISMISS_VH
+  });
+  /* The upper one, and the only thing that opens over another drawer. Its
+   * own backdrop dims the sheet underneath, which is what makes the stack
+   * read as a stack rather than as one sheet that changed its mind. */
+  var stackedSheet = makeActionSheet({
+    className: "msg-sheet--stacked",
+    openVh: STEP_SHEET_OPEN_VH,
+    minVh: STEP_SHEET_MIN_VH,
+    maxVh: STEP_SHEET_MAX_VH,
+    dismissVh: STEP_SHEET_DISMISS_VH
+  });
+
+  function openMessageActions(actions, title, opts) {
+    actionSheet.open(actions, title, opts);
+  }
+
+  function closeMessageActions() { actionSheet.close(); }
 
   function askPending(progress) {
     var row = el("div", "ask-msg ask-theirs ask-pending");
@@ -13604,7 +13712,6 @@
     var captureStatus = document.getElementById("capture-status");
     var buttons = Array.prototype.slice.call(form.querySelectorAll(".capture-btn"));
     var typeBtn = document.getElementById("capture-type");
-    var projectBtn = document.getElementById("capture-project");
     var sendBtn = document.getElementById("capture-send");
     var NO_PROJECT = "No project";
     /* Last-used, not none. He files three issues about the same thing in a
@@ -13681,14 +13788,33 @@
       onStatus: setStatus,
     });
     var submitRow = document.querySelector(".capture-submit");
+    /* The picker and its label park in the same hidden host the type
+     * buttons ship in, and the sheet moves all three out of it. They have
+     * to be IN the document from load: `#capture-prio` is the trigger
+     * `/diag` opens to prove the health check leaves an open picker alone,
+     * and a control that only exists while a drawer is open is a control
+     * nothing else can reach. */
+    var typesHost = document.getElementById("capture-types");
+    var prioLabel = document.querySelector(".capture-prio-label");
+    if (typesHost) {
+      if (prioLabel) typesHost.appendChild(prioLabel);
+      typesHost.appendChild(prioPicker.el);
+    }
     form.appendChild(captureAttach.input);
     // Directly under the box he typed in, above the row of controls --
     // the thumbnails belong to the sentence, not to the buttons.
     textEl.parentNode.insertBefore(captureAttach.tray, textEl.nextSibling);
-    // Both before Submit, which stays the last child: his ask puts Submit
-    // "all the way to the right" and priority and attach "like they are".
+    /* The attach `+` immediately before Send, and nothing else in this row.
+     * His screenshot, 2026-09-08: five controls in it and the leftmost one
+     * cut off the side of a 390px screen. The type, the project and the
+     * importance are three *decisions* and they moved into one sheet
+     * together; what stays on the row is the one that opens it, the one
+     * that adds a picture, and the one that files the line.
+     *
+     * `prioPicker.el` is deliberately NOT inserted anywhere. The picker
+     * object is still what holds the value `send` reads -- only its trigger
+     * is gone, replaced by the rows the sheet draws. */
     submitRow.insertBefore(captureAttach.button, sendBtn);
-    submitRow.insertBefore(prioPicker.el, sendBtn);
 
 
     /* the owner, issues.md 2026-08-09: "the input box for the Nova pwa is too
@@ -13769,9 +13895,11 @@
       if (typeBtn) typeBtn.textContent = picked.textContent;
     }
 
+    /* The project has no button of its own on the row any more, so this
+     * only remembers it -- the sheet is where it is read back, and `send`
+     * is what does something with it. */
     function setProject(name) {
       currentProject = name || "";
-      if (projectBtn) projectBtn.textContent = currentProject || NO_PROJECT;
     }
 
     function send(target) {
@@ -13812,43 +13940,163 @@
         .then(function () { setBusy(false); });
     }
 
-    /* Choosing a type closes the sheet and updates the button. It does not
-     * submit -- that is the whole point of the rework, and the reason the
-     * old handler on these very buttons had to go. */
+    /* Choosing a type updates the button and leaves the sheet open. It does
+     * not submit -- that is the whole point of the rework, and the reason
+     * the old handler on these very buttons had to go. */
+    // Set by the sheet while it is built, so a type tap refreshes the marks
+    // in the other two groups' company. Registered once here rather than
+    // per open, which would stack a listener every time he opened it.
+    var refreshMarks = null;
     buttons.forEach(function (button) {
-      button.addEventListener("click", function () { setTarget(button.getAttribute("data-target")); });
+      button.addEventListener("click", function () {
+        setTarget(button.getAttribute("data-target"));
+        if (refreshMarks) refreshMarks();
+      });
     });
-    if (typeBtn) {
-      typeBtn.addEventListener("click", function () {
-        // The shared bottom sheet, the fourth thing to use it. The rows
-        // are the real buttons out of the HTML, moved in and moved back
-        // by `openMessageActions`'s own close handler -- so there is one
-        // set of type buttons in this document, not two that can drift.
-        openMessageActions(buttons, "Capture type");
+
+    /* One sheet for all three choices -- his ask, 2026-09-08, after the
+     * row they were spread across ran off the side of his phone.
+     *
+     * It is three ROWS, each opening a drawer of its own over this one --
+     * his follow-up the same morning: *"Make the types (issue, idea...)
+     * also open as a drawer modal like the project list ... make the
+     * priority a drawer modal like the rest."* The project list went first
+     * because it is unbounded, and the reason generalises: an option list
+     * inlined here pushes the groups below it off a drawer that opens
+     * around half a screen, so the field he set two taps ago scrolls out
+     * of sight. Three rows that each say what they are set to fit in any
+     * drawer and read as a summary of the capture he is about to file.
+     *
+     * Nothing closes this sheet on a tap. The upper drawer does close on
+     * one, because it holds a single decision and this is where he comes
+     * back to. */
+    function heading(text) {
+      return el("p", "capture-sheet-head", text);
+    }
+
+    function optionRow(label, isPicked, onPick) {
+      var row = el("button", "capture-btn", label);
+      row.type = "button";
+      row.setAttribute("aria-pressed", isPicked ? "true" : "false");
+      row.addEventListener("click", onPick);
+      return row;
+    }
+
+    /* A row on the capture sheet: the value it is currently set to, and a
+     * drawer behind it. `data-field` is what the browser tests reach for --
+     * three rows that differ only by their text are three rows nothing can
+     * tell apart. */
+    function fieldRow(field, value, open) {
+      var row = optionRow(value, false, open);
+      row.removeAttribute("aria-pressed");
+      row.setAttribute("aria-haspopup", "dialog");
+      row.setAttribute("data-field", field);
+      return row;
+    }
+
+    function targetLabel() {
+      var picked = null;
+      buttons.forEach(function (b) {
+        if (b.getAttribute("data-target") === currentTarget) picked = b;
+      });
+      return picked ? picked.textContent : currentTarget;
+    }
+
+    function prioLabelText() {
+      return prioPicker.getValue() || "Unrated";
+    }
+
+    function openCaptureOptions() {
+      /* Built fresh each open, because the project list is whatever the
+       * board holds right now and a cycle can have added one since the page
+       * loaded. `loadProjects` is the same cached index the row editor's
+       * picker uses, so this costs one request per session. */
+      loadProjects().then(function (names) {
+        var rows = [];
+        var typeRow = fieldRow("type", targetLabel(), function () {
+          /* The real buttons out of the shipped HTML, moved into the upper
+           * drawer -- so there is one set of type buttons in this document,
+           * not two that can drift from `CAPTURE_TARGETS`. They carry their
+           * own handler, registered once, which is what sets the target. */
+          buttons.forEach(function (b) {
+            b.setAttribute("aria-pressed",
+              b.getAttribute("data-target") === currentTarget ? "true" : "false");
+          });
+          stackedSheet.open(buttons, "Type");
+        });
+        var projectRow = fieldRow("project", currentProject || NO_PROJECT, function () {
+          openProjectSheet(names || []);
+        });
+        var prioRow = fieldRow("priority", prioLabelText(), function () {
+          openPrioritySheet();
+        });
+
+        rows.push(heading("Type"), typeRow);
+        rows.push(heading("Project"), projectRow);
+        rows.push(heading("Importance"), prioRow);
+
+        /* Re-read after every pick in the upper drawer. The sheet stays
+         * open underneath it, so a row still showing the previous value
+         * would be the only thing on screen and it would be wrong. */
+        refreshMarks = function () {
+          typeRow.textContent = targetLabel();
+          projectRow.textContent = currentProject || NO_PROJECT;
+          prioRow.textContent = prioLabelText();
+        };
+        openMessageActions(rows, "Capture details",
+          { closeOnPick: false, openVh: CAPTURE_SHEET_OPEN_VH });
       });
     }
-    if (projectBtn) {
-      projectBtn.addEventListener("click", function () {
-        /* Built fresh each open, because the project list is whatever the
-         * board holds right now and a cycle can have added one since the
-         * page loaded. `loadProjects` is the same cached index the row
-         * editor's picker uses, so this costs one request per session. */
-        loadProjects().then(function (names) {
-          var rows = [];
-          var none = el("button", "capture-btn", NO_PROJECT);
-          none.type = "button";
-          none.addEventListener("click", function () { setProject(""); });
-          rows.push(none);
-          (names || []).forEach(function (name) {
-            var row = el("button", "capture-btn", name);
-            row.type = "button";
-            row.addEventListener("click", function () { setProject(name); });
-            rows.push(row);
-          });
-          openMessageActions(rows, "Project");
+
+    /* The upper drawer, three times over. All three close on a pick,
+     * unlike the sheet underneath: each holds a single decision, and the
+     * sheet it drops back to is where the other two are made.
+     *
+     * Alphabetical, his ask 2026-09-08. The board's own order is a
+     * priority ranking, which is the right order on the board and the
+     * wrong one here: this is a list he scans for a name he already has in
+     * mind, and the only order that helps is the one his eye can
+     * binary-search. `localeCompare` and not `<`, because "Ålesund" sorting
+     * after "Zulu" is a Norwegian alphabet answering in ASCII. `No project`
+     * is prepended after the sort, so it stays the first row rather than
+     * filing itself under N. */
+    function openProjectSheet(names) {
+      var sorted = (names || []).slice().sort(function (a, b) {
+        return String(a).localeCompare(String(b));
+      });
+      var rows = [""].concat(sorted).map(function (name) {
+        return optionRow(name || NO_PROJECT, name === currentProject, function () {
+          setProject(name);
+          if (refreshMarks) refreshMarks();
         });
       });
+      stackedSheet.open(rows, "Project");
     }
+
+    /* The rating, as a drawer instead of the `.prio-menu` popup it opened
+     * before.
+     *
+     * `prioPicker` still owns the value: `send` reads it, the reset after a
+     * successful file writes it, and `PRIORITIES` is the vocabulary both
+     * this and `.prio-menu` spell out, so there is one list of ratings in
+     * this app. What its trigger no longer does is appear -- the row on the
+     * capture sheet shows the rating now. The element stays parked in the
+     * hidden `#capture-types` host, and that is a wart I am flagging rather
+     * than leaving quiet: three tests reach for `#capture-prio` as a real,
+     * openable picker (including `/diag`'s guard that the health check
+     * leaves an open one alone), and repointing those at the board-capture
+     * picker is a change of its own rather than a line in this one. */
+    function openPrioritySheet() {
+      var rows = PRIORITIES.map(function (label) {
+        return optionRow(label || "\u2013 Unrated", label === prioPicker.getValue(), function () {
+          prioPicker.setValue(label);
+          if (refreshMarks) refreshMarks();
+        });
+      });
+      stackedSheet.open(rows, "Importance");
+    }
+
+    if (typeBtn) typeBtn.addEventListener("click", openCaptureOptions);
     if (sendBtn) {
       sendBtn.addEventListener("click", function () { send(currentTarget); });
     }
