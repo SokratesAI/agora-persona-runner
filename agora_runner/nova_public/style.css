@@ -990,7 +990,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   width: 100%;
   background: var(--bg);
   color: var(--text);
-  border: 1px solid var(--outline);
+  border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.7rem 0.8rem;
   font: inherit;
@@ -1135,7 +1135,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   overflow-y: auto;
   overscroll-behavior: contain;
   background: var(--card);
-  border-left: 1px solid var(--outline);
+  border-left: 1px solid var(--line);
   box-shadow: -12px 0 28px #0008;
   transform: translateX(100%);
   visibility: hidden;
@@ -4426,7 +4426,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   display: block;
   width: 100%;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--outline);
+  border: 1px solid var(--line);
   border-left: 3px solid var(--nova);
   border-radius: 8px;
   background: var(--card);
