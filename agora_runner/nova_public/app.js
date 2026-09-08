@@ -72,6 +72,20 @@
      * -- a second, differently-shaped rendering of the same asks -- is
      * deleted rather than moved. */
     if (path === "/asks") return { view: "journal", cycle: null, board: null, asks: true };
+    /* `/replies` -- the journal, filtered to the cards carrying a reply he
+     * has not read.
+     *
+     * The owner, capture 2026-09-08: *"Make the 'N new replies' pill on the
+     * Journal page a filter like the 'waiting on you' pill -- a route
+     * (/replies) showing the journal cards that have comment replies I have
+     * not seen yet -- instead of the inline panel it opens today."* Same
+     * shape as `/asks` above and for the same reason: `view: "journal"`, so
+     * the cards render through the one path the feed uses.
+     *
+     * The one way it is unlike `/asks`: the server cannot compute this set.
+     * The read marks are this browser's, so the page has to send the cycle
+     * numbers -- see `journalUrl`. */
+    if (path === "/replies") return { view: "journal", cycle: null, board: null, replies: true };
     if (path === "/pool") return { view: "pool", cycle: null, board: null };
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
@@ -115,13 +129,19 @@
     return !!route(pathname).asks;
   }
 
+  /** Whether the URL is the unread-replies filter. */
+  function routedReplies(pathname) {
+    return !!route(pathname).replies;
+  }
+
   function markNav() {
     var here = route(window.location.pathname);
     // Hidden on `/asks` for the reason a deep link hides it: the URL is
     // already a filter, and a second one narrowing it would answer with
     // the newest matches across the whole archive rather than within the
     // asks -- `journal_page` treats `q` and `asks` as separate windows.
-    setJournalSearchVisible(here.view === "journal" && here.cycle === null && !here.asks);
+    setJournalSearchVisible(here.view === "journal" && here.cycle === null
+      && !here.asks && !here.replies);
     // Every view but the journal is named after its own path, so the two
     // single-page views need no branch of their own -- which is what a
     // third one turning the chain into a nested ternary made worth doing.
@@ -250,13 +270,6 @@
    * outright -- which is what a browser with no storage gets. */
   var repliesRead = null;
   var repliesReadLoaded = false;
-
-  /* The unread replies he has opened in the header, captured at the tap.
-   *
-   * Deliberately not persisted: this is "the panel is on screen right now",
-   * which is exactly the kind of state a reload should clear. The marks it
-   * writes are the durable half and they live in `localStorage`. */
-  var unreadOpen = null;
 
   /* Which cards have already auto-opened their ask drawer, so it happens
    * once per device rather than once per page load.
@@ -442,12 +455,14 @@
     var cards = 0;
     var oldest = null;
     var items = [];
+    var cycles = [];
     Object.keys(byCycle || {}).forEach(function (key) {
       var unread = unreadOn(key, byCycle[key]);
       if (!unread.length) return;
       count += unread.length;
       cards += 1;
       var cycle = parseInt(key, 10);
+      if (!isNaN(cycle)) cycles.push(cycle);
       if (!isNaN(cycle) && (oldest === null || cycle < oldest)) oldest = cycle;
       unread.forEach(function (answer) {
         items.push({ cycle: cycle, stamp: answer.stamp, text: answer.text, asked: answer.asked });
@@ -457,7 +472,12 @@
      * to be looking for is the one that just arrived. The *badge* still names
      * the oldest card, because that one is about to scroll out of the feed. */
     items.sort(function (a, b) { return a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0; });
-    return { count: count, cards: cards, cycle: oldest, items: items };
+    /* Newest card first, which is the order `/replies` renders in anyway --
+     * sent so the URL is stable between two fetches that found the same
+     * cards, rather than varying with `Object.keys` order and turning every
+     * poll into a fresh etag. */
+    cycles.sort(function (a, b) { return b - a; });
+    return { count: count, cards: cards, cycle: oldest, items: items, cycles: cycles };
   }
 
   /* "3 cycles since you last looked · 2 PRs merged", and nothing at all
@@ -639,8 +659,8 @@
     changedEl.removeAttribute("hidden");
   }
 
-  /* The unread-reply badge and the panel it opens, in their own node outside
-   * `statusEl` so they survive a page that is not the journal.
+  /* The unread-reply badge, in its own node outside `statusEl` so it
+   * survives a page that is not the journal.
    *
    * the owner, capture 2026-08-25: *"I want to have a status the Nova header
    * if i have unread Journal comments."* The header is one element shared by
@@ -726,81 +746,35 @@
          * mark is wired to.
          *
          * He offered two fixes and I took the first: show him the message. The
-         * badge opens the replies themselves, in the header, newest first, and
-         * opening it is what marks them read. One tap, no hunting, and the text
-         * is on screen rather than a number pointing at where the text lives.
+         * badge opened the replies themselves, in a panel in the header.
          *
-         * `unreadOpen` holds the items captured at the tap rather than
-         * recomputing them, because the tap marks them read: recomputing would
-         * find nothing unread and draw an empty panel over the message he just
-         * asked to see. */
+         * That panel is gone as of 2026-09-08, on his capture: *"Make the 'N
+         * new replies' pill on the Journal page a filter like the 'waiting on
+         * you' pill -- a route (/replies) showing the journal cards that have
+         * comment replies I have not seen yet -- instead of the inline panel
+         * it opens today."* Same call `/asks` made when it replaced the
+         * yellow waiting-on-you list: a second, differently-shaped rendering
+         * of content the feed already knows how to draw is a second thing to
+         * maintain and a second place for the two to disagree. The badge is a
+         * link now and the cards are the cards.
+         *
+         * What it costs, said out loud rather than discovered later: the tap
+         * no longer marks everything read. It cannot -- he has not read
+         * anything yet at the moment of the tap, and marking on arrival is
+         * how the old feature got its complaint. Each card's own drawer marks
+         * its own replies, which is the mechanism that was already there and
+         * the one the count is derived from. So the pill empties as he reads,
+         * one card at a time, instead of all at once on a tap. */
         var mail = el("p", "status-sub");
-        var open = el("button", "badge badge-unread status-unread-open",
+        var open = el("a", "badge badge-unread status-unread-open",
           unread.count + (unread.count === 1 ? " new reply" : " new replies"));
-        open.type = "button";
-        /* No `aria-expanded`: the badge does not survive being pressed. The
-         * tap marks everything read, so the next render draws the panel and
-         * no badge at all, and a control that is gone cannot be expanded. */
-        open.addEventListener("click", function () {
-          unreadOpen = unread.items;
-          Object.keys(lastCommentsByCycle || {}).forEach(function (key) {
-            markRepliesRead(key, lastCommentsByCycle[key]);
-          });
-          paintMail(replayed);
-          /* The cards' own chips are derived from the same marks, and there is
-           * no held journal payload to re-render the feed from. Clearing them
-           * in place is the honest edit rather than a shortcut: they are now
-           * read, and leaving them lit for up to a poll would be the badge
-           * insisting on a reply that is open on his screen -- the thing this
-           * whole feature keeps getting wrong. */
-          if (feed) {
-            Array.prototype.forEach.call(feed.querySelectorAll(".comment-unread"),
-              function (chip) { chip.remove(); });
-            Array.prototype.forEach.call(feed.querySelectorAll(".comment-toggle.has-unread"),
-              function (button) { button.classList.remove("has-unread"); });
-          }
-        });
+        open.href = "/replies";
         mail.appendChild(open);
         mail.appendChild(el("span", "status-pr", unread.cards === 1
           ? "cycle " + unread.cycle
           : "oldest on cycle " + unread.cycle));
         mailEl.appendChild(mail);
       }
-    }
-    /* The replies themselves, which is the half of his ask the badge never
-     * had. Drawn after `subs` so it sits under the status line it came from,
-     * and outside the `!replayed` guard above because by the time this runs
-     * the items are already in hand -- a cached payload cannot make a message
-     * he asked to read disappear. */
-    if (unreadOpen && unreadOpen.length) {
-      var panel = el("div", "unread-panel");
-      var head = el("p", "unread-panel-head");
-      head.appendChild(el("span", "unread-panel-count",
-        unreadOpen.length + (unreadOpen.length === 1 ? " reply" : " replies")));
-      var shut = el("button", "unread-panel-close", "Close");
-      shut.type = "button";
-      shut.addEventListener("click", function () {
-        unreadOpen = null;
-        paintMail(replayed);
-      });
-      head.appendChild(shut);
-      panel.appendChild(head);
-      unreadOpen.forEach(function (answer) {
-        var row = el("a", "unread-reply");
-        row.href = "/cycle/" + answer.cycle;
-        var meta = el("p", "unread-reply-meta");
-        meta.appendChild(el("span", "status-pr", "cycle " + answer.cycle));
-        if (answer.stamp) meta.appendChild(el("span", "status-pr", answer.stamp));
-        row.appendChild(meta);
-        /* His own comment first, dimmed, because a reply read outside its
-         * thread has lost the question it answers -- "yes, that is the same
-         * bug" is not a message on its own. One line of it: this is a mailbox,
-         * not the thread, and the thread is one tap away on the link. */
-        if (answer.asked) row.appendChild(el("p", "unread-reply-asked", answer.asked));
-        row.appendChild(el("p", "unread-reply-text", answer.text || "(no text)"));
-        panel.appendChild(row);
-      });
-      mailEl.appendChild(panel);
     }
   }
 
@@ -3716,6 +3690,16 @@
       });
     }
 
+    /* `/replies`: the cards carrying a reply he has not read.
+     *
+     * No filter of its own -- the server was handed the cycle numbers and
+     * every entry that came back is one of them. The reason it needs a flag
+     * anyway is the two things `filtered` also buys `/asks`: no recap card,
+     * and no pager. It is deliberately not folded into `filtered`, because
+     * the line under that flag says "N entries are waiting on you" and these
+     * are not asks. */
+    var repliesOnly = routedReplies(window.location.pathname);
+
     /* One card per cycle, newest cycle first.
      *
      * A cycle's entries are usually adjacent on the wire but are not
@@ -3749,7 +3733,7 @@
      * keystroke. His capture 2026-09-04 12:29: *"it should go away when i
      * use the search tool on journals."* A twelve-hour summary pinned over
      * three search hits is answering a question he did not ask. */
-    recapWanted = !filtered && wanted === null && !answered;
+    recapWanted = !filtered && !repliesOnly && wanted === null && !answered;
     if (recapWanted) {
       ensureRecap();
       placeRecap();
@@ -3775,6 +3759,28 @@
         : entries.length === 1
           ? "1 entry is waiting on you."
           : entries.length + " entries are waiting on you."));
+    }
+    if (repliesOnly) {
+      var backFeed = el("a", "back", "← all entries");
+      backFeed.href = "/";
+      feed.appendChild(backFeed);
+      /* Counted in cards, not in replies. The pill above counts replies,
+       * because that is the number that arrived; this page is a list of
+       * cards, and saying "7" over three of them is the badge pointing at a
+       * number the screen does not contain -- which is the complaint the
+       * pill has already been rebuilt for once. */
+      /* A failed comments read is its own line rather than a count of zero.
+       * This page is the one place on the site where that failure is total:
+       * the set of cards is computed from the comments payload, so without
+       * it there is no list -- and "No unread replies" would be the page
+       * answering a question it could not read. */
+      feed.appendChild(el("p", "empty", comments === null
+        ? "Could not tell which replies are unread — this list is built from the replies payload, and it did not load."
+        : entries.length === 0
+          ? "No unread replies."
+          : entries.length === 1
+            ? "1 card has replies you have not read."
+            : entries.length + " cards have replies you have not read."));
     }
     if (wanted !== null) {
       var back = el("a", "back", "← all cycles");
@@ -3870,7 +3876,8 @@
      * `entries` is the ones he has not answered, so the two differ by
      * exactly the answered ones and the pager would otherwise be drawn
      * permanently, offering to load entries that are already here. */
-    if (wanted === null && !filtered && typeof total === "number" && entries.length < total) {
+    if (wanted === null && !filtered && !repliesOnly
+        && typeof total === "number" && entries.length < total) {
       // A search is not a window onto the newest entries, so "older" is
       // the wrong word for what the next twenty are -- they are the next
       // twenty matches, and they can be from any month.
@@ -4193,6 +4200,20 @@
     var wanted = routedCycle(window.location.pathname);
     if (wanted !== null) return "/api/journal?cycle=" + wanted;
     if (routedAsks(window.location.pathname)) return "/api/journal?asks=1";
+    /* `/replies` asks for named cycles, and the names come from this
+     * browser: which replies he has seen lives in `localStorage`, so the
+     * server cannot compute the set and the page has to send it. It is
+     * `unreadSummary`'s own list, so the cards on this page and the count
+     * on the pill can never disagree about which cards those are.
+     *
+     * `haveComments` is false until the comments payload lands, which is
+     * why `fetchAll` waits for it on this route and only on this route --
+     * an empty list here would ask for nothing and draw an empty page over
+     * a mailbox that has three replies in it. */
+    if (routedReplies(window.location.pathname)) {
+      return "/api/journal?cycles="
+        + unreadSummary(lastCommentsByCycle).cycles.join(",");
+    }
     var url = "/api/journal?limit=" + windowSize;
     var q = journalQuery.trim();
     if (q) url += "&q=" + encodeURIComponent(q);
@@ -4215,6 +4236,9 @@
      * else's. Without a line, a card renders its own prose, which is what
      * he is on this page to read. */
     if (routedAsks(window.location.pathname)) return null;
+    // Same reason as `/asks` above: the cards here are scattered across the
+    // archive, and `?limit=N` resolves its window out of the newest N.
+    if (routedReplies(window.location.pathname)) return null;
     return "/api/digest?limit=" + windowSize;
   }
 
@@ -4231,6 +4255,31 @@
      * for the one-line version of it. */
     var searching = (!!journalQuery.trim() && routedCycle(window.location.pathname) === null)
       || digestUrl() === null;
+    /* `/replies` is the one route whose journal request depends on another
+     * payload, so it is the one route where the two are serial. The comments
+     * read is tolerated everywhere else on this page -- it costs the bubbles,
+     * never the feed -- and here it costs the feed too, because without it
+     * there is no set of cycles to ask for. A failure therefore has to draw
+     * the "comments could not be loaded" line rather than an empty page
+     * claiming he has read everything, which is why it resolves to `null`
+     * here as well and `render` treats a `/replies` page with no comments as
+     * unknown rather than as none. */
+    if (routedReplies(window.location.pathname) && !haveComments) {
+      return fetchVersioned("/api/comments", "comments")
+        .catch(function () { return null; })
+        .then(function (comments) {
+          if (comments && comments.byCycle) {
+            lastCommentsByCycle = comments.byCycle;
+            haveComments = true;
+          }
+          return Promise.all([
+            fetchVersioned(journalUrl(), "journal"),
+            Promise.resolve(null),
+            Promise.resolve(comments),
+            fetchVersioned("/api/asks/chat", "askchat").catch(function () { return null; }),
+          ]);
+        });
+    }
     return Promise.all([
       fetchVersioned(journalUrl(), "journal"),
       searching

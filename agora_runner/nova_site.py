@@ -346,6 +346,7 @@ PAGE_ROUTES = (
     "/ideas",
     "/notes",
     "/asks",
+    "/replies",
     "/pool",
     "/costs",
     "/retro",
@@ -2947,7 +2948,7 @@ def _refresh(name, build):
 
 
 def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
-                 record_age=None, search=None, asks=False):
+                 record_age=None, search=None, asks=False, cycles=None):
     """One window of the journal, plus how many entries there are in all.
 
     The cold load is the half the 304 poll of #84 did not touch: 109
@@ -3019,6 +3020,23 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
 
     Like `cycle`, it ignores `offset` and `limit` -- the whole point is to
     see all of them at once, and there are eight, not eight hundred.
+
+    `cycles` is the owner's capture of 2026-09-08, asking for the *"N new
+    replies"* pill to become a route the way the waiting-on-you pill did:
+    *"a route (/replies) showing the journal cards that have comment
+    replies I have not seen yet."* It is a list of cycle numbers and it
+    exists because this server cannot compute that set. Which replies he
+    has seen is kept in his browser (`nova.repliesRead.v1` in
+    `localStorage`), there is no session and no per-device state here, so
+    "unseen by him" is a question only the page can answer -- and the page
+    already answers it, for the pill's own count. So the page sends the
+    answer and this selects by it, which is the smaller of the two shapes
+    he named; the other was moving the read marks server-side.
+
+    An empty list selects nothing rather than everything. `?cycles=` with
+    no numbers in it is a page saying "these ones", having found none, and
+    answering that with the whole archive would be the widest possible
+    reading of the narrowest possible request.
     """
     entries = payload.get("entries") or []
     if search is not None and search.strip():
@@ -3061,6 +3079,23 @@ def journal_page(payload, limit=None, offset=0, cycle=None, now=None,
             # how many cards it is showing, and `total` is what it reads.
             "total": len(picked),
             "asks": True,
+        }
+    if cycles is not None:
+        wanted = {int(number) for number in cycles}
+        picked = [
+            entry for entry in entries if entry.get("cycle") in wanted
+        ]
+        return {
+            "entries": [_rendered(entry) for entry in picked],
+            "status": _with_silence(
+                payload.get("status", {}), now, record_age=record_age
+            ),
+            # The number of cards found, not the number asked for: a cycle
+            # that ran and wrote no entry is a number the page can hold a
+            # read mark for and this corpus has no card for, and `total`
+            # saying otherwise would draw a pager offering to fetch it.
+            "total": len(picked),
+            "cycles": sorted(wanted, reverse=True),
         }
     if cycle is not None:
         picked = [entry for entry in entries if entry.get("cycle") == cycle]
@@ -3542,7 +3577,8 @@ def board_descriptor(args):
     return "&".join(f"{name}={args[name]!r}" for name in sorted(args))
 
 
-def journal_descriptor(page, limit, offset, cycle, search=None, asks=False):
+def journal_descriptor(page, limit, offset, cycle, search=None, asks=False,
+                       cycles=None):
     """What `/api/journal`'s etag must vary by, beyond the payload itself.
 
     The window, obviously -- a client that just asked for forty entries
@@ -3583,6 +3619,12 @@ def journal_descriptor(page, limit, offset, cycle, search=None, asks=False):
         # etag, and without this the second one asked for is served 304 with
         # the first one's rows still on screen.
         window = "asks"
+    elif cycles is not None:
+        # The exact set, for the reason `asks` gets a key of its own: two
+        # `/replies` visits with different unread cards behind them build
+        # the same base etag, and without this the second is answered 304
+        # with the first one's rows still on screen.
+        window = "cycles=" + ",".join(str(number) for number in sorted(cycles))
     else:
         window = f"cycle={cycle}" if cycle is not None else f"{offset}:{limit}"
     # Two different queries against the same journal build the same base
@@ -3625,6 +3667,35 @@ def journal_descriptor(page, limit, offset, cycle, search=None, asks=False):
 # stream, and neither belongs on a corpus the owner is entitled to read
 # whole.
 JOURNAL_DEFAULT_LIMIT = 20
+
+
+def _cycle_list(query):
+    """`?cycles=1204,1198` -> `[1204, 1198]`; absent -> `None`.
+
+    Present-and-empty is `[]`, not `None`, and the difference decides the
+    whole answer: `None` is "no filter" and `[]` is "these ones, and there
+    are none of them". See `journal_page`'s `cycles` for why the page is
+    the thing that knows.
+
+    A number it cannot parse is dropped rather than raising. The list is
+    built from read marks in the owner's `localStorage`, which is text a
+    browser has been writing since 2026-08-26 and which nothing has ever
+    validated -- so a single corrupt key would otherwise 500 the page
+    instead of costing it one card.
+    """
+    raw = (query.get("cycles") or [None])[0]
+    if raw is None:
+        return None
+    numbers = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            numbers.append(int(part))
+        except ValueError:
+            continue
+    return numbers
 
 
 def _journal_limit(query):
@@ -3759,12 +3830,14 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         offset = _int_param(query, "offset", 0)
         search = (query.get("q") or [None])[0]
         asks = (query.get("asks") or ["0"])[0] == "1"
+        cycles = _cycle_list(query)
         page = journal_page(
             payload, limit=limit, offset=offset, cycle=cycle, record_age=age,
-            search=search, asks=asks,
+            search=search, asks=asks, cycles=cycles,
         )
         etag = page_etag(
-            base, journal_descriptor(page, limit, offset, cycle, search, asks)
+            base,
+            journal_descriptor(page, limit, offset, cycle, search, asks, cycles),
         )
         # The version travels inside the document as well as in the header,
         # for the reason `_versioned` puts it in both: a response served out

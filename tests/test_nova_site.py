@@ -5269,6 +5269,82 @@ def test_the_endpoint_actually_reads_asks_off_the_query_string():
         assert json.loads(plain)["version"] != page["version"]
 
 
+def test_the_cycles_filter_returns_exactly_the_cards_it_was_named():
+    page = nova_site.journal_page(_with_asks(), cycles=[3, 1])
+    assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+    assert page["total"] == 2
+    assert page["cycles"] == [3, 1], "echoed newest first"
+
+
+def test_the_cycles_filter_ignores_the_window():
+    """Like `cycle` and like `asks`: the page asked for named cards, and a
+    window over them would drop the ones it named."""
+    page = nova_site.journal_page(_with_asks(), cycles=[4, 3, 1], limit=1, offset=2)
+    assert [entry["cycle"] for entry in page["entries"]] == [4, 3, 1]
+
+
+def test_an_empty_cycles_list_selects_nothing_rather_than_everything():
+    """`?cycles=` is the page saying "these ones" and having found none.
+    Answering it with the whole archive is the widest possible reading of
+    the narrowest possible request, and it is the shape `None` has."""
+    page = nova_site.journal_page(_with_asks(), cycles=[])
+    assert page["entries"] == []
+    assert page["total"] == 0
+
+
+def test_a_cycle_with_no_entry_is_not_counted_as_one():
+    """A read mark can name a cycle that ran and wrote nothing. `total` is
+    the cards found, so the pager is not offered a card that cannot come."""
+    page = nova_site.journal_page(_with_asks(), cycles=[3, 999])
+    assert [entry["cycle"] for entry in page["entries"]] == [3]
+    assert page["total"] == 1
+
+
+def test_the_cycles_window_gets_its_own_etag_per_set():
+    """Two `/replies` visits with different unread cards behind them build
+    the same base etag, so without the set in the key the second is answered
+    304 with the first one's rows still on screen."""
+    payload = _with_asks()
+    one = nova_site.journal_page(payload, cycles=[3])
+    two = nova_site.journal_page(payload, cycles=[3, 1])
+    plain = nova_site.journal_page(payload, limit=20)
+    first = nova_site.journal_descriptor(one, None, 0, None, None, False, [3])
+    second = nova_site.journal_descriptor(two, None, 0, None, None, False, [3, 1])
+    assert first != second
+    assert first != nova_site.journal_descriptor(plain, 20, 0, None, None, False)
+
+
+def test_the_endpoint_actually_reads_cycles_off_the_query_string():
+    """Same reason the ask test goes over the socket: every assertion above
+    would pass if `_send_journal` never passed `cycles` down."""
+    nova_site.reset_cache()
+    payload = _with_asks()
+    with patch.object(nova_site, "journal_payload", lambda: payload):
+        status, _, body = _get("/api/journal?cycles=3,1")
+        assert status == 200
+        page = json.loads(body)
+        assert [entry["cycle"] for entry in page["entries"]] == [3, 1]
+
+        _, _, other = _get("/api/journal?cycles=3")
+        assert json.loads(other)["version"] != page["version"]
+
+
+def test_a_corrupt_cycle_number_costs_one_card_and_not_the_page():
+    """The list is built from `localStorage` text nothing has ever
+    validated, so a bad key must not 500 the page it is the subject of."""
+    nova_site.reset_cache()
+    payload = _with_asks()
+    with patch.object(nova_site, "journal_payload", lambda: payload):
+        status, _, body = _get("/api/journal?cycles=3,not-a-number,1")
+        assert status == 200
+        assert [e["cycle"] for e in json.loads(body)["entries"]] == [3, 1]
+
+
+def test_the_replies_page_is_served_the_shell_on_a_cold_load():
+    """`/replies` has to survive a bookmark and a reload, same as `/asks`."""
+    assert "/replies" in nova_site.PAGE_ROUTES
+
+
 def test_the_asks_page_is_served_the_shell_on_a_cold_load():
     """`/asks` has to survive a bookmark and a reload, not only a tap on
     the header -- the header is on the front page and he opens this from a
