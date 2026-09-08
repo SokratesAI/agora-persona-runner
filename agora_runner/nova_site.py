@@ -6385,9 +6385,20 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         # line and a client that sends `"false"` or `1` by accident must
         # not silently glue a whole paste into one item.
         one_item = payload.get("oneItem") is True
+        # The project he picked in the box, as its display name. It is
+        # slugged into a tag by `nova_capture.project_slug`, which is also
+        # what makes an unknown or empty name harmless: it writes no tag
+        # rather than refusing the capture. Refusing would lose the
+        # sentence over a piece of metadata, which is the opposite of what
+        # this box is for.
+        project = payload.get("project")
+        if project is not None and not isinstance(project, str):
+            self._send_json(400, {"error": "project must be a string"})
+            return
 
         try:
-            ok, message = capture(target, text, priority, one_item=one_item)
+            ok, message = capture(
+                target, text, priority, one_item=one_item, project=project or "")
         except Exception as e:
             log(f"nova-site capture failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})

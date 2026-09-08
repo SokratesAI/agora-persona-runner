@@ -135,10 +135,32 @@
     <div class="capture-actions">
       <p id="capture-status" class="capture-status" role="status" aria-live="polite"></p>
       <div class="capture-submit">
-        <button type="button" class="capture-btn" data-target="issues">Issue</button>
-        <button type="button" class="capture-btn" data-target="ideas">Idea</button>
-        <button type="button" class="capture-btn" data-target="notes">Note</button>
+        <!-- One button per row of the row he types into, left to right:
+             what kind of thing this is, which project it belongs to, how
+             urgent, an image, and then Submit hard against the right
+             edge. His ask, 2026-09-08, with a screenshot. The priority
+             and attach controls are inserted between `capture-project`
+             and `capture-send` by `app.js`, which is where they have
+             always been built. -->
+        <button type="button" id="capture-type" class="capture-pick"
+                aria-haspopup="dialog" aria-expanded="false">Issue</button>
+        <button type="button" id="capture-project" class="capture-pick"
+                aria-haspopup="dialog" aria-expanded="false">No project</button>
+        <button type="button" id="capture-send" class="capture-send" disabled>Submit</button>
       </div>
+    </div>
+    <!-- The four types, as the buttons the bottom sheet shows. They live
+         in the shipped HTML rather than being built in `app.js` because
+         `test_nova_capture` reads them straight out of this file and
+         asserts they are exactly `CAPTURE_TARGETS` -- a button and that
+         dict disagreeing is a capture that 400s on a phone. Hidden here
+         and moved into the shared sheet when it opens; a tap selects the
+         type and does not submit. -->
+    <div id="capture-types" class="capture-types" hidden>
+      <button type="button" class="capture-btn" data-target="issues">Issue</button>
+      <button type="button" class="capture-btn" data-target="ideas">Idea</button>
+      <button type="button" class="capture-btn" data-target="notes">Note</button>
+      <button type="button" class="capture-btn" data-target="projects">Project</button>
     </div>
   </form>
 </section>

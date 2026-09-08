@@ -6604,7 +6604,8 @@ describe("the attach button is on the page, not just in the source", () => {
     };
     const status = window.document.querySelector(".capture-status");
     status.textContent = "";
-    window.document.querySelector('#capture-form [data-target="issues"]').click();
+    window.document.getElementById("capture-text").dispatchEvent(new window.Event("input"));
+    window.document.getElementById("capture-send").click();
     // Waiting on the *status line*, not on the tray, because one of the
     // tests below asserts what happened to the tray -- and a wait that
     // watches the thing it is about to assert can only ever pass.
@@ -6834,30 +6835,26 @@ describe("an attachment renders as what it is", () => {
 });
 
 describe("the capture row does not scramble", () => {
-  test("the priority picker joins the targets as the last item in the group", async () => {
+  test("the row runs type, project, attach, priority, submit", async () => {
     const window = await loadSite("/");
     const group = window.document.querySelector(".capture-submit");
     assert.ok(group, "the buttons are no longer grouped");
     const kids = [...group.children];
+    /* His ask, 2026-09-08: the three destination buttons became one type
+     * button plus a project button, priority and attach "stay like they
+     * are", and Submit goes "all the way to the right". Still five
+     * children and still an exact count, because the point of this test
+     * has not changed: nothing appears in this row without someone
+     * deciding where it goes. The attach button was once prepended here
+     * and every substring test in the suite stayed green. */
     assert.deepEqual(
-      kids.slice(0, 3).map((el) => el.dataset.target),
-      ["issues", "ideas", "notes"],
-      "the button group does not hold the three targets first",
-    );
-    // Five since the attach button joined the row: the three targets, the
-    // paperclip, the picker. The count is still asserted rather than
-    // loosened, because the whole point of this test is that nothing gets
-    // to appear in this row without someone deciding where it goes -- the
-    // attach button was prepended first and this assertion is what caught
-    // it putting the targets at 1, 2, 3.
-    assert.equal(kids.length, 5, "the priority picker is not in the button group");
-    assert.equal(
-      kids[3] && kids[3].className.includes("attach-btn"), true,
-      "the attach button is not between the targets and the picker",
+      kids.map((el) => el.id || el.className.trim()),
+      ["capture-type", "capture-project", "attach-btn", "capture-prio", "capture-send"],
+      "the capture row is scrambled",
     );
     assert.equal(
-      kids[4] && kids[4].id, "capture-prio",
-      "the picker is not the last (rightmost) item in the row",
+      group.lastElementChild.id, "capture-send",
+      "Submit is not the last (rightmost) item in the row",
     );
   });
 
@@ -7180,7 +7177,8 @@ describe("the priority picker (buildPrioPicker)", () => {
     click(window, [...window.document.querySelectorAll(".prio-option")]
       .find((o) => o.textContent === "🔴 Immediately"));
     window.document.getElementById("capture-text").value = "ship the thing";
-    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    window.document.getElementById("capture-text").dispatchEvent(new window.Event("input"));
+    click(window, window.document.getElementById("capture-send"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.length, 1);
     assert.equal(window.posted[0].body.priority, "🔴 Immediately");
@@ -7188,6 +7186,90 @@ describe("the priority picker (buildPrioPicker)", () => {
       window.document.getElementById("capture-prio").textContent, "–",
       "the picker did not reset after a send",
     );
+  });
+
+  /* The capture box rework, his ask 2026-09-08 with a screenshot: one type
+   * button opening a bottom sheet, a project button, and an explicit
+   * Submit at the right. The load-bearing half is that choosing a type no
+   * longer files anything -- two submit paths that can disagree about the
+   * selected type is a capture filed as the wrong kind. */
+  test("the type sheet selects without submitting", async () => {
+    const window = await loadSite("/issues");
+    const box = window.document.getElementById("capture-text");
+    box.value = "ship the thing";
+    box.dispatchEvent(new window.Event("input"));
+    click(window, window.document.getElementById("capture-type"));
+    const rows = [...window.document.querySelectorAll(".msg-sheet-body .capture-btn")];
+    assert.deepEqual(
+      rows.map((r) => r.dataset.target),
+      ["issues", "ideas", "notes", "projects"],
+      "the sheet is not showing the four capture targets",
+    );
+    click(window, rows.find((r) => r.dataset.target === "ideas"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, 0, "picking a type filed something");
+    assert.equal(window.document.getElementById("capture-type").textContent, "Idea");
+  });
+
+  test("Submit posts the chosen target, not the leftmost one", async () => {
+    const window = await loadSite("/issues");
+    const box = window.document.getElementById("capture-text");
+    box.value = "a project I want";
+    box.dispatchEvent(new window.Event("input"));
+    click(window, window.document.getElementById("capture-type"));
+    click(window, [...window.document.querySelectorAll(".msg-sheet-body .capture-btn")]
+      .find((r) => r.dataset.target === "projects"));
+    click(window, window.document.getElementById("capture-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].body.target, "projects");
+  });
+
+  test("the picked project reaches the request body, and No project clears it", async () => {
+    const window = await loadSite("/issues");
+    const real = window.fetch;
+    window.fetch = (url, options) => {
+      if (String(url).startsWith("/api/project")) {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: () => Promise.resolve({ projects: ["Marcus", "Nova app"] }),
+        });
+      }
+      return real(url, options);
+    };
+    const box = window.document.getElementById("capture-text");
+    box.value = "the tool sheet drags wrong";
+    box.dispatchEvent(new window.Event("input"));
+    click(window, window.document.getElementById("capture-project"));
+    // The list arrives one round trip after the tap, so the sheet is
+    // built in a `then` -- this is what waits for it.
+    for (let i = 0; i < 40 && !window.document.querySelector(".msg-sheet-body button"); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const rows = [...window.document.querySelectorAll(".msg-sheet-body button")];
+    assert.deepEqual(rows.map((r) => r.textContent), ["No project", "Marcus", "Nova app"]);
+    click(window, rows.find((r) => r.textContent === "Nova app"));
+    assert.equal(window.document.getElementById("capture-project").textContent, "Nova app");
+    click(window, window.document.getElementById("capture-send"));
+    await new Promise((r) => window.setTimeout(r, 0));
+    assert.equal(window.posted.length, 1);
+    assert.equal(window.posted[0].body.project, "Nova app");
+    // Last-used, deliberately: he files three issues about one thing in a
+    // row, so the project survives a send where the rating does not.
+    assert.equal(window.document.getElementById("capture-project").textContent, "Nova app");
+  });
+
+  test("Submit is inert on an empty box and wakes on a keystroke", async () => {
+    const window = await loadSite("/issues");
+    const send = window.document.getElementById("capture-send");
+    assert.equal(send.disabled, true, "Submit is live with nothing to file");
+    const box = window.document.getElementById("capture-text");
+    box.value = "   ";
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(send.disabled, true, "whitespace is not a capture");
+    box.value = "a real line";
+    box.dispatchEvent(new window.Event("input"));
+    assert.equal(send.disabled, false, "Submit stayed dead on a typed line");
   });
 
   test("the one-item toggle appears only once the box holds more than one line", async () => {
@@ -7224,7 +7306,8 @@ describe("the priority picker (buildPrioPicker)", () => {
     box.dispatchEvent(new window.Event("input"));
     click(window, window.document.getElementById("capture-one-input"));
     assert.equal(window.document.getElementById("capture-one-input").checked, true);
-    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    window.document.getElementById("capture-text").dispatchEvent(new window.Event("input"));
+    click(window, window.document.getElementById("capture-send"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted.length, 1);
     assert.equal(window.posted[0].body.oneItem, true);
@@ -7238,7 +7321,8 @@ describe("the priority picker (buildPrioPicker)", () => {
   test("an untouched capture posts oneItem false rather than nothing", async () => {
     const window = await loadSite("/issues");
     window.document.getElementById("capture-text").value = "the app needs a restart";
-    click(window, window.document.querySelector('.capture-btn[data-target="issues"]'));
+    window.document.getElementById("capture-text").dispatchEvent(new window.Event("input"));
+    click(window, window.document.getElementById("capture-send"));
     await new Promise((r) => window.setTimeout(r, 0));
     assert.equal(window.posted[0].body.oneItem, false);
   });
@@ -8465,7 +8549,7 @@ describe("the notes page", () => {
     // The one composer the shell has, not a second copy that could drift
     // from the handlers `captureBox()` bound at startup.
     assert.equal(window.document.querySelectorAll("#capture-form").length, 1);
-    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 4);
   });
 
   test("navigating away puts the composer back rather than deleting it", async () => {
@@ -8479,7 +8563,7 @@ describe("the notes page", () => {
     const capture = window.document.getElementById("capture");
     assert.ok(capture, "the composer was destroyed by navigating away from Notes");
     assert.equal(capture.parentNode, window.document.getElementById("feed").parentNode);
-    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 4);
   });
 
   test("it opens on the newest message instead of at the top", async () => {
@@ -8532,7 +8616,7 @@ describe("the notes page", () => {
     const capture = window.document.getElementById("capture");
     assert.ok(capture, "scrolling up destroyed the composer");
     assert.equal(capture.parentNode, window.document.getElementById("feed"));
-    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 4);
     // And it is still the last thing on the page, under the messages it
     // just revealed.
     assert.equal(window.document.getElementById("feed").lastElementChild, capture);
@@ -8640,7 +8724,7 @@ describe("the notes page", () => {
     const capture = window.document.getElementById("capture");
     assert.ok(capture, "the composer was destroyed from every page");
     assert.equal(capture.parentNode, feed.parentNode, "the composer is inside the feed on a board page");
-    assert.equal(window.document.querySelectorAll(".capture-btn").length, 3);
+    assert.equal(window.document.querySelectorAll(".capture-btn").length, 4);
     assert.deepEqual(scrolls, [], "the notes page scrolled a page it was no longer on");
   });
 

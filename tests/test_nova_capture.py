@@ -18,9 +18,10 @@ from unittest.mock import patch
 import pytest
 
 from agora_runner import nova_capture
-from agora_runner.nova_boards import _captures
+from agora_runner.nova_boards import _captures, PROJECT_META_PATH
 from agora_runner.nova_capture import (
     CAPTURE_TARGETS,
+    project_slug,
     amend,
     capture,
     clean_capture_text,
@@ -446,6 +447,14 @@ def test_notes_is_a_capture_target_pointing_at_edvards_own_folder():
     assert CAPTURE_TARGETS["notes"] == "projects/sokrates/projects/nova/notes.md"
     assert CAPTURE_TARGETS["issues"] == "projects/sokrates/projects/nova/issues.md"
     assert CAPTURE_TARGETS["ideas"] == "projects/sokrates/projects/nova/ideas.md"
+    # Deliberately not `projects.md`: that path is `PROJECT_META_PATH`, the
+    # project *rating* table the board reads on every render. A capture
+    # filed there would put bare bullets above a parsed table.
+    assert (
+        CAPTURE_TARGETS["projects"]
+        == "projects/sokrates/projects/nova/proposed-projects.md"
+    )
+    assert CAPTURE_TARGETS["projects"] != PROJECT_META_PATH
     assert not any(
         p.startswith("projects/sokrates/projects/agora/")
         for p in CAPTURE_TARGETS.values()
@@ -1003,3 +1012,82 @@ def test_convert_never_deletes_the_source_when_addressed_by_the_folded_form(issu
     # are both still there -- the thing the reviewer found was that they
     # were not.
     assert [path for path, _ in writes] == [CAPTURE_TARGETS["ideas"]]
+
+
+# --- the project a capture belongs to (his capture 2026-09-08) -----------
+
+
+def test_a_project_rides_on_the_end_of_the_bullet_as_a_tag():
+    """The tag goes at the *end* of the first bullet and nowhere else.
+
+    The front is taken by the rating, and the end is the only place a bare
+    bullet has left -- every parser in this module assumes a capture is one
+    line that looks exactly like a line he typed in Obsidian.
+    """
+    written = {}
+
+    def fake_read(path):
+        return "---\ntype: log\n---\n\n- \n\n## Board\n", "1-a"
+
+    def fake_write(path, text, if_rev=None):
+        written["text"] = text
+        return "written"
+
+    with patch.object(nova_capture, "vault_read_path_rev", fake_read), \
+            patch.object(nova_capture, "vault_write_path", fake_write):
+        ok, _ = nova_capture.capture(
+            "ideas", "fix the drag on the tool sheet", project="Nova app")
+    assert ok
+    assert "- fix the drag on the tool sheet #nova-app" in written["text"]
+
+
+def test_the_tag_lands_after_the_rating_not_before_it():
+    """Rating in front, project at the back, on the same bullet.
+
+    Both ride on bullet zero for the same reason: a paste that splits into
+    four lines is one thought he rated once and filed against one project.
+    """
+    written = {}
+
+    with patch.object(nova_capture, "vault_read_path_rev",
+                      lambda path: ("---\ntype: log\n---\n\n- \n\n## Board\n", "1-a")), \
+            patch.object(nova_capture, "vault_write_path",
+                         lambda path, text, if_rev=None: written.update(text=text) or "written"):
+        ok, _ = nova_capture.capture(
+            "issues", "one\n\ntwo", priority="High", project="Marcus")
+    assert ok
+    lines = [l for l in written["text"].splitlines() if l.startswith("- ") and l.strip() != "-"]
+    assert lines[0] == "- \U0001f7e0 High: one #marcus"
+    # The second bullet carries neither, which is the half a test that only
+    # looked at bullet zero would pass without.
+    assert lines[1] == "- two"
+
+
+def test_an_unnameable_project_writes_no_tag_rather_than_a_bare_hash():
+    """A name that slugs to nothing is not an error and must not become `#`.
+
+    Refusing here would lose the sentence over a piece of metadata, which
+    is the opposite of what this box is for. A bare `#` would be a tag
+    pointing at nothing.
+    """
+    written = {}
+    with patch.object(nova_capture, "vault_read_path_rev",
+                      lambda path: ("---\ntype: log\n---\n\n- \n\n## Board\n", "1-a")), \
+            patch.object(nova_capture, "vault_write_path",
+                         lambda path, text, if_rev=None: written.update(text=text) or "written"):
+        ok, _ = nova_capture.capture("notes", "just a note", project="   ")
+    assert ok
+    assert "- just a note\n" in written["text"]
+    assert "#" not in written["text"].split("## Board")[0]
+
+
+def test_project_slug_is_one_source_of_truth_for_the_tag():
+    assert project_slug("Nova app") == "nova-app"
+    assert project_slug("Sokrates Post!") == "sokrates-post"
+    assert project_slug("  WhatsApp  bridge ") == "whatsapp-bridge"
+    assert project_slug("") == ""
+    assert project_slug(None) == ""
+    # A slug can never carry the space or the `#` that would end the tag
+    # early and swallow the rest of the bullet into it.
+    assert " " not in project_slug("a b c")
+    assert "#" not in project_slug("a#b")
