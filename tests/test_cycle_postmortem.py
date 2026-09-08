@@ -750,13 +750,47 @@ def test_the_two_causes_get_separate_headings_and_both_still_raise():
     assert alone == 2
 
 
-def test_the_lost_heading_says_where_the_reply_still_is():
-    """Three cycles wrote `their transcripts are the only source` into the
-    handoff while every one of those replies sat in Agora. The recovery
-    path belongs on the report, not in a journal entry nobody re-reads."""
-    report, _ = format_report([row(87, "lost")], 1243, None)
-    assert "Agora conversation" in report
-    assert "final_reply" in report
+def test_the_report_prints_the_lost_cycles_own_account():
+    """Four cycles running called this bucket undiagnosable while every one
+    of those replies sat in Agora, because the report named the recovery
+    instead of performing it. Naming it is what did not work."""
+    reply = "Merged runner#421.\nThe cache is warm and the page is 4x faster."
+    lost = dict(row(87, "lost"), reply=reply)
+    report, _ = format_report([lost], 1243, None)
+    assert "Merged runner#421." in report
+    # Whole, both lines of it -- a summary of a lost cycle's only surviving
+    # account is the same loss one step further along.
+    assert "The cache is warm and the page is 4x faster." in report
+
+
+def test_a_lost_row_whose_reply_cannot_be_read_says_so():
+    """The heading promises the reply is in the conversation. A row that
+    printed nothing would make that promise false with nothing on the page
+    to tell a reader it had."""
+    report, _ = format_report([dict(row(87, "lost"), reply=None)], 1243, None)
+    assert "no reply in the conversation to recover" in report
+    assert "--- end of recovered reply ---" not in report
+
+
+def test_only_a_lost_row_carries_a_recovered_reply():
+    """An `api error` run's last message IS the error, already quoted in its
+    own detail line; printing it again under a recovery banner would read as
+    work to get back."""
+    report, _ = format_report([row(839, "api error"), row(506, "failed")],
+                              1243, None)
+    assert "recovered from Agora" not in report
+    assert "no reply in the conversation to recover" not in report
+
+
+def test_judge_carries_the_reply_out_with_the_lost_row():
+    """`collect` has already paid for these messages. A reader who has to go
+    back to Agora for them is the state this replaces, so the text has to
+    leave `judge` attached to the row rather than be re-fetched."""
+    reply = "Done -- the journal page renders in 300ms now."
+    lost = judge(87, {"id": "c"},
+                 [message("working"), message(reply), message(CLOSING_87)])
+    assert lost["verdict"] == "lost"
+    assert lost["reply"] == reply
 
 
 def test_a_heading_with_no_note_prints_no_blank_indent():

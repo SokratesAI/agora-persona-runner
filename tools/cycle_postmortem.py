@@ -450,6 +450,12 @@ def judge(number, conversation, messages, now=None):
             return {"number": number, "verdict": "api error",
                     "messages": len(messages),
                     "detail": _api_error_detail(messages[-1].get("text") or "", reply)}
+        # The reply travels with the row rather than being re-fetched by
+        # whoever reads the report. `collect` has already paid for these
+        # messages; a reader who has to go back to Agora for them is the
+        # state that had four cycles calling this bucket undiagnosable.
+        return {"number": number, "verdict": verdict, "detail": detail,
+                "messages": len(messages), "reply": reply}
     return {"number": number, "verdict": verdict, "detail": detail,
             "messages": len(messages)}
 
@@ -762,9 +768,9 @@ RAISING_VERDICTS = ("lost", "api error", "cut off", "unjudged")
 
 _HEADINGS = (
     ("lost", "RAN AND LEFT NO RECORD — the work happened and the journal does not have it",
-     "The run's own reply to Edvard is still in its Agora conversation, so what the "
-     "cycle did is readable without a CLI transcript -- `final_reply` on the "
-     "conversation's messages is the whole recovery."),
+     "Each row prints the run's own reply to Edvard, recovered from its Agora "
+     "conversation -- so what the cycle did is readable here, without a CLI "
+     "transcript and without a second call to Agora."),
     ("api error", "DIED ON A MODEL-CALL ERROR — the run's last message is the error itself, "
                   "not a reply",
      "Agora's closing line counts it as a reply of N chars, which is why these used "
@@ -780,6 +786,31 @@ _HEADINGS = (
     ("unreadable", "UNREADABLE — the conversation exists and its messages did not answer"),
     ("still running", "STILL RUNNING — no outcome yet, and it spoke a moment ago"),
 )
+
+
+#: Where the recovered reply starts, and where it stops. A `lost` row's
+#: reply is the cycle's own account of work the journal does not have, so
+#: it is printed whole -- prose that a fence makes readable rather than a
+#: length that would decide for the reader which part mattered.
+_REPLY_OPEN = "      --- its own account of the work, recovered from Agora ---"
+_REPLY_CLOSE = "      --- end of recovered reply ---"
+
+
+def _recovered_reply_lines(reply):
+    """The block printed under a `lost` row, as lines.
+
+    A `lost` row whose reply cannot be read says so. The heading above it
+    promises the reply is still in the conversation, and a row that
+    quietly printed nothing would make that promise false without any
+    reader being able to tell -- which is the shape of failure this whole
+    tool exists to remove.
+    """
+    if not (reply or "").strip():
+        return ["      no reply in the conversation to recover — the closing line "
+                "counted characters that are not in any message"]
+    return ([_REPLY_OPEN]
+            + [f"      {line}" for line in reply.strip().splitlines()]
+            + [_REPLY_CLOSE])
 
 
 def format_report(results, newest, error, window=DEFAULT_WINDOW, raise_all=False):
@@ -808,6 +839,8 @@ def format_report(results, newest, error, window=DEFAULT_WINDOW, raise_all=False
             mark = "" if row.get("recent") else "  (outside the window)"
             lines.append(f"  Cycle {row['number']}: {row['detail']}"
                          f" [{row['messages']} message(s)]{mark}")
+            if verdict == "lost":
+                lines.extend(_recovered_reply_lines(row.get("reply")))
 
     lines.append("")
     lines.append(f"{len(results)} cycle number(s) in the journal's range have no entry: "
