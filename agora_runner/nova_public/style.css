@@ -331,7 +331,10 @@ a.status-sub:hover .status-pr { color: var(--text); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.capture-pick::after { content: " \25BE"; color: var(--dim); }
+/* No arrow. His ask, 2026-09-08 -- and it is the second time the same
+   caret has been taken off a control this week (see `#chat-model-host
+   select`): on a 44px pill it costs width the label needs, and the button
+   opens a drawer that announces itself by sliding up the screen. */
 .capture-pick:hover { border-color: var(--accent); }
 
 /* Submit, hard against the right edge -- his ask, 2026-09-08. Filled
@@ -3412,6 +3415,20 @@ body.has-full-chart { overflow: hidden; }
   cursor: pointer;
 }
 
+/* The `+` wears the same ring as the buttons beside it -- his ask,
+ * 2026-09-08, for both composers at once. It is borderless everywhere else
+ * on purpose (in the `+` drawer it is a card, in the comment box it sits
+ * alone), so this is scoped to the two rows where it stands in a line of
+ * outlined controls and was the only one without an edge.
+ *
+ * `--outline` in both, and not the `--line` its neighbour in the chat row
+ * happens to use: that token is a divider at 1.2:1 against `--card` and
+ * fails SC 1.4.11 as a control edge. `test_no_control_borders_its_edge_
+ * with_the_divider_token` caught the first version of this rule doing
+ * exactly that. */
+.capture-submit .attach-btn { border: 1px solid var(--outline); }
+.chat-actions .attach-btn { border: 1px solid var(--outline); }
+
 .attach-btn:hover:not(:disabled) { color: var(--text); }
 /* The emoji in these two carry their own colour, which no `color` can
  * reach -- the speaker renders bright blue beside two monochrome glyphs.
@@ -5202,6 +5219,23 @@ X that summarizes the last 12
   color: var(--dim);
 }
 .capture-sheet-head:first-child { margin-top: 0; }
+/* The upper drawer of the pair -- his ask, 2026-09-08: *"Make the project
+ * picker be another modal on top of the other modal. They should both be
+ * drawers like what we did for the chat."*
+ *
+ * Two numbers and nothing else. It is the same element the lower one is,
+ * built by the same factory, so everything that makes it a drawer -- the
+ * grip, the slide, the drag, the backdrop fade -- it already has from the
+ * shared rule list above. What it needs is to sit over its sibling, and
+ * for its own backdrop to sit over that sibling too: a stack whose upper
+ * backdrop dimmed nothing would leave both sheets equally lit and read as
+ * one sheet that had changed its mind.
+ *
+ * 43 and 42 against the base 41 and 40, deliberately adjacent -- there is
+ * no third layer, and leaving a gap would invite one. */
+.msg-sheet--stacked { z-index: 43; }
+.msg-sheet--stacked-backdrop { z-index: 42; }
+
 .msg-sheet .capture-btn[aria-pressed="true"] {
   border-color: var(--accent);
   color: var(--accent);
