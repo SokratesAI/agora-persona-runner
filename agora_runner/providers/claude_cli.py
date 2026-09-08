@@ -66,6 +66,9 @@ list and hands the CLI a real user message over --input-format stream-json
 """
 import base64
 import json
+import socket
+import time
+import urllib.error
 
 from agora_runner.config import (CLAUDE_BRIDGE_URL, CLAUDE_BRIDGE_TOKEN,
                                  CLAUDE_CLI_CONCURRENT, RUNNER_CALLBACK_URL)
@@ -78,6 +81,74 @@ from agora_runner.tools_mcp import grant as grant_mcp, revoke as revoke_mcp
 class ClaudeBridgeUsageLimited(Exception):
     """Real subscription/API usage cap reported by the bridge (HTTP 429) --
     distinct from a generic failure. Callers should not retry immediately."""
+
+
+# How long to keep offering a turn to a bridge that is not there yet, and
+# how long to wait between offers. The owner lost a chat message on
+# 2026-09-08 at ~14:52: no reply, the chat spun forever, and the cluster
+# events said why -- the bridge Deployment uses strategy Recreate, so the
+# old pod is scaled to 0 and only then is the replacement created, and
+# there was a ~7 minute window with no bridge at all. His message landed
+# in it. The bridge has always implemented its half of this: a pod that is
+# draining answers /generate with 503 {"error": "shutting_down"} and the
+# comment above that line says it is there "so the caller can retry
+# against the replacement pod" (bridge/server.py). Nothing implemented the
+# caller's half. 600s is chosen against that measured ~7 minute gap with
+# room over it, not against a generation time -- every wait here happens
+# while no turn is running anywhere.
+BRIDGE_RETRY_SECONDS = 600
+BRIDGE_RETRY_BACKOFF = (5, 10, 20, 30)
+
+
+def _bridge_never_took_it(exc):
+    """True only when the request provably never reached the bridge.
+
+    Retrying is safe exactly when nothing was delivered. A refused
+    connection and a DNS failure both happen before a byte of the body is
+    sent, so no turn can have started. A connection *reset* after the
+    request was accepted is deliberately not in here: from this side it is
+    indistinguishable from the refusal above, and retrying it would ask a
+    live pod to run the same turn a second time.
+    """
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, (ConnectionRefusedError, socket.gaierror))
+
+
+def _post_generate(body, headers, timeout):
+    """POST /generate, waiting out a bridge that is mid-rollout.
+
+    Returns `(status, resp)` exactly as `http_json` does, and raises what
+    `http_json` raises once the retry budget is spent. Only the two states
+    that mean "this pod has not run your turn and will not" are retried:
+    a 503 whose error is `shutting_down`, which the bridge sends before
+    doing any work, and a connection the pod never accepted.
+    """
+    deadline = time.monotonic() + BRIDGE_RETRY_SECONDS
+    attempt = 0
+    while True:
+        try:
+            status, resp = http_json(
+                "POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers,
+                timeout=timeout)
+            if not (status == 503 and (resp or {}).get("error") == "shutting_down"):
+                return status, resp
+            why = "503 shutting_down"
+            last = None
+        except urllib.error.URLError as e:
+            if not _bridge_never_took_it(e):
+                raise
+            why = f"unreachable ({getattr(e, 'reason', e)})"
+            last = e
+        wait = BRIDGE_RETRY_BACKOFF[min(attempt, len(BRIDGE_RETRY_BACKOFF) - 1)]
+        if time.monotonic() + wait >= deadline:
+            log(f"claude_cli: bridge {why} for the whole "
+                f"{BRIDGE_RETRY_SECONDS}s budget, giving up")
+            if last is not None:
+                raise last
+            return status, resp
+        log(f"claude_cli: bridge {why}, retrying in {wait}s")
+        time.sleep(wait)
+        attempt += 1
 
 
 def _bridge_attachments(message):
@@ -235,8 +306,7 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         # the full v2 single-session arc: read state, decide, implement,
         # review, merge, health-check, journal, all in one call) or this HTTP
         # call gives up before the bridge itself would.
-        status, resp = http_json(
-            "POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers, timeout=2760)
+        status, resp = _post_generate(body, headers, timeout=2760)
     finally:
         revoke_tool_activity(activity_token)
         revoke_mcp(mcp_token)
