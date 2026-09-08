@@ -20,7 +20,7 @@
  * read on his phone as "the buttons are gone". The activate handler below
  * deletes every cache whose key is not this one, so changing the name is
  * what evicts the stale shell. Bump it whenever the shell files change. */
-var CACHE = "nova-v8";
+var CACHE = "nova-v9";
 /* Where a push handler parks the thread its notification is about.
  *
  * A second cache rather than a corner of the first one, because the two
@@ -108,7 +108,30 @@ self.addEventListener("fetch", function (event) {
       // its own cache reads are all on failure paths.
       return undefined;
     }).then(function (hit) {
-      return hit || networkFirst(request, fallback);
+      /* No push had answered this one, so it is an ordinary load of the
+       * thread -- and since 2026-09-08 that means the cache answers it,
+       * like every other payload the page polls.
+       *
+       * It was `networkFirst` until his report the same morning: *"When i
+       * open the app or closed my phone with the Nova app open and then
+       * unlocked my phone again, it takes about 10 seconds before anything
+       * loads in the chat, messages or how many tools have been used."*
+       * The reopen fix (#895) reached everything on `POLLED_PAYLOADS` and
+       * stopped short of exactly one route -- this one -- because the push
+       * branch above claimed the path first and fell through to the
+       * network. So the whole app painted from cache instantly and the
+       * chat, the biggest payload of the lot, still sat waiting.
+       *
+       * It is the biggest by a distance: measured against his own thread
+       * that morning, 109 KB over two upstream fetches and 1.8s of server
+       * time before a byte leaves the cluster.
+       *
+       * The `If-None-Match` guard is the same one below: the page's own
+       * 30-second poll carries an etag and is left to the network, so this
+       * only ever answers the load where the page has nothing. */
+      if (hit) return hit;
+      if (headerOf(request, "If-None-Match")) return networkFirst(request, fallback);
+      return staleWhileRevalidate(event, request);
     }));
     return;
   }
