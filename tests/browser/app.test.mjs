@@ -15812,13 +15812,61 @@ describe("the thoughts-and-tools drawer", () => {
           steps: [{ kind: "thought", text: "Counting." }] },
       ] },
     });
+    /* `:not(.ask-pending)` since 2026-09-08: a steps-only tail now also
+     * draws the loader, which is itself an `.ask-msg`. What this test is
+     * about is unchanged -- the running turn must not draw a bubble with no
+     * text in it -- and the loader is not that; it is the thing that says
+     * the turn is still going. */
     assert.equal(
-      window.document.querySelectorAll("#chat-thread .ask-msg").length, 1,
+      window.document.querySelectorAll("#chat-thread .ask-msg:not(.ask-pending)").length, 1,
       "the running turn drew a bubble of its own");
     assert.equal(
       window.document.querySelectorAll("#chat-thread .ask-msg-steps").length, 1);
     assert.equal(lines(window).length, 1);
     assert.match(lines(window)[0].textContent, /Thought/);
+  });
+
+  test("work under a finished reply still shows the loader", async () => {
+    /* His question, 2026-09-08, with a screenshot of a reply followed by a
+     * bare "Used 10 tools" and nothing else: *"You seem to be working on
+     * something, but after sending a message? There is no spinner, just
+     * some tool usage that are displayed below your output. Not sure if
+     * this is by design or a bug?"*
+     *
+     * Half of each, and this pins the half that was a bug. `waiting` is
+     * computed from settled messages so that a passage arriving mid-turn
+     * does not read as "answered" and stop the poll -- correct, and the
+     * wrong question to ask about the loader. A thread visibly making tool
+     * calls said nothing about it. */
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, messages: [
+        { id: "1", sender: "Edvard", text: "how many pods?" },
+        { id: "2", sender: "Nova", text: "Seven." },
+        { id: "", sender: "", text: "", partial: true, stepsOnly: true,
+          steps: [{ kind: "tool", capability: "Bash", input: "ls", id: "a",
+                    status: "running", at: new Date().toISOString() }] },
+      ] },
+    });
+    assert.ok(window.document.querySelector("#chat-thread .ask-orbit"),
+      "a thread making tool calls under a finished reply showed no loader");
+  });
+
+  test("a block of work that stopped hours ago does not spin forever", async () => {
+    /* The other case this row exists for: a cycle that narrated for an hour
+     * and died without replying. A loader over that would be the same class
+     * of untruth as the missing one above, pointing the other way. */
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, messages: [
+        { id: "1", sender: "Edvard", text: "how many pods?" },
+        { id: "2", sender: "Nova", text: "Seven." },
+        { id: "", sender: "", text: "", partial: true, stepsOnly: true,
+          steps: [{ kind: "tool", capability: "Bash", input: "ls", id: "a",
+                    status: "running",
+                    at: new Date(Date.now() - 3600 * 1000).toISOString() }] },
+      ] },
+    });
+    assert.equal(window.document.querySelector("#chat-thread .ask-orbit"), null,
+      "an hour-old block of work is still claiming to be running");
   });
 
   test("more than one capability is counted rather than named", async () => {

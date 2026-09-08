@@ -12206,7 +12206,52 @@
       return;
     }
     askPaintThread(container, payload, afterSend);
-    if (payload.waiting) container.appendChild(askPending(payload.progress));
+    if (payload.waiting || tailIsWorking(messages)) {
+      container.appendChild(askPending(payload.progress));
+    }
+  }
+
+  /* How long a steps-only tail may go without a new step and still count as
+   * a turn in flight. Generous on purpose: a single tool call can run for
+   * minutes (a test suite, a CI wait), and a loader that gave up on a turn
+   * that was merely thinking would be a worse lie than the one this fixes. */
+  var TAIL_WORKING_WITHIN_SECONDS = 300;
+
+  /* Is the bottom of the thread a block of work with nothing said after it?
+   *
+   * His question, 2026-09-08, with a screenshot of a reply followed by a
+   * bare "Used 10 tools" and no loader: *"You seem to be working on
+   * something, but after sending a message? There is no spinner, just some
+   * tool usage that are displayed below your output. Not sure if this is by
+   * design or a bug?"*
+   *
+   * Half of each. The row itself is deliberate -- `visible_rows` emits a
+   * steps-only row for narration with no message after it, which is what
+   * stops mid-turn work being drawn as a second chat bubble. The missing
+   * loader is not. `payload.waiting` is computed from SETTLED messages
+   * only, deliberately: it drives the poll, and a passage arriving mid-turn
+   * must not read as "answered" and stop it. But the page used the same
+   * flag to decide whether to draw the loader, so a thread visibly making
+   * tool calls under a finished reply reported nothing at all.
+   *
+   * Bounded by the newest step's own timestamp, because the other case this
+   * row exists for is a cycle that narrated for an hour and died. A loader
+   * spinning forever over that would be the same class of untruth. Steps
+   * have carried `at` since 2026-09-07, so the question is answerable here.
+   */
+  function tailIsWorking(messages) {
+    var last = messages[messages.length - 1];
+    if (!last || !last.stepsOnly) return false;
+    var steps = last.steps || [];
+    var newest = 0;
+    steps.forEach(function (step) {
+      var at = Date.parse(step.endedAt || step.at || "");
+      if (!isNaN(at) && at > newest) newest = at;
+    });
+    // No usable stamp is not evidence of staleness -- an older payload
+    // carries none at all, and the block is still the newest thing here.
+    if (!newest) return true;
+    return (Date.now() - newest) / 1000 <= TAIL_WORKING_WITHIN_SECONDS;
   }
 
   /* The Conversations page is gone -- his ask, 2026-09-07: *"I only use
