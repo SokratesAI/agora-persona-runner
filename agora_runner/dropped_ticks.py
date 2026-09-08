@@ -50,6 +50,19 @@ PATH = "projects/sokrates/projects/agora/nova/resources/dropped-ticks.json"
 # one list is how a reader starts filtering instead of reading.
 LAG_PATH = "projects/sokrates/projects/agora/nova/resources/scheduler-lag.json"
 
+# The third way an anchored slot is lost, and until now the only one that left
+# nothing behind. `pass_once` catches every exception out of
+# `run_due_heartbeats` on purpose -- an escape would stop every heartbeat in
+# this Pod for as long as it lives -- and then said so only to a log that dies
+# with the container. So a scheduler raising on every pass for an hour looked,
+# from outside, exactly like a scheduler with nothing to do: no drop record
+# (nothing was ever judged), no lag record (the loop kept its cadence), and a
+# missed slot that `heartbeat_gaps` files under `unevaluated`, which is the
+# NAME OF A DIFFERENT BUG -- the poller sleeping through the slot. That is the
+# misattribution cycle 1237 fixed one layer up, arriving by a path it could
+# not see. Its own document for the same reason the other two are separate.
+FAIL_PATH = "projects/sokrates/projects/agora/nova/resources/scheduler-failures.json"
+
 # Enough to cover several days of a healthy loop and a whole outage of a sick
 # one: the 24h window `heartbeat_gaps` judges saw four drops on the day this
 # was written, and a heartbeat wedged for its full 45-minute cap contributes
@@ -149,6 +162,24 @@ def record_pass_lag(gap_seconds, pass_seconds, interval_seconds, n, now=None):
     return thread
 
 
+def record_pass_failure(error, n, now=None):
+    """Persist one scheduler pass that raised, off the calling thread. -> the Thread.
+
+    `error` is the exception; its type and text are stored separately because
+    the type is what groups an outage and the text is what identifies it, and
+    a single formatted string makes a reader parse one back out of the other.
+    """
+    at = (now or datetime.now(timezone.utc)).isoformat()
+    entry = {"at": at, "error": f"{type(error).__name__}: {error}",
+             "errorType": type(error).__name__,
+             "failedSinceHealthy": n}
+    thread = threading.Thread(
+        target=_write_quietly, args=(entry, FAIL_PATH, "scheduler-failure"),
+        daemon=True)
+    thread.start()
+    return thread
+
+
 def read_records():
     """Every stored record, oldest first. -> list
 
@@ -163,3 +194,9 @@ def read_lag_records():
     """Every stored late-pass record, oldest first. -> list"""
     raw, _rev = vault_read_path_rev(LAG_PATH)
     return _load(raw, LAG_PATH)
+
+
+def read_failure_records():
+    """Every stored failed-pass record, oldest first. -> list"""
+    raw, _rev = vault_read_path_rev(FAIL_PATH)
+    return _load(raw, FAIL_PATH)

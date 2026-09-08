@@ -400,3 +400,30 @@ def test_every_slept_through_slot_is_named_in_the_one_record():
     assert _utc(10, 24).isoformat() in reason
     assert _utc(10, 48).isoformat() in reason
     assert calls[0][1]["now"] == _utc(10, 24)
+
+
+# --- a scheduler pass that raised -----------------------------------------
+
+
+def test_a_failed_pass_is_stored_with_its_type_and_its_text(monkeypatch):
+    written = []
+    monkeypatch.setattr(dropped_ticks, "_write_quietly",
+                        lambda entry, path, label: written.append((entry, path, label)))
+    at = datetime(2026, 9, 8, 18, 30, tzinfo=timezone.utc)
+    dropped_ticks.record_pass_failure(RuntimeError("agora unreachable"), 2,
+                                      now=at).join(timeout=5)
+    (entry, path, label), = written
+    assert path == dropped_ticks.FAIL_PATH
+    assert label == "scheduler-failure"
+    assert entry == {"at": at.isoformat(),
+                     "error": "RuntimeError: agora unreachable",
+                     "errorType": "RuntimeError",
+                     "failedSinceHealthy": 2}
+
+
+def test_the_failure_ledger_is_its_own_document():
+    # Three ledgers, three documents: `heartbeat_gaps` reads them for three
+    # different sentences, and one list with a `kind` field is how a reader
+    # starts filtering instead of reading.
+    assert len({dropped_ticks.PATH, dropped_ticks.LAG_PATH,
+                dropped_ticks.FAIL_PATH}) == 3

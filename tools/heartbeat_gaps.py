@@ -63,6 +63,16 @@ back that far, which is the honest answer for every slot before the recorder
 shipped, and for all four of the ones above). Empty is not the same as
 absent, and neither is a cause.
 
+**A fourth answer, and the one that was silent everywhere.** A scheduler
+pass that *raises* declines no tick and keeps its cadence, so it writes
+neither of those ledgers, and the slot it loses arrives here as
+`unevaluated` --- the name of the poller sleeping through a slot, which is a
+different bug with a different fix. `pass_once` has always caught that
+exception on purpose, and then said so only to a log that dies with the
+container. `agora_runner.dropped_ticks.record_pass_failure` gives it a
+document, and a missed slot whose own period holds one of those records is
+taken out ahead of the covered/idle split and named as a raised pass.
+
 The attribution window is the schedule's own period, not a tolerance I
 picked. That is deliberately generous: it over-attributes rather than
 under-attributes, so an *unexplained* slot is a claim this can defend.
@@ -121,6 +131,13 @@ DROP_LEDGER = "projects/sokrates/projects/agora/nova/resources/dropped-ticks.jso
 #: A declined tick above is a slot the poller looked at; this is the poller
 #: not looking, which is how an anchored slot is lost without being declined.
 LAG_LEDGER = "projects/sokrates/projects/agora/nova/resources/scheduler-lag.json"
+
+#: Where the runner records a scheduler pass that RAISED. The third way a slot
+#: is lost and the only one that used to leave nothing outside the Pod: a
+#: raising scheduler declines no tick and keeps its cadence, so it writes
+#: neither ledger above, and its lost slots land in `unevaluated` below ---
+#: the name of the poller sleeping through a slot, a different bug.
+FAIL_LEDGER = "projects/sokrates/projects/agora/nova/resources/scheduler-failures.json"
 
 #: `vault_tool.py`, which exists on the bridge Pod only. Same constant and
 #: same reason as `tools.roll_health`.
@@ -190,6 +207,60 @@ def read_lag_records(runner=subprocess.run):
     return records, None
 
 
+def read_failure_records(runner=subprocess.run):
+    """`(records, error)` --- scheduler passes that raised.
+
+    Same contract as `read_drop_records` and `read_lag_records`: an empty list
+    is a real measurement, an unreadable ledger reports its error and still
+    does not raise the exit status, because this explains slots that are
+    already being reported rather than finding anything itself.
+    """
+    raw = _vault_get(FAIL_LEDGER, runner=runner)
+    if raw is None:
+        return [], None
+    try:
+        records = json.loads(raw)
+    except ValueError:
+        return [], f"{FAIL_LEDGER} is not JSON"
+    if not isinstance(records, list):
+        return [], f"{FAIL_LEDGER} does not hold a list"
+    return records, None
+
+
+def failure_summary(records, now, window_hours):
+    """One line about scheduler passes that raised in the window, or `None`.
+
+    `None` for an empty window for the same reason `lag_summary` returns it:
+    a healthy scheduler produces no records at all, and a line saying so on
+    every run is a line nobody reads. The newest error text is quoted because
+    the count alone says an outage happened and not which one.
+    """
+    cutoff = now - timedelta(hours=window_hours)
+    inside, undated = [], 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        at = _parse_stamp(record.get("at"))
+        if at is None:
+            undated += 1
+            continue
+        if at >= cutoff:
+            inside.append((at, record))
+    if not inside and not undated:
+        return None
+    inside.sort()
+    line = (f"SCHEDULER PASSES RAISED — {len(inside) + undated} recorded in the "
+            f"last {window_hours:g}h; a pass that raises evaluates no tick, so "
+            "it loses a slot without declining it")
+    if inside:
+        newest = inside[-1][1]
+        stamp = inside[-1][0].astimezone(timezone.utc).strftime("%m-%d %H:%M")
+        line += f". Newest {stamp} UTC: {newest.get('error') or 'no error recorded'}"
+    if undated:
+        line += f". {undated} carried no readable timestamp and are counted, not dated"
+    return line
+
+
 def lag_summary(records, now, window_hours):
     """One line about late scheduler passes in the window, or `None`.
 
@@ -222,7 +293,7 @@ def lag_summary(records, now, window_hours):
     )
 
 
-def reasons_for(slots, records, period_seconds, heartbeat_id=None):
+def reasons_for(slots, records, period_seconds, heartbeat_id=None, field="reason"):
     """`{slot: [reason, ...]}` --- why the poller declined each slot.
 
     A record is matched to the slot whose own period contains the moment it
@@ -249,7 +320,7 @@ def reasons_for(slots, records, period_seconds, heartbeat_id=None):
             continue
         for slot in slots:
             if slot <= at < slot + period:
-                reason = record.get("reason") or "no reason recorded"
+                reason = record.get(field) or "no reason recorded"
                 if reason not in found[slot]:
                     found[slot].append(reason)
     return found
@@ -549,7 +620,8 @@ def judge(heartbeat, conversations, now, window_hours):
 def format_report(results, error, window_hours, listed,
                   rollouts=None, shape=None, rollout_error=None,
                   drop_records=None, drop_error=None,
-                  lag_records=None, lag_error=None, now=None):
+                  lag_records=None, lag_error=None,
+                  fail_records=None, fail_error=None, now=None):
     """`(text, status)` --- the report and its exit code."""
     lines = []
     if error:
@@ -603,6 +675,27 @@ def format_report(results, error, window_hours, listed,
                             for t in unexplained[:12]
                         )
                     )
+                    # A pass that RAISED is taken out first, and before the
+                    # in-flight split rather than inside it: the scheduler
+                    # raising loses a slot whether or not a run was going, so
+                    # asking "was something in flight" about it answers a
+                    # question that is not the cause. Leaving these in would
+                    # file them as `unevaluated`, which names a different bug.
+                    raised = reasons_for(unexplained, fail_records or [],
+                                         row["period_seconds"], field="error")
+                    failed = [t for t in unexplained if raised.get(t)]
+                    if failed:
+                        lines.append(
+                            f"        {len(failed)} of them had a scheduler pass "
+                            "raise inside their own period, so no tick was "
+                            "evaluated at all: "
+                            + ", ".join(
+                                t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                                + f" ({'; '.join(raised[t])})"
+                                for t in failed[:12]
+                            )
+                        )
+                    unexplained = [t for t in unexplained if t not in failed]
                     covered, idle = split_by_in_flight(
                         unexplained, row.get("intervals") or []
                     )
@@ -721,6 +814,16 @@ def format_report(results, error, window_hours, listed,
                               window_hours)
         if summary:
             lines.append(summary)
+    if fail_error:
+        lines.append(
+            f"NO SCHEDULER FAILURES READ — {fail_error}, so passes that raised "
+            "are missing rather than clean"
+        )
+    else:
+        summary = failure_summary(fail_records or [],
+                                  now or datetime.now(timezone.utc), window_hours)
+        if summary:
+            lines.append(summary)
     lines.append(
         f"Read {listed} conversation(s) and {len(results)} heartbeat(s) from {AGORA_PUBLIC}."
     )
@@ -778,9 +881,11 @@ def main(argv=None):
         rollouts, rollout_error = read_rollout_instants()
     drop_records, drop_error = read_drop_records()
     lag_records, lag_error = read_lag_records()
+    fail_records, fail_error = read_failure_records()
     report, status = format_report(
         results, error, args.hours, len(conversations), rollouts, shape,
-        rollout_error, drop_records, drop_error, lag_records, lag_error, now
+        rollout_error, drop_records, drop_error, lag_records, lag_error,
+        fail_records, fail_error, now
     )
     print(report)
     return status

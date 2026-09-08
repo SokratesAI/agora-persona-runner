@@ -55,26 +55,35 @@ LATE_FACTOR = 2.0
 # second stall an hour later is reported as loudly as the first.
 _late_since_healthy = 0
 
+# Same doubling and the same reset rule, counted separately from lateness on
+# purpose: a scheduler can be perfectly punctual and raise on every pass, and
+# sharing one counter would let a healthy pass on one silence the other.
+_failed_since_healthy = 0
+
 _thread = None
 
 
 def pass_once():
-    """One scheduler look. Never raises -- returns False if the pass failed.
+    """One scheduler look. Never raises -- returns the exception, or `None`.
 
     Swallowing here rather than in the loop below is deliberate: this is
     the thread that decides whether anything fires at all, and an
     exception escaping it stops every heartbeat in this pod for as long as
     the pod lives, silently. `poll.py` wrapped the same call for the same
     reason before this module existed.
+
+    It hands the exception back rather than a bare `False` because the loop
+    has to record *which* error, and swallowing used to mean the only copy of
+    that lived in a log that dies with the container.
     """
     from agora_runner.heartbeats import run_due_heartbeats
 
     try:
         run_due_heartbeats()
-        return True
+        return None
     except Exception as exc:
         log(f"heartbeat pass failed: {exc}")
-        return False
+        return exc
 
 
 def note_pass(gap_seconds, pass_seconds, interval_seconds=None,
@@ -107,6 +116,34 @@ def note_pass(gap_seconds, pass_seconds, interval_seconds=None,
     return record(gap_seconds, pass_seconds, interval, n)
 
 
+def note_failure(error, record=dropped_ticks.record_pass_failure):
+    """Record a pass that raised, at a doubling. -> the Thread, or `None`.
+
+    `error` is `None` for a pass that worked, which resets the counter --- so
+    a second outage an hour later is reported as loudly as the first, the same
+    contract `note_pass` keeps for lateness.
+
+    This is the third way an anchored slot is lost and it was the only one
+    that left nothing outside the Pod. A raising scheduler declines no tick
+    (nothing is ever judged) and keeps its cadence (the raise is caught in
+    milliseconds), so it writes neither of the other two ledgers, and the slot
+    it loses reads as `unevaluated` in `heartbeat_gaps` --- which is the name
+    of the poller sleeping through a slot, a different bug with a different
+    fix.
+    """
+    global _failed_since_healthy
+    if error is None:
+        _failed_since_healthy = 0
+        return None
+    _failed_since_healthy += 1
+    n = _failed_since_healthy
+    if n & (n - 1) != 0:  # 1, 2, 4, 8, ... -- never silent, never a flood
+        return None
+    log(f"heartbeat scheduler: pass raised {type(error).__name__}: {error}, "
+        f"{n} failed pass(es) since the last healthy one")
+    return record(error, n)
+
+
 def _loop(should_stop):
     previous_start = None
     previous_pass_seconds = 0.0
@@ -118,7 +155,7 @@ def _loop(should_stop):
         note_pass(None if previous_start is None else started - previous_start,
                   previous_pass_seconds)
         previous_start = started
-        pass_once()
+        note_failure(pass_once())
         previous_pass_seconds = time.monotonic() - started
         # Sliced like main's own sleep, so a SIGTERM arriving while idle is
         # noticed inside a second instead of at the end of the interval.
