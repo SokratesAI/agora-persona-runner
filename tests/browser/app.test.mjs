@@ -16190,6 +16190,50 @@ describe("the drawer follows the poll", () => {
     assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest", "Read/x"]);
   });
 
+  test("a different run's block does not take over the drawer he opened", async () => {
+    /* His report, 2026-09-08, with three screenshots: *"When i open the
+     * tools drawer, it displayed an older tools run from earlier ... It says
+     * that it has ran 21 tools, i open the drawer and still it says 21
+     * tools. Then suddenly after 4 seconds or so it switches to say 12
+     * tools."*
+     *
+     * `stepMessageKey` hands the same sentinel to every steps-only row --
+     * the server invents those rows and they carry no id. So an exact key
+     * match found "a pending block", not "the pending block he opened", and
+     * with two runs narrating into one thread (and the thread now served
+     * from the worker's cache first) the paint he opened on and the paint a
+     * round trip later were different blocks. The drawer swapped under him.
+     *
+     * A payload that does not contain his block at all must leave the sheet
+     * alone. That is the existing rule for a block that scrolled out of the
+     * window; this makes a foreign block take the same path. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    const opened = rows(window).map((n) => n.textContent);
+    assert.deepEqual(opened, ["Bashpytestrunning"]);
+
+    // The next payload's pending row is somebody else's work entirely: same
+    // sentinel key, no step in common.
+    box.ask = running([{ kind: "tool", capability: "Read", input: "/etc/hosts",
+                        id: "toolu_other", status: "done" }]);
+    await poll();
+    assert.deepEqual(rows(window).map((n) => n.textContent), opened,
+      "another run's steps replaced the ones he opened the drawer on");
+  });
+
+  test("the block he opened is still followed once it grows", async () => {
+    /* The other half: the guard must not freeze the drawer. The block he
+     * opened keeps its identity as steps are appended to it, which is the
+     * whole point of the drawer following the poll. */
+    const { window, box, poll } = await openDock(running([BASH_RUNNING]));
+    openSheet(window);
+    box.ask = running([BASH_DONE,
+      { kind: "tool", capability: "Read", input: "/x", id: "toolu_s", status: "done" }]);
+    await poll();
+    assert.deepEqual(rows(window).map((n) => n.textContent), ["Bashpytest", "Read/x"],
+      "the drawer stopped following the block it was opened on");
+  });
+
   test("another thread's poll does not repaint the drawer he is reading", async () => {
     /* One sheet, three surfaces. The floating dock lives outside the routed
      * feed, so it can be open over a conversation page on a different thread,
