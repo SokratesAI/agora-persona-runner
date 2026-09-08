@@ -2076,7 +2076,7 @@ body.nav-open { overflow: hidden; }
 .prio-immediate { color: var(--bg); background: var(--danger); border-color: var(--danger); }
 .prio-high { color: var(--danger); border-color: var(--danger); }
 .prio-medium { color: var(--warn); border-color: var(--warn); }
-.prio-low { color: var(--dim); border-color: var(--line); font-weight: 400; }
+.prio-low { color: var(--dim); border-color: var(--outline); font-weight: 400; }
 
 /* The one thing the read-only original never needed: a sign that tapping
  * this chip did something. Only the board row's chip is ever a trigger
@@ -2499,7 +2499,7 @@ body.has-full-chart { overflow: hidden; }
   min-height: 44px;
   padding: 0.3rem 0.75rem;
   border-radius: 999px;
-  border: 1px solid var(--line, #3a3a3a);
+  border: 1px solid var(--outline, #686e82);
   background: var(--card, #1c1c1c);
   color: inherit;
 }
