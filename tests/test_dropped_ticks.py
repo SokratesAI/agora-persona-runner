@@ -377,3 +377,26 @@ def test_run_now_is_not_a_slot_and_files_nothing():
 
     assert started, "forceRun must still start the run"
     assert calls == []
+
+
+def test_the_record_is_stamped_at_the_slot_it_explains_not_at_now():
+    """`heartbeat_gaps.reasons_for` files a record under the slot whose period
+    contains the moment it was written. Written at `now`, that is the slot that
+    DID fire -- which has no gap -- so the missed slot stays unexplained."""
+    calls = []
+    _spawn(_hb(), _utc(12, 1), lambda *a, **k: calls.append((a, k)))
+
+    assert calls[0][1]["now"] == _utc(11, 36)
+
+
+def test_every_slept_through_slot_is_named_in_the_one_record():
+    """Only the oldest gets the timestamp, so the text is what carries the
+    rest -- a second missed slot must not vanish into the count alone."""
+    calls = []
+    _spawn(_hb(lastRunAt=_utc(10, 0).isoformat()), _utc(11, 15),
+           lambda *a, **k: calls.append((a, k)))
+
+    reason = calls[0][0][2]
+    assert _utc(10, 24).isoformat() in reason
+    assert _utc(10, 48).isoformat() in reason
+    assert calls[0][1]["now"] == _utc(10, 24)
