@@ -910,7 +910,7 @@ def doubled_entries(lost, entry_prs, reply_prs, paths_by_cycle):
 
     Measured live 2026-09-09, and it is why this exists: the folder holds
     `516-cycle-454.md` and `517-cycle-454.md`, cycle 455 has no entry, and
-    455's own reply to Edvard announces `#396` -- which is the pull
+    455's own reply to the owner announces `#396` -- which is the pull
     request in `517`'s footer, and is named nowhere in 454's reply, which
     announces `#531` and `#535`.
 

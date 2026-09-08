@@ -954,7 +954,7 @@ def test_a_document_that_does_not_stamp_itself_is_not_claimed():
 #
 # The live case, measured 2026-09-09: `516-cycle-454.md` and
 # `517-cycle-454.md` both sit in the folder, cycle 455 has no entry, and
-# 455's reply to Edvard announces #396 -- the pull request in 517's
+# 455's reply to the owner announces #396 -- the pull request in 517's
 # footer, which 454's reply (#531, #535) never mentions.
 
 _DOUBLED_JOURNAL = ["j/515-cycle-453.md", "j/516-cycle-454.md",
