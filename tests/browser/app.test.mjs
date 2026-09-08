@@ -3964,35 +3964,28 @@ describe("an unsent comment survives a re-render", () => {
  * load of `/issues` actually renders, not that a function exists. */
 const rows = (window) => [...window.document.querySelectorAll(".item")];
 
-/* Press and hold a bubble, then find one of its actions in the drawer.
+/* Open a message's actions and find one of them in the drawer.
  *
- * Copy and "Ask again" left the bubble on 2026-09-07 -- his ask -- and live
- * in a sheet a one-second hold opens. Returns null when the gesture offers
- * nothing, which is a real answer: a message with no text and no question
- * above it opens no drawer at all rather than an empty one.
+ * Copy and "Ask again" left the bubble on 2026-09-07 -- his ask -- and open
+ * from a `⋯` at the bottom right of each message. This was a press-and-hold
+ * for about an hour, until he tried it: the hold had to exclude the prose
+ * to leave his selection alone, which left it almost no hit area.
  *
- * The hold starts on the bubble itself and NOT on `.ask-text`, because that
- * is the rule the feature turns on: the prose belongs to the browser's own
- * selection, which is how he takes one line out of an answer. A helper that
- * pressed the text would pass while the real gesture did nothing. */
+ * Returns null when the message offers nothing, which is a real answer: a
+ * line with no text and no question above it gets no button at all rather
+ * than one that opens an empty drawer. Async because the call sites already
+ * await it, and because it stays honest if this ever needs a frame again.
+ */
 async function holdFor(window, row, selector) {
   const open = window.document.querySelector(".msg-sheet");
   if (open) open.hidden = true;
-  row.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
-  // The real timer, waited out rather than faked: the gesture is a second
-  // long because that is what the app asks of him, and a helper that
-  // shortened it would be testing a gesture nobody makes.
-  await new Promise((resolve) => setTimeout(resolve, HOLD_TEST_MS));
+  const more = row.querySelector(".ask-more");
+  if (!more) return null;
+  more.dispatchEvent(new window.Event("click"));
   const sheet = window.document.querySelector(".msg-sheet");
   if (!sheet || sheet.hidden) return null;
   return sheet.querySelector(selector);
 }
-
-// `HOLD_MS` in app.js. Read from the source so the two cannot drift.
-const HOLD_TEST_MS = Number(
-  (readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..",
-                     "agora_runner", "nova_public", "app.js"), "utf8")
-    .match(/var HOLD_MS = (\d+);/) || [])[1]) + 60;
 const rowNumbers = (window) =>
   rows(window).map((row) => row.querySelector(".item-number").textContent);
 
@@ -9683,53 +9676,13 @@ describe("copying a message", () => {
     assert.equal((await holdFor(window, rows[0], ".ask-copy")).textContent, "Copy");
   });
 
-  test("a bubble with nothing to offer opens no drawer at all", async () => {
-    /* An attachment-only line of his own has neither action: nothing to
-     * copy, and his own message re-asks itself. The drawer must then not
-     * open, rather than sliding up empty -- a sheet with no buttons in it
-     * reads as a feature that broke.
-     *
-     * This is a separate test because the ones above cannot see it. They
-     * ask the drawer for a button and get `null` either way, so an empty
-     * drawer and no drawer are the same answer to them; only the sheet's
-     * own `hidden` separates the two. */
-    const window = await loadAskDock({
-      ask: {
-        conversationId: "c-copy",
-        waiting: false,
-        messages: [
-          { id: "1", sender: "Edvard", text: "how many pods?" },
-          { id: "2", sender: "Edvard", text: "" },
-        ],
-      },
-    });
-    const rows = [...window.document.querySelectorAll("#chat-thread .ask-msg")];
-    assert.equal(rows.length, 2, "the fixture did not render");
-
-    // The bubble above it does open one, so a drawer that never works
-    // cannot carry the assertion that matters.
-    assert.ok(await holdFor(window, rows[0], ".ask-copy"),
-      "no bubble in this thread opens the drawer, so the check below proves nothing");
-
-    const sheet = window.document.querySelector(".msg-sheet");
-    if (sheet) sheet.hidden = true;
-    rows[1].dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, HOLD_TEST_MS));
-    const opened = window.document.querySelector(".msg-sheet");
-    assert.ok(!opened || opened.hidden,
-      "holding a message with no actions slid up an empty drawer");
-  });
-
-  test("a hold on the prose is the browser's, not the drawer's", async () => {
-    /* The whole condition he put on this, 2026-09-07: *"I still want the
-     * default text selection on my phone so i can copy just a line of text
-     * and not having to copy the entire bubble."* A long-press is how a
-     * phone starts a selection, so a hold that begins inside `.ask-text`
-     * must do nothing here and fall through to the OS.
-     *
-     * This is the assertion the feature turns on: without the exclusion the
-     * drawer opens over the selection he was making, and Copy-the-whole-
-     * bubble is the only copy left. */
+  test("the prose is the browser's: pressing it opens nothing", async () => {
+    /* What the `⋯` bought back. The press-and-hold this replaced had to
+     * carve `.ask-text` out to leave his selection alone, and what was left
+     * was a hit area he could not find -- *"I tried to hold the box in
+     * between the text, but only the small top of the bubble opens the edit
+     * modal."* Nothing intercepts a press on a bubble now, so a long-press
+     * anywhere in it is the OS selection he asked to keep. */
     const window = await loadAskDock({
       ask: {
         conversationId: "c-copy",
@@ -9740,15 +9693,17 @@ describe("copying a message", () => {
     const bubble = window.document.querySelector("#chat-thread .ask-msg");
     const prose = bubble.querySelector(".ask-text");
     prose.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, HOLD_TEST_MS));
+    prose.dispatchEvent(new window.MouseEvent("mouseup", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
     const sheet = window.document.querySelector(".msg-sheet");
     assert.ok(!sheet || sheet.hidden,
-      "holding the text opened the drawer, which takes his selection away");
+      "pressing the text opened the drawer, which takes his selection away");
 
-    // ...and the same bubble still offers the drawer when held anywhere else,
-    // or this test would pass on a feature that simply never works.
+    // ...and the button is what does open it, or the check above would pass
+    // just as well on a message that offers nothing at all.
+    assert.ok(bubble.querySelector(".ask-more"), "no actions button on the bubble");
     assert.ok(await holdFor(window, bubble, ".ask-copy"),
-      "the bubble offers no actions at all, so the check above proves nothing");
+      "the button opened no drawer, so the check above proves nothing");
   });
 
   /* The assertion that matters, and the reason the source is passed to the
@@ -16302,6 +16257,63 @@ describe("the model picker on a thread", () => {
         "the previous thread's options were still selectable");
     });
 
+  test("the picker lives behind `+` rather than in the composer row", async () => {
+    /* His ask, 2026-09-08: *"I also want to merge the model picker into the
+     * + button in the chat and also position the + buttom to the right
+     * side, but left next to the send button."* A pill he changes maybe
+     * once a week was parked permanently beside the two controls he uses on
+     * every single message.
+     *
+     * Asserted on the DOM and not on a class name, because the thing that
+     * can break is exactly structural: the host is MOVED into the drawer,
+     * and a rebuild instead of a move would drop the options it has already
+     * fetched and the change handler that writes the switch. The last
+     * assertion is what would catch that. */
+    const window = await openDock({
+      model: "anthropic:claude-opus-5", models: CATALOG, found: true,
+    });
+    const host = window.document.getElementById("chat-model-host");
+    assert.ok(window.document.getElementById("chat-extras").contains(host),
+      "the model picker is not inside the `+` drawer");
+    assert.equal(window.document.querySelector(".chat-actions #chat-model-host"), null,
+      "the model picker is still sitting in the composer row");
+    assert.equal(pickerIn(window).value, "anthropic:claude-opus-5",
+      "the picker lost the thread's model in the move");
+  });
+
+  test("`+` sits immediately left of Send", async () => {
+    const window = await openDock({
+      model: "anthropic:claude-opus-5", models: CATALOG, found: true,
+    });
+    const plus = window.document.getElementById("chat-plus");
+    assert.equal(plus.parentElement.className, "chat-actions");
+    assert.equal(plus.nextElementSibling,
+      window.document.getElementById("chat-send"),
+      "something got between `+` and Send");
+  });
+
+  test("exactly one control in the composer row absorbs the free space", () => {
+    /* The bug this pins, his report 2026-09-08: *"The pluss sign is in the
+     * middle, move it all the way to the right."* Moving `+` next to Send
+     * gave it `margin-left: auto`, but Send already had one -- and two auto
+     * margins in a flex row SPLIT the free space between them rather than
+     * collapsing it, which parked `+` at the halfway mark. Neither rule is
+     * wrong on its own, which is why reading either one alone would not have
+     * found this.
+     *
+     * Read off the sheet rather than off a rendered layout: jsdom does not
+     * lay flex out, so a computed style here would report nothing either
+     * way. The invariant is one auto margin, on the LEFTMOST member of the
+     * right-hand group -- never on Send, which is the rightmost. */
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    const auto = [...sheet.matchAll(/(\.chat-actions[^{]*)\{([^}]*)\}/g)]
+      .filter(([, , body]) => /margin-left:\s*auto/.test(body))
+      .map(([, selector]) => selector.trim());
+    assert.ok(auto.length, "nothing in the row absorbs the free space at all");
+    assert.deepEqual(auto.filter((s) => /chat-send/.test(s)), [],
+      "Send still carries an auto margin, so `+` gets stranded mid-row");
+  });
+
 });
 
 
@@ -16833,5 +16845,57 @@ describe("the rating picker says what the rating does", () => {
     assert.ok(importance, "the sort control still says Priority: "
       + options.map((o) => o.textContent).join(", "));
     assert.equal(importance.value, "priority", "the sort key was renamed along with the label");
+  });
+});
+
+
+/* The two things that hang from the top of the screen: the toast that says
+ * something happened, and the banner that offers a reload. */
+describe("the notices pinned to the top of the screen", () => {
+  const ruleFor = (sheet, selector) => {
+    /* Comments come out first: they sit between the previous `}` and the
+     * selector, so the chunk this splits on would otherwise be a paragraph
+     * of prose with the selector on its last line. */
+    const bare = sheet.replace(/\/\*[\s\S]*?\*\//g, "");
+    const found = [...bare.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+      .find(([, sel]) => sel.trim() === selector);
+    assert.ok(found, `no rule for ${selector}`);
+    return found[2];
+  };
+
+  test("neither is offset from one edge, which is what narrowed the banner", () => {
+    /* His screenshot, 2026-09-08: *"Make the reload toaster wider. It does
+     * not fit text propperly."* "A new version of Nova is ready." was
+     * wrapped over four lines inside a pill about half the screen wide.
+     *
+     * The `max-width` was never the constraint and raising it would have
+     * changed nothing. `position: fixed` with `width: auto` is shrink-to-
+     * fit, and the space it fits into runs from its own `left` offset to
+     * the right edge of the viewport -- so `left: 50%` handed it half a
+     * screen before any rule of ours applied, and `translateX(-50%)` then
+     * recentred the cramped result so it read as a styling choice.
+     *
+     * Asserted on the sheet because jsdom lays nothing out: a computed
+     * width here would be 0 whichever way the rule went. Both selectors,
+     * because the toast carried the identical mistake. */
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    for (const selector of [".toast", ".update-banner"]) {
+      const body = ruleFor(sheet, selector);
+      assert.doesNotMatch(body, /left:\s*50%/,
+        `${selector} is still offset to the middle, which halves the width it can use`);
+      assert.match(body, /right:\s*0/,
+        `${selector} does not reach the right edge, so it cannot use the full width`);
+      assert.match(body, /margin-inline:\s*auto/,
+        `${selector} has nothing centring it now the transform does not`);
+    }
+  });
+
+  test("the toast still slides in, and only vertically", () => {
+    /* The transform used to carry the centring as well as the slide, so
+     * dropping the `-50%` from one of the two states and not the other
+     * would jump the toast sideways as it appeared. */
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(ruleFor(sheet, ".toast"), /transform:\s*translateY\(-0\.6rem\)/);
+    assert.match(ruleFor(sheet, ".toast--on"), /transform:\s*translateY\(0\)/);
   });
 });

@@ -2932,9 +2932,13 @@ body.has-full-chart { overflow: hidden; }
  * status sits left and the paperclip sits against Send. It keeps the 44px
  * target the rest of this file holds every button to. */
 .chat-actions .attach-btn { margin-left: auto; }
-/* ...except the `+`, which opens the drawer the others now live in and
-   belongs on the left of the model pill (his ask, 2026-09-07). */
-.chat-actions .chat-plus { margin-left: 0; margin-right: 0.1rem; font-size: 1.5rem; }
+/* The `+` opens the drawer the others now live in, and sits immediately
+   left of Send (his ask, 2026-09-08 -- it used to be pinned left of the
+   model pill, which has since moved into the drawer itself). It is the
+   only visible `.attach-btn` left in the row, so it is the one the `auto`
+   margin has to land on; when a voice button is on screen the `~` rule
+   below hands the margin over to that one instead and this drops to 0. */
+.chat-actions .chat-plus { margin-left: auto; margin-right: 0.1rem; font-size: 1.5rem; }
 /* The two voice buttons (ideas.md #221) sit in the same right-hand group.
    The `auto` margin has to land on the first control that is actually on
    screen, and both of these are hidden on a browser with no speech API --
@@ -3163,6 +3167,23 @@ body.has-full-chart { overflow: hidden; }
 .extras-label { font-size: 0.8rem; line-height: 1.2; color: var(--dim); }
 .chat-extras .extras-tile[aria-pressed="true"] { border-color: var(--accent); }
 .chat-extras .extras-tile[aria-pressed="true"] .extras-label { color: var(--bg); }
+/* The model picker, under the tiles (his ask, 2026-09-08). A row and not
+ * a fourth tile: it is a <select> whose whole point is the model NAME, and
+ * a 5rem tile would ellipsis that away. Label left, pill right. */
+.extras-model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+.extras-model-label { font-size: 0.9rem; color: var(--dim); }
+/* Room to breathe now that it is not fighting a composer row for width;
+   `fitModelPick` still writes the exact width from the selected name. */
+.extras-model #chat-model-host select { max-width: 60vw; font-size: 0.9rem; }
+
 /* The tray of picked files lives in the composer, not in here -- it is
    what he has already attached, and it has to stay visible after the
    drawer closes. */
@@ -3975,8 +3996,10 @@ body.chat-open { overflow: hidden; }
   gap: 0.35rem;
 }
 .chat-list[hidden] { display: none; }
+/* The model host is not named here any more: it lives in the `+` drawer,
+   which hangs off <body>, so hiding it with the composer stopped being
+   this rule's job. */
 .chat-dock.list-open .chat-thread,
-.chat-dock.list-open #chat-model-host,
 .chat-dock.list-open .chat-form { display: none; }
 .chat-list-row {
   display: block;
@@ -4106,7 +4129,13 @@ body.chat-open { overflow: hidden; }
  * evenly, which put the pill in the middle of the gap the moment the mic
  * and speaker moved out of this row and into the `+` drawer. */
 .chat-actions { display: flex; align-items: center; justify-content: flex-start; gap: 0.4rem; margin-top: 0.45rem; }
-.chat-actions .chat-send { margin-left: auto; }
+/* Send used to carry the `auto` margin that pushes the right-hand group
+ * over. It cannot any more: `+` now sits immediately left of it and carries
+ * an `auto` of its own, and TWO auto margins in one flex row split the free
+ * space between them instead of collapsing it -- which is exactly what put
+ * `+` in the middle of the row (his report, 2026-09-08). One auto, on the
+ * leftmost control of the right-hand group, is the whole mechanism; see the
+ * `.chat-plus` / `.chat-voice` rules above for which control that is. */
 .chat-status { margin: 0; font-size: 0.76rem; color: var(--dim); }
 .chat-send {
   flex: none;
@@ -4132,8 +4161,14 @@ body.chat-open { overflow: hidden; }
 .toast {
   position: fixed;
   top: max(0.6rem, env(safe-area-inset-top));
-  left: 50%;
-  transform: translate(-50%, -0.6rem);
+  /* Pinned to BOTH edges and centred with an auto margin, not offset from
+   * the left one. See `.update-banner` below for what `left: 50%` alone
+   * costs: it is the same trap and it was in both of these. */
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: fit-content;
+  transform: translateY(-0.6rem);
   z-index: 60;
   max-width: min(26rem, calc(100vw - 1.6rem));
   padding: 0.55rem 0.9rem;
@@ -4150,7 +4185,7 @@ body.chat-open { overflow: hidden; }
   pointer-events: none;
   transition: opacity 180ms ease, transform 180ms ease;
 }
-.toast--on { opacity: 1; transform: translate(-50%, 0); }
+.toast--on { opacity: 1; transform: translateY(0); }
 .toast--error { border-color: var(--accent); }
 
 /* "A new version is ready", at the top of the screen until he acts on it.
@@ -4161,8 +4196,25 @@ body.chat-open { overflow: hidden; }
 .update-banner {
   position: fixed;
   top: max(0.6rem, env(safe-area-inset-top));
-  left: 50%;
-  transform: translateX(-50%);
+  /* His screenshot, 2026-09-08: *"Make the reload toaster wider. It does
+   * not fit text properly."* -- "A new version of Nova is ready." was
+   * broken over four lines in a pill about half the screen wide, with the
+   * `max-width` below never coming near to biting.
+   *
+   * The cause is `left: 50%` with no `right`. A fixed box with `width:
+   * auto` is shrink-to-fit, and the space it fits into is measured from
+   * its own left offset to the right edge of the viewport -- so offsetting
+   * it to the middle halved the width available to it before any rule of
+   * ours was consulted. `translateX(-50%)` then dragged the too-narrow
+   * result back into the centre, which is why it LOOKED centred and merely
+   * cramped rather than obviously broken.
+   *
+   * Pinning both edges gives it the whole viewport to fit into; the auto
+   * margin does the centring the transform used to fake. */
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: fit-content;
   z-index: 61;
   display: flex;
   align-items: center;
@@ -5163,10 +5215,36 @@ X that summarizes the last 12
   cursor: pointer;
 }
 
-/* His words, 2026-09-07: "I still want the default text selection on my
-   phone so i can copy just a line of text". The prose stays selectable and
-   keeps the OS callout; the furniture around it does not, so a hold there
-   is unambiguously the drawer's gesture rather than a selection that fights
-   it. */
+/* The `⋯` that opens a message's actions -- his ask, 2026-09-07, after the
+   press-and-hold it replaces turned out to have almost no hit area: it had
+   to exclude the prose to leave his selection alone, which left the name
+   row and a few pixels of padding.
+   
+   Bottom right, and deliberately small. It sits on every message in a
+   column he mostly reads, so it is a dim glyph that takes its 32px of tap
+   target out of the bubble's own trailing space rather than adding a row
+   of its own. `margin-top: -0.4rem` pulls it back up into the gap the text
+   already leaves. */
+.ask-more {
+  align-self: flex-end;
+  min-width: 32px;
+  min-height: 32px;
+  margin: -0.4rem -0.35rem -0.25rem 0;
+  padding: 0 0.35rem;
+  background: none;
+  border: 0;
+  color: var(--dim);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  /* Not part of the text he is selecting or copying out of the bubble. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+.ask-more:hover, .ask-more:focus-visible { color: var(--text); }
+
+/* The prose is the browser's: selection and the OS callout on the whole
+   bubble, which is how he takes one line out of an answer rather than the
+   lot. Nothing intercepts a press here any more. */
 .ask-msg .ask-text { -webkit-user-select: text; user-select: text; }
-.ask-msg .ask-who { -webkit-user-select: none; user-select: none; }
