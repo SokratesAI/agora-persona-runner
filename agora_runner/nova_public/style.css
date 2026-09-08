@@ -4,6 +4,12 @@
   --bg: #12131a;
   --card: #191b24;
   --line: #272a36;
+  /* Border of an interactive control. WCAG 2.2 SC 1.4.11 Non-text Contrast
+     (level AA) requires 3:1 for "visual information required to identify user
+     interface components and states". --line is 1.3:1 against --bg and 1.2:1
+     against --card, so it may edge a divider but never a control. See
+     resources/design-wiki/contrast-minimums.md. */
+  --outline: #686e82;
   --text: #dfe2ea;
   --dim: #8b90a0;
   --accent: #7aa2f7;
@@ -173,7 +179,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   width: 100%;
   background: var(--card);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 10px;
   padding: 0.7rem 0.8rem;
   font: inherit;
@@ -287,7 +293,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .capture-btn {
   background: none;
   color: var(--accent);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 999px;
   /* 44px is the iOS touch-target minimum; this is opened on a phone. */
   min-height: 44px;
@@ -312,7 +318,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .capture-pick {
   background: none;
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 999px;
   min-height: 44px;
   padding: 0 0.9rem;
@@ -346,7 +352,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .capture-send:disabled {
   background: none;
   color: var(--dim);
-  border-color: var(--line);
+  border-color: var(--outline);
   cursor: default;
 }
 
@@ -1313,7 +1319,7 @@ body.nav-open { overflow: hidden; }
   gap: 0.32rem;
   padding: 0;
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -1391,7 +1397,7 @@ body.nav-open { overflow: hidden; }
   padding: 0.5rem 0.7rem;
   background: var(--card);
   color: var(--dim);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   font: inherit;
   font-size: 0.9rem;
@@ -1428,7 +1434,7 @@ body.nav-open { overflow: hidden; }
   padding: 0.4rem 0.6rem;
   background: var(--card);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   font: inherit;
   font-size: 0.95rem;
@@ -1489,7 +1495,7 @@ body.nav-open { overflow: hidden; }
   padding: 0.4rem 0.6rem;
   background: var(--card);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   font: inherit;
   font-size: 0.95rem;
@@ -1564,7 +1570,7 @@ body.nav-open { overflow: hidden; }
   padding: 0.3rem 0.5rem;
   background: var(--card);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   font: inherit;
   font-size: 0.9rem;
@@ -1581,7 +1587,7 @@ body.nav-open { overflow: hidden; }
   min-height: 44px;
   background: var(--card);
   color: var(--accent);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   font: inherit;
   font-size: 1.05rem;
@@ -1610,7 +1616,7 @@ body.nav-open { overflow: hidden; }
   width: 44px;
   min-height: 44px;
   background: var(--card);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   cursor: pointer;
 }
@@ -1776,7 +1782,7 @@ body.nav-open { overflow: hidden; }
   overflow-y: auto;
   padding: 0.7rem 0.8rem;
   background: var(--card);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 10px;
   color: var(--text);
   font: inherit;
@@ -1931,7 +1937,7 @@ body.nav-open { overflow: hidden; }
   box-sizing: border-box;
   padding: 0.5rem;
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   color: var(--text);
   font: inherit;
@@ -1987,7 +1993,7 @@ body.nav-open { overflow: hidden; }
   box-sizing: border-box;
   padding: 0.5rem;
   background: var(--bg);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 0.5rem;
   color: var(--text);
   font: inherit;
@@ -2022,7 +2028,7 @@ body.nav-open { overflow: hidden; }
   border-radius: 999px;
   font: inherit;
   font-size: 0.8rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   background: none;
   color: var(--dim);
   white-space: nowrap;
@@ -2669,7 +2675,7 @@ body.has-full-chart { overflow: hidden; }
 .goal-state { font-size: 0.75rem; }
 .goal-state.approved { color: var(--good); }
 .goal-state.declined { color: var(--dim); }
-.goal-state-btn { min-height: 44px; padding: 0 0.7rem; font: inherit; font-size: 0.78rem; cursor: pointer; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text); }
+.goal-state-btn { min-height: 44px; padding: 0 0.7rem; font: inherit; font-size: 0.78rem; cursor: pointer; border-radius: 8px; border: 1px solid var(--outline); background: transparent; color: var(--text); }
 .goal-state-btn.current { border-color: var(--accent); color: var(--accent); }
 .goal-state-btn[disabled] { opacity: 0.5; cursor: default; }
 .goal-state-note { font-size: 0.72rem; color: var(--dim); }
@@ -2852,7 +2858,7 @@ body.has-full-chart { overflow: hidden; }
   margin-top: 0.4rem;
   padding: 0.1rem 0.45rem;
   background: none;
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 6px;
   color: var(--dim);
   font: inherit;
@@ -3627,7 +3633,7 @@ body.has-full-chart { overflow: hidden; }
   box-sizing: border-box;
   background: var(--bg);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 8px;
   padding: 0.55rem 0.6rem;
   font: inherit;
@@ -3649,7 +3655,7 @@ body.has-full-chart { overflow: hidden; }
   flex: 1;
   padding: 0.6rem 0.4rem;
   border-radius: 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   background: var(--bg);
   color: var(--text);
   font: inherit;
@@ -3768,7 +3774,7 @@ body.has-full-chart { overflow: hidden; }
   justify-content: center;
   padding: 0;
   background: var(--card);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 999px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -4265,7 +4271,7 @@ body.chat-open { overflow: hidden; }
 
 .hb-btn {
   background: var(--card);
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   border-radius: 10px;
   /* 44px is the tap target the rest of this file uses. */
   min-height: 44px;
@@ -4584,7 +4590,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   font: inherit;
   font-size: 0.8rem;
   border-radius: 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--outline);
   background: var(--bg);
   color: inherit;
   padding: 0.3rem 0.6rem;
@@ -4789,7 +4795,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-standing-move { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
 .project-standing-move-btn {
   min-width: 44px; min-height: 44px; border-radius: 8px;
-  border: 1px solid var(--line); background: transparent; color: var(--text);
+  border: 1px solid var(--outline); background: transparent; color: var(--text);
   font-size: 1rem; cursor: pointer;
 }
 .project-standing-move-btn:disabled { opacity: 0.3; cursor: default; }
@@ -4891,7 +4897,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-milestone-move-btn,
 .project-milestone-unpin {
   min-width: 44px; min-height: 44px; border-radius: 8px;
-  border: 1px solid var(--line); background: transparent; color: var(--text);
+  border: 1px solid var(--outline); background: transparent; color: var(--text);
   font-size: 1rem; cursor: pointer;
 }
 .project-milestone-unpin { min-width: 0; padding: 0 12px; font-size: 0.85rem; }
