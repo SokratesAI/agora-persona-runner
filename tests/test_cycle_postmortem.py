@@ -101,10 +101,20 @@ def test_a_run_with_no_closing_line_is_cut_off_and_quotes_what_it_did_say():
 def test_only_the_last_message_decides_the_verdict():
     """A cycle says thousands of things; Agora's closing line is the last
     of them, and an earlier `API Error` in the transcript is not the
-    outcome. Cycle 358 is the live case: it carries a 529 mid-run and
-    still finished and replied."""
+    outcome -- a cycle that hits a 529 mid-run and recovers replies
+    normally afterwards, and that is lost work like any other.
+
+    This used to name cycle 358 as the live case for that, on a fixture
+    where the 529 is the only thing said before the closing line. I read
+    that conversation on 2026-09-08 and the fixture is not what it holds:
+    the 529 IS its last message and `replied 147 chars` is that error's
+    own length. So the recovery is the invariant and 358 is not an example
+    of it -- it is in `test_a_stalled_stream_is_the_same_verdict_as_a_500`'s
+    bucket instead.
+    """
     row = judge(358, {"id": "x"}, [
         message("API Error: 529 Overloaded."),
+        message("Recovered, and here is what I did with the hour."),
         message("heartbeat: Nova finished in 3m 26s — replied 147 chars"),
     ])
     assert row["verdict"] == "lost"
@@ -676,3 +686,81 @@ def test_the_rate_split_counts_a_misfiled_cycle_as_a_gap_and_names_the_cause():
     assert before["after"]["gaps"] == after["after"]["gaps"] == 1
     assert before["after"]["verdicts"]["lost"] == 1
     assert after["after"]["verdicts"] == {"misfiled": 1}
+
+
+# --- a model-call error is not a reply --------------------------------
+
+CLOSING_87 = "heartbeat: Nova finished in 7m 19s — replied 2146 chars"
+CLOSING_839 = "heartbeat: Nova finished in 11m 30s — replied 158 chars"
+ERROR_839 = ("API Error: 500 Internal server error. This is a server-side issue, "
+             "usually temporary — try again in a moment. If it persists, check "
+             "https://status.claude.com.")
+ERROR_301 = ("API Error: Response stalled mid-stream. The response above may be "
+             "incomplete.")
+
+
+def test_a_run_whose_last_message_is_the_models_error_is_not_lost_work():
+    """Cycle 839, verbatim off Agora on 2026-09-08.
+
+    Agora's closing line says `replied 158 chars` and those 158 characters
+    are the CLI's own transport error, posted into the conversation as an
+    ordinary message. Read as a reply it made four dead runs look like four
+    recoverable ones, and three cycles in a row called the whole bucket
+    undiagnosable because of it.
+    """
+    row = judge(839, {"id": "c"},
+                [message("working"), message(ERROR_839), message(CLOSING_839)])
+    assert row["verdict"] == "api error"
+    assert "11m 30s" in row["detail"]
+    assert "500 Internal server error" in row["detail"]
+
+
+def test_a_stalled_stream_is_the_same_verdict_as_a_500():
+    """Cycle 301, verbatim. No status code in it at all, so a matcher
+    keyed on a number would file this one back under `lost`."""
+    row = judge(301, {"id": "c"},
+                [message("working"), message(ERROR_301),
+                 message("heartbeat: Nova finished in 8m 35s — replied 77 chars")])
+    assert row["verdict"] == "api error"
+    assert "stalled mid-stream" in row["detail"]
+
+
+def test_a_real_reply_that_talks_about_an_api_error_is_still_lost_work():
+    """The precondition the matcher rests on: it is anchored at the start
+    of the reply, because a cycle that spent its hour on this very bug
+    writes the phrase into the middle of a perfectly good reply."""
+    reply = ("Done. Four of the eleven silent cycles ended on an "
+             "API Error: 500 rather than a reply, so they are not recoverable.")
+    row = judge(87, {"id": "c"},
+                [message("working"), message(reply), message(CLOSING_87)])
+    assert row["verdict"] == "lost"
+
+
+def test_the_two_causes_get_separate_headings_and_both_still_raise():
+    """Unmerging the cause must not quieten it: both are a cycle's work
+    that the journal does not have, and neither has been explained."""
+    report, status = format_report(
+        [row(87, "lost"), row(839, "api error")], 1243, None)
+    assert "RAN AND LEFT NO RECORD" in report
+    assert "DIED ON A MODEL-CALL ERROR" in report
+    assert status == 2
+    # And on its own, so that dropping `api error` from RAISING_VERDICTS
+    # shows up here -- `lost` raises by itself and would carry this for free.
+    _, alone = format_report([row(839, "api error")], 1243, None)
+    assert alone == 2
+
+
+def test_the_lost_heading_says_where_the_reply_still_is():
+    """Three cycles wrote `their transcripts are the only source` into the
+    handoff while every one of those replies sat in Agora. The recovery
+    path belongs on the report, not in a journal entry nobody re-reads."""
+    report, _ = format_report([row(87, "lost")], 1243, None)
+    assert "Agora conversation" in report
+    assert "final_reply" in report
+
+
+def test_a_heading_with_no_note_prints_no_blank_indent():
+    """Most verdicts carry no note and must not grow an empty line."""
+    report, _ = format_report([row(506, "failed")], 1243, None)
+    assert "\n    \n" not in report
+    assert "    None" not in report
