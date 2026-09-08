@@ -628,8 +628,18 @@ def split_capture_project_tag(bullet, known=()):
     `Marcus` on his page, and a capitalisation this function invented
     would be a name he never typed. An unresolved slug is therefore left
     exactly where it is -- in the title, project unset, no worse than
-    today -- and never guessed at. In practice it cannot happen: the
-    picker only offers names `/api/project` returned.
+    today -- and never guessed at.
+
+    **It happens in practice, and this docstring said it could not.** The
+    sentence here read *"the picker only offers names `/api/project`
+    returned"*, which is true and does not imply what it was used for:
+    `project_payload` builds that list from **both** boards, and `known`
+    is whatever one board the caller is writing. Measured against the live
+    site on 2026-09-08 -- eleven names offered, eight on `issues.md` -- so
+    Maintenance, Research and Demos were pickable in the app and
+    unresolvable here. The caller has to widen `known` itself; see
+    `tools.board_capture --projects-from`. `unresolved_capture_project_tag`
+    below is how a miss gets said out loud instead of vanishing.
 
     The tag is matched at the end for `split_capture_project`'s reason
     inverted: the front of a bullet is taken by the rating and the `DONE`
@@ -646,6 +656,33 @@ def split_capture_project_tag(bullet, known=()):
         if candidate and _project_slug(candidate) == slug:
             return candidate, text[:match.start()].strip()
     return "", text
+
+
+def unresolved_capture_project_tag(bullet, known=()):
+    """The trailing `#slug` that matched no name in `known`, or `""`.
+
+    `split_capture_project_tag` above cannot report this: an unresolved
+    tag and no tag at all both come back as `("", text)`, on purpose --
+    an invented project name is worse than a tag left in the title. But
+    the two are not the same event, and only one of them is a mistake
+    somebody should hear about. This is the question "was there a tag
+    here that I could not place", and it exists so a caller can say so
+    out loud instead of filing the row under nothing in silence.
+
+    Shape-only, so it says nothing about whether `#4` mid-sentence was
+    ever meant as a project: the regex it shares only matches a slug at
+    the very end, which is where `nova_capture.capture` puts one.
+    """
+    text = (bullet or "").strip()
+    match = _CAPTURE_PROJECT_TAG_RE.search(text)
+    if not match:
+        return ""
+    slug = match.group(1)
+    for name in known or ():
+        candidate = (name or "").strip()
+        if candidate and _project_slug(candidate) == slug:
+            return ""
+    return slug
 
 
 def _project_slug(name):

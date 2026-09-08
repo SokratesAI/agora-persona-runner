@@ -73,6 +73,7 @@ from agora_runner.nova_boards import (  # noqa: E402
     split_capture_priority,
     split_capture_project,
     split_capture_project_tag,
+    unresolved_capture_project_tag,
 )
 
 # The statuses a cycle may move a capture into. `outdated` is deliberately
@@ -151,12 +152,44 @@ def check(before, after, number, title, capture_text, project=""):
     return problems
 
 
-def promote(before, index, priority, status, dated, title=None, project=None):
+def _known_names(before, extra=()):
+    """The board's own projects first, then any the caller added.
+
+    Order matters only for readability -- `split_capture_project_tag`
+    returns the first name whose slug matches and slugs are unique -- but
+    the board's own spelling winning is the right precedence anyway: if
+    two boards spell one project differently, the row being written should
+    keep the spelling already on its own page.
+    """
+    names = board_projects(parse_board(before).get("items") or [])
+    for name in extra or ():
+        cleaned = (name or "").strip()
+        if cleaned and cleaned not in names:
+            names.append(cleaned)
+    return names
+
+
+def promote(
+    before, index, priority, status, dated, title=None, project=None,
+    known_projects=(),
+):
     """`(after, number, title, project)` or `(None, reason, None, None)`.
 
     The fourth element is the project the row actually landed under --
     `""` when it landed under none. `check` needs it and only `promote`
     knows it, because the tag is stripped out of his bullet in here.
+
+    `known_projects` widens the set his `#slug` tag is resolved against.
+    It exists because the picker in the app and the resolver here were
+    reading two different lists: `/api/project` builds its list from
+    **both** boards, and this function was matching against the one board
+    it is writing. Measured 2026-09-08 against the live site: the picker
+    offered eleven projects and `issues.md` carried eight, so picking
+    Maintenance, Research or Demos on an issue produced a row at the
+    default project with `#maintenance` still inside its title -- the
+    exact defect PR #888 was written to end, surviving in the three
+    projects that happen to have no issue open. The caller passes the
+    sibling board because this module reads no vault; see `--projects-from`.
     """
     entries = capture_entries(before)
     if index < 0 or index >= len(entries):
@@ -173,7 +206,7 @@ def promote(before, index, priority, status, dated, title=None, project=None):
         # resolve to a project that already exists, and an unknown slug
         # stays in the title rather than inventing one.
         own_project, text = split_capture_project_tag(
-            text, board_projects(parse_board(before).get("items") or []))
+            text, _known_names(before, known_projects))
     if not text.strip():
         return None, "that capture is empty once its prefixes are stripped", None, None
 
@@ -233,6 +266,17 @@ def main(argv=None):
         "--project",
         help="Project cell; default is the bullet's own '(Project: X)' prefix",
     )
+    parser.add_argument(
+        "--projects-from",
+        action="append",
+        metavar="PATH",
+        help=(
+            "another board markdown on disk whose Project cells also count "
+            "as known names -- pass the sibling board, because the picker in "
+            "the app offers the union of both and this file only sees one. "
+            "Repeatable."
+        ),
+    )
     parser.add_argument("--out", help="where to write (default: in place)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -270,9 +314,24 @@ def main(argv=None):
         return 1
     _, _, raw_text, _ = entries[args.index]
 
+    extra_names = []
+    for path in args.projects_from or ():
+        try:
+            sibling = open(path, encoding="utf-8").read()
+        except OSError as exc:
+            # A refusal, not a shrug: silently narrowing the known list is
+            # exactly the failure this flag exists to fix, and it would be
+            # invisible in the output.
+            print(
+                f"REFUSED: could not read --projects-from {path}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        extra_names.extend(board_projects(parse_board(sibling).get("items") or []))
+
     after, number, row_title, tag = promote(
         before, args.index, args.priority, args.status, args.dated, args.title,
-        args.project,
+        args.project, extra_names,
     )
     if after is None:
         print(f"REFUSED: {number}", file=sys.stderr)
@@ -290,6 +349,21 @@ def main(argv=None):
     print(f"  status {row['status']!r}  priority {row['priority']!r}")
     if tag:
         print(f"  project {tag!r}, lifted out of the title")
+    else:
+        # Say it out loud. He picked a project in the app, the slug matched
+        # nothing this call knew about, and the row went in under none with
+        # the tag still in its title -- which used to happen in silence.
+        missed = unresolved_capture_project_tag(
+            raw_text, _known_names(before, extra_names)
+        )
+        if missed:
+            print(
+                f"  WARNING: '#{missed}' matched no project this call knows "
+                "about, so the row went in with no project and the tag is "
+                "still in its title. Pass --projects-from <the other board> "
+                "or --project <name>.",
+                file=sys.stderr,
+            )
     print(f"  captures {len(entries)} -> {len(capture_entries(after))}")
     print(f"  {len(before)} -> {len(after)} bytes")
     if args.dry_run:

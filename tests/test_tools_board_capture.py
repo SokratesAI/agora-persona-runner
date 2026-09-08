@@ -394,3 +394,126 @@ def test_an_untagged_capture_gets_no_project_cell(tmp_path):
     # appended for a row that never asked for one.
     header = [line for line in after.split("\n") if line.startswith("| # |")][0]
     assert header.count("|") == 6
+
+
+#: A second board that carries a project the first one does not. This is the
+#: whole point of the case below: `/api/project` builds the picker's list from
+#: BOTH boards, so a project with rows on only one of them is offerable in the
+#: app and unresolvable here.
+SIBLING_BOARD = BOARD_WITH_PROJECTS.replace("| Marcus |", "| Maintenance |")
+
+
+def test_the_sibling_fixture_really_carries_a_project_the_first_one_lacks():
+    """The precondition, asserted rather than assumed.
+
+    Every test below claims a slug resolves *because* of the sibling. If the
+    replacement above silently missed, `Maintenance` would be on neither
+    board and the negative test would pass for the wrong reason.
+    """
+    first = [item["project"] for item in parse_board(BOARD_WITH_PROJECTS)["items"]]
+    second = [item["project"] for item in parse_board(SIBLING_BOARD)["items"]]
+    assert "Maintenance" in second
+    assert "Maintenance" not in first
+
+
+def _tagged(slug):
+    return BOARD_WITH_PROJECTS.replace(
+        "- The first thing he typed. It goes on for a second sentence.",
+        f"- The first thing he typed. It goes on. #{slug}",
+    )
+
+
+def test_a_project_only_on_the_other_board_resolves_when_it_is_handed_over(tmp_path):
+    """`--projects-from` closes the gap between the picker and the resolver.
+
+    Measured against the live site on 2026-09-08: `/api/project` returned
+    eleven projects and `issues.md` carried eight, so Maintenance, Research
+    and Demos were pickable in the app and unresolvable when the capture was
+    boarded onto issues -- the row landed with no project and the slug still
+    in its title, which is the defect PR #888 was written to end.
+    """
+    sibling = tmp_path / "ideas.md"
+    sibling.write_text(SIBLING_BOARD, encoding="utf-8")
+    code, path = _run(
+        tmp_path,
+        board=_tagged("maintenance"),
+        priority="medium",
+        projects_from=str(sibling),
+    )
+    assert code == 0
+    after = path.read_text(encoding="utf-8")
+    assert parse_board(after)["items"][0]["project"] == "Maintenance"
+    assert parse_board(after)["items"][0]["title"] == "The first thing he typed."
+    assert "#maintenance" not in after
+
+
+def test_that_same_tag_does_not_resolve_without_the_other_board(tmp_path, capsys):
+    """The complement, and the reason the flag exists at all.
+
+    Without this the test above passes whether or not `--projects-from` does
+    anything -- `Maintenance` could be resolving through some other path and
+    the assertion could not tell.
+    """
+    code, path = _run(tmp_path, board=_tagged("maintenance"), priority="medium")
+    assert code == 0
+    after = path.read_text(encoding="utf-8")
+    row = parse_board(after)["items"][0]
+    assert row["project"] != "Maintenance"
+    # Still in the document -- the write-up here, the title when his first
+    # sentence is the whole capture. Either way it never reached a cell.
+    assert "#maintenance" in after
+    assert "WARNING: '#maintenance'" in capsys.readouterr().err
+
+
+def test_a_resolved_tag_prints_no_warning(tmp_path, capsys):
+    """The other half of the warning, so it cannot fire on every run."""
+    code, _path = _run(tmp_path, board=_tagged("marcus"), priority="medium")
+    assert code == 0
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_a_capture_with_no_tag_at_all_prints_no_warning(tmp_path, capsys):
+    """A bullet he typed by hand is not a picker miss."""
+    code, _path = _run(tmp_path, board=BOARD_WITH_PROJECTS, priority="medium")
+    assert code == 0
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_an_unreadable_projects_from_is_a_refusal_not_a_shrug(tmp_path, capsys):
+    """Carrying on with a narrower list would reproduce the exact bug.
+
+    The row would land with no project, and the only sign would be a
+    warning that reads identically to the case where the sibling really
+    does not carry the name.
+    """
+    code, path = _run(
+        tmp_path,
+        board=_tagged("maintenance"),
+        priority="medium",
+        projects_from=str(tmp_path / "no-such-board.md"),
+    )
+    assert code == 1
+    assert "REFUSED" in capsys.readouterr().err
+    # And nothing was written: the capture is still in the box.
+    assert len(capture_entries(path.read_text(encoding="utf-8"))) == 3
+
+
+def test_the_boards_own_spelling_of_a_project_wins_over_the_siblings(tmp_path):
+    """One project, two spellings, and the row keeps its own page's.
+
+    Both slugify to `marcus`, so whichever list is consulted first decides
+    the cell. The row being written belongs on this board's project page,
+    so this board's spelling is the right answer.
+    """
+    sibling = tmp_path / "ideas.md"
+    sibling.write_text(
+        BOARD_WITH_PROJECTS.replace("| Marcus |", "| MARCUS |"), encoding="utf-8"
+    )
+    code, path = _run(
+        tmp_path,
+        board=_tagged("marcus"),
+        priority="medium",
+        projects_from=str(sibling),
+    )
+    assert code == 0
+    assert parse_board(path.read_text(encoding="utf-8"))["items"][0]["project"] == "Marcus"
