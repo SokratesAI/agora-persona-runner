@@ -220,3 +220,108 @@ def test_lateness_and_failure_are_counted_separately():
     heartbeat_pass.note_failure(RuntimeError("x"), record=lambda *a: seen.append(a))
     assert len(seen) == 2  # the two failures; the on-time pass wrote nothing
     assert heartbeat_pass._failed_since_healthy == 2
+
+
+def test_loop_survives_a_recorder_that_raises(monkeypatch):
+    """The guard `pass_once` has, extended to the calls around it.
+
+    `note_pass` and `note_failure` sat outside every guard in this module,
+    and this thread is a daemon nothing supervised -- so a `RuntimeError`
+    out of `threading.Thread.start` (the process at its thread limit, which
+    is when a diagnostic is most likely to fire) ended every heartbeat in
+    the Pod for as long as it lived.
+    """
+    passes = []
+    logged = []
+    monkeypatch.setattr(heartbeat_pass, "INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(heartbeat_pass, "log", logged.append)
+    monkeypatch.setattr(heartbeat_pass, "pass_once", lambda: passes.append(1))
+
+    def boom(*_a, **_k):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(heartbeat_pass, "note_pass", boom)
+
+    heartbeat_pass._loop(lambda: len(passes) >= 3 or len(logged) >= 3)
+
+    # Every pass after the first raise still happened: the loop is alive.
+    assert len(logged) == 3, logged
+    assert all("can't start new thread" in line for line in logged)
+
+
+def test_loop_survives_note_failure_raising(monkeypatch):
+    """The second bookkeeping call, guarded for the same reason as the first.
+
+    It is reached only when a pass raised, so a scheduler already in trouble
+    is exactly the one that would have died here.
+    """
+    logged = []
+    monkeypatch.setattr(heartbeat_pass, "INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(heartbeat_pass, "log", logged.append)
+    monkeypatch.setattr(heartbeat_pass, "pass_once", lambda: RuntimeError("agora is down"))
+
+    def boom(*_a, **_k):
+        raise ValueError("recorder is broken")
+
+    monkeypatch.setattr(heartbeat_pass, "note_failure", boom)
+
+    heartbeat_pass._loop(lambda: len(logged) >= 2)
+
+    assert len(logged) == 2, logged
+    assert all("recorder is broken" in line for line in logged)
+
+
+def test_a_raising_recorder_costs_the_pass_beside_it_and_nothing_after(monkeypatch):
+    """The guard is around the pair, so a raise in `note_pass` costs that
+    iteration's pass as well as its record -- and the NEXT iteration runs.
+
+    That is the trade this catch makes and it is the right way round: one
+    lost pass is one 5-second beat, and a dead thread is every heartbeat in
+    the Pod. Asserted rather than left implicit, because a future guard moved
+    inside `note_pass` would change this number and should have to say so.
+    """
+    passes = []
+    iterations = []
+    monkeypatch.setattr(heartbeat_pass, "INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(heartbeat_pass, "log", lambda _m: iterations.append(1))
+    monkeypatch.setattr(heartbeat_pass, "pass_once", lambda: passes.append(1))
+    monkeypatch.setattr(heartbeat_pass, "note_pass",
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("x")))
+
+    heartbeat_pass._loop(lambda: len(iterations) >= 2)
+
+    assert len(iterations) == 2, "the loop stopped at the first raise"
+    assert passes == []
+
+
+def test_main_asks_for_the_scheduler_on_every_tick(monkeypatch):
+    """`start_heartbeat_pass` is idempotent, so calling it each tick makes the
+    poll loop the scheduler's supervisor. Called once before the loop, a
+    thread that died stayed dead for the life of the Pod."""
+    main_mod = importlib.import_module("agora_runner.main")
+
+    given = []
+    ticks = []
+    monkeypatch.setattr(main_mod, "init_tracing", lambda _n: None)
+    monkeypatch.setattr(main_mod, "start_invoke_server", lambda: None)
+    monkeypatch.setattr(main_mod, "start_catalog_refresh", lambda: None)
+    monkeypatch.setattr(main_mod, "start_heartbeat_pass", lambda s: given.append(s))
+    monkeypatch.setattr(main_mod, "poll_once", lambda: ticks.append(1))
+    monkeypatch.setattr(main_mod, "_sleep_between_ticks", lambda _s: None)
+    monkeypatch.setattr(main_mod, "_drain_and_exit", lambda: None)
+    monkeypatch.setattr(main_mod.signal, "signal", lambda *a: None)
+
+    # Two ticks: shut down only once the loop has been round twice.
+    monkeypatch.setattr(main_mod, "_shutdown_requested", False)
+    real_sleep = main_mod._sleep_between_ticks
+
+    def stop_after_two(_s):
+        if len(ticks) >= 2:
+            monkeypatch.setattr(main_mod, "_shutdown_requested", True)
+
+    monkeypatch.setattr(main_mod, "_sleep_between_ticks", stop_after_two)
+    main_mod.main()
+
+    assert ticks == [1, 1]
+    assert given == [main_mod.shutdown_requested, main_mod.shutdown_requested]
+    assert real_sleep is not None

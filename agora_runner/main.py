@@ -120,9 +120,18 @@ def main():
     # scheduled cycle past its own slot -- and an anchored schedule only ever
     # asks about the most recent occurrence, so a slot pushed past is lost
     # rather than late. See agora_runner/heartbeat_pass.py.
-    start_heartbeat_pass(shutdown_requested)
     log(f"polling {AGORA_URL}/conversations every {POLL_INTERVAL_SECONDS}s")
     while True:
+        # Called every tick, not once before the loop, and it is the same
+        # call: `start_heartbeat_pass` returns the live thread untouched and
+        # only starts one when there is none running. So this is the start
+        # AND the supervisor, in one line -- the scheduler is a daemon thread
+        # that nothing was watching, and a thread that dies for a reason
+        # `heartbeat_pass._loop` does not enumerate takes every future
+        # heartbeat in this Pod with it, silently. The poll loop below has
+        # been supervised by its own `try` since it was written; this thread
+        # decides whether anything fires at all and had less.
+        start_heartbeat_pass(shutdown_requested)
         try:
             poll_once()
         except Exception as e:
