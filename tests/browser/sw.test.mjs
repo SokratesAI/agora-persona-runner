@@ -442,17 +442,44 @@ describe("the tap after a push is answered without a round trip", () => {
     assert.equal(await response.text(), "live");
   });
 
-  test("a thread with nothing parked behaves exactly as it did before", async () => {
+  test("a thread with nothing parked is answered from the cache, not waited for", async () => {
+    /* This pinned the opposite until 2026-09-08 -- "behaves exactly as it
+     * did before", i.e. it waited for the network and only fell back to the
+     * cache on a timeout. His report is what that felt like: *"When i open
+     * the app or closed my phone with the Nova app open and then unlocked
+     * my phone again, it takes about 10 seconds before anything loads in
+     * the chat, messages or how many tools have been used."*
+     *
+     * The reopen fix reached every other polled payload and stopped short
+     * of exactly this one, because the push branch claimed the path first
+     * and fell through to the network. So the whole app painted instantly
+     * and the chat -- 109 KB, the biggest of the lot -- still sat there.
+     *
+     * `pending === false` is the assertion that matters: the response is
+     * already resolved, with no timer fired and a network that never
+     * answers. */
     const worker = loadWorker();
     worker.cache.set(THREAD, new Response("stale", { status: 200 }));
     worker.network(() => new Promise(() => {}));
 
     const answered = fetchEvent(worker, req(THREAD));
-    assert.equal(await pending(answered), true);
-    worker.fireTimer();
-    const response = await answered;
-    assert.equal(await response.text(), "stale");
-    assert.equal(response.headers.get("X-Nova-Replayed"), "1");
+    assert.equal(await pending(answered), false,
+      "the thread still waited for the network with a cached copy in hand");
+    assert.equal(await (await answered).text(), "stale");
+  });
+
+  test("a thread the page is polling for is still left to the network", async () => {
+    /* The other half of the same rule, and the reason the guard is on the
+     * request's own `If-None-Match`: the 30-second poll holds the payload
+     * in memory and is asking whether it moved. Handing it the cached body
+     * would answer a question it did not ask and delay the one it did. */
+    const worker = loadWorker();
+    worker.cache.set(THREAD, new Response("stale", { status: 200 }));
+    worker.network(() => new Promise(() => {}));
+
+    const answered = fetchEvent(worker, req(THREAD, { headers: new Headers({ "If-None-Match": 'W/"abc"' }) }));
+    assert.equal(await pending(answered), true,
+      "a conditional request for the thread was answered from the cache");
   });
 });
 
