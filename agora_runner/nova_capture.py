@@ -120,7 +120,57 @@ CAPTURE_TARGETS = {
     # `prompt.md` step 1a is where that obligation is written down, and
     # without it this button files into a file nothing opens.
     "notes": "projects/sokrates/projects/nova/notes.md",
+    # His capture 2026-09-08, with a screenshot of the box: *"another
+    # [button] that is like issues and ideas, but it says 'project'."*
+    #
+    # A flat fourth file, with the same bare-bullet contract as the other
+    # three, and deliberately **not** a real project note per capture.
+    # The project board reads frontmatter -- lifecycle, TRL, size, order --
+    # and a one-line phone capture has none of it, so writing a note per
+    # capture would create a project row that is wrong in four fields the
+    # moment it exists. A cycle promotes a bullet here into a real project
+    # the same way it boards an issue.
+    #
+    # Same obligation as `notes` above, and it is the half that makes this
+    # a button rather than a dead end: `prompt.md` step 1a has to read this
+    # file, or a capture lands where nothing opens it.
+    #
+    # **Not `projects.md`, which the spec proposed and which is already
+    # taken.** `nova_boards.PROJECT_META_PATH` is that path: the project
+    # *rating* board, a markdown table of one row per rated project, read
+    # by `parse_project_meta` on every board render. Filing bare bullets
+    # into it would put untabled lines above a table whose parser is the
+    # ordering of the whole board. The file this writes is new and holds
+    # nothing else.
+    "projects": "projects/sokrates/projects/nova/proposed-projects.md",
 }
+
+
+# The project a capture belongs to rides on the end of the bullet as a
+# tag: `- fix the drag on the tool sheet #nova-app`.
+#
+# **The bare-bullet contract is what picks the format, not taste.** Every
+# parser in this module -- `capture_entries`, `replace_capture`,
+# `split_capture_priority` -- assumes a capture is one line that looks
+# exactly like a line he typed in Obsidian. A prefix or a second line
+# would be richer and would break all three. A trailing tag survives them
+# untouched, greps, reads as a tag in Obsidian, and he can type one by
+# hand.
+#
+# The slug comes from the project name he picked in the app, lowercased
+# with runs of anything that is not a letter, a digit or a hyphen
+# collapsed to one hyphen. That is one source of truth: the picker offers
+# the names the board already holds, so a tag can only ever name a
+# project that exists at the moment it is written.
+PROJECT_TAG_PREFIX = "#"
+
+_PROJECT_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def project_slug(name):
+    """A project name -> the tag slug a capture carries it as. `""` if none."""
+    slug = _PROJECT_SLUG_RE.sub("-", (name or "").strip().lower()).strip("-")
+    return slug
 
 # 64 KiB. A capture is a line typed on a phone; this is orders of
 # magnitude above any real one and still bounded against the 256Mi limit.
@@ -653,11 +703,15 @@ def insert_captures(markdown, bullets):
     return "\n".join(lines[:start] + block + lines[end:])
 
 
-def capture(target, text, priority="", one_item=False):
+def capture(target, text, priority="", one_item=False, project=""):
     """Append a capture to `issues.md` or `ideas.md`. Returns (ok, message).
 
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
     client sends is ever used to address a vault document.
+
+    `project` rides at the *end* of the first bullet as a `#slug` tag --
+    see `project_slug`; the front is taken and the end is the only place
+    a bare bullet has left.
 
     `priority` rides at the front of the bullet as its full label and a
     colon (`🟠 High: ...`, `CAPTURE_PRIORITY_SEP`), and only on the
@@ -691,6 +745,14 @@ def capture(target, text, priority="", one_item=False):
         return False, "nothing to capture"
     if priority:
         bullets[0] = priority + CAPTURE_PRIORITY_SEP + bullets[0]
+    # The project tag, on the first bullet only and for the same reason
+    # the rating is: a paste that splits into four lines is one thought he
+    # filed against one project, not four items each assigned separately.
+    # An unnameable project (a name that slugs to nothing) writes no tag
+    # rather than a bare `#`, which would be a tag pointing at nothing.
+    slug = project_slug(project)
+    if slug:
+        bullets[0] = bullets[0] + " " + PROJECT_TAG_PREFIX + slug
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):

@@ -11687,6 +11687,7 @@
   var msgSheet = null;
   var msgSheetBackdrop = null;
   var msgSheetBody = null;
+  var msgSheetTitle = null;
   var msgSheetHide = null;
 
   function buildMessageSheet() {
@@ -11708,7 +11709,8 @@
 
     var head = el("div", "msg-sheet-head");
     var titles = el("div", "msg-sheet-titles");
-    titles.appendChild(el("h2", "msg-sheet-title", "Message"));
+    msgSheetTitle = el("h2", "msg-sheet-title", "Message");
+    titles.appendChild(msgSheetTitle);
     head.appendChild(titles);
     var close = el("button", "msg-sheet-close", "✕");
     close.type = "button";
@@ -11733,8 +11735,14 @@
     return msgSheet;
   }
 
-  function openMessageActions(actions) {
+  /* `title` is optional and defaults to the message actions this sheet
+   * was built for. The capture box opens it with "Capture type" and
+   * "Project"; a drawer whose heading says "Message" over a list of
+   * projects is a drawer that reads as the wrong drawer. */
+  function openMessageActions(actions, title) {
     buildMessageSheet();
+    msgSheetTitle.textContent = title || "Message";
+    msgSheet.setAttribute("aria-label", title || "Message actions");
     msgSheetBody.textContent = "";
     actions.forEach(function (button) {
       // The buttons keep their own classes and their own handlers; only the
@@ -13574,23 +13582,50 @@
   window.addEventListener("focus", function () { resume(false); });
   window.addEventListener("online", function () { resume(false); });
 
-  /* The capture box (item 6). One button per target rather than a target
-   * toggle plus a submit: it is one tap fewer on a phone, which is the
-   * whole point of the feature, and it is why a third target cost one
-   * button rather than a redesign. The text is only cleared once the
-   * server confirms the write -- a failed capture that wiped the box would
-   * lose the thought it exists to catch.
+  /* The capture box (item 6). A type button, a project button, priority,
+   * attach, and a Submit hard against the right edge.
    *
-   * Nothing here names the targets: `send` takes whatever `data-target`
-   * the button carries and the server rejects anything not in
-   * CAPTURE_TARGETS, so the Note button (the owner, issues.md 2026-08-12)
-   * needed no change in this file at all. */
+   * **It was one button per target until 2026-09-08**, and that was the
+   * right shape while there were three: a target button *was* the submit,
+   * which is one tap fewer on a phone, and the Note button cost one line
+   * of HTML rather than a redesign. His ask, with a screenshot of the box:
+   * *"The issues, ideas, notes and project buttons are merged into one
+   * button and opens a modal from the bottom with the different options
+   * (idea, note, issue and the new project) and i can select there. I
+   * actually want a new submit button that is all the way to the right.
+   * The priority button and attach button should stay like they are."*
+   *
+   * A fourth target is what breaks the old shape: four destination buttons
+   * plus priority plus attach do not fit one row at 390px, and the project
+   * selector he also asked for is a fifth control. So the two *choices*
+   * collapse into two buttons that open sheets, and the act of filing gets
+   * its own button.
+   *
+   * The one thing that had to go with it: pressing a type must no longer
+   * submit. Two submit paths that can disagree about the selected type is
+   * a capture filed as the wrong kind, which is exactly the failure the
+   * Enter key used to cause.
+   *
+   * Nothing here still names the targets: the sheet rows come from the
+   * shipped HTML and `send` uses whatever `data-target` the selected one
+   * carries. */
   (function captureBox() {
     var form = document.getElementById("capture-form");
     if (!form) return;
     var textEl = document.getElementById("capture-text");
     var captureStatus = document.getElementById("capture-status");
     var buttons = Array.prototype.slice.call(form.querySelectorAll(".capture-btn"));
+    var typeBtn = document.getElementById("capture-type");
+    var projectBtn = document.getElementById("capture-project");
+    var sendBtn = document.getElementById("capture-send");
+    var NO_PROJECT = "No project";
+    /* Last-used, not none. He files three issues about the same thing in a
+     * row, so re-picking the project every time is a tax on the common
+     * case; and unlike the rating, a wrong project is a cell a cycle
+     * fixes rather than a claim about urgency. It resets to the last
+     * choice and not to nothing after a send, for the same reason. */
+    var currentTarget = buttons.length ? buttons[0].getAttribute("data-target") : "issues";
+    var currentProject = "";
 
     /* the owner, issues.md 2026-08-14: "i want that aswell both when i input
      * in the textbox in the Nova app". Unrated is the default and stays
@@ -13619,7 +13654,6 @@
      * buttons on the first line. That measurement no longer holds: the
      * control is a fixed 44px circle now, not a word, so it rejoins the
      * group it was split out of. See `.capture-submit` in style.css. */
-    document.querySelector(".capture-submit").appendChild(prioPicker.el);
 
     /* The same attach button the comment drawer gets, on the box that
      * files an issue, an idea or a note -- which is the rest of the owner's
@@ -13651,16 +13685,22 @@
       // All three destinations, not just one: whichever he taps mid-upload
       // files the text without the image. Same race as the comment drawer.
       onBusy: function (isBusy) {
-        buttons.forEach(function (b) { b.disabled = isBusy; });
+        // The Submit button, not the type rows: those live in a sheet now
+        // and choosing a type mid-upload is harmless. Filing is the thing
+        // that would race the upload.
+        setBusy(isBusy);
       },
       onStatus: setStatus,
     });
     var submitRow = document.querySelector(".capture-submit");
     form.appendChild(captureAttach.input);
-    // Directly under the box he typed in, above the row of destinations --
+    // Directly under the box he typed in, above the row of controls --
     // the thumbnails belong to the sentence, not to the buttons.
     textEl.parentNode.insertBefore(captureAttach.tray, textEl.nextSibling);
-    submitRow.insertBefore(captureAttach.button, prioPicker.el);
+    // Both before Submit, which stays the last child: his ask puts Submit
+    // "all the way to the right" and priority and attach "like they are".
+    submitRow.insertBefore(captureAttach.button, sendBtn);
+    submitRow.insertBefore(prioPicker.el, sendBtn);
 
 
     /* the owner, issues.md 2026-08-09: "the input box for the Nova pwa is too
@@ -13714,6 +13754,38 @@
       captureStatus.className = isError ? "capture-status is-error" : "capture-status";
     }
 
+    /* Submit is inert on an empty box, and that is a real state rather
+     * than a cosmetic one: the old design had no submit at all, so
+     * "nothing to file" could only be discovered by tapping a
+     * destination. `count()` is why an image with no sentence still
+     * enables it -- a screenshot on its own is a capture worth filing,
+     * the same guard `send` has always carried. */
+    var busy = false;
+    function setBusy(isBusy) {
+      busy = isBusy;
+      fitSend();
+    }
+    function fitSend() {
+      if (!sendBtn) return;
+      var has = textEl.value.trim() !== "" || captureAttach.count() > 0;
+      sendBtn.disabled = busy || !has;
+    }
+
+    function setTarget(target) {
+      var picked = null;
+      buttons.forEach(function (b) {
+        if (b.getAttribute("data-target") === target) picked = b;
+      });
+      if (!picked) return;
+      currentTarget = target;
+      if (typeBtn) typeBtn.textContent = picked.textContent;
+    }
+
+    function setProject(name) {
+      currentProject = name || "";
+      if (projectBtn) projectBtn.textContent = currentProject || NO_PROJECT;
+    }
+
     function send(target) {
       var text = textEl.value.trim();
       // A screenshot with no sentence under it is still a capture worth
@@ -13723,7 +13795,7 @@
         return;
       }
       var body = [text, captureAttach.markdown()].filter(Boolean).join("\n\n");
-      buttons.forEach(function (b) { b.disabled = true; });
+      setBusy(true);
       setStatus("saving…", false);
       fetch("/api/capture", {
         method: "POST",
@@ -13732,6 +13804,7 @@
           target: target,
           text: body,
           priority: prioPicker.getValue(),
+          project: currentProject,
           oneItem: !!(oneInput && oneInput.checked),
         }),
       })
@@ -13748,12 +13821,49 @@
           load();
         })
         .catch(function (err) { setStatus(String(err.message || err), true); })
-        .then(function () { buttons.forEach(function (b) { b.disabled = false; }); });
+        .then(function () { setBusy(false); });
     }
 
+    /* Choosing a type closes the sheet and updates the button. It does not
+     * submit -- that is the whole point of the rework, and the reason the
+     * old handler on these very buttons had to go. */
     buttons.forEach(function (button) {
-      button.addEventListener("click", function () { send(button.getAttribute("data-target")); });
+      button.addEventListener("click", function () { setTarget(button.getAttribute("data-target")); });
     });
+    if (typeBtn) {
+      typeBtn.addEventListener("click", function () {
+        // The shared bottom sheet, the fourth thing to use it. The rows
+        // are the real buttons out of the HTML, moved in and moved back
+        // by `openMessageActions`'s own close handler -- so there is one
+        // set of type buttons in this document, not two that can drift.
+        openMessageActions(buttons, "Capture type");
+      });
+    }
+    if (projectBtn) {
+      projectBtn.addEventListener("click", function () {
+        /* Built fresh each open, because the project list is whatever the
+         * board holds right now and a cycle can have added one since the
+         * page loaded. `loadProjects` is the same cached index the row
+         * editor's picker uses, so this costs one request per session. */
+        loadProjects().then(function (names) {
+          var rows = [];
+          var none = el("button", "capture-btn", NO_PROJECT);
+          none.type = "button";
+          none.addEventListener("click", function () { setProject(""); });
+          rows.push(none);
+          (names || []).forEach(function (name) {
+            var row = el("button", "capture-btn", name);
+            row.type = "button";
+            row.addEventListener("click", function () { setProject(name); });
+            rows.push(row);
+          });
+          openMessageActions(rows, "Project");
+        });
+      });
+    }
+    if (sendBtn) {
+      sendBtn.addEventListener("click", function () { send(currentTarget); });
+    }
     form.addEventListener("submit", function (event) { event.preventDefault(); });
     /* Enter is a newline. The owner, issues.md #90: *"When i press enter on my
      * keyboard, it automatically submits my input text as an issue in the
@@ -13779,11 +13889,17 @@
     textEl.addEventListener("keydown", function (event) {
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        send(buttons.length ? buttons[0].getAttribute("data-target") : "issues");
+        // The selected type, now that there is one. It used to have to
+        // guess, and guessed `issues` for a box with three buttons.
+        send(currentTarget);
       }
     });
     textEl.addEventListener("input", fit);
     textEl.addEventListener("input", fitOne);
+    textEl.addEventListener("input", fitSend);
+    setTarget(currentTarget);
+    setProject("");
+    fitSend();
     fit();
     // Both on load, not just `fit`: a browser restores a textarea's value
     // across a refresh, so the box can already hold a paste before he has

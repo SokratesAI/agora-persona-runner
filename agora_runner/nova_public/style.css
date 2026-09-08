@@ -300,6 +300,56 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .capture-btn:hover:not(:disabled) { border-color: var(--accent); }
 .capture-btn:disabled { color: var(--dim); cursor: default; }
 
+/* The four type buttons live in the shipped HTML so the Python test can
+ * read them against CAPTURE_TARGETS, and `app.js` moves them into the
+ * shared bottom sheet on the first open. Hidden here, and hidden by
+ * `hidden` rather than by this rule -- the sheet is what shows them. */
+.capture-types { display: none; }
+
+/* The two choice buttons: type and project. Same pill as `.capture-btn`
+ * and the same 44px target, with a caret so it reads as "this opens
+ * something" rather than as a third destination to tap. */
+.capture-pick {
+  background: none;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  min-height: 44px;
+  padding: 0 0.9rem;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  /* The project name can be long; the row must not be pushed apart by it. */
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.capture-pick::after { content: " \25BE"; color: var(--dim); }
+.capture-pick:hover { border-color: var(--accent); }
+
+/* Submit, hard against the right edge -- his ask, 2026-09-08. Filled
+ * rather than outlined: it is the one button in this row that acts, and
+ * the four beside it are all choices. */
+.capture-send {
+  margin-left: auto;
+  background: var(--accent);
+  color: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  min-height: 44px;
+  padding: 0 1.1rem;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.capture-send:disabled {
+  background: none;
+  color: var(--dim);
+  border-color: var(--line);
+  cursor: default;
+}
+
 /* The ask, on the card that raised it -- the owner, comments board 2026-08-16:
  * "add a new yellow block below the title or somehow higlight your issue so
  * that i see it."
