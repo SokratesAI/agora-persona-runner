@@ -254,7 +254,7 @@ class InvokeHandler(BaseHTTPRequestHandler):
             # about vault tools and about `save_memory` while withholding
             # every one of them. The model believes the prompt: asked "can
             # you remember this?" it calls `save_memory`, the call reaches
-            # no tool, and the whole reply Edvard gets is the CLI's
+            # no tool, and the whole reply the owner gets is the CLI's
             # placeholder for it -- `save_memory`, or `**1 tool use**`,
             # with nothing else in the turn. Measured live 2026-09-08
             # against Marcus's coach, which is Ask's only production

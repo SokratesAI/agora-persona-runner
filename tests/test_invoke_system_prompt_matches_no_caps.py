@@ -12,7 +12,7 @@ Measured live on 2026-09-08 against the running coach, twice: asked "kan du
 huske dette?" at the end of a long self-introduction, the whole reply was
 the string `save_memory`; asked to consult its notes, the whole reply was
 `**1 tool use**`. That is the CLI's placeholder for a tool call standing in
-for the answer, and it is exactly what Edvard reported -- a reply that says
+for the answer, and it is exactly what the owner reported -- a reply that says
 it will check its notes "but never did anything more".
 
 The assertion is on the produced prompt rather than on the argument
