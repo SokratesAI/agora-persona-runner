@@ -72,6 +72,31 @@ a kill older than the restart is still unnameable; and the lookup is
 presentation only — it never changes the exit status, because whether a
 cgroup-limit kill happened does not depend on whether I can name it.
 
+**It reads the tail of `kern.log`, not all of it, and that is a reliability
+fix rather than a saving.** Cycle 1190: the sweep read `UNREADABLE --
+server2: stream error: stream ID 1; INTERNAL_ERROR; received from peer`,
+so the one node that has no swap to absorb a memory spike had no OOM
+instrument at all. `kubectl get --raw` pulls the whole file down one
+HTTP/2 stream and server2's `kern.log` was 12.3MB, most of it AppArmor
+audit lines; that stream is what broke, twice, reproducibly enough to
+catch in one cycle. The kubelet's log handler is a static file server and
+answers a suffix `Range` with 206, so this asks for the smallest tail that
+still reaches back past the window start and grows the range only when it
+does not — which also means a step that dies mid-stream is stepped past
+instead of becoming the verdict. Measured after the change: both nodes
+read, in 0.96s against 46s, and server1 answers a 24h window from 8MB
+instead of 8.5.
+
+**The coverage check is the part that makes a tail read honest.** A tail
+that begins after the window opened has said nothing about the gap in
+between, so a quiet report off it would be a negative result guaranteed by
+where the read started rather than by the log. `covers` compares the
+oldest parsable timestamp in the returned bytes against the window start,
+and a tail with no timestamp in it at all counts as no coverage rather
+than as clean. When even the whole file does not reach back, the whole
+file is still the answer — the report already prints the oldest stamp it
+saw, which is the honest statement of what the window actually covered.
+
 Scope it prints for itself: the node keeps `kern.log` for as long as
 logrotate keeps it and this reads the current file only, so a window
 longer than that rotation silently holds fewer days than it asks for —
@@ -80,7 +105,9 @@ the report says which timestamps it actually saw.
 
 import argparse
 import json
+import os
 import re
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -103,8 +130,102 @@ VICTIM = re.compile(
 INVOKED = re.compile(r"invoked oom-killer:")
 
 
-def read_kern_log(node, runner=subprocess.run):
-    """The node's current kernel log, through the kubelet's log endpoint."""
+# Progressively larger tails, in bytes, stopping at the first one that spans
+# the query window. The endpoint serves the whole file, and on 2026-09-08
+# server2's kern.log was 12.3MB of mostly AppArmor audit lines -- pulling all
+# of it over one HTTP/2 stream is what broke, and the report then read
+# UNREADABLE for the one node that has no swap to absorb a spike.
+#
+# The sizes are measured against that log rather than picked: a 2MB tail of
+# server2 reached back about 7 hours and an 8MB tail about 34, so 2MB answers
+# a 24h window on a quiet node and 8MB answers it on the noisy one. The last
+# step is larger than either node's whole log on purpose -- a suffix range
+# bigger than the file is satisfiable and returns all of it, so there is no
+# separate unranged fallback to keep in step with this tuple.
+TAIL_STEPS = (2 * 1024 * 1024, 8 * 1024 * 1024, 32 * 1024 * 1024, 128 * 1024 * 1024)
+
+SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+
+def kern_log_url(node, host, port):
+    return "https://%s:%s/api/v1/nodes/%s/proxy/logs/kern.log" % (host, port, node)
+
+
+def ranged_fetch(url, tail_bytes=None, opener=urllib.request.urlopen, timeout=90):
+    """The bytes of `url`, optionally only its last `tail_bytes`.
+
+    `kubectl get --raw` cannot set a Range header, so this talks to the API
+    server directly with the pod's own service-account token. The kubelet's
+    log handler is a static file server and answers 206 with a Content-Range;
+    a server that ignores the header answers 200 with the whole file, which
+    is still a correct answer and is handled by the coverage check below
+    rather than by trusting the status code.
+    """
+    request = urllib.request.Request(url)
+    with open(SA_DIR + "/token") as handle:
+        request.add_header("Authorization", "Bearer " + handle.read().strip())
+    if tail_bytes is not None:
+        request.add_header("Range", "bytes=-%d" % tail_bytes)
+    context = ssl.create_default_context(cafile=SA_DIR + "/ca.crt")
+    with opener(request, context=context, timeout=timeout) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def covers(text, window_start):
+    """Does `text` reach back to at or before `window_start`?
+
+    A tail read is only an answer about a window it actually spans. The oldest
+    timestamp in the returned bytes is the earliest moment this read could have
+    seen an OOM kill at, so if it is newer than the window start the read has
+    said nothing about the gap in between -- a negative result that was
+    guaranteed by where the read began, not by the log being quiet.
+    """
+    if window_start is None:
+        return True
+    for line in text.splitlines():
+        when = _stamp(line)
+        if when is not None:
+            return when <= window_start
+    # Not one parsable timestamp in the tail: nothing to judge coverage on.
+    return False
+
+
+def read_kern_log(node, runner=subprocess.run, fetch=None, window_start=None):
+    """The node's current kernel log, through the kubelet's log endpoint.
+
+    With `fetch` given, read the smallest tail in `TAIL_STEPS` that still
+    spans back to `window_start`, growing the range until one does; a step
+    that fails mid-stream is stepped past rather than being the verdict.
+    Without it, pull the whole file through `kubectl get --raw` -- the older
+    path, and what runs where there is no service account to authenticate
+    with.
+    """
+    if fetch is not None:
+        last = None
+        text = None
+        previous_len = -1
+        for tail_bytes in TAIL_STEPS:
+            try:
+                text = fetch(tail_bytes)
+            except Exception as problem:  # any transport failure, incl. HTTP/2
+                last = problem
+                continue
+            if covers(text, window_start):
+                return text
+            if len(text) == previous_len:
+                # A suffix range strictly returns more until the file runs
+                # out, so two steps of equal length means this is the whole
+                # log. Asking for more is a second download of the same bytes,
+                # which is what this tool is trying to stop doing.
+                break
+            previous_len = len(text)
+            last = None
+        if text is None:
+            raise OSError(str(last) or "ranged read failed")
+        # Every step read, none of them reached back far enough: the log does
+        # not go that deep. `sweep_one` prints the oldest stamp it saw, so the
+        # honest answer is the largest read rather than a refusal.
+        return text
     done = runner(
         ["kubectl", "get", "--raw", "/api/v1/nodes/%s/proxy/logs/kern.log" % node],
         capture_output=True,
@@ -325,10 +446,14 @@ def _pod_label(event, namer):
     return namer.name(uid, event.get("when"))
 
 
-def sweep_one(node, hours, namer, runner=subprocess.run, out=print, now=None):
+def sweep_one(node, hours, namer, runner=subprocess.run, out=print, now=None,
+              fetch_factory=None):
     """One node's verdict. 1 means it could not be read, which is never clean."""
+    window_start = (now or datetime.now(timezone.utc)) - timedelta(hours=hours)
+    fetch = fetch_factory(node) if fetch_factory is not None else None
     try:
-        text = read_kern_log(node, runner=runner)
+        text = read_kern_log(node, runner=runner, fetch=fetch,
+                             window_start=window_start)
     except (OSError, ValueError) as problem:
         out("UNREADABLE -- %s: %s. A node nothing could be read from is not a clean one."
             % (node, problem))
@@ -348,7 +473,8 @@ def sweep_one(node, hours, namer, runner=subprocess.run, out=print, now=None):
     return report(node, within(events, hours, now=now), hours, namer, seen_from, out=out)
 
 
-def main(argv=None, runner=subprocess.run, out=print, now=None, namer_factory=PodNamer):
+def main(argv=None, runner=subprocess.run, out=print, now=None, namer_factory=PodNamer,
+         fetch_factory=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--node", default=None,
                         help="one node instead of every node in the cluster")
@@ -364,7 +490,8 @@ def main(argv=None, runner=subprocess.run, out=print, now=None, namer_factory=Po
         return 1
 
     statuses = [
-        sweep_one(node, args.hours, namer, runner=runner, out=out, now=now)
+        sweep_one(node, args.hours, namer, runner=runner, out=out, now=now,
+                  fetch_factory=fetch_factory)
         for node in nodes
     ]
     unread = [node for node, status in zip(nodes, statuses) if status == 1]
@@ -377,5 +504,23 @@ def main(argv=None, runner=subprocess.run, out=print, now=None, namer_factory=Po
     return 1 if unread else 0
 
 
+def api_fetch_factory():
+    """The real ranged reader, or None when there is no service account here.
+
+    Built only on the production path so a unit test can never reach the API
+    server through a default argument.
+    """
+    host = os.environ.get("KUBERNETES_SERVICE_HOST")
+    port = os.environ.get("KUBERNETES_SERVICE_PORT")
+    if not host or not port or not os.path.exists(SA_DIR + "/token"):
+        return None
+
+    def factory(node):
+        url = kern_log_url(node, host, port)
+        return lambda tail_bytes: ranged_fetch(url, tail_bytes=tail_bytes)
+
+    return factory
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(fetch_factory=api_fetch_factory()))

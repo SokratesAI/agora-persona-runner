@@ -343,3 +343,138 @@ def test_node_restricts_the_sweep_to_one_node_without_listing_them():
     assert oom_history.main(["--node", "server2"], runner=runner, out=got.append, now=NOW) == 0
     assert not any("nodes" in cmd and "get" in cmd and "-o" in cmd for cmd in asked)
     assert "Swept 1 node(s): server2." in "\n".join(got)
+
+
+# --- the ranged kern.log read ------------------------------------------------
+#
+# Cycle 1190: `oom_history` pulled the whole kern.log through one `kubectl get
+# --raw` stream. On 2026-09-08 that was 12.3MB on server2 and the stream died
+# with `stream error: stream ID 1; INTERNAL_ERROR`, so the sweep reported
+# UNREADABLE for the one node that has no swap. The kubelet's log handler
+# answers HTTP Range (measured: 206 with a Content-Range), so the fix is to
+# read only the tail that spans the query window.
+
+WINDOW_START = datetime(2026, 9, 2, 0, 0, tzinfo=timezone.utc)
+
+
+class FakeFetch:
+    """Stands in for one node's ranged reader. Records every tail size asked for.
+
+    `answers` maps a tail size (or None for the whole file) to the text it
+    returns, or to an exception instance to make that read fail.
+    """
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.asked = []
+
+    def __call__(self, tail_bytes):
+        self.asked.append(tail_bytes)
+        answer = self.answers[tail_bytes]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def test_covers_is_true_when_the_tail_reaches_back_past_the_window():
+    assert oom_history.covers(GLOBAL_KILL, WINDOW_START) is False
+    assert oom_history.covers(GLOBAL_KILL, datetime(2026, 9, 3, tzinfo=timezone.utc)) is True
+
+
+def test_covers_is_false_when_the_tail_has_no_timestamp_to_judge_by():
+    # A tail that begins mid-line carries no parsable stamp; that is not
+    # coverage, it is nothing to judge coverage on.
+    assert oom_history.covers("kernel: some line with no stamp\n", WINDOW_START) is False
+
+
+def test_covers_needs_no_window_when_the_caller_asked_for_none():
+    assert oom_history.covers("", None) is True
+
+
+def test_ranged_read_stops_at_the_smallest_tail_that_spans_the_window():
+    small = oom_history.TAIL_STEPS[0]
+    fetch = FakeFetch(dict.fromkeys(oom_history.TAIL_STEPS, GLOBAL_KILL))
+    text = oom_history.read_kern_log(
+        "server2", fetch=fetch,
+        window_start=datetime(2026, 9, 3, tzinfo=timezone.utc))
+    assert text == GLOBAL_KILL
+    assert fetch.asked == [small], "a covered tail must not be re-read larger"
+
+
+def test_ranged_read_grows_the_range_until_it_spans_the_window():
+    small, big = oom_history.TAIL_STEPS[:2]
+    fetch = FakeFetch(dict.fromkeys(oom_history.TAIL_STEPS, GLOBAL_KILL + BRIDGE_KILL))
+    fetch.answers[small] = BRIDGE_KILL
+    text = oom_history.read_kern_log(
+        "server2", fetch=fetch,
+        window_start=datetime(2026, 9, 2, 6, 0, tzinfo=timezone.utc))
+    # The smallest tail begins at 09:08, after the window opened at 06:00, so
+    # it says nothing about the gap; the next one begins at 00:54 and stops it.
+    assert fetch.asked == [small, big]
+    assert text == GLOBAL_KILL + BRIDGE_KILL
+
+
+def test_ranged_read_keeps_going_past_a_broken_stream():
+    # The exact failure that fired: the big read dies mid-stream. A smaller
+    # tail that does not span the window must not be handed back as the answer.
+    small, big, third = oom_history.TAIL_STEPS[:3]
+    broke = OSError("stream error: stream ID 1; INTERNAL_ERROR; received from peer")
+    fetch = FakeFetch(dict.fromkeys(oom_history.TAIL_STEPS, BRIDGE_KILL))
+    fetch.answers[small] = "kernel: no stamp here\n"
+    fetch.answers[big] = broke
+    text = oom_history.read_kern_log(
+        "server2", fetch=fetch,
+        window_start=datetime(2026, 9, 3, tzinfo=timezone.utc))
+    assert fetch.asked == [small, big, third]
+    assert text == BRIDGE_KILL
+
+
+def test_ranged_read_raises_when_every_attempt_fails():
+    broke = OSError("stream error: stream ID 1; INTERNAL_ERROR; received from peer")
+    fetch = FakeFetch(dict.fromkeys(oom_history.TAIL_STEPS, broke))
+    try:
+        oom_history.read_kern_log("server2", fetch=fetch, window_start=WINDOW_START)
+    except OSError as problem:
+        assert "INTERNAL_ERROR" in str(problem)
+    else:
+        raise AssertionError("a read that never succeeded must not read as clean")
+
+
+def test_largest_read_is_the_answer_even_when_it_does_not_span_the_window():
+    # The log is rotated: nothing reaches back that far and nothing ever will.
+    # `sweep_one` already prints the oldest stamp it saw, so the honest move is
+    # to return the whole file rather than to raise.
+    fetch = FakeFetch(dict.fromkeys(oom_history.TAIL_STEPS, GLOBAL_KILL))
+    assert oom_history.read_kern_log(
+        "server2", fetch=fetch,
+        window_start=datetime(2026, 1, 1, tzinfo=timezone.utc)) == GLOBAL_KILL
+    assert fetch.asked == list(oom_history.TAIL_STEPS[:2])
+
+
+def test_kubectl_path_is_untouched_when_no_fetch_is_given():
+    calls = []
+
+    def runner(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=GLOBAL_KILL, stderr="")
+
+    assert oom_history.read_kern_log("server1", runner=runner) == GLOBAL_KILL
+    assert calls[0][:3] == ["kubectl", "get", "--raw"]
+
+
+def test_no_service_account_means_no_ranged_reader(monkeypatch):
+    # Guards the one thing that would put a real API call inside a unit test.
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    assert oom_history.api_fetch_factory() is None
+
+
+def test_escalation_stops_once_the_whole_log_is_in_hand():
+    # Two steps that return the same bytes means the file ran out; a third
+    # request is the same download again, which is the cost this fix exists
+    # to remove. Measured on server2: steps three and four both returned the
+    # same 12.3MB.
+    fetch = FakeFetch(dict.fromkeys(oom_history.TAIL_STEPS, GLOBAL_KILL))
+    assert oom_history.read_kern_log(
+        "server2", fetch=fetch,
+        window_start=datetime(2026, 1, 1, tzinfo=timezone.utc)) == GLOBAL_KILL
+    assert fetch.asked == list(oom_history.TAIL_STEPS[:2])
