@@ -104,6 +104,11 @@ from agora_runner.heartbeat_liveness import (  # noqa: E402
 #: `agora_runner.vault` has no working credentials.
 DROP_LEDGER = "projects/sokrates/projects/agora/nova/resources/dropped-ticks.json"
 
+#: Where the runner records a scheduler pass that started a whole beat late.
+#: A declined tick above is a slot the poller looked at; this is the poller
+#: not looking, which is how an anchored slot is lost without being declined.
+LAG_LEDGER = "projects/sokrates/projects/agora/nova/resources/scheduler-lag.json"
+
 #: `vault_tool.py`, which exists on the bridge Pod only. Same constant and
 #: same reason as `tools.roll_health`.
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -150,6 +155,58 @@ def read_drop_records(runner=subprocess.run):
     if not isinstance(records, list):
         return [], f"{DROP_LEDGER} does not hold a list"
     return records, None
+
+
+def read_lag_records(runner=subprocess.run):
+    """`(records, error)` --- late scheduler passes the runner recorded.
+
+    Same contract as `read_drop_records`: an empty list is a real measurement
+    and never an error, and an unreadable ledger does not raise the exit
+    status on its own, because this explains slots that are already being
+    reported rather than finding anything itself.
+    """
+    raw = _vault_get(LAG_LEDGER, runner=runner)
+    if raw is None:
+        return [], None
+    try:
+        records = json.loads(raw)
+    except ValueError:
+        return [], f"{LAG_LEDGER} is not JSON"
+    if not isinstance(records, list):
+        return [], f"{LAG_LEDGER} does not hold a list"
+    return records, None
+
+
+def lag_summary(records, now, window_hours):
+    """One line about late scheduler passes in the window, or `None`.
+
+    `None` for an empty window is deliberate: a healthy scheduler produces no
+    records at all, and a line saying so on every run is a line nobody reads.
+    A record with an unparseable stamp is counted and not dated, because
+    dropping it would understate an outage.
+    """
+    if not records:
+        return None
+    cutoff = now - timedelta(hours=window_hours)
+    inside = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        at = _parse_stamp(record.get("at"))
+        if at is None or at >= cutoff:
+            inside.append(record)
+    if not inside:
+        return None
+    worst = max(inside, key=lambda r: r.get("gapSeconds") or 0)
+    return (
+        f"SCHEDULER LAG — {len(inside)} recorded pass(es) started more than a "
+        f"beat late in the last {window_hours:g}h; the worst was "
+        f"{worst.get('gapSeconds')}s after the previous pass "
+        f"(interval {worst.get('intervalSeconds')}s, and that previous pass "
+        f"itself took {worst.get('passSeconds')}s). A gap that is mostly its "
+        "pass means run_due_heartbeats is slow; a long gap around a short "
+        "pass means the scheduler thread was starved."
+    )
 
 
 def reasons_for(slots, records, period_seconds, heartbeat_id=None):
@@ -426,7 +483,8 @@ def judge(heartbeat, conversations, now, window_hours):
 
 def format_report(results, error, window_hours, listed,
                   rollouts=None, shape=None, rollout_error=None,
-                  drop_records=None, drop_error=None):
+                  drop_records=None, drop_error=None,
+                  lag_records=None, lag_error=None, now=None):
     """`(text, status)` --- the report and its exit code."""
     lines = []
     if error:
@@ -545,6 +603,20 @@ def format_report(results, error, window_hours, listed,
         lines.append(f"NOT JUDGED — {len(names)} heartbeat(s): {detail}")
         lines.append(f"    {', '.join(names)}")
 
+    # Above the "read N conversations" footer, because this is a finding about
+    # the loop and that is provenance. It sits outside the per-heartbeat rows
+    # on purpose: the scheduler is one thread for every heartbeat in the pod,
+    # so a late pass is not attributable to the row it happened to cost.
+    if lag_error:
+        lines.append(
+            f"NO SCHEDULER LAG READ — {lag_error}, so how late the scheduler "
+            "ran is missing rather than clean"
+        )
+    else:
+        summary = lag_summary(lag_records or [], now or datetime.now(timezone.utc),
+                              window_hours)
+        if summary:
+            lines.append(summary)
     lines.append(
         f"Read {listed} conversation(s) and {len(results)} heartbeat(s) from {AGORA_PUBLIC}."
     )
@@ -601,9 +673,10 @@ def main(argv=None):
     if not rollout_error:
         rollouts, rollout_error = read_rollout_instants()
     drop_records, drop_error = read_drop_records()
+    lag_records, lag_error = read_lag_records()
     report, status = format_report(
         results, error, args.hours, len(conversations), rollouts, shape,
-        rollout_error, drop_records, drop_error
+        rollout_error, drop_records, drop_error, lag_records, lag_error, now
     )
     print(report)
     return status

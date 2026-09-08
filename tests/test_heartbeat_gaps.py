@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from tools import heartbeat_gaps as hg
 
@@ -452,3 +453,59 @@ def test_a_ledger_holding_a_list_is_returned_verbatim():
         return _Proc(returncode=0, stdout=json.dumps(stored) + "\n")
 
     assert hg.read_drop_records(runner=run) == (stored, None)
+
+
+# --- the scheduler-lag ledger --------------------------------------------
+# `read_drop_records` above explains a slot the poller DECLINED. These cover
+# the other loss: the poller never looked, which is what `note_pass` records.
+
+def _lag(at, gap, pass_seconds=1.0, interval=5.0):
+    return {"at": at, "gapSeconds": gap, "passSeconds": pass_seconds,
+            "intervalSeconds": interval, "lateSinceHealthy": 1}
+
+
+def test_lag_summary_is_silent_when_the_scheduler_was_never_late():
+    now = datetime(2026, 9, 8, 19, 0, tzinfo=timezone.utc)
+    assert hg.lag_summary([], now, 24) is None
+
+
+def test_lag_summary_drops_records_older_than_the_window():
+    now = datetime(2026, 9, 8, 19, 0, tzinfo=timezone.utc)
+    old = _lag("2026-09-05T19:00:00+00:00", 900.0)
+    assert hg.lag_summary([old], now, 24) is None
+
+
+def test_lag_summary_names_the_worst_gap_and_its_pass():
+    now = datetime(2026, 9, 8, 19, 0, tzinfo=timezone.utc)
+    records = [_lag("2026-09-08T10:00:00+00:00", 30.0, pass_seconds=1.0),
+               _lag("2026-09-08T11:00:00+00:00", 612.5, pass_seconds=611.0)]
+    line = hg.lag_summary(records, now, 24)
+    assert "2 recorded pass(es)" in line
+    assert "612.5s" in line
+    assert "611.0s" in line
+
+
+def test_a_record_with_no_usable_stamp_is_still_counted():
+    """Dropping it would understate an outage, which is the wrong direction."""
+    now = datetime(2026, 9, 8, 19, 0, tzinfo=timezone.utc)
+    records = [_lag("not a date", 44.0)]
+    line = hg.lag_summary(records, now, 24)
+    assert line is not None
+    assert "1 recorded pass(es)" in line
+
+
+def test_an_unreadable_lag_ledger_says_so_rather_than_reading_as_clean():
+    def runner(cmd, **kwargs):
+        return SimpleNamespace(returncode=0, stdout="{not json", stderr="")
+
+    records, error = hg.read_lag_records(runner=runner)
+    assert records == []
+    assert error and "scheduler-lag.json" in error
+
+
+def test_a_missing_lag_ledger_is_an_empty_measurement_not_an_error():
+    def runner(cmd, **kwargs):
+        return SimpleNamespace(
+            returncode=0, stdout="[not found: whatever]", stderr="")
+
+    assert hg.read_lag_records(runner=runner) == ([], None)

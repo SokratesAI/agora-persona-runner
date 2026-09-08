@@ -28,6 +28,7 @@ import os
 import threading
 import time
 
+from agora_runner import dropped_ticks
 from agora_runner.config import POLL_INTERVAL_SECONDS
 from agora_runner.log import log
 
@@ -35,6 +36,24 @@ from agora_runner.log import log
 # this module is that it is now the cadence that actually happens, rather
 # than an upper bound on how often the scheduler gets a look in.
 INTERVAL_SECONDS = float(os.environ.get("HEARTBEAT_PASS_SECONDS", POLL_INTERVAL_SECONDS))
+
+# A pass is LATE when the gap from the previous pass's start is more than two
+# whole intervals. One interval is the sleep this loop takes on purpose; a
+# second full interval elapsed on top of it means the scheduler missed a beat
+# it was supposed to take, which is the thing that loses an anchored slot --
+# `schedule_due` only ever asks about the most recent occurrence, so a
+# scheduler that is away across two slot boundaries loses the older one
+# outright. The factor is not a feel: it is the smallest gap that cannot be
+# explained by the loop doing exactly what it says.
+LATE_FACTOR = 2.0
+
+# Same doubling as `_drop_tick`, for the same reason and against the same
+# danger. A permanently starved scheduler is late on EVERY pass, which is
+# hundreds of records an hour; writing at the 1st, 2nd, 4th, 8th ... late pass
+# keeps a sick loop talking for as long as it is sick and costs about ten
+# writes rather than nine hundred. The counter resets on a healthy pass, so a
+# second stall an hour later is reported as loudly as the first.
+_late_since_healthy = 0
 
 _thread = None
 
@@ -58,9 +77,49 @@ def pass_once():
         return False
 
 
+def note_pass(gap_seconds, pass_seconds, interval_seconds=None,
+              record=dropped_ticks.record_pass_lag):
+    """Judge one pass against the interval and record it if it was late.
+
+    Returns the record's thread when it wrote one and `None` otherwise, so a
+    test can tell "not late" from "late but not at a doubling". `gap_seconds`
+    is `None` for the very first pass of the process, which has nothing to be
+    late against and must not be reported as late by default.
+    """
+    global _late_since_healthy
+    interval = INTERVAL_SECONDS if interval_seconds is None else interval_seconds
+    # A non-positive interval is "as fast as this thread can go" and has no
+    # beat to be late against, so there is nothing here to judge. Nothing sets
+    # it that way in production; a test does, and a rule that calls every pass
+    # late under it is measuring its own configuration.
+    if interval <= 0:
+        return None
+    if gap_seconds is None or gap_seconds <= interval * LATE_FACTOR:
+        _late_since_healthy = 0
+        return None
+    _late_since_healthy += 1
+    n = _late_since_healthy
+    if n & (n - 1) != 0:  # 1, 2, 4, 8, ... — never silent, never a flood
+        return None
+    log(f"heartbeat scheduler: pass {gap_seconds:.1f}s after the previous one "
+        f"(interval {interval:.1f}s, the pass itself took {pass_seconds:.1f}s), "
+        f"{n} late pass(es) since the last healthy one")
+    return record(gap_seconds, pass_seconds, interval, n)
+
+
 def _loop(should_stop):
+    previous_start = None
+    previous_pass_seconds = 0.0
     while not should_stop():
+        started = time.monotonic()
+        # The gap is start-to-start, so what fills it is the PREVIOUS pass
+        # plus the sleep after it -- reporting this pass's own duration
+        # against it would pair a number with a gap it did not cause.
+        note_pass(None if previous_start is None else started - previous_start,
+                  previous_pass_seconds)
+        previous_start = started
         pass_once()
+        previous_pass_seconds = time.monotonic() - started
         # Sliced like main's own sleep, so a SIGTERM arriving while idle is
         # noticed inside a second instead of at the end of the interval.
         remaining = INTERVAL_SECONDS

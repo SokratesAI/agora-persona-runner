@@ -39,6 +39,17 @@ from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 PATH = "projects/sokrates/projects/agora/nova/resources/dropped-ticks.json"
 
+# The second half of the same question, in its own document. A dropped tick is
+# a slot the poller LOOKED at and declined; a lagged pass is the poller not
+# looking at all, which loses an anchored slot outright rather than declining
+# it (`heartbeats._skipped_occurrences` names that loss, and this says how long
+# the scheduler was away). They share this module because they share every
+# property that made it worth writing -- off-thread, failure-swallowing,
+# bounded, doubling-gated -- and they are kept in two documents because
+# `heartbeat_gaps` reads them for two different sentences and a `kind` field on
+# one list is how a reader starts filtering instead of reading.
+LAG_PATH = "projects/sokrates/projects/agora/nova/resources/scheduler-lag.json"
+
 # Enough to cover several days of a healthy loop and a whole outage of a sick
 # one: the 24h window `heartbeat_gaps` judges saw four drops on the day this
 # was written, and a heartbeat wedged for its full 45-minute cap contributes
@@ -54,7 +65,7 @@ KEEP = 200
 ATTEMPTS = 2
 
 
-def _load(raw):
+def _load(raw, path=PATH):
     """The stored records, or `[]` for anything that is not a JSON list.
 
     A ledger that has been hand-edited into something unparseable must not
@@ -66,38 +77,37 @@ def _load(raw):
     try:
         records = json.loads(raw)
     except ValueError:
-        log(f"dropped-ticks ledger at {PATH} is not JSON — starting a new one")
+        log(f"ledger at {path} is not JSON — starting a new one")
         return []
     if not isinstance(records, list):
-        log(f"dropped-ticks ledger at {PATH} is not a list — starting a new one")
+        log(f"ledger at {path} is not a list — starting a new one")
         return []
     return records
 
 
-def _write(record):
+def _write(record, path=PATH, label="dropped-ticks"):
     for attempt in range(ATTEMPTS):
-        raw, rev = vault_read_path_rev(PATH)
-        records = _load(raw)
+        raw, rev = vault_read_path_rev(path)
+        records = _load(raw, path)
         records.append(record)
         body = json.dumps(records[-KEEP:], indent=2) + "\n"
-        result = vault_write_path(PATH, body, if_rev=rev)
+        result = vault_write_path(path, body, if_rev=rev)
         if result == "written":
             debug_log(
-                f"dropped-ticks: recorded {record['reason']!r} for "
-                f"{record['heartbeat']}, {len(records[-KEEP:])} record(s) held"
+                f"{label}: recorded {record!r}, "
+                f"{len(records[-KEEP:])} record(s) held"
             )
             return True
-        debug_log(f"dropped-ticks: write {attempt + 1} of {ATTEMPTS} said {result!r}")
-    log(f"dropped-ticks: could not record {record['reason']!r} for "
-        f"{record['heartbeat']} after {ATTEMPTS} attempt(s)")
+        debug_log(f"{label}: write {attempt + 1} of {ATTEMPTS} said {result!r}")
+    log(f"{label}: could not record {record!r} after {ATTEMPTS} attempt(s)")
     return False
 
 
-def _write_quietly(record):
+def _write_quietly(record, path=PATH, label="dropped-ticks"):
     try:
-        _write(record)
+        _write(record, path, label)
     except Exception as e:  # noqa: BLE001 -- see the module docstring
-        log(f"dropped-ticks: {type(e).__name__} recording a dropped tick: {e}")
+        log(f"{label}: {type(e).__name__} recording a record: {e}")
 
 
 def record(hb_id, name, reason, n, now=None):
@@ -115,6 +125,30 @@ def record(hb_id, name, reason, n, now=None):
     return thread
 
 
+def record_pass_lag(gap_seconds, pass_seconds, interval_seconds, n, now=None):
+    """Persist one late scheduler pass, off the calling thread. -> the Thread.
+
+    `gap_seconds` is start-to-start between two passes and `pass_seconds` is
+    how long `run_due_heartbeats` itself took inside the EARLIER one, which
+    is the pass whose duration the gap is made of. Both are
+    stored because the difference is the whole diagnosis and neither number
+    carries it alone: a gap that is almost all pass means the Agora calls in
+    `run_due_heartbeats` are slow, and a long gap around a short pass means
+    the scheduler thread was starved by something else in this process. Until
+    this existed the only way to tell those apart was to guess, which is what
+    "the poll loop stalls for minutes and I do not know why" has meant.
+    """
+    at = (now or datetime.now(timezone.utc)).isoformat()
+    entry = {"at": at, "gapSeconds": round(gap_seconds, 3),
+             "passSeconds": round(pass_seconds, 3),
+             "intervalSeconds": round(interval_seconds, 3),
+             "lateSinceHealthy": n}
+    thread = threading.Thread(
+        target=_write_quietly, args=(entry, LAG_PATH, "scheduler-lag"), daemon=True)
+    thread.start()
+    return thread
+
+
 def read_records():
     """Every stored record, oldest first. -> list
 
@@ -122,4 +156,10 @@ def read_records():
     put a reason beside a slot it can only otherwise report as unexplained.
     """
     raw, _rev = vault_read_path_rev(PATH)
-    return _load(raw)
+    return _load(raw, PATH)
+
+
+def read_lag_records():
+    """Every stored late-pass record, oldest first. -> list"""
+    raw, _rev = vault_read_path_rev(LAG_PATH)
+    return _load(raw, LAG_PATH)
