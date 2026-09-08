@@ -152,10 +152,28 @@ def _loop(should_stop):
         # The gap is start-to-start, so what fills it is the PREVIOUS pass
         # plus the sleep after it -- reporting this pass's own duration
         # against it would pair a number with a gap it did not cause.
-        note_pass(None if previous_start is None else started - previous_start,
-                  previous_pass_seconds)
+        gap = None if previous_start is None else started - previous_start
         previous_start = started
-        note_failure(pass_once())
+        try:
+            note_pass(gap, previous_pass_seconds)
+            note_failure(pass_once())
+        except Exception as exc:  # noqa: BLE001 -- see below
+            # `pass_once` guards the one call this loop was built around and
+            # the two bookkeeping calls sat OUTSIDE that guard, which put the
+            # whole scheduler behind them: this thread is started once and
+            # supervised by nothing, so an escape here ends every heartbeat in
+            # this Pod for as long as it lives, with one log line and no
+            # ledger record. Both recorders do their vault I/O on a thread of
+            # their own behind `_write_quietly`, but the synchronous part they
+            # run first can still raise -- `threading.Thread.start` answers
+            # `RuntimeError: can't start new thread` when the process is at
+            # its thread limit, which is exactly the state a runner under load
+            # reaches, and `str(exc)` on a custom exception can raise anything
+            # at all. So the guard is around the bookkeeping rather than
+            # inside either recorder: it has to hold for whatever the next
+            # instrument added here does too.
+            log(f"heartbeat scheduler: bookkeeping raised "
+                f"{type(exc).__name__}: {exc} -- carrying on")
         previous_pass_seconds = time.monotonic() - started
         # Sliced like main's own sleep, so a SIGTERM arriving while idle is
         # noticed inside a second instead of at the end of the interval.
