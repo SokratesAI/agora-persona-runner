@@ -13556,6 +13556,13 @@
     poll(!!wasAway);
   }
 
+  /* The fifth thing that asks for a poll, and the only one not driven by
+   * him: `sw.js` telling the page that the copy it painted from the cache
+   * has been overtaken. A global for the same reason `novaThreadUpdated` is
+   * one -- the worker's message listener is registered outside this
+   * closure. */
+  window.novaApiUpdated = function () { resume(false); };
+
   document.addEventListener("visibilitychange", function () { resume(true); });
   window.addEventListener("pageshow", function (event) {
     if (event && event.persisted) resume(true);
@@ -13984,8 +13991,26 @@
      * flight, and a late answer must not repaint the thread he is reading now
      * with the messages of the one he left.
      */
+    /* The worker retracting an API payload it served from last time's copy.
+     *
+     * On a reopen the page has no etag in memory, so `sw.js` answers from
+     * its cache and asks the server behind that answer -- conditionally, so
+     * the usual reply is an empty 304 and nothing is repainted. This fires
+     * only when the fresh copy actually differs, which is the reopen that
+     * lands after a cycle wrote something.
+     *
+     * `resume(false)` rather than a fetch of its own: it already refuses to
+     * start a second poll while one is in flight, re-arms the timer, and
+     * defers to a drawer he is typing in. It is also the journal's poll, so
+     * a board page ignores this -- a board is a record and its own load
+     * already marks a saved copy.
+     */
     navigator.serviceWorker.addEventListener("message", function (event) {
       var msg = event.data || {};
+      if (msg.type === "nova-api-updated") {
+        if (window.novaApiUpdated) window.novaApiUpdated();
+        return;
+      }
       if (msg.type !== "nova-thread-updated" || !msg.conversationId) return;
       // The dock decides whether it is showing that thread; this no longer
       // knows, because the page that used to is gone.

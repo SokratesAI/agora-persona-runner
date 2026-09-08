@@ -113,8 +113,190 @@ self.addEventListener("fetch", function (event) {
     return;
   }
 
+  /* The reopen. Serve what is already here, then ask the server whether it
+   * still stands -- with the etag, so the answer is an empty 304 rather
+   * than the body again.
+   *
+   * His report, 2026-09-08: *"Nova re-downloads everything every time I
+   * reopen the app, which is slow and drains my mobile roaming -- it should
+   * serve what it already has."* Measured in that report: a reopen refetches
+   * `/api/digest` at 2.85 MB and `/api/journal` at 113 KB, in full, over
+   * roaming. The server has answered `If-None-Match` with a 304 since #77
+   * and `fetchVersioned` in `app.js` has sent one since 08-11 -- but only
+   * out of `lastPayload`, which is *memory*, and a reopen is a cold page
+   * with an empty one. So the page cannot send an etag it no longer has,
+   * and this worker is holding the very response that carries it.
+   *
+   * **A request that already carries `If-None-Match` is deliberately left
+   * alone**, which is what keeps this off the 30-second poll. There the
+   * page holds the payload in memory and is asking whether it moved; a
+   * cached body would answer a question it did not ask, and delay the one
+   * it did. The whole change is therefore scoped to the load where the page
+   * has nothing and this worker has everything -- the reopen he reported.
+   *
+   * Stale bytes served ahead of the network is the one thing the rest of
+   * this file refuses to do, and the reason it is safe here is the reason
+   * it is safe for the push prefetch above: something retracts them.
+   * `revalidateApi` posts `nova-api-updated` when the fresh copy differs or
+   * when it could not reach the server at all, `app.js` polls on it, and the
+   * window in between is one round trip.
+   */
+  if (isPolledPayload(url.pathname) && !headerOf(request, "If-None-Match")) {
+    event.respondWith(staleWhileRevalidate(event, request));
+    return;
+  }
+
   event.respondWith(networkFirst(request, fallback));
 });
+
+/* The three payloads `fetchAll` polls *and nothing else fetches*, and the
+ * reason this is a list rather than the `/api/` prefix his report asked for.
+ *
+ * Serving a stale body is only honest if something retracts it, and on
+ * these four the retraction already exists: they are re-read every thirty
+ * seconds by the journal's own poll, so a `nova-api-updated` -- including
+ * the one a *failed* revalidation posts -- reaches a page that will go and
+ * ask again within a round trip. `/api/board` has none of that. It is
+ * fetched once per visit through `fetchPage`, which marks a payload the
+ * worker stamped `X-Nova-Replayed` and draws "can't reach Nova" over it;
+ * answer that from the cache instead and an offline reopen of a board would
+ * paint a saved copy as live with nothing behind it to say otherwise. That
+ * is the one failure this whole file is written against, so the prefix
+ * would have bought his 2.85 MB by reintroducing it somewhere else.
+ *
+ * These three are also all of the measurement: `/api/digest` at 2.85 MB and
+ * `/api/journal` at 113 KB are the bytes he reported, and `/api/asks/chat`
+ * rides the same poll.
+ *
+ * **`/api/comments` is deliberately not here, and the reason is the sharper
+ * half of the same rule: a path is not a caller.** It is polled by
+ * `fetchAll` like the other three -- and *also* fetched unconditionally from
+ * three other places in `app.js`: `refreshMail`, the reply drawer's 8s wait,
+ * and the refetch that runs the moment he posts a comment. None of those
+ * ever sends `If-None-Match`, so none of them would ever leave this path
+ * again, and the last one is the expensive one: it would repaint the drawer
+ * from the snapshot taken *before* his comment existed. `fetchPage` guards
+ * against exactly that, and it guards on `X-Nova-Replayed`, which this path
+ * does not set. The comment above that guard in `app.js` says what happens
+ * next -- he sends it twice.
+ *
+ * So the rule this list encodes is not "the page polls it". It is "every
+ * caller of it sends an etag once it has one", and the only way to know that
+ * is to go and read the call sites. Found by the reviewer on runner#895; I
+ * had reasoned about which *routes* were polled and never about who else
+ * asks for them.
+ *
+ * Matched on the path, because `journalUrl()` and `digestUrl()` both carry a
+ * query string that varies with the window he is looking at.
+ */
+var POLLED_PAYLOADS = ["/api/journal", "/api/digest", "/api/asks/chat"];
+
+function isPolledPayload(pathname) {
+  return POLLED_PAYLOADS.indexOf(pathname) !== -1;
+}
+
+/* A header off a Request or a Response, or null.
+ *
+ * Defensive about `headers` for the same reason `isReplayed` in `app.js`
+ * is: a 304 carries none, and neither do the request-alikes this file is
+ * tested against. Missing reads as absent, which is the safe direction --
+ * no etag means the revalidation below is unconditional, i.e. exactly
+ * what happens today.
+ */
+function headerOf(message, name) {
+  if (!message || !message.headers || !message.headers.get) return null;
+  return message.headers.get(name);
+}
+
+/* Cached first, then the network behind it -- and only ever with a cached
+ * copy in hand.
+ *
+ * On a miss this is `networkFirst` unchanged, which is the whole of the
+ * first load and the whole of a cold install. There is no third behaviour
+ * hiding in here.
+ */
+function staleWhileRevalidate(event, request) {
+  return caches.match(request).catch(function () {
+    // Safari's private mode has rejected `caches.open` outright before, and
+    // a rejection reaching `respondWith` is a browser error page in place of
+    // his app. Falling through to the network is what the file already does
+    // on the one other cache-first route.
+    return undefined;
+  }).then(function (hit) {
+    if (!hit) return networkFirst(request, request);
+    var revalidating = revalidateApi(request, headerOf(hit, "ETag"));
+    try {
+      // Keeps the worker alive until the conditional request lands. The
+      // fetch event is still active here -- `respondWith` has been called
+      // and its promise has not settled -- but a browser that disagrees
+      // must not take the response down with it, and the fetch runs either
+      // way.
+      event.waitUntil(revalidating);
+    } catch (err) { /* the revalidation is already in flight */ }
+    return stamped(hit, "X-Nova-Stale");
+  });
+}
+
+/* Ask whether the copy we just served still stands, carrying its etag.
+ *
+ * The 304 is the point. `/api/digest` is 2.85 MB and changes once an hour;
+ * a reopen that learns it has not changed should cost an empty response,
+ * not the megabytes again. `no-store` for the reason `fetchVersioned` gives
+ * on the page's own conditional: neither response carries `Cache-Control`,
+ * so leaving the browser's HTTP cache to decide whether to revalidate is a
+ * per-browser heuristic, and a heuristic hit here would answer nothing at
+ * all.
+ *
+ * Silence when the etags match, which is the ordinary case -- the same call
+ * `revalidate` makes above, and for the same reason: a repaint with no new
+ * information in it is a flicker. When there is no cached etag the fetch is
+ * unconditional and cannot be compared, so it reports; that is the honest
+ * direction, because the alternative is deciding a body is unchanged
+ * without having checked.
+ */
+function revalidateApi(request, etag) {
+  var init = { cache: "no-store" };
+  if (etag) init.headers = { "If-None-Match": etag };
+  return fetch(request.url, init).then(function (response) {
+    if (!response) return undefined;
+    // A 304 is not `ok`, so the line below already returns here and
+    // mutating this branch away changes nothing today -- I checked, and it
+    // survived. It is spelled out anyway because the two arrive at the same
+    // place for opposite reasons: a 304 is the success this whole function
+    // is for, a 500 is a revalidation that did not happen. Anything added
+    // after the `ok` check will need them apart, and `fetchVersioned` in
+    // `app.js` is where getting this order wrong actually costs -- there a
+    // 304 carries the answer rather than the absence of one.
+    if (response.status === 304) return undefined;
+    if (!response.ok) return undefined;
+    var fresh = headerOf(response, "ETag");
+    caches.open(CACHE)
+      .then(function (cache) { cache.put(request, response); })
+      .catch(function () { /* see the same write in `networkFirst` */ });
+    if (etag && fresh && fresh === etag) return undefined;
+    return tellClients(request);
+  }).catch(function () {
+    /* A revalidation that could not reach the server at all, which is the
+     * offline reopen -- and the one case where serving from the cache
+     * silently would be dishonest rather than merely early.
+     *
+     * `X-Nova-Replayed` is the page's whole basis for drawing "can't reach
+     * Nova", and the response above did not carry it, because at the moment
+     * it went out nothing had failed yet. Reporting here is what closes
+     * that: the page polls, that poll now carries the etag it just learned,
+     * the request goes down `networkFirst` instead of this path, and a dead
+     * network gets stamped exactly as it always was. */
+    return tellClients(request);
+  });
+}
+
+function tellClients(request) {
+  return self.clients.matchAll({ type: "window" }).then(function (clients) {
+    clients.forEach(function (client) {
+      client.postMessage({ type: "nova-api-updated", url: request.url });
+    });
+  }).catch(function () { return undefined; });
+}
 
 /* The thread endpoint, spelled once.
  *
@@ -337,9 +519,23 @@ var REFUSED = { novaRefused: true };
  * different thing from one we construct here.
  */
 function replayed(hit) {
+  return stamped(hit, "X-Nova-Replayed");
+}
+
+/* The rebuild that `replayed` above describes, with the header name passed
+ * in, because there are two of these now and they mean different things.
+ *
+ * `X-Nova-Replayed` is *the network is down* -- it is what
+ * `renderStatusUnreachable` is built on, and the page dims a header under
+ * it. `X-Nova-Stale` is *this is last time's copy and the network is being
+ * asked about it right now*, which is not an outage and must not paint like
+ * one. Sharing the header would make a reopen on a perfectly good link
+ * announce that Nova is unreachable.
+ */
+function stamped(hit, name) {
   if (!hit) return hit;
   var headers = new Headers(hit.headers);
-  headers.set("X-Nova-Replayed", "1");
+  headers.set(name, "1");
   return hit.blob().then(function (body) {
     return new Response(body, {
       status: hit.status,

@@ -100,7 +100,10 @@ function loadWorker() {
   const sandbox = {
     self,
     caches,
-    fetch: (request) => respondToFetch(request),
+    // Two arguments, because the worker's conditional revalidation passes
+    // an init with `If-None-Match` in it and a fake that dropped it would
+    // let an unconditional refetch pass a test about conditional ones.
+    fetch: (request, init) => respondToFetch(request, init),
     setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length - 1; },
     clearTimeout() { cleared += 1; },
     Promise, Response, Headers, Blob, URL, console,
@@ -142,10 +145,21 @@ function req(url, extra = {}) {
   return { method: "GET", url, mode: "same-origin", ...extra };
 }
 
-/* Fire the fetch handler and hand back whatever it passed to respondWith. */
+/* Fire the fetch handler and hand back whatever it passed to respondWith.
+ *
+ * `waitUntil` is real here rather than a no-op: the stale-while-revalidate
+ * path parks its conditional refetch on it, and a test that awaited only
+ * the response would finish before the revalidation had run. `settled()`
+ * on the returned handle is how a test waits for that half. */
 function fetchEvent(worker, request) {
   let answered = null;
-  worker.handlers.fetch({ request, respondWith(p) { answered = p; } });
+  const extended = [];
+  worker.handlers.fetch({
+    request,
+    respondWith(p) { answered = p; },
+    waitUntil(p) { extended.push(p); },
+  });
+  if (answered) answered.settled = () => Promise.all(extended);
   return answered;
 }
 
@@ -189,6 +203,10 @@ describe("the service worker bounds how long the network gets", () => {
     const worker = loadWorker();
     worker.network(() => new Promise(() => {}));
     fetchEvent(worker, req("https://nova.example/api/journal"));
+    // An /api route now looks in the cache before it reaches `networkFirst`,
+    // so the timer is armed a microtask later than it used to be. A cold
+    // cache still ends up in exactly the same place.
+    await drain();
 
     assert.equal(worker.timers.length, 1);
     assert.equal(worker.timers[0].ms, 8000);
@@ -206,6 +224,7 @@ describe("the service worker bounds how long the network gets", () => {
     worker.network(() => new Promise((resolve) => { land = resolve; }));
 
     const answered = fetchEvent(worker, req("https://nova.example/api/journal"));
+    await drain();                                   // the cache lookup, which misses
     worker.fireTimer();
     assert.equal(await pending(answered), true,
       "an empty cache is not an answer -- the network is still all there is");
@@ -219,12 +238,19 @@ describe("the service worker bounds how long the network gets", () => {
   test("a response that beats the timer is served live and the timer is cleared", async () => {
     /* The ordinary case, which is every load: nothing about the timeout may
      * be observable when the network answers. A timer left running would
-     * hold the worker awake for eight seconds after every single request. */
+     * hold the worker awake for eight seconds after every single request.
+     *
+     * On the shell rather than on `/api/journal`, which is where this was
+     * written, because an /api GET carrying no `If-None-Match` is now
+     * answered from the cache first by design -- see the reopen block at the
+     * bottom of this file, which asserts the same rule for the /api request
+     * that does carry one. Moved rather than deleted: the shell is still
+     * network-first and this is still the case that proves it. */
     const worker = loadWorker();
-    worker.cache.set("https://nova.example/api/journal", new Response("stale", { status: 200 }));
+    worker.cache.set("https://nova.example/app.js", new Response("stale", { status: 200 }));
     worker.network(() => Promise.resolve(new Response("live", { status: 200 })));
 
-    const response = await fetchEvent(worker, req("https://nova.example/api/journal"));
+    const response = await fetchEvent(worker, req("https://nova.example/app.js"));
     assert.equal(await response.text(), "live");
     assert.equal(response.headers.get("X-Nova-Replayed"), null);
     assert.equal(worker.clearedCount(), 1, "the pending timer must be cleared");
@@ -544,5 +570,192 @@ describe("the worker prefetches the URL the page actually asks for", () => {
     const fromPage = "/api/conversations/thread?id=" + encodeURIComponent(id)
       + "&limit=" + pageStep;
     assert.equal(fromWorker, fromPage);
+  });
+});
+
+/* The reopen he reported on 2026-09-08: *"Nova re-downloads everything every
+ * time I reopen the app, which is slow and drains my mobile roaming."*
+ *
+ * These pin both halves of the fix and, more importantly, the boundary
+ * between them: the cold page gets the cache and a conditional refetch, and
+ * the warm 30-second poll gets exactly what it got before. */
+describe("a reopen is answered from the cache and confirmed with an etag", () => {
+  const DIGEST = "https://nova.example/api/digest";
+
+  function cached(worker, body, etag) {
+    const headers = etag ? { ETag: etag } : {};
+    worker.cache.set(DIGEST, new Response(body, { status: 200, headers }));
+  }
+
+  test("the page paints from the cache without waiting for the network", async () => {
+    /* The measurement behind this: `/api/digest` is 2.85 MB and a reopen
+     * refetched all of it before the page could draw anything. The network
+     * below never answers, so a response arriving at all is proof the page
+     * did not wait on it. */
+    const worker = loadWorker();
+    cached(worker, "last time's digest", 'W/"abc"');
+    worker.network(() => new Promise(() => {}));
+
+    const response = await fetchEvent(worker, req(DIGEST));
+    assert.equal(await response.text(), "last time's digest");
+  });
+
+  test("the served copy is stamped stale, and not as an outage", async () => {
+    /* `X-Nova-Replayed` is what `renderStatusUnreachable` is built on. A
+     * reopen on a perfectly good link must not paint "can't reach Nova". */
+    const worker = loadWorker();
+    cached(worker, "body", 'W/"abc"');
+    worker.network(() => new Promise(() => {}));
+
+    const response = await fetchEvent(worker, req(DIGEST));
+    assert.equal(response.headers.get("X-Nova-Stale"), "1");
+    assert.equal(response.headers.get("X-Nova-Replayed"), null,
+      "a revalidating cache hit is not an unreachable server");
+  });
+
+  test("the refetch behind it carries the cached etag", async () => {
+    /* This is the byte saving. Without the header the server answers with
+     * the whole 2.85 MB again; with it, an empty 304. The page cannot send
+     * it on a reopen because `lastPayload` is memory and memory is gone. */
+    const worker = loadWorker();
+    cached(worker, "body", 'W/"abc"');
+    const asked = [];
+    worker.network((url, init) => {
+      asked.push({ url, init });
+      return Promise.resolve(new Response(null, { status: 304 }));
+    });
+
+    const answering = fetchEvent(worker, req(DIGEST));
+    await answering;
+    await answering.settled();
+
+    assert.equal(asked.length, 1);
+    assert.equal(asked[0].url, DIGEST);
+    assert.equal(asked[0].init.headers["If-None-Match"], 'W/"abc"');
+    assert.equal(asked[0].init.cache, "no-store",
+      "the browser's own HTTP cache must not answer this instead of the server");
+  });
+
+  test("a 304 says nothing to the page, so a reopen never flickers", async () => {
+    const worker = loadWorker();
+    cached(worker, "body", 'W/"abc"');
+    worker.network(() => Promise.resolve(new Response(null, { status: 304 })));
+
+    const answering = fetchEvent(worker, req(DIGEST));
+    await answering;
+    await answering.settled();
+
+    assert.deepEqual(worker.posted, []);
+  });
+
+  test("a copy that moved is replaced and the page is told to poll", async () => {
+    const worker = loadWorker();
+    cached(worker, "yesterday", 'W/"abc"');
+    worker.network(() => Promise.resolve(
+      new Response("today", { status: 200, headers: { ETag: 'W/"def"' } })));
+
+    const answering = fetchEvent(worker, req(DIGEST));
+    assert.equal(await (await answering).text(), "yesterday");
+    await answering.settled();
+    await drain();
+
+    assert.equal(worker.posted.length, 1);
+    assert.equal(worker.posted[0].type, "nova-api-updated");
+    assert.equal(worker.posted[0].url, DIGEST);
+    assert.equal(await worker.cache.get(DIGEST).text(), "today");
+  });
+
+  test("a poll that already carries its own etag is left on the network", async () => {
+    /* The boundary. `fetchVersioned` sends `If-None-Match` out of memory
+     * every 30 seconds while the tab is visible, asking whether the payload
+     * it is holding moved. Answering that from the cache would answer a
+     * question it did not ask and delay the one it did. */
+    const worker = loadWorker();
+    cached(worker, "cached body", 'W/"abc"');
+    worker.network(() => Promise.resolve(new Response("live body", { status: 200 })));
+
+    const withEtag = req(DIGEST, {
+      headers: { get: (name) => (name === "If-None-Match" ? 'W/"abc"' : null) },
+    });
+    const response = await fetchEvent(worker, withEtag);
+
+    assert.equal(await response.text(), "live body");
+    assert.equal(response.headers.get("X-Nova-Stale"), null);
+  });
+
+  test("a cold cache is network-first exactly as it was", async () => {
+    const worker = loadWorker();
+    worker.network(() => Promise.resolve(new Response("first load", { status: 200 })));
+
+    const response = await fetchEvent(worker, req(DIGEST));
+    assert.equal(await response.text(), "first load");
+    assert.equal(response.headers.get("X-Nova-Stale"), null);
+  });
+
+  test("a revalidation that cannot reach the server still reports", async () => {
+    /* The offline reopen, and the one case where answering from the cache
+     * silently would be dishonest rather than merely early. The response
+     * went out without `X-Nova-Replayed` because nothing had failed yet, so
+     * the page has to be sent back to ask -- that second request carries the
+     * etag, takes the network-first path, and gets stamped as a replay. */
+    const worker = loadWorker();
+    cached(worker, "body", 'W/"abc"');
+    worker.network(() => Promise.reject(new TypeError("Failed to fetch")));
+
+    const answering = fetchEvent(worker, req(DIGEST));
+    assert.equal(await (await answering).text(), "body");
+    await answering.settled();
+    await drain();
+
+    assert.equal(worker.posted.length, 1);
+    assert.equal(worker.posted[0].type, "nova-api-updated");
+    assert.deepEqual(worker.puts, [], "nothing was written over the copy on screen");
+  });
+
+  test("a comments read is left on the network -- a path is not a caller", async () => {
+    /* `/api/comments` is polled by `fetchAll` exactly like the three that
+     * are on the list, and is fetched unconditionally from three other
+     * places: `refreshMail`, the reply drawer's 8s wait, and the refetch
+     * that runs the moment he posts a comment. None of those ever sends an
+     * etag, so none of them would leave this path again -- and the last one
+     * would repaint the drawer from the snapshot taken before his comment
+     * existed. `fetchPage` guards on `X-Nova-Replayed`, which the cache-first
+     * path does not set, so the guard would be dead. */
+    const worker = loadWorker();
+    const comments = "https://nova.example/api/comments";
+    worker.cache.set(comments, new Response("comments before his post", { status: 200 }));
+    worker.network(() => Promise.resolve(new Response("comments including his post", { status: 200 })));
+
+    const response = await fetchEvent(worker, req(comments));
+    assert.equal(await response.text(), "comments including his post");
+    assert.equal(response.headers.get("X-Nova-Stale"), null);
+  });
+
+  test("a board is left on the network, so an offline reopen still says so", async () => {
+    /* Why this is a list of four paths and not the `/api/` prefix. A board
+     * is fetched once per visit and never polled, so nothing would come back
+     * to correct a cached copy -- and `fetchPage` draws "can't reach Nova"
+     * off the `X-Nova-Replayed` stamp that only the network-first path sets.
+     * Serving this from the cache buys a few kilobytes by painting a saved
+     * copy as live, which is the failure the whole file is written against. */
+    const worker = loadWorker();
+    const board = "https://nova.example/api/board?name=issues";
+    worker.cache.set(board, new Response("cached board", { status: 200 }));
+    worker.network(() => Promise.reject(new TypeError("Failed to fetch")));
+
+    const response = await fetchEvent(worker, req(board));
+    assert.equal(await response.text(), "cached board");
+    assert.equal(response.headers.get("X-Nova-Replayed"), "1");
+    assert.equal(response.headers.get("X-Nova-Stale"), null);
+  });
+
+  test("the shell is untouched -- this is scoped to /api", async () => {
+    const worker = loadWorker();
+    worker.cache.set("https://nova.example/app.js", new Response("cached app.js", { status: 200 }));
+    worker.network(() => Promise.resolve(new Response("live app.js", { status: 200 })));
+
+    const response = await fetchEvent(worker, req("https://nova.example/app.js"));
+    assert.equal(await response.text(), "live app.js",
+      "network-first is what keeps a rebuilt shell from pinning itself");
   });
 });
