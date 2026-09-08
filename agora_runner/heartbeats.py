@@ -1,7 +1,9 @@
 """Heartbeat scheduling: due-check, vault-context injection, and the workflow-mode thread dispatch."""
 
+import os
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 
 from agora_runner.config import (
@@ -32,6 +34,27 @@ from agora_runner.deferred import ANSWERED_LIVE_CAPABILITY
 # quietly turn into megabytes of prompt every cycle.
 CYCLE_LOOKBACK = 5
 PENDING_CHARS_CAP = 4000
+
+
+def raising_frame(error):
+    """`'heartbeats.py:512 in run_heartbeat'` -- where an exception came from.
+
+    The innermost frame, because that is the line that raised; the frames
+    above it are the call path, which a reader of the record already knows.
+    Basename only: an absolute path spends 40 of the 200 characters
+    `lastResult` allows on a directory layout that is the same on every pod.
+
+    Returns `'no traceback'` rather than raising when there is none -- this
+    is called from a failure path, and a helper that can itself fail there
+    would take the whole failure handling with it. An exception constructed
+    but never raised has `__traceback__` of `None`, which is the case the
+    tests use.
+    """
+    frames = traceback.extract_tb(getattr(error, "__traceback__", None))
+    if not frames:
+        return "no traceback"
+    frame = frames[-1]
+    return f"{os.path.basename(frame.filename)}:{frame.lineno} in {frame.name}"
 
 
 def _elapsed(seconds):
@@ -601,8 +624,21 @@ def run_heartbeat(heartbeat):
                 # the old behaviour, for exactly the old reason.
                 audit(persona["name"], conversation_id, "heartbeat", started_chip)
     except Exception as e:
-        result = f"failed: {e}"[:200]
-        log(f"heartbeat {heartbeat['name']} failed: {e}")
+        # `f"failed: {e}"` was the whole record, and for the exception types
+        # this window actually raises it says nothing. `str(KeyError('schedule'))`
+        # is `'schedule'`; `str(TypeError(...))` names no line and no file. The
+        # point of moving the `try` up here (idea #267) was that the next silent
+        # cycle would name its own bug -- and the only place the raising line
+        # existed was a traceback nobody printed, in a pod log that dies with
+        # the pod, which is exactly why 1145, 1146, 1148, 1166 and 1181 are
+        # undiagnosable today.
+        #
+        # So `where` goes FIRST, before the truncation: `lastResult` is capped
+        # at 200 characters and a long message would otherwise push the one
+        # part that says where out of the record. `!r` rather than `str`,
+        # because the type is half the diagnosis.
+        result = f"failed: {raising_frame(e)}: {e!r}"[:200]
+        log(f"heartbeat {heartbeat['name']} failed: {result}\n{traceback.format_exc()}")
         # Sokrates' proposal on the owner's `issues.md`, 2026-08-24: a run that
         # dies leaves `lastResult` on the heartbeat and a line in a log
         # nobody opens, and the feed -- the one place the owner actually looks
