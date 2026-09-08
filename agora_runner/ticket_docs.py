@@ -377,7 +377,7 @@ def push_markdown(path, source, source_rev=None):
 ROW_FIELDS = (
     "number", "title", "status", "statusKey", "updated",
     "priority", "priorityKey", "project", "size", "sizeKey", "milestone",
-    "where", "done",
+    "order", "where", "done",
 )
 
 ROWS_DDOC_ID = "_design/rows"

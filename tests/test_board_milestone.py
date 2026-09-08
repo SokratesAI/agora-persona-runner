@@ -93,7 +93,7 @@ def test_the_header_grows_a_milestone_column():
         line for line in after.split("\n")
         if line.startswith("| # |")
     ][0]
-    assert header.rstrip().endswith("| Milestone |")
+    assert header.rstrip().endswith("| Milestone | Order |")
     # The owner's own second column is never renamed.
     assert "| Idea |" in header
 
@@ -131,7 +131,9 @@ def test_a_name_is_stripped_not_stored_with_its_padding():
     """
     after = set_row_milestone(BOARD, 7, "  Picking redesign  ")
     written = [line for line in after.split("\n") if line.startswith("| [[#7")][0]
-    assert written.endswith("| Picking redesign |")
+    # The trailing empty cell is the `Order` column, which every row grows
+    # the moment any cell past it is written and which nothing has placed.
+    assert written.endswith("| Picking redesign |  |")
     assert rows(after)[7]["milestone"] == "Picking redesign"
 
 

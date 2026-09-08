@@ -360,6 +360,7 @@
         "size": "",
         "sizeKey": "",
         "milestone": "",
+        "order": null,
         "done": false
       },
       {
@@ -375,6 +376,7 @@
         "size": "",
         "sizeKey": "",
         "milestone": "",
+        "order": null,
         "done": false
       },
       {
@@ -390,6 +392,7 @@
         "size": "",
         "sizeKey": "",
         "milestone": "",
+        "order": null,
         "done": false
       },
       {
@@ -405,6 +408,7 @@
         "size": "",
         "sizeKey": "",
         "milestone": "",
+        "order": null,
         "done": true
       }
     ],
@@ -470,6 +474,7 @@
       "size": "",
       "sizeKey": "",
       "milestone": "",
+      "order": null,
       "done": false,
       "blocks": [
         {

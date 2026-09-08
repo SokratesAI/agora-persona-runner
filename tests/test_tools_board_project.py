@@ -137,9 +137,9 @@ def test_the_header_grows_to_the_full_board_width(tmp_path):
     assert code == 0
     text = path.read_text(encoding="utf-8")
     header = [line for line in text.split("\n") if line.startswith("| # |")][0]
-    assert header.count("|") == 9, header
+    assert header.count("|") == 10, header
     assert header.rstrip().endswith(
-        "| Priority | Project | Size | Milestone |"), header
+        "| Priority | Project | Size | Milestone | Order |"), header
 
 
 def test_a_bad_row_in_a_multi_row_run_writes_nothing(tmp_path, capsys):
