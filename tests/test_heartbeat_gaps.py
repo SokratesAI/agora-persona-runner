@@ -773,3 +773,21 @@ def test_the_report_prints_how_many_runs_were_in_flight_at_a_lost_slot():
     text, status = hg.format_report([row], None, 1, 4, [], {"type": "RollingUpdate"})
     assert status == 2, text
     assert "(1 in flight)" in text, text
+
+
+def test_runs_in_flight_counts_a_run_whose_last_word_lands_on_the_slot():
+    # Same closed-at-the-end boundary as `split_by_in_flight`, asserted
+    # separately because the count is its own function: a run whose newest
+    # message is exactly the slot was demonstrably alive at it.
+    slot = NOW - timedelta(minutes=30)
+    assert hg.runs_in_flight(slot, [(NOW - timedelta(minutes=45), slot)]) == 1
+
+
+def test_the_slot_list_caps_the_slots_it_prints_and_counts_each_one():
+    # The cap is what stops one wedged heartbeat printing hundreds of slots
+    # on a line. Thirteen covered slots, one run over all of them.
+    slots = [NOW - timedelta(minutes=m) for m in range(10, 75, 5)]
+    assert len(slots) == 13
+    intervals = [(NOW - timedelta(minutes=90), NOW)]
+    printed = hg._with_in_flight(slots, intervals)
+    assert printed.count("(1 in flight)") == 12
