@@ -16,6 +16,7 @@ exists, every exit path writes a closing chip and a `lastResult`.**
 """
 
 import json
+import traceback
 from unittest.mock import patch
 
 import pytest
@@ -289,17 +290,43 @@ def test_own_call_path_is_empty_when_no_frame_is_ours(runner):
     assert runner.heartbeats.own_call_path(error) == ""
 
 
-def test_own_call_path_survives_a_frame_with_no_real_file(runner):
-    """It runs on the failure path, so a synthetic filename may not kill it."""
-    error = ValueError("boom")
+def test_a_synthetic_filename_is_not_one_of_our_frames(runner):
+    """`<string>` and `<frozen importlib._bootstrap>` are nobody's file.
+
+    The obvious spelling of `_is_ours` was `os.path.abspath(...).startswith(
+    root)`, which resolves a relative or synthetic filename against the
+    working directory -- and on the pod that directory IS the repo root, so
+    all three of these came back as ours. The record would then have named a
+    frame that does not exist, in the one field whose whole job is to be
+    believed. Asserted on the predicate directly, because with a synthetic
+    frame innermost `own_call_path` returns early and would pass either way.
+    """
+    fake = traceback.FrameSummary("<string>", 1, "<module>")
+    assert runner.heartbeats._is_ours(fake) is False
+    frozen = traceback.FrameSummary("<frozen importlib._bootstrap>", 1, "_call")
+    assert runner.heartbeats._is_ours(frozen) is False
+    relative = traceback.FrameSummary("agora_runner/heartbeats.py", 1, "run")
+    assert runner.heartbeats._is_ours(relative) is False
+    # The control: a real frame of ours, absolute, still counts. Without
+    # this the three above pass on a predicate that returns False always.
+    real = traceback.FrameSummary(runner.heartbeats.__file__, 1, "run_heartbeat")
+    assert runner.heartbeats._is_ours(real) is True
+
+
+def test_a_synthetic_frame_is_left_out_of_the_call_path(runner):
+    """The same thing one level up, where a cycle would actually read it."""
     try:
-        exec(compile("raise ValueError('boom')", "<string>", "exec"))
+        _outer_call_of_ours("{")
     except ValueError as caught:
         error = caught
-    # Does not raise; `<string>` is nobody's file, so there is nothing ours
-    # under it and the raiser stands alone.
-    assert runner.heartbeats.own_call_path(error) == ""
-    assert runner.heartbeats.raising_frame(error).startswith("<string>:")
+
+    frames = traceback.extract_tb(error.__traceback__)
+    with patch.object(runner.heartbeats.traceback, "extract_tb",
+                      lambda _tb: [traceback.FrameSummary("<string>", 1, "<module>")]
+                      + list(frames)):
+        path = runner.heartbeats.own_call_path(error)
+    assert path, "our real frames are still there"
+    assert "<string>" not in path, path
 
 
 def test_the_record_keeps_the_exception_type_when_the_path_is_long(runner):

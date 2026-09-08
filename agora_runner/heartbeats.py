@@ -51,7 +51,19 @@ def _frame_label(frame):
 
 
 def _is_ours(frame):
-    return os.path.abspath(frame.filename).startswith(OWN_CODE_ROOT + os.sep)
+    """Absolute, and under this checkout.
+
+    `os.path.abspath` was the obvious spelling and it is the wrong one:
+    it resolves anything relative against the working directory, and on
+    the pod that directory IS `/app`, which is `OWN_CODE_ROOT`. So
+    `<string>`, `<frozen importlib._bootstrap>` and any relative filename
+    all came back as ours, and the record would have carried an invented
+    frame in the one field whose whole job is to be believed. Requiring
+    the filename to be absolute already drops every synthetic one; a real
+    frame of ours is imported by absolute path.
+    """
+    name = frame.filename or ""
+    return os.path.isabs(name) and name.startswith(OWN_CODE_ROOT + os.sep)
 
 
 def raising_frame(error):
