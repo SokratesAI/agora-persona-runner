@@ -948,3 +948,145 @@ def test_a_document_that_does_not_stamp_itself_is_not_claimed():
     pairs = cycle_postmortem.find_unnumbered(
         _lost(265), _CONVERSATIONS, paths, read_entry=read)
     assert pairs == [(265, "j/319-report-256-263.md")]
+
+
+# --- a lost cycle's entry filed under a number somebody else also used ----
+#
+# The live case, measured 2026-09-09: `516-cycle-454.md` and
+# `517-cycle-454.md` both sit in the folder, cycle 455 has no entry, and
+# 455's reply to Edvard announces #396 -- the pull request in 517's
+# footer, which 454's reply (#531, #535) never mentions.
+
+_DOUBLED_JOURNAL = ["j/515-cycle-453.md", "j/516-cycle-454.md",
+                    "j/517-cycle-454.md", "j/518-cycle-456.md"]
+
+_DOUBLED_ENTRIES = {"j/516-cycle-454.md": frozenset({531, 535}),
+                    "j/517-cycle-454.md": frozenset({396})}
+
+_DOUBLED_REPLIES = {454: frozenset({531, 535}), 455: frozenset({396})}
+
+
+def _doubled_paths():
+    return {454: ["j/516-cycle-454.md", "j/517-cycle-454.md"]}
+
+
+def test_the_footer_decides_which_of_two_entries_the_lost_cycle_wrote():
+    assert cycle_postmortem.doubled_entries(
+        [455], _DOUBLED_ENTRIES, _DOUBLED_REPLIES, _doubled_paths()
+    ) == [(455, "j/517-cycle-454.md")]
+
+
+def test_a_number_with_only_one_entry_is_never_read_as_doubled():
+    assert cycle_postmortem.doubled_entries(
+        [455], _DOUBLED_ENTRIES, _DOUBLED_REPLIES,
+        {454: ["j/517-cycle-454.md"]}) == []
+
+
+def test_an_entry_the_named_cycle_also_announced_is_left_alone():
+    # The second condition: 454 named #396 too, so which of the two ran
+    # that work is a coin toss and this says nothing rather than picking.
+    replies = {**_DOUBLED_REPLIES, 454: frozenset({396, 531})}
+    assert cycle_postmortem.doubled_entries(
+        [455], _DOUBLED_ENTRIES, replies, _doubled_paths()) == []
+
+
+def test_a_lost_cycle_that_could_claim_both_documents_claims_neither():
+    # A contradiction rather than a finding -- 454 would then have written
+    # neither of the two entries carrying its own number.
+    replies = {**_DOUBLED_REPLIES, 455: frozenset({396, 531, 535}),
+               454: frozenset()}
+    assert cycle_postmortem.doubled_entries(
+        [455], _DOUBLED_ENTRIES, replies, _doubled_paths()) == []
+
+
+def test_a_document_two_lost_cycles_could_both_claim_is_dropped():
+    replies = {**_DOUBLED_REPLIES, 453: frozenset({396})}
+    paths = dict(_doubled_paths())
+    assert cycle_postmortem.doubled_entries(
+        [453, 455], _DOUBLED_ENTRIES, replies, paths) == []
+
+
+def test_an_entry_with_no_pull_request_in_its_footer_is_not_attributed():
+    entries = {**_DOUBLED_ENTRIES, "j/517-cycle-454.md": frozenset()}
+    assert cycle_postmortem.doubled_entries(
+        [455], entries, _DOUBLED_REPLIES, _doubled_paths()) == []
+
+
+def test_a_neighbour_whose_reply_could_not_be_read_is_skipped():
+    # `None` is "cannot say", not "named nothing" -- the same call
+    # `misfiled_entries` makes, and the difference is a wrong attribution.
+    replies = {**_DOUBLED_REPLIES, 454: None}
+    assert cycle_postmortem.doubled_entries(
+        [455], _DOUBLED_ENTRIES, replies, _doubled_paths()) == []
+
+
+def test_find_doubled_shortlists_on_the_filenames_before_reading_anything():
+    reads = []
+
+    def counting(path):
+        reads.append(path)
+        return "PR: #396 | Outcome: merged"
+
+    # 456 carries one entry here, so nothing beside it is ever fetched.
+    cycle_postmortem.find_doubled(
+        _lost(457), {}, _DOUBLED_JOURNAL, read_entry=counting,
+        fetch=lambda _id: [])
+    assert reads == []
+
+
+def test_find_doubled_reads_both_documents_and_joins_them_to_the_run():
+    texts = {"j/516-cycle-454.md": "PR: #531, #535 | Outcome: merged",
+             "j/517-cycle-454.md": "PR: #396 | Outcome: merged"}
+    conversations = {454: {"id": "c454"}, 455: {"id": "c455"}}
+    messages = {"c454": [{"text": "shipped #531 and #535"}],
+                "c455": [{"text": "shipped #396"}]}
+    pairs = cycle_postmortem.find_doubled(
+        _lost(455), conversations, _DOUBLED_JOURNAL,
+        read_entry=texts.get, fetch=lambda cid: messages[cid])
+    assert pairs == [(455, "j/517-cycle-454.md")]
+
+
+def test_find_doubled_reads_nothing_when_no_cycle_came_back_lost():
+    reads = []
+    rows = [{"number": 455, "verdict": "misfiled", "detail": "x", "messages": 1}]
+    assert cycle_postmortem.find_doubled(
+        rows, {}, _DOUBLED_JOURNAL, read_entry=reads.append,
+        fetch=lambda _id: []) == []
+    assert reads == []
+
+
+def test_apply_doubled_downgrades_the_row_and_names_the_file():
+    rows = _lost(455, 580)
+    cycle_postmortem.apply_doubled(rows, [(455, "j/517-cycle-454.md")])
+    assert rows[0]["verdict"] == "doubled"
+    assert "517-cycle-454.md" in rows[0]["detail"]
+    assert rows[1]["verdict"] == "lost"
+
+
+def test_doubled_does_not_raise_the_exit_status():
+    assert "doubled" not in cycle_postmortem.RAISING_VERDICTS
+
+
+def test_doubled_has_a_heading_so_the_rows_are_printed():
+    assert "doubled" in dict((h[0], h[1]) for h in cycle_postmortem._HEADINGS)
+
+
+def test_format_doubled_names_the_cycle_and_the_file():
+    text = "\n".join(cycle_postmortem.format_doubled(
+        [(455, "j/517-cycle-454.md")]))
+    assert "Cycle 455's work is in `517-cycle-454.md`" in text
+    assert "never renamed" in text
+
+
+def test_format_doubled_is_silent_with_nothing_to_say():
+    assert cycle_postmortem.format_doubled([]) == []
+
+
+def test_a_footer_the_lost_run_never_announced_is_not_attributed():
+    # The first condition on its own. The second cannot cover this: a pull
+    # request neither run named passes `footer & own` for free, so without
+    # `footer <= said` the lost cycle claims a document that is nobody's.
+    entries = {**_DOUBLED_ENTRIES, "j/516-cycle-454.md": frozenset({999})}
+    replies = {**_DOUBLED_REPLIES, 454: frozenset({531, 535})}
+    assert cycle_postmortem.doubled_entries(
+        [455], entries, replies, _doubled_paths()) == [(455, "j/517-cycle-454.md")]
