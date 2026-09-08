@@ -5727,30 +5727,63 @@ describe("an ask nobody answered is named in the header", () => {
     writtenLabel: "11:00", cycles: "871-901", ageHours: 1, stale: false, staleAfterHours: 3, total: 2,
   };
 
-  test("the recap card sits above the feed and says when it was written", async () => {
+  test("the recap card sits between the search box and the feed", async () => {
+    /* It was the feed's first child until 2026-09-08, went above the search
+     * box at his ask, and came back below it at his next one -- the box
+     * collapsed to a single button that morning, so the thing it was making
+     * room above stopped taking any room.
+     *
+     * Still outside the feed, which is the part worth pinning: `render`
+     * empties the feed on every paint, so a card inside it would flicker on
+     * the thirty-second poll. */
     const window = await loadSite("/", { recap: RECAP });
-    const card = window.document.querySelector("#feed .recap");
+    const card = window.document.querySelector(".recap");
     assert.ok(card, "no recap card on the journal feed");
-    assert.equal(window.document.querySelector("#feed").firstElementChild, card,
-      "the recap card is not the first thing in the feed");
+    assert.equal(card.nextElementSibling, window.document.getElementById("feed"),
+      "the recap card is not immediately above the feed");
+    assert.equal(card.previousElementSibling,
+      window.document.getElementById("journal-search"),
+      "the recap card is not below the search box");
     assert.equal(card.querySelectorAll(".recap-item").length, 2);
     assert.match(card.querySelector(".recap-stamp").textContent, /as of 11:00/);
     assert.equal(card.querySelector(".recap-note"), null,
       "a fresh recap should not carry the stale note");
   });
 
+  test("it opens shut, and the heading is what opens it", async () => {
+    /* His ask, 2026-09-08: *"i want the 12 hours summary for the journals to
+     * be collapsable and default collapsed as it takes up a lot of space."*
+     *
+     * Default-collapsed is the load-bearing half: remembering that he opened
+     * it once would put the screenful back on the next load, which is the
+     * thing being got rid of. The whole head is the control rather than a
+     * chevron beside it -- on a phone the title is what is under his thumb. */
+    const window = await loadSite("/", { recap: RECAP });
+    const card = window.document.querySelector(".recap");
+    const head = card.querySelector(".recap-head");
+    assert.ok(card.classList.contains("recap--shut"), "the recap opened expanded");
+    assert.equal(head.getAttribute("aria-expanded"), "false");
+    assert.equal(head.tagName, "BUTTON", "the heading is not a control");
+    head.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.equal(card.classList.contains("recap--shut"), false,
+      "tapping the heading did not open it");
+    assert.equal(head.getAttribute("aria-expanded"), "true");
+    // The bullets are in the DOM either way -- this is a fold, not a fetch.
+    assert.equal(card.querySelectorAll(".recap-item").length, 2);
+  });
+
   test("a stale recap says so rather than passing as current", async () => {
     const window = await loadSite("/", {
       recap: Object.assign({}, RECAP, { stale: true, ageHours: 9 }),
     });
-    const card = window.document.querySelector("#feed .recap");
+    const card = window.document.querySelector(".recap");
     assert.ok(card.querySelector(".recap-stamp.stale"), "the stamp is not marked stale");
     assert.match(card.querySelector(".recap-note").textContent, /more than 3 hours ago/);
   });
 
   test("no recap, no card -- an empty box is a thing to read", async () => {
     const window = await loadSite("/", { recap: { bullets: [], total: 0 } });
-    assert.equal(window.document.querySelector("#feed .recap"), null);
+    assert.equal(window.document.querySelector(".recap"), null);
   });
 
   test("a bullet's link is a real tap target", async () => {
@@ -5769,7 +5802,7 @@ describe("an ask nobody answered is named in the header", () => {
         total: 1,
       }),
     });
-    const link = window.document.querySelector("#feed .recap .recap-link");
+    const link = window.document.querySelector(".recap .recap-link");
     assert.ok(link, "the bullet named a page and offered no way to open it");
     assert.equal(link.getAttribute("href"), "https://hub.tailc83eb3.ts.net/");
     assert.equal(link.textContent, "hub");
@@ -5777,7 +5810,7 @@ describe("an ask nobody answered is named in the header", () => {
     assert.match(link.rel, /noopener/);
     // The sentence around the link survives intact -- a card that drops
     // its own words to gain a link is a worse card.
-    assert.match(window.document.querySelector("#feed .recap-item").textContent,
+    assert.match(window.document.querySelector(".recap-item").textContent,
       /Your start page is at hub now\./);
   });
 
@@ -5791,7 +5824,7 @@ describe("an ask nobody answered is named in the header", () => {
         total: 1,
       }),
     });
-    const link = window.document.querySelector("#feed .recap .recap-link");
+    const link = window.document.querySelector(".recap .recap-link");
     assert.equal(link.getAttribute("href"), "/galaxy");
     assert.notEqual(link.target, "_blank", "an internal page opened in a second tab");
   });
@@ -5807,7 +5840,7 @@ describe("an ask nobody answered is named in the header", () => {
         total: 1,
       }),
     });
-    const link = window.document.querySelector("#feed .recap .recap-lead .recap-link");
+    const link = window.document.querySelector(".recap .recap-lead .recap-link");
     assert.ok(link, "the bolded lead swallowed its link");
     assert.equal(link.getAttribute("href"), "https://hub.tailc83eb3.ts.net/");
   });
@@ -5817,9 +5850,9 @@ describe("an ask nobody answered is named in the header", () => {
      * from before this shipped has `text` and no `parts`. Losing the links
      * for one page load is a small thing; losing the bullets is the card. */
     const window = await loadSite("/", { recap: RECAP });
-    assert.match(window.document.querySelector("#feed .recap").textContent,
+    assert.match(window.document.querySelector(".recap").textContent,
       /You can write back to the bot now\./);
-    assert.equal(window.document.querySelector("#feed .recap .recap-link"), null);
+    assert.equal(window.document.querySelector(".recap .recap-link"), null);
   });
 
   test("the recap is not drawn on the asks view", async () => {
@@ -5828,7 +5861,7 @@ describe("an ask nobody answered is named in the header", () => {
       comments: { byCycle: {}, needs: [] },
       recap: RECAP,
     });
-    assert.equal(window.document.querySelector("#feed .recap"), null,
+    assert.equal(window.document.querySelector(".recap"), null,
       "a twelve-hour summary is not an answer to the question /asks is asking");
   });
 
@@ -12017,6 +12050,48 @@ describe("searching the journal", () => {
     return box;
   }
 
+  test("the box is a magnifying glass until he taps it", async () => {
+    /* His ask, 2026-09-08: *"that search input should be collapsed aswell to
+     * a button with a search icon in it. So when i click that button, the
+     * search input appears with a sliding effect both in and out."*
+     *
+     * The input is never removed or rebuilt, only slid: it holds the query,
+     * the caret and the debounce timer, and the feed repaints under it every
+     * thirty seconds. `--shut` is the class the slide hangs off, so the
+     * state is what this asserts -- jsdom animates nothing. */
+    const window = await loadSite("/", { journal: searchable().serve });
+    const box = window.document.getElementById("journal-search");
+    const toggle = window.document.querySelector(".journal-search-toggle");
+    assert.ok(toggle, "there is no button to open the search with");
+    assert.ok(box.classList.contains("journal-search--shut"),
+      "the search box opened expanded");
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    // The field is present the whole time, which is the point.
+    assert.ok(window.document.querySelector(".journal-search-input"));
+
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    assert.equal(box.classList.contains("journal-search--shut"), false);
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  });
+
+  test("closing it clears the search rather than hiding a filtered feed", async () => {
+    /* A filtered feed under a collapsed box is a page showing three of four
+     * hundred entries with nothing on screen saying why. */
+    const searches = searchable();
+    const window = await loadSite("/", { journal: searches.serve });
+    const toggle = window.document.querySelector(".journal-search-toggle");
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await search(window, "ingress");
+    assert.match(searches.asked[searches.asked.length - 1], /q=ingress/,
+      "the search never reached the server, so this proves nothing");
+
+    toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(window.document.querySelector(".journal-search-input").value, "");
+    assert.doesNotMatch(searches.asked[searches.asked.length - 1], /q=ingress/,
+      "the feed is still filtered by a query he can no longer see");
+  });
+
   test("the journal feed carries a search box", async () => {
     const window = await loadSite("/", { journal: searchable().serve });
     const box = window.document.querySelector(".journal-search-input");
@@ -12063,17 +12138,17 @@ describe("searching the journal", () => {
         stale: false, staleAfterHours: 3, total: 1,
       },
     });
-    assert.ok(window.document.querySelector("#feed .recap"),
+    assert.ok(window.document.querySelector(".recap"),
       "the card should be there before he searches");
 
     await search(window, "ingress");
-    assert.equal(window.document.querySelector("#feed .recap"), null,
+    assert.equal(window.document.querySelector(".recap"), null,
       "the recap card stayed pinned over the search results");
 
     // And it comes back when he clears the box: hiding it is about the
     // search, not a one-way switch for the rest of the session.
     await search(window, "");
-    assert.ok(window.document.querySelector("#feed .recap"),
+    assert.ok(window.document.querySelector(".recap"),
       "the card never came back after the search was cleared");
   });
 
@@ -12097,11 +12172,17 @@ describe("searching the journal", () => {
     assert.match(count.textContent, /No entry mentions/);
   });
 
-  test("clearing the box brings the feed back", async () => {
+  test("closing the box brings the feed back", async () => {
+    /* The separate clear × is gone, 2026-09-08: the one button on the right
+     * is the glass while shut and the × while open, and closing empties the
+     * field. Two ×s side by side -- one emptying, one closing -- is a choice
+     * nobody wants to make on a phone. */
     const server = searchable();
     const window = await loadSite("/", { journal: server.serve });
+    const toggle = window.document.querySelector(".journal-search-toggle");
+    click(window, toggle);
     await search(window, "ingress");
-    click(window, window.document.querySelector(".journal-search-clear"));
+    click(window, toggle);
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(cards(window).length, 20);
     assert.ok(!/q=/.test(server.asked[server.asked.length - 1]), "still searching after a clear");
@@ -13849,199 +13930,19 @@ describe("holding a conversation in the switcher opens edit options", () => {
   });
 });
 
-/* the owner, ideas board #115: *"You are asleep for nine cycles at a time and
- * the app opens on the newest journal card with no sense of how much you
- * missed. One line -- six cycles, two PRs merged, one thing needs your input,
- * one board row moved -- would let you decide in two seconds whether to read
- * or to close it."*
+/* "N cycles since you last looked" was here, from ideas board #115, until
+ * 2026-09-08. He asked for it to go: it answered a question he had stopped
+ * having. The line existed because the app opened on the newest card with no
+ * sense of how much had been missed, back when he read it once or twice a
+ * day; he now works with the app open beside him, so it reported one cycle
+ * almost every time it said anything.
  *
- * The mark lives in `localStorage`, so every test here either seeds it through
- * `install` or deliberately leaves it empty -- jsdom gives each window its own
- * store, and empty is the honest first-load case. The fixture's journal is
- * cycles 57 (twice, an entry and its addendum), 55, and one unnumbered report;
- * `status.cycle` is 57 and 56 is a real hole in the numbering.
+ * `#changed`, `nova.lastSeen.v1` and the dismissal mark went with it. There
+ * is nothing left to test, which is why this is a note and not a describe
+ * block asserting the absence -- the element is gone from index.html and
+ * `grep changedLine` is a better guard than a test that passes on an empty
+ * page.
  */
-describe("what changed since you last looked", () => {
-  const withLastSeen = (cycle) => (window) => {
-    window.localStorage.setItem("nova.lastSeen.v1", String(cycle));
-  };
-  const line = (window) => window.document.querySelector("#changed .changed-line");
-  const box = (window) => window.document.getElementById("changed");
-
-  test("a first load says nothing and seeds the mark instead", async () => {
-    /* The same call `nova.repliesRead.v1` makes one describe block up: with
-     * no mark there is no "last time", and printing "540 cycles" on day one
-     * is the absence of a measurement dressed as one. */
-    const window = await loadSite("/");
-    assert.equal(line(window), null, "a fresh device claimed news it cannot know about");
-    assert.equal(box(window).hasAttribute("hidden"), true);
-    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "57",
-      "the first load did not record where he got to");
-  });
-
-  test("it counts the cycles and the merges he missed", async () => {
-    const window = await loadSite("/", { install: withLastSeen(54) });
-    assert.equal(line(window).textContent, "2 cycles since you last looked · 2 PRs merged");
-  });
-
-  test("a cycle and its addendum are one cycle and one PR, not two", async () => {
-    /* Cycle 57 has two entries carrying the same `PR: agora#45` footer. */
-    const window = await loadSite("/", { install: withLastSeen(56) });
-    assert.equal(line(window).textContent, "1 cycle since you last looked · 1 PR merged");
-  });
-
-  test("nothing new says nothing at all", async () => {
-    const window = await loadSite("/", { install: withLastSeen(57) });
-    assert.equal(line(window), null, "drew a line with no news in it");
-    assert.equal(box(window).hasAttribute("hidden"), true);
-  });
-
-  test("a mark older than the feed's window says `at least`", async () => {
-    /* The feed is the newest N cycles, so a mark from before the oldest card
-     * on it cannot be counted exactly -- both numbers are floors. */
-    const window = await loadSite("/", { install: withLastSeen(3) });
-    assert.equal(line(window).textContent,
-      "at least 2 cycles since you last looked · at least 2 PRs merged");
-  });
-
-  test("a cycle that shipped no PR is counted as a cycle and not as a merge", async () => {
-    const journal = () => ({
-      status: { ...payload.journal.status, cycle: 60 },
-      entries: [
-        { ...payload.journal.entries[0], cycle: 60, pr: "none", outcome: "no-op" },
-        ...payload.journal.entries,
-      ],
-    });
-    const window = await loadSite("/", { install: withLastSeen(57), journal });
-    assert.equal(line(window).textContent, "1 cycle since you last looked",
-      "counted a cycle with no PR as a merge");
-  });
-
-  test("a dismissal only covers the news he was actually shown", async () => {
-    /* The tab stays open on his phone. A plain "dismissed" flag silenced the
-     * line for the whole session, so every cycle that ran while he had it
-     * open went unannounced -- which is the case the feature exists for. */
-    let cycle = 57;
-    const journal = () => ({
-      status: { ...payload.journal.status, cycle },
-      entries: cycle > 57
-        ? [{ ...payload.journal.entries[0], cycle, pr: "runner#500", outcome: "merged" },
-           ...payload.journal.entries]
-        : payload.journal.entries,
-    });
-    const window = await loadSite("/", { install: withLastSeen(54), journal });
-    line(window).dispatchEvent(new window.Event("click"));
-    assert.equal(line(window), null, "the tap left the line on screen");
-    // A cycle runs while he has the tab open, and the page re-renders.
-    cycle = 60;
-    window.dispatchEvent(new window.PopStateEvent("popstate"));
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.ok(line(window), "news that arrived after the tap was never shown");
-    assert.equal(line(window).textContent, "3 cycles since you last looked · 3 PRs merged");
-  });
-
-  test("tapping the line dismisses it", async () => {
-    const window = await loadSite("/", { install: withLastSeen(54) });
-    line(window).dispatchEvent(new window.Event("click"));
-    assert.equal(line(window), null, "the tap left the line on screen");
-    assert.equal(box(window).hasAttribute("hidden"), true);
-  });
-
-  test("the mark only moves forward", async () => {
-    /* A deep link or a search can hand `render` a `status.cycle` below the
-     * mark; writing it would invent a hundred cycles of news on his next
-     * open. */
-    const journal = () => ({ ...payload.journal, status: { ...payload.journal.status, cycle: 40 } });
-    const window = await loadSite("/", { install: withLastSeen(57), journal });
-    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "57");
-  });
-
-  test("a /cycle/N permalink neither draws the line nor moves the mark", async () => {
-    const window = await loadSite("/cycle/55", { install: withLastSeen(54) });
-    assert.equal(line(window), null, "a permalink drew a line about its own single entry");
-    assert.equal(window.localStorage.getItem("nova.lastSeen.v1"), "54",
-      "a permalink overwrote the mark with the cycle he deep-linked to");
-  });
-
-  test("a payload replayed out of the worker's cache says nothing", async () => {
-    /* Same call the badges beside it make: "this is what changed" is a claim
-     * about now, and these bytes were cached at some unknown earlier time. */
-    const window = await loadSite("/", { install: withLastSeen(54), replayed: true });
-    assert.equal(line(window), null, "made a claim about now off a cached payload");
-  });
-
-  test("the page renders without localStorage at all", async () => {
-    const window = await loadSite("/", {
-      install: (w) => {
-        Object.defineProperty(w, "localStorage", {
-          get() { throw new Error("refused"); },
-        });
-      },
-    });
-    assert.equal(cards(window).length > 0, true, "the feed did not render without localStorage");
-    assert.equal(line(window), null);
-  });
-
-  test("a search takes the line down rather than recounting off its results", async () => {
-    /* A search answers with whichever cycles matched, from anywhere in the
-     * archive, so its entries are not "the newest N". Recomputing off them
-     * would describe the query rather than what he missed -- here, the one
-     * matched cycle would read "1 cycle" against the true "2 cycles".
-     * Clearing the search brings the original line back unchanged. */
-    const journal = (url) => {
-      if (!url.includes("q=")) return payload.journal;
-      return {
-        ...payload.journal,
-        query: "tailscale",
-        total: 1,
-        entries: [payload.journal.entries[0]],
-        status: { ...payload.journal.status, cycle: 57 },
-      };
-    };
-    const window = await loadSite("/", { install: withLastSeen(54), journal });
-    const before = line(window).textContent;
-    assert.equal(before, "2 cycles since you last looked · 2 PRs merged");
-    const input = window.document.querySelector(".journal-search-input");
-    input.value = "tailscale";
-    input.dispatchEvent(new window.Event("input"));
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    // Guard: without this the assertion below passes on a search that never
-    // rendered, which is what the fixture does by default.
-    assert.equal(window.document.querySelector(".journal-search-count").textContent,
-      "1 entry mentions \u201Ctailscale\u201D", "the search never rendered");
-    assert.equal(line(window), null, "the search left a line over its own results");
-    window.document.querySelector(".journal-search-clear")
-      .dispatchEvent(new window.Event("click", { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    assert.equal(line(window).textContent, before,
-      "clearing the search did not bring the same line back");
-  });
-
-  test("navigating to another page takes the line down with it", async () => {
-    /* Every internal link is a `pushState`, so without a hide the journal's
-     * line sits over the Issues board after one tap. */
-    const window = await loadSite("/", { install: withLastSeen(54) });
-    assert.ok(line(window), "no line on the journal");
-    window.document.querySelector('.nav-tab[href="/issues"]')
-      .dispatchEvent(new window.Event("click", { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(window.location.pathname, "/issues", "the tap did not navigate");
-    assert.equal(line(window), null, "the journal's line stayed on the board page");
-  });
-
-  test("the line survives an in-page navigation", async () => {
-    /* The mark advances on the first paint, so a second read of storage
-     * would answer "nothing new" -- and tapping a card and coming back
-     * re-renders the header. */
-    const window = await loadSite("/", { install: withLastSeen(54) });
-    assert.ok(line(window), "no line on the first paint");
-    window.history.pushState({}, "", "/");
-    window.dispatchEvent(new window.PopStateEvent("popstate"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(line(window).textContent, "2 cycles since you last looked · 2 PRs merged",
-      "the line vanished when he navigated back to the feed");
-  });
-});
 
 /* The dock paints before the network answers.
  *
@@ -14520,52 +14421,8 @@ describe("the project page", () => {
     assert.equal(window.posted.length, before);
   });
 
-  test("the index chips only the projects that carry a rating", async () => {
-    const window = await loadSite("/project/Nova", { project: () => RATED });
-    const pills = [...window.document.querySelectorAll(".project-pill")];
-    assert.deepEqual(pills.map((p) => p.getAttribute("href")),
-      ["/project/Marcus", "/project/Nova", "/project/Agora"],
-      "the pills are not in the order the server sent");
-    const chipOf = (pill) => {
-      const chip = pill.querySelector(".chip");
-      return chip ? chip.textContent : null;
-    };
-    // Unrated draws no chip at all -- every project is unrated today, so an
-    // unconditional one would put an empty coloured pill on all of them.
-    assert.deepEqual(pills.map(chipOf), ["🔴 Immediately", null, "⚪ Low"]);
-    assert.ok(pills[0].querySelector(".prio-immediate"),
-      "the chip is not coloured from the server's priorityKey");
-    // The word beside the glyph, never the glyph alone.
-    assert.match(chipOf(pills[0]), /Immediately/);
-  });
 
-  test("rating a project posts the project, not a board row", async () => {
-    const window = await loadSite("/project/Nova", { project: () => RATED });
-    const trigger = window.document.querySelector(".project-prio > .chip.prio");
-    assert.ok(trigger, "no priority trigger on the project page");
-    // It opens on what the server holds for this project, which is unrated.
-    assert.equal(trigger.textContent, "Unrated");
-    click(window, trigger);
-    const high = [...window.document.querySelectorAll(".prio-option")]
-      .find((o) => o.textContent === "🟠 High");
-    click(window, high);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const posted = window.posted.find((p) => p.url === "/api/project/priority");
-    assert.ok(posted, "no write reached /api/project/priority");
-    assert.deepEqual(posted.body, { project: "Nova", priority: "🟠 High" });
-    // The project name, not a board target and not a row number -- this is
-    // the one write on this page that belongs to no row.
-    assert.equal(posted.body.number, undefined);
-    assert.equal(posted.body.target, undefined);
-  });
 
-  test("the trigger opens on the rating the server already holds", async () => {
-    const window = await loadSite("/project/Marcus",
-      { project: () => ({ ...RATED, name: "Marcus", asked: "Marcus" }) });
-    const trigger = window.document.querySelector(".project-prio > .chip.prio");
-    assert.equal(trigger.textContent, "🔴 Immediately");
-    assert.equal(trigger.className, "chip prio prio-immediate");
-  });
 
   /* His satisfaction with a project -- milestone M5 of idea #260, the one
    * of that milestone's three fields the spec gives to him and to nobody
@@ -14631,13 +14488,6 @@ describe("the project page", () => {
     assert.deepEqual(posted.body, { project: "Marcus", score: 0 });
   });
 
-  test("the index page has no picker, because no project is chosen", async () => {
-    const window = await loadSite("/projects",
-      { project: () => ({ ...RATED, name: null, asked: "" }) });
-    assert.ok(window.document.querySelector(".project-pill"),
-      "the index drew no pills at all, so this proves nothing");
-    assert.equal(window.document.querySelector(".project-prio"), null);
-  });
 
   /* The portfolio standing on the index -- idea #228's project-manager
    * pass. The index listed names and ratings and nothing about how any
@@ -14673,6 +14523,53 @@ describe("the project page", () => {
   const standings = (window) =>
     [...window.document.querySelectorAll(".project-standing")];
 
+  test("the whole standing is the link, and there are no pills above it", async () => {
+    /* His ask, 2026-09-08: *"make the draggable projects clickable instead
+     * of the project buttons above the draggable project list. Remove the
+     * current clickable project buttons."*
+     *
+     * The pills were a second list of the same projects stacked over the
+     * first, and the lower one already answered every question the upper
+     * one could be asked. A real anchor rather than a click handler, so
+     * middle-click and long-press behave; safe against the drag because the
+     * drag starts on the grip only. */
+    const window = await loadSite("/projects", { project: () => STANDING });
+    assert.equal(window.document.querySelector(".project-pill"), null,
+      "the row of project pills is still drawn above the list");
+    const rows = standings(window);
+    const link = rows[0].querySelector(".project-standing-link");
+    assert.ok(link, "the standing is not a link");
+    assert.equal(link.getAttribute("href"), "/project/Marcus");
+    // The bar and the counts are inside it: the whole row is the target,
+    // not the name alone.
+    assert.ok(link.querySelector(".project-standing-track"));
+    assert.ok(link.querySelector(".project-standing-counts"));
+    // ...and the grip is not, or every drag would end in a navigation.
+    assert.equal(link.querySelector(".project-standing-grip"), null,
+      "the drag grip is inside the link");
+  });
+
+  test("the project's own rating is gone; the worst open row's is not", async () => {
+    /* Two different facts wore the same chip until 2026-09-08. His ask --
+     * *"I do not want the old priority anymore, only the placement sorting
+     * priority"* -- removes the project's own rating, which was the weaker
+     * of two orderings and only ranked a project that had no position.
+     *
+     * The other chip stays: it is the worst rating among the project's open
+     * ROWS, which is a fact about the work rather than a second dial for
+     * ordering the list. Deleting the test that covered both is how that
+     * one would have gone quietly. */
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const rows = standings(window);
+    assert.deepEqual(
+      [...rows[0].querySelectorAll(".chip")].map((c) => c.textContent),
+      ["🔴 Immediately · 2"],
+      "the project's own rating chip is still drawn beside the row's worst");
+    // Nova's only open row is unrated, and "unrated" is not a severity.
+    assert.deepEqual(
+      [...rows[1].querySelectorAll(".chip")].map((c) => c.textContent), []);
+  });
+
   test("the index shows where each project stands, in the server's order", async () => {
     const window = await loadSite("/projects", { project: () => STANDING });
     const rows = standings(window);
@@ -14703,19 +14600,6 @@ describe("the project page", () => {
       .getAttribute("aria-label"), "Marcus — 40% · 6 open · 2 on you");
   });
 
-  test("the worst open rating is named, and unrated is not a severity", async () => {
-    const window = await loadSite("/projects", { project: () => STANDING });
-    const rows = standings(window);
-    // Marcus carries the project's own rating and, separately, the worst
-    // rating among its open rows. Two different facts, both chips.
-    const chips = [...rows[0].querySelectorAll(".chip")].map((c) => c.textContent);
-    assert.deepEqual(chips, ["🔴 Immediately", "🔴 Immediately · 2"]);
-    // Nova's only open row is unrated. "Unrated" is not the worst thing
-    // under a project, so nothing is drawn -- and Nova is unrated as a
-    // project too, so this row must carry no chip at all.
-    assert.deepEqual(
-      [...rows[1].querySelectorAll(".chip")].map((c) => c.textContent), []);
-  });
 
   test("one project spelled two ways is one standing", async () => {
     const window = await loadSite("/projects", {
@@ -14942,16 +14826,6 @@ describe("the project page", () => {
       /Could not move/);
   });
 
-  test("a project page still draws the pills and no standings", async () => {
-    const window = await loadSite("/project/Nova", {
-      project: () => ({ ...STANDING, name: "Nova", asked: "Nova" }),
-    });
-    assert.ok(window.document.querySelector(".project-pill"),
-      "the project page lost its navigation");
-    // The page has its own, larger summary for the project it is showing;
-    // a second list of every project's numbers under it is the index.
-    assert.equal(standings(window).length, 0);
-  });
 
   test("an index with no standings at all still says what to do", async () => {
     const window = await loadSite("/projects", {
@@ -15187,24 +15061,7 @@ describe("the project page", () => {
     assert.equal(rows[1].querySelectorAll(".chip.prio").length, 0);
   });
 
-  test("the project you are on is the marked pill", async () => {
-    const window = await loadSite("/project/Nova", { project: NOVA });
-    const on = [...window.document.querySelectorAll(".project-pill.on")]
-      .map((el) => el.textContent);
-    assert.deepEqual(on, ["Nova"]);
-    const links = [...window.document.querySelectorAll(".project-pill")]
-      .map((el) => el.getAttribute("href"));
-    assert.deepEqual(links, ["/project/Nova", "/project/Agora"]);
-  });
 
-  test("a project with nothing filed under it says so and still offers the others", async () => {
-    const window = await loadSite("/project/Newspaper", {
-      project: { projects: ["Nova"], name: null, asked: "Newspaper",
-                 boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } } },
-    });
-    assert.match(window.document.querySelector(".empty").textContent, /Newspaper/);
-    assert.equal(window.document.querySelectorAll(".project-pill").length, 1);
-  });
 
   /* Phase 4 -- the conversation per project. */
 
@@ -15867,6 +15724,72 @@ describe("the thoughts-and-tools drawer", () => {
       window.document.querySelectorAll("#chat-thread .ask-msg-steps").length, 1);
     assert.equal(lines(window).length, 1);
     assert.match(lines(window)[0].textContent, /Thought/);
+  });
+
+  test("a turn that stopped answering says so instead of spinning", async () => {
+    /* His report, 2026-09-08: *"I sent you a message, got a warning on my
+     * phone and you never responded and was just loading forever. Your pod
+     * restarted but now you are up again."*
+     *
+     * A bridge rollout took the pod down mid-turn -- `Recreate` on a
+     * ReadWriteOnce volume, so there is a real window with no bridge at
+     * all. That window is structural. The lie is not: `waiting` means "the
+     * last message is his", which stays true forever when the turn was
+     * never picked up, so the loader spun for as long as he left it open.
+     *
+     * The bound is on SILENCE, not on the turn: a turn narrating steps can
+     * run its full 45 minutes and never trip this. */
+    const old = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: true,
+        progress: { askedAt: old },
+        messages: [{ id: "1", sender: "Edvard", text: "how many pods?",
+                     createdAt: old }] },
+    });
+    assert.equal(window.document.querySelector("#chat-thread .ask-orbit"), null,
+      "a turn silent for half an hour is still claiming to be running");
+    const said = window.document.querySelector("#chat-thread .ask-stopped");
+    assert.ok(said, "nothing on screen says the turn was lost");
+    assert.match(said.textContent, /No answer came back/);
+    // And the one action that helps, from the same implementation the `⋯`
+    // menu uses -- two ways to re-ask must not disagree about what is sent.
+    assert.ok(window.document.querySelector("#chat-thread .ask-retry"),
+      "no way to send it again");
+  });
+
+  test("a turn that is merely slow keeps its loader", async () => {
+    /* The negative control, and the one that makes this safe: a long Bash
+     * call, a subagent, a model thinking before it reaches for anything.
+     * Calling that lost would be the same lie pointing the other way. */
+    const recent = new Date(Date.now() - 60 * 1000).toISOString();
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: true,
+        progress: { askedAt: recent },
+        messages: [{ id: "1", sender: "Edvard", text: "how many pods?",
+                     createdAt: recent }] },
+    });
+    assert.ok(window.document.querySelector("#chat-thread .ask-orbit"),
+      "a turn one minute in was called lost");
+    assert.equal(window.document.querySelector("#chat-thread .ask-stopped"), null);
+  });
+
+  test("steps arriving keep a long turn alive", async () => {
+    /* The bound is silence, not elapsed time. This turn was asked half an
+     * hour ago and made a tool call a minute ago: still running. */
+    const old = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const recent = new Date(Date.now() - 60 * 1000).toISOString();
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: true,
+        progress: { askedAt: old },
+        messages: [
+          { id: "1", sender: "Edvard", text: "run the suite", createdAt: old },
+          { id: "", sender: "", text: "", partial: true, stepsOnly: true,
+            steps: [{ kind: "tool", capability: "Bash", input: "pytest",
+                      id: "a", status: "running", at: recent }] },
+        ] },
+    });
+    assert.ok(window.document.querySelector("#chat-thread .ask-orbit"),
+      "a turn that narrated a minute ago was called lost");
   });
 
   test("work under a finished reply still shows the loader", async () => {
@@ -17188,23 +17111,6 @@ describe("the rating picker says what the rating does", () => {
       .some((o) => /Importance/.test(o.textContent)), "the caption is one of the choices");
   });
 
-  test("the project picker says the hand-ordered list wins over the rating", async () => {
-    /* The second instance of the same gap, found by auditing M1-M6 for
-     * it. M3 shipped an order field described as *replacing* the priority
-     * labels in `projects.md`; `project_ranks` layered instead -- a placed
-     * project ranks by position, an unplaced one by this rating. So the
-     * sentence here is a different one from the board row's, and a shared
-     * caption would be wrong on both pages. */
-    const window = await loadSite("/project/Nova", { project: () => RATED_PROJECT });
-    const trigger = window.document.querySelector(".project-prio .chip.prio");
-    assert.ok(trigger, "the project page has no rating trigger to open");
-    click(window, trigger);
-    const text = caption(window).textContent;
-    assert.match(text, /unordered/, "the project caption does not say when the rating applies: " + text);
-    assert.match(text, /position wins/, "the project caption does not say what outranks it: " + text);
-    assert.equal(window.document.querySelector(".project-prio-label").textContent,
-      "Project importance", "the project page still calls the field Priority");
-  });
 
   test("the board's sort control offers Importance, and the sort key is untouched", async () => {
     /* The word changes; `priority` does not. It is the value in the URL
