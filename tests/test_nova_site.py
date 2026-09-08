@@ -5340,6 +5340,26 @@ def test_a_corrupt_cycle_number_costs_one_card_and_not_the_page():
         assert [e["cycle"] for e in json.loads(body)["entries"]] == [3, 1]
 
 
+def test_a_blank_cycles_parameter_over_the_wire_selects_nothing():
+    """`?cycles=` is `/replies` with nothing unread, and it must not be
+    answered with the whole archive.
+
+    This is the socket, not `journal_page`, and the difference is the whole
+    test: `parse_qs` drops a blank value by default, so the filter never
+    reached the function and the page got the feed under its own "No unread
+    replies" line. Found live, after the unit tests were green.
+    """
+    nova_site.reset_cache()
+    payload = _with_asks()
+    with patch.object(nova_site, "journal_payload", lambda: payload):
+        status, _, body = _get("/api/journal?cycles=")
+        assert status == 200
+        page = json.loads(body)
+        assert page["entries"] == []
+        assert page["total"] == 0
+        assert page["cycles"] == []
+
+
 def test_the_replies_page_is_served_the_shell_on_a_cold_load():
     """`/replies` has to survive a bookmark and a reload, same as `/asks`."""
     assert "/replies" in nova_site.PAGE_ROUTES
