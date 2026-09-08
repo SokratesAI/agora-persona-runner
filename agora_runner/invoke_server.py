@@ -245,7 +245,23 @@ class InvokeHandler(BaseHTTPRequestHandler):
             model_override = payload.get("model")
             if not isinstance(model_override, str) or not model_override:
                 model_override = None
-            system = build_system(persona)
+            # The system prompt has to be built from the capabilities this
+            # turn actually grants, which is none of them: `generate_reply`
+            # below is handed `NO_CAPS`, so /invoke has no tools at all.
+            # `build_system` reads `capabilities` off the persona, and a
+            # persona that curates a conversation elsewhere carries real
+            # ones -- Marcus's coach has `vaultRead`, so Ask was telling it
+            # about vault tools and about `save_memory` while withholding
+            # every one of them. The model believes the prompt: asked "can
+            # you remember this?" it calls `save_memory`, the call reaches
+            # no tool, and the whole reply the owner gets is the CLI's
+            # placeholder for it -- `save_memory`, or `**1 tool use**`,
+            # with nothing else in the turn. Measured live 2026-09-08
+            # against Marcus's coach, which is Ask's only production
+            # caller. tests/test_system_prompt_matches_tools.py already
+            # guards this class of drift inside `caps`; the gap was between
+            # the caps the prompt is built from and the caps the turn gets.
+            system = build_system({**persona, "capabilities": dict(NO_CAPS)})
             # /invoke serves Ask and Preview, both of which are a person
             # pressing a button, so this is an attended turn and may use a
             # metered model. Said out loud because reply.py defaults closed.
