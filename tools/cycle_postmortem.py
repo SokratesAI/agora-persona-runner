@@ -267,7 +267,7 @@ def reply_numbers(messages):
     return frozenset(int(n) for n in _HASH_NUMBER_RE.findall(text))
 
 
-def misfiled_entries(lost, entry_prs, reply_prs):
+def misfiled_entries(lost, entry_prs, reply_prs, step=1):
     """`[(wrote_it, filed_as), ...]` -- entries filed under the wrong cycle.
 
     A cycle that asks `cycle_number` without its conversation id is
@@ -297,12 +297,22 @@ def misfiled_entries(lost, entry_prs, reply_prs):
     The second is what keeps a coincidence out. Two cycles working the
     same pull request both name it, so the pair is ambiguous and this
     says nothing rather than picking one.
+
+    `step` is the direction of the shift and `-1` is a real case, not a
+    symmetry for its own sake. A run that reads its number off the
+    *previous entry* rather than off Agora files one number DOWN, and the
+    two shifts are indistinguishable from the gap alone -- both leave one
+    unused number with entries either side of it. Measured live
+    2026-09-09: cycle 87's reply announces `#75`, and `#75` is the footer
+    of `093-cycle-86.md`, whose own run announced something else. Reading
+    only `+1` left that in `RAN AND LEFT NO RECORD` for four months while
+    the entry sat in the folder.
     """
     found = []
     for start in sorted(lost):
         earlier, said = start, reply_prs.get(start)
         while said:
-            filed_as = earlier + 1
+            filed_as = earlier + step
             footer = entry_prs.get(filed_as)
             if not footer or not footer <= said:
                 break
@@ -696,11 +706,14 @@ def _read_entry(path):
     return done.stdout if done.returncode == 0 else None
 
 
-def find_misfiled(results, conversations, paths, read_entry=None, fetch=None):
+def find_misfiled(results, conversations, paths, read_entry=None, fetch=None,
+                  step=1):
     """`[(wrote_it, filed_as), ...]` for the `lost` cycles in `results`.
 
     Nothing is read at all unless a cycle came back `lost`, which is the
-    only state that can mean "its entry is somewhere else".
+    only state that can mean "its entry is somewhere else". `step` is
+    passed through to `misfiled_entries`: `1` for an entry filed one
+    number up, `-1` for one filed one number down.
     """
     lost = [row["number"] for row in results if row["verdict"] == "lost"]
     if not lost:
@@ -729,7 +742,8 @@ def find_misfiled(results, conversations, paths, read_entry=None, fetch=None):
         except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
             return None
 
-    return misfiled_entries(lost, _LazyMap(entry), _LazyMap(reply))
+    return misfiled_entries(lost, _LazyMap(entry), _LazyMap(reply),
+                            step=step)
 
 
 #: The Oslo-stamped heading every document in `nova/journal/` opens with,
@@ -1035,6 +1049,39 @@ def apply_doubled(results, pairs):
     return results
 
 
+def keep_still_lost(results, pairs):
+    """Drop a pair whose head has already been explained by another block.
+
+    Only the head of a chain appears in `results` at all -- every later
+    link has an entry under its own number and was never `lost` -- so a
+    cycle this does not know about passes through untouched.
+    """
+    verdicts = {row["number"]: row["verdict"] for row in results or ()}
+    return [(wrote_it, filed_as) for wrote_it, filed_as in pairs or ()
+            if verdicts.get(wrote_it, "lost") == "lost"]
+
+
+def merge_misfiled(up, down):
+    """The two directions as one list, with anything ambiguous dropped.
+
+    An entry filed one number up and an entry filed one number down leave
+    the same shape of hole, so both searches run and neither is trusted
+    over the other. If two different lost cycles can each claim the same
+    entry, or one lost cycle is handed two entries, that is a guess
+    between two answers and both claims go -- the same call
+    `doubled_entries` makes, and for the same reason: attributing one
+    cycle's work to another on a guess is worse than not noticing.
+    """
+    pairs = sorted(set(tuple(pair) for pair in list(up or ()) + list(down or ())))
+    filed = {}
+    wrote = {}
+    for wrote_it, filed_as in pairs:
+        filed.setdefault(filed_as, set()).add(wrote_it)
+        wrote.setdefault(wrote_it, set()).add(filed_as)
+    return [(wrote_it, filed_as) for wrote_it, filed_as in pairs
+            if len(filed[filed_as]) == 1 and len(wrote[wrote_it]) == 1]
+
+
 def format_misfiled(pairs):
     """The misfiled block, or `[]` when there is nothing to say."""
     if not pairs:
@@ -1043,12 +1090,15 @@ def format_misfiled(pairs):
              "FILED UNDER THE WRONG NUMBER — the entry exists and names the wrong "
              f"cycle — {len(pairs)}"]
     for wrote_it, filed_as in pairs:
+        way = "one number up" if filed_as > wrote_it else "one number down"
         lines.append(f"  Cycle {wrote_it}'s work is in the entry filed as cycle "
-                     f"{filed_as}: that entry's PR was announced by {wrote_it}'s own "
-                     f"reply and not by {filed_as}'s.")
+                     f"{filed_as} ({way}): that entry's PR was announced by "
+                     f"{wrote_it}'s own reply and not by {filed_as}'s.")
     lines.append("  Historical entries are never renumbered — this says where the "
-                 "record is, it does not ask for a repair. The cause is a cycle "
-                 "asking `cycle_number` without its conversation id.")
+                 "record is, it does not ask for a repair. One number up is a "
+                 "cycle asking `cycle_number` without its conversation id; one "
+                 "number down is a cycle reading its number off the previous "
+                 "entry instead.")
     return lines
 
 
@@ -1058,7 +1108,7 @@ def apply_misfiled(results, pairs):
     `lost` says "the work happened and the journal does not have it", and it
     raises the exit status because that gap is unexplained. For the head of a
     misfiled chain both halves of that are false: the journal does have the
-    entry, one number up, and the same report names where. Measured
+    entry, one number up or one number down, and the same report names where. Measured
     2026-09-08: five of the sixteen `lost` cycles -- 366, 870, 968, 985 and
     1183 -- were located by the block printed twelve lines below them, and
     1183 is inside the window, so the run exited 2 on a gap it had explained
@@ -1085,8 +1135,8 @@ def apply_misfiled(results, pairs):
 #: is not in the record". `failed`, `silent` and `absent` are all Agora
 #: giving a definite answer that the run did not complete, so there is
 #: nothing to go and find. `misfiled` is the one non-raising verdict where
-#: the run DID complete and its work IS in the record -- under the next
-#: cycle's number, which is where `find_misfiled` says it is, and which
+#: the run DID complete and its work IS in the record -- under a
+#: neighbour's number, which is where `find_misfiled` says it is, and which
 #: historical entries are never renumbered to correct. `still running` is
 #: not an outcome at all. The three below each leave a real question
 #: open. The docstring's contract is that 0 means every gap in the window
@@ -1105,8 +1155,8 @@ _HEADINGS = (
      "Agora's closing line counts it as a reply of N chars, which is why these used "
      "to sit above under RAN AND LEFT NO RECORD. There is no reply to recover; the "
      "cause is upstream of this loop."),
-    ("misfiled", "FILED ONE NUMBER UP — the work is in the record, under the next "
-                 "cycle's number"),
+    ("misfiled", "FILED UNDER A NEIGHBOUR'S NUMBER — the work is in the record, "
+                 "under the cycle before or after it"),
     ("unnumbered", "WROTE SOMETHING ELSE — the run's record is in the journal folder "
                    "under a name that is not a cycle number"),
     ("doubled", "SHARES ANOTHER CYCLE'S NUMBER — two entries carry one number and "
@@ -1234,6 +1284,17 @@ def main(argv=None):
     # competes with them for the same row.
     doubled = [] if error else find_doubled(results, conversations, paths)
     apply_doubled(results, doubled)
+    # An entry filed one number DOWN leaves exactly the same hole as one
+    # filed up, so it is searched with the same two conditions -- but it is
+    # searched LAST, and only for rows still `lost`. The three blocks above
+    # each name a specific document; this one names a number, and
+    # `find_misfiled` keeps one path per number, so on a number that carries
+    # two documents it would answer with an arbitrary one of them. Running
+    # it last means the stronger answer is already taken.
+    down = [] if error else keep_still_lost(
+        results, find_misfiled(results, conversations, paths, step=-1))
+    apply_misfiled(results, down)
+    pairs = merge_misfiled(pairs, down)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all)
     if not error:
