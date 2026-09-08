@@ -849,9 +849,31 @@ def test_document_written_at_converts_the_oslo_stamp_to_utc():
     assert at.isoformat() == "2026-08-17T12:07:00+00:00"
 
 
-def test_document_with_no_oslo_stamp_is_not_guessed_at():
+def test_document_with_no_time_in_its_heading_is_not_guessed_at():
+    """A date alone cannot be joined to a run window that is minutes wide,
+    and 707 of the 1,334 documents in the folder are exactly that. `None`
+    is the honest answer for them; a midnight default would be a guess."""
     assert cycle_postmortem.document_written_at("no heading here\n") is None
-    assert cycle_postmortem.document_written_at("### 2026-08-17 14:07 — Report") is None
+    assert cycle_postmortem.document_written_at("### 2026-08-02 — Cycle 4") is None
+
+
+def test_the_stamp_is_read_in_either_heading_order():
+    """The rule this used to carry required the literal `(Oslo)` and the
+    date before the cycle number, and half my entries are written the
+    other way round -- `### Cycle 579 — 2026-08-28 14:25 — ...`. Measured
+    across the whole folder 2026-09-09: 272 documents readable under the
+    old rule, 620 under `nova_journal.parse_heading`, which is the parser
+    the site has rendered both orders with since Cycle 3. The failure was
+    silent in the direction that hides -- a join with nothing to find and
+    a join that cannot read look identical from outside."""
+    cycle_first = cycle_postmortem.document_written_at(
+        "### Cycle 579 — 2026-08-28 14:25 — The comments page\n\nbody\n")
+    assert cycle_first is not None
+    assert cycle_first.isoformat() == "2026-08-28T12:25:00+00:00"
+    # No `(Oslo)` anywhere, and still a stamp: rule 7 says every time I
+    # write for him is Oslo, so the marker was never what made it one.
+    assert cycle_postmortem.document_written_at(
+        "### 2026-08-17 14:07 — Report").isoformat() == "2026-08-17T12:07:00+00:00"
 
 
 def test_candidates_are_the_documents_in_a_lost_cycle_s_sequence_gap():
@@ -1162,3 +1184,120 @@ def test_the_block_says_which_way_the_entry_moved():
     down = format_misfiled([(87, 86)])
     assert any("filed as cycle 1184 (one number up)" in line for line in up)
     assert any("filed as cycle 86 (one number down)" in line for line in down)
+
+
+# --- the clock join, for a shift neither run named a pull request on ------
+
+_LOST_WINDOW = (
+    datetime(2026, 8, 28, 12, 0, 4, tzinfo=timezone.utc),
+    datetime(2026, 8, 28, 12, 32, 41, tzinfo=timezone.utc),
+)
+#: 579's own run, which had closed before its entry was written.
+_NEIGHBOUR_WINDOW = (
+    datetime(2026, 8, 28, 11, 30, 4, tzinfo=timezone.utc),
+    datetime(2026, 8, 28, 11, 53, 25, tzinfo=timezone.utc),
+)
+#: `646-cycle-579.md` stamps itself 14:25 Oslo.
+_ENTRY_STAMP = datetime(2026, 8, 28, 12, 25, tzinfo=timezone.utc)
+
+
+def test_clock_join_finds_the_shift_the_pr_join_cannot():
+    """Cycle 580's reply names no `#number` at all, so `misfiled_entries`
+    has nothing to join on and stops at its first condition. The entry
+    filed as 579 stamps itself inside 580's window and outside 579's."""
+    found = cycle_postmortem.clock_shifted(
+        [580], {579: _ENTRY_STAMP},
+        {580: _LOST_WINDOW, 579: _NEIGHBOUR_WINDOW}, step=-1)
+    assert found == [(580, 579)]
+
+
+def test_an_entry_stamped_inside_its_own_run_is_never_taken_off_it():
+    """The guard, and the whole reason this join is two-sided. A cycle
+    that files its own entry stamps it inside its own window, so an
+    overlapping neighbour must not be able to claim it -- one-sided
+    evidence here is a coincidence, not a measurement."""
+    overlapping = (datetime(2026, 8, 28, 12, 20, tzinfo=timezone.utc),
+                   datetime(2026, 8, 28, 12, 40, tzinfo=timezone.utc))
+    assert cycle_postmortem.clock_shifted(
+        [580], {579: _ENTRY_STAMP},
+        {580: _LOST_WINDOW, 579: overlapping}, step=-1) == []
+
+
+def test_a_neighbour_whose_window_cannot_be_read_is_refused_not_assumed():
+    """With no window for the run the entry is filed under there is
+    nothing to exclude it with, and this function exists to not accept
+    one-sided evidence."""
+    assert cycle_postmortem.clock_shifted(
+        [580], {579: _ENTRY_STAMP}, {580: _LOST_WINDOW}, step=-1) == []
+
+
+def test_a_stamp_outside_the_lost_run_is_not_claimed():
+    """Cycle 275, live. `329-cycle-274.md` stamps itself 06:53 Oslo
+    (04:53Z), which is outside 275's window (03:27..03:44Z) *and* outside
+    274's own (02:15..02:32Z) -- so the neighbour guard cannot reject it
+    and only "inside the lost run" can. That asymmetry is why this fixture
+    is the real one and not the tidier neighbour on the other side:
+    dropping the condition entirely left every other test in this file
+    green, measured Cycle 1251.
+
+    275 therefore stays `lost`, which is the honest answer. Its reply says
+    it typed its own number as 274, and the document filed under 274 was
+    written two hours after 275 stopped speaking, so it is somebody
+    else's."""
+    stamp_274 = datetime(2026, 8, 20, 4, 53, tzinfo=timezone.utc)
+    window_275 = (datetime(2026, 8, 20, 3, 27, 1, tzinfo=timezone.utc),
+                  datetime(2026, 8, 20, 3, 44, 54, tzinfo=timezone.utc))
+    window_274 = (datetime(2026, 8, 20, 2, 15, 0, tzinfo=timezone.utc),
+                  datetime(2026, 8, 20, 2, 32, 45, tzinfo=timezone.utc))
+    assert cycle_postmortem.clock_shifted(
+        [275], {274: stamp_274},
+        {275: window_275, 274: window_274}, step=-1) == []
+
+
+def test_the_neighbour_on_the_other_side_is_left_alone():
+    """`647-cycle-581.md` is stamped 14:45 Oslo, thirteen minutes after
+    580's run closed and inside 581's own."""
+    later = datetime(2026, 8, 28, 12, 45, tzinfo=timezone.utc)
+    assert cycle_postmortem.clock_shifted(
+        [580], {581: later},
+        {580: _LOST_WINDOW,
+         581: (datetime(2026, 8, 28, 12, 30, 1, tzinfo=timezone.utc),
+               datetime(2026, 8, 28, 12, 46, 50, tzinfo=timezone.utc))},
+        step=1) == []
+
+
+def test_the_clock_block_says_it_is_the_weaker_join():
+    """It reads when a document says it was written, not what it says it
+    did, and a reader quoting it needs to know which of the two it is."""
+    lines = cycle_postmortem.format_clock_shifted([(580, 579)])
+    assert any("filed as cycle 579 (one number down)" in line for line in lines)
+    assert any("weaker join" in line for line in lines)
+    assert cycle_postmortem.format_clock_shifted([]) == []
+
+
+def test_a_utc_heading_is_not_read_as_oslo():
+    """`parse_heading` answers with a bare date and time and says nothing
+    about the zone, and one of the four live heading shapes states UTC:
+    `### 2026-08-03 03:19Z — Cycle 6`. Taking that as Oslo moves it two
+    hours in summer -- a wrong instant rather than a refusal, which is the
+    same silent failure this function was just fixed for, pointed the
+    other way. The zone is read off the raw heading."""
+    at = cycle_postmortem.document_written_at(
+        "### 2026-08-03 03:19Z — Cycle 6, closing status\n\nbody\n")
+    assert at is not None
+    assert at.isoformat() == "2026-08-03T03:19:00+00:00"
+    # And the Oslo form of the same clock is still two hours behind it.
+    assert cycle_postmortem.document_written_at(
+        "### 2026-08-03 03:19 (Oslo) — Cycle 6").isoformat() == (
+            "2026-08-03T01:19:00+00:00")
+
+
+def test_an_unpadded_hour_is_still_a_stamp():
+    """`854-retrospective.md` is a real document headed `### 2026-09-02
+    7:09 (Oslo) — Retrospective`, and `nova_journal._TIME_RE` accepts a
+    one-digit hour on purpose. Requiring two here would re-create the
+    blindness this function was fixed for, inside the fix for it."""
+    at = cycle_postmortem.document_written_at(
+        "### 2026-09-02 7:09 (Oslo) — Retrospective\n\nWhat happened.\n")
+    assert at is not None
+    assert at.isoformat() == "2026-09-02T05:09:00+00:00"

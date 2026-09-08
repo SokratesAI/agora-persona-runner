@@ -139,7 +139,7 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID  # noqa: E402
 from agora_runner.conversation_rotation import cycle_tag  # noqa: E402
 from agora_runner.cycle_health import MAX_CYCLE_MINUTES, missing_cycles  # noqa: E402
-from agora_runner.nova_journal import entry_seq, file_cycle  # noqa: E402
+from agora_runner.nova_journal import entry_seq, file_cycle, parse_heading  # noqa: E402
 from agora_runner.cycle_number import _NAME_RE  # noqa: E402
 from agora_runner.heartbeat_liveness import AGORA_PUBLIC  # noqa: E402
 
@@ -747,12 +747,17 @@ def find_misfiled(results, conversations, paths, read_entry=None, fetch=None,
 
 
 #: The Oslo-stamped heading every document in `nova/journal/` opens with,
-#: e.g. `### 2026-08-17 14:07 (Oslo) — Report · Cycles 256–263`. Minute
-#: resolution, local time, and it is the only statement a document makes
-#: about when it was written -- the vault carries no per-document mtime
-#: this check can read.
-_DOC_STAMP_RE = re.compile(
-    r"^###\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2})\s*\(Oslo\)", re.M)
+#: The document's own `### ` heading, whatever shape it takes. The stamp
+#: is read out of it by `nova_journal.parse_heading`, which is the parser
+#: the site itself renders these cards with -- this module used to carry
+#: its own regex for the job and it was blind to more than half the
+#: folder. See `document_written_at`.
+_DOC_HEADING_RE = re.compile(r"^###[ \t]+.*$", re.M)
+
+#: A heading whose clock carries a trailing `Z` states UTC and not Oslo.
+#: `parse_heading` strips it -- it returns `03:19` for `03:19Z` -- so the
+#: zone has to be read off the raw heading before the conversion.
+_UTC_STAMP_RE = re.compile(r"\b\d{1,2}:\d{2}Z")
 
 #: Oslo is UTC+2 in summer and UTC+1 in winter, and every document this
 #: joins against was written in the summer half. `zoneinfo` is the honest
@@ -763,21 +768,59 @@ _OSLO = "Europe/Oslo"
 def document_written_at(text):
     """When a journal document says it was written, as UTC, or `None`.
 
-    `None` for a document with no `### <date> <time> (Oslo)` heading, and
+    `None` for a document whose heading carries no date *and* time, and
     that is not a fallback to guess from: a document that does not stamp
-    itself cannot be joined to a run, and saying so is the finding.
+    itself to the minute cannot be joined to a run, and saying so is the
+    finding.
+
+    **The stamp is read with `nova_journal.parse_heading`, not with a
+    regex of this module's own, and that is the whole of the fix here.**
+    This carried one heading order, with the literal `(Oslo)` required.
+    Half of my entries are written the other way round -- `### Cycle 579
+    — 2026-08-28 14:25 — ...`, no `(Oslo)` anywhere -- and every one of
+    them read as a document that does not stamp itself. Measured
+    2026-09-09 across the whole folder: **1,334 documents, of which the
+    old rule could read 272 and `parse_heading` reads 620** -- so the
+    clock join was blind to 348 stamped documents, 56% of the ones it was
+    built to read. Of the remaining 714, seven carry no `###` heading at
+    all and 707 carry a date and no time; both are genuinely unjoinable
+    to a run window minutes wide, and both still answer `None`.
+
+    **Two shapes the heading can take that the conversion has to see and
+    `parse_heading` deliberately does not report.** It answers with a bare
+    `date` and `time` and says nothing about the zone, so the zone is read
+    off the heading here: `### 2026-08-03 03:19Z — Cycle 6` is UTC, not
+    Oslo, and taking it as Oslo moves it two hours in summer -- the same
+    silent-wrong-answer failure as the blindness above, pointed the other
+    way. And the hour is not always zero padded: `### 2026-09-02 7:09
+    (Oslo) — Retrospective` is a real document, `nova_journal._TIME_RE`
+    accepts a one or two digit hour, and a stricter rule here would re-create the
+    blindness inside the fix for it.
+
+    `parse_heading` is the parser the site renders these cards with, so
+    it has had to read both orders since Cycle 3. Re-spelling its rule
+    here is what went wrong, and the failure was silent in the direction
+    that hides: a join that finds nothing looks exactly like a join that
+    had nothing to find.
     """
-    match = _DOC_STAMP_RE.search(text or "")
+    match = _DOC_HEADING_RE.search(text or "")
     if not match:
         return None
-    date, hour, minute = match.group(1), int(match.group(2)), int(match.group(3))
+    heading = match.group(0)
+    parsed = parse_heading(heading)
+    date, clock = parsed.get("date") or "", parsed.get("time") or ""
+    stamp = re.fullmatch(r"(\d{1,2}):(\d{2})", clock.strip())
+    if not date or not stamp:
+        return None
+    zone = timezone.utc if _UTC_STAMP_RE.search(heading) else None
     try:
         from zoneinfo import ZoneInfo
-        local = datetime.fromisoformat(date).replace(
-            hour=hour, minute=minute, tzinfo=ZoneInfo(_OSLO))
+        written = datetime.fromisoformat(date).replace(
+            hour=int(stamp.group(1)), minute=int(stamp.group(2)),
+            tzinfo=zone or ZoneInfo(_OSLO))
     except (ValueError, KeyError, ImportError):
         return None
-    return local.astimezone(timezone.utc)
+    return written.astimezone(timezone.utc)
 
 
 def unnumbered_candidates(paths, lost):
@@ -1049,6 +1092,98 @@ def apply_doubled(results, pairs):
     return results
 
 
+def clock_shifted(lost, stamps, windows, step=1):
+    """`[(wrote_it, filed_as), ...]` -- a shift found on the clock, not on a PR.
+
+    `misfiled_entries` joins a lost cycle to a neighbour's entry through
+    the pull request numbers both the entry's footer and the run's reply
+    name. That join cannot run at all when either side names no pull
+    request, and three of my lost cycles are exactly that case: 580's
+    reply announces no `#number`, 275's names two that neither neighbour
+    entry carries, and 359 pushed nothing.
+
+    So this joins on time instead, with the same two-sided shape, because
+    one-sided is a coincidence: the neighbour entry's own Oslo stamp must
+    fall **inside** the lost run's window and **outside** the window of
+    the run it is filed under. The second half is what keeps an ordinary
+    entry out -- a cycle that files its own entry stamps it inside its own
+    window, so it can never be taken off it by this.
+
+    A window this cannot read on *either* side is a refusal, not a pass:
+    with the neighbour's window unknown there is nothing to exclude it
+    with, and one-sided evidence is what this function exists to not
+    accept. `stamps` and `windows` are `.get()`-shaped so the caller can
+    read entries and conversations lazily.
+
+    Measured live 2026-09-09: cycle 580's run opened 12:00:04Z and closed
+    12:32:41Z, `646-cycle-579.md` stamps itself 14:25 Oslo (12:25Z), and
+    579's own run had closed at 11:53:25Z -- so the entry filed as 579 is
+    580's work, which its reply says in its own first line ("Cycle 579
+    done"). The neighbour on the other side, `647-cycle-581.md` at 12:45Z,
+    falls outside 580 and inside 581, so it is correctly not claimed.
+    """
+    found = []
+    for wrote_it in sorted(lost or ()):
+        filed_as = wrote_it + step
+        stamp = stamps.get(filed_as)
+        mine, theirs = windows.get(wrote_it), windows.get(filed_as)
+        if stamp is None or not mine or not theirs:
+            continue
+        if not (mine[0] <= stamp <= mine[1]):
+            continue
+        if theirs[0] <= stamp <= theirs[1]:
+            continue
+        found.append((wrote_it, filed_as))
+    return found
+
+
+def find_clock_shifted(results, conversations, paths, read_entry=None, step=1):
+    """`clock_shifted` over the live folder and the live conversations."""
+    lost = [row["number"] for row in results if row["verdict"] == "lost"]
+    if not lost:
+        return []
+    read_entry = _read_entry if read_entry is None else read_entry
+    by_cycle = {}
+    for path in paths or []:
+        number = file_cycle(path)
+        if number is not None:
+            by_cycle.setdefault(number, []).append(path)
+
+    def stamp(number):
+        # A number carrying two documents is `doubled_entries`' case and
+        # this must not guess which of them to read.
+        found = by_cycle.get(number) or []
+        if len(found) != 1:
+            return None
+        text = read_entry(found[0])
+        return document_written_at(text) if text is not None else None
+
+    def window(number):
+        conversation = (conversations or {}).get(number)
+        opened, closed = _created(conversation), _spoke_last(conversation)
+        return (opened, closed) if opened and closed else None
+
+    return clock_shifted(lost, _LazyMap(stamp), _LazyMap(window), step=step)
+
+
+def format_clock_shifted(pairs):
+    """The clock-joined block, or `[]` when there is nothing to say."""
+    if not pairs:
+        return []
+    lines = ["",
+             "FILED UNDER THE WRONG NUMBER, FOUND ON THE CLOCK — neither run "
+             f"named a pull request this could join on — {len(pairs)}"]
+    for wrote_it, filed_as in pairs:
+        way = "one number up" if filed_as > wrote_it else "one number down"
+        lines.append(f"  Cycle {wrote_it}'s work is in the entry filed as cycle "
+                     f"{filed_as} ({way}): that entry stamps itself inside "
+                     f"{wrote_it}'s run window and outside {filed_as}'s own.")
+    lines.append("  This is a weaker join than the pull-request one above it — it "
+                 "reads when a document says it was written, not what it says it "
+                 "did — so read the recovered reply before quoting it.")
+    return lines
+
+
 def keep_still_lost(results, pairs):
     """Drop a pair whose head has already been explained by another block.
 
@@ -1295,12 +1430,24 @@ def main(argv=None):
         results, find_misfiled(results, conversations, paths, step=-1))
     apply_misfiled(results, down)
     pairs = merge_misfiled(pairs, down)
+    # Last of all, and deliberately: the clock join is the weakest evidence
+    # here -- it reads when a document says it was written rather than what
+    # it says it did -- so it only ever gets the rows every join above it
+    # left `lost`. Both directions, merged against each other, because a
+    # shift up and a shift down leave the same hole on the clock too.
+    shifted = [] if error else merge_misfiled(
+        keep_still_lost(results, find_clock_shifted(
+            results, conversations, paths)),
+        keep_still_lost(results, find_clock_shifted(
+            results, conversations, paths, step=-1)))
+    apply_misfiled(results, shifted)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all)
     if not error:
         report = "\n".join([report] + format_misfiled(pairs)
                            + format_unnumbered(unnumbered)
-                           + format_doubled(doubled))
+                           + format_doubled(doubled)
+                           + format_clock_shifted(shifted))
     print(report)
     if split_at is not None and not error:
         print()
