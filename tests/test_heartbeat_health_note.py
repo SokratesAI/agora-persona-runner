@@ -187,8 +187,12 @@ def test_run_heartbeat_actually_puts_the_note_in_the_system_prompt(monkeypatch):
         "task": "Follow prompt.md", "enabled": True,
         "lastRunAt": (NOW - timedelta(hours=1)).isoformat(),
     }
-    with pytest.raises(Stop):
-        heartbeats.run_heartbeat(heartbeat)
+    # `Stop` no longer escapes `run_heartbeat`: everything from the
+    # conversation's creation onwards is inside the handler that closes the
+    # run (see tests/test_silent_cycle_window.py -- an exception in this
+    # window used to kill the thread and leave a conversation with nothing
+    # in it). The probe is unchanged; only its exit is.
+    heartbeats.run_heartbeat(heartbeat)
 
     assert "134" in captured["extra"]
     # After the task, so a cycle reads its instructions before the

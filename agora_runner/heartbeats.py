@@ -422,122 +422,144 @@ def run_heartbeat(heartbeat):
     if rotated:
         _status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit={FETCH_LIMIT}")
 
-    # 2026-08-05, the owner: "The times when you start will not always be exactly
-    # 6 hours as I often manually trigger you to start when i see that we have
-    # a lot of token quota left. Maybe a good idea to you is to add to the
-    # agora manual trigger to let you know that you where triggered manually."
+    # `result`/`silent`/`started_at` and the `try` start HERE, immediately
+    # after the conversation exists, and not further down at the model call.
+    # From this line on there is an exit path that says what happened; above
+    # it there was none, and that is what a `silent` cycle is made of.
     #
-    # `forceRun` is exactly that signal -- POST /heartbeats/:id/run sets it,
-    # and the claim PATCH above clears it server-side, so this local snapshot
-    # (fetched by run_due_heartbeats before the claim) is the last place it can
-    # be read at all. Without it a cycle silently assumes its own schedule
-    # elapsed since the previous run, which is how one of them ends up
-    # reasoning about "six hours of vault changes" over a twelve-minute gap.
-    manual = bool(heartbeat.get("forceRun"))
-    origin = ("a manual trigger — Edvard started this run himself just now "
-              f"rather than waiting for the {heartbeat['schedule']} schedule"
-              if manual else
-              f"an automatic scheduled turn ({heartbeat['schedule']})")
-    extra_parts = [
-        "## Heartbeat turn",
-        f"This message is {origin}. It is not a direct reply to Edvard — "
-        "write to Edvard proactively.",
-    ]
-    if heartbeat.get("task"):
-        extra_parts.append(f"Task for this turn: {heartbeat['task']}")
-    # Before the vault context and after the task, so a cycle reads what it
-    # was asked to do and then what went wrong last hour -- the second only
-    # ever changes how it does the first.
-    health = nova_health_note(persona, previous_run_at, heartbeat.get("schedule"))
-    if health:
-        extra_parts.append(health)
-    if heartbeat.get("vaultPaths"):
-        context = fetch_vault_context(heartbeat["vaultPaths"])
-        if context:
-            extra_parts.append(
-                "## Reference material from Edvard's vault\n"
-                "Already fetched for you — answer from it directly rather than "
-                "browsing the vault with tools, unless something essential is "
-                f"missing.\n\n{context}"
-            )
-    heartbeat_extra = "\n\n".join(extra_parts)
-
-    caps = persona.get("capabilities") or dict(NO_CAPS)
-    participants = detail.get("personas") or []
-    system = build_system(persona, detail, heartbeat_extra)
-    history = merge_history(detail.get("messages", []), persona["name"],
-                            len(participants) > 1)
-    # A heartbeat may fire into an empty/assistant-ended thread — providers
-    # need a user turn, so the trigger itself becomes a synthetic one.
+    # Measured 2026-09-08 (the owner's idea #267, "read three transcripts
+    # before theorising"): 16 entryless cycles hold a conversation that was
+    # created, numbered and tagged with not one message in it -- 1029, 1038,
+    # 1082, 1133, 1145, 1146, 1148, 1166 and 1181 among them. The transcripts
+    # are empty *by construction*: the first thing a run ever posts is the
+    # opening chip below, and everything between `rotate_cycle_conversation`
+    # and that chip -- the health note, the vault-context fetch, the walk back
+    # for an unanswered message, `audit` itself -- ran on a bare thread with
+    # no enclosing handler. Anything raising in there killed the thread
+    # outright: no chip, no closing line, no `lastResult` PATCH, no stub. So
+    # the loop lost the cycle AND every trace of why, which is the one
+    # failure shape that cannot be diagnosed afterwards.
     #
-    # 2026-08-02: claude-cli personas only ever see this LAST history entry
-    # (bridge/cli.py's generate_reply forwards history[-1], not the full
-    # thread) -- so if the owner's real last message was just sitting in
-    # `history` unaddressed, a claude-cli persona would never actually see
-    # it, only this synthetic trigger. Folding his real content into the
-    # trigger when it's genuinely his turn (last message role is "user")
-    # fixes that without changing anything for Anthropic/Gemini, which
-    # already see the full thread regardless.
-    #
-    # 2026-08-02, later: rotation (above) replaces `detail` with a
-    # brand-new EMPTY conversation, so on a rotating heartbeat `history`
-    # is always empty and the fold-in below could never fire -- the two
-    # halves of the fix cancelled each other out. Anything the owner typed
-    # between cycles lived only in the conversation we just rotated away
-    # from, and was dropped silently, forever. So when we rotated, fall
-    # back to the pre-rotation thread for his pending message.
-    #
-    # 2026-08-02, later still: one step back isn't enough either -- a
-    # cycle that dies before replying leaves an empty conversation, and
-    # the message from the cycle before it was still lost. See
-    # pending_across_cycles.
-    # Said twice on purpose: claude-cli personas only ever see this last
-    # history entry (the comment above), so the system prompt's `origin`
-    # alone would not reach them.
-    trigger = ("[Manual heartbeat trigger — Edvard started this run himself. "
-               "Address Edvard directly.]" if manual else
-               "[Automatic heartbeat trigger — address Edvard directly.]")
-    pending = pending_user_turn(history)
-    carried = [("this conversation", pending)] if pending else []
-    if not carried and rotated:
-        carried = pending_across_cycles(heartbeat, previous_detail,
-                                        conversation_id, since=previous_run_at)
-    if len(carried) == 1:
-        source, text = carried[0]
-        trigger += f" Edvard's most recent message in {source}: {text}"
-    elif carried:
-        lines = "\n".join(f"- in {source}: {text}" for source, text in carried)
-        trigger += ("\n\nEdvard's messages since your last reply, none of them "
-                    f"answered yet, oldest first:\n{lines}")
-    history.append({"role": "user", "content": trigger})
-
-    # 2026-08-03 (the owner's ask): the "Ran heartbeat" chip is meant to show
-    # that something is *processing*, but it was posted after notify() at
-    # the very end of the run -- so it rendered BELOW the reply and only
-    # appeared once there was nothing left to wait for. On a claude-cli
-    # cycle that is up to 45 minutes late: "they serve no purpose other
-    # than hindsight logging. I want to see them immediately when they are
-    # triggered." So post it up front instead.
-    #
-    # Not for monitoring-style heartbeats, though. Those opt into
-    # HEARTBEAT_NO_REPORT_SENTINEL (config.py) precisely so a clean run
-    # leaves the chat untouched, and a chip every 10 minutes saying "Ran
-    # heartbeat" is exactly the noise that sentinel exists to prevent.
-    # Whether a run will go silent isn't knowable until the reply is in
-    # hand -- but opting in means *instructing the model*, and the only
-    # channel for that is the system prompt, so that is what we test.
-    # Those heartbeats keep the old end-of-run chip, unchanged.
-    may_go_silent = HEARTBEAT_NO_REPORT_SENTINEL in system
-    # The opening chip says which of the two started this run, so the thread
-    # itself records what the owner did rather than only what the clock did.
-    started_chip = f"{heartbeat['name']} ({'manual trigger' if manual else heartbeat['schedule']})"
-    if not may_go_silent:
-        audit(persona["name"], conversation_id, "heartbeat", started_chip)
-
+    # Neither pod had rolled at 16:42Z (cycle 1166) or 21:48Z (cycle 1181),
+    # so the process was alive and this window is what it died in, rather
+    # than a rollout killing a run that had already started speaking -- that
+    # one leaves messages behind and `cycle_postmortem` calls it `cut off`.
     result = ""
     silent = False
     started_at = time.monotonic()
     try:
+        # 2026-08-05, the owner: "The times when you start will not always be exactly
+        # 6 hours as I often manually trigger you to start when i see that we have
+        # a lot of token quota left. Maybe a good idea to you is to add to the
+        # agora manual trigger to let you know that you where triggered manually."
+        #
+        # `forceRun` is exactly that signal -- POST /heartbeats/:id/run sets it,
+        # and the claim PATCH above clears it server-side, so this local snapshot
+        # (fetched by run_due_heartbeats before the claim) is the last place it can
+        # be read at all. Without it a cycle silently assumes its own schedule
+        # elapsed since the previous run, which is how one of them ends up
+        # reasoning about "six hours of vault changes" over a twelve-minute gap.
+        manual = bool(heartbeat.get("forceRun"))
+        origin = ("a manual trigger — Edvard started this run himself just now "
+                  f"rather than waiting for the {heartbeat['schedule']} schedule"
+                  if manual else
+                  f"an automatic scheduled turn ({heartbeat['schedule']})")
+        extra_parts = [
+            "## Heartbeat turn",
+            f"This message is {origin}. It is not a direct reply to Edvard — "
+            "write to Edvard proactively.",
+        ]
+        if heartbeat.get("task"):
+            extra_parts.append(f"Task for this turn: {heartbeat['task']}")
+        # Before the vault context and after the task, so a cycle reads what it
+        # was asked to do and then what went wrong last hour -- the second only
+        # ever changes how it does the first.
+        health = nova_health_note(persona, previous_run_at, heartbeat.get("schedule"))
+        if health:
+            extra_parts.append(health)
+        if heartbeat.get("vaultPaths"):
+            context = fetch_vault_context(heartbeat["vaultPaths"])
+            if context:
+                extra_parts.append(
+                    "## Reference material from Edvard's vault\n"
+                    "Already fetched for you — answer from it directly rather than "
+                    "browsing the vault with tools, unless something essential is "
+                    f"missing.\n\n{context}"
+                )
+        heartbeat_extra = "\n\n".join(extra_parts)
+
+        caps = persona.get("capabilities") or dict(NO_CAPS)
+        participants = detail.get("personas") or []
+        system = build_system(persona, detail, heartbeat_extra)
+        history = merge_history(detail.get("messages", []), persona["name"],
+                                len(participants) > 1)
+        # A heartbeat may fire into an empty/assistant-ended thread — providers
+        # need a user turn, so the trigger itself becomes a synthetic one.
+        #
+        # 2026-08-02: claude-cli personas only ever see this LAST history entry
+        # (bridge/cli.py's generate_reply forwards history[-1], not the full
+        # thread) -- so if the owner's real last message was just sitting in
+        # `history` unaddressed, a claude-cli persona would never actually see
+        # it, only this synthetic trigger. Folding his real content into the
+        # trigger when it's genuinely his turn (last message role is "user")
+        # fixes that without changing anything for Anthropic/Gemini, which
+        # already see the full thread regardless.
+        #
+        # 2026-08-02, later: rotation (above) replaces `detail` with a
+        # brand-new EMPTY conversation, so on a rotating heartbeat `history`
+        # is always empty and the fold-in below could never fire -- the two
+        # halves of the fix cancelled each other out. Anything the owner typed
+        # between cycles lived only in the conversation we just rotated away
+        # from, and was dropped silently, forever. So when we rotated, fall
+        # back to the pre-rotation thread for his pending message.
+        #
+        # 2026-08-02, later still: one step back isn't enough either -- a
+        # cycle that dies before replying leaves an empty conversation, and
+        # the message from the cycle before it was still lost. See
+        # pending_across_cycles.
+        # Said twice on purpose: claude-cli personas only ever see this last
+        # history entry (the comment above), so the system prompt's `origin`
+        # alone would not reach them.
+        trigger = ("[Manual heartbeat trigger — Edvard started this run himself. "
+                   "Address Edvard directly.]" if manual else
+                   "[Automatic heartbeat trigger — address Edvard directly.]")
+        pending = pending_user_turn(history)
+        carried = [("this conversation", pending)] if pending else []
+        if not carried and rotated:
+            carried = pending_across_cycles(heartbeat, previous_detail,
+                                            conversation_id, since=previous_run_at)
+        if len(carried) == 1:
+            source, text = carried[0]
+            trigger += f" Edvard's most recent message in {source}: {text}"
+        elif carried:
+            lines = "\n".join(f"- in {source}: {text}" for source, text in carried)
+            trigger += ("\n\nEdvard's messages since your last reply, none of them "
+                        f"answered yet, oldest first:\n{lines}")
+        history.append({"role": "user", "content": trigger})
+
+        # 2026-08-03 (the owner's ask): the "Ran heartbeat" chip is meant to show
+        # that something is *processing*, but it was posted after notify() at
+        # the very end of the run -- so it rendered BELOW the reply and only
+        # appeared once there was nothing left to wait for. On a claude-cli
+        # cycle that is up to 45 minutes late: "they serve no purpose other
+        # than hindsight logging. I want to see them immediately when they are
+        # triggered." So post it up front instead.
+        #
+        # Not for monitoring-style heartbeats, though. Those opt into
+        # HEARTBEAT_NO_REPORT_SENTINEL (config.py) precisely so a clean run
+        # leaves the chat untouched, and a chip every 10 minutes saying "Ran
+        # heartbeat" is exactly the noise that sentinel exists to prevent.
+        # Whether a run will go silent isn't knowable until the reply is in
+        # hand -- but opting in means *instructing the model*, and the only
+        # channel for that is the system prompt, so that is what we test.
+        # Those heartbeats keep the old end-of-run chip, unchanged.
+        may_go_silent = HEARTBEAT_NO_REPORT_SENTINEL in system
+        # The opening chip says which of the two started this run, so the thread
+        # itself records what the owner did rather than only what the clock did.
+        started_chip = f"{heartbeat['name']} ({'manual trigger' if manual else heartbeat['schedule']})"
+        if not may_go_silent:
+            audit(persona["name"], conversation_id, "heartbeat", started_chip)
+
         # 2026-07-24: heartbeats always run non-sticky regardless of the
         # bound conversation's own stickyFallback setting -- a scheduled
         # proactive message shouldn't permanently downgrade a persona that
