@@ -58,6 +58,12 @@ CLAIM_ATTEMPTS = 3
 # the *same* heartbeat legitimately need to serialize on the number itself.
 _COUNTER_PATH = "projects/sokrates/projects/agora/nova/_cycle_counters/{}.json"
 
+# Asked for in the conversation id's place when the caller genuinely has no
+# id to give. A sentinel rather than an empty argument on purpose: an empty
+# `$AGORA_CONVERSATION_ID` interpolates into an empty argument, so the two
+# would be indistinguishable exactly when it matters -- see `main`.
+NO_CONVERSATION_ID = "--no-conversation-id"
+
 # `Nova — Cycle 277`. The separator is an em dash today and the heartbeat
 # name is free text, so anchor on the number at the end and nothing else.
 _NAME_RE = re.compile(r"Cycle\s+(\d+)\s*$")
@@ -333,7 +339,7 @@ def current_number_with_source(heartbeat_id, conversation_id=None):
 
 
 def main():
-    """`cd /app && python3 -m agora_runner.cycle_number <heartbeat-id> [conversation-id]`.
+    """`cd /app && python3 -m agora_runner.cycle_number <heartbeat-id> <conversation-id>`.
 
     In `agora_runner/` and not `tools/` on purpose: `tools/` is not copied
     into the container image, and the shell a cycle has inside the runner
@@ -350,16 +356,55 @@ def main():
     goes to `stderr`, so `$(...)` around this stays exactly one integer.
 
     Exit 0 with the number, 1 if Agora could not be read, 2 on bad arguments,
-    and **3 if a conversation id was given that names no conversation** -- see
+    **3 if a conversation id was given that names no conversation**, and **4
+    if no conversation id was given at all** -- see
     `current_number_with_source` for the cycle that cost.
+
+    **Exit 4 is the other half of exit 3, and it is the half that actually
+    happened 39 times.** A wrong id has refused since #907; a *missing* one
+    still printed the highest number that exists with a warning on stderr,
+    and `cycle_postmortem.misfiled_entries` measured what that costs --
+    cycles 1183 through 1204 each filed their entry one number up, because a
+    run that outlives the heartbeat interval is handed the number of the
+    cycle that woke after it. The warning was there the whole time. It went
+    to `stderr`, which is exactly the stream a `$(...)` capture drops on the
+    floor, and stdout still carried a plausible integer, so nothing
+    downstream could tell the two apart. A refusal can be: it puts nothing
+    on stdout, which is the same shape as exit 3 and is what makes the
+    caller stop.
+
+    The fallback is not removed, because an old bridge really can have no id
+    to pass (`AGORA_CONVERSATION_ID` arrived in agora-claude-bridge#72), and
+    a rotation bug must never be the reason a cycle does not run. It is made
+    **explicit**: `--no-conversation-id` in the id's place asks for the
+    highest number on purpose, warns exactly as before, and exits 0. So the
+    deliberate case still works and the accidental one -- including an empty
+    `$AGORA_CONVERSATION_ID` interpolated into the command line, which is the
+    accident this is -- now stops instead of answering.
     """
     import sys
 
     if len(sys.argv) not in (2, 3):
-        print("usage: python3 -m agora_runner.cycle_number <heartbeat-id> [conversation-id]",
+        print("usage: python3 -m agora_runner.cycle_number <heartbeat-id> "
+              "<conversation-id>|--no-conversation-id",
               file=sys.stderr)
         return 2
-    conversation_id = sys.argv[2] if len(sys.argv) == 3 else ""
+    given = sys.argv[2] if len(sys.argv) == 3 else ""
+    deliberately_without = given == NO_CONVERSATION_ID
+    conversation_id = "" if deliberately_without else given
+    if not conversation_id and not deliberately_without:
+        # Nothing on stdout, for exit 3's reason: the caller believed it was
+        # asking "which cycle am I", and the highest number answers "which
+        # cycle woke most recently", which is a different question whenever
+        # more than one cycle is alive.
+        print("no conversation id given, so the cycle number cannot be derived from "
+              "the conversation this cycle is running in. Read $AGORA_CONVERSATION_ID "
+              "in the bridge shell and pass it. Pass "
+              f"{NO_CONVERSATION_ID} instead only if the bridge exports none -- that "
+              "asks for the highest number that exists, which collides whenever "
+              "cycles overlap.",
+              file=sys.stderr)
+        return 4
     number, source = current_number_with_source(sys.argv[1], conversation_id or None)
     if source == "unknown-conversation":
         # Refused rather than warned, and nothing on stdout. The caller passed
