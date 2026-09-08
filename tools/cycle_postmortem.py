@@ -184,6 +184,112 @@ def entryless(paths, newest):
     return sorted(set(interior) | set(tail))
 
 
+#: The `PR:` field of an entry's fixed footer, e.g.
+#:   PR: agora-persona-runner#876 | Board: idea #187 | Outcome: merged
+#: Only the field before the first `|` is read, so a `Board:` number can
+#: never be mistaken for the pull request the entry is about.
+_FOOTER_PR_RE = re.compile(r"^PR:\s*(?P<field>[^|\n]*)", re.M)
+
+_HASH_NUMBER_RE = re.compile(r"#(\d+)")
+
+
+def entry_pr_numbers(text):
+    """The pull request number(s) an entry's footer names, as a frozenset.
+
+    Empty when the entry says `PR: none`, which is the honest answer for a
+    cycle that shipped nothing, and empty is deliberately not a match: an
+    entry with no pull request in it cannot be attributed to a run by this.
+    """
+    numbers = set()
+    for match in _FOOTER_PR_RE.finditer(text or ""):
+        numbers.update(int(n) for n in _HASH_NUMBER_RE.findall(match.group("field")))
+    return frozenset(numbers)
+
+
+def final_reply(messages):
+    """The text of the run's reply to the owner, or `None`.
+
+    That is the last message that is neither one of Agora's own notices
+    about another cycle nor Agora's closing line -- measured across cycles
+    1183 to 1185, it is `messages[-2]` every time, with the closing line
+    last.
+    """
+    for message in reversed(run_messages(messages)):
+        text = (message or {}).get("text") or ""
+        if text.strip() and read_outcome(text) is None:
+            return text
+    return None
+
+
+def reply_numbers(messages):
+    """Every `#<digits>` in the run's reply, as a frozenset, or `None`.
+
+    The reply and *only* the reply. The first version of this read every
+    message in the conversation and it could not work: a cycle reads the
+    digest, its own board and its own diff, so the transcript names
+    hundreds of pull requests including the one the cycle before it
+    shipped. Measured against cycle 1183, whose reply announces exactly
+    one: the transcript answered with 300-odd numbers, which makes the
+    first condition in `misfiled_entries` true for free and the second one
+    false for free. A set that wide is a guaranteed answer, not a
+    measurement.
+
+    `None` means there was no reply to read, which `misfiled_entries`
+    treats as "cannot say" rather than "named nothing".
+    """
+    text = final_reply(messages)
+    if text is None:
+        return None
+    return frozenset(int(n) for n in _HASH_NUMBER_RE.findall(text))
+
+
+def misfiled_entries(lost, entry_prs, reply_prs):
+    """`[(wrote_it, filed_as), ...]` -- entries filed under the wrong cycle.
+
+    A cycle that asks `cycle_number` without its conversation id is
+    answered with the highest number that *exists*, and three cycles
+    overlap -- so a run that lasts longer than the heartbeat interval is
+    handed the number of the cycle that woke after it. Its entry then
+    lands one number up, and the next cycle does the same thing, so the
+    shift is not one entry: measured live 2026-09-08, cycles 1183 to 1204
+    each filed under the next number -- twenty-two entries deep, and every
+    one of them reads as a healthy cycle from `judge` because a file with
+    that name exists. Three older runs are in the record too (367, 871-874,
+    969-973, 986-992), 39 entries in all. The chain ends where a cycle
+    replied nothing at all, which is why 1205 stopped it.
+
+    `judge` cannot see any of this. It only ever looks at cycle numbers
+    with *no* entry, so the cycle whose work went missing reads as `lost`
+    (which is true) and the cycle holding somebody else's entry reads as
+    fine (which is not).
+
+    Two conditions, both required, because attributing one cycle's work to
+    another on a guess is worse than not noticing:
+
+    * every pull request in the entry's footer was named by the *earlier*
+      run, and
+    * none of them was named by the run the entry is filed under.
+
+    The second is what keeps a coincidence out. Two cycles working the
+    same pull request both name it, so the pair is ambiguous and this
+    says nothing rather than picking one.
+    """
+    found = []
+    for start in sorted(lost):
+        earlier, said = start, reply_prs.get(start)
+        while said:
+            filed_as = earlier + 1
+            footer = entry_prs.get(filed_as)
+            if not footer or not footer <= said:
+                break
+            own = reply_prs.get(filed_as)
+            if own is None or footer & own:
+                break
+            found.append((earlier, filed_as))
+            earlier, said = filed_as, own
+    return found
+
+
 def _get(url, timeout=30):
     with urllib.request.urlopen(url, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -448,23 +554,27 @@ def format_rate_split(split):
 
 
 def collect(window=DEFAULT_WINDOW):
-    """`(results, newest, error, conversations)` -- a row per entryless cycle."""
+    """`(results, newest, error, conversations, paths)` -- a row per entryless cycle.
+
+    `paths` comes back so `find_misfiled` can read an entry's footer
+    without a second listing of the journal folder.
+    """
     paths = journal_paths()
     if paths is None:
-        return [], None, f"could not list {JOURNAL_PREFIX} through {VAULT_TOOL}", {}
+        return [], None, f"could not list {JOURNAL_PREFIX} through {VAULT_TOOL}", {}, []
     try:
         payload = _get(f"{AGORA_PUBLIC}/conversations?limit=1000")
     except (urllib.error.URLError, OSError, ValueError) as error:
-        return [], None, f"could not read {AGORA_PUBLIC}/conversations: {error}", {}
+        return [], None, f"could not read {AGORA_PUBLIC}/conversations: {error}", {}, []
     try:
         conversations = conversations_by_cycle(payload)
     except (AttributeError, TypeError, ValueError) as error:
         return [], None, (f"{AGORA_PUBLIC}/conversations answered in a shape "
-                          f"this cannot read: {error}"), {}
+                          f"this cannot read: {error}"), {}, []
     if not conversations:
         return [], None, (f"{AGORA_PUBLIC} answered with no conversations for "
                           "Nova's heartbeat -- this loop runs on them, so that is "
-                          "no instrument, not an empty history"), {}
+                          "no instrument, not an empty history"), {}, []
     newest = max(conversations)
     gaps = entryless(paths, newest)
     now = datetime.now(timezone.utc)
@@ -491,7 +601,91 @@ def collect(window=DEFAULT_WINDOW):
         results = list(pool.map(one, gaps))
     for row in results:
         row["recent"] = row["number"] > newest - window
-    return results, newest, None, conversations
+    return results, newest, None, conversations, paths
+
+
+class _LazyMap:
+    """A `.get()`-shaped mapping that computes and caches on first ask.
+
+    `misfiled_entries` walks a chain forward and stops as soon as one link
+    does not match, so it must not be handed a prefetched neighbourhood --
+    the chain is one entry long almost always, and prefetching a fixed
+    window would spend a vault read and a message read per cycle for the
+    case that never happens. Tests pass plain dicts; the pure function
+    cannot tell the difference.
+    """
+
+    def __init__(self, compute):
+        self._compute = compute
+        self._cache = {}
+
+    def get(self, key, default=None):
+        if key not in self._cache:
+            self._cache[key] = self._compute(key)
+        return self._cache[key]
+
+
+def _read_entry(path):
+    """One journal entry's text, or `None` if the vault would not answer."""
+    try:
+        done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def find_misfiled(results, conversations, paths, read_entry=None, fetch=None):
+    """`[(wrote_it, filed_as), ...]` for the `lost` cycles in `results`.
+
+    Nothing is read at all unless a cycle came back `lost`, which is the
+    only state that can mean "its entry is somewhere else".
+    """
+    lost = [row["number"] for row in results if row["verdict"] == "lost"]
+    if not lost:
+        return []
+    read_entry = _read_entry if read_entry is None else read_entry
+    fetch = _fetch_messages if fetch is None else fetch
+    by_cycle = {}
+    for path in paths or []:
+        number = file_cycle(path)
+        if number is not None:
+            by_cycle[number] = path
+
+    def entry(number):
+        path = by_cycle.get(number)
+        if path is None:
+            return frozenset()
+        text = read_entry(path)
+        return entry_pr_numbers(text) if text is not None else frozenset()
+
+    def reply(number):
+        conversation = conversations.get(number)
+        if conversation is None:
+            return None
+        try:
+            return reply_numbers(fetch(conversation["id"]))
+        except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+            return None
+
+    return misfiled_entries(lost, _LazyMap(entry), _LazyMap(reply))
+
+
+def format_misfiled(pairs):
+    """The misfiled block, or `[]` when there is nothing to say."""
+    if not pairs:
+        return []
+    lines = ["",
+             "FILED UNDER THE WRONG NUMBER — the entry exists and names the wrong "
+             f"cycle — {len(pairs)}"]
+    for wrote_it, filed_as in pairs:
+        lines.append(f"  Cycle {wrote_it}'s work is in the entry filed as cycle "
+                     f"{filed_as}: that entry's PR was announced by {wrote_it}'s own "
+                     f"reply and not by {filed_as}'s.")
+    lines.append("  Historical entries are never renumbered — this says where the "
+                 "record is, it does not ask for a repair. The cause is a cycle "
+                 "asking `cycle_number` without its conversation id.")
+    return lines
 
 
 #: The verdicts that mean "this gap is not explained, or the work it did
@@ -580,9 +774,12 @@ def main(argv=None):
             return 1
         if split_at.tzinfo is None:
             split_at = split_at.replace(tzinfo=timezone.utc)
-    results, newest, error, conversations = collect(window=args.window)
+    results, newest, error, conversations, paths = collect(window=args.window)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all)
+    if not error:
+        report = "\n".join([report] + format_misfiled(
+            find_misfiled(results, conversations, paths)))
     print(report)
     if split_at is not None and not error:
         print()
