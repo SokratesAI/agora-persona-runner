@@ -896,6 +896,145 @@ def apply_unnumbered(results, pairs):
     return results
 
 
+def doubled_entries(lost, entry_prs, reply_prs, paths_by_cycle):
+    """`[(wrote_it, path), ...]` -- a lost cycle's entry filed under a neighbour.
+
+    A third way a gap gets explained, and the one the two above are blind
+    to by construction. `misfiled_entries` reads a chain of entries each
+    filed one number *up*; `find_unnumbered` reads documents whose
+    filename carries no cycle number at all. Neither can see the case
+    where two cycles ran at once, both asked `cycle_number` without a
+    conversation id, and both were handed the same number -- so the
+    journal holds **two** `NNN-cycle-M.md` documents and the number beside
+    M holds none.
+
+    Measured live 2026-09-09, and it is why this exists: the folder holds
+    `516-cycle-454.md` and `517-cycle-454.md`, cycle 455 has no entry, and
+    455's own reply to the owner announces `#396` -- which is the pull
+    request in `517`'s footer, and is named nowhere in 454's reply, which
+    announces `#531` and `#535`.
+
+    The two conditions are `misfiled_entries`', for its reason: every pull
+    request in the document's footer was named by the lost run's reply,
+    and none of them by the run whose number the document carries. The
+    second is what keeps a coincidence out, and here it does a second job
+    -- one of the two documents really is the neighbour's, and this is
+    what stops that one being taken away from it.
+
+    A document more than one lost cycle can claim is dropped, and so is a
+    lost cycle that can claim both of a neighbour's documents: the first
+    is a guess between two answers, and the second is a contradiction,
+    since the neighbour would then have written none of its own.
+    """
+    claims = {}
+    for cycle in sorted(lost or ()):
+        said = reply_prs.get(cycle)
+        if not said:
+            continue
+        for neighbour in (cycle - 1, cycle + 1):
+            paths = paths_by_cycle.get(neighbour) or []
+            if len(paths) < 2:
+                continue
+            own = reply_prs.get(neighbour)
+            if own is None:
+                continue
+            for path in paths:
+                footer = entry_prs.get(path) or frozenset()
+                if not footer or not footer <= said or footer & own:
+                    continue
+                claims.setdefault(path, []).append(cycle)
+    taken = [(cycles[0], path) for path, cycles in claims.items()
+             if len(cycles) == 1]
+    greedy = {cycle for cycle, _ in taken
+              if sum(1 for other, _ in taken if other == cycle) > 1}
+    return sorted((cycle, path) for cycle, path in taken if cycle not in greedy)
+
+
+def find_doubled(results, conversations, paths, read_entry=None, fetch=None):
+    """`doubled_entries` wired to the vault and to Agora.
+
+    Nothing is read unless a `lost` cycle actually sits beside a number
+    that carries more than one document, which is three cycles in the
+    whole history -- so the shortlist is built from filenames first and
+    the vault reads follow it.
+    """
+    lost = [row["number"] for row in results if row["verdict"] == "lost"]
+    if not lost:
+        return []
+    read_entry = _read_entry if read_entry is None else read_entry
+    fetch = _fetch_messages if fetch is None else fetch
+    by_cycle = {}
+    for path in paths or []:
+        number = file_cycle(path)
+        if number is not None:
+            by_cycle.setdefault(number, []).append(path)
+    shortlist = {}
+    for cycle in lost:
+        for neighbour in (cycle - 1, cycle + 1):
+            if len(by_cycle.get(neighbour) or []) > 1:
+                shortlist[neighbour] = sorted(by_cycle[neighbour], key=entry_seq)
+    if not shortlist:
+        return []
+    entry_prs = {}
+    for cycle_paths in shortlist.values():
+        for path in cycle_paths:
+            text = read_entry(path)
+            entry_prs[path] = entry_pr_numbers(text) if text is not None else frozenset()
+
+    def reply(number):
+        conversation = (conversations or {}).get(number)
+        if conversation is None:
+            return None
+        try:
+            return reply_numbers(fetch(conversation["id"]))
+        except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+            return None
+
+    return doubled_entries(lost, entry_prs, _LazyMap(reply), shortlist)
+
+
+def format_doubled(pairs):
+    """The doubled block, or `[]` when there is nothing to say."""
+    if not pairs:
+        return []
+    lines = ["",
+             "FILED UNDER A NUMBER SOMEBODY ELSE ALSO USED — two entries carry one "
+             f"cycle number and this one is the lost run's — {len(pairs)}"]
+    for number, path in pairs:
+        name = path.rsplit("/", 1)[-1]
+        lines.append(f"  Cycle {number}'s work is in `{name}`: its footer names a "
+                     f"pull request {number}'s own reply announced, and that the "
+                     "cycle in the filename never mentioned.")
+    lines.append("  Historical entries are never renamed — this says where the "
+                 "record is, it does not ask for a repair. The cause is two "
+                 "overlapping cycles asking `cycle_number` without a conversation id "
+                 "and both being handed the same number.")
+    return lines
+
+
+def apply_doubled(results, pairs):
+    """Downgrade every `lost` row whose entry `find_doubled` located.
+
+    The same call `apply_misfiled` and `apply_unnumbered` make: `lost`
+    raises because the gap is unexplained, and a run whose entry this
+    report has just named is explained. Its own verdict rather than a
+    reuse of `misfiled`, because the repair instruction differs -- that
+    entry is one number up and alone, this one shares a number with a
+    document that genuinely belongs to the cycle named in the filename.
+    """
+    located = dict((number, path) for number, path in pairs or ())
+    for row in results:
+        if row["verdict"] != "lost":
+            continue
+        path = located.get(row["number"])
+        if path is None:
+            continue
+        row["verdict"] = "doubled"
+        name = path.rsplit("/", 1)[-1]
+        row["detail"] = f"{row['detail']}; its entry is `{name}`"
+    return results
+
+
 def format_misfiled(pairs):
     """The misfiled block, or `[]` when there is nothing to say."""
     if not pairs:
@@ -970,6 +1109,8 @@ _HEADINGS = (
                  "cycle's number"),
     ("unnumbered", "WROTE SOMETHING ELSE — the run's record is in the journal folder "
                    "under a name that is not a cycle number"),
+    ("doubled", "SHARES ANOTHER CYCLE'S NUMBER — two entries carry one number and "
+                "one of them is this run's"),
     ("failed", "ENDED ON A RECORDED FAILURE — nothing to recover, the reason is Agora's own"),
     ("cut off", "STOPPED WITH NO CLOSING LINE — Agora never wrote an outcome for these"),
     ("silent", "NEVER SPOKE — a conversation with no message in it at all"),
@@ -1087,11 +1228,18 @@ def main(argv=None):
     # gap, and only one of them names an entry with this cycle's work in it.
     unnumbered = [] if error else find_unnumbered(results, conversations, paths)
     apply_unnumbered(results, unnumbered)
+    # Last of the three, because it is the only one that reads a document
+    # already filed under a real cycle number -- so a gap either of the
+    # two above can explain is explained by them first, and this never
+    # competes with them for the same row.
+    doubled = [] if error else find_doubled(results, conversations, paths)
+    apply_doubled(results, doubled)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all)
     if not error:
         report = "\n".join([report] + format_misfiled(pairs)
-                           + format_unnumbered(unnumbered))
+                           + format_unnumbered(unnumbered)
+                           + format_doubled(doubled))
     print(report)
     if split_at is not None and not error:
         print()
