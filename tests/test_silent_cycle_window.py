@@ -88,12 +88,16 @@ def test_a_failure_before_the_opening_chip_still_closes_the_run(runner):
     """The whole point: no chip is not the same as no record."""
     chips, patches, _stub = _run_with_window_failure(runner)
 
-    # It never got as far as the opening chip -- that is the precondition,
-    # and without asserting it this test would pass on a run that spoke.
-    assert not any("every@18m" in text for _c, _k, text in chips)
+    # The opening chip is now posted before this window rather than after it,
+    # so a run that dies in here leaves two lines: it started, and it failed.
+    # That the failing call is genuinely downstream of the chip is the
+    # precondition, and without it this test would pass on a run that never
+    # entered the window at all.
+    assert len(chips) == 2, chips
+    assert "every@18m" in chips[0][2]
+
     # ...and it still closed the run in the conversation the owner reads.
-    assert len(chips) == 1
-    conversation_id, kind, text = chips[0]
+    conversation_id, kind, text = chips[1]
     # Into THIS cycle's conversation, not the one it rotated away from.
     # `cycle_postmortem` reads the new one, so a closing line posted into the
     # previous cycle's transcript would leave this cycle looking silent and
@@ -349,3 +353,124 @@ def test_the_record_keeps_the_exception_type_when_the_path_is_long(runner):
     assert len(result) == 200, result
     assert "JSONDecodeError" in result, result
     assert result.startswith("failed: decoder.py:"), result
+
+
+# --- The chip goes first, because a handler cannot catch a SIGKILL --------
+#
+# #903 put a handler around this window so a raise in it names its own line.
+# The other way a run dies here does not raise: the process goes away. The
+# runner Deployment is maxSurge 1 / maxUnavailable 0 with a 2880s grace, so a
+# rollout leaves two pods polling and SIGKILLs the old one at grace expiry
+# whatever it is holding; an OOM kill and a node eviction land the same way.
+# The conversation is already created, numbered and tagged by then, so what
+# is left is `cycle_postmortem`'s `silent` verdict -- a transcript with
+# nothing in it and no pod alive to hold the log. Cycle 1217 is the
+# occurrence: created 2026-09-08T09:20:49Z, off its own 24m cadence, ten
+# minutes into a rollout window, zero messages.
+#
+# A chip on the thread is the one record that survives the process, so it is
+# posted before any of this window's work rather than after all of it.
+
+
+def _run_recording_order(runner, heartbeat, system="a system prompt",
+                         reply="a real reply", vault_paths=None):
+    """Every chip and every pre-chip call, in the order they happened."""
+    if vault_paths:
+        heartbeat = dict(heartbeat, vaultPaths=vault_paths)
+    detail = {"personas": [], "messages": [], "stickyFallback": False}
+    order = []
+
+    def note(label, result=None):
+        def fake(*_args, **_kwargs):
+            order.append(label)
+            return result
+        return fake
+
+    def fake_audit(_name, _conversation_id, _kind, text):
+        order.append(f"chip:{text}")
+        return 200, "chip"
+
+    with patch.object(runner.heartbeats, "fetch_persona",
+                      return_value=_nova_persona(runner)), \
+         patch.object(runner.heartbeats, "agora_get", return_value=(200, detail)), \
+         patch.object(runner.heartbeats, "rotate_cycle_conversation",
+                      return_value=ROTATED_INTO), \
+         patch.object(runner.heartbeats, "nova_health_note",
+                      side_effect=note("health", "")), \
+         patch.object(runner.heartbeats, "fetch_vault_context",
+                      side_effect=note("vault", "")), \
+         patch.object(runner.heartbeats, "build_system", return_value=system), \
+         patch.object(runner.heartbeats, "generate_reply",
+                      side_effect=note("model", reply)), \
+         patch.object(runner.heartbeats, "notify", return_value=(200, "mid-1")), \
+         patch.object(runner.heartbeats, "audit", side_effect=fake_audit), \
+         patch.object(runner.heartbeats, "agora_internal", return_value=(200, {})), \
+         patch.object(cycle_stub, "write_stub"):
+        runner.run_heartbeat(heartbeat)
+    return order
+
+
+def test_the_opening_chip_lands_before_the_window_that_kills_silent_cycles(runner):
+    """Ordering is the whole fix: everything the chip now precedes is work
+    that can take the process down without raising."""
+    order = _run_recording_order(runner, _nova_heartbeat(),
+                                 vault_paths=["some/path.md"])
+
+    # The window really did run -- otherwise "the chip came first" is true of
+    # a run that did nothing, and this test would pass on a deleted feature.
+    assert "health" in order and "vault" in order, order
+    assert order[0].startswith("chip:"), order
+    assert order.index("health") > 0
+    assert order.index("vault") > 0
+    assert "every@18m" in order[0]
+
+
+def test_the_cycle_heartbeat_still_posts_exactly_two_chips(runner):
+    """One at the start, one at the end -- not three, and not one."""
+    order = _run_recording_order(runner, _nova_heartbeat())
+    chips = [line for line in order if line.startswith("chip:")]
+    assert len(chips) == 2, order
+    assert "every@18m" in chips[0]
+    assert "finished in" in chips[1]
+
+
+def test_a_monitoring_heartbeat_keeps_withholding_its_chip(runner):
+    """The hoist is scoped to Nova's own cycle heartbeat. A monitoring one
+    opts into HEARTBEAT_NO_REPORT_SENTINEL precisely so a clean run leaves
+    the chat untouched, and posting up front would be a chip every tick."""
+    monitoring = dict(_nova_heartbeat(), id="hb2", personaId="some-other-persona")
+    system = f"you may answer {runner.HEARTBEAT_NO_REPORT_SENTINEL} instead"
+    order = _run_recording_order(runner, monitoring, system=system,
+                                 reply=runner.HEARTBEAT_NO_REPORT_SENTINEL)
+
+    assert "model" in order, order
+    assert not [line for line in order if line.startswith("chip:")], order
+
+
+def test_a_monitoring_heartbeat_that_speaks_posts_its_chip_at_the_end(runner):
+    """Unchanged behaviour for everything the hoist does not cover."""
+    monitoring = dict(_nova_heartbeat(), id="hb2", personaId="some-other-persona")
+    system = f"you may answer {runner.HEARTBEAT_NO_REPORT_SENTINEL} instead"
+    order = _run_recording_order(runner, monitoring, system=system,
+                                 reply="something worth saying")
+
+    # The opening chip and the closing line, both AFTER the model call -- the
+    # opening one is withheld until the reply is in hand and turns out not to
+    # be the sentinel. Its position is the assertion; a count alone would pass
+    # on the hoisted order too, since that is also two chips.
+    chips = [i for i, line in enumerate(order) if line.startswith("chip:")]
+    assert len(chips) == 2, order
+    assert min(chips) > order.index("model"), order
+    assert "every@18m" in order[chips[0]]
+
+
+def test_a_cycle_heartbeat_carrying_the_sentinel_gets_one_chip_not_two(runner):
+    """The end-of-run post is keyed on whether the chip already went out, not
+    on `may_go_silent`. Keyed the other way, a heartbeat that is BOTH Nova's
+    cycle and sentinel-carrying would post the same opening chip twice."""
+    system = f"you may answer {runner.HEARTBEAT_NO_REPORT_SENTINEL} instead"
+    order = _run_recording_order(runner, _nova_heartbeat(), system=system,
+                                 reply="something worth saying")
+
+    opening = [line for line in order if "every@18m" in line]
+    assert len(opening) == 1, order
