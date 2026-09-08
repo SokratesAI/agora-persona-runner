@@ -347,11 +347,21 @@ def run_heartbeat(heartbeat):
     # `ifLastRunAt` makes that claim a compare-and-swap (agora#89): the write
     # lands only while `lastRunAt` still holds the value this snapshot was
     # read at, so of two pollers that both saw the same due tick exactly one
-    # wins and the other is told 409. Nothing overlaps today — the runner
-    # deploys with `Recreate` and a 48-minute grace, so the replacement pod is
-    # not created until the running cycle exits, which is the outage in issue
-    # #130 — and this is the guard that has to exist before that Deployment
-    # can move to RollingUpdate.
+    # wins and the other is told 409. **Two pollers is the normal case now**,
+    # and this comment said the opposite for five days: it read "Nothing
+    # overlaps today — the runner deploys with `Recreate` and a 48-minute
+    # grace", which stopped being true on 2026-09-06 when that Deployment
+    # went to RollingUpdate, and stopped being true twice on 2026-09-08 when
+    # it went to `maxUnavailable: 0` — which deliberately keeps the old pod
+    # polling until the replacement is Ready, so a rollout has no window with
+    # no poller in it. This guard is what pays for that, and it was measured
+    # before the flip rather than assumed: a PATCH carrying a deliberately
+    # stale `ifLastRunAt` came back 409 `lastRunAt has moved since you read
+    # it` and left `lastResult` untouched (2026-09-08 05:25 Oslo, live).
+    #
+    # Note it has to be server-side to hold here. `_heartbeat_spawn_marks`
+    # below is process-local, so it stops one pod double-spawning a slot and
+    # says nothing at all about two pods.
     #
     # `previous_run_at` is the right token and not merely a convenient one:
     # it is read off the same snapshot `run_due_heartbeats` decided due-ness
