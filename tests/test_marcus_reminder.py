@@ -153,3 +153,15 @@ def test_a_delivered_log_that_also_mentions_nobody_reads_as_the_specific_one():
     """`delivered to ` is a general phrase and the refusal wording is specific;
     a log carrying both must not be read as healthy."""
     assert marcus_reminder.classify(DELIVERED + "\n" + NOBODY)[0] == "nobody"
+
+
+def test_one_reaped_log_among_readable_ones_is_not_a_reaped_history():
+    """`kubectl logs` on a Pod whose node has rotated the file fails for that
+    Pod alone. Only a history where *nothing* is readable is a `1` -- one hole
+    beside a readable newest run is still a verdict."""
+    run = _runner(
+        _pods(("marcus-reminder-2-b", "2026-09-08T18:00:00Z"),
+              ("marcus-reminder-1-a", "2026-09-07T18:00:00Z")),
+        {"marcus-reminder-2-b": DELIVERED},
+    )
+    assert marcus_reminder.main([], runner=run) == 0
