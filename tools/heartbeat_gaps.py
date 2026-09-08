@@ -41,14 +41,27 @@ An unexplained slot is split one step further, because "no known cause"
 was hiding two different bugs behind one number. Measured 2026-09-08 on
 Nova's own heartbeat: **four of the five unexplained slots came round with
 an earlier cycle still running, and exactly one run was in flight at each
-of them --- against a concurrency limit of 3.** So those four are the
-poller declining a tick it had room to take, not a busy loop. The fifth
-had nothing running at all, which is a different failure: the poll loop
-is fully sequential and blocking, so a tick it never reached is a tick
-that was never judged. Both keep raising --- this splits the finding, it
-does not excuse either half. The interval a run covers is `createdAt` to
+of them --- against a concurrency limit of 3.** The fifth had nothing
+running at all. Both keep raising --- this splits the finding, it does not
+excuse either half. The interval a run covers is `createdAt` to
 `lastMessageAt` on its own conversation, open at the start so a firing
 never reads as covered by the run it produced.
+
+For six hours this then wrote **"so the poller declined a tick it had room
+for"** under those four, which was a cause it had not measured. A slot with
+a run over it and room to spare is equally consistent with the poller never
+having *reached* the tick --- `schedule_due` asks only about the most recent
+anchored occurrence, so a pass that lands after two slot boundaries loses
+the older slot without ever declining it (runner#916). Those are different
+bugs with different fixes, and the sentence picked one. The instrument that
+actually separates them is `agora_runner.dropped_ticks` (runner#915): the
+poller records every decline, so a slot the ledger covers and has nothing
+for is a slot nothing declined. So a covered slot now lands in one of three
+places --- **declined** (a record names the guard), **unevaluated** (the
+ledger covers it and is silent), or **unjudged** (the ledger does not reach
+back that far, which is the honest answer for every slot before the recorder
+shipped, and for all four of the ones above). Empty is not the same as
+absent, and neither is a cause.
 
 The attribution window is the schedule's own period, not a tolerance I
 picked. That is deliberately generous: it over-attributes rather than
@@ -405,13 +418,17 @@ def split_by_in_flight(slots, intervals):
 
     A slot is *covered* when some earlier run had started and had not yet
     said its last word when the slot came round. That is not an excuse and
-    this does not treat it as one: the runner's concurrency limit is 3 and
-    only one run was ever in flight at any of the slots this has judged, so
-    a covered slot is a firing the poller declined while it had room. It is
-    printed apart from an *idle* one because the two are different bugs --
-    a slot lost with a cycle running is the scheduler declining a tick it
-    could have taken, and a slot lost with nothing running is the poll loop
-    not looking.
+    this does not treat it as one. It is printed apart from an *idle* one
+    because a slot lost with a cycle running and a slot lost with nothing
+    running are different failures.
+
+    What a covered slot is NOT is proof that the poller declined anything.
+    This function knows only that a run overlapped the slot; the concurrency
+    limit is 3, so the tick had room, and a tick with room that produced no
+    run was either declined for another reason or never evaluated at all
+    (`_skipped_occurrences`, runner#916). Those are different bugs with
+    different fixes and only the runner's own drop-record ledger separates
+    them -- see `split_by_drop_record`, which this hands its result to.
 
     `intervals` are `(start, last_message)` pairs. A run's own slot is not
     counted against it: the interval is treated as open at the start, so
@@ -424,6 +441,54 @@ def split_by_in_flight(slots, intervals):
         else:
             idle.append(slot)
     return covered, idle
+
+
+def ledger_start(records):
+    """The oldest moment the drop-record ledger can speak for, or None.
+
+    A slot earlier than this has no record because the recorder was not
+    writing yet, which is a completely different thing from no tick having
+    been declined -- and treating the two as one is how a report grows a
+    cause it never measured. `agora_runner.dropped_ticks` keeps the newest
+    200 records, so the oldest one is a lower bound on coverage: the ledger
+    may reach further back than this, never less far.
+
+    None for an empty or unreadable ledger, which means it speaks for
+    nothing and every slot stays unjudged.
+    """
+    stamps = [
+        _parse_stamp(record.get("at"))
+        for record in records
+        if isinstance(record, dict)
+    ]
+    stamps = [stamp for stamp in stamps if stamp is not None]
+    return min(stamps) if stamps else None
+
+
+def split_by_drop_record(slots, named, start):
+    """`(declined, unevaluated, unjudged)` --- did the poller decline these?
+
+    `named` is `reasons_for`'s mapping and `start` is `ledger_start`'s.
+
+    * **declined** --- the poller wrote a reason inside this slot's period, so
+      it looked at the tick and turned it down. The reason says which guard.
+    * **unevaluated** --- the ledger covers this slot and holds nothing for
+      it. `_drop_tick` records every decline at a doubling, so a slot the
+      poller judged and declined leaves a record; a slot with none was never
+      judged, which is the skipped-occurrence path rather than the limit.
+    * **unjudged** --- the ledger does not reach back this far (or could not
+      be read), so both of the above are still open and this says so instead
+      of picking one.
+    """
+    declined, unevaluated, unjudged = [], [], []
+    for slot in slots:
+        if named.get(slot):
+            declined.append(slot)
+        elif start is not None and slot >= start:
+            unevaluated.append(slot)
+        else:
+            unjudged.append(slot)
+    return declined, unevaluated, unjudged
 
 
 def judge(heartbeat, conversations, now, window_hours):
@@ -541,16 +606,57 @@ def format_report(results, error, window_hours, listed,
                     covered, idle = split_by_in_flight(
                         unexplained, row.get("intervals") or []
                     )
+                    # The poller's own account of these slots, read once and
+                    # used twice: to say WHY a tick was declined, and -- for a
+                    # slot the ledger covers and says nothing about -- to say
+                    # that nothing declined it, which is a different bug.
+                    # No `drop_error` branch: `read_drop_records` returns an
+                    # empty list with every error it reports, so an unreadable
+                    # ledger already lands on "speaks for nothing" here. The
+                    # error itself is printed below.
+                    named = reasons_for(unexplained, drop_records or [],
+                                        row["period_seconds"], row.get("id"))
+                    start = ledger_start(drop_records or [])
                     if covered:
-                        lines.append(
-                            f"        {len(covered)} of them came round with an earlier "
-                            "run still going, so the poller declined a tick it had room "
-                            "for: "
-                            + ", ".join(
-                                t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
-                                for t in covered[:12]
-                            )
+                        # NOT `unjudged` -- that name is the outer list of
+                        # heartbeat rows this function reports on further down.
+                        declined, unevaluated, unattributed = split_by_drop_record(
+                            covered, named, start
                         )
+                        if declined:
+                            lines.append(
+                                f"        {len(declined)} of them came round with an "
+                                "earlier run still going and the poller recorded "
+                                "declining them, so a guard took the tick (reason "
+                                "below): "
+                                + ", ".join(
+                                    t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                                    for t in declined[:12]
+                                )
+                            )
+                        if unevaluated:
+                            lines.append(
+                                f"        {len(unevaluated)} of them came round with an "
+                                "earlier run still going and the poller recorded "
+                                "declining nothing, so the tick was never evaluated "
+                                "rather than declined -- the skipped-occurrence path, "
+                                "not the concurrency limit: "
+                                + ", ".join(
+                                    t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                                    for t in unevaluated[:12]
+                                )
+                            )
+                        if unattributed:
+                            lines.append(
+                                f"        {len(unattributed)} of them came round with an "
+                                "earlier run still going, and the drop-record ledger "
+                                "does not reach back that far, so a declined tick and "
+                                "one that was never evaluated look the same here: "
+                                + ", ".join(
+                                    t.astimezone(timezone.utc).strftime("%m-%d %H:%M")
+                                    for t in unattributed[:12]
+                                )
+                            )
                     if idle:
                         lines.append(
                             f"        {len(idle)} of them came round with nothing running "
@@ -572,8 +678,6 @@ def format_report(results, error, window_hours, listed,
                             "than empty"
                         )
                     else:
-                        named = reasons_for(unexplained, drop_records or [],
-                                            row["period_seconds"], row.get("id"))
                         for slot in unexplained[:12]:
                             if named.get(slot):
                                 lines.append(

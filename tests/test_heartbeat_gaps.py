@@ -509,3 +509,134 @@ def test_a_missing_lag_ledger_is_an_empty_measurement_not_an_error():
             returncode=0, stdout="[not found: whatever]", stderr="")
 
     assert hg.read_lag_records(runner=runner) == ([], None)
+
+
+# --- declined, or never evaluated? (idea #267) -------------------------------
+#
+# A covered slot -- one with an earlier run still going -- was reported for six
+# hours as "the poller declined a tick it had room for". That is a cause the
+# check never measured: the same evidence fits the poller never reaching the
+# tick at all (`_skipped_occurrences`, runner#916), which is a different bug.
+# The drop-record ledger is the only thing that separates them, and an EMPTY
+# ledger separates nothing -- these hold that line.
+
+
+def test_ledger_start_is_the_oldest_record_it_holds():
+    oldest = NOW - timedelta(hours=3)
+    records = [_drop(NOW - timedelta(minutes=5)), _drop(oldest),
+               _drop(NOW - timedelta(hours=1))]
+    assert hg.ledger_start(records) == oldest
+
+
+def test_an_empty_ledger_speaks_for_no_slot_at_all():
+    assert hg.ledger_start([]) is None
+
+
+def test_a_ledger_of_unreadable_stamps_speaks_for_no_slot_either():
+    # Not "now", and not the epoch: a record whose time cannot be read says
+    # nothing about how far back the ledger reaches.
+    assert hg.ledger_start([_drop_unparseable(), {"nope": 1}, "junk"]) is None
+
+
+def _drop_unparseable():
+    return {"at": "not a time", "heartbeatId": "hb", "reason": "why"}
+
+
+def test_a_slot_the_poller_named_is_declined():
+    slot = NOW - timedelta(minutes=30)
+    named = {slot: ["3 run(s) in flight, limit 3"]}
+    declined, unevaluated, unattributed = hg.split_by_drop_record(
+        [slot], named, NOW - timedelta(hours=3))
+    assert (declined, unevaluated, unattributed) == ([slot], [], [])
+
+
+def test_a_slot_the_covering_ledger_is_silent_about_was_never_evaluated():
+    slot = NOW - timedelta(minutes=30)
+    declined, unevaluated, unattributed = hg.split_by_drop_record(
+        [slot], {}, NOW - timedelta(hours=3))
+    assert (declined, unevaluated, unattributed) == ([], [slot], [])
+
+
+def test_a_slot_older_than_the_ledger_is_neither():
+    # The recorder was not writing yet. Absent is not empty, and calling this
+    # "never evaluated" would be inventing the cause all over again.
+    slot = NOW - timedelta(hours=5)
+    declined, unevaluated, unattributed = hg.split_by_drop_record(
+        [slot], {}, NOW - timedelta(hours=3))
+    assert (declined, unevaluated, unattributed) == ([], [], [slot])
+
+
+def test_a_slot_exactly_at_the_ledger_start_is_covered_by_it():
+    start = NOW - timedelta(minutes=30)
+    declined, unevaluated, unattributed = hg.split_by_drop_record(
+        [start], {}, start)
+    assert unevaluated == [start] and unattributed == []
+
+
+def test_with_no_ledger_at_all_every_covered_slot_is_unattributed():
+    slot = NOW - timedelta(minutes=30)
+    declined, unevaluated, unattributed = hg.split_by_drop_record(
+        [slot], {}, None)
+    assert (declined, unevaluated, unattributed) == ([], [], [slot])
+
+
+def _covered_row():
+    # 02:00 is missed and the 01:45 run was still talking at 02:05.
+    convs = _conversations_with_ends([(0, 0), (15, 10), (45, 25), (60, 50)])
+    return hg.judge(_heartbeat(), convs, NOW, 1)
+
+
+def test_the_report_says_declined_only_when_the_poller_said_so():
+    missed = NOW - timedelta(minutes=30)
+    text, status = hg.format_report(
+        [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [_drop(missed + timedelta(minutes=2))], None,
+    )
+    assert status == 2, text
+    assert "the poller recorded declining them" in text
+    assert "never evaluated rather than declined" not in text
+    assert "does not reach back that far" not in text
+
+
+def test_the_report_calls_a_silent_covering_ledger_never_evaluated():
+    # A record from an earlier slot: it puts the ledger's start before the
+    # missed slot without explaining the missed slot itself.
+    text, status = hg.format_report(
+        [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [_drop(NOW - timedelta(minutes=50))], None,
+    )
+    assert status == 2, text
+    assert "the tick was never evaluated rather than declined" in text
+    assert "the poller recorded declining them" not in text
+
+
+def test_the_report_refuses_to_pick_a_cause_with_an_empty_ledger():
+    text, status = hg.format_report(
+        [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [], None,
+    )
+    assert status == 2, text
+    assert "does not reach back that far" in text
+    assert "never evaluated rather than declined" not in text
+    assert "the poller recorded declining them" not in text
+
+
+def test_an_unreadable_ledger_never_reads_as_never_evaluated():
+    # `[]` with an error is not `[]` measured. The cause stays open.
+    text, _ = hg.format_report(
+        [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+        [], "dropped-ticks.json is not JSON",
+    )
+    assert "does not reach back that far" in text
+    assert "never evaluated rather than declined" not in text
+
+
+def test_no_report_still_claims_the_poller_declined_a_tick_it_had_room_for():
+    # The exact sentence this replaced, in every ledger state.
+    for records, error in (([], None), ([_drop(NOW - timedelta(minutes=50))], None),
+                           ([], "unreadable")):
+        text, _ = hg.format_report(
+            [_covered_row()], None, 1, 4, [], {"type": "RollingUpdate"}, None,
+            records, error,
+        )
+        assert "declined a tick it had room for" not in text
