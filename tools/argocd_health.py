@@ -82,6 +82,22 @@ import sys
 # cycle's deploy.
 UNHEALTHY = {"Degraded", "Missing", "Unknown", "Suspended"}
 
+# ...but only for as long as it is plausibly still in flight. A rollout that
+# never converges stays `Progressing` forever, and until Cycle 1270 that read
+# as `ok` with no bound at all: `sokratesai-infra` had been `Progressing`
+# since 2026-09-08 10:28 UTC -- 20 hours, its sync operation long since
+# `Succeeded` -- and this check printed `ok  sokratesai-infra: Synced,
+# Progressing` and exited 0.
+#
+# The bound is derived, not chosen for comfort. The slowest rollout measured
+# in this cluster is Marcus at about four minutes, and `workload_health`
+# judges an unavailable Deployment against its own terminationGracePeriodSeconds
+# plus five minutes. Thirty minutes is several times the slowest real
+# convergence here and two orders of magnitude under the stall it exists to
+# catch, so it cannot fire on a cycle's own deploy while a wedged rollout can
+# no longer hide in it.
+PROGRESSING_GRACE_SECONDS = 30 * 60
+
 
 def _run(runner, args):
     try:
@@ -303,6 +319,23 @@ def stale_job_failures(cronjobs, jobs_by_owner):
     return stale, live
 
 
+def _age_seconds(since, now):
+    """Seconds since an RFC3339 stamp, or None when it cannot be read.
+
+    None is not zero and not "fresh": a stamp this cannot parse proves
+    nothing about how long a rollout has been running, and the caller has to
+    say so rather than pick a direction.
+    """
+    if not since:
+        return None
+    try:
+        at = datetime.datetime.fromisoformat(since.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    seconds = (now - at).total_seconds()
+    return None if seconds < 0 else seconds
+
+
 def _age(since, now):
     """"3 days" from an RFC3339 stamp, or "" when it cannot be read.
 
@@ -325,6 +358,23 @@ def _age(since, now):
     return f"{int(seconds // 86400)}d"
 
 
+def _progressing_too_long(app, now):
+    """Seconds an app has been `Progressing` past the grace, or None.
+
+    None covers all three of "not Progressing", "inside the grace" and "the
+    stamp is unreadable" -- the last of those on purpose. A `Progressing` with
+    no readable `lastTransitionTime` cannot be *shown* to be stuck, and raising
+    on it would report a clock problem as a rollout problem. It still prints
+    with `age ?` on the ok line, so it cannot read as measured.
+    """
+    if app.get("health") != "Progressing":
+        return None
+    seconds = _age_seconds(app.get("since") or "", now)
+    if seconds is None or seconds <= PROGRESSING_GRACE_SECONDS:
+        return None
+    return seconds
+
+
 def report(apps, jobs_by_owner, now, broken_sealed=None):
     """The printed lines and the exit status, as (lines, status)."""
     lines = []
@@ -341,8 +391,18 @@ def report(apps, jobs_by_owner, now, broken_sealed=None):
                 f"OUT OF SYNC  {app['name']}: git and the cluster disagree "
                 f"({app['sync']})")
         if app["health"] not in UNHEALTHY:
+            if _progressing_too_long(app, now) is not None:
+                actionable = True
+                lines.append(
+                    f"STUCK PROGRESSING  {app['name']}: Progressing for "
+                    f"{age or '?'}, since {app['since']} — past the "
+                    f"{PROGRESSING_GRACE_SECONDS // 60}m a real rollout in this "
+                    "cluster takes, so this is a rollout that is not converging "
+                    "rather than one in flight")
+                continue
             if app["sync"] == "Synced":
-                lines.append(f"ok      {app['name']}: Synced, {app['health']}")
+                lines.append(
+                    f"ok      {app['name']}: Synced, {app['health']}{aged}")
             continue
 
         actionable = True
