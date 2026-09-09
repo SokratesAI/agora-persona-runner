@@ -63,6 +63,13 @@ failure this catches is a row sitting at the top of the board for days,
 and catching it the same day is the whole fix. A row whose claim has
 already been pruned is invisible here and always will be, which is why
 #152 and #162 had to be closed by hand rather than found by this.
+
+**The board side is read out of the record store, not out of markdown**
+(issue #203). The ledger side is not: `claims.json` is this loop's own
+vault document and no part of a board, so it is still fetched as text. A
+board whose records will not read is reported as unread and exits 1, for
+the same reason an unreadable board file did -- a sweep that saw one board
+of two must not print "no drift".
 """
 
 import argparse
@@ -76,7 +83,7 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_boards import BOARD_PATHS, parse_board  # noqa: E402
+from agora_runner import board_document, board_records, board_store  # noqa: E402
 from agora_runner.nova_claims import CLAIMS_PATH  # noqa: E402
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -85,6 +92,10 @@ VAULT_TOOL = "/app/bridge/vault_tool.py"
 #: square brackets and `prompt.md` step 2 tells a cycle to claim. Anything
 #: else in the ledger (`journal-seq-1136`, an invented slug for work that came
 #: out of my own head) names no row and is skipped rather than guessed at.
+#: Its two alternatives are the record store's own board names, which is why
+#: nothing translates between them any more (issue #203): the slug `idea-152`
+#: already carries the board `board_records.contents` wants. A test holds the
+#: two together, so a third board cannot be taught to one and not the other.
 SLUG_RE = re.compile(r"^(idea|issue)-(\d+)$")
 
 #: The two `statusKey` values `nova_boards` treats as closed. Kept as a
@@ -104,8 +115,11 @@ def _fetch(path):
     Same shape as `roll_health._fetch` and `doc_integrity._fetch`, for the
     same measured reason: `get` prints `[not found: <path>]` on stdout and
     exits 0, so a return code alone reads a vanished document as an empty
-    one -- which here would report a board with no rows as a board with no
-    drift.
+    one -- which here would read a ledger that is gone as a ledger holding
+    no claims, and print "no drift" over a sweep that swept nothing.
+
+    Since issue #203 the only document this fetches is `claims.json`; the
+    boards come through `board_records.contents`.
     """
     try:
         done = subprocess.run([sys.executable, VAULT_TOOL, "get", path],
@@ -122,6 +136,9 @@ def _fetch(path):
 def newest_board_claims(ledger):
     """`{(board, number): claim}` -- the newest claim per board row.
 
+    `board` is the record store's own name for it -- `idea`, `issue` -- which
+    is the slug's own first half rather than a pluralisation of it.
+
     `ledger` is the parsed `claims.json`. A slug can appear more than once:
     a row taken, released `--progress`, then taken again by a later cycle
     leaves two rows in the file, and only the last one says what the loop
@@ -136,23 +153,29 @@ def newest_board_claims(ledger):
         found = SLUG_RE.match(str(claim.get("item", "")))
         if not found:
             continue
-        key = (found.group(1) + "s", int(found.group(2)))
+        key = (found.group(1), int(found.group(2)))
         previous = newest.get(key)
         if previous is None or str(claim.get("at", "")) >= str(previous.get("at", "")):
             newest[key] = claim
     return newest
 
 
-def check(fetch=_fetch, boards=("ideas", "issues")):
+def check(fetch=_fetch, store=board_store, boards=board_document.BOARDS):
     """`(findings, blocked, mirrors, unreadable, swept)`.
 
     A `findings` entry is `(board, number, status, claim)` -- a row whose
     newest claim is `done` and whose cell is neither closed nor blocked.
     `blocked` is the same tuple for a `done` claim against a row blocked on
     the owner, and `mirrors` for the opposite disagreement; both print and
-    neither raises. `unreadable` names documents that did not come back.
+    neither raises. `unreadable` names sources that did not come back.
     `swept` is the number of rows that carried a claim at all, so "no drift"
     can never be confused with "no claims in the window".
+
+    **The rows come out of the record store, not out of board markdown**
+    (issue #203). The ledger is still a vault document read through `fetch`:
+    `claims.json` is this loop's own file and no part of the boards. `store`
+    is injected the way `board_records.contents` injects it, so a test drives
+    this without a CouchDB.
     """
     findings, blocked, mirrors, unreadable = [], [], [], []
     raw = fetch(CLAIMS_PATH)
@@ -165,12 +188,18 @@ def check(fetch=_fetch, boards=("ideas", "issues")):
     claims = newest_board_claims(ledger)
     swept = 0
     for board in boards:
-        path = BOARD_PATHS[board]["edvard"]
-        text = fetch(path)
-        if text is None:
-            unreadable.append(path)
+        try:
+            items = board_records.contents(board, store=store)["items"]
+        except (board_store.StoreError, board_document.DocumentError,
+                board_records.RecordError, OSError) as exc:
+            # All four mean what an unreadable board file used to mean here:
+            # this sweep did not see that board. A `RecordError` in particular
+            # is a document that contradicts its own board, and sweeping the
+            # rows that did read would report the ledger's other half as
+            # having no drift when it was simply never looked at.
+            unreadable.append("the %s records (%s)" % (board, exc))
             continue
-        for item in parse_board(text)["items"]:
+        for item in items:
             claim = claims.get((board, item["number"]))
             if claim is None:
                 continue
@@ -188,9 +217,8 @@ def check(fetch=_fetch, boards=("ideas", "issues")):
 
 
 def _line(board, number, status, claim):
-    word = "idea" if board == "ideas" else "issue"
     outcome = str(claim.get("outcome") or "").strip()
-    return (f"    {word} #{number} — cell reads {status!r}, claim released "
+    return (f"    {board} #{number} — cell reads {status!r}, claim released "
             f"{claim.get('state')!r} by cycle {claim.get('cycle')} at "
             f"{str(claim.get('at', ''))[:16]}"
             + (f" — {outcome}" if outcome else ""))
@@ -209,8 +237,10 @@ def report(findings, blocked, mirrors, unreadable, swept, out=sys.stdout):
         print("    Fix each with `python3 -m tools.board_status --file <board> "
               "--number <n> --status done --dated <MM-DD> --note '<what closed "
               "it>' --cycle <N>`, inside the usual get --rev-file / put "
-              "--if-rev-file pair. If the row is genuinely not finished, the "
-              "claim was the wrong half: say so on the row.", file=out)
+              "--if-rev-file pair -- that writer is still on the markdown and "
+              "moves to the records with the rest of issue #203. If the row is "
+              "genuinely not finished, the claim was the wrong half: say so on "
+              "the row.", file=out)
     if blocked:
         print(f"CLAIMED DONE, BLOCKED ON EDVARD — {len(blocked)} row(s) carry "
               "a done claim and sit blocked on the owner. This prints and "
@@ -242,10 +272,10 @@ def report(findings, blocked, mirrors, unreadable, swept, out=sys.stdout):
     return 0
 
 
-def main(argv=None):
+def main(argv=None, store=board_store):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.parse_args(argv)
-    return report(*check())
+    return report(*check(store=store))
 
 
 if __name__ == "__main__":

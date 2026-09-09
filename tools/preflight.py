@@ -277,7 +277,7 @@ SUBJECT = {
     "claim_drift":       ("on-box",  "live claims in this cluster"),
     "claim_schema":      ("on-box",  "live claims in this cluster"),
     "roll_health":       ("on-box",  "my own digest and handoff files"),
-    "board_done_drift":  ("on-box",  "the owner's boards against my own claim ledger"),
+    "board_done_drift":  ("on-box",  "the board records against my own claim ledger"),
     "ticket_drift":      ("on-box",  "the ticket store, in CouchDB here"),
     "running_images":    ("on-box",  "containers running in this cluster"),
     "workload_health":   ("on-box",  "workloads in this cluster"),
