@@ -91,6 +91,11 @@ def migrate(markdown, board, apply=False, store=board_store):
     registry = store.read_registry()
     docs, details = plan(markdown, board, registry)
 
+    # `projects` and `milestones` are the registry's totals *after* this
+    # run, not what this run minted. For the switchover that is the useful
+    # number -- the store starts empty and the two are the same -- but the
+    # second board of a pair reports the first board's ids in its count too,
+    # and reading that as "the idea board has 11 projects" is wrong.
     report = {
         "board": board,
         "rows": len(docs),
