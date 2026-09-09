@@ -149,6 +149,10 @@ from agora_runner.cycle_health import MAX_CYCLE_MINUTES, missing_cycles  # noqa:
 from agora_runner.nova_journal import entry_seq, file_cycle, parse_heading  # noqa: E402
 from agora_runner.cycle_number import _NAME_RE  # noqa: E402
 from agora_runner.heartbeat_liveness import AGORA_PUBLIC  # noqa: E402
+from tools.cli_sessions import (  # noqa: E402
+    apply_cli_sessions,
+    index as cli_session_index,
+)
 from agora_runner.runner_lifecycle import (  # noqa: E402
     PATH as RUNNER_LIFECYCLE_PATH, lives)
 
@@ -1693,6 +1697,34 @@ def _runner_life_lines(life, error=None):
             f"(that process started {_oslo(life['started'])})"]
 
 
+def _cli_session_lines(life):
+    """The CLI-transcript line printed under a `silent` row, as lines.
+
+    The absent case is the finding, so it says what it means rather than
+    only what it did not find: a heartbeat turn that starts no session is
+    a runner that never reached the bridge.
+    """
+    if not life:
+        return []
+    if life.get("no_clock"):
+        return ["      Agora gave this conversation no createdAt, so there is no "
+                "instant to join the CLI transcript archive on"]
+    if "uncovered" in life:
+        reach = life["uncovered"]
+        where = ("it holds no transcript this can place on a clock" if reach is None
+                 else f"it begins {_oslo(reach)}")
+        return [f"      the CLI transcript archive does not reach back to "
+                f"{_oslo(life['created'])} ({where}), so nothing here says "
+                f"whether a session started"]
+    paths = life.get("paths") or []
+    if not paths:
+        return ["      no Claude Code session started in this cycle's window, so "
+                "the runner never reached the bridge — the death is upstream of "
+                "the CLI, the same shape as a refused connection"]
+    return [f"      a Claude Code session DID start ({len(paths)}): "
+            + ", ".join(paths)]
+
+
 def apply_branch_landing(results, root, clone, base="main", measure=None):
     """Attach a `branch_landing` list to every `lost` row, in place."""
     measure = measure or branch_landing
@@ -1736,6 +1768,7 @@ def format_report(results, newest, error, window=DEFAULT_WINDOW,
             if verdict == "silent":
                 lines.extend(_runner_life_lines(row.get("runner_life"),
                                                 error=lifecycle_error))
+                lines.extend(_cli_session_lines(row.get("cli_session")))
 
     lines.append("")
     lines.append(f"{len(results)} cycle number(s) in the journal's range have no entry: "
@@ -1838,6 +1871,13 @@ def main(argv=None):
     # print the first sentence for the second.
     if not error and lifecycle_error is None:
         apply_runner_lifecycle(results, conversations, lifecycle)
+    # And the join that DOES reach backwards. The lifecycle ledger starts the
+    # day it was built; the CLI's own transcripts are already on disk back to
+    # 2026-08-18, so this is the only thing that can speak to a historical
+    # silent cycle. Same rule as above: it changes no verdict.
+    if not error:
+        sessions, reach = cli_session_index()
+        apply_cli_sessions(results, conversations, sessions, reach)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all,
                                    lifecycle_error=lifecycle_error)
