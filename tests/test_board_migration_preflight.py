@@ -309,17 +309,37 @@ def test_a_board_it_fully_models_round_trips_with_nothing_lost():
     assert report["document_words_lost"] == 0
 
 
-def test_a_section_parse_board_does_not_model_is_reported_as_lost():
-    """The failure this check exists for: `render_document` is built out of
-    `parse_board`'s four keys, so a section the parser does not model is
-    absent from both sides of every comparison written in its own terms.
-    Both live boards carry one and the four-key check called them clean."""
+def test_a_section_parse_board_does_not_model_now_survives():
+    """The failure this check was built to expose, and the fix for it.
+
+    `render_document` used to be built out of `parse_board`'s four keys
+    alone, so a section the parser does not model was absent from both
+    sides of every comparison written in its own terms -- both live boards
+    carried one and the four-key check called them clean. This renders
+    through the document's own layout now, so the section comes back.
+    """
     report, problems = preflight.document_round_trip(
         BOARD_DOC + "\n## Processed captures\n\n- DONE (Cycle 9): shipped it\n")
-    assert report["document_words_lost"] > 0
-    assert report["document_round_trip"] is False
-    assert any("did not survive as written" in text for text in problems)
-    assert any("Processed" in text for text in problems)
+    assert report["document_words_lost"] == 0
+    assert report["document_round_trip"] is True
+    assert problems == []
+
+
+def test_the_word_stream_still_catches_a_section_that_is_genuinely_dropped():
+    """The detector, proved sharp on the render that has no layout.
+
+    The test above no longer fails, and a check that has stopped failing is
+    only good news if the instrument still works. So this renders the same
+    board *without* a layout -- which is what the four-key renderer did --
+    and asserts `words_lost` names the section.
+    """
+    damaged = BOARD_DOC + "\n## Processed captures\n\n- DONE (Cycle 9): shipped it\n"
+    was = nova_boards.parse_board(damaged)
+    lost = preflight.words_lost(
+        damaged,
+        board_view.render_document(was, preflight.frontmatter_of(damaged)))
+    assert lost
+    assert "Processed" in " ".join(lost)
 
 
 def test_the_four_key_comparison_alone_would_have_passed_that_board():

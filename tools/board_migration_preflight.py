@@ -131,9 +131,23 @@ def document_round_trip(markdown):
     names which key moved rather than a single boolean, because "the
     document does not round trip" and "detail #57 lost its body" are the
     same failure at two useful distances.
+
+    **It renders through the source document's own layout**, which is what
+    took `document_words_lost` on the two live boards from 19,653 and 6,469
+    to 120 and 216 (measured 2026-09-09). Without it the sections
+    `parse_board` does not model -- the owner's `## Processed captures`
+    archive, `# Done — detail`, `ideas.md`'s `## Discarded` table -- are
+    absent from the render, and the four-key comparison above cannot see
+    that because it is written in the parser's own four words. What is left
+    is the detail-heading reflow `board_view.render_detail` chose on
+    purpose: 60 and 108 write-ups on those boards are still written in the
+    older `## N —` shape and are emitted in the newer `### #N —` one, which
+    is two tokens each and no prose.
     """
     was = nova_boards.parse_board(markdown)
-    document = board_view.render_document(was, frontmatter_of(markdown))
+    document = board_view.render_document(
+        was, frontmatter_of(markdown),
+        layout=board_view.document_layout(markdown))
     now = nova_boards.parse_board(document)
     problems = []
     for key in ("captures", "captureReplies", "items", "details"):

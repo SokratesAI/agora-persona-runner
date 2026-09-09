@@ -58,7 +58,8 @@ is lossy for a finished row whose record carries a project other than the
 default. The record keeps it; the markdown cannot say it.
 """
 
-from .nova_boards import DEFAULT_PROJECT
+from .nova_boards import (
+    DEFAULT_PROJECT, _SECTION_RE, _detail_spans)
 
 #: The `## Board` table, left to right. `parse_board` reads these by
 #: index, so the order is load-bearing and the names are not -- it drops
@@ -133,8 +134,22 @@ def render_row(item):
     ])
 
 
-def render_table(items, columns):
-    """A header, its rule and one line per record -- always all columns."""
+def render_table(items, columns, width=None):
+    """A header, its rule and one line per record -- always all columns.
+
+    `width` is how many cells `render_row` will write, and a `columns`
+    shorter than it is padded from the default names. That is not a
+    nicety: `ideas.md`'s header stops at `Milestone` because `Order` was
+    appended to the table without the header being rewritten, so keeping
+    the owner's header verbatim would draw an eight-column header over
+    nine-cell rows. `parse_board` reads by position and never looks at the
+    header, so it would still parse -- and it would still be a broken
+    table on his page.
+    """
+    columns = tuple(columns)
+    if width and len(columns) < width:
+        default = BOARD_COLUMNS if width == len(BOARD_COLUMNS) else DONE_COLUMNS
+        columns = columns + tuple(default[len(columns):width])
     lines = [_line([_cell(name) for name in columns]), _rule(len(columns))]
     lines.extend(render_row(item) for item in items)
     return "\n".join(lines)
@@ -176,7 +191,206 @@ def render_detail(number, title, body):
     return f"{heading}\n\n{body}" if body else heading
 
 
-def render_document(contents, frontmatter="", tail=""):
+def _header_cells(lines):
+    """The header row of the first markdown table in `lines`, or `()`.
+
+    Read here rather than through `nova_boards._table_rows`, which drops
+    the header by shape -- it starts at the first `|---|` rule, because
+    that is what a *row* reader wants. This wants the line the rule sits
+    under, and only that line, so it stops at the rule and never sees a
+    cell carrying an escaped wikilink pipe.
+    """
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        if set(stripped) <= set("|- \t:"):
+            return ()
+        return tuple(
+            cell.strip() for cell in stripped.strip("|").split("|"))
+    return ()
+
+
+#: The block kinds a layout may name. `board` and `done` are the two
+#: generated tables, `detail` is one row's write-up by number, and
+#: `verbatim` is markdown copied through untouched.
+LAYOUT_KINDS = ("board", "done", "detail", "verbatim")
+
+
+def document_layout(markdown):
+    """One board file -> the order of its blocks, with the residue kept whole.
+
+    This is the record home the `tail` argument below was a placeholder
+    for. `parse_board` models four things -- captures, the two tables and
+    the detail bodies -- and a board file contains more than that: the
+    owner's `## Processed captures` archive, the `# Done — detail` heading
+    that splits the write-ups in two, and `ideas.md`'s `## Discarded`
+    table. Measured 2026-09-09, that residue is 19,653 words of `issues.md`
+    and 6,469 of `ideas.md`, and a view rendered from the four keys alone
+    deletes every one of them.
+
+    A block is `{"kind": "board"}`, `{"kind": "done"}`,
+    `{"kind": "detail", "number": n}` or
+    `{"kind": "verbatim", "markdown": ...}`, in document order, covering
+    everything from the first heading to the end of the file. The preamble
+    -- frontmatter and the capture bullets -- is not in here, because
+    `render_document` already draws it from the records and the frontmatter
+    it is handed.
+
+    **Position is the whole point, not just presence.** `## Discarded` sits
+    *between* the tables and `# Details` on `ideas.md`, and `# Done — detail`
+    sits between two runs of write-ups on both boards, so a residue appended
+    at the end would be reported lost by
+    `board_migration_preflight.words_lost` -- it is a sequence diff, and a
+    word deleted here and added there is a document that changed. Holding
+    the residue as ordered blocks is what lets the render put each piece
+    back where the owner has it.
+
+    It reads `nova_boards`' own line scanner rather than a second one.
+    `_detail_spans` already answers "which lines are a write-up" for the
+    parser and the delete path, and a third copy of that question here is
+    the duplication `prompt.md` says to stop writing at the third instance.
+    """
+    lines = (markdown or "").split("\n")
+    claimed = {}
+    for number, (heading_line, _, end) in _detail_spans(markdown).items():
+        claimed[heading_line] = (end, {"kind": "detail", "number": int(number)})
+
+    headings = sorted(
+        {index for index, line in enumerate(lines) if _SECTION_RE.match(line)}
+        | set(claimed))
+    for position, line_no in enumerate(headings):
+        if line_no in claimed:
+            continue
+        match = _SECTION_RE.match(lines[line_no])
+        name = match.group(2).strip().lower()
+        if name not in ("board", "done"):
+            continue
+        end = headings[position + 1] if position + 1 < len(headings) else len(lines)
+        block = {"kind": name}
+        # The owner's own header row, kept rather than regenerated:
+        # `ideas.md` calls its second column `Idea` where `BOARD_COLUMNS`
+        # says `Item`. `parse_board` drops the header by shape and never
+        # reads a word of it, so this is invisible to every check written
+        # in the parser's terms -- and rendering the constant would rename
+        # a column on his page for no reason anyone chose.
+        header = _header_cells(lines[line_no + 1:end])
+        if header:
+            block["columns"] = header
+        claimed[line_no] = (end, block)
+
+    blocks = []
+    pending = []
+
+    def flush():
+        text = "\n".join(pending).strip()
+        pending.clear()
+        if text:
+            blocks.append({"kind": "verbatim", "markdown": text})
+
+    index = headings[0] if headings else len(lines)
+    while index < len(lines):
+        if index in claimed:
+            end, block = claimed[index]
+            flush()
+            blocks.append(block)
+            index = max(end, index + 1)
+            continue
+        pending.append(lines[index])
+        index += 1
+    flush()
+    return blocks
+
+
+def _default_order(items, details, titles):
+    """The fixed order this drew before a layout could be stored.
+
+    Still the answer for a caller with no layout -- a board being rendered
+    for the first time, and every test that only cares about the tables.
+    """
+    parts = []
+    tables = render_tables(items)
+    parts.append("## Board\n\n" + tables["board"])
+    if any(item.get("done") for item in items):
+        parts.append("## Done\n\n" + tables["done"])
+    if details:
+        sections = ["# Details"]
+        for number in details:
+            sections.append(
+                render_detail(number, titles.get(int(number), ""), details[number]))
+        parts.append("\n\n".join(sections))
+    return parts
+
+
+def _laid_out(items, details, titles, layout):
+    """The blocks `document_layout` recorded, filled from today's records.
+
+    Three rules, and each of them is a way the stored layout and the live
+    records can disagree:
+
+    **A detail the layout does not name is still written.** A row boarded
+    since the layout was captured has a write-up and no seat, and dropping
+    it would make the generated view lossy in the one direction the whole
+    exercise is meant to close. They go after the last detail block, which
+    is where a cycle appends one today.
+
+    **A detail the layout names and the records no longer hold is skipped.**
+    That row's write-up was deleted; the layout is a memory of the document,
+    not a claim about what still exists.
+
+    **`## Done` is written only when a row is in it**, the same rule the
+    fixed order follows. A stored layout that names the section outlives
+    the last done row, and emitting an empty table would put a heading on
+    his page that nothing chose.
+    """
+    written = set()
+    parts = []
+    detail_positions = [
+        index for index, block in enumerate(layout)
+        if block.get("kind") == "detail"]
+    last_detail = detail_positions[-1] if detail_positions else None
+    for index, block in enumerate(layout):
+        kind = block.get("kind")
+        if kind == "board":
+            parts.append("## Board\n\n" + render_table(
+                [row for row in items if not row.get("done")],
+                block.get("columns") or BOARD_COLUMNS,
+                width=len(BOARD_COLUMNS)))
+        elif kind == "done":
+            if any(item.get("done") for item in items):
+                parts.append("## Done\n\n" + render_table(
+                    [row for row in items if row.get("done")],
+                    block.get("columns") or DONE_COLUMNS,
+                    width=len(DONE_COLUMNS)))
+        elif kind == "verbatim":
+            text = (block.get("markdown") or "").strip()
+            if text:
+                parts.append(text)
+        elif kind == "detail":
+            number = int(block["number"])
+            if number in details:
+                written.add(number)
+                parts.append(
+                    render_detail(number, titles.get(number, ""), details[number]))
+        else:
+            raise ValueError(
+                f"a layout block's kind must be one of {LAYOUT_KINDS}, "
+                f"not {kind!r}")
+        if index == last_detail:
+            for number in details:
+                if int(number) in written:
+                    continue
+                written.add(int(number))
+                parts.append(render_detail(
+                    number, titles.get(int(number), ""), details[number]))
+    if last_detail is None:
+        for number in details:
+            parts.append(render_detail(
+                number, titles.get(int(number), ""), details[number]))
+    return parts
+
+
+def render_document(contents, frontmatter="", tail="", layout=None):
     """A parsed board -> the whole markdown document, ready to write back.
 
     This is the envelope `render_tables` does not draw. The spec asks for
@@ -205,17 +419,24 @@ def render_document(contents, frontmatter="", tail=""):
     ragged number of table cells, so the first generated write is a
     one-time reflow.
 
-    `tail` is verbatim markdown appended after the details, and it exists
-    because **`parse_board` does not model the whole document and a view
-    built from its four keys alone deletes the rest.** Measured on the two
-    live boards, 2026-09-09: rendering `issues.md` from its own parse drops
-    19,653 words and `ideas.md` drops 6,469 -- his `## Processed captures`
-    archive on both, the `# Done — detail` heading, and `ideas.md`'s
-    `## Discarded` table. None of that is a row, a capture or a detail
-    body, so nothing in the four keys can carry it. Until those sections
-    have a record home of their own, a caller that has the source document
-    must pass what the parse did not account for; a caller that renders
-    from records alone is writing a document that does not have it.
+    `layout` is `document_layout`'s answer for the source document, and it
+    is the record home for what the four keys do not model. **`parse_board`
+    does not model the whole document and a view built from its four keys
+    alone deletes the rest.** Measured on the two live boards, 2026-09-09:
+    rendering `issues.md` from its own parse drops 19,653 words and
+    `ideas.md` drops 6,469 -- his `## Processed captures` archive on both,
+    the `# Done — detail` heading, and `ideas.md`'s `## Discarded` table.
+    Rendering through the layout takes those to 120 and 216, and what is
+    left is `render_detail`'s deliberate heading reflow rather than prose.
+    A caller with no layout gets the fixed order and the old hole; that is
+    the right answer for a board being rendered for the first time and the
+    wrong one for a write-back.
+
+    `tail` predates the layout and is verbatim markdown appended after
+    everything else. It stays because a caller that only needs to bolt one
+    section on has no document to take a layout from, and because deleting
+    an argument in the same commit that supersedes it hides which of the
+    two a bug came from.
 
     `## Done` is written only when a row is in it. Both live boards have
     zero done rows today and neither carries the section, so emitting an
@@ -244,19 +465,12 @@ def render_document(contents, frontmatter="", tail=""):
     parts.append("\n".join(bullets))
 
     items = list(contents.get("items") or [])
-    tables = render_tables(items)
-    parts.append("## Board\n\n" + tables["board"])
-    if any(item.get("done") for item in items):
-        parts.append("## Done\n\n" + tables["done"])
-
     details = contents.get("details") or {}
-    if details:
-        titles = {int(item["number"]): item.get("title") or "" for item in items}
-        sections = ["# Details"]
-        for number in details:
-            sections.append(
-                render_detail(number, titles.get(int(number), ""), details[number]))
-        parts.append("\n\n".join(sections))
+    titles = {int(item["number"]): item.get("title") or "" for item in items}
+    if layout:
+        parts.extend(_laid_out(items, details, titles, layout))
+    else:
+        parts.extend(_default_order(items, details, titles))
 
     tail = (tail or "").strip()
     if tail:
