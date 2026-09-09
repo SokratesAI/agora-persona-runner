@@ -67,7 +67,7 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import (board_document, board_records, board_store,  # noqa: E402
-                          entity_id, nova_boards, rank_key)
+                          board_view, entity_id, nova_boards, rank_key)
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
@@ -142,6 +142,13 @@ def migrate(markdown, board, apply=False, store=board_store):
     registry = store.read_registry()
     docs, details, captures = plan(markdown, board, registry)
 
+    # The block order of the source document, stored beside the records.
+    # Without it the only thing that can render this board back without
+    # deleting his `## Processed captures` archive is a caller holding the
+    # markdown -- which is the markdown the records exist to replace, so a
+    # migration that stored rows and no layout has not finished.
+    layout = board_view.document_layout(markdown)
+
     # `projects` and `milestones` are the registry's totals *after* this
     # run, not what this run minted. For the switchover that is the useful
     # number -- the store starts empty and the two are the same -- but the
@@ -152,6 +159,7 @@ def migrate(markdown, board, apply=False, store=board_store):
         "rows": len(docs),
         "details": len(details),
         "captures": len(captures),
+        "layout_blocks": len(layout),
         "projects": len(registry.get("projects") or {}),
         "milestones": len(registry.get("milestones") or {}),
         "applied": bool(apply),
@@ -179,6 +187,12 @@ def migrate(markdown, board, apply=False, store=board_store):
             f"{len(wrote_captures['failures'])} capture(s) failed to write; "
             "the store now holds a partial migration and must be emptied "
             "before a retry")
+    # After both key ranges and before the report, because a layout stored
+    # over rows that failed to write would describe a board that is not
+    # there; the two `MigrationRefused` raises above leave the store
+    # partial and this must not add to it.
+    store.write_layout(board, layout)
+    report["layout_written"] = True
     report["written"] = written.get("written") or 0
     report["captures_written"] = wrote_captures.get("written") or 0
     report["stored"] = len(store.stored_documents(board))

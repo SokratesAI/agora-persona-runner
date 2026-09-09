@@ -9,7 +9,7 @@ a status key computed from a stale copy of a rule that has since moved.
 
 import pytest
 
-from agora_runner import nova_boards, rank_key
+from agora_runner import board_document, nova_boards, rank_key
 from agora_runner.board_document import (
     BOARDS,
     CAPTURE_DOCUMENT_TYPE,
@@ -341,3 +341,100 @@ def test_a_capture_id_sits_outside_the_range_the_store_reads_rows_with():
 
     capture_id = capture_document_id("issue", "cap_1")
     assert not (start <= capture_id < end)
+
+
+# ---------------------------------------------------------------------------
+# Layouts
+# ---------------------------------------------------------------------------
+
+
+def test_the_layout_id_is_outside_both_of_a_boards_key_ranges():
+    """The id decision, asserted rather than left to the reader.
+
+    `board_store` selects a board's rows with an `_all_docs` range over the
+    literal prefix `board:<board>:` and its captures over `capture:<board>:`.
+    A layout id inside either one would be handed back as a row and
+    tombstoned by `write_rows`' prune -- so this is the guard, and it is
+    written as the two prefixes rather than as the literal string, so
+    renaming a range breaks it.
+    """
+    for board in board_document.BOARDS:
+        doc_id = board_document.layout_document_id(board)
+        assert not doc_id.startswith(f"board:{board}:")
+        assert not doc_id.startswith(f"capture:{board}:")
+    assert (board_document.layout_document_id("issue")
+            != board_document.layout_document_id("idea"))
+
+
+def test_a_layout_round_trips_through_its_document():
+    blocks = [
+        {"kind": "board", "columns": ["#", "Idea"]},
+        {"kind": "verbatim", "markdown": "## Discarded\n\nnothing yet"},
+        {"kind": "detail", "number": 7},
+    ]
+    doc = board_document.to_layout_document(blocks, "idea")
+
+    assert doc["_id"] == "board:layout:idea"
+    assert doc["type"] == board_document.LAYOUT_DOCUMENT_TYPE
+    assert doc["board"] == "idea"
+    assert board_document.layout_blocks_of(doc) == blocks
+
+
+def test_the_layout_type_is_not_the_row_type():
+    """The CouchDB views key on `doc.type`; a layout is not a row."""
+    assert (board_document.LAYOUT_DOCUMENT_TYPE
+            != board_document.DOCUMENT_TYPE)
+    assert (board_document.LAYOUT_DOCUMENT_TYPE
+            != board_document.CAPTURE_DOCUMENT_TYPE)
+
+
+def test_every_kind_board_view_mints_is_accepted():
+    """The accepted kinds are `board_view`'s own tuple, not a second copy.
+
+    A layout block whose kind this module does not know is refused, and the
+    list of known kinds lives where the blocks are minted. If that tuple
+    grows a kind and this module carried its own copy, every layout
+    containing the new kind would be unstorable.
+    """
+    from agora_runner import board_view
+
+    for kind in board_view.LAYOUT_KINDS:
+        block = {"kind": kind}
+        if kind == "detail":
+            block["number"] = 1
+        if kind == "verbatim":
+            block["markdown"] = "x"
+        assert board_document.to_layout_document([block], "issue")
+
+
+@pytest.mark.parametrize("blocks", [
+    "not a list",
+    [{"kind": "prose", "markdown": "x"}],
+    [{"kind": "detail", "number": "7"}],
+    [{"kind": "verbatim"}],
+    [["kind", "board"]],
+])
+def test_a_layout_that_would_delete_his_archive_is_refused(blocks):
+    """`render_document` drops a block it does not recognise silently.
+
+    So a layout that lost its `verbatim` blocks -- a JSON load of the wrong
+    file, a `number` that arrived as a string -- renders a board with the
+    `## Processed captures` archive deleted and no error anywhere. That is
+    the same 19,653 words this whole piece exists to keep, so the shape is
+    refused at the one place that mints the document.
+    """
+    with pytest.raises(board_document.DocumentError):
+        board_document.to_layout_document(blocks, "issue")
+
+
+def test_a_layout_document_served_under_the_wrong_board_is_refused():
+    doc = board_document.to_layout_document([{"kind": "board"}], "issue")
+    doc["board"] = "idea"
+
+    with pytest.raises(board_document.DocumentError):
+        board_document.layout_blocks_of(doc)
+
+
+def test_a_layout_for_a_board_that_is_not_his_is_refused():
+    with pytest.raises(board_document.DocumentError):
+        board_document.layout_document_id("roadmap")

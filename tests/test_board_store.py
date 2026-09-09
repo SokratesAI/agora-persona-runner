@@ -660,3 +660,145 @@ def test_a_capture_bulk_write_that_reports_an_error_is_not_reported_as_clean(
     monkeypatch.setattr(ticket_docs, "_req", failing)
     summary = board_store.write_captures("issue", [_capture("issue", "cap_1")])
     assert len(summary["failures"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Layouts
+# ---------------------------------------------------------------------------
+
+LAYOUT = [
+    {"kind": "board", "columns": ["#", "Idea"]},
+    {"kind": "verbatim", "markdown": "## Discarded\n\n| # | Item |"},
+    {"kind": "detail", "number": 7},
+]
+
+
+def test_an_unstored_layout_reads_as_none_and_never_as_an_empty_list(couch):
+    """Absent and empty are opposite instructions to `render_document`.
+
+    `layout=None` means "draw the fixed default order" and `layout=[]` means
+    "this document has no blocks", which renders a board file holding its
+    frontmatter, his capture box and nothing else. A reader that flattened
+    the absent case to `[]` would delete every row, every write-up and the
+    whole `## Processed captures` archive the first time it rendered a board
+    that had never been migrated -- with no error, because an empty layout
+    is a valid layout.
+    """
+    assert board_store.read_layout("issue") is None
+    assert board_store.read_layout("issue") != []
+
+    board_store.write_layout("issue", [])
+    assert board_store.read_layout("issue") == []
+
+
+def test_a_layout_survives_the_database_and_comes_back_in_order(couch):
+    board_store.write_layout("idea", LAYOUT)
+
+    assert board_store.read_layout("idea") == LAYOUT
+
+
+def test_one_boards_layout_is_not_the_others(couch):
+    board_store.write_layout("issue", [{"kind": "board"}])
+    board_store.write_layout("idea", LAYOUT)
+
+    assert board_store.read_layout("issue") == [{"kind": "board"}]
+    assert board_store.read_layout("idea") == LAYOUT
+
+
+def test_the_layout_is_not_handed_back_as_a_row_or_a_capture(couch):
+    """The prefix guard, measured through the store rather than the id.
+
+    `test_board_document.py` asserts the id sits outside both prefixes. This
+    is the consequence: a layout inside the row range would arrive in
+    `read_rows`, reach `from_document` and fail there -- or worse, be
+    tombstoned by the next `write_rows` prune. Both ranges are checked
+    because the layout is written under `board:` and the captures are not.
+    """
+    board_store.write_layout("issue", LAYOUT)
+    board_store.write_rows("issue", [_row("issue", 1, rank="0|a:")])
+
+    assert sorted(dict(board_store.stored_documents("issue"))) == [
+        "board:issue:1"]
+    assert dict(board_store.stored_capture_documents("issue")) == {}
+    assert board_store.read_layout("issue") == LAYOUT
+
+
+def test_a_rewrite_of_the_rows_does_not_tombstone_the_layout(couch):
+    """`write_rows(board, [])` is the restore path `board_migrate.verify`
+    runs in a `finally`, and it prunes everything in the row range. The
+    layout must survive it, or a verify run would delete the block order of
+    a board it was only supposed to read."""
+    board_store.write_layout("issue", LAYOUT)
+    board_store.write_rows("issue", [])
+    board_store.write_captures("issue", [])
+
+    assert board_store.read_layout("issue") == LAYOUT
+
+
+def test_an_unchanged_layout_costs_no_revision(couch):
+    """A migration re-run computes the same blocks from the same markdown."""
+    first = board_store.write_layout("issue", LAYOUT)
+    again = board_store.write_layout("issue", list(LAYOUT))
+
+    assert again["_rev"] == first["_rev"]
+
+
+def test_a_changed_layout_is_written(couch):
+    first = board_store.write_layout("issue", LAYOUT)
+    changed = board_store.write_layout("issue", LAYOUT[:2])
+
+    assert changed["_rev"] != first["_rev"]
+    assert board_store.read_layout("issue") == LAYOUT[:2]
+
+
+def test_a_layout_that_lost_the_race_is_written_over(couch, monkeypatch):
+    """The one place this deliberately differs from `write_registry`.
+
+    A registry holds minted ids, so a caller that lost a race and resent its
+    body would orphan rows permanently -- `write_registry` raises instead. A
+    layout holds no identity: it is a function of the source markdown, and
+    two cycles migrating the same board compute the same blocks. So the 409
+    is retried against the winner's revision rather than raised.
+    """
+    board_store.write_layout("issue", [{"kind": "board"}])
+    real = ticket_docs._req
+    stale = {"n": 0}
+
+    def conflict_once(method, path, body=None, timeout=60):
+        if (method == "PUT" and "layout" in path and stale["n"] == 0):
+            stale["n"] = 1
+            return 409, {"error": "conflict"}
+        return real(method, path, body=body, timeout=timeout)
+
+    monkeypatch.setattr(ticket_docs, "_req", conflict_once)
+    board_store.write_layout("issue", LAYOUT)
+
+    monkeypatch.setattr(ticket_docs, "_req", real)
+    assert stale["n"] == 1
+    assert board_store.read_layout("issue") == LAYOUT
+
+
+def test_a_layout_for_a_board_that_is_not_his_is_refused(couch):
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_layout("roadmap", LAYOUT)
+    with pytest.raises(board_document.DocumentError):
+        board_store.read_layout("roadmap")
+
+
+def test_a_re_migration_of_the_same_markdown_costs_no_revision(couch):
+    """The tuple trap, pinned where it bit.
+
+    `board_view.document_layout` puts the owner's own table header in the
+    block as a **tuple**, because `_header_cells` returns one, and JSON has
+    no tuple -- so the stored copy comes back as a list. Comparing a fresh
+    layout against the stored one without normalising means they never
+    compare equal, and every migration re-run burns a revision on a document
+    that did not change. `LAYOUT` above uses plain lists and cannot see it.
+    """
+    with_tuple = [{"kind": "board", "columns": ("#", "Idea")}]
+    first = board_store.write_layout("idea", with_tuple)
+    again = board_store.write_layout("idea", list(with_tuple))
+
+    assert again["_rev"] == first["_rev"]
+    assert board_store.read_layout("idea") == [
+        {"kind": "board", "columns": ["#", "Idea"]}]

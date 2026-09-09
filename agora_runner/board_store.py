@@ -499,3 +499,69 @@ def write_registry(registry):
     if status not in (200, 201):
         raise StoreError(f"writing {REGISTRY_ID}: {status} {json.dumps(body)[:200]}")
     return dict(doc, _rev=body["rev"])
+
+
+def read_layout(board):
+    """The stored block order for one board, or `None` if there is none.
+
+    **Absent is `None` and never `[]`, and the two mean opposite things.**
+    `board_view.render_document` treats `layout=None` as "no layout stored,
+    draw the fixed default order" and an empty list as "this document has no
+    blocks", which renders a board file containing its frontmatter, his
+    capture box and nothing else. So a reader that flattened the absent case
+    to `[]` would delete every row, every write-up and 19,653 words of
+    archive on the first render of a board that had never been migrated --
+    silently, because an empty layout is a valid layout.
+    """
+    _check_board(board)
+    doc_id = board_document.layout_document_id(board)
+    status, body = ticket_docs._req(
+        "GET", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}")
+    if status == 200:
+        return board_document.layout_blocks_of(body)
+    if status == 404:
+        return None
+    raise StoreError(f"reading {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
+def write_layout(board, blocks):
+    """Store the block order for one board. Returns the document written.
+
+    A document whose blocks have not changed is not written, for the same
+    reason `write_rows` and `write_registry` skip one: a migration re-run
+    that computed the same layout must cost no revision.
+
+    **A 409 here is retried against the winner's revision, where
+    `write_registry` refuses to.** That difference is deliberate and it is
+    the reason these are two functions rather than one. A registry holds
+    minted ids, so a caller that lost a race and resent its body would
+    overwrite ids that rows already point at -- permanently, since there is
+    no delete. A layout holds no identity at all: it is a pure function of
+    the source markdown, and two cycles migrating the same board compute the
+    same blocks. Losing this race costs nothing that cannot be recomputed
+    from the document it was read from.
+    """
+    _check_board(board)
+    doc = board_document.to_layout_document(blocks, board)
+    doc_id = doc["_id"]
+    path = f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}"
+    for attempt in (0, 1):
+        status, held = ticket_docs._req("GET", path)
+        if status == 200:
+            # `_payload` on both sides, not just the stored one: on the
+            # retry after a 409 this document already carries the revision
+            # from the losing attempt, and comparing that against a
+            # revisionless payload makes the skip miss forever.
+            if ticket_docs._payload(held) == ticket_docs._payload(doc):
+                return held
+            doc["_rev"] = held["_rev"]
+        elif status == 404:
+            doc.pop("_rev", None)
+        else:
+            raise StoreError(f"reading {doc_id}: {status} {json.dumps(held)[:200]}")
+        status, body = ticket_docs._req("PUT", path, doc)
+        if status in (200, 201):
+            return dict(doc, _rev=body["rev"])
+        if status == 409 and attempt == 0:
+            continue
+        raise StoreError(f"writing {doc_id}: {status} {json.dumps(body)[:200]}")

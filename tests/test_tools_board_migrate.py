@@ -12,7 +12,7 @@ reached a database pass every test in this file.
 import pytest
 
 from agora_runner import (board_document, board_records, board_store,
-                          entity_id, ticket_docs)
+                          board_view, entity_id, nova_boards, ticket_docs)
 from tools import board_migrate
 
 from tests.test_board_store import FakeCouch
@@ -399,3 +399,95 @@ def test_the_cli_verify_exits_zero_when_the_seam_agrees(couch, tmp_path,
     out = capsys.readouterr().out
     assert code == 0
     assert "verify.contents_matches_parse: True" in out
+
+
+# ---------------------------------------------------------------------------
+# The layout, stored beside the records
+# ---------------------------------------------------------------------------
+
+
+def _with_archive(markdown):
+    """His `## Processed captures` archive, spliced where he actually keeps
+    it: between the table and `# Details`. Appending it to the end would
+    make the position assertions below pass on a renderer that simply
+    tacked the residue on, and position is the requirement --
+    `board_migration_preflight.words_lost` is a sequence diff."""
+    return markdown.replace(
+        "\n# Details\n",
+        "\n## Processed captures\n\n- an old bullet he keeps\n\n# Details\n")
+
+
+def test_a_dry_run_stores_no_layout(couch):
+    """Same contract as the rows: the switchover runs this against his live
+    boards first, and a dry run that wrote is unrecoverable by the time
+    anyone reads the report."""
+    report = board_migrate.migrate(board([(1, "Nova", "")]), "issue")
+
+    assert report["layout_blocks"] >= 1
+    assert "layout_written" not in report
+    assert board_store.read_layout("issue") is None
+
+
+def test_apply_stores_the_layout_of_the_document_it_migrated(couch):
+    markdown = board([(1, "Nova", "")], details=[(1, "why")])
+    report = board_migrate.migrate(markdown, "issue", apply=True)
+
+    assert report["layout_written"] is True
+    assert (board_store.read_layout("issue")
+            == board_document.to_layout_document(
+                board_view.document_layout(markdown), "issue")["blocks"])
+
+
+def test_the_stored_layout_renders_the_residue_back(couch):
+    """The point of storing it at all, asserted end to end.
+
+    His boards carry sections `parse_board` does not model -- the
+    `## Processed captures` archive, the `# Done — detail` heading,
+    `ideas.md`'s `## Discarded` table -- 19,653 words of `issues.md` and
+    6,469 of `ideas.md` measured on 2026-09-09. A render driven by the four
+    parsed keys alone deletes every one of them. This migrates a board with
+    such a section, reads the layout back out of the store, and renders from
+    the records: the section has to come back, **in its own position**,
+    because `words_lost` is a sequence diff and a residue appended at the
+    end still reads as lost.
+    """
+    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    layout = board_store.read_layout("issue")
+    rendered = board_view.render_document(
+        nova_boards.parse_board(markdown), layout=layout)
+
+    assert "an old bullet he keeps" in rendered
+    assert rendered.index("Processed captures") > rendered.index("| # |")
+    assert rendered.index("Processed captures") < rendered.index("# Details")
+
+
+def test_without_the_stored_layout_that_residue_is_gone(couch):
+    """The other half of the test above, and the reason it is not vacuous.
+
+    A check that only asserts the section is present passes just as well
+    against a renderer that emits the whole source document, or against one
+    that happens to keep everything. This renders the same records with no
+    layout and asserts the archive is **not** there -- so the assertion
+    above is measuring the layout rather than the fixture.
+    """
+    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
+
+    without = board_view.render_document(nova_boards.parse_board(markdown))
+
+    assert "an old bullet he keeps" not in without
+
+
+def test_a_second_migration_of_the_same_board_is_refused_before_the_layout(couch):
+    """`migrate` refuses a board that already holds records, and the layout
+    must not be written by the run that was refused -- it is computed before
+    the refusal has a chance to fire in a later version of this function."""
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    first = board_store.read_layout("issue")
+
+    with pytest.raises(board_migrate.MigrationRefused):
+        board_migrate.migrate(board([(2, "Marcus", "")]), "issue", apply=True)
+
+    assert board_store.read_layout("issue") == first
