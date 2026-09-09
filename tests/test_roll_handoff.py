@@ -349,27 +349,41 @@ def test_no_digest_line_with_a_cycle_number_means_no_cut():
     assert roll_handoff.oldest_digest_cycle(undated) is None
 
 
-def test_selection_by_age_skips_what_it_cannot_name_or_date():
+def test_selection_by_age_skips_only_what_it_cannot_date():
     items = live_items(AGED)
     picked = roll_handoff.select_older_than(items, 669)
-    assert [item_slug(items[i]) for i in picked] == ["stale-thing"]
+    assert [item_slug(items[i]) for i in picked] == ["stale-thing", None]
     # boundary-thing cites exactly 669 and stays: the digest still shows
     # that cycle, so the two sections cover the same stretch of time.
     # amended-thing cites 640 and 670; the newest citation keeps it.
-    # undatable-thing and the unslugged paragraph are never selectable.
+    # undatable-thing cites no cycle and nothing here can date it.
+    # The unslugged paragraph cites 600 and IS selected -- the age rule
+    # works in indices, and requiring a name it never uses was what let
+    # an item 295 cycles behind sit in the live section forever.
+
+
+def test_an_unslugged_item_is_the_one_the_slug_rule_used_to_strand():
+    # The regression this test exists for: the same item, dated 600 and
+    # older than every cutoff, must be selectable. If a future change
+    # reintroduces a name requirement here, this fails and the one above
+    # keeps passing, because stale-thing has a slug.
+    items = live_items(AGED)
+    unslugged = [i for i in items if item_slug(i) is None and "no slug" in i]
+    assert len(unslugged) == 1
+    picked = roll_handoff.select_older_than(items, 669)
+    assert items[picked[-1]] is unslugged[0]
 
 
 def test_age_roll_moves_the_old_items_and_records_the_rule():
     new_live, new_archive, moved = roll_handoff.archive_older_than(
         AGED, "", 669, TODAY
     )
-    assert [item_slug(i) for i in moved] == ["stale-thing"]
+    assert [item_slug(i) for i in moved] == ["stale-thing", None]
     assert [item_slug(i) for i in live_items(new_live)] == [
         "recent-thing",
         "amended-thing",
         "boundary-thing",
         "undatable-thing",
-        None,
     ]
     assert "oldest cycle the digest section" in new_archive
     assert "**Retired 08-30**" in new_archive
@@ -445,15 +459,18 @@ def test_a_duplicate_slug_still_stops_a_roll_that_names_it_by_hand():
 
 
 def test_nothing_to_roll_names_the_items_it_cannot_date():
-    # `AGED` holds one undated item and one with no slug, and neither is
-    # retirable at any cutoff. At cutoff 600 nothing moves, and the old
-    # message said all six "cite cycle 600 or later" -- four do.
+    # `AGED` holds one item citing no cycle, and it is not retirable at
+    # any cutoff. At cutoff 600 nothing moves, and the old message said
+    # all six "cite cycle 600 or later" -- five do, the sixth is undated.
     items = live_items(AGED)
     said = roll_handoff.explain_none_older_than(items, 600)
     assert "of 6 handoff item(s)" in said
-    assert "4 cite(s) cycle 600 or later" in said
-    assert "1 carr(y/ies) no slug" in said
+    assert "5 cite(s) cycle 600 or later" in said
     assert "1 cite(s) no cycle at all" in said
+    # A missing slug is no longer a reason anything is skipped, so it is
+    # no longer a bucket -- reporting it would send a cycle looking for a
+    # name requirement that is not there.
+    assert "no slug" not in said
 
 
 def test_nothing_to_roll_says_only_the_true_thing_when_every_item_is_recent():
@@ -483,12 +500,13 @@ def test_nothing_to_roll_says_so_when_it_is_asked_out_of_sequence():
     # rather than inferring it as everything left over, so a caller that
     # asks before `select_older_than` has returned empty is told, instead
     # of being handed a confident sentence about items nothing looked at.
-    # AGED at cutoff 669: three items are genuinely at or after it, one
-    # (stale-thing, cycle 640) is not, plus the unslugged and undated pair.
+    # AGED at cutoff 669: three items are genuinely at or after it, two
+    # (stale-thing at 640 and the unslugged paragraph at 600) are not,
+    # plus the one item that cites no cycle at all.
     items = live_items(AGED)
     said = roll_handoff.explain_none_older_than(items, 669)
     assert "3 cite(s) cycle 669 or later" in said
-    assert "1 (y)our caller should have retired" in said
+    assert "2 (y)our caller should have retired" in said
     assert "asked out of sequence" in said
 
 
@@ -511,9 +529,9 @@ def test_the_cli_prints_the_bucket_breakdown_when_nothing_rolls(tmp_path, capsys
     said = capsys.readouterr().out
     assert code == 0
     assert "nothing to roll: of 6 handoff item(s)" in said
-    assert "4 cite(s) cycle 600 or later" in said
-    assert "1 carr(y/ies) no slug" in said
+    assert "5 cite(s) cycle 600 or later" in said
     assert "1 cite(s) no cycle at all" in said
+    assert "no slug" not in said
     assert "asked out of sequence" not in said
     assert live.read_text() == before
 
