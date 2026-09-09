@@ -61,13 +61,19 @@ def job(name, cronjob, created, failed=False, succeeded=False, namespace="agents
 
 
 def _which(args):
-    for kind in ("applications", "jobs", "sealedsecrets"):
+    for kind in ("applications", "cronjobs", "jobs", "sealedsecrets"):
         if kind in args:
             return kind
     raise AssertionError(f"unexpected kubectl call: {args}")
 
 
-def fake_kubectl(apps=(), jobs=(), sealed=(), fail_on=None, stdout=None):
+def cronjob(name, namespace="agents", suspend=False):
+    spec = {"suspend": suspend} if suspend is not None else {}
+    return {"metadata": {"name": name, "namespace": namespace}, "spec": spec}
+
+
+def fake_kubectl(apps=(), jobs=(), sealed=(), cronjobs=(), fail_on=None,
+                 stdout=None):
     """A `subprocess.run` that answers the two queries the tool makes."""
     def runner(args, **kwargs):
         which = _which(args)
@@ -75,20 +81,23 @@ def fake_kubectl(apps=(), jobs=(), sealed=(), fail_on=None, stdout=None):
             return subprocess.CompletedProcess(args, 1, "", "Error from server (Forbidden)")
         if stdout is not None and which == stdout[0]:
             return subprocess.CompletedProcess(args, 0, stdout[1], "")
-        items = {"applications": apps, "jobs": jobs, "sealedsecrets": sealed}[which]
+        items = {"applications": apps, "jobs": jobs, "sealedsecrets": sealed,
+                 "cronjobs": cronjobs}[which]
         return subprocess.CompletedProcess(args, 0, json.dumps({"items": list(items)}), "")
     return runner
 
 
-def report_for(apps, jobs, sealed=()):
-    runner = fake_kubectl(apps=apps, jobs=jobs, sealed=sealed)
+def report_for(apps, jobs, sealed=(), cronjobs=()):
+    runner = fake_kubectl(apps=apps, jobs=jobs, sealed=sealed, cronjobs=cronjobs)
     parsed, why = argocd_health.read_applications(runner)
     assert why is None
     by_owner, why = argocd_health.read_jobs(runner)
     assert why is None
     broken, why = argocd_health.read_sealed_secrets(runner)
     assert why is None
-    return argocd_health.report(parsed, by_owner, NOW, broken)
+    paused, why = argocd_health.read_suspended_cronjobs(runner)
+    assert why is None
+    return argocd_health.report(parsed, by_owner, NOW, broken, paused)
 
 
 # --- the clean case -------------------------------------------------
@@ -652,3 +661,99 @@ def test_a_healthy_app_never_trips_the_new_branch():
     lines, status = argocd_health.report([app], {}, _NOW)
     assert status == 0
     assert any(line.startswith("ok      marcus-config") for line in lines)
+
+
+# --- Suspended: a paused CronJob is a decision, not a finding ---------
+
+def test_suspended_is_not_a_finding_when_git_suspended_the_cronjob():
+    # `sokratesai-infra` live, 2026-09-09 09:07 Oslo: Synced, Suspended,
+    # two of its CronJob children carrying `spec.suspend: true`.
+    lines, status = report_for(
+        [app("sokratesai-infra", health="Suspended",
+             cronjobs=[("agents", "heartbeat-liveness"),
+                       ("infra", "claude-child-reaper")])],
+        [],
+        cronjobs=[cronjob("heartbeat-liveness", suspend=True),
+                  cronjob("claude-child-reaper", namespace="infra", suspend=True)])
+    assert status == 0
+    assert any(l.startswith("ok      sokratesai-infra: Synced, Suspended")
+               for l in lines)
+    assert not any("UNHEALTHY" in l for l in lines)
+
+
+def test_the_excused_line_names_every_suspended_cronjob():
+    # The names are the whole content of the excuse: a reader has to be able
+    # to check the claim without re-running kubectl.
+    lines, _ = report_for(
+        [app("x", health="Suspended",
+             cronjobs=[("agents", "heartbeat-liveness"),
+                       ("infra", "claude-child-reaper")])],
+        [],
+        cronjobs=[cronjob("heartbeat-liveness", suspend=True),
+                  cronjob("claude-child-reaper", namespace="infra", suspend=True)])
+    line = next(l for l in lines if l.startswith("ok      x:"))
+    assert "2 CronJob(s) suspended in git" in line
+    assert "agents/heartbeat-liveness" in line
+    assert "infra/claude-child-reaper" in line
+
+
+def test_suspended_still_raises_when_no_child_cronjob_is_suspended():
+    # A paused Deployment or Rollout lands here, and it should be looked at.
+    lines, status = report_for(
+        [app("x", health="Suspended", cronjobs=[("agents", "nightly")])],
+        [],
+        cronjobs=[cronjob("nightly", suspend=False)])
+    assert status == 2
+    assert any(l.startswith("UNHEALTHY  x: Suspended") for l in lines)
+
+
+def test_a_suspended_cronjob_in_another_application_does_not_excuse_this_one():
+    # The excuse reads the Application's own children, not the cluster.
+    _, status = report_for(
+        [app("x", health="Suspended", cronjobs=[("agents", "nightly")])],
+        [],
+        cronjobs=[cronjob("nightly", suspend=False),
+                  cronjob("someone-elses", suspend=True)])
+    assert status == 2
+
+
+def test_out_of_sync_and_suspended_still_raises():
+    # OutOfSync means the suspension is not demonstrably what git asked for,
+    # which is the entire argument for excusing it.
+    lines, status = report_for(
+        [app("x", sync="OutOfSync", health="Suspended",
+             cronjobs=[("agents", "nightly")])],
+        [],
+        cronjobs=[cronjob("nightly", suspend=True)])
+    assert status == 2
+    assert any(l.startswith("UNHEALTHY  x: Suspended") for l in lines)
+
+
+def test_degraded_is_never_excused_by_a_suspended_cronjob():
+    _, status = report_for(
+        [app("x", health="Degraded", cronjobs=[("agents", "nightly")])],
+        [],
+        cronjobs=[cronjob("nightly", suspend=True)])
+    assert status == 2
+
+
+def test_main_does_not_read_cronjobs_when_nothing_is_suspended():
+    # The read is a cluster-wide query a restricted account can be refused;
+    # asking for it on a clean cluster would turn a green answer into
+    # COULD NOT READ for data nothing was going to use.
+    seen = []
+
+    def runner(args, **kwargs):
+        seen.append(args)
+        return subprocess.CompletedProcess(
+            args, 0, json.dumps({"items": [app("x")]}), "")
+
+    assert argocd_health.main([], runner=runner, now=NOW) == 0
+    assert not any("cronjobs" in a for a in seen)
+
+
+def test_main_refuses_rather_than_guessing_when_the_cronjob_read_fails():
+    runner = fake_kubectl(
+        apps=[app("x", health="Suspended", cronjobs=[("agents", "n")])],
+        fail_on="cronjobs")
+    assert argocd_health.main([], runner=runner, now=NOW) == 1
