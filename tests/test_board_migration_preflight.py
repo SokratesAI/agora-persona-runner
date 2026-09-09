@@ -4,9 +4,11 @@ Each of `rank_key`, `entity_id` and `board_view` is covered on its own.
 What these cover is the seam between them -- the thing the migration
 commit does and no test did until now.
 """
+import json
+
 import pytest
 
-from agora_runner import entity_id, nova_boards
+from agora_runner import board_store, entity_id, nova_boards
 from tools import board_migration_preflight as preflight
 
 HEADER = (
@@ -111,3 +113,115 @@ def test_a_board_with_no_rows_composes_to_nothing_rather_than_raising():
 def test_it_needs_a_board_to_look_at():
     with pytest.raises(SystemExit):
         preflight.main([])
+
+
+class FakeStore(object):
+    """A record store that round-trips through JSON, like `board_store`'s own
+    fake does -- handing back the caller's own dicts makes a test pass against
+    a store it mutated itself."""
+
+    StoreError = RuntimeError
+
+    def __init__(self, held=None):
+        self.docs = json.loads(json.dumps(held or {}))
+        self.writes = []
+
+    def stored_documents(self, board):
+        return json.loads(json.dumps(self.docs))
+
+    def read_rows(self, board):
+        return board_store.in_order(json.loads(json.dumps(list(self.docs.values()))))
+
+    def write_rows(self, board, docs, prune=True):
+        self.writes.append(len(docs))
+        deleted = 0
+        if prune:
+            keep = {doc["_id"] for doc in docs}
+            for doc_id in list(self.docs):
+                if doc_id not in keep:
+                    del self.docs[doc_id]
+                    deleted += 1
+        for doc in json.loads(json.dumps(docs)):
+            self.docs[doc["_id"]] = doc
+        return {"written": len(docs), "deleted": deleted, "unchanged": 0,
+                "failures": []}
+
+
+def items_of(rows):
+    return preflight.board_items(board(rows))
+
+
+def test_round_trip_through_the_store_renders_the_same_markdown():
+    """The control the in-memory checks cannot take: a store that dropped a
+    cell would compose identically and only show up on the way back."""
+    store = FakeStore()
+    report, problems = preflight.round_trip(
+        items_of([(1, "Nova", "v1"), (2, "Agora", ""), (3, "Agora", "v1")]),
+        "issue", store=store)
+    assert problems == []
+    assert report["rows"] == 3 and report["read_back"] == 3
+    assert report["render_identical"] is True
+
+
+def test_round_trip_names_the_project_cell_the_migration_would_rewrite():
+    """A second spelling of one project is one id, and the id resolves back to
+    one name -- so the row that used the other spelling comes back rewritten.
+
+    That is the migration doing what `entity_id` is for, not a defect, and it
+    is the one place a row's markdown legitimately changes. It has to be
+    visible before the switchover rather than found afterwards in a diff of
+    the generated backup. No board holds two spellings today (measured
+    2026-09-09: 8 project names and 8 ids on issues, 11 and 11 on ideas), so
+    this case exists only here."""
+    store = FakeStore()
+    report, problems = preflight.round_trip(
+        items_of([(1, "Nova", ""), (2, "nova", "")]), "issue", store=store)
+    assert report["render_identical"] is False
+    assert any("differs" in text and "Nova" in text for text in problems)
+    assert store.docs == {}, "it left rows behind after a mismatch"
+
+
+def test_round_trip_restores_the_store_to_empty():
+    """It writes into the live namespace, so leaving rows behind would be a
+    migration nobody decided to run."""
+    store = FakeStore()
+    report, problems = preflight.round_trip(items_of([(1, "Nova", "")]), "issue",
+                                            store=store)
+    assert store.docs == {}
+    assert report["restored_to"] == 0 and report["deleted_on_restore"] == 1
+    assert problems == []
+
+
+def test_round_trip_refuses_a_board_that_already_holds_records():
+    """Restoring to empty is only a restore when it started empty. Against a
+    migrated board this run would tombstone real rows and could not put them
+    back, so it must not start."""
+    store = FakeStore({"board:issue:1": {"_id": "board:issue:1", "number": 1}})
+    with pytest.raises(preflight.RoundTripRefused):
+        preflight.round_trip(items_of([(1, "Nova", "")]), "issue", store=store)
+    assert store.writes == [], "it wrote before deciding it should not have"
+    assert store.docs.keys() == {"board:issue:1"}
+
+
+def test_round_trip_reports_a_store_that_loses_a_row():
+    """A silent drop is the failure this is here to catch, so make the store
+    do it rather than trusting that it never would."""
+
+    class Lossy(FakeStore):
+        def read_rows(self, board):
+            return super().read_rows(board)[:-1]
+
+    store = Lossy()
+    report, problems = preflight.round_trip(
+        items_of([(1, "Nova", ""), (2, "Agora", "")]), "issue", store=store)
+    assert report["read_back"] == 1
+    assert any("read back" in text for text in problems)
+    assert store.docs == {}, "it left rows behind after a failed comparison"
+
+
+def test_round_trip_needs_exactly_one_board_file(tmp_path, capsys):
+    path = tmp_path / "b.md"
+    path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        preflight.main(["--board", str(path), "--board", str(path),
+                        "--round-trip", "issue"])
