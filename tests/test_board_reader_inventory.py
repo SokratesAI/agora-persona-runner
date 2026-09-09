@@ -217,3 +217,101 @@ def test_the_gate_does_not_name_an_exempt_module(capsys):
                 if l.startswith("NOT MIGRATED"))
     assert "tools/roll_health.py" not in line
     assert "agora_runner/nova_boards.py" in line
+
+
+# Cycle 1322: the gate was unreachable in three more places, and the three
+# are two different reasons. `roll_done_details` is `roll_health`'s own
+# roller for `roll_health.PAIRS`, so it is the same exemption. `board_migrate`
+# and `board_migration_preflight` parse the owner's real boards and must,
+# because the migration is a `parse_board` call by definition -- a second
+# list, because the reason is what the next cycle reads.
+
+
+def test_the_by_design_exemption_names_a_file_that_really_still_parses():
+    """Same integrity check as `NOT_A_BOARD`, on the second list."""
+    assert inv.READS_MARKDOWN_BY_DESIGN, "an empty list needs no code path"
+    for rel, reason in inv.READS_MARKDOWN_BY_DESIGN.items():
+        path = ROOT / rel
+        assert path.exists(), f"{rel} is exempt and does not exist"
+        assert inv.PARSES in inv.surfaces(path.read_text()), \
+            f"{rel} is exempt from a parse gate and does not parse"
+        assert reason.strip(), f"{rel} is exempt for no stated reason"
+
+
+def test_the_two_exemption_lists_do_not_overlap():
+    """One module, one reason -- a name in both is a reason nobody chose."""
+    assert not (set(inv.NOT_A_BOARD) & set(inv.READS_MARKDOWN_BY_DESIGN))
+
+
+def test_roll_done_details_is_only_ever_pointed_at_novas_own_files():
+    """The evidence under its exemption, not a restatement of it.
+
+    Its paths come from `--live`/`--archive` at runtime, so nothing static
+    can read them off the module. What is checkable is who calls it: if
+    `roll_health` is the only caller in this tree, then the only paths it is
+    handed are `roll_health.PAIRS`, which the test above pins to Nova's own
+    files. A second caller appearing fails here rather than widening the
+    gate in silence.
+
+    Through `code_only`, because the inventory names this module inside the
+    exemption dict: a name in a string is documentation, not a call, and the
+    same distinction is what stops the scanner reading a docstring as a
+    reader.
+    """
+    assert "tools/roll_done_details.py" in inv.NOT_A_BOARD, \
+        "the evidence has to be tied to the entry it excuses"
+    callers = set()
+    for path in ROOT.rglob("*.py"):
+        rel = path.relative_to(ROOT).as_posix()
+        if rel.startswith(("tests/", "tools/roll_done_details.py")):
+            continue
+        if any(part in inv.SKIP_DIRS for part in path.parts):
+            continue
+        if "roll_done_details" in inv.code_only(path.read_text()):
+            callers.add(rel)
+    assert callers == {"tools/roll_health.py"}, sorted(callers)
+
+
+def test_the_migration_tools_are_the_records_side_of_the_seam():
+    """The evidence under the second list: they write or check records.
+
+    A module that only reads a board cannot be excused this way -- the
+    excuse is that it produces the record set the readers move to, so it
+    has to hold both shapes at once.
+    """
+    assert set(inv.READS_MARKDOWN_BY_DESIGN) == {
+        "tools/board_migrate.py", "tools/board_migration_preflight.py"}, \
+        "the evidence has to be tied to the entries it excuses"
+    for rel in inv.READS_MARKDOWN_BY_DESIGN:
+        text = (ROOT / rel).read_text()
+        assert "board_store" in text, f"{rel} touches no record store"
+
+
+def test_the_gate_names_none_of_the_four_excused_modules(capsys):
+    """On the live tree, so this is about the real exemptions."""
+    assert inv.main(["--assert-migrated"]) == 2
+    line = next(l for l in capsys.readouterr().out.split("\n")
+                if l.startswith("NOT MIGRATED"))
+    for rel in (*inv.NOT_A_BOARD, *inv.READS_MARKDOWN_BY_DESIGN):
+        assert rel not in line, f"{rel} is excused and still blocks the gate"
+    assert "agora_runner/ticket_store.py" in line, \
+        "ticket_store leaves the count by being deleted, not excused"
+
+
+def test_a_by_design_module_does_not_block_assert_migrated(tmp_path):
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "board_migrate.py").write_text("parse_board(text)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
+    (tmp_path / "tools" / "other.py").write_text("parse_board(text)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+
+
+def test_a_by_design_module_is_still_reported_as_a_parser(tmp_path, capsys):
+    """Excused from the gate, never hidden from the report."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "board_migrate.py").write_text("parse_board(text)")
+    inv.main(["--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "parses" in out
+    assert "tools/board_migrate.py" in out
+    assert inv.READS_MARKDOWN_BY_DESIGN["tools/board_migrate.py"] in out

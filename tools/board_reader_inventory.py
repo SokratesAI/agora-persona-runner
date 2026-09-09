@@ -49,6 +49,19 @@ finished. Counted as a reader still to move, it makes `--assert-migrated`
 unreachable: the gate that decides when the switchover branch leaves draft
 could never return 0, however many readers were converted.
 
+**Three modules were counted as readers still to move and none of them can
+ever move**, which is the same unreachable-gate bug found twice more, on
+2026-09-09. `tools/roll_done_details.py` is `roll_health`'s own roller for
+the two files above -- `roll_health` imports it and is its only caller here
+-- so it is the same exemption for the same reason. `tools/board_migrate.py`
+and `tools/board_migration_preflight.py` are a different case and get their
+own list, `READS_MARKDOWN_BY_DESIGN`: they parse the owner's real boards,
+and they have to, because turning markdown into records is a `parse_board`
+call by definition and so is proving the records answer what the parser did.
+Converting either one is not a step anybody can take.
+`agora_runner/ticket_store.py` is deliberately NOT excused: it leaves
+the count by being deleted at the switchover, and that is a real step.
+
 Nothing static can tell which document a call parses -- `roll_health` takes
 its text from a local path at runtime -- so the exemption is a named list
 with a reason each, `NOT_A_BOARD`, rather than a pattern pretending to
@@ -87,6 +100,25 @@ NOT_A_BOARD = {
     "tools/roll_health.py":
         "parses Nova's own nova/resources/issues.md and ideas.md, the two "
         "paths in its PAIRS constant, which board_migrate does not migrate",
+    "tools/roll_done_details.py":
+        "is roll_health's roller for the same two files -- roll_health is "
+        "its only caller in this tree and hands it the pairs above",
+}
+
+#: Modules that parse the owner's boards and must go on doing so after the
+#: switchover, mapped to why. These are the migration itself: turning
+#: markdown into records is a `parse_board` call by definition, and so is
+#: proving the records answer what the parser did. Same treatment as
+#: `NOT_A_BOARD` -- reported under `parses`, not waited for by
+#: `--assert-migrated` -- for a different reason, which is why it is a
+#: second list rather than a second entry in the first.
+READS_MARKDOWN_BY_DESIGN = {
+    "tools/board_migrate.py":
+        "is the migration -- it reads the board markdown to write the "
+        "records, and --verify reads it again to compare",
+    "tools/board_migration_preflight.py":
+        "compares a board's markdown against the records it would produce, "
+        "so both sides of that comparison are its subject",
 }
 
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".pytest_cache", "venv"}
@@ -181,7 +213,9 @@ def report(found, refs, unreadable, untokenized=(), assert_migrated=False,
     out = sys.stdout if out is None else out
     parsers = sorted(rel for rel, used in found.items() if PARSES in used)
     exempt = [rel for rel in parsers if rel in NOT_A_BOARD]
-    blocking = [rel for rel in parsers if rel not in NOT_A_BOARD]
+    by_design = [rel for rel in parsers if rel in READS_MARKDOWN_BY_DESIGN]
+    excused = set(NOT_A_BOARD) | set(READS_MARKDOWN_BY_DESIGN)
+    blocking = [rel for rel in parsers if rel not in excused]
     for rel in sorted(found):
         used = found[rel]
         print(f"{'parses' if PARSES in used else '      '}  "
@@ -193,6 +227,13 @@ def report(found, refs, unreadable, untokenized=(), assert_migrated=False,
               "the owner's boards, so the switchover has nothing to convert "
               "them to and --assert-migrated does not wait for them: "
               + ", ".join(f"{rel} ({NOT_A_BOARD[rel]})" for rel in exempt),
+              file=out)
+    if by_design:
+        print(f"{len(by_design)} of those parse the owner's boards and must "
+              "keep doing so after the switchover, so --assert-migrated does "
+              "not wait for them either: "
+              + ", ".join(f"{rel} ({READS_MARKDOWN_BY_DESIGN[rel]})"
+                          for rel in by_design),
               file=out)
     if refs:
         print(f"{len(refs)} module(s) match the spec's grep only via "
