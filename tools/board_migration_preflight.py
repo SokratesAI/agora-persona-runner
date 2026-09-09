@@ -91,6 +91,13 @@ def board_items(markdown):
     return []
 
 
+def board_details(markdown):
+    """A board's `{number: prose body}` map, `{}` on any older parse shape."""
+    parsed = nova_boards.parse_board(markdown)
+    details = parsed.get("details") if isinstance(parsed, dict) else None
+    return details if isinstance(details, dict) else {}
+
+
 def compose(items):
     """Mint an id and a rank for every row; report what would not compose.
 
@@ -180,14 +187,22 @@ class RoundTripRefused(RuntimeError):
     """The store already holds records, so the run has nothing safe to restore to."""
 
 
-def records(items, board, registry):
+def records(items, board, registry, details=None):
     """Mint ids and ranks for `items` and return their record documents.
 
     Returns `(docs, project_names, milestone_names)` -- the two maps are
     id -> name, which is what `board_document.from_document` needs to put
     the names back into a row it reconstructs. `compose` above counts what
     would happen; this builds it.
+
+    `details` is `parse_board`'s `{number: prose body}` map. It is a
+    separate argument because a body is not a key on the row it belongs to,
+    and it is threaded here rather than left out because a document written
+    without one loses the body with no symptom -- `render_tables` draws the
+    two tables only, so a round trip that dropped every `# Details` section
+    would still report `render_identical`.
     """
+    details = details or {}
     projects = {}
     milestones = {}
     for item in items:
@@ -209,12 +224,13 @@ def records(items, board, registry):
         stone = item.get("milestone")
         mid = milestones.get((pid, stone)) if (pid and stone) else None
         docs.append(board_document.to_document(
-            item, board, project_id=pid, milestone_id=mid, rank=key))
+            item, board, project_id=pid, milestone_id=mid, rank=key,
+            detail=details.get(item.get("number"))))
     return docs, {v: k for k, v in projects.items()}, \
         {mid: stone for (_pid, stone), mid in milestones.items()}
 
 
-def round_trip(items, board, store=board_store):
+def round_trip(items, board, store=board_store, details=None):
     """Write `items` to the record store, read them back, render both ways.
 
     This is the control the in-memory checks above cannot take: everything
@@ -234,7 +250,8 @@ def round_trip(items, board, store=board_store):
             "have to delete them and cannot put them back")
 
     registry = entity_id.new_registry()
-    docs, project_names, milestone_names = records(items, board, registry)
+    docs, project_names, milestone_names = records(
+        items, board, registry, details=details)
     written = store.write_rows(board, docs)
     try:
         back = store.read_rows(board)
@@ -258,12 +275,20 @@ def round_trip(items, board, store=board_store):
         "restored_to": len(store.stored_documents(board)),
         "deleted_on_restore": deleted.get("deleted"),
         "render_identical": rendered == from_markdown,
+        # Counted separately because `render_identical` cannot see it: the
+        # two tables carry no prose, so a lost body leaves that flag True.
+        "details_in": len(details or {}),
+        "details_back": len(board_document.details_map(back)),
     }
     problems = []
     if written.get("failures"):
         problems.append(f"{len(written['failures'])} row(s) failed to write")
     if len(back) != len(items):
         problems.append(f"wrote {len(items)} row(s), read back {len(back)}")
+    if report["details_back"] != report["details_in"]:
+        problems.append(
+            f"{report['details_in']} detail body(ies) went in, "
+            f"{report['details_back']} came back")
     if not report["render_identical"]:
         left = _lines(from_markdown)
         right = _lines(rendered)
@@ -299,9 +324,12 @@ def main(argv=None):
         parser.error("--round-trip takes exactly one --board FILE")
 
     items = []
+    details = {}
     for path in args.board:
         with open(path, encoding="utf-8") as handle:
-            items.extend(board_items(handle.read()))
+            markdown = handle.read()
+        items.extend(board_items(markdown))
+        details.update(board_details(markdown))
 
     report, problems = compose(items)
     for name, value in report.items():
@@ -310,7 +338,8 @@ def main(argv=None):
         print(f"PROBLEM: {problem}")
     if args.round_trip:
         try:
-            trip, trip_problems = round_trip(items, args.round_trip)
+            trip, trip_problems = round_trip(
+                items, args.round_trip, details=details)
         except (RoundTripRefused, board_store.StoreError) as exc:
             print(f"PROBLEM: round trip: {exc}")
             return 2
