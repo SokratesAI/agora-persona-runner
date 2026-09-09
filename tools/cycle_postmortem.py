@@ -151,6 +151,7 @@ from agora_runner.cycle_number import _NAME_RE  # noqa: E402
 from agora_runner.heartbeat_liveness import AGORA_PUBLIC  # noqa: E402
 from tools.cli_sessions import (  # noqa: E402
     apply_cli_sessions,
+    apply_session_endings,
     index as cli_session_index,
 )
 from agora_runner.runner_lifecycle import (  # noqa: E402
@@ -1721,8 +1722,50 @@ def _cli_session_lines(life):
         return ["      no Claude Code session started in this cycle's window, so "
                 "the runner never reached the bridge — the death is upstream of "
                 "the CLI, the same shape as a refused connection"]
-    return [f"      a Claude Code session DID start ({len(paths)}): "
-            + ", ".join(paths)]
+    lines = [f"      a Claude Code session DID start ({len(paths)}): "
+             + ", ".join(paths)]
+    for path in paths:
+        lines.extend(_session_ending_lines(path,
+                                           (life.get("endings") or {}).get(path)))
+    return lines
+
+
+def _duration(seconds):
+    """A run length a person reads, from seconds."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+
+
+def _session_ending_lines(path, ending):
+    """How one named session ended, as lines under the path that named it.
+
+    `a session DID start` is one sentence covering two opposite outcomes,
+    and the difference is the whole finding: a cycle that ran to a closing
+    reply did all of its work and lost only the delivery, and a cycle
+    killed mid-tool-call did nothing at all. Merging causes under one
+    counter is the mistake this tool has now made at three layers.
+
+    The reply prints whole. It is the only copy --- Agora never carried
+    it --- so truncating it here would be losing it a second time.
+    """
+    if ending is None:
+        return ["        this transcript could not be read, so how the session "
+                "ended is not recorded"]
+    ran = _duration(ending.get("ran_for") or 0)
+    reply = ending.get("reply")
+    if reply:
+        return ([f"        it ran {ran} and reached a closing reply, so the work "
+                 f"happened and only the delivery was lost — Agora never carried "
+                 f"this and it has been readable here ever since:"]
+                + [f"        | {line}" for line in reply.splitlines()])
+    waiting = ending.get("waiting_on")
+    on = f" waiting on `{waiting}`" if waiting else ""
+    return [f"        it was killed mid-turn after {ran}{on}, so it never "
+            f"reached a reply — nothing it did is recoverable from here"]
 
 
 def apply_branch_landing(results, root, clone, base="main", measure=None):
@@ -1878,6 +1921,7 @@ def main(argv=None):
     if not error:
         sessions, reach = cli_session_index()
         apply_cli_sessions(results, conversations, sessions, reach)
+        apply_session_endings(results)
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all,
                                    lifecycle_error=lifecycle_error)

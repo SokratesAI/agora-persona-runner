@@ -33,14 +33,23 @@ precisely a cycle whose CLI never started. The instrument and the
 independent record agree on the same cycles.
 
 And the finding it was built for: of the 16 silent cycles inside the
-archive's reach, **13 started no session**. Their death is upstream of
+archive's reach, **14 started no session**. Their death is upstream of
 the bridge --- the same shape as the refused-connection bucket, with
-nothing recorded anywhere. Three did start one (360, 784, 1082), and
-those transcripts are readable, which is the "read the transcripts before
-theorising" this row has carried for days.
+nothing recorded anywhere. Two did start one --- 360 and 784 --- and
+those transcripts are readable. (An earlier draft of this paragraph said
+three and named 1082 as well; 1082 is exactly the chat session the
+paragraph above says the heartbeat filter exists to exclude, so the
+sentence contradicted the filter it was documenting. Corrected cycle
+1262, off a live run.)
 
-This changes no verdict. A conversation with no message in it is silent
-whether or not a session started; this says where to look next.
+Reading those two is what `last_turn` below is for, because **"a session
+DID start" turned out to cover two opposite outcomes**: cycle 360 ran to
+a full reply and lost only the delivery, cycle 784 was killed 26 seconds
+in having written nothing.
+
+The `silent` verdict itself does not change --- a conversation with no
+message in it is silent whatever happened upstream --- but what a cycle
+should do about one now depends on which of those two it is.
 """
 
 import datetime
@@ -159,3 +168,105 @@ def apply_cli_sessions(results, conversations, sessions, reach, verdict="silent"
             continue
         row["cli_session"] = {"paths": sessions_near(sessions, created),
                               "created": created}
+
+
+def _blocks(row):
+    """The content blocks of one transcript row, always as a list."""
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    return content if isinstance(content, list) else []
+
+
+def _closing_text(row):
+    """The assistant's closing prose, or `None` if the turn ends mid-flight.
+
+    A turn whose last block is a `tool_use` is a turn still in flight: the
+    model asked for something and the answer never came back. Only a turn
+    that ends on non-empty `text` is a cycle that finished speaking.
+    """
+    blocks = _blocks(row)
+    if not blocks:
+        return None
+    last = blocks[-1]
+    if not isinstance(last, dict) or last.get("type") != "text":
+        return None
+    text = (last.get("text") or "").strip()
+    return text or None
+
+
+def _last_tool(row):
+    """The name of the tool the final turn was waiting on, if any."""
+    for block in reversed(_blocks(row)):
+        if isinstance(block, dict) and block.get("type") == "tool_use":
+            return block.get("name")
+    return None
+
+
+def last_turn(path, opener=open):
+    """How one transcript ends: `{"ran_for", "reply", "waiting_on"}`.
+
+    `index` above answers whether a session started. That is one line
+    covering two opposite outcomes, and reading the two transcripts it
+    named is what separated them (cycle 1262). Cycle 360 ran for 41
+    minutes, wrote its digest to the vault, composed a full reply to the
+    owner --- and Agora carried none of it, so the report calls that cycle
+    silent and the reply has sat unread on this disk since 2026-08-24.
+    Cycle 784 was killed 26 seconds in, mid `Bash` call, having written
+    nothing anywhere. Both are "a session DID start".
+
+    So `reply` is the discriminator and it is deliberately strict: the
+    **final** assistant turn must end on prose. A session that spoke and
+    then went back to work and was killed there did not finish, and a
+    formatter that took the last text block anywhere in the file would
+    report its mid-cycle narration as a delivered reply.
+
+    Returns `None` when the file cannot be read or holds no timestamped
+    row --- an unreadable transcript is not a transcript that ends badly.
+    """
+    first = last = None
+    final_assistant = None
+    try:
+        with opener(path, errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                at = _stamp(row.get("timestamp"))
+                if at is not None:
+                    if first is None or at < first:
+                        first = at
+                    if last is None or at > last:
+                        last = at
+                if row.get("type") == "assistant":
+                    final_assistant = row
+    except OSError:
+        return None
+    if first is None:
+        return None
+    return {"ran_for": (last - first).total_seconds(),
+            "reply": _closing_text(final_assistant) if final_assistant else None,
+            "waiting_on": _last_tool(final_assistant) if final_assistant else None}
+
+
+def apply_session_endings(results, read=last_turn, verdict="silent"):
+    """Attach `endings` --- one `last_turn` per named path --- in place.
+
+    Keyed by path rather than positional, so a transcript that could not be
+    read is absent from the mapping instead of shifting the rest along.
+    """
+    for row in results:
+        if row.get("verdict") != verdict:
+            continue
+        session = row.get("cli_session") or {}
+        endings = {}
+        for path in session.get("paths") or []:
+            ending = read(path)
+            if ending is not None:
+                endings[path] = ending
+        if endings:
+            session["endings"] = endings
