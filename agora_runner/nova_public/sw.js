@@ -20,7 +20,7 @@
  * read on his phone as "the buttons are gone". The activate handler below
  * deletes every cache whose key is not this one, so changing the name is
  * what evicts the stale shell. Bump it whenever the shell files change. */
-var CACHE = "nova-v16";
+var CACHE = "nova-v21";
 /* Where a push handler parks the thread its notification is about.
  *
  * A second cache rather than a corner of the first one, because the two
@@ -130,7 +130,16 @@ self.addEventListener("fetch", function (event) {
        * 30-second poll carries an etag and is left to the network, so this
        * only ever answers the load where the page has nothing. */
       if (hit) return hit;
-      if (headerOf(request, "If-None-Match")) return networkFirst(request, fallback);
+      /* `X-Nova-Poll` as well as an etag. The page's own four-second poll
+       * of this thread carries no `If-None-Match` -- `fetchPage` is a plain
+       * fetch -- so the guard below let the cache answer it, and a poll
+       * answered from bytes older than the message he just sent repaints
+       * his message off the screen. His report, 2026-09-09. The cache-first
+       * rule is for the cold load, where the page has nothing; a poll is
+       * the page saying it already has something. */
+      if (headerOf(request, "If-None-Match") || headerOf(request, "X-Nova-Poll")) {
+        return networkFirst(request, fallback);
+      }
       return staleWhileRevalidate(event, request);
     }));
     return;

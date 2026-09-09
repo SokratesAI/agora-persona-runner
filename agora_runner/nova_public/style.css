@@ -4827,7 +4827,17 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-standing-counts { color: var(--dim); font-size: 0.85rem; margin-left: auto; }
 /* The two reorder buttons (idea #260, M3). 44px tall because this is a
    phone control and a 24px target is one he misses. */
+/* Pushed to the right edge -- his ask, 2026-09-08: *"move the arrows and
+   the button you hold to drag to the right side of the card so i can use my
+   right thumb for it."* He reads this page one-handed on a phone, and a
+   control on the left edge is a stretch across the screen every time. The
+   note keeps the left, because it is read rather than pressed. */
 .project-standing-move { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
+/* The note eats the free space, so everything after it sits against the
+   right edge. One mechanism: a `justify-content` here as well would be a
+   second one, and the auto margin wins anyway -- which is exactly how the
+   controls stayed on the left after the first attempt at this. */
+.project-standing-move-note { margin-right: auto; }
 .project-standing-move-btn {
   min-width: 44px; min-height: 44px; border-radius: 8px;
   border: 1px solid var(--outline); background: transparent; color: var(--text);
@@ -4852,6 +4862,50 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 .project-standing--dragging .project-standing-grip { cursor: grabbing; }
+/* The drawer under a standing: milestones, and the rows inside one.
+   His ask, 2026-09-08 -- a project opens in place instead of navigating,
+   so the other projects stay on screen above and below it. */
+.project-standing-link {
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.project-drawer { padding: 0.2rem 0 0.4rem 0.6rem; }
+.project-drawer[hidden] { display: none; }
+.project-drawer-loading, .project-drawer-empty, .project-drawer-error {
+  color: var(--dim); font-size: 0.85rem; margin: 0.3rem 0;
+}
+.project-drawer-error { color: var(--warn, var(--text)); }
+.project-drawer-milestones { list-style: none; margin: 0; padding: 0; }
+.project-drawer-milestone { border-top: 1px solid var(--line); }
+.project-drawer-milestone-head {
+  display: flex; align-items: center; gap: 0.5rem;
+  width: 100%; min-height: 44px;
+  background: none; border: 0; padding: 0.2rem 0;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.project-drawer-milestone-name { font-weight: 600; }
+.project-drawer-milestone-counts { color: var(--dim); font-size: 0.85rem; margin-left: auto; }
+.project-drawer-tasks { list-style: none; margin: 0 0 0.4rem; padding: 0 0 0 0.6rem; }
+.project-drawer-tasks[hidden] { display: none; }
+.project-drawer-task {
+  display: flex; align-items: baseline; gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+.project-drawer-task-link { color: var(--text); text-decoration: none; }
+.project-drawer-task-link:hover { color: var(--accent); }
+.project-drawer-task-status { color: var(--dim); font-size: 0.8rem; margin-left: auto; }
+.project-drawer-more {
+  display: inline-block; margin-top: 0.4rem;
+  color: var(--dim); font-size: 0.85rem; text-decoration: none;
+}
+.project-drawer-more:hover { color: var(--accent); }
+
 .project-standing-track {
   margin-top: 6px;
   height: 6px;
@@ -4928,7 +4982,15 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   border-radius: 999px;
   padding: 2px 8px;
 }
+/* Right-hand side, the same reason the project standings' controls are:
+   he reorders one-handed with his right thumb (his ask, 2026-09-08). The
+   note keeps the left, because it is read rather than pressed. */
 .project-milestone-move { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
+/* The note eats the free space, so everything after it sits against the
+   right edge. One mechanism: a `justify-content` here as well would be a
+   second one, and the auto margin wins anyway -- which is exactly how the
+   controls stayed on the left after the first attempt at this. */
+.project-milestone-move-note { margin-right: auto; }
 .project-milestone-move-btn,
 .project-milestone-unpin {
   min-width: 44px; min-height: 44px; border-radius: 8px;

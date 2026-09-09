@@ -468,6 +468,28 @@ describe("the tap after a push is answered without a round trip", () => {
     assert.equal(await (await answered).text(), "stale");
   });
 
+  test("the dock's own poll is left to the network, header or etag", async () => {
+    /* His report, 2026-09-09: *"when i send you a message they dissapears
+     * along with the spinner after 2sec and i have to close and reopen the
+     * chat to see it."*
+     *
+     * The cache-first rule for the thread (#898) exempted requests carrying
+     * `If-None-Match`, on the reasoning that the page's poll always carries
+     * one. The dock's poll does not -- `fetchPage` is a plain fetch -- so
+     * every four-second poll was answered from bytes taken before he pressed
+     * Send, and the repaint wiped his message and the loader off the screen.
+     *
+     * `pending === true` is the assertion: with a cached copy in hand and a
+     * network that never answers, a poll must still be waiting. */
+    const worker = loadWorker();
+    worker.cache.set(THREAD, new Response("stale", { status: 200 }));
+    worker.network(() => new Promise(() => {}));
+    const answered = fetchEvent(worker, req(THREAD, {
+      headers: new Headers({ "X-Nova-Poll": "1" }) }));
+    assert.equal(await pending(answered), true,
+      "the dock's poll was answered from the cache, which is what erased his message");
+  });
+
   test("a thread the page is polling for is still left to the network", async () => {
     /* The other half of the same rule, and the reason the guard is on the
      * request's own `If-None-Match`: the 30-second poll holds the payload

@@ -14523,30 +14523,237 @@ describe("the project page", () => {
   const standings = (window) =>
     [...window.document.querySelectorAll(".project-standing")];
 
-  test("the whole standing is the link, and there are no pills above it", async () => {
-    /* His ask, 2026-09-08: *"make the draggable projects clickable instead
-     * of the project buttons above the draggable project list. Remove the
-     * current clickable project buttons."*
+  test("the standing opens a drawer instead of navigating away", async () => {
+    /* His ask, 2026-09-08: *"Instead of being navigated to another page when
+     * i click on a project, i want a drawer system where projects contains
+     * milestones and milestones contains tasks."*
      *
-     * The pills were a second list of the same projects stacked over the
-     * first, and the lower one already answered every question the upper
-     * one could be asked. A real anchor rather than a click handler, so
-     * middle-click and long-press behave; safe against the drag because the
-     * drag starts on the grip only. */
+     * It was an anchor to `/project/<name>` for half a day, which was the
+     * ask before this one -- the row rather than the pills above it. The
+     * pills stay gone; what changed is where the row leads. Two taps now
+     * open a project and one of its milestones with the other projects
+     * still on screen, which is the comparison the ordered list is for. */
     const window = await loadSite("/projects", { project: () => STANDING });
     assert.equal(window.document.querySelector(".project-pill"), null,
-      "the row of project pills is still drawn above the list");
+      "the row of project pills is back above the list");
     const rows = standings(window);
-    const link = rows[0].querySelector(".project-standing-link");
-    assert.ok(link, "the standing is not a link");
-    assert.equal(link.getAttribute("href"), "/project/Marcus");
-    // The bar and the counts are inside it: the whole row is the target,
-    // not the name alone.
-    assert.ok(link.querySelector(".project-standing-track"));
-    assert.ok(link.querySelector(".project-standing-counts"));
-    // ...and the grip is not, or every drag would end in a navigation.
-    assert.equal(link.querySelector(".project-standing-grip"), null,
-      "the drag grip is inside the link");
+    const head = rows[0].querySelector(".project-standing-link");
+    assert.ok(head, "the standing has no control on it");
+    assert.equal(head.tagName, "BUTTON",
+      "the standing still navigates instead of opening in place");
+    assert.equal(head.getAttribute("aria-expanded"), "false");
+    // The bar and the counts are inside it: the whole row is the target.
+    assert.ok(head.querySelector(".project-standing-track"));
+    assert.ok(head.querySelector(".project-standing-counts"));
+    // ...and the grip is not, or every drag would end in an expand.
+    assert.equal(head.querySelector(".project-standing-grip"), null,
+      "the drag grip is inside the disclosure");
+  });
+
+  test("opening one shows its milestones, and opening a milestone its rows", async () => {
+    /* The whole of his ask: *"expanding a project reveals the underlying
+     * milestones in the ordered priority where the one on top is the first
+     * pick. Clicking on a milestone expands it with the same system for the
+     * tasks."*
+     *
+     * The milestone order is the server's -- `project_milestones` sorts by
+     * `milestone_ranks`, the same map the picker and `top_board_rows` read.
+     * "The one on top is the first pick" is only true if this list and the
+     * thing that chooses work agree, so the page must not sort.
+     *
+     * The rows cost no second request: they are already in this payload,
+     * grouped by status, each carrying its milestone. */
+    const asked = [];
+    const window = await loadSite("/projects", {
+      project: (url) => {
+        asked.push(String(url));
+        if (!String(url).includes("name=Marcus")) return STANDING;
+        return {
+          name: "Marcus", asked: "Marcus",
+          milestones: [{ name: "M1 — coach", open: 2, pin: 0 },
+                       { name: "M2 — history", open: 1, pin: 0 }],
+          /* The real shape, and the reason this test earns its keep: the
+           * rows live under `boards.<board>.columns`, not at the top level.
+           * The first version of this fixture invented `payload.columns`,
+           * the code read the same invention, and both agreed with each
+           * other while every milestone on his screen reported zero rows. */
+          boards: {
+            issues: { total: 1, columns: [{ key: "open", label: "Open", items: [
+              { number: 41, title: "the card lies about today",
+                milestone: "M1 — coach" },
+            ] }] },
+            ideas: { total: 2, columns: [{ key: "open", label: "Open", items: [
+              { number: 42, title: "log the set", milestone: "M1 — coach" },
+              { number: 43, title: "history page", milestone: "M2 — history" },
+            ] }] },
+          },
+        };
+      },
+    });
+    const row = standings(window)[0];
+    const named = () => asked.filter((u) => u.includes("name=Marcus")).length;
+    // Nothing for THIS project is fetched until he asks for it.
+    assert.equal(named(), 0,
+      "the drawer's payload was fetched before he opened anything");
+
+    click(window, row.querySelector(".project-standing-link"));
+    for (let i = 0; i < 40 && !row.querySelector(".project-drawer-milestone"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const milestones = [...row.querySelectorAll(".project-drawer-milestone-name")];
+    assert.deepEqual(milestones.map((m) => m.textContent),
+      ["M1 — coach", "M2 — history"],
+      "the drawer is not showing the server's milestone order");
+    assert.equal(row.querySelector(".project-standing-link")
+      .getAttribute("aria-expanded"), "true");
+
+    // Second level: the rows of one milestone, and only that one's.
+    const first = row.querySelectorAll(".project-drawer-milestone")[0];
+    assert.equal(first.querySelector(".project-drawer-tasks").hidden, true,
+      "a milestone opened expanded");
+    click(window, first.querySelector(".project-drawer-milestone-head"));
+    assert.equal(first.querySelector(".project-drawer-tasks").hidden, false);
+    assert.deepEqual(
+      [...first.querySelectorAll(".project-drawer-task-link")].map((t) => t.textContent),
+      ["#41 the card lies about today", "#42 log the set"],
+      "the milestone is showing rows that belong to another one");
+
+    // Folding the project shut and open again must not refetch: it would
+    // blank the milestones he is looking at.
+    click(window, row.querySelector(".project-standing-link"));
+    click(window, row.querySelector(".project-standing-link"));
+    assert.equal(named(), 1, "reopening the drawer fetched the project again");
+  });
+
+  test("a milestone in the drawer can be moved, through the one pin route", async () => {
+    /* His ask, 2026-09-08: *"Lets me organise/sort the milestones and tasks
+     * aswell."* The milestone half is reachable today: `POST
+     * /api/milestone/pin` has existed since M4 and the project page already
+     * draws these controls. This puts them where he is now.
+     *
+     * The same route, deliberately: a pin that meant one thing on the page
+     * and another in the drawer would be two answers to "where does this
+     * milestone sit". */
+    const posted = [];
+    const window = await loadSite("/projects", {
+      project: (url) => {
+        if (!String(url).includes("name=Marcus")) return STANDING;
+        return {
+          name: "Marcus", asked: "Marcus",
+          milestones: [{ name: "M1 — coach", open: 1, pin: 0 },
+                       { name: "M2 — history", open: 1, pin: 0 }],
+          boards: { issues: { total: 0, columns: [] },
+                    ideas: { total: 0, columns: [] } },
+        };
+      },
+    });
+    window.fetch = ((real) => (url, options) => {
+      if (String(url) === "/api/milestone/pin") {
+        posted.push(JSON.parse(options.body));
+        return Promise.resolve({ ok: true, status: 200,
+          json: () => Promise.resolve({ ok: true }) });
+      }
+      return real(url, options);
+    })(window.fetch);
+
+    const row = standings(window)[0];
+    click(window, row.querySelector(".project-standing-link"));
+    for (let i = 0; i < 40 && !row.querySelector(".project-drawer-milestone"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const second = row.querySelectorAll(".project-drawer-milestone")[1];
+    const up = [...second.querySelectorAll(".project-milestone-move-btn")]
+      .find((b) => b.textContent === "↑");
+    assert.ok(up, "no way to move a milestone from inside the drawer");
+    click(window, up);
+    /* A successful pin calls `load()`, and that refetch outlives the
+     * assertions. Awaited here rather than left to leak into whatever test
+     * runs next -- an unhandled rejection from a torn-down window fails the
+     * file, a long way from its cause. */
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(posted, [
+      { project: "Marcus", milestone: "M2 — history", position: 1 }],
+      "moving a milestone in the drawer did not write through the pin route");
+  });
+
+  test("the milestone controls sit on the right too, grip last", () => {
+    // Same mechanism as the project card's, and the same mistake avoided:
+    // the note's auto margin is what pushes them right, so the note has to
+    // come first and the grip last.
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(sheet, /\.project-milestone-move-note \{[^}]*margin-right:\s*auto/);
+    const src = readFileSync(join(publicDir, "app.js"), "utf8");
+    const fn = src.slice(src.indexOf("function milestoneMoveControls"));
+    const body = fn.slice(0, fn.indexOf("\n  }"));
+    assert.ok(body.indexOf("appendChild(note)") < body.indexOf("milestoneDragHandle"),
+      "the milestone note is appended after the grip, so it pushes it left");
+  });
+
+  test("the whole card expands, not the progress bar alone", async () => {
+    /* His report, 2026-09-08: *"please make the whole card clickable to
+     * expand, not just the progressbar."* The name and the bar were inside
+     * the disclosure already; the projected finish and the worst-row chip
+     * were appended to the row beside it, so the bottom third of the card
+     * did nothing when pressed. */
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const row = standings(window)[0];
+    const head = row.querySelector(".project-standing-link");
+    ["project-standing-name", "project-standing-counts", "project-standing-track",
+     "project-standing-pace"].forEach((part) => {
+      const node = row.querySelector("." + part);
+      if (!node) return;   // pace is absent when there is nothing to project
+      assert.ok(head.contains(node),
+        `.${part} is outside the tap target, so pressing it does nothing`);
+    });
+    // The move controls stay outside: they do something else.
+    assert.equal(head.querySelector(".project-standing-move"), null);
+  });
+
+  test("the reorder controls sit on the right, grip last", async () => {
+    /* His ask, 2026-09-08: *"move the arrows and the button you hold to drag
+     * to the right side of the card so i can use my right thumb for it."*
+     * Then, when they had not moved: *"I want you to completly mirror this
+     * so the draggable is all the way to the right."*
+     *
+     * The first attempt used `justify-content: flex-end` and appended the
+     * note LAST with `margin-right: auto`. An auto margin beats
+     * `justify-content` -- it takes the free space first -- so the note
+     * pushed every control before it hard left and nothing moved. Same
+     * mistake as the chat composer's two auto margins the same morning.
+     *
+     * So this asserts the DOM order, which is the mechanism: note first
+     * (it eats the space), then the arrows, then the grip at the far
+     * right. A CSS assertion would have passed on the broken version. */
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const wrap = standings(window)[0].querySelector(".project-standing-move");
+    assert.ok(wrap, "the move controls are gone");
+    assert.equal(wrap.firstElementChild.className, "project-standing-move-note",
+      "the note is not first, so it cannot be what pushes the controls right");
+    assert.ok(wrap.lastElementChild.classList.contains("project-standing-grip"),
+      "the drag grip is not the rightmost control");
+    const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(sheet, /\.project-standing-move-note \{[^}]*margin-right:\s*auto/);
+  });
+
+  test("pressing the strip beside the arrows expands the card", async () => {
+    /* His ask, 2026-09-08: *"the area of the card where the arrows are below
+     * the text should be clickable to expand the drawer."* The arrows cannot
+     * live inside the disclosure button -- nested buttons are invalid -- so
+     * the row forwards a press to it, unless the press landed on something
+     * with a job of its own. */
+    const window = await loadSite("/projects", { project: () => STANDING });
+    const row = standings(window)[0];
+    const head = row.querySelector(".project-standing-link");
+    const wrap = row.querySelector(".project-standing-move");
+
+    click(window, wrap.querySelector(".project-standing-move-note"));
+    assert.equal(head.getAttribute("aria-expanded"), "true",
+      "pressing the empty strip did not open the drawer");
+
+    // ...and a press on a control in that strip still does its own job only.
+    click(window, wrap.querySelector(".project-standing-grip"));
+    assert.equal(head.getAttribute("aria-expanded"), "true",
+      "the drag grip toggled the drawer as well as being a grip");
   });
 
   test("the project's own rating is gone; the worst open row's is not", async () => {

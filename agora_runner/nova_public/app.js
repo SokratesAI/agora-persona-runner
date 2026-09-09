@@ -3888,8 +3888,26 @@
    * pages fetches afresh -- so the mark cannot outlive the response it came
    * on. `shallow` rather than assignment for the same reason it is used
    * there: the response body is left untouched. */
-  function fetchPage(url) {
-    return fetch(url).then(function (r) {
+  /* `opts.poll` marks a request that must not be answered from the worker's
+   * cache.
+   *
+   * His report, 2026-09-09: *"when i send you a message they dissapears
+   * along with the spinner after 2sec and i have to close and reopen the
+   * chat to see it."*
+   *
+   * That is mine, from the day before. The thread became cache-first so a
+   * reopen paints instantly (#898) -- and the rule I wrote was "cache unless
+   * the request carries `If-None-Match`", on the reasoning that the page's
+   * poll always carries one. The dock's poll does not: `fetchPage` is a
+   * plain `fetch`. So every four-second poll was answered from bytes taken
+   * before he pressed Send, and the repaint wiped the message and the
+   * loader off his screen until he closed the dock and opened it again.
+   *
+   * The cache-first rule was only ever meant for the cold load, where the
+   * page has nothing. This header is what says "this is not that". */
+  function fetchPage(url, opts) {
+    var init = (opts && opts.poll) ? { headers: { "X-Nova-Poll": "1" } } : undefined;
+    return fetch(url, init).then(function (r) {
       return json(r).then(function (body) {
         if (isReplayed(r) && body) return shallow(body, { replayed: true });
         return body;
@@ -8882,8 +8900,25 @@
      * on `.project-standing-grip` only (`attachProjectDrag`), and the move
      * buttons stay outside this anchor. A row-wide gesture would have made
      * every drag end in a navigation. */
-    var link = el("a", "project-standing-link");
-    link.setAttribute("href", "/project/" + encodeURIComponent(name));
+    /* A disclosure, not a link -- his ask, 2026-09-08: *"Instead of being
+     * navigated to another page when i click on a project, i want a drawer
+     * system where projects contains milestones and milestones contains
+     * tasks."*
+     *
+     * It was an anchor to `/project/<name>` for half a day. The page it
+     * opened is still there and still the place to read one project in
+     * full; what changed is that answering "what is left in this one" no
+     * longer costs a navigation and a way back. Two taps now open a project
+     * and one of its milestones with the other projects still on screen
+     * above and below, which is the comparison the ordered list exists to
+     * support.
+     *
+     * `aria-expanded` and a `<button>` rather than a styled div, because
+     * this is exactly the widget those are for -- and a screen reader
+     * announcing "collapsed" is the whole of what the caret says visually. */
+    var link = el("button", "project-standing-link");
+    link.type = "button";
+    link.setAttribute("aria-expanded", "false");
     var head = el("div", "project-standing-head");
     head.appendChild(el("span", "project-standing-name", name));
     var counts = summary.percentDone + "% · " + summary.open + " open";
@@ -8899,13 +8934,42 @@
     track.setAttribute("role", "img");
     track.setAttribute("aria-label", name + " — " + counts);
     link.appendChild(track);
-    li.appendChild(link);
+
+    /* Filled on the first open and kept after that: re-fetching a project
+     * he is folding shut and open again would blank the milestones he is
+     * looking at, on a page whose whole point is that they stay put. */
+    var drawer = el("div", "project-drawer");
+    drawer.hidden = true;
+    var loaded = false;
+    link.addEventListener("click", function () {
+      var opening = drawer.hidden;
+      drawer.hidden = !opening;
+      link.setAttribute("aria-expanded", opening ? "true" : "false");
+      if (!opening || loaded) return;
+      loaded = true;
+      drawer.appendChild(el("p", "project-drawer-loading", "Loading…"));
+      fetch("/api/project?name=" + encodeURIComponent(name))
+        .then(json)
+        .then(function (payload) {
+          drawer.textContent = "";
+          drawer.appendChild(projectDrawerBody(name, payload));
+        })
+        .catch(function (err) {
+          drawer.textContent = "";
+          /* Said, and re-openable. `loaded` goes back so the next tap tries
+           * again -- a drawer stuck on an error it cannot retry is worse
+           * than one that never opened. */
+          loaded = false;
+          drawer.appendChild(el("p", "project-drawer-error",
+            "Could not load this project: " + (err && err.message ? err.message : err)));
+        });
+    });
     // The projected finish, on the index as well as the page, for the same
     // reason the standing is: "which project lands first" should not cost
     // one tap per project.
     var standingPace = paceSentence(summary.pace);
     if (standingPace) {
-      li.appendChild(el("div", "project-standing-pace", standingPace));
+      link.appendChild(el("div", "project-standing-pace", standingPace));
     }
     // The worst rating among the *open* rows -- "is there anything red
     // under this project", which is the question the four status columns
@@ -8919,10 +8983,40 @@
       if (entries[i].key) { worst = entries[i]; break; }
     }
     if (worst) {
-      li.appendChild(el("span", "chip prio prio-" + worst.key,
+      link.appendChild(el("span", "chip prio prio-" + worst.key,
         worst.label + " · " + worst.count));
     }
+    /* The card is the control -- his ask, 2026-09-08: *"make the whole card
+     * clickable to expand, not just the progressbar."* The bar and the name
+     * were inside the button already; the projected finish and the worst-row
+     * chip were not, so the bottom third of the card did nothing when
+     * pressed. Everything that describes the project is in the disclosure
+     * now; only the move controls stay outside it, because they do
+     * something else. */
+    li.appendChild(link);
+    li.appendChild(drawer);
     li.appendChild(projectMoveControls(name, index, total));
+
+    /* The strip the arrows sit in expands the card too -- his ask,
+     * 2026-09-08: *"the area of the card where the arrows are below the text
+     * should be clickable to expand the drawer."*
+     *
+     * A listener on the row rather than a bigger button, because a button
+     * cannot contain the arrows (nested buttons are invalid and a screen
+     * reader gets one control where there are three). So the row forwards a
+     * press to the disclosure UNLESS it landed on something that does its
+     * own job -- a button, a link, or the drag grip. `closest` and not a
+     * target check: the press lands on the glyph inside the button as often
+     * as on the button.
+     *
+     * The disclosure itself is a button, so its own presses are caught by
+     * that same guard and handled once, not twice. */
+    li.addEventListener("click", function (event) {
+      var target = event.target;
+      if (target && target.closest
+          && target.closest("button, a, .project-standing-grip")) return;
+      link.click();
+    });
     return li;
   }
 
@@ -8964,10 +9058,133 @@
    * screen-reader equivalent, so deleting them would take the ordering
    * away from every input except a finger.
    */
+  /* The second and third levels of the drawer: a project's milestones, and
+   * the rows inside each one.
+   *
+   * The milestone order is the server's -- `project_milestones` sorts by
+   * `milestone_ranks`, which is the same map the picker and
+   * `tools.top_board_rows` read. His ask says the top one is the first
+   * pick, and that is only true if this list and the thing that chooses
+   * work agree; computing a second order here is exactly the duplication
+   * this repo keeps paying for.
+   *
+   * The rows are grouped here rather than fetched, because they are already
+   * in this payload: `_project_columns` groups every row by status, and
+   * each row carries the milestone it belongs to. So the third level costs
+   * no request at all.
+   */
+  function projectDrawerBody(project, payload) {
+    var wrap = el("div", "project-drawer-body");
+    var milestones = (payload && payload.milestones) || [];
+    /* `boards.issues.columns` and `boards.ideas.columns`, NOT
+     * `payload.columns`. Reading the latter is what made every milestone
+     * report zero rows in his screenshot: the key does not exist, so the
+     * list was always empty and the counts were always right about it.
+     *
+     * `project_payload` keeps the two boards apart because the page's tabs
+     * need the per-board totals; the milestones do not care which board a
+     * row came from, only that the link points at the right one. */
+    var rows = [];
+    ["issues", "ideas"].forEach(function (board) {
+      var group = ((payload && payload.boards) || {})[board] || {};
+      (group.columns || []).forEach(function (column) {
+        (column.items || []).forEach(function (item) {
+          rows.push({
+            item: item,
+            board: board === "issues" ? "issue" : "idea",
+            status: column.label || "",
+          });
+        });
+      });
+    });
+
+    if (!milestones.length) {
+      wrap.appendChild(el("p", "project-drawer-empty",
+        "No milestones yet — " + rows.length + " row" + (rows.length === 1 ? "" : "s")
+        + " filed under this project."));
+    }
+    var list = el("ol", "project-drawer-milestones");
+    milestones.forEach(function (milestone, index) {
+      list.appendChild(milestoneDrawer(
+        project, milestone, rows, index, milestones.length));
+    });
+    wrap.appendChild(list);
+
+    // The full page keeps its place: this drawer answers "what is left",
+    // and the page answers everything else -- the roadmap, the comments,
+    // the lifecycle. A drawer that tried to be the page would be the page.
+    var more = el("a", "project-drawer-more", "Open " + project + " →");
+    more.setAttribute("href", "/project/" + encodeURIComponent(project));
+    wrap.appendChild(more);
+    return wrap;
+  }
+
+  function milestoneDrawer(project, milestone, rows, index, total) {
+    var li = el("li", "project-drawer-milestone");
+    var head = el("button", "project-drawer-milestone-head");
+    head.type = "button";
+    head.setAttribute("aria-expanded", "false");
+    head.appendChild(el("span", "project-drawer-milestone-name", milestone.name));
+    var mine = rows.filter(function (row) {
+      return String(row.item.milestone || "").toLowerCase()
+        === String(milestone.name || "").toLowerCase();
+    });
+    head.appendChild(el("span", "project-drawer-milestone-counts",
+      mine.length + " row" + (mine.length === 1 ? "" : "s")));
+    li.appendChild(head);
+
+    var tasks = el("ul", "project-drawer-tasks");
+    tasks.hidden = true;
+    if (!mine.length) {
+      tasks.appendChild(el("li", "project-drawer-empty",
+        "Nothing is filed under this milestone yet."));
+    }
+    mine.forEach(function (row) {
+      var task = el("li", "project-drawer-task");
+      var link = el("a", "project-drawer-task-link",
+        "#" + row.item.number + " " + (row.item.title || ""));
+      link.setAttribute("href",
+        "/" + (row.board === "issue" ? "issues" : "ideas") + "#" + row.item.number);
+      task.appendChild(link);
+      if (row.status) task.appendChild(el("span", "project-drawer-task-status", row.status));
+      tasks.appendChild(task);
+    });
+    li.appendChild(tasks);
+    /* The same controls the project page carries, in the drawer -- his ask,
+     * 2026-09-08: *"Lets me organise/sort the milestones and tasks aswell."*
+     * They write through `sendMilestonePin`, which is the single path every
+     * milestone control on this site already uses, so a pin cannot mean two
+     * things depending on which screen set it.
+     *
+     * On the right, per [[controls on the right]]: he reorders one-handed
+     * with his right thumb. */
+    li.appendChild(milestoneMoveControls(project, milestone, index, total));
+    head.addEventListener("click", function () {
+      var opening = tasks.hidden;
+      tasks.hidden = !opening;
+      head.setAttribute("aria-expanded", opening ? "true" : "false");
+    });
+    return li;
+  }
+
   function projectMoveControls(name, index, total) {
     var wrap = el("div", "project-standing-move");
     var note = el("span", "project-standing-move-note", "");
-    wrap.appendChild(projectDragHandle(name));
+    /* Note first, controls after it, grip last -- and that ORDER is what
+     * puts them on the right, not the `justify-content` that was here.
+     *
+     * His report, 2026-09-08: *"the arrows where never moved to the right.
+     * They are still on the left, same with the drag button."* I had added
+     * `justify-content: flex-end` and appended the note LAST with
+     * `margin-right: auto`. An auto margin beats `justify-content` -- it
+     * eats the free space first -- so the note's own margin pushed
+     * everything before it hard left, which is every control in the row.
+     * The same mistake as the chat composer's two auto margins earlier the
+     * same day, and the same fix: one mechanism, not two fighting.
+     *
+     * The grip is last because he asked for the draggable to be *"all the
+     * way to the right"*; the arrows keep reading order between them. */
+    wrap.appendChild(note);
     function mover(label, position, enabled) {
       var button = el("button", "project-standing-move-btn", label);
       button.type = "button";
@@ -8984,7 +9201,7 @@
     }
     wrap.appendChild(mover("\u2191", index, index > 0));
     wrap.appendChild(mover("\u2193", index + 2, index < total - 1));
-    wrap.appendChild(note);
+    wrap.appendChild(projectDragHandle(name));
     return wrap;
   }
 
@@ -9511,7 +9728,9 @@
   function milestoneMoveControls(project, item, index, total) {
     var wrap = el("div", "project-milestone-move");
     var note = el("span", "project-milestone-move-note", "");
-    wrap.appendChild(milestoneDragHandle(item.name));
+    // Note first, grip last -- see `projectMoveControls` for why the order
+    // is what puts these on the right and the `justify-content` was not.
+    wrap.appendChild(note);
     function mover(label, position, enabled) {
       var button = el("button", "project-milestone-move-btn", label);
       button.type = "button";
@@ -9537,7 +9756,7 @@
       });
       wrap.appendChild(clear);
     }
-    wrap.appendChild(note);
+    wrap.appendChild(milestoneDragHandle(item.name));
     return wrap;
   }
 
@@ -15098,7 +15317,7 @@
         // and buzzed his phone about a message he was watching arrive.
         pingAskWatching(isOpen && source.kind === "ask");
         pingConvWatching(isOpen && source.kind === "conv", source.id);
-        fetchPage(threadUrl())
+        fetchPage(threadUrl(), { poll: true })
           .then(function (payload) {
             if (token !== sourceToken) return;
             paint(payload);
@@ -15132,7 +15351,7 @@
        * exact moment this feature is for. */
       var anchor = thread.scrollHeight;
       var token = sourceToken;
-      fetchPage(threadUrl())
+      fetchPage(threadUrl(), { poll: true })
         .then(function (payload) {
           if (token !== sourceToken) return;
           pendingAnchor = anchor;
@@ -15160,7 +15379,7 @@
 
     function loadThread() {
       var token = sourceToken;
-      return fetchPage(threadUrl())
+      return fetchPage(threadUrl(), { poll: true })
         .then(function (payload) {
           if (token !== sourceToken) return;
           paint(payload);
