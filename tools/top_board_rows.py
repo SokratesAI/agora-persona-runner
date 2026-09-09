@@ -89,15 +89,16 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner.nova_boards import (
     BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, is_relayed,
     parse_board, parse_milestone_pins, parse_project_meta, status_key,
-    unanswered_comment_bodies,
+    unanswered_comment_bodies_from_details,
 )
 # The ranking itself lives in `agora_runner` now, not here. The site had to
 # be able to import it and could not: `tools/` is not in the image. Same
 # functions, one definition -- see `nova_next`'s docstring.
 from agora_runner.nova_next import (
     _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims, open_rows,
-    low_satisfaction, load_diagnoses, milestone_ranks,
+    low_satisfaction, load_diagnoses, milestone_ranks, open_rows_from_contents,
     project_ranks, rank, reserve_maintenance, row_slug, unboarded_captures,
+    unboarded_captures_from_contents,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_boards import PROJECT_SATISFACTION_MAX
@@ -390,7 +391,28 @@ def closed_rows_waiting(markdown, board):
     them into `rows` would have put a Done row at the top of the pick
     list, which is the opposite failure and just as wrong.
     """
-    waiting = unanswered_comment_bodies(markdown or "")
+    return closed_rows_waiting_from_contents(parse_board(markdown or ""), board)
+
+
+def closed_rows_waiting_from_contents(contents, board):
+    """The same answer, from `parse_board`'s return value instead of the file.
+
+    Same split, and the same reason, as `nova_next.open_rows_from_contents`:
+    issue #203 replaces the markdown with records, and `board_records.contents`
+    already hands back exactly the four keys `parse_board` does, so the reader
+    above this line is a door onto a function that never sees a file.
+
+    The double read this closes is the same one `open_rows` had, and it is
+    worse here. The old body called `unanswered_comment_bodies` on the file
+    and then `parse_board` on it again -- two reads of one string, which
+    cannot disagree, but two `_all_docs` queries against a live CouchDB,
+    which can. This function decides a row is owed a reply by intersecting
+    the two halves, so a write landing between them drops a comment on a
+    Done row out of the answer entirely: exactly the nine-cycle silence on
+    `ideas #63` that `closed_rows_waiting` exists to prevent, back again
+    with a different cause. One `contents` makes them the same read.
+    """
+    waiting = unanswered_comment_bodies_from_details(contents["details"])
     return [{
         "board": board,
         "number": item["number"],
@@ -400,7 +422,7 @@ def closed_rows_waiting(markdown, board):
         "waiting": True,
         "relayed": is_relayed(waiting.get(item["number"], "")),
         "replySlug": _reply_slug(board, item["number"], waiting),
-    } for item in parse_board(markdown or "")["items"]
+    } for item in contents["items"]
         if (item["done"] or item["statusKey"] in _CLOSED)
         and item["number"] in waiting]
 
@@ -912,9 +934,18 @@ def main(argv=None):
         if text is None:
             missing.append(path)
             continue
-        rows.extend(open_rows(text, board))
-        captures.extend(unboarded_captures(text, board))
-        closed_waiting.extend(closed_rows_waiting(text, board))
+        # One parse, three readers. Each of the three used to take the file
+        # and parse it itself, so a board was read three times per pass --
+        # free on a string and three `board_records.contents` calls once
+        # issue #203 lands, with a write able to land between any two of
+        # them. The pick, the capture list and the owed replies have to come
+        # off one read of one board or they can contradict each other: a
+        # capture whose row was written between reads is handed to a waking
+        # cycle as unprocessed, above every row on the board.
+        contents = parse_board(text or "")
+        rows.extend(open_rows_from_contents(contents, board))
+        captures.extend(unboarded_captures_from_contents(contents, board))
+        closed_waiting.extend(closed_rows_waiting_from_contents(contents, board))
 
     notes_md = open(args.notes, encoding="utf-8").read() if args.notes \
         else _fetch(NOTES_PATH)

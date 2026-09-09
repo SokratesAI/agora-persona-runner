@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import patch
 
 from agora_runner.nova_boards import CAPTURE_PRIORITY_SEP, PRIORITY_LABELS, STATUS_LABELS
+from agora_runner import nova_next
 from tools import top_board_rows
 
 
@@ -1742,3 +1743,139 @@ def test_an_ungrouped_row_says_so_rather_than_printing_nothing():
     rows = top_board_rows.open_rows(board, "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
     assert f"Marcus (project {IMMEDIATE}, ungrouped)" in out
+
+
+# --- issue #203: the records-shaped door on the closed-row reader ---------
+#
+# Every dict below is hand-built and none of these tests holds a line of
+# board markdown, on purpose. A test that writes a table and parses it
+# agrees with a converted and an unconverted reader alike, so it cannot
+# tell the two apart; and `board_records.contents` hands back shapes a
+# board file cannot express -- a write-up for a row that is not in
+# `items`, an `order` integer on a capture -- which is exactly where a
+# reader that assumed the parser's invariants breaks.
+
+
+def _closed_contents(details, items):
+    """`parse_board`'s four keys, built by hand rather than parsed."""
+    return {"captures": [], "captureReplies": {},
+            "items": items, "details": details}
+
+
+def _row(number, *, done=False, status_key="done"):
+    return {"number": number, "title": f"row {number}", "status": "✅ Done",
+            "statusKey": status_key, "done": done, "updated": "09-09",
+            "priority": "🔴 Immediately", "priorityKey": "immediately",
+            "project": "", "milestone": "", "size": ""}
+
+
+def test_closed_rows_waiting_from_contents_reads_one_dict():
+    """The owed reply comes off `items` and `details` of a single read."""
+    contents = _closed_contents(
+        {63: "It shipped.\n\n**Edvard, 09-08:** this is not actually done."},
+        [_row(63, done=True)])
+    got = top_board_rows.closed_rows_waiting_from_contents(contents, "idea")
+    assert [(r["board"], r["number"], r["waiting"]) for r in got] \
+        == [("idea", 63, True)]
+    assert got[0]["replySlug"]
+
+
+def test_closed_rows_waiting_from_contents_skips_an_open_row():
+    """An open row is `open_rows`' business; this reader must not claim it."""
+    contents = _closed_contents(
+        {63: "**Edvard, 09-08:** is this moving?"},
+        [_row(63, done=False, status_key="in-progress")])
+    assert top_board_rows.closed_rows_waiting_from_contents(contents, "idea") == []
+
+
+def test_closed_rows_waiting_from_contents_ignores_a_detail_with_no_row():
+    """A write-up whose row is absent from `items` is not a row to reply to.
+
+    Markdown cannot produce this and records can: `details` and `items`
+    come from two different projections of the documents, so a row
+    deleted between them leaves its write-up behind. Answering off
+    `details` alone would invent a row with no title and no status.
+    """
+    contents = _closed_contents(
+        {63: "**Edvard, 09-08:** this is not actually done."}, [])
+    assert top_board_rows.closed_rows_waiting_from_contents(contents, "idea") == []
+
+
+def test_closed_rows_waiting_from_contents_never_reaches_the_parser(monkeypatch):
+    """The twin cannot fall back to markdown, which is what makes it a door.
+
+    `board-records.md` bans a facade -- an accessor that can still reach a
+    parser is how this migration ends up with two live sources of truth.
+    A twin that quietly parsed would return the *right answer* for every
+    caller still holding markdown, so nothing but a raising parser catches
+    it.
+    """
+    def _no(*_a, **_k):
+        raise AssertionError("parse_board reached from the records door")
+    monkeypatch.setattr(top_board_rows, "parse_board", _no)
+    contents = _closed_contents(
+        {63: "**Edvard, 09-08:** this is not actually done."},
+        [_row(63, done=True)])
+    assert top_board_rows.closed_rows_waiting_from_contents(
+        contents, "idea")[0]["number"] == 63
+
+
+def test_closed_rows_waiting_door_delegates_to_the_twin(monkeypatch):
+    """The markdown-shaped function is the parse and the call, nothing else."""
+    seen = {}
+
+    def _twin(contents, board):
+        seen["board"] = board
+        seen["keys"] = sorted(contents)
+        return ["sentinel"]
+
+    monkeypatch.setattr(top_board_rows, "parse_board",
+                        lambda _md: {"captures": [], "captureReplies": {},
+                                     "items": [], "details": {}})
+    monkeypatch.setattr(top_board_rows, "closed_rows_waiting_from_contents", _twin)
+    assert top_board_rows.closed_rows_waiting("| whatever |", "issue") == ["sentinel"]
+    assert seen == {"board": "issue",
+                    "keys": ["captureReplies", "captures", "details", "items"]}
+
+
+def test_main_parses_each_board_exactly_once(tmp_path, monkeypatch):
+    """Three readers, one read per board.
+
+    Each of the three used to parse the file itself. On a string that is
+    three identical answers; on `board_records.contents` it is three
+    `_all_docs` pairs a write can land between, and the pick, the capture
+    list and the owed replies would then be answering about three
+    different boards.
+    """
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    notes = tmp_path / "notes.md"
+    for path in (issues, ideas):
+        path.write_text("# Board\n\n| # | Title | Priority | Size | Status | Updated |\n"
+                        "|---|---|---|---|---|---|\n"
+                        "| 1 | a thing | 🔴 Immediately | S | 🟡 In progress | 09-09 |\n",
+                        encoding="utf-8")
+    notes.write_text("- \n", encoding="utf-8")
+
+    real = top_board_rows.parse_board
+    assert nova_next.parse_board is real
+    calls = []
+
+    def _counted(markdown):
+        calls.append(len(markdown or ""))
+        return real(markdown)
+
+    # Counted in BOTH namespaces, because a bound import is not one name.
+    # `open_rows` and `unboarded_captures` live in `nova_next` and call
+    # *its* `parse_board`, so a counter patched only onto `top_board_rows`
+    # sees nothing when the loop hands them the file again -- which is
+    # exactly the double read this test exists to forbid, and it survived
+    # a mutation until the second patch went on.
+    monkeypatch.setattr(top_board_rows, "parse_board", _counted)
+    monkeypatch.setattr(nova_next, "parse_board", _counted)
+    top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
+                         "--notes", str(notes), "--projects", str(notes)])
+    # Two boards, one parse each. `unread_notes` parses `notes.md` as well
+    # -- that file is a capture list and not a board, so `board_migrate`
+    # does not migrate it and it stays markdown; it is the third call.
+    assert len(calls) == 3
