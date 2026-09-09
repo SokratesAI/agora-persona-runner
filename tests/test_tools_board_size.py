@@ -9,7 +9,12 @@ the only thing that moved.
 import pytest
 
 from agora_runner.nova_boards import parse_board, parse_notes
-from tools.board_size import check, main, resolve_size
+from tools.board_size import check_from_contents, main, resolve_size
+
+
+def _texts(markdown):
+    """The bullet stream `check_from_contents` compares, read the way `main` reads it."""
+    return [note["text"] for note in parse_notes(markdown)]
 
 BOARD = """# Nova — Ideas
 
@@ -132,13 +137,13 @@ def test_check_catches_a_second_row_moving_underneath_the_write():
     after = BOARD.replace("| Open one | 🟡 In progress | 09-05 | 🟠 High | Marcus |",
                           "| Open one | 🟡 In progress | 09-05 | 🟠 High | Marcus | S |")
     after = after.replace("| Closed one | ✅ Done | 09-04 |", "| Renamed | ✅ Done | 09-04 |")
-    problems = check(BOARD, after, 7, "S", noted=False)
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 7, "S", noted=False)
     assert any("#8" in problem for problem in problems), problems
 
 
 def test_check_catches_the_wrong_size_landing():
     after = BOARD.replace("| 🟠 High | Marcus |", "| 🟠 High | Marcus | M |")
-    problems = check(BOARD, after, 7, "S", noted=False)
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 7, "S", noted=False)
     assert any("asked for 'S'" in problem for problem in problems), problems
 
 
@@ -150,7 +155,7 @@ def test_check_refuses_a_date_the_caller_did_not_ask_for():
     """
     after = BOARD.replace("| Open one | 🟡 In progress | 09-05 | 🟠 High | Marcus |",
                           "| Open one | 🟡 In progress | 01-01 | 🟠 High | Marcus | S |")
-    problems = check(BOARD, after, 7, "S", noted=True, dated="09-06")
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 7, "S", noted=True, dated="09-06")
     assert any("came back updated" in problem for problem in problems), problems
 
 

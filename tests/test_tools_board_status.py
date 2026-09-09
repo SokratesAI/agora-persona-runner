@@ -16,7 +16,12 @@ import pytest
 
 from agora_runner import nova_boards
 from agora_runner.nova_boards import parse_board, parse_notes
-from tools.board_status import CLOSED_STATUS_KEYS, check, main, resolve_status
+from tools.board_status import CLOSED_STATUS_KEYS, check_from_contents, main, resolve_status
+
+
+def _texts(markdown):
+    """The bullet stream `check_from_contents` compares, read the way `main` reads it."""
+    return [note["text"] for note in parse_notes(markdown)]
 
 BOARD = """---
 type: log
@@ -199,7 +204,7 @@ def test_check_catches_a_second_row_moving():
     before = BOARD
     after = BOARD.replace("| Metered API | ⚪ Backlog |", "| Metered API | ✅ Done |")
     after = after.replace("| Weekly work | 🟡 In progress |", "| Weekly work | ✅ Done |")
-    problems = check(before, after, 100, "✅ Done", noted=False)
+    problems = check_from_contents(parse_board(before), parse_board(after), _texts(before), _texts(after), 100, "✅ Done", noted=False)
     assert any("#104 changed" in p for p in problems)
 
 
@@ -207,5 +212,5 @@ def test_check_catches_a_rewritten_write_up():
     before = BOARD
     after = BOARD.replace("| Weekly work | 🟡 In progress |", "| Weekly work | ✅ Done |")
     after = after.replace("Three heartbeats, one prompt file each.", "Something else entirely.")
-    problems = check(before, after, 100, "✅ Done", noted=True)
+    problems = check_from_contents(parse_board(before), parse_board(after), _texts(before), _texts(after), 100, "✅ Done", noted=True)
     assert any("was rewritten, not appended to" in p for p in problems)

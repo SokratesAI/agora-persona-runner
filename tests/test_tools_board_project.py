@@ -8,7 +8,7 @@ cannot do on its own.
 
 The first is `check`, which re-parses the whole document and refuses the
 write unless the rows named are the only things that moved -- same shape as
-`tools.board_status.check`, and tighter, because setting a project may not
+`tools.board_status.check_from_contents`, and tighter, because setting a project may not
 change a title, a status, a rating, a write-up or the bullet stream.
 
 The second is that **several rows are set in one process**. A project is by
@@ -30,7 +30,12 @@ from agora_runner.nova_boards import (
     parse_board,
     parse_notes,
 )
-from tools.board_project import check, main
+from tools.board_project import check_from_contents, main
+
+
+def _texts(markdown):
+    """The bullet stream `check_from_contents` compares, read the way `main` reads it."""
+    return [note["text"] for note in parse_notes(markdown)]
 
 BOARD = """---
 type: log
@@ -197,12 +202,12 @@ def test_dry_run_prints_and_writes_nothing(tmp_path):
 def test_check_catches_a_status_changed_underneath_the_project_move(tmp_path):
     """`check` reads the document, not the diff it was handed."""
     after = BOARD.replace("🟡 In progress", "✅ Done")
-    problems = check(BOARD, after, [122], "NAS")
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), [122], "NAS")
     assert any("#131" in problem for problem in problems), problems
 
 
 def test_check_catches_a_row_that_did_not_get_the_project(tmp_path):
-    problems = check(BOARD, BOARD, [122], "NAS")
+    problems = check_from_contents(parse_board(BOARD), parse_board(BOARD), _texts(BOARD), _texts(BOARD), [122], "NAS")
     assert any("asked for 'NAS'" in problem for problem in problems), problems
 
 
@@ -211,7 +216,7 @@ def test_check_catches_an_edited_write_up(tmp_path):
     assert code == 0
     good = path.read_text(encoding="utf-8")
     bad = good.replace("Body text nothing here may touch.", "rewritten")
-    problems = check(BOARD, bad, [122], "NAS")
+    problems = check_from_contents(parse_board(BOARD), parse_board(bad), _texts(BOARD), _texts(bad), [122], "NAS")
     assert any("write-up" in problem for problem in problems), problems
 
 
@@ -221,5 +226,5 @@ def test_check_catches_a_lost_bullet(tmp_path):
     good = path.read_text(encoding="utf-8")
     bad = good.replace("- 2026-08-26 (Cycle 480) — a bullet nothing here may touch\n", "")
     assert len(parse_notes(bad)) < len(parse_notes(BOARD))
-    problems = check(BOARD, bad, [122], "NAS")
+    problems = check_from_contents(parse_board(BOARD), parse_board(bad), _texts(BOARD), _texts(bad), [122], "NAS")
     assert any("bullet stream" in problem for problem in problems), problems

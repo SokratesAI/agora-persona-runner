@@ -56,7 +56,7 @@ _TRL_KEYS = frozenset({"trl"})
 def check(before, after, project, trl):
     """Refuse the write unless that one project's TRL moved, and nothing else.
 
-    Same shape and same reasoning as `tools.board_size.check`, against
+    Same shape and same reasoning as `tools.board_size.check_from_contents`, against
     `parse_project_meta` instead of `parse_board` because this is his
     project table rather than a board. There is no forgiveness here at all
     -- this tool writes no note and stamps no date, so a moved `Updated`

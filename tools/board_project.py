@@ -57,19 +57,24 @@ from agora_runner.nova_boards import (
 )
 
 
-def check(before, after, numbers, project):
+def check_from_contents(old, new, old_notes, new_notes, numbers, project):
     """Refuse the write unless those rows' projects moved and nothing else did.
 
-    Same shape and same reasoning as `tools.board_status.check`: this edits a
-    document the site parses, so the question is what `parse_board` says
+    Same shape and same reasoning as
+    `tools.board_status.check_from_contents`: this edits a document the site
+    parses, so the question is what `parse_board` says
     afterwards, not what the string looks like. Setting a project changes one
     cell per named row and nothing else at all — not a title, not a status,
     not a rating, not a write-up, not the bullet stream — which makes this the
     tightest guard of the three board tools.
+
+    `old` and `new` are the two parsed record sets and `old_notes` /
+    `new_notes` the two bullet streams, all four read by `main`. This
+    reaches for no document itself: #203 turns the source into a CouchDB
+    range query, and a guard that fetched its own copy would be checking
+    a version of the board the caller never saw.
     """
     problems = []
-    old = parse_board(before)
-    new = parse_board(after)
     old_by_number = {item["number"]: item for item in old["items"]}
     new_by_number = {item["number"]: item for item in new["items"]}
 
@@ -105,8 +110,6 @@ def check(before, after, numbers, project):
         elif now != was:
             problems.append(f"#{was['number']} changed underneath the project move")
 
-    old_notes = [note["text"] for note in parse_notes(before)]
-    new_notes = [note["text"] for note in parse_notes(after)]
     if old_notes != new_notes:
         problems.append(
             f"the bullet stream changed: {len(old_notes)} -> {len(new_notes)} note(s)"
@@ -143,6 +146,8 @@ def main(argv=None):
         return 1
 
     before = open(args.file, encoding="utf-8").read()
+    before_board = parse_board(before)
+    before_notes = [note["text"] for note in parse_notes(before)]
     after = before
     for number in args.number:
         stepped = set_row_project(after, number, project)
@@ -156,17 +161,21 @@ def main(argv=None):
             return 1
         after = stepped
 
-    problems = check(before, after, args.number, project)
+    after_board = parse_board(after)
+    after_notes = [note["text"] for note in parse_notes(after)]
+    problems = check_from_contents(
+        before_board, after_board, before_notes, after_notes, args.number, project
+    )
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
         return 1
 
-    was = {item["number"]: item for item in parse_board(before)["items"]}
+    was = {item["number"]: item for item in before_board["items"]}
     for number in args.number:
         old = (was[number].get("project") or "").strip() or "(none)"
         print(f"#{number}: {old} -> {project}")
-    print(f"projects on this board: {', '.join(board_projects(parse_board(after)['items']))}")
+    print(f"projects on this board: {', '.join(board_projects(after_board['items']))}")
     print(f"{len(before)} -> {len(after)} bytes")
     if args.dry_run:
         return 0

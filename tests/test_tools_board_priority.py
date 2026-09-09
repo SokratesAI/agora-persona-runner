@@ -16,7 +16,12 @@ column.
 import pytest
 
 from agora_runner.nova_boards import parse_board, parse_notes
-from tools.board_priority import check, main, resolve_priority
+from tools.board_priority import check_from_contents, main, resolve_priority
+
+
+def _texts(markdown):
+    """The bullet stream `check_from_contents` compares, read the way `main` reads it."""
+    return [note["text"] for note in parse_notes(markdown)]
 
 BOARD = """---
 type: log
@@ -194,7 +199,7 @@ def test_check_catches_a_second_row_moving_underneath_it():
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🔴 Immediately |",
     ).replace("Demos live two weeks | 🟡 In progress", "Demos live two weeks | ⚪ Backlog")
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 260, "🔴 Immediately", noted=False)
     assert any("#259 changed underneath the re-rating" in p for p in problems)
 
 
@@ -203,7 +208,7 @@ def test_check_catches_the_target_row_losing_a_cell():
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
         "| Redesign the picker | 🟡 In progress | 09-06 | 🔴 Immediately |",
     )
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 260, "🔴 Immediately", noted=False)
     assert any("other than its rating" in p for p in problems)
 
 
@@ -212,7 +217,7 @@ def test_check_catches_a_lost_bullet():
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🔴 Immediately |",
     ).replace("- 2026-09-06 (Cycle 1087) — a bullet nothing here may touch\n", "")
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 260, "🔴 Immediately", noted=False)
     assert any("bullet stream changed" in p for p in problems)
 
 
@@ -221,7 +226,7 @@ def test_check_catches_a_rewritten_write_up():
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🔴 Immediately |",
     ).replace("The full spec lives in its own note.", "Something else entirely.")
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=True)
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 260, "🔴 Immediately", noted=True)
     assert any("was rewritten, not appended to" in p for p in problems)
 
 
@@ -236,7 +241,7 @@ def test_check_passes_the_note_carrying_write_on_a_date_the_row_did_not_have(tmp
     assert code == 0
     text = path.read_text(encoding="utf-8")
     assert _rows_from(text)[260]["updated"] == "09-07"
-    assert check(BOARD, text, 260, "🔴 Immediately", noted=True, dated="09-07") == []
+    assert check_from_contents(parse_board(BOARD), parse_board(text), _texts(BOARD), _texts(text), 260, "🔴 Immediately", noted=True, dated="09-07") == []
 
 
 def test_check_refuses_a_date_the_caller_did_not_ask_for():
@@ -246,7 +251,7 @@ def test_check_refuses_a_date_the_caller_did_not_ask_for():
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
         "| Redesign the picker | ⚪ Backlog | 01-01 | 🔴 Immediately |",
     )
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=True, dated="09-07")
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 260, "🔴 Immediately", noted=True, dated="09-07")
     assert any("came back updated" in p for p in problems)
 
 
@@ -255,7 +260,7 @@ def test_a_re_rating_without_a_note_may_not_move_the_date():
         "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
         "| Redesign the picker | ⚪ Backlog | 09-07 | 🔴 Immediately |",
     )
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
+    problems = check_from_contents(parse_board(BOARD), parse_board(after), _texts(BOARD), _texts(after), 260, "🔴 Immediately", noted=False)
     assert any("other than its rating" in p for p in problems)
 
 
@@ -265,7 +270,7 @@ def test_main_actually_refuses_when_check_reports_a_problem(tmp_path, monkeypatc
     the gate left all 33 green. It does not now."""
     import tools.board_priority as module
 
-    monkeypatch.setattr(module, "check", lambda *a, **k: ["invented problem"])
+    monkeypatch.setattr(module, "check_from_contents", lambda *a, **k: ["invented problem"])
     code, path = _run(tmp_path)
     assert code == 1
     assert path.read_text(encoding="utf-8") == BOARD

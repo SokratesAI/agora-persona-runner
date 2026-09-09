@@ -95,20 +95,25 @@ def resolve_priority(value):
     return resolved or None
 
 
-def check(before, after, number, priority, noted, dated=None):
+def check_from_contents(old, new, old_notes, new_notes, number, priority, noted, dated=None):
     """Refuse the write unless that one rating moved and nothing else did.
 
-    Same shape and same reasoning as `tools.board_status.check`. It has one
+    Same shape and same reasoning as
+    `tools.board_status.check_from_contents`. It has one
     forgiveness of its own and it is not optional: `append_detail_note`
     stamps `Updated` with `dated`, so when `noted` is true the target row's
     `updated` may move, and only to `dated`. Asserting the new value rather
     than skipping the field is what keeps this from becoming a hole -- a
     plain exclusion would let any date through, including one a caller
     never asked for.
+
+    `old` and `new` are the two parsed record sets and `old_notes` /
+    `new_notes` the two bullet streams, all four read by `main`. This
+    reaches for no document itself: #203 turns the source into a CouchDB
+    range query, and a guard that fetched its own copy would be checking
+    a version of the board the caller never saw.
     """
     problems = []
-    old = parse_board(before)
-    new = parse_board(after)
     old_by_number = {item["number"]: item for item in old["items"]}
     new_by_number = {item["number"]: item for item in new["items"]}
 
@@ -152,8 +157,6 @@ def check(before, after, number, priority, noted, dated=None):
         elif now != was:
             problems.append(f"#{was['number']} changed underneath the re-rating")
 
-    old_notes = [note["text"] for note in parse_notes(before)]
-    new_notes = [note["text"] for note in parse_notes(after)]
     if old_notes != new_notes:
         problems.append(
             f"the bullet stream changed: {len(old_notes)} -> {len(new_notes)} note(s)"
@@ -228,6 +231,8 @@ def main(argv=None):
         return 1
 
     before = open(args.file, encoding="utf-8").read()
+    before_board = parse_board(before)
+    before_notes = [note["text"] for note in parse_notes(before)]
     after = set_row_priority(before, args.number, priority)
     if after is None:
         print(
@@ -249,15 +254,17 @@ def main(argv=None):
             return 1
         after = noted
 
-    problems = check(
-        before, after, args.number, priority, noted=bool(args.note), dated=args.dated
+    after_board = parse_board(after)
+    after_notes = [note["text"] for note in parse_notes(after)]
+    problems = check_from_contents(
+        before_board, after_board, before_notes, after_notes, args.number, priority, noted=bool(args.note), dated=args.dated
     )
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
         return 1
 
-    was = {item["number"]: item for item in parse_board(before)["items"]}
+    was = {item["number"]: item for item in before_board["items"]}
     print(f"#{args.number}: {was[args.number]['priority'] or '(unrated)'} -> {priority}")
     print(f"{len(before)} -> {len(after)} bytes")
     if args.dry_run:
