@@ -144,3 +144,76 @@ def test_an_f_string_is_prose_but_its_holes_are_code():
     a call until the tokenizer's f-string types were added."""
     assert inv.surfaces('msg = f"still call parse_board: {n}"') == ()
     assert inv.surfaces('msg = f"rows: {parse_board(t)}"') == ("parse_board",)
+
+
+# --- A `parse_board` call is not always one of the owner's boards. ---------
+#
+# `--assert-migrated` is the gate that decides when the switchover branch
+# leaves draft, and it was unreachable: `tools/roll_health.py` parses the
+# board *shape* out of Nova's own capture files, which `board_migrate` never
+# migrates, so it must keep calling `parse_board` after the migration is
+# finished. Found cycle 1303.
+
+
+def test_the_exemption_names_a_file_that_really_still_parses():
+    """A stale exemption is a gate widened by accident.
+
+    If a listed module is converted or deleted, its entry has to go with it
+    — otherwise the list keeps excusing a name that no longer means
+    anything, and the next module to take that path is excused silently.
+    """
+    assert inv.NOT_A_BOARD, "an empty list needs no code path"
+    for rel, reason in inv.NOT_A_BOARD.items():
+        path = ROOT / rel
+        assert path.exists(), f"{rel} is exempt and does not exist"
+        assert inv.PARSES in inv.surfaces(path.read_text()), \
+            f"{rel} is exempt from a parse gate and does not parse"
+        assert reason.strip(), f"{rel} is exempt for no stated reason"
+
+
+def test_roll_health_reads_only_novas_own_capture_files():
+    """The evidence under the exemption, not a restatement of it.
+
+    Its `PAIRS` is hardcoded, so this is checkable rather than assumed: if
+    anything ever points that tool at one of the owner's two boards, the
+    exemption stops being true and this fails before the gate goes quiet.
+    """
+    from agora_runner.nova_boards import BOARD_PATHS
+    from tools import roll_health
+
+    owners = {paths["edvard"] for paths in BOARD_PATHS.values()}
+    novas = {p for paths in BOARD_PATHS.values()
+             for key, p in paths.items() if key != "edvard"}
+    read = {path for pair in roll_health.PAIRS for path in pair}
+    assert read, "no paths is not proof of the right paths"
+    assert read <= novas
+    assert not (read & owners)
+
+
+def test_an_exempt_module_does_not_block_assert_migrated(tmp_path):
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "roll_health.py").write_text("parse_board(text)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
+    (tmp_path / "tools" / "other.py").write_text("parse_board(text)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+
+
+def test_the_exempt_module_is_still_reported_as_a_parser(tmp_path, capsys):
+    """Excused from the gate, never hidden from the report."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "roll_health.py").write_text("parse_board(text)")
+    inv.main(["--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "parses" in out
+    assert "tools/roll_health.py" in out
+    assert "1 module(s) touch a board, 1 of them by parsing markdown." in out
+    assert inv.NOT_A_BOARD["tools/roll_health.py"] in out
+
+
+def test_the_gate_does_not_name_an_exempt_module(capsys):
+    """On the live tree, so this is about the real exemption."""
+    assert inv.main(["--assert-migrated"]) == 2
+    line = next(l for l in capsys.readouterr().out.split("\n")
+                if l.startswith("NOT MIGRATED"))
+    assert "tools/roll_health.py" not in line
+    assert "agora_runner/nova_boards.py" in line

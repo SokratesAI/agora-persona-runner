@@ -39,6 +39,25 @@ tokenize falls back to the raw text and is reported, because
 over-reporting a reader is the safe direction and silently reading a
 broken file as clean is not.
 
+**And a `parse_board` call is not always a board.** The two tables are a
+markdown shape, not only the owner's two documents, and `tools/roll_health.py`
+parses that shape out of *Nova's own* `nova/resources/issues.md` and
+`ideas.md` -- its `PAIRS` constant names those two paths and nothing else.
+`board_migrate` never migrates them, there is no record store for them to
+read, and so that module keeps calling `parse_board` after the switchover is
+finished. Counted as a reader still to move, it makes `--assert-migrated`
+unreachable: the gate that decides when the switchover branch leaves draft
+could never return 0, however many readers were converted.
+
+Nothing static can tell which document a call parses -- `roll_health` takes
+its text from a local path at runtime -- so the exemption is a named list
+with a reason each, `NOT_A_BOARD`, rather than a pattern pretending to
+measure it. The plain report still prints the module under `parses`, because
+it does call `parse_board`; only `--assert-migrated` stops waiting for it. A
+test holds every entry against the real file, so an exemption for a module
+that no longer parses, or no longer exists, fails rather than quietly
+widening the gate.
+
 What it does not detect: a module that builds a markdown row by hand
 instead of calling `parse_board`. That is the same split brain and it has
 no name to grep for. This is a coverage floor, not a proof.
@@ -58,6 +77,17 @@ PATHS = "BOARD_PATHS"
 _SURFACES = ((PARSES, re.compile(r"\bparse_board\b")),
              (PATHS, re.compile(r"\bBOARD_PATHS\b")))
 _REFS = re.compile(r"\bparse_board_refs\b")
+
+#: Modules whose `parse_board` call is on a document that is not one of the
+#: owner's two boards, mapped to why. Keys are paths relative to the scanned
+#: root. These still show under `parses` in the report -- they really do call
+#: it -- and `--assert-migrated` does not wait for them, because the
+#: switchover has nothing to convert them to. See the module docstring.
+NOT_A_BOARD = {
+    "tools/roll_health.py":
+        "parses Nova's own nova/resources/issues.md and ideas.md, the two "
+        "paths in its PAIRS constant, which board_migrate does not migrate",
+}
 
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".pytest_cache", "venv"}
 
@@ -150,12 +180,20 @@ def report(found, refs, unreadable, untokenized=(), assert_migrated=False,
     # test read an empty capture on a report that had printed.
     out = sys.stdout if out is None else out
     parsers = sorted(rel for rel, used in found.items() if PARSES in used)
+    exempt = [rel for rel in parsers if rel in NOT_A_BOARD]
+    blocking = [rel for rel in parsers if rel not in NOT_A_BOARD]
     for rel in sorted(found):
         used = found[rel]
         print(f"{'parses' if PARSES in used else '      '}  "
               f"{'paths' if PATHS in used else '     '}  {rel}", file=out)
     print(f"{len(found)} module(s) touch a board, {len(parsers)} of them by "
           f"parsing markdown.", file=out)
+    if exempt:
+        print(f"{len(exempt)} of those parse a document that is not one of "
+              "the owner's boards, so the switchover has nothing to convert "
+              "them to and --assert-migrated does not wait for them: "
+              + ", ".join(f"{rel} ({NOT_A_BOARD[rel]})" for rel in exempt),
+              file=out)
     if refs:
         print(f"{len(refs)} module(s) match the spec's grep only via "
               "parse_board_refs, which reads a journal entry's PR list and "
@@ -171,9 +209,9 @@ def report(found, refs, unreadable, untokenized=(), assert_migrated=False,
         return 1
     if not assert_migrated:
         return 0
-    if parsers:
-        print(f"NOT MIGRATED — {len(parsers)} module(s) still call "
-              f"parse_board: {', '.join(parsers)}", file=out)
+    if blocking:
+        print(f"NOT MIGRATED — {len(blocking)} module(s) still call "
+              f"parse_board: {', '.join(blocking)}", file=out)
         return 2
     print("MIGRATED — no module parses board markdown. A module still "
           "reading BOARD_PATHS is expected: the generated markdown view has "
