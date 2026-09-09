@@ -17,14 +17,25 @@ reads CouchDB or it raises.
 
 Two joins live here and nowhere else:
 
-**Rows and captures share a key range.** `board_store.read_rows` selects
-on the literal prefix `board:<board>:`, and a capture's id is
-`board:<board>:capture:<captureId>` -- inside that range on purpose, so
-one query fetches both. Telling them apart is therefore this module's
-job, and it is done on the document's own `type` field rather than on
-the id, because `type` is what the CouchDB views key on and a document
-that disagrees with its own type is a bug worth raising rather than
-silently filing under the other kind.
+**Rows and captures are two key ranges, not one.** This module shipped
+believing the opposite -- that a capture's id was `board:<board>:capture:<id>`
+and so one `read_rows` fetched both kinds -- and it is wrong.
+`board_document.capture_document_id` mints `capture:<board>:<id>`, outside
+`board_store`'s row range, deliberately: an id under `board:` would come
+back from `read_rows` as a row with no number, and `write_rows`' default
+`prune=True` would tombstone every capture the owner has ever written the
+first time a migration wrote the rows alone. So `contents` asks the store
+twice, and the second query is the only thing that makes `captures` and
+`captureReplies` non-empty against a real CouchDB.
+
+**The green test that hid it is the lesson, not the typo.** The fake store
+answered `read_rows` with a hand-built list of both kinds, so it agreed
+with a join no real store could perform. A fake that cannot say *"that id
+is not in the range you asked for"* cannot fail this, and every reader
+converted onto `contents` would have reported the owner's captures as
+none. `type` still separates the documents, because a document that
+disagrees with the range it was stored in is a bug worth raising rather
+than silently filing under the other kind.
 
 **A row carries `projectId`/`milestoneId`; `parse_board` carried names.**
 The registry is the only place the two are joined, and a row pointing at
@@ -107,7 +118,14 @@ def contents(board, store=board_store):
     order and the two capture lists in `captures_map`'s.
 
     `store` is injected so a test can hand over a fake without a CouchDB;
-    it needs `read_rows` and `read_registry`.
+    it needs `read_rows`, `read_captures` and `read_registry`. The fake
+    must honour the two key ranges separately -- one that answers
+    `read_rows` with captures in it is agreeing with a join CouchDB cannot
+    perform, which is how the missing `read_captures` call stayed green.
+
+    **A capture found in the row range raises rather than being read.**
+    It is not merely misfiled: the next `write_rows` prunes it, so a reader
+    that quietly took it would be the last thing to see it.
 
     **An unmigrated store raises rather than reading as a clean board.**
     `read_rows` answers `[]` for a board that has never been written and for
@@ -126,7 +144,16 @@ def contents(board, store=board_store):
             f"for board {board!r}: the registry document has no revision. Run "
             "`python3 -m tools.board_migrate --board <board> --file <md> "
             "--apply` first")
-    rows, captures = split_documents(store.read_rows(board))
+    rows, misfiled = split_documents(store.read_rows(board))
+    if misfiled:
+        raise RecordError(
+            f"{len(misfiled)} capture document(s) are stored inside the row "
+            f"key range of board {board!r} "
+            f"({', '.join(sorted(str(doc.get('_id')) for doc in misfiled))}); "
+            "a `write_rows` with the default `prune=True` would tombstone "
+            "them. They belong under `capture:<board>:` -- see "
+            "`board_document.capture_document_id`")
+    _, captures = split_documents(store.read_captures(board))
     items = []
     for doc in rows:
         project_name, milestone_name = _names(registry, doc)

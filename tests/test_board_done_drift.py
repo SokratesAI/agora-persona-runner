@@ -182,6 +182,14 @@ class _HalfReadableStore:
             raise board_store.StoreError("listing idea records: 503 {}")
         return self.store.read_rows(board)
 
+    def read_captures(self, board):
+        # The outage is the board, not the query: `contents` asks for the
+        # row range and the capture range separately, and a fake that only
+        # fails one of them is describing an outage CouchDB does not have.
+        if board == "idea":
+            raise board_store.StoreError("listing idea captures: 503 {}")
+        return self.store.read_captures(board)
+
     def read_registry(self):
         return self.store.read_registry()
 

@@ -388,3 +388,72 @@ def test_write_row_refuses_a_board_it_does_not_know(couch):
                                "type": board_document.DOCUMENT_TYPE,
                                "board": "issues", "number": 1, "done": False})
     assert not couch.docs
+
+
+def _range_of(query):
+    """`(startkey, endkey)` decoded back out of an `_all_docs` query string."""
+    parsed = urllib.parse.parse_qs(query)
+    return json.loads(parsed["startkey"][0]), json.loads(parsed["endkey"][0])
+
+
+def test_a_capture_id_falls_in_the_capture_range_and_not_the_row_range():
+    """The two ranges are what `board_records.contents` has to query
+    separately, and the reason it has to is that a capture id is *outside*
+    the row range. Held against `board_document.capture_document_id`'s own
+    output rather than a re-spelled prefix: if that function ever moves
+    captures under `board:`, this fails here rather than silently making
+    `write_rows`' prune eat every capture the owner has written.
+    """
+    doc_id = board_document.capture_document_id("issue", "cap_1")
+    row_start, row_end = _range_of(board_store._range_query("issue"))
+    cap_start, cap_end = _range_of(board_store._capture_range_query("issue"))
+
+    assert cap_start <= doc_id <= cap_end
+    assert not (row_start <= doc_id <= row_end)
+
+    # And the row id is in the row range only, so the two are disjoint over
+    # the ids that actually exist rather than merely different strings.
+    row_id = board_document.document_id("issue", 41)
+    assert row_start <= row_id <= row_end
+    assert not (cap_start <= row_id <= cap_end)
+
+
+def test_the_capture_range_is_scoped_to_one_board():
+    """Both boards' captures share the `capture:` prefix, so a range that
+    stopped at it would hand the issue board the idea board's captures."""
+    cap_start, cap_end = _range_of(board_store._capture_range_query("issue"))
+    other = board_document.capture_document_id("idea", "cap_1")
+    assert not (cap_start <= other <= cap_end)
+
+
+def test_read_captures_fetches_the_capture_range_from_the_database(couch):
+    """Against the fake CouchDB, which answers a key range rather than a
+    field, so this fails if `read_captures` queries the row prefix.
+
+    A row of the same board is in the store too: the assertion is that the
+    capture came back *and* the row did not, which a query returning
+    everything would also fail.
+    """
+    capture = board_document.to_capture_document(
+        "His capture", "issue", "cap_1", rank="V")
+    row = _row("issue", 41, rank="V")
+    couch.docs = {doc["_id"]: doc for doc in (capture, row)}
+    assert [doc["_id"] for doc in board_store.read_captures("issue")] == [
+        capture["_id"]]
+
+
+def test_read_captures_does_not_reach_the_other_board(couch):
+    mine = board_document.to_capture_document("Mine", "issue", "cap_1")
+    theirs = board_document.to_capture_document("Theirs", "idea", "cap_1")
+    couch.docs = {doc["_id"]: doc for doc in (mine, theirs)}
+    assert [doc["text"] for doc in board_store.read_captures("idea")] == ["Theirs"]
+
+
+def test_a_refused_capture_read_raises_rather_than_reading_as_empty(monkeypatch):
+    """Empty is what a board with no captures looks like, so a 500 that
+    returned `[]` would render as "he has written nothing" on every reader
+    below `board_records.contents`."""
+    monkeypatch.setattr(ticket_docs, "_req",
+                        lambda *a, **k: (500, {"error": "boom"}))
+    with pytest.raises(board_store.StoreError):
+        board_store.read_captures("issue")

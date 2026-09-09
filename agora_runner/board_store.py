@@ -11,10 +11,16 @@ so every reader ends up here or nowhere.
 
 It sits on `ticket_docs` for credentials and HTTP rather than opening a
 second connection, and shares that module's database -- the ticket mirror
-holds `ticket:<path>:<n>` and this holds `board:<board>:<n>`, two id
-namespaces in one database, because CouchDB is one database per vault and
-a second one would need its own credentials, its own backup and its own
-reason.
+holds `ticket:<path>:<n>` and this holds `board:<board>:<n>` **and**
+`capture:<board>:<id>`, three id namespaces in one database, because
+CouchDB is one database per vault and a second one would need its own
+credentials, its own backup and its own reason.
+
+The two of those that are one board's are two *separate* `_all_docs`
+ranges, and that is not a detail: a capture id under `board:` would be
+tombstoned by `write_rows`' prune, so it is outside deliberately, and a
+reader that fetches one range and sorts by `type` finds no captures at
+all. `read_rows` and `read_captures` are both needed to read one board.
 
 **Nothing calls this yet**, for the same reason the four before it call
 nothing: the store, the migration and the 23 markdown readers land in one
@@ -105,8 +111,7 @@ def ensure_database():
     return ticket_docs.ensure_database()
 
 
-def _range_query(board, include_docs=True):
-    prefix = f"board:{board}:"
+def _prefix_query(prefix, include_docs=True):
     query = {
         "startkey": json.dumps(prefix),
         "endkey": json.dumps(prefix + _ID_MAX),
@@ -114,6 +119,31 @@ def _range_query(board, include_docs=True):
     if include_docs:
         query["include_docs"] = "true"
     return urllib.parse.urlencode(query)
+
+
+def _range_query(board, include_docs=True):
+    return _prefix_query(f"board:{board}:", include_docs=include_docs)
+
+
+def _capture_range_query(board, include_docs=True):
+    """The **other** key range of one board -- its captures, not its rows.
+
+    Captures deliberately do not live under `board:<board>:`.
+    `board_document.capture_document_id` puts them under `capture:<board>:`
+    and says why: an id inside the row range would be handed back by
+    `read_rows` as a row with no number, and `write_rows`' default
+    `prune=True` would tombstone every capture the owner has written the
+    first time a migration wrote the rows alone.
+
+    The consequence is that one board is **two** queries, and that is the
+    thing to keep hold of. A reader that fetches the row range and then
+    sorts captures out of it by `type` gets an empty capture list against a
+    real store, forever, while a fake store that answers `read_rows` with a
+    hand-built list of both kinds agrees with it -- which is exactly how
+    `board_records.contents` shipped reading zero captures with a green
+    test.
+    """
+    return _prefix_query(f"capture:{board}:", include_docs=include_docs)
 
 
 def stored_documents(board):
@@ -133,6 +163,34 @@ def stored_documents(board):
 def read_rows(board):
     """Every record document for one board, in `sort_key` order."""
     return in_order(stored_documents(board).values())
+
+
+def stored_capture_documents(board):
+    """`{doc_id: the stored document}` for one board's captures, unsorted.
+
+    Its own `_all_docs` range because captures have their own id prefix --
+    see `_capture_range_query`.
+    """
+    _check_board(board)
+    status, body = ticket_docs._req(
+        "GET", f"{ticket_docs.TICKET_DB}/_all_docs?{_capture_range_query(board)}")
+    if status != 200:
+        raise StoreError(
+            f"listing {board} captures: {status} {json.dumps(body)[:200]}")
+    return {row["id"]: row["doc"] for row in body.get("rows", []) if row.get("doc")}
+
+
+def read_captures(board):
+    """Every capture document for one board, in wire order.
+
+    Deliberately **not** run through `in_order`. A capture carries a rank
+    and no number, so `sort_key`'s number tie-break has nothing to work
+    with, and `board_document.captures_map` already owns the capture order
+    -- ranked first in rank order, then unranked in the order they were
+    handed over. Sorting here as well would decide that second half twice,
+    in two places, on two rules.
+    """
+    return list(stored_capture_documents(board).values())
 
 
 def read_row(board, number):
