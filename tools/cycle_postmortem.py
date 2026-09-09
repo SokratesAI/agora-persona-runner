@@ -307,6 +307,19 @@ def misfiled_entries(lost, entry_prs, reply_prs, step=1):
     of `093-cycle-86.md`, whose own run announced something else. Reading
     only `+1` left that in `RAN AND LEFT NO RECORD` for four months while
     the entry sat in the folder.
+
+    **A shift down is not bounded at one, and `-2` is measured too.** The
+    number a cycle reads off the newest journal filename is behind by
+    however many entries are missing at that instant, and with three
+    cycles overlapping that is routinely more than one. Cycle 275 listed
+    the folder at 05:43 Oslo on 2026-08-20 and got `327-cycle-272.md`,
+    because 273 had not written and 274 would not write for another hour;
+    it filed its own entry as `328-cycle-273.md`, whose footer `#246,
+    #247` is precisely the pair 275's reply announced and 273's own reply
+    (`#7, #62`) does not. The shift up has no matching unboundedness --
+    `cycle_number` answers with the highest number that exists, so it can
+    only ever be ahead by the cycles that actually woke during the run --
+    which is why this searches two down and not two up.
     """
     found = []
     for start in sorted(lost):
@@ -1196,6 +1209,48 @@ def keep_still_lost(results, pairs):
             if verdicts.get(wrote_it, "lost") == "lost"]
 
 
+def find_shifted_down(results, conversations, paths, read_entry=None,
+                      fetch=None, steps=(-1, -2)):
+    """The downward PR joins, nearest first, on rows still `lost`.
+
+    A cycle that reads its own number off the newest journal filename is
+    behind by however many entries are missing at that instant, and with
+    three cycles overlapping that is routinely more than one -- so the
+    shift down is not bounded at one the way the shift up is.
+    `cycle_number` answers with the highest number that *exists*, so a run
+    can only ever be handed a number the cycles that actually woke during
+    it pushed up; a filename can lag by any number of unwritten entries.
+
+    Measured 2026-09-09: cycle 275 listed the folder at 05:43 Oslo on
+    2026-08-20 and got `327-cycle-272.md`, because 273 had not written and
+    274 would not write for another hour. It filed as `328-cycle-273.md`,
+    two numbers down, and the one-number search could not reach it -- it
+    sat in `RAN AND LEFT NO RECORD` for four months with its entry in the
+    folder.
+
+    Nearest first, and each pass only sees what the one before it left
+    `lost`, so a row two joins could both claim goes to the nearer one
+    rather than to whichever ran last.
+
+    `keep_still_lost` here is a redundant second filter and a mutation
+    removing it survives -- measured, not assumed: `find_misfiled` starts
+    only from rows whose verdict is `lost`, and `apply_misfiled` has
+    already moved this pass's heads off that verdict before the next pass
+    reads them. It is kept because the same call in `main` guards against
+    the blocks above this one, and because the cost of the extra pass is a
+    dict comprehension over a list of about twenty rows.
+    """
+    found = []
+    for step in steps:
+        pairs = keep_still_lost(
+            results, find_misfiled(results, conversations, paths,
+                                   read_entry=read_entry, fetch=fetch,
+                                   step=step))
+        apply_misfiled(results, pairs)
+        found = merge_misfiled(found, pairs)
+    return found
+
+
 def merge_misfiled(up, down):
     """The two directions as one list, with anything ambiguous dropped.
 
@@ -1217,6 +1272,17 @@ def merge_misfiled(up, down):
             if len(filed[filed_as]) == 1 and len(wrote[wrote_it]) == 1]
 
 
+def describe_shift(distance):
+    """`-2` -> `"two numbers down"`. The report used to say "one number
+    down" for every negative distance, which was true only while the
+    search was one number wide.
+    """
+    words = {1: "one", 2: "two", 3: "three"}
+    size = abs(distance)
+    return f"{words.get(size, size)} number{'' if size == 1 else 's'} " \
+           f"{'up' if distance > 0 else 'down'}"
+
+
 def format_misfiled(pairs):
     """The misfiled block, or `[]` when there is nothing to say."""
     if not pairs:
@@ -1225,15 +1291,16 @@ def format_misfiled(pairs):
              "FILED UNDER THE WRONG NUMBER — the entry exists and names the wrong "
              f"cycle — {len(pairs)}"]
     for wrote_it, filed_as in pairs:
-        way = "one number up" if filed_as > wrote_it else "one number down"
         lines.append(f"  Cycle {wrote_it}'s work is in the entry filed as cycle "
-                     f"{filed_as} ({way}): that entry's PR was announced by "
-                     f"{wrote_it}'s own reply and not by {filed_as}'s.")
+                     f"{filed_as} ({describe_shift(filed_as - wrote_it)}): that "
+                     f"entry's PR was announced by {wrote_it}'s own reply and not "
+                     f"by {filed_as}'s.")
     lines.append("  Historical entries are never renumbered — this says where the "
-                 "record is, it does not ask for a repair. One number up is a "
-                 "cycle asking `cycle_number` without its conversation id; one "
-                 "number down is a cycle reading its number off the previous "
-                 "entry instead.")
+                 "record is, it does not ask for a repair. Up is a "
+                 "cycle asking `cycle_number` without its conversation id; down is "
+                 "a cycle reading its number off the newest journal filename "
+                 "instead, which lags by however many entries are missing — so a "
+                 "shift down is not bounded at one.")
     return lines
 
 
@@ -1290,8 +1357,8 @@ _HEADINGS = (
      "Agora's closing line counts it as a reply of N chars, which is why these used "
      "to sit above under RAN AND LEFT NO RECORD. There is no reply to recover; the "
      "cause is upstream of this loop."),
-    ("misfiled", "FILED UNDER A NEIGHBOUR'S NUMBER — the work is in the record, "
-                 "under the cycle before or after it"),
+    ("misfiled", "FILED UNDER ANOTHER CYCLE'S NUMBER — the work is in the record, "
+                 "a number or two either side of this one"),
     ("unnumbered", "WROTE SOMETHING ELSE — the run's record is in the journal folder "
                    "under a name that is not a cycle number"),
     ("doubled", "SHARES ANOTHER CYCLE'S NUMBER — two entries carry one number and "
@@ -1419,16 +1486,16 @@ def main(argv=None):
     # competes with them for the same row.
     doubled = [] if error else find_doubled(results, conversations, paths)
     apply_doubled(results, doubled)
-    # An entry filed one number DOWN leaves exactly the same hole as one
-    # filed up, so it is searched with the same two conditions -- but it is
-    # searched LAST, and only for rows still `lost`. The three blocks above
-    # each name a specific document; this one names a number, and
+    # An entry filed DOWN leaves exactly the same hole as one filed up, so
+    # it is searched with the same two conditions -- but it is searched
+    # LAST, and only for rows still `lost`. The three blocks above each
+    # name a specific document; this one names a number, and
     # `find_misfiled` keeps one path per number, so on a number that carries
     # two documents it would answer with an arbitrary one of them. Running
-    # it last means the stronger answer is already taken.
-    down = [] if error else keep_still_lost(
-        results, find_misfiled(results, conversations, paths, step=-1))
-    apply_misfiled(results, down)
+    # it last means the stronger answer is already taken. One number down
+    # and two, nearest first -- see `find_shifted_down` for why the down
+    # search is not bounded at one and the up search is.
+    down = [] if error else find_shifted_down(results, conversations, paths)
     pairs = merge_misfiled(pairs, down)
     # Last of all, and deliberately: the clock join is the weakest evidence
     # here -- it reads when a document says it was written rather than what

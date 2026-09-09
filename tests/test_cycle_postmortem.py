@@ -1301,3 +1301,105 @@ def test_an_unpadded_hour_is_still_a_stamp():
         "### 2026-09-02 7:09 (Oslo) — Retrospective\n\nWhat happened.\n")
     assert at is not None
     assert at.isoformat() == "2026-09-02T05:09:00+00:00"
+
+
+# --- Two numbers down ------------------------------------------------------
+#
+# Cycle 275's real numbers. It listed the journal folder at 05:43 Oslo on
+# 2026-08-20 and got `327-cycle-272.md` as the newest, because 273 had not
+# written and 274 would not write for another hour; it named its own entry
+# from that and filed as `328-cycle-273.md`. Footer `#246, #247`, which is
+# what 275's reply announced and what 273's reply (`#7, #62`) does not.
+
+def test_an_entry_filed_two_numbers_down_is_found():
+    from tools.cycle_postmortem import misfiled_entries
+    assert misfiled_entries(
+        [275],
+        {273: frozenset({246, 247})},
+        {275: frozenset({7, 94, 246, 247}), 273: frozenset({7, 62})},
+        step=-2,
+    ) == [(275, 273)]
+
+
+def test_two_numbers_down_still_refuses_when_the_filed_cycle_named_it_too():
+    """The second condition is what keeps a coincidence out, and widening
+    the search widens what could coincide. If 273 had announced `#246` as
+    well, the pair is ambiguous and this says nothing rather than picking
+    one."""
+    from tools.cycle_postmortem import misfiled_entries
+    assert misfiled_entries(
+        [275],
+        {273: frozenset({246, 247})},
+        {275: frozenset({246, 247}), 273: frozenset({246})},
+        step=-2,
+    ) == []
+
+
+def test_one_number_down_does_not_reach_cycle_275():
+    """The pass that already existed cannot find this one: 274's entry
+    footer is `#248`, which 275 never announced. Without this assertion a
+    `-2` search that quietly behaved like `-1` would still pass the test
+    above, since `misfiled_entries` is called with the step under test."""
+    from tools.cycle_postmortem import misfiled_entries
+    assert misfiled_entries(
+        [275],
+        {274: frozenset({248}), 273: frozenset({246, 247})},
+        {275: frozenset({7, 94, 246, 247}), 274: frozenset({7, 63}),
+         273: frozenset({7, 62})},
+        step=-1,
+    ) == []
+
+
+def test_the_report_names_the_real_distance():
+    """It said "one number down" for every negative distance, which was
+    true only while the search was one number wide."""
+    from tools.cycle_postmortem import describe_shift, format_misfiled
+    assert describe_shift(-2) == "two numbers down"
+    assert describe_shift(-1) == "one number down"
+    assert describe_shift(1) == "one number up"
+    block = "\n".join(format_misfiled([(275, 273)]))
+    assert "filed as cycle 273 (two numbers down)" in block
+    assert "one number down)" not in block
+
+
+def test_the_down_search_reaches_two_numbers_and_the_report_says_so():
+    """Cycle 275's real shape, through the wiring rather than through
+    `misfiled_entries` alone: 274's entry (footer `#248`) is not 275's and
+    the one-number pass correctly refuses it, so a search that stops at one
+    leaves 275 `lost` with `328-cycle-273.md` sitting in the folder."""
+    from tools.cycle_postmortem import find_shifted_down
+    paths = ["projects/x/journal/328-cycle-273.md",
+             "projects/x/journal/329-cycle-274.md"]
+    entries = {paths[0]: "### Cycle 273\n\n---\nPR: #246, #247 | Outcome: merged\n",
+               paths[1]: "### Cycle 274\n\n---\nPR: #248 | Outcome: merged\n"}
+    replies = {"c273": [{"text": "merged #7 and #62"}],
+               "c274": [{"text": "merged #7 and #63"}],
+               "c275": [{"text": "That's runner#246, merged. And runner#247, merged. issue #7 #94"}]}
+    results = [{"number": 275, "verdict": "lost", "detail": "ran 16m 45s"}]
+    pairs = find_shifted_down(
+        results,
+        {273: {"id": "c273"}, 274: {"id": "c274"}, 275: {"id": "c275"}},
+        paths,
+        read_entry=entries.get,
+        fetch=lambda cid: replies[cid],
+    )
+    assert pairs == [(275, 273)]
+    assert results[0]["verdict"] == "misfiled"
+    assert "filed as cycle 273" in results[0]["detail"]
+
+
+def test_the_nearer_join_wins_when_both_could_claim_a_row():
+    """Nearest first is not cosmetic: with the same footer one and two
+    numbers down, the row must go to the nearer entry rather than to
+    whichever pass happened to run last."""
+    from tools.cycle_postmortem import find_shifted_down
+    paths = ["projects/x/journal/010-cycle-8.md", "projects/x/journal/011-cycle-9.md"]
+    entries = {paths[0]: "### Cycle 8\n\n---\nPR: #500 | Outcome: merged\n",
+               paths[1]: "### Cycle 9\n\n---\nPR: #500 | Outcome: merged\n"}
+    replies = {"c8": [{"text": "merged #1"}], "c9": [{"text": "merged #2"}],
+               "c10": [{"text": "merged #500"}]}
+    results = [{"number": 10, "verdict": "lost", "detail": "ran 9m"}]
+    assert find_shifted_down(
+        results, {8: {"id": "c8"}, 9: {"id": "c9"}, 10: {"id": "c10"}}, paths,
+        read_entry=entries.get, fetch=lambda cid: replies[cid],
+    ) == [(10, 9)]
