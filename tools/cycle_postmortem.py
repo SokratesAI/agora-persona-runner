@@ -122,6 +122,7 @@ on either binary and this cannot tell you which.
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -134,7 +135,8 @@ from datetime import datetime, timedelta, timezone
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
 import sys as _sys, pathlib as _pathlib  # noqa: E402
-_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+_REPO_ROOT = str(_pathlib.Path(__file__).resolve().parents[1])
+_sys.path.insert(0, _REPO_ROOT)
 
 from agora_runner.config import NOVA_CYCLE_HEARTBEAT_ID  # noqa: E402
 from agora_runner.conversation_rotation import cycle_tag  # noqa: E402
@@ -1398,6 +1400,139 @@ def _recovered_reply_lines(reply):
             + [_REPLY_CLOSE])
 
 
+#: A branch name inside backticks: at least one `/`, and a last segment
+#: with no dot in it. Deliberately narrow, and the trade is one-sided on
+#: purpose -- `tools/mutate.py` is read as a filename and never offered as
+#: a branch, and a branch genuinely named `nova/fix-1.2` is missed. A miss
+#: costs one line of output; a false name costs a reader a git call on a
+#: path and, worse, a printed sentence about a branch that never existed.
+_BRANCH_IN_BACKTICKS = re.compile(r"`([A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9._-]+)+)`")
+
+
+def branches_named(reply):
+    """Branch-shaped names a `lost` cycle's reply puts in backticks.
+
+    In the order the reply names them, deduplicated, so a branch mentioned
+    three times is checked once.
+
+    **This exists because the reply is the only place the branch name
+    survives.** Cycle 359 ran 41 minutes, could not push (the pod had no
+    DNS to github.com), and its reply said the work was "committed on
+    `nova/status-word-back-on-the-card`". Then it left no journal entry, so
+    every later reader met it as `RAN AND LEFT NO RECORD` -- a heading that
+    is a claim about the *work* over a measurement of the *entry*. Three of
+    my cycles read that row and wrote "honestly lost" into the handoff. The
+    work was not lost: it merged five days later as agora-persona-runner#316
+    and the one-word status has been on the journal card ever since.
+    """
+    out = []
+    for name in _BRANCH_IN_BACKTICKS.findall(reply or ""):
+        if "." in name.rsplit("/", 1)[-1]:
+            continue
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def _git_ok(root, clone, *args):
+    """`git -C <root>/<clone> ...`, never raising -- the caller reads the code."""
+    return subprocess.run(["git", "-C", os.path.join(root, clone)] + list(args),
+                          capture_output=True, text=True, check=False)
+
+
+def branch_landing(names, root, clone, base="main", run=None, landed=None):
+    """`[{branch, verdict, landed, total}]` -- is each branch's content on `base`?
+
+    Verdicts: `landed` (every added line of the branch is already on the
+    base), `partly`, `gone` (no such ref, so there is nothing to measure),
+    `unmeasurable` (the ref is there and git could not answer).
+
+    **It fetches the branch first, and that is not a detail.**
+    `tidy_workspace._content_landed` is the measurement -- reading added
+    lines rather than commit counts, so a squash, a rebase or a rename
+    cannot make finished work read as outstanding -- and it refuses to
+    measure a ref whose oid is not the sha its caller was told the branch
+    is at. That guard protects a sweep which never fetches. Here I have no
+    independently-reported sha, so satisfying the guard from the same local
+    ref I just read would be a check whose positive result is guaranteed in
+    advance, which is the failure this file's own prompt names. Fetching
+    first makes the local ref current and the guard honest rather than
+    decorative.
+
+    Reused rather than re-implemented on purpose: this is the third place in
+    this loop that wants "did this branch's content reach main", and a third
+    copy of the diff parse is the shape `prompt.md` step 2 says to stop
+    writing.
+    """
+    from tools.tidy_workspace import _content_landed
+    run = run or _git_ok
+    landed = landed or _content_landed
+    out = []
+    for name in names:
+        run(root, clone, "fetch", "--quiet", "origin", name)
+        head = run(root, clone, "rev-parse", "--verify", "--quiet",
+                   "origin/" + name + "^{commit}")
+        if head.returncode != 0 or not head.stdout.strip():
+            out.append({"branch": name, "verdict": "gone",
+                        "landed": None, "total": None})
+            continue
+        measured = landed(root, clone, base, name, head.stdout.strip())
+        if measured is None:
+            out.append({"branch": name, "verdict": "unmeasurable",
+                        "landed": None, "total": None})
+            continue
+        have, total = measured
+        out.append({"branch": name,
+                    "verdict": "landed" if have == total else "partly",
+                    "landed": have, "total": total})
+    return out
+
+
+def _branch_landing_lines(rows, base="main"):
+    """The lines printed under a `lost` row's recovered reply.
+
+    A reply that names no branch says so in words rather than printing
+    nothing: "checked and it names none" and "nobody checked" are opposite
+    findings and this tool exists to stop them sharing a rendering.
+    """
+    if rows is None:
+        return []
+    if not rows:
+        return ["      its reply names no branch, so there is nothing to "
+                "compare against origin/%s" % base]
+    lines = []
+    for row in rows:
+        name, verdict = row["branch"], row["verdict"]
+        if verdict == "gone":
+            lines.append("      it names `%s` and no such branch is on origin — "
+                         "the work is not recoverable from a ref" % name)
+        elif verdict == "unmeasurable":
+            lines.append("      it names `%s`, which is on origin, and git could "
+                         "not tell me whether its content is on origin/%s"
+                         % (name, base))
+        elif verdict == "landed":
+            lines.append("      it names `%s`, and all %d of its added lines are "
+                         "already on origin/%s — the ENTRY is missing, its work is "
+                         "not" % (name, row["total"], base))
+        else:
+            lines.append("      it names `%s`, and %d of its %d added lines are on "
+                         "origin/%s — a pointer to go and read, not a verdict: main "
+                         "has moved since, so a line that is absent may have been "
+                         "rewritten rather than dropped"
+                         % (name, row["landed"], row["total"], base))
+    return lines
+
+
+def apply_branch_landing(results, root, clone, base="main", measure=None):
+    """Attach a `branch_landing` list to every `lost` row, in place."""
+    measure = measure or branch_landing
+    for row in results:
+        if row.get("verdict") != "lost":
+            continue
+        row["branch_landing"] = measure(branches_named(row.get("reply")),
+                                        root, clone, base=base)
+
+
 def format_report(results, newest, error, window=DEFAULT_WINDOW, raise_all=False):
     """`(text, status)` --- the report and its exit code."""
     if error:
@@ -1426,6 +1561,7 @@ def format_report(results, newest, error, window=DEFAULT_WINDOW, raise_all=False
                          f" [{row['messages']} message(s)]{mark}")
             if verdict == "lost":
                 lines.extend(_recovered_reply_lines(row.get("reply")))
+                lines.extend(_branch_landing_lines(row.get("branch_landing")))
 
     lines.append("")
     lines.append(f"{len(results)} cycle number(s) in the journal's range have no entry: "
@@ -1508,6 +1644,16 @@ def main(argv=None):
         keep_still_lost(results, find_clock_shifted(
             results, conversations, paths, step=-1)))
     apply_misfiled(results, shifted)
+    # Last thing before the report is built, and only for rows still `lost`
+    # after every join above: a `lost` row's reply is the only place its
+    # branch name survives, and whether that branch's content reached main
+    # is the difference between "the work is gone" and "the entry is gone".
+    # It does NOT change the verdict -- the entry really is missing and the
+    # heading really should raise -- it stops a reader concluding more than
+    # the verdict says. Cycle 359 is the row this was measured on.
+    if not error:
+        apply_branch_landing(results, os.path.dirname(_REPO_ROOT),
+                             os.path.basename(_REPO_ROOT))
     report, status = format_report(results, newest, error,
                                    window=args.window, raise_all=args.raise_all)
     if not error:

@@ -1403,3 +1403,147 @@ def test_the_nearer_join_wins_when_both_could_claim_a_row():
         results, {8: {"id": "c8"}, 9: {"id": "c9"}, 10: {"id": "c10"}}, paths,
         read_entry=entries.get, fetch=lambda cid: replies[cid],
     ) == [(10, 9)]
+
+
+# --- a `lost` row's branch, and whether its content reached main -------------
+#
+# Cycle 359 replied that its work was "committed on
+# `nova/status-word-back-on-the-card`" and then wrote no entry, so every
+# reader met it under a heading claiming the work was gone. Most of it was
+# not: it merged as #316. These pin the reading, not the conclusion.
+
+
+def test_branches_named_takes_a_backticked_branch_and_not_a_filename():
+    reply = ("The work is committed on `nova/status-word-back-on-the-card`. "
+             "One `git push` finishes it; see `tools/mutate.py` and `agora_runner/x.py`.")
+    assert cycle_postmortem.branches_named(reply) == [
+        "nova/status-word-back-on-the-card"]
+
+
+def test_branches_named_dedupes_and_keeps_reply_order():
+    reply = "on `b/two` then `a/one` then `b/two` again"
+    assert cycle_postmortem.branches_named(reply) == ["b/two", "a/one"]
+
+
+def test_branches_named_reads_nothing_out_of_an_empty_reply():
+    assert cycle_postmortem.branches_named(None) == []
+    assert cycle_postmortem.branches_named("no branch here, just `push`") == []
+
+
+class _Done:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _runner(refs):
+    """A fake git: `refs` maps a branch name to the oid origin has for it."""
+    calls = []
+
+    def run(root, clone, *args):
+        calls.append(args)
+        if args[0] == "fetch":
+            return _Done(0, "")
+        name = args[-1].replace("origin/", "").replace("^{commit}", "")
+        if name in refs:
+            return _Done(0, refs[name] + "\n")
+        return _Done(1, "")
+    run.calls = calls
+    return run
+
+
+def test_branch_landing_fetches_before_it_reads_the_ref():
+    # The oid guard inside `_content_landed` is only honest against a ref
+    # that was just fetched; a stale ref makes the guard pass on the wrong
+    # commit. Deleting the fetch must fail here.
+    run = _runner({"nova/x": "abc123"})
+    seen = {}
+
+    def landed(root, clone, base, branch, sha):
+        seen["sha"] = sha
+        return (5, 5)
+
+    rows = cycle_postmortem.branch_landing(["nova/x"], "/r", "c",
+                                           run=run, landed=landed)
+    assert ("fetch", "--quiet", "origin", "nova/x") in run.calls
+    assert run.calls[0][0] == "fetch"
+    assert seen["sha"] == "abc123"
+    assert rows == [{"branch": "nova/x", "verdict": "landed",
+                     "landed": 5, "total": 5}]
+
+
+def test_branch_landing_separates_gone_from_unmeasurable():
+    run = _runner({"nova/there": "deadbeef"})
+    rows = cycle_postmortem.branch_landing(
+        ["nova/there", "nova/missing"], "/r", "c",
+        run=run, landed=lambda *a: None)
+    assert [row["verdict"] for row in rows] == ["unmeasurable", "gone"]
+
+
+def test_branch_landing_calls_a_ref_gone_when_rev_parse_prints_nothing():
+    # `rev-parse --verify --quiet` can exit 0 with empty stdout; reading that
+    # as an oid hands `_content_landed` an empty sha, which its own guard
+    # then compares against the ref and refuses -- an `unmeasurable` where
+    # the honest answer is `gone`.
+    def run(root, clone, *args):
+        return _Done(0, "" if args[0] == "rev-parse" else "")
+    rows = cycle_postmortem.branch_landing(["nova/x"], "/r", "c", run=run,
+                                           landed=lambda *a: (1, 1))
+    assert rows[0]["verdict"] == "gone"
+
+
+def test_branch_landing_calls_a_short_match_partly():
+    run = _runner({"nova/x": "abc"})
+    rows = cycle_postmortem.branch_landing(["nova/x"], "/r", "c", run=run,
+                                           landed=lambda *a: (103, 158))
+    assert rows[0] == {"branch": "nova/x", "verdict": "partly",
+                       "landed": 103, "total": 158}
+
+
+def test_branch_landing_lines_say_so_when_a_reply_names_none():
+    # "checked and it names none" and "nobody checked" are opposite findings.
+    assert cycle_postmortem._branch_landing_lines(None) == []
+    text = "\n".join(cycle_postmortem._branch_landing_lines([]))
+    assert "names no branch" in text
+
+
+def test_branch_landing_lines_do_not_call_a_partial_match_a_verdict():
+    rows = [{"branch": "nova/x", "verdict": "partly", "landed": 103, "total": 158}]
+    text = "\n".join(cycle_postmortem._branch_landing_lines(rows))
+    assert "103 of its 158" in text
+    assert "not a verdict" in text
+
+
+def test_branch_landing_lines_name_the_whole_match():
+    rows = [{"branch": "nova/x", "verdict": "landed", "landed": 5, "total": 5}]
+    text = "\n".join(cycle_postmortem._branch_landing_lines(rows))
+    assert "all 5 of its added lines" in text
+    assert "the ENTRY is missing" in text
+
+
+def test_apply_branch_landing_touches_only_lost_rows():
+    results = [{"number": 359, "verdict": "lost", "reply": "on `nova/x`"},
+               {"number": 360, "verdict": "misfiled", "reply": "on `nova/y`"}]
+    seen = []
+
+    def measure(names, root, clone, base="main"):
+        seen.append(names)
+        return [{"branch": n, "verdict": "landed", "landed": 1, "total": 1}
+                for n in names]
+
+    cycle_postmortem.apply_branch_landing(results, "/r", "c", measure=measure)
+    assert seen == [["nova/x"]]
+    assert results[0]["branch_landing"][0]["branch"] == "nova/x"
+    assert "branch_landing" not in results[1]
+
+
+def test_format_report_prints_the_branch_line_under_a_lost_row():
+    results = [{"number": 359, "verdict": "lost", "detail": "ran 41m",
+                "messages": 74, "recent": False, "reply": "on `nova/x`",
+                "branch_landing": [{"branch": "nova/x", "verdict": "landed",
+                                    "landed": 5, "total": 5}]}]
+    text, status = cycle_postmortem.format_report(results, 1257, None)
+    assert "all 5 of its added lines" in text
+    # The branch line explains; it does not excuse. The entry really is
+    # missing, so `lost` must still be a raising verdict.
+    assert status == 2 or "lost" in cycle_postmortem.RAISING_VERDICTS
