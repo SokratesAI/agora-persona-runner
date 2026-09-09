@@ -22,7 +22,6 @@ from agora_runner.nova_idea_pool import (
     insert_board_row,
     insert_detail,
     insert_discarded,
-    next_number,
     parse_history,
     parse_pool,
     remove_candidate,
@@ -153,12 +152,14 @@ def test_remove_takes_one_candidate_and_leaves_the_rest():
     assert "# Idea pool" in after
 
 
-def test_next_number_reads_the_board():
-    assert next_number(LIVE_IDEAS) == 115
+def test_next_number_reads_the_live_board():
+    """Kept against the real document rather than a hand-built dict: this is
+    the one assertion that the *parser's* `items` still carries what
+    `next_number_from_contents` reads out of it, which no records-shaped
+    fixture can check."""
+    from agora_runner.nova_boards import parse_board
 
-
-def test_next_number_on_an_empty_board_starts_at_one():
-    assert next_number("---\ntype: log\n---\n\n## Board\n\n| # | Idea |\n|---|---|\n") == 1
+    assert nova_idea_pool.next_number_from_contents(parse_board(LIVE_IDEAS)) == 115
 
 
 def test_an_approved_row_renders_as_five_cells():
@@ -630,3 +631,101 @@ def test_a_comment_block_stays_inside_its_own_candidate():
     assert COMMENT_HEADING not in remaining
     assert len(parse_pool(remaining)["candidates"]) == 1
 
+
+
+# ---------------------------------------------------------------------------
+# Issue #203: the records-shaped rules.
+#
+# Every dict below is hand-built and none of these tests holds a line of
+# board markdown, on purpose. A test that writes a table and parses it
+# agrees with a converted and an unconverted reader alike, so it cannot
+# tell the two apart -- and `board_records.contents` hands back shapes a
+# board file cannot express, which is exactly where a reader that assumed
+# the parser's invariants breaks.
+
+
+def _contents(items):
+    """`parse_board`'s four keys, built by hand rather than parsed."""
+    return {"captures": [], "captureReplies": {}, "items": items, "details": {}}
+
+
+def _row(number, title):
+    return {"number": number, "title": title, "status": "🟡 In progress",
+            "statusKey": "in-progress", "done": False, "updated": "09-09",
+            "priority": "🔵 Medium", "priorityKey": "medium",
+            "project": "", "milestone": "", "size": ""}
+
+
+def test_next_number_from_contents_reads_one_dict():
+    assert nova_idea_pool.next_number_from_contents(
+        _contents([_row(3, "a"), _row(114, "b")])) == 115
+
+
+def test_next_number_from_contents_on_an_empty_board_starts_at_one():
+    assert nova_idea_pool.next_number_from_contents(_contents([])) == 1
+
+
+def test_next_number_from_contents_ignores_a_row_with_no_number():
+    """Records can hand back a row whose `number` is None -- `from_document`
+    does it for a document minted before a number was assigned -- and
+    `max()` over that raises rather than answering."""
+    row = _row(7, "a")
+    numberless = dict(_row(0, "b"), number=None)
+    assert nova_idea_pool.next_number_from_contents(
+        _contents([row, numberless])) == 8
+
+
+def test_already_boarded_in_contents_matches_on_the_title():
+    contents = _contents([_row(114, "  a fine idea  ")])
+    assert nova_idea_pool._already_boarded_in_contents(contents, "a fine idea")
+    assert not nova_idea_pool._already_boarded_in_contents(contents, "another one")
+
+
+def test_already_boarded_in_contents_refuses_an_empty_title():
+    """An empty candidate title would match every row whose title is blank,
+    so the guard would report `True` and silently drop a real write."""
+    assert not nova_idea_pool._already_boarded_in_contents(
+        _contents([_row(114, "")]), "   ")
+
+
+def test_the_twins_never_reach_the_parser(monkeypatch):
+    """The twins cannot fall back to markdown, which is the whole point.
+
+    `board-records.md` bans a facade -- an accessor that can still reach a
+    parser is how this migration ends up with two live sources of truth. A
+    twin that quietly parsed would return the *right answer* for every
+    caller still holding markdown, so nothing but a raising parser catches
+    it.
+    """
+    def _no(*_a, **_k):
+        raise AssertionError("parse_board reached from the records door")
+
+    monkeypatch.setattr(nova_idea_pool, "parse_board", _no)
+    contents = _contents([_row(114, "a fine idea")])
+    assert nova_idea_pool.next_number_from_contents(contents) == 115
+    assert nova_idea_pool._already_boarded_in_contents(contents, "a fine idea")
+
+
+def test_approving_parses_his_ideas_board_exactly_once(monkeypatch):
+    """Two questions, one read of the board.
+
+    The dedup guard and the number used to parse the file separately. On a
+    string that is two identical answers; on `board_records.contents` it is
+    two `_all_docs` pairs a write can land between -- and the write that
+    lands between them is the concurrent approve this guard exists to
+    absorb, so it would answer "no row carries this title" against one
+    board and "the highest number is 114" against another.
+    """
+    real = nova_idea_pool.parse_board
+    calls = []
+
+    def _counted(markdown):
+        calls.append(len(markdown or ""))
+        return real(markdown)
+
+    monkeypatch.setattr(nova_idea_pool, "parse_board", _counted)
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][1]["title"]
+    ok, message = _run(vault, lambda: decide(1, title, "approve", "", "08-25"))
+    assert ok, message
+    assert len(calls) == 1

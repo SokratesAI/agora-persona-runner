@@ -349,21 +349,36 @@ def set_generate_flag(markdown, requested):
     return "\n".join(lines)
 
 
-def next_number(ideas_markdown):
-    """One past the highest row number on his ideas board.
+def next_number_from_contents(contents):
+    """The same answer, from `parse_board`'s return value instead of the file.
 
-    Reads `## Board` *and* `## Done` through `parse_board`, so a number
-    that has been finished and moved is never handed out twice -- every
-    journal entry, claim slug and board comment points at these numbers,
-    so reuse is worse than a gap.
+    Reads `## Board` *and* `## Done`, so a number that has been finished
+    and moved is never handed out twice -- every journal entry, claim slug
+    and board comment points at these numbers, so reuse is worse than a
+    gap.
+
+    Issue #203 is moving every board reader onto `board_records.contents`,
+    which returns these same four keys out of CouchDB and never parses
+    anything, so the only part of this function that was ever about
+    markdown was its first line -- and that line is now `decide`'s.
+
+    There is deliberately **no** `next_number(markdown)` door above it,
+    unlike `nova_next.open_rows` or `top_board_rows.closed_rows_waiting`.
+    Those keep one because they still have markdown callers elsewhere;
+    this had exactly one caller and it is `decide`, one screen down. A
+    door with no caller is not a migration step, it is a facade with a
+    docstring -- and `board-records.md` bans a facade precisely because an
+    accessor that can still reach a parser is how this ends up with two
+    live sources of truth. A mutation found this rather than a review: a
+    door that nothing calls survives having its parse deleted.
     """
-    items = parse_board(ideas_markdown or "").get("items", [])
+    items = contents.get("items", [])
     numbers = [i["number"] for i in items if isinstance(i.get("number"), int)]
     return (max(numbers) + 1) if numbers else 1
 
 
-def _already_boarded(ideas_markdown, title):
-    """Is a row with exactly this title already on his ideas board?
+def _already_boarded_in_contents(contents, title):
+    """The same answer, from `parse_board`'s return value instead of the file.
 
     The de-duplication guard for a decision that arrives twice. Matched on
     the title because that is what the candidate carries -- the number does
@@ -371,13 +386,25 @@ def _already_boarded(ideas_markdown, title):
     `## Done` counts too: an idea approved, finished and moved is still one
     he already said yes to, and re-boarding it would hand him a duplicate
     of something he has already closed.
+
+    Same shape, and the same reason, as `next_number_from_contents` --
+    including having no markdown door -- and here the split buys something
+    the two functions could not have separately. `decide`'s `mutate` asks
+    both, and the guard is only a guard if the two answers describe the
+    *same* board: "no row carries
+    this title" and "the highest number is 114" have to be read at one
+    instant. Two reads of one string cannot disagree; two reads of one
+    CouchDB can, because a write may land between them, and the write that
+    lands between them is precisely the concurrent approve this guard
+    exists to absorb. One `contents` for both makes that impossible by
+    construction rather than by timing.
     """
     want = (title or "").strip()
     if not want:
         return False
     return any(
         (item.get("title") or "").strip() == want
-        for item in parse_board(ideas_markdown or "").get("items", [])
+        for item in contents.get("items", [])
     )
 
 
@@ -554,9 +581,13 @@ def decide(index, title, decision, comment, dated):
             # anywhere says he now has two identical rows. Reviewer finding
             # on this PR. Checking the title before inserting turns the
             # second write into a no-op instead.
-            if _already_boarded(current, candidate["title"]):
+            # One parse, two questions -- see
+            # `_already_boarded_in_contents` for why they must be the same
+            # read rather than two of them.
+            contents = parse_board(current or "")
+            if _already_boarded_in_contents(contents, candidate["title"]):
                 return current, ""
-            number = next_number(current)
+            number = next_number_from_contents(contents)
             updated, error = insert_board_row(
                 current, number, candidate["title"], priority, dated)
             if error:
