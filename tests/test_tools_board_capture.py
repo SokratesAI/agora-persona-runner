@@ -16,7 +16,28 @@ documents still render.
 import pytest
 
 from agora_runner.nova_boards import DEFAULT_PROJECT, capture_entries, parse_board
-from tools.board_capture import check, first_sentence, main, promote
+from tools.board_capture import (
+    check_from_contents,
+    first_sentence,
+    main,
+    promote,
+)
+
+
+def _promote(markdown, index, priority, status, dated, **kw):
+    """`promote` with the two reads it now requires, taken here once."""
+    return promote(
+        markdown, parse_board(markdown), capture_entries(markdown), index,
+        priority, status, dated, **kw
+    )
+
+
+def _check(before, after, number, title, capture_text, project=""):
+    """`check_from_contents` over two documents the caller still holds."""
+    return check_from_contents(
+        parse_board(before), parse_board(after), capture_entries(before),
+        capture_entries(after), number, title, capture_text, project,
+    )
 
 BOARD = """---
 type: board
@@ -174,27 +195,27 @@ def test_first_sentence_keeps_a_long_one_whole(tmp_path):
 
 def test_check_catches_a_capture_lost_beside_the_one_boarded():
     """The off-by-one this guard exists for, forced by hand."""
-    after, number, title, _ = promote(BOARD, 0, "medium", "backlog", "08-27")
-    assert not check(BOARD, after, number, title,
+    after, number, title, _ = _promote(BOARD, 0, "medium", "backlog", "08-27")
+    assert not _check(BOARD, after, number, title,
                      "The first thing he typed. It goes on for a second sentence.")
     damaged = after.replace("- 🟠 High: A rated capture.\n", "")
-    problems = check(BOARD, damaged, number, title,
+    problems = _check(BOARD, damaged, number, title,
                      "The first thing he typed. It goes on for a second sentence.")
     assert any("capture count went" in p for p in problems)
 
 
 def test_check_catches_a_reply_taken_with_the_cut():
-    after, number, title, _ = promote(BOARD, 1, "medium", "backlog", "08-27")
+    after, number, title, _ = _promote(BOARD, 1, "medium", "backlog", "08-27")
     damaged = after.replace("  - Cycle 500 answered this one.\n", "")
-    problems = check(BOARD, damaged, number, title, "🟠 High: A rated capture.")
+    problems = _check(BOARD, damaged, number, title, "🟠 High: A rated capture.")
     assert any("a capture changed underneath" in p for p in problems)
 
 
 def test_check_catches_a_row_that_changed_underneath():
-    after, number, title, _ = promote(BOARD, 0, "medium", "backlog", "08-27")
+    after, number, title, _ = _promote(BOARD, 0, "medium", "backlog", "08-27")
     damaged = after.replace("| The second thing | 🟡 In progress |",
                             "| The second thing | ✅ Done |")
-    problems = check(BOARD, damaged, number, title,
+    problems = _check(BOARD, damaged, number, title,
                      "The first thing he typed. It goes on for a second sentence.")
     assert any("#2 changed underneath" in p for p in problems)
 

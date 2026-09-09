@@ -422,3 +422,128 @@ def test_untag_main_refuses_a_write_that_moved_a_row_it_was_not_asked_about(
         return damaged
 
     assert _damage_untag(tmp_path, monkeypatch, move_the_untouched_row) == 1
+
+
+def _count_capture_reads(module, monkeypatch):
+    """`board_capture` reads its bullets with `capture_entries`, not `parse_notes`.
+
+    Same namespace argument as `_count_parses`: both names are bound into
+    `tools.board_capture` by its own `from ... import`, so a counter on
+    `nova_boards` would see the calls `add_row` and `set_row_status` make
+    inside the write and none of the ones this test is about.
+    """
+    counts = {"parse_board": 0, "capture_entries": 0}
+    for name in counts:
+        real = getattr(module, name)
+
+        def counting(markdown, _real=real, _name=name):
+            counts[_name] += 1
+            return _real(markdown)
+
+        monkeypatch.setattr(module, name, counting)
+    return counts
+
+
+# `capture_entries` reads the bullets ABOVE the first heading and stops there,
+# which is where the box he types into actually sits -- `BOARD`'s bullet is
+# under `## Entries`, which is `parse_notes`' list, not his. So `board_capture`
+# sees an empty box on the shared fixture and this one puts a bullet where the
+# tool looks.
+CAPTURE_BOARD = BOARD.replace(
+    "---\n\n# Nova — Ideas",
+    "---\n\n- Something he typed and nothing has boarded yet.\n\n# Nova — Ideas",
+    1,
+)
+
+
+def _capture_argv(path):
+    return [
+        "--file", str(path), "--index", "0", "--priority", "high",
+        "--dated", "09-09", "--dry-run",
+    ]
+
+
+def test_capture_reads_the_document_once_per_version(tmp_path, monkeypatch):
+    """Five reads before the split: `before` three times, `after` twice.
+
+    `promote` parsed the board for the project names and read the bullets
+    for the span; `check` parsed and read both versions again; and `main`
+    parsed `after` a third time to print the row it had just written.
+    """
+    import tools.board_capture as module
+
+    path = tmp_path / "issues.md"
+    path.write_text(CAPTURE_BOARD, encoding="utf-8")
+    counts = _count_capture_reads(module, monkeypatch)
+
+    assert module.main(_capture_argv(path)) == 0
+    assert counts == {"parse_board": 2, "capture_entries": 2}
+
+
+def test_capture_guard_cannot_reach_a_document(tmp_path, monkeypatch):
+    import tools.board_capture as module
+
+    path = tmp_path / "issues.md"
+    path.write_text(CAPTURE_BOARD, encoding="utf-8")
+    guard = module.check_from_contents
+
+    def no_document_here(*a, **k):
+        for name in ("parse_board", "capture_entries"):
+            monkeypatch.setattr(module, name, _refuse)
+        return guard(*a, **k)
+
+    monkeypatch.setattr(module, "check_from_contents", no_document_here)
+    assert module.main(_capture_argv(path)) == 0
+
+
+def test_capture_promote_will_not_re_read_the_document_for_itself(
+    tmp_path, monkeypatch
+):
+    """The board and the bullets are required arguments, not defaulted ones.
+
+    A default that fell back to parsing `before` would put the second read
+    straight back in and every other test here would still pass.
+    """
+    import inspect
+
+    import tools.board_capture as module
+
+    parameters = inspect.signature(module.promote).parameters
+    for name in ("board", "entries"):
+        assert parameters[name].default is inspect.Parameter.empty
+
+
+def _damage_capture(tmp_path, monkeypatch, damage):
+    import tools.board_capture as module
+
+    path = tmp_path / "issues.md"
+    path.write_text(CAPTURE_BOARD, encoding="utf-8")
+    real = module.add_row
+
+    def damaged(before, *a, **k):
+        written, number = real(before, *a, **k)
+        return (None if written is None else damage(written)), number
+
+    monkeypatch.setattr(module, "add_row", damaged)
+    return module.main(_capture_argv(path))
+
+
+def test_capture_main_refuses_a_write_that_grew_a_row_from_nowhere(
+    tmp_path, monkeypatch
+):
+    """Boarding is +1 row exactly, so a smuggled second row fails the count.
+
+    `_eat_a_bullet` is deliberately not used here: it removes a bullet from
+    `## Entries`, which is `parse_notes`' list, and `board_capture` reads the
+    capture box with `capture_entries` and does not look at `## Entries` at
+    all. That gap is real and is filed rather than closed here -- it changes
+    what this guard refuses, not what it reads.
+    """
+    assert _damage_capture(tmp_path, monkeypatch, _add_a_row) == 1
+
+
+def test_capture_main_refuses_a_write_that_moved_a_row_it_was_not_asked_about(
+    tmp_path, monkeypatch
+):
+    """The damage moves a RATING, which the guard did not compare until now."""
+    assert _damage_capture(tmp_path, monkeypatch, _move_another_row) == 1

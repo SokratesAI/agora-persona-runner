@@ -102,13 +102,23 @@ def first_sentence(text):
     return one
 
 
-def check(before, after, number, title, capture_text, project=""):
-    """Refuse the write unless exactly one capture became exactly one row."""
-    problems = []
-    old_board, new_board = parse_board(before), parse_board(after)
-    old_caps = capture_entries(before)
-    new_caps = capture_entries(after)
+def check_from_contents(
+    old_board, new_board, old_caps, new_caps, number, title, capture_text,
+    project="",
+):
+    """Refuse the write unless exactly one capture became exactly one row.
 
+    Takes the four parsed halves rather than the two markdown strings, and
+    reaches for no document of its own -- `main` reads each version once and
+    hands the same dicts here and to `promote`. On a string the extra parses
+    were free and always agreed; once the source is the record store they are
+    separate `_all_docs` pairs a concurrent write can land between, and this
+    guard would then be checking a row count against one version of the board
+    and a capture count against another. There is no markdown door on purpose:
+    nothing outside `main` and the tests has ever called this, and a door with
+    no caller is the facade `board-records.md` bans.
+    """
+    problems = []
     if len(new_caps) != len(old_caps) - 1:
         problems.append(
             f"capture count went {len(old_caps)} -> {len(new_caps)}, expected -1"
@@ -144,7 +154,13 @@ def check(before, after, number, title, capture_text, project=""):
         now = new_by_number.get(was["number"])
         if now is None:
             problems.append(f"#{was['number']} fell off the board")
-        elif now["title"] != was["title"] or now["status"] != was["status"]:
+        elif now != was:
+            # The whole row, like every sibling writer -- comparing only
+            # `title` and `status` let a write that also moved another row's
+            # rating, size, milestone, project or date through in silence.
+            # `board_row` carried the same narrow pair until Cycle 1317 and
+            # this is the same one-line fix; nothing here is exempt, because
+            # boarding a capture appends a row and moves no other cell.
             problems.append(f"#{was['number']} changed underneath the new row")
     for old_number, body in old_board["details"].items():
         if new_board["details"].get(old_number) != body:
@@ -152,7 +168,7 @@ def check(before, after, number, title, capture_text, project=""):
     return problems
 
 
-def _known_names(before, extra=()):
+def _known_names(board, extra=()):
     """The board's own projects first, then any the caller added.
 
     Order matters only for readability -- `split_capture_project_tag`
@@ -160,8 +176,11 @@ def _known_names(before, extra=()):
     the board's own spelling winning is the right precedence anyway: if
     two boards spell one project differently, the row being written should
     keep the spelling already on its own page.
+
+    Takes the parsed board, not the markdown: this used to parse the file
+    again, once inside `promote` and once more in `main`'s warning branch.
     """
-    names = board_projects(parse_board(before).get("items") or [])
+    names = board_projects(board.get("items") or [])
     for name in extra or ():
         cleaned = (name or "").strip()
         if cleaned and cleaned not in names:
@@ -170,14 +189,19 @@ def _known_names(before, extra=()):
 
 
 def promote(
-    before, index, priority, status, dated, title=None, project=None,
-    known_projects=(),
+    before, board, entries, index, priority, status, dated, title=None,
+    project=None, known_projects=(),
 ):
     """`(after, number, title, project)` or `(None, reason, None, None)`.
 
     The fourth element is the project the row actually landed under --
     `""` when it landed under none. `check` needs it and only `promote`
     knows it, because the tag is stripped out of his bullet in here.
+
+    `board` and `entries` are `before` already parsed -- the row dict and
+    the capture stream -- and both are **required** rather than defaulted,
+    because a default that re-parsed would put the second read straight back
+    in without anything saying so.
 
     `known_projects` widens the set his `#slug` tag is resolved against.
     It exists because the picker in the app and the resolver here were
@@ -191,7 +215,6 @@ def promote(
     projects that happen to have no issue open. The caller passes the
     sibling board because this module reads no vault; see `--projects-from`.
     """
-    entries = capture_entries(before)
     if index < 0 or index >= len(entries):
         return None, f"no capture at index {index} ({len(entries)} in the list)", None, None
     start, end, text, replies = entries[index]
@@ -206,7 +229,7 @@ def promote(
         # resolve to a project that already exists, and an unknown slug
         # stays in the title rather than inventing one.
         own_project, text = split_capture_project_tag(
-            text, _known_names(before, known_projects))
+            text, _known_names(board, known_projects))
     if not text.strip():
         return None, "that capture is empty once its prefixes are stripped", None, None
 
@@ -304,6 +327,7 @@ def main(argv=None):
         return 1
 
     before = open(args.file, encoding="utf-8").read()
+    before_board = parse_board(before)
     entries = capture_entries(before)
     if args.index < 0 or args.index >= len(entries):
         print(
@@ -330,21 +354,25 @@ def main(argv=None):
         extra_names.extend(board_projects(parse_board(sibling).get("items") or []))
 
     after, number, row_title, tag = promote(
-        before, args.index, args.priority, args.status, args.dated, args.title,
-        args.project, extra_names,
+        before, before_board, entries, args.index, args.priority, args.status,
+        args.dated, args.title, args.project, extra_names,
     )
     if after is None:
         print(f"REFUSED: {number}", file=sys.stderr)
         return 1
 
-    problems = check(before, after, number, row_title, raw_text, tag)
+    after_board = parse_board(after)
+    after_entries = capture_entries(after)
+    problems = check_from_contents(
+        before_board, after_board, entries, after_entries, number, row_title,
+        raw_text, tag,
+    )
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
         return 1
 
-    board = parse_board(after)
-    row = next(item for item in board["items"] if item["number"] == number)
+    row = next(item for item in after_board["items"] if item["number"] == number)
     print(f"boarded #{number} — {row_title}")
     print(f"  status {row['status']!r}  priority {row['priority']!r}")
     if tag:
@@ -354,7 +382,7 @@ def main(argv=None):
         # nothing this call knew about, and the row went in under none with
         # the tag still in its title -- which used to happen in silence.
         missed = unresolved_capture_project_tag(
-            raw_text, _known_names(before, extra_names)
+            raw_text, _known_names(before_board, extra_names)
         )
         if missed:
             print(
@@ -364,7 +392,7 @@ def main(argv=None):
                 "or --project <name>.",
                 file=sys.stderr,
             )
-    print(f"  captures {len(entries)} -> {len(capture_entries(after))}")
+    print(f"  captures {len(entries)} -> {len(after_entries)}")
     print(f"  {len(before)} -> {len(after)} bytes")
     if args.dry_run:
         return 0
