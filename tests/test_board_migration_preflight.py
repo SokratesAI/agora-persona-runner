@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from agora_runner import board_store, entity_id, nova_boards
+from agora_runner import board_store, board_view, entity_id, nova_boards
 from tools import board_migration_preflight as preflight
 
 HEADER = (
@@ -20,9 +20,14 @@ HEADER = (
 
 def board(rows):
     """Board markdown for `(number, project, milestone)` triples."""
+    # `🔵 Medium`, not the legacy `🟡` spelling this fixture used to carry:
+    # `parse_board` normalises a legacy glyph on the way out, so a board
+    # written the old way does not render back word for word and
+    # `document_round_trip` reports the difference -- correctly, and that is
+    # a fact about the fixture rather than about the tool.
     lines = [
         f"| [[#{n} — Item {n}\\|{n}]] | Item {n} | ⚪ Backlog | 09-09 "
-        f"| 🟡 Medium | {project} | | {milestone} | |"
+        f"| 🔵 Medium | {project} | | {milestone} | |"
         for n, project, milestone in rows
     ]
     return HEADER + "\n".join(lines) + "\n"
@@ -265,3 +270,88 @@ def test_board_details_reads_the_prose_bodies_off_a_board_file():
     details = preflight.board_details(markdown)
     assert list(details) == [1]
     assert "the reasoning for row 1" in details[1]
+
+
+# --- the whole document, not just its two tables ---------------------------
+
+
+BOARD_DOC = """---
+type: board
+contract: Edvard writes in the bullets.
+---
+
+- something broke
+
+## Board
+
+| # | Item | Status | Updated | Priority | Project | Size | Milestone | Order |
+|---|---|---|---|---|---|---|---|---|
+| [[#1 — One\\|1]] | One | ⚪ Backlog | 09-09 |  | Nova |  |  |  |
+
+# Details
+
+### #1 — One
+
+The write-up.
+"""
+
+
+def test_frontmatter_is_taken_off_the_document():
+    assert preflight.frontmatter_of(BOARD_DOC).startswith("---\ntype: board")
+    assert preflight.frontmatter_of(BOARD_DOC).endswith("---")
+    assert preflight.frontmatter_of("no frontmatter here") == ""
+
+
+def test_a_board_it_fully_models_round_trips_with_nothing_lost():
+    report, problems = preflight.document_round_trip(BOARD_DOC)
+    assert problems == []
+    assert report["document_round_trip"] is True
+    assert report["document_words_lost"] == 0
+
+
+def test_a_section_parse_board_does_not_model_is_reported_as_lost():
+    """The failure this check exists for: `render_document` is built out of
+    `parse_board`'s four keys, so a section the parser does not model is
+    absent from both sides of every comparison written in its own terms.
+    Both live boards carry one and the four-key check called them clean."""
+    report, problems = preflight.document_round_trip(
+        BOARD_DOC + "\n## Processed captures\n\n- DONE (Cycle 9): shipped it\n")
+    assert report["document_words_lost"] > 0
+    assert report["document_round_trip"] is False
+    assert any("did not survive as written" in text for text in problems)
+    assert any("Processed" in text for text in problems)
+
+
+def test_the_four_key_comparison_alone_would_have_passed_that_board():
+    """Names why the word stream is the instrument: the keys agree."""
+    damaged = BOARD_DOC + "\n## Processed captures\n\n- DONE (Cycle 9): shipped it\n"
+    was = nova_boards.parse_board(damaged)
+    now = nova_boards.parse_board(
+        board_view.render_document(was, preflight.frontmatter_of(damaged)))
+    assert all(was[key] == now[key]
+               for key in ("captures", "captureReplies", "items", "details"))
+
+
+def test_a_word_moved_rather_than_deleted_still_counts_as_lost():
+    """A sequence diff, not a bag of words -- a multiset would call this clean."""
+    assert preflight.words_lost("alpha beta", "beta alpha") == ["beta"]
+
+
+def test_the_tail_a_caller_carries_closes_the_hole():
+    extra = "## Processed captures\n\n- DONE (Cycle 9): shipped it"
+    damaged = BOARD_DOC + "\n" + extra + "\n"
+    was = nova_boards.parse_board(damaged)
+    rendered = board_view.render_document(
+        was, preflight.frontmatter_of(damaged), tail=extra)
+    assert preflight.words_lost(damaged, rendered) == []
+
+
+def test_a_reflowed_table_rule_is_not_counted_as_a_lost_word():
+    """The renderer redraws every rule at three dashes; the source pads them
+    to its column widths. Same rule, different word, no content moved."""
+    assert preflight.words_lost("| # | Item |\n|---|------|", "| # | Item |\n|---|---|") == []
+
+
+def test_a_dashed_token_that_is_not_a_rule_is_still_caught():
+    """The one filter above must stay a filter on rules, not on prose."""
+    assert preflight.words_lost("|--- important ---|", "") != []

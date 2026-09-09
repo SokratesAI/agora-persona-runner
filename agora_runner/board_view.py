@@ -153,3 +153,113 @@ def render_tables(items):
         "done": render_table(
             [row for row in items if row.get("done")], DONE_COLUMNS),
     }
+
+
+def render_detail(number, title, body):
+    """One row's detail section: its heading and its body.
+
+    `### #N — title`, which is the newer of the two shapes `_DETAIL_RE`
+    accepts and the one every cycle has written since. The older `## N —`
+    is still parsed and deliberately not emitted: two shapes in one
+    generated file would be a difference nothing chose.
+
+    `title` may be empty, because `parse_board` returns detail bodies
+    keyed by number and throws the heading text away -- a detail whose row
+    is gone from both tables has no title left anywhere in the document.
+    The regex allows the empty title, so the body still round-trips; it is
+    an orphan either way and inventing a title would hide that.
+    """
+    heading = f"### #{int(number)} —"
+    if title:
+        heading = f"{heading} {title}"
+    body = (body or "").strip()
+    return f"{heading}\n\n{body}" if body else heading
+
+
+def render_document(contents, frontmatter="", tail=""):
+    """A parsed board -> the whole markdown document, ready to write back.
+
+    This is the envelope `render_tables` does not draw. The spec asks for
+    the generated view by name -- *"keep the generated markdown view from
+    day one, so the GitHub backup and `vault-drift` keep working"* -- and
+    a board file is more than its two tables: the owner's capture bullets
+    sit above the first heading and every row's write-up sits under
+    `# Details`. Without this, each of the sixteen writers still on
+    `parse_board` would splice its own, which is the twenty-one-joins
+    argument that put `board_records.contents` in one place.
+
+    `contents` is `parse_board`'s four keys, which is also exactly what
+    `board_records.contents` returns -- that shared shape is the seam, so
+    this renders a store read and a parse the same way and neither side
+    has to know which it was handed.
+
+    `frontmatter` is passed in rather than derived: it is the owner's, it
+    carries the `contract:` line each board file explains itself with, and
+    nothing in the records holds it. A caller with no document to take it
+    from gets a file without one, which parses.
+
+    The invariant is `parse_board(render_document(parse_board(md)))
+    == parse_board(md)`, not byte-identity. `board_view`'s module comment
+    says why the stronger claim is false and the tables are only half of
+    it: the live files carry detail headings in both accepted shapes and a
+    ragged number of table cells, so the first generated write is a
+    one-time reflow.
+
+    `tail` is verbatim markdown appended after the details, and it exists
+    because **`parse_board` does not model the whole document and a view
+    built from its four keys alone deletes the rest.** Measured on the two
+    live boards, 2026-09-09: rendering `issues.md` from its own parse drops
+    19,653 words and `ideas.md` drops 6,469 -- his `## Processed captures`
+    archive on both, the `# Done — detail` heading, and `ideas.md`'s
+    `## Discarded` table. None of that is a row, a capture or a detail
+    body, so nothing in the four keys can carry it. Until those sections
+    have a record home of their own, a caller that has the source document
+    must pass what the parse did not account for; a caller that renders
+    from records alone is writing a document that does not have it.
+
+    `## Done` is written only when a row is in it. Both live boards have
+    zero done rows today and neither carries the section, so emitting an
+    empty one would put a heading on his page that no cycle chose.
+    """
+    parts = []
+    frontmatter = (frontmatter or "").strip()
+    if frontmatter:
+        parts.append(frontmatter)
+
+    captures = list(contents.get("captures") or [])
+    replies = list(contents.get("captureReplies") or [])
+    bullets = []
+    for index, text in enumerate(captures):
+        bullets.append(f"- {text}")
+        for reply in (replies[index] if index < len(replies) else []):
+            bullets.append(f"    - {reply}")
+    # The empty bullet is not in `contents` and cannot be: `parse_board`
+    # drops a bullet with no text, so a generated view built from the parse
+    # alone would quietly remove the box the owner types into. Both board
+    # files state the contract in their own frontmatter -- *"always leaves
+    # exactly one empty bullet there so he can start typing immediately"* --
+    # so it is written unconditionally rather than carried through the
+    # records.
+    bullets.append("- ")
+    parts.append("\n".join(bullets))
+
+    items = list(contents.get("items") or [])
+    tables = render_tables(items)
+    parts.append("## Board\n\n" + tables["board"])
+    if any(item.get("done") for item in items):
+        parts.append("## Done\n\n" + tables["done"])
+
+    details = contents.get("details") or {}
+    if details:
+        titles = {int(item["number"]): item.get("title") or "" for item in items}
+        sections = ["# Details"]
+        for number in details:
+            sections.append(
+                render_detail(number, titles.get(int(number), ""), details[number]))
+        parts.append("\n\n".join(sections))
+
+    tail = (tail or "").strip()
+    if tail:
+        parts.append(tail)
+
+    return "\n\n".join(parts) + "\n"

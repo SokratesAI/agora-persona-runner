@@ -15,6 +15,8 @@ import pytest
 from agora_runner.board_view import (
     BOARD_COLUMNS,
     DONE_COLUMNS,
+    render_detail,
+    render_document,
     render_row,
     render_table,
     render_tables,
@@ -224,3 +226,117 @@ def test_the_done_table_cannot_carry_a_project():
     item = row(9, done=True, project="Marcus")
     assert "Marcus" not in render_tables([item])["done"]
     assert roundtrip([item])[9]["project"] == DEFAULT_PROJECT
+
+
+# --- render_document -------------------------------------------------------
+#
+# `render_tables` draws two tables; a board file is an envelope around them
+# — frontmatter, the owner's capture bullets, and every row's write-up under
+# `# Details`. These tests are round trips for the same reason the ones above
+# are: the failure to guard against is a document that looks right and parses
+# back into something subtly different.
+
+FRONTMATTER = "---\ntype: board\ncontract: Edvard writes in the bullets.\n---"
+
+
+def contents(items, captures=(), replies=None, details=None):
+    """`parse_board`'s four keys, which is also `board_records.contents`'."""
+    return {
+        "captures": list(captures),
+        "captureReplies": [list(r) for r in (replies or [[] for _ in captures])],
+        "items": list(items),
+        "details": dict(details or {}),
+    }
+
+
+def test_document_round_trips_rows_captures_and_details():
+    want = contents(
+        [row(1), row(2, priority="🔴 Immediately", milestone="M4", order=1),
+         row(3, done=True, where="#12")],
+        captures=["something broke", "an idea"],
+        replies=[["Nova, 09-09: boarded as #4"], []],
+        details={1: "The write-up for one.\n\n**Nova, 09-09:** and a reply.",
+                 3: "Landed in #12."},
+    )
+    back = parse_board(render_document(want, FRONTMATTER))
+    assert back["captures"] == want["captures"]
+    assert back["captureReplies"] == want["captureReplies"]
+    assert back["items"] == want["items"]
+    assert back["details"] == want["details"]
+
+
+def test_document_keeps_the_empty_bullet_the_owner_types_into():
+    """`parse_board` drops a bullet with no text, so the records cannot carry
+    it and a view rebuilt from the parse alone would delete his capture box.
+    Both board files state the contract in their own frontmatter."""
+    document = render_document(contents([row(1)]), FRONTMATTER)
+    above = document.split("## Board")[0]
+    assert [line for line in above.split("\n") if line.strip() == "-"] == ["- "]
+
+
+def test_the_empty_bullet_is_last_so_his_typing_lands_below_the_captures():
+    document = render_document(
+        contents([row(1)], captures=["something broke"]), FRONTMATTER)
+    above = document.split("## Board")[0].split("---")[-1]
+    bullets = [line for line in above.split("\n")
+               if line.strip().startswith("- ") or line.strip() == "-"]
+    assert bullets == ["- something broke", "- "]
+
+
+def test_a_reply_is_indented_so_it_is_not_read_as_its_own_capture():
+    document = render_document(
+        contents([row(1)], captures=["his words"], replies=[["my answer"]]),
+        FRONTMATTER)
+    assert "\n    - my answer\n" in document
+    parsed = parse_board(document)
+    assert parsed["captures"] == ["his words"]
+    assert parsed["captureReplies"] == [["my answer"]]
+
+
+def test_frontmatter_is_kept_verbatim_and_the_captures_still_parse():
+    document = render_document(contents([row(1)], captures=["hi"]), FRONTMATTER)
+    assert document.startswith(FRONTMATTER + "\n")
+    assert parse_board(document)["captures"] == ["hi"]
+
+
+def test_a_document_without_frontmatter_still_parses():
+    document = render_document(contents([row(1)], captures=["hi"]))
+    assert not document.startswith("---")
+    assert parse_board(document)["captures"] == ["hi"]
+
+
+def test_no_done_section_when_no_row_is_in_it():
+    """Both live boards have zero done rows and neither carries the heading,
+    so writing an empty one would put a section on his page nobody chose."""
+    assert "## Done" not in render_document(contents([row(1), row(2)]))
+    assert "## Done" in render_document(contents([row(1), row(2, done=True)]))
+
+
+def test_a_done_row_stays_in_the_done_table():
+    document = render_document(contents([row(1), row(2, done=True)]))
+    back = {item["number"]: item for item in parse_board(document)["items"]}
+    assert back[2]["done"] and not back[1]["done"]
+
+
+def test_an_orphan_detail_renders_without_a_title_and_keeps_its_body():
+    """`parse_board` keys details by number and throws the heading text away,
+    so a detail whose row is in neither table has no title left in the
+    document. The body still has to survive."""
+    document = render_document(contents([row(1)], details={99: "orphan body"}))
+    assert "### #99 —\n" in document
+    assert parse_board(document)["details"][99] == "orphan body"
+
+
+def test_a_detail_with_no_body_renders_its_heading_alone():
+    assert render_detail(7, "Row 7", "  \n ") == "### #7 — Row 7"
+
+
+def test_an_empty_board_still_renders_a_parseable_document():
+    document = render_document(contents([]))
+    parsed = parse_board(document)
+    assert parsed["items"] == [] and parsed["captures"] == []
+
+
+def test_a_pipe_in_a_title_raises_rather_than_splitting_the_row():
+    with pytest.raises(ValueError):
+        render_document(contents([row(1, title="a | b")]))
