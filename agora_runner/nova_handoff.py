@@ -329,23 +329,31 @@ def oldest_digest_cycle(live):
 def select_older_than(items, cutoff):
     """Indices of the items that cite no cycle at or after `cutoff`.
 
-    Three kinds of item are never selected, and all three omissions are
-    the conservative direction -- this section is where the loop keeps its
+    Two kinds of item are never selected, and both omissions are the
+    conservative direction -- this section is where the loop keeps its
     "do not redo this" findings, so keeping one too long costs a cycle
     some reading and dropping one too early costs it the work again:
 
-    * an item with no slug, which `select_slugs` cannot name either;
     * an item citing no cycle at all, which nothing here can date;
     * an item whose *newest* citation is recent. `newest_cycle` takes the
       maximum, so an old item that a later cycle amended stays until the
       amendment ages out too.
+
+    A missing `[slug]` used to be a third omission and was a mistake I
+    only found by measuring what the rule could actually move. This roll
+    selects by age and hands `archive_indices` indices, which is the
+    identity it works in -- only `--retire` needs a name, because that is
+    the path where a human types one. Requiring a name here bought
+    nothing and cost the file its only automatic brake: on 2026-09-09 the
+    live section held 51 items, 18 of them dated and older than the
+    cutoff by up to 295 cycles, and every one of the 18 was skipped for
+    lacking a slug. The section had grown from 25.7KB to 61.4KB in three
+    days while this function returned an empty list every time.
     """
     return [
         index
         for index, item in enumerate(items)
-        if item_slug(item) is not None
-        and newest_cycle(item) is not None
-        and newest_cycle(item) < cutoff
+        if newest_cycle(item) is not None and newest_cycle(item) < cutoff
     ]
 
 
@@ -354,16 +362,16 @@ def explain_none_older_than(items, cutoff):
 
     The CLI used to answer this with "all N item(s) cite cycle {cutoff}
     or later", which is only true when every item is genuinely recent. An
-    item with no slug or no cycle number is skipped by
-    `select_older_than` whatever its age, so a section held open by one
-    undated item was reported as a section that had nothing old in it --
-    a true count wrapped around a false reason, which is the shape that
-    sends a cycle looking for a bug in the cutoff.
+    item citing no cycle number is skipped by `select_older_than`
+    whatever its age, so a section held open by one undated item was
+    reported as a section that had nothing old in it -- a true count
+    wrapped around a false reason, which is the shape that sends a cycle
+    looking for a bug in the cutoff.
+
+    A missing slug is no longer one of the buckets, because it is no
+    longer a reason to skip anything; see `select_older_than`.
     """
-    unslugged = [i for i in items if item_slug(i) is None]
-    undated = [
-        i for i in items if item_slug(i) is not None and newest_cycle(i) is None
-    ]
+    undated = [i for i in items if newest_cycle(i) is None]
     # `recent` is measured against the cutoff rather than inferred as
     # "everything else". Inferring it would make this function correct
     # only when `select_older_than` has already returned empty, and a
@@ -373,23 +381,19 @@ def explain_none_older_than(items, cutoff):
     recent = [
         i
         for i in items
-        if item_slug(i) is not None
-        and newest_cycle(i) is not None
-        and newest_cycle(i) >= cutoff
+        if newest_cycle(i) is not None and newest_cycle(i) >= cutoff
     ]
     parts = [f"{len(recent)} cite(s) cycle {cutoff} or later"]
-    if unslugged:
-        parts.append(f"{len(unslugged)} carr(y/ies) no slug")
     if undated:
         parts.append(f"{len(undated)} cite(s) no cycle at all")
-    stale = len(items) - len(unslugged) - len(undated) - len(recent)
+    stale = len(items) - len(undated) - len(recent)
     if stale:
         parts.append(
             f"{stale} (y)our caller should have retired and did not -- "
             "this was asked out of sequence"
         )
     tail = ""
-    if unslugged or undated:
+    if undated:
         tail = (
             " -- the last of those are never retired by age, whatever their "
             "age, so they stay until a cycle names them by hand"
