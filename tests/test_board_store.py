@@ -865,3 +865,56 @@ def test_delete_layout_reaches_for_no_other_document(couch):
     board_store.delete_layout("issue")
 
     assert not any("_all_docs" in path for _method, path in couch.calls)
+
+
+def test_write_capture_creates_one_bullet_without_touching_the_others(couch):
+    """The whole point of the single-document form over `write_captures`.
+
+    `write_captures` lists the range with `include_docs=true` and prunes what
+    it was not passed, so writing one bullet through it fetches every bullet
+    and every reply and tombstones the rest.
+    """
+    board_store.write_captures("issue", [_capture("issue", "cap_1"),
+                                         _capture("issue", "cap_2")])
+    held = board_store.read_capture("issue", "cap_1")
+
+    board_store.write_capture(dict(held, text="Edited"))
+
+    assert board_store.read_capture("issue", "cap_1")["text"] == "Edited"
+    assert board_store.read_capture("issue", "cap_2") is not None
+
+
+def test_an_unstored_capture_reads_as_none_rather_than_raising(couch):
+    """`read_row`'s contract over the other range: absent is not an error."""
+    assert board_store.read_capture("issue", "cap_9") is None
+
+
+def test_a_capture_update_must_carry_the_revision_it_was_read_at(couch):
+    """The rule `_write_one` holds for both ranges, asked of the capture."""
+    board_store.write_capture(_capture("issue", "cap_1", text="His words"))
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_capture(_capture("issue", "cap_1", text="Clobbered"))
+    assert board_store.read_capture("issue", "cap_1")["text"] == "His words"
+
+
+def test_an_unchanged_capture_costs_no_revision(couch):
+    """A re-run must be free here too, and free without a `_rev`."""
+    stored = board_store.write_capture(_capture("issue", "cap_1"))
+    again = board_store.write_capture(_capture("issue", "cap_1"))
+    assert again["_rev"] == stored["_rev"]
+
+
+def test_a_lost_capture_revision_raises_its_own_conflict(couch):
+    """Not `RowConflict`: a caller recovering from one is not recovering the other."""
+    stale = board_store.write_capture(_capture("issue", "cap_1", text="a"))
+    board_store.write_capture(dict(stale, text="b"))
+    with pytest.raises(board_store.CaptureConflict):
+        board_store.write_capture(dict(stale, text="c"))
+    assert board_store.read_capture("issue", "cap_1")["text"] == "b"
+
+
+def test_write_capture_refuses_a_document_that_is_not_a_capture(couch):
+    """A row handed to the capture writer would land outside its own range."""
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_capture(_row("issue", 5))
+    assert couch.docs == {}

@@ -361,9 +361,24 @@ def write_row(doc):
     # second guard here would be a line no input can reach.
     board = doc["board"]
     doc_id = board_document.document_id(board, doc["number"])
+    return _write_one(doc, doc_id, read_row(board, doc["number"]), RowConflict)
+
+
+def _write_one(doc, doc_id, held, conflict):
+    """The three rules above, once, for a row and for a capture.
+
+    Extracted when `write_capture` needed the same three -- a second copy of
+    *"an update must carry the `_rev` it was read at"* is a second place for
+    it to stop being true, and the rule that matters is the one nobody
+    notices going missing.
+
+    `conflict` is the exception class to raise on a 409 rather than a flag,
+    because a caller catching "the row I read moved" and a caller catching
+    "the capture I read moved" are two different recoveries, and one class
+    named for a row would make the second one read as the first.
+    """
     body = dict(doc, _id=doc_id)
     rev = body.pop("_rev", None)
-    held = read_row(board, doc["number"])
     if held is not None and ticket_docs._payload(held) == body:
         return held
     if held is not None and rev is None:
@@ -376,13 +391,56 @@ def write_row(doc):
         "PUT", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}",
         body)
     if status == 409:
-        raise RowConflict(
-            f"{doc_id} moved since it was read: re-read the row, apply the "
-            "change to the record that won, and write that -- do not resend "
-            "this one")
+        raise conflict(
+            f"{doc_id} moved since it was read: re-read it, apply the change "
+            "to the record that won, and write that -- do not resend this one")
     if status not in (200, 201):
         raise StoreError(f"writing {doc_id}: {status} {json.dumps(answer)[:200]}")
     return dict(body, _rev=answer["rev"])
+
+
+class CaptureConflict(StoreError):
+    """The stored capture moved between the read and the write."""
+
+
+def read_capture(board, capture_id):
+    """One capture document, or `None` if it is not stored."""
+    doc_id = board_document.capture_document_id(_check_board(board), capture_id)
+    status, body = ticket_docs._req(
+        "GET", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}")
+    if status == 200:
+        return body
+    if status == 404:
+        return None
+    raise StoreError(f"reading {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
+def write_capture(doc):
+    """Write one capture's record, conditional on the revision it was read at.
+
+    `write_row`'s twin over the **other** key range, and it is a separate
+    function for `write_captures`' reason: neither may reach the other's
+    range. It shares the three rules through `_write_one` and shares nothing
+    else.
+
+    Why the single-document form is needed here and not only for rows: a
+    capture carries the owner's own words *and every reply a cycle has
+    written under them*, and the two tools that move captures between his
+    `## Captures` list and his `## Processed captures` archive
+    (`close_done_captures`, `roll_done_captures`) change a **subset** of
+    them -- however many came back answered that run, which their guards
+    count rather than assume. `write_captures` is the wrong shape for a
+    subset twice over: it lists the whole range with `include_docs=true`,
+    so every bullet and every reply is fetched to write a few, and its
+    default `prune=True` tombstones every capture the caller did not pass.
+    Passing `prune=False` fixes the second and not the first, and leaves the
+    caller holding a flag whose wrong value deletes his captures.
+    """
+    board_document._check_capture_identity(doc)
+    board = doc["board"]
+    doc_id = board_document.capture_document_id(board, doc["captureId"])
+    return _write_one(doc, doc_id, read_capture(board, doc["captureId"]),
+                      CaptureConflict)
 
 
 #: The project/milestone registry, one document beside the row records.
