@@ -306,6 +306,8 @@ def test_a_first_write_over_an_existing_registry_is_refused(couch):
     {},
     {"projects": {}},
     {"projects": {}, "milestones": []},
+    {"projects": {}, "milestones": {}, "captures": []},
+    {"projects": {}, "milestones": {}, "captures": None},
     "projects",
 ])
 def test_a_thing_that_is_not_a_registry_never_reaches_couchdb(couch, bad):
@@ -318,6 +320,41 @@ def test_a_thing_that_is_not_a_registry_never_reaches_couchdb(couch, bad):
         board_store.write_registry(bad)
 
     assert couch.docs[board_store.REGISTRY_ID] == before
+
+
+def test_a_registry_stored_before_captures_existed_is_still_writable(couch):
+    """The asymmetry in `_check_registry`, and the reason for it.
+
+    Every registry written before `entity_id.mint_capture` existed carries
+    `projects` and `milestones` and no `captures`. Requiring the third map
+    the way the first two are required would refuse to write the one
+    document every `projectId` on every row points at, and the recovery is
+    a hand-edit of the live database.
+    """
+    couch.docs[board_store.REGISTRY_ID] = {
+        "_id": board_store.REGISTRY_ID,
+        "_rev": "1-old",
+        "type": board_store.REGISTRY_TYPE,
+        "projects": {"prj_nova": {"name": "Nova", "key": "nova", "aliases": []}},
+        "milestones": {},
+    }
+    held = board_store.read_registry()
+    assert "captures" not in held
+
+    # The write that must not be refused, and it is an ordinary one: a
+    # cycle renaming a project touches no capture and so never mints the
+    # map into existence. Minting first would put a `captures` back on the
+    # document and test nothing -- the mutation `if not isinstance(
+    # registry.get("captures"), dict)` survives that version.
+    entity_id.rename_project(held, "prj_nova", "Aurora")
+    stored = board_store.write_registry(held)
+    assert "captures" not in stored
+    assert stored["projects"]["prj_nova"]["name"] == "Aurora"
+
+    assert entity_id.mint_capture(stored, "issue") == "cap_1"
+    stored = board_store.write_registry(stored)
+    assert stored["captures"] == {"issue": 1}
+    assert stored["projects"]["prj_nova"]["name"] == "Aurora"
 
 
 def test_write_row_writes_one_document_without_listing_the_board(couch):

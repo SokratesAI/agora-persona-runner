@@ -365,6 +365,16 @@ def _check_registry(registry):
         if not isinstance(registry.get(field), dict):
             raise board_document.DocumentError(
                 f"registry {field!r} must be a dict, not {registry.get(field)!r}")
+    # `captures` is checked only when it is there, and that asymmetry is
+    # deliberate. Every registry written before `entity_id.mint_capture`
+    # existed has the other two maps and not this one; requiring it would
+    # make the stored registry unwritable, and the recovery from that is a
+    # hand-edit of the one document every `projectId` on every row points
+    # at. `entity_id.capture_high_water` reads an absent map as zero, so
+    # absent and empty already mean the same thing to every caller.
+    if "captures" in registry and not isinstance(registry["captures"], dict):
+        raise board_document.DocumentError(
+            f"registry 'captures' must be a dict, not {registry['captures']!r}")
     return registry
 
 
