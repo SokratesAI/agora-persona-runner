@@ -61,6 +61,18 @@ named as unexplained rather than reported clean.
 says nothing about whether to act, and "Degraded for 3 days, and the only
 failing Job is one a later run succeeded past" is the finding.
 
+**A `Suspended` Application whose CronJob children git suspended is a
+decision, not a finding.** `sokratesai-infra` reads `Synced, Suspended`
+permanently because two of the CronJobs it owns carry `spec.suspend: true`
+in their manifests, and this check raised on it every sweep. That is the
+`security_alerts` already-fixed problem in a different suit: a permanent
+finding makes `preflight` collapse the whole check to one standing line, so
+a real `Degraded` arriving tomorrow would read as the same unchanged row.
+The excuse needs the Application to be `Synced` as well, and that is the
+argument rather than a convenience — ArgoCD diffs `spec.suspend`, so a
+CronJob suspended by hand shows the Application `OutOfSync`. A `Suspended`
+this cannot attribute to a suspended CronJob child still raises.
+
 Exit status, matching `tools.security_alerts`, `tools.cli_pin`,
 `tools.agentic_health`, `tools.heartbeat_health` and
 `tools.helm_repo_health` so a cycle can read it without parsing the text:
@@ -81,6 +93,25 @@ import sys
 # merge, and a checker that called it a finding would fire on its own
 # cycle's deploy.
 UNHEALTHY = {"Degraded", "Missing", "Unknown", "Suspended"}
+
+# `Suspended` is in that set and stays in it, but it is the one member that
+# has an innocent cause this check can prove. ArgoCD reports an Application
+# `Suspended` when a child is deliberately paused, and the commonest such
+# child here is a CronJob carrying `spec.suspend: true` -- which is a line
+# somebody wrote in a manifest, not a fault. `sokratesai-infra` holds two of
+# them (`agents/heartbeat-liveness`, `infra/claude-child-reaper`), so the
+# Application reads `Suspended` permanently and this check raised on it
+# permanently, which is worse than useless: `preflight` then collapses the
+# whole check to one standing line and a real `Degraded` arriving later
+# reads as the same unchanged finding.
+#
+# The excuse is only taken when the Application is *also* `Synced`, and that
+# is the whole argument rather than a convenience. ArgoCD diffs `spec.suspend`
+# like any other field, so a CronJob suspended by hand on the cluster shows the
+# Application `OutOfSync`. `Synced` + a suspended CronJob child therefore means
+# git asked for the suspension. Anything else keeps raising, including a
+# `Suspended` this cannot attribute to a CronJob at all -- a paused Deployment
+# or Rollout would land there, and it should be looked at.
 
 # ...but only for as long as it is plausibly still in flight. A rollout that
 # never converges stays `Progressing` forever, and until Cycle 1270 that read
@@ -157,6 +188,25 @@ def read_applications(runner=subprocess.run):
             "sealed": sealed,
         })
     return apps, None
+
+
+def read_suspended_cronjobs(runner=subprocess.run):
+    """The (namespace, name) of every CronJob with `spec.suspend: true`.
+
+    Returns (set, None) or (None, why). Absent-and-false are the same answer
+    here: `spec.suspend` is optional and unset means running.
+    """
+    body, why = _run(runner, ["kubectl", "get", "cronjobs", "-A", "-o", "json"])
+    if why:
+        return None, why
+
+    suspended = set()
+    for item in body.get("items") or []:
+        if not (item.get("spec") or {}).get("suspend"):
+            continue
+        meta = item.get("metadata") or {}
+        suspended.add((meta.get("namespace") or "", meta.get("name") or ""))
+    return suspended, None
 
 
 def read_jobs(runner=subprocess.run):
@@ -253,6 +303,21 @@ def takeover_remedy(why, namespace, name):
     return (
         f"kubectl annotate secret -n {namespace} {name} "
         "sealedsecrets.bitnami.com/managed=true"
+    )
+
+
+def declared_suspensions(app, suspended_cronjobs):
+    """The app's own CronJob children that git has suspended, as `ns/name`.
+
+    Empty for an Application that is not `Synced`, because then the
+    suspension is not demonstrably what git asked for — see `UNHEALTHY`.
+    """
+    if app.get("sync") != "Synced":
+        return []
+    return sorted(
+        f"{ns}/{name}"
+        for ns, name in app.get("cronjobs") or []
+        if (ns, name) in (suspended_cronjobs or set())
     )
 
 
@@ -375,12 +440,14 @@ def _progressing_too_long(app, now):
     return seconds
 
 
-def report(apps, jobs_by_owner, now, broken_sealed=None):
+def report(apps, jobs_by_owner, now, broken_sealed=None,
+           suspended_cronjobs=None):
     """The printed lines and the exit status, as (lines, status)."""
     lines = []
     actionable = False
     unexplained = []
     broken_sealed = broken_sealed or {}
+    suspended_cronjobs = suspended_cronjobs or set()
 
     for app in sorted(apps, key=lambda a: a["name"]):
         age = _age(app["since"], now)
@@ -404,6 +471,15 @@ def report(apps, jobs_by_owner, now, broken_sealed=None):
                 lines.append(
                     f"ok      {app['name']}: Synced, {app['health']}{aged}")
             continue
+
+        if app["health"] == "Suspended":
+            paused = declared_suspensions(app, suspended_cronjobs)
+            if paused:
+                lines.append(
+                    f"ok      {app['name']}: Synced, Suspended{aged} — "
+                    f"{len(paused)} CronJob(s) suspended in git, which is what "
+                    f"ArgoCD is reporting: {', '.join(paused)}")
+                continue
 
         actionable = True
         stale, live = stale_job_failures(app["cronjobs"], jobs_by_owner)
@@ -498,6 +574,12 @@ def main(argv=None, runner=subprocess.run, now=None):
     # answer into `COULD NOT READ` for data nothing was going to use.
     jobs_by_owner = {}
     broken_sealed = {}
+    suspended_cronjobs = set()
+    if any(a["health"] == "Suspended" for a in apps):
+        suspended_cronjobs, why = read_suspended_cronjobs(runner)
+        if why:
+            print(f"COULD NOT READ  {why}")
+            return 1
     if any(a["health"] in UNHEALTHY for a in apps):
         jobs_by_owner, why = read_jobs(runner)
         if why:
@@ -511,7 +593,7 @@ def main(argv=None, runner=subprocess.run, now=None):
     lines, status = report(
         apps, jobs_by_owner,
         now or datetime.datetime.now(datetime.timezone.utc),
-        broken_sealed)
+        broken_sealed, suspended_cronjobs)
     for line in lines:
         print(line)
     return status
