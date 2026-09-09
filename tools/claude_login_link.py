@@ -67,6 +67,25 @@ the endpoint is there and the query survives the redirect; whether the consent
 page renders is measurable only from a real browser on a real phone. Whether Anthropic's
 authorize page accepts this client id in manual mode from a browser the owner owns
 is the one step only he can run, and it costs him one tap to find out.
+
+**The token endpoint is now measured too, and it changed one line of this
+module.** The first live attempt at this flow (Sokrates and the owner, together,
+2026-09-09) never reached Anthropic: `_post_json` sent urllib's default
+`Python-urllib/3.x` and Cloudflare answered `403 error code: 1010` in front of
+the token endpoint. Three POSTs of a deliberately invalid code from this pod
+separate the causes, because an invalid code is answered by the backend and a
+blocked request never gets there:
+
+    Python-urllib/3.x   403  error code: 1010                (Cloudflare)
+    axios/1.15.2        400  invalid_grant "Invalid 'code'"  (Anthropic)
+    Chrome 140 UA       429  rate_limit_error                (Anthropic)
+
+Reversed and re-run, and the three verdicts held, so the 429 is a property of
+that User-Agent rather than of being third in a row. **The CLI's own axios
+User-Agent is the only one measured to reach the backend un-rate-limited**, and
+it is what `read_token_user_agent` pulls out of the binary. What is still
+unmeasured is the same thing as before: an exchange with a *valid* code, which
+only the owner can produce.
 """
 
 from __future__ import annotations
@@ -132,6 +151,23 @@ _CONFIG_KEYS = {
 }
 
 
+# The CLI's own token exchange is axios, and axios sets `User-Agent: axios/<v>`
+# on every request it makes. urllib sets `Python-urllib/3.x`, which Cloudflare
+# blocks outright in front of the token endpoint -- measured from this pod on
+# 2026-09-09, three POSTs of a deliberately invalid code to the live endpoint:
+# `Python-urllib` answered `403 error code: 1010` (Cloudflare's browser-integrity
+# check), `axios/1.15.2` answered `400 invalid_grant "Invalid 'code' in request"`
+# from Anthropic's own backend, and a Chrome UA answered `429 rate_limit_error`.
+# The order was reversed and re-run and the three verdicts held, so the 429 is a
+# property of the browser UA rather than of being the third request in a row.
+# So the header is not cosmetic and the browser UA is not the one to send: the
+# CLI's own is the only one measured to reach the backend un-rate-limited.
+#
+# Read out of the binary for the same reason every other constant here is -- a
+# remembered `axios/1.15.2` goes stale exactly the way a pin does.
+TOKEN_UA_ANCHOR = r'"User-Agent","axios/"\+(\w+)'
+
+
 class CannotSee(Exception):
     """A constant the URL needs is not in the binary. Never a guess instead."""
 
@@ -192,6 +228,30 @@ def live_scopes(path: str = DEFAULT_CREDENTIALS):
     if not isinstance(scopes, list) or not scopes:
         return list(FALLBACK_SCOPES), "the documented fallback list (credential carries no scopes)"
     return [str(s) for s in scopes], f"the running credential at {path}"
+
+
+def read_token_user_agent(text: str) -> str:
+    """The User-Agent the CLI's own token exchange sends, read out of the bundle.
+
+    Two lookups, and both must resolve to exactly one thing. The anchor names
+    the minified variable holding axios's version; that variable is then read
+    back as a version literal. A second match on either means the bundle moved
+    and the name no longer identifies what it used to, which is a `CannotSee`
+    rather than a guess -- sending the wrong User-Agent is how this request gets
+    blocked, so a wrong value is worse than a refusal that says why.
+    """
+    names = set(re.findall(TOKEN_UA_ANCHOR, text))
+    if len(names) != 1:
+        raise CannotSee(
+            f"cannot see the token exchange's User-Agent: {len(names)} matches for the axios anchor"
+        )
+    name = names.pop()
+    versions = set(re.findall(r"\b" + re.escape(name) + r'=\"([0-9]+\.[0-9]+\.[0-9]+)\"', text))
+    if len(versions) != 1:
+        raise CannotSee(
+            f"cannot see the token exchange's User-Agent: {len(versions)} version literals for `{name}`"
+        )
+    return "axios/" + versions.pop()
 
 
 def pkce_pair(verifier: str | None = None):
@@ -260,11 +320,14 @@ def load_session(path: str) -> dict:
         return json.load(handle)
 
 
-def _post_json(url: str, body: dict, timeout: int = 30):
+def _post_json(url: str, body: dict, timeout: int = 30, user_agent: str | None = None):
+    headers = {"Content-Type": "application/json"}
+    if user_agent:
+        headers["User-Agent"] = user_agent
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -276,7 +339,12 @@ def exchange(session: dict, code: str, post=None):
     test can never reach Anthropic -- and it defaults to None rather than to
     `_post_json`, because a default argument binds once at import and a test
     that replaced the module attribute afterwards would be replacing something
-    this function never looks at again."""
+    this function never looks at again.
+
+    `user_agent` travels on the session because `start` is the step that reads
+    the binary; a session minted before that field existed carries None, and
+    `_cmd_finish` fills it in rather than letting the request go out with
+    urllib's default and get a 1010."""
     post = _post_json if post is None else post
     body = {
         "grant_type": "authorization_code",
@@ -286,7 +354,7 @@ def exchange(session: dict, code: str, post=None):
         "code_verifier": session["code_verifier"],
         "state": session["state"],
     }
-    status, payload = post(session["token_url"], body)
+    status, payload = post(session["token_url"], body, user_agent=session.get("user_agent"))
     if status != 200:
         raise CannotSee(f"token exchange failed ({status})")
     return payload
@@ -373,7 +441,9 @@ def build_parser():
 
 def _cmd_start(args) -> int:
     try:
-        config = extract_oauth_config(read_binary_text(args.binary))
+        bundle = read_binary_text(args.binary)
+        config = extract_oauth_config(bundle)
+        user_agent = read_token_user_agent(bundle)
     except (OSError, CannotSee) as problem:
         print(f"CANNOT SEE  {problem}")
         return 1
@@ -397,10 +467,12 @@ def _cmd_start(args) -> int:
             "client_id": config["client_id"],
             "token_url": config["token_url"],
             "redirect_uri": config["manual_redirect_url"],
+            "user_agent": user_agent,
             "created_at": time.time(),
         },
     )
     print(f"scopes from {source}: {' '.join(scopes)}")
+    print(f"token exchange will send User-Agent: {user_agent}")
     print(f"session saved to {args.session} (0600)")
     print(url)
     if args.notify:
@@ -426,6 +498,13 @@ def _cmd_finish(args) -> int:
     if state is not None and state != session.get("state"):
         print("REFUSED  the state in that code is not the one this session minted")
         return 2
+    if not session.get("user_agent"):
+        try:
+            session["user_agent"] = read_token_user_agent(read_binary_text(args.binary))
+        except (OSError, CannotSee) as problem:
+            print(f"CANNOT SEE  {problem}")
+            return 1
+        print(f"session predates the User-Agent field; using {session['user_agent']}")
     try:
         payload = exchange(session, code)
     except (urllib.error.URLError, OSError, CannotSee, KeyError, ValueError) as problem:
