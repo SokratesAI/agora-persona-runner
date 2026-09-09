@@ -51,9 +51,11 @@ import argparse
 import glob
 import os
 import signal
+import select
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def drop_bytecode(path):
@@ -170,8 +172,18 @@ def count_failures(text):
 
 DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
+#: Wide enough that a genuinely slow suite is never cut off, tight enough
+#: that a stuck one leaves the cycle a working turn. The number to beat is
+#: the 45-minute turn cap: a hang has to be killed with time left to write
+#: a journal entry, or the diagnosis dies with the cycle the same way the
+#: hang would have. Ten minutes is several times this repo's own suite and
+#: leaves at least half a turn. Raise it with --timeout-seconds rather than
+#: here if a particular command is honestly slower.
+DEFAULT_TIMEOUT_SECONDS = 10 * 60
 
-def run_bounded(command, max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES):
+
+def run_bounded(command, max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES,
+                timeout_seconds=DEFAULT_TIMEOUT_SECONDS):
     """Run the command, keeping only the head and the tail of what it prints.
 
     `subprocess.run(capture_output=True)` holds the whole of a child's
@@ -197,7 +209,23 @@ def run_bounded(command, max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES):
     stderr is merged into stdout so that one bound covers both. The two
     were concatenated anyway, and interleaved is the truer order.
 
-    Returns `(returncode, text, total_bytes, dropped_bytes)`.
+    `timeout_seconds` is the other half of the same argument and it is a
+    wall-clock deadline rather than an idle one. A mutant is code known
+    to be wrong, and the two ways that costs something are printing
+    without end (the bound above) and never finishing at all -- a
+    deleted loop increment, a lock never released, a `while True` whose
+    exit condition was the mutated line. Neither prints anything alarming
+    and neither ever returns, so without a deadline the run holds the
+    turn until the 45-minute cap kills the cycle: no reply, no journal
+    entry. Pass `None` for no deadline.
+
+    The kill is SIGKILL to the child this function started, and not to
+    any process that child started in turn. The suite here is a single
+    `pytest`, so that is the whole tree; a command that forks its own
+    workers would leave them, and that is a scope limit rather than a
+    thing to reason around.
+
+    Returns `(returncode, text, total_bytes, dropped_bytes, timed_out)`.
     """
     half = max(1, max_output_bytes // 2)
     proc = subprocess.Popen(command, stdout=subprocess.PIPE,
@@ -205,9 +233,21 @@ def run_bounded(command, max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES):
     head = bytearray()
     tail = bytearray()
     total = 0
+    timed_out = False
+    deadline = None if timeout_seconds is None \
+        else time.monotonic() + timeout_seconds
     with proc.stdout as stream:
+        fd = stream.fileno()
         while True:
-            chunk = stream.read(65536)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                if not select.select([fd], [], [], remaining)[0]:
+                    timed_out = True
+                    break
+            chunk = os.read(fd, 65536)
             if not chunk:
                 break
             total += len(chunk)
@@ -219,6 +259,8 @@ def run_bounded(command, max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES):
                 tail += chunk
                 if len(tail) > half:
                     del tail[:len(tail) - half]
+    if timed_out:
+        proc.kill()
     returncode = proc.wait()
     dropped = total - len(head) - len(tail)
     parts = [bytes(head).decode("utf-8", "replace")]
@@ -228,7 +270,7 @@ def run_bounded(command, max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES):
             "the head and the tail are kept ...\n\n"
             % (dropped, max_output_bytes))
     parts.append(bytes(tail).decode("utf-8", "replace"))
-    return returncode, "".join(parts), total, dropped
+    return returncode, "".join(parts), total, dropped, timed_out
 
 
 def main(argv=None):
@@ -245,6 +287,12 @@ def main(argv=None):
                         help="how much of the command's output to keep in "
                              "memory; the head and the tail are kept and the "
                              "middle is dropped with a line saying how much")
+    parser.add_argument("--timeout-seconds", type=float,
+                        default=DEFAULT_TIMEOUT_SECONDS,
+                        help="wall-clock deadline for the test command; a "
+                             "mutant that hangs is killed and the round is "
+                             "reported as TIMED OUT rather than graded. "
+                             "0 means no deadline")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="-- followed by the test command to run")
     args = parser.parse_args(argv)
@@ -293,8 +341,9 @@ def main(argv=None):
     print("mutating %s (1 site), snapshot at %s" % (args.file, restorer.snapshot))
     try:
         restorer.write_mutation(text.replace(args.old, args.new).encode("utf-8"))
-        returncode, output, total, dropped = run_bounded(
-            command, args.max_output_bytes)
+        returncode, output, total, dropped, timed_out = run_bounded(
+            command, args.max_output_bytes,
+            args.timeout_seconds if args.timeout_seconds else None)
         sys.stdout.write(output)
     finally:
         restorer.restore()
@@ -317,6 +366,16 @@ def main(argv=None):
               "A mutant that prints without stopping is what this bound is "
               "for; the verdict below is read off the tail."
               % (total, total - dropped))
+
+    if timed_out:
+        print("TIMED OUT — the command was still running after %g second(s) "
+              "and was killed, so this round is NOT a verdict. A killed "
+              "command exits non-zero, which reads exactly like a caught "
+              "mutation; it is not one, because the tests never finished. "
+              "Raise --timeout-seconds if the suite is genuinely this slow, "
+              "or find out what the mutation made hang."
+              % args.timeout_seconds, file=sys.stderr)
+        return 3
 
     failures = count_failures(output)
     if returncode != 0:
