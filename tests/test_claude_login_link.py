@@ -24,6 +24,12 @@ BUNDLE = (
     'CLIENT_ID:"9d1c250a-e61b-44d9-88ed-5944d1962f5e"};'
 )
 
+# The axios version literal and the header line that names it, both verbatim
+# out of the same binary. They live far apart in the real bundle; the reader
+# must find each on its own, so they are two separate strings here too.
+AXIOS = 'var Ce="1.15.2";' + 'N.set("User-Agent","axios/"+Ce,!1);'
+BUNDLE_WITH_UA = BUNDLE + AXIOS
+
 
 def test_extract_reads_the_four_constants_the_manual_flow_needs():
     config = login.extract_oauth_config(BUNDLE)
@@ -105,7 +111,7 @@ def test_pasted_code_splits_on_the_hash_the_callback_page_shows():
 def test_exchange_sends_the_fields_the_cli_sends():
     seen = {}
 
-    def fake_post(url, body):
+    def fake_post(url, body, user_agent=None):
         seen["url"] = url
         seen["body"] = body
         return 200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}
@@ -135,7 +141,7 @@ def test_exchange_raises_on_a_non_200():
         "token_url": "u", "redirect_uri": "r",
     }
     with pytest.raises(login.CannotSee):
-        login.exchange(session, "code", post=lambda url, body: (401, {}))
+        login.exchange(session, "code", post=lambda url, body, user_agent=None: (401, {}))
 
 
 def test_credential_expiries_are_epoch_ms_from_now():
@@ -199,7 +205,7 @@ def test_finish_writes_nothing_without_install(tmp_path, capsys, monkeypatch):
     })
     monkeypatch.setattr(
         login, "_post_json",
-        lambda url, body, timeout=30: (200, {
+        lambda url, body, timeout=30, user_agent=None: (200, {
             "access_token": "at", "refresh_token": "rt", "expires_in": 60,
         }),
     )
@@ -290,7 +296,7 @@ def test_finish_warns_when_a_field_the_cli_writes_cannot_be_supplied(tmp_path, c
     monkeypatch.setattr(login, "DEFAULT_CREDENTIALS", str(tmp_path / "absent.json"))
     monkeypatch.setattr(
         login, "_post_json",
-        lambda url, body, timeout=30: (200, {
+        lambda url, body, timeout=30, user_agent=None: (200, {
             "access_token": "at", "refresh_token": "rt", "expires_in": 60,
         }),
     )
@@ -304,7 +310,7 @@ def test_finish_warns_when_a_field_the_cli_writes_cannot_be_supplied(tmp_path, c
 def test_start_refuses_to_clobber_an_unspent_link(tmp_path, capsys, monkeypatch):
     """A second start silently invalidates a link already on his phone, and the
     failure lands an hour later as a state mismatch blaming the wrong thing."""
-    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE)
+    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE_WITH_UA)
     session = tmp_path / "session.json"
     creds = str(tmp_path / "absent.json")
     assert login.main(["--session", str(session), "start", "--credentials", creds]) == 0
@@ -334,9 +340,141 @@ def test_finish_says_refused_rather_than_raising_on_a_malformed_body(tmp_path, c
         "token_url": "u", "redirect_uri": "r", "created_at": 0,
     })
 
-    def blows_up(url, body, timeout=30):
+    def blows_up(url, body, timeout=30, user_agent=None):
         raise ValueError("Expecting value: line 1 column 1 (char 0)")
 
     monkeypatch.setattr(login, "_post_json", blows_up)
     assert login.main(["--session", str(session), "finish", "--code", "code#s"]) == 2
     assert "REFUSED" in capsys.readouterr().out
+
+
+def test_the_token_exchange_user_agent_is_read_out_of_the_binary():
+    """Not a table of constants -- the same rule the four OAuth URLs follow."""
+    assert login.read_token_user_agent(BUNDLE_WITH_UA) == "axios/1.15.2"
+
+
+def test_the_user_agent_reader_refuses_rather_than_guessing():
+    """Both lookups have to land on exactly one thing. A minified name that has
+    picked up a second meaning is not a name any more, and the wrong User-Agent
+    is precisely what gets this request blocked."""
+    with pytest.raises(login.CannotSee):
+        login.read_token_user_agent(BUNDLE)  # no axios anchor at all
+    with pytest.raises(login.CannotSee):
+        login.read_token_user_agent(BUNDLE_WITH_UA.replace('"axios/"+Ce', '"axios/"+Renamed'))
+    with pytest.raises(login.CannotSee):
+        login.read_token_user_agent(BUNDLE_WITH_UA + 'var Ce="9.9.9";')
+    # axios bundled twice under two minified names: two anchors, and picking
+    # the first would be a fact about layout rather than about which one the
+    # token exchange uses.
+    with pytest.raises(login.CannotSee):
+        login.read_token_user_agent(
+            BUNDLE_WITH_UA + 'var Qx="0.1.2";' + 'h.set("User-Agent","axios/"+Qx,!1);'
+        )
+
+
+def test_post_json_sends_the_user_agent_it_is_given(monkeypatch):
+    """urllib's default is `Python-urllib/3.x`, and the live token endpoint
+    answers that with `403 error code: 1010` -- Cloudflare, before Anthropic
+    sees the request at all. Measured from this pod 2026-09-09."""
+    seen = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["headers"] = dict(request.header_items())
+        return FakeResponse()
+
+    monkeypatch.setattr(login.urllib.request, "urlopen", fake_urlopen)
+
+    login._post_json("https://token.example", {}, user_agent="axios/1.15.2")
+    assert seen["headers"]["User-agent"] == "axios/1.15.2"
+
+    seen.clear()
+    login._post_json("https://token.example", {})
+    assert "User-agent" not in seen["headers"]
+
+
+def test_exchange_sends_the_session_user_agent():
+    """It travels on the session so `finish` sends what `start` was built
+    against, rather than re-reading a binary that may have rolled between."""
+    seen = {}
+
+    def fake_post(url, body, user_agent=None):
+        seen["user_agent"] = user_agent
+        return 200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}
+
+    session = {
+        "code_verifier": "v", "state": "s", "client_id": "c",
+        "token_url": "u", "redirect_uri": "r", "user_agent": "axios/1.15.2",
+    }
+    login.exchange(session, "the-code", post=fake_post)
+    assert seen["user_agent"] == "axios/1.15.2"
+
+
+def test_start_writes_the_user_agent_into_the_session(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE_WITH_UA)
+    session = tmp_path / "session.json"
+    assert login.main([
+        "--session", str(session), "start",
+        "--credentials", str(tmp_path / "absent.json"),
+    ]) == 0
+    assert json.loads(session.read_text())["user_agent"] == "axios/1.15.2"
+    assert "axios/1.15.2" in capsys.readouterr().out
+
+
+def test_finish_fills_in_a_user_agent_a_older_session_never_had(tmp_path, monkeypatch, capsys):
+    """The sessions on disk today were minted before this field existed. Sending
+    them out with urllib's default is the 1010 again, so finish reads it rather
+    than letting the request go."""
+    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE_WITH_UA)
+    session = tmp_path / "session.json"
+    login.save_session(str(session), {
+        "code_verifier": "v", "state": "s", "client_id": "c",
+        "token_url": "u", "redirect_uri": "r", "created_at": 0,
+    })
+    seen = {}
+
+    def fake_post(url, body, timeout=30, user_agent=None):
+        seen["user_agent"] = user_agent
+        return 200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}
+
+    monkeypatch.setattr(login, "_post_json", fake_post)
+    assert login.main(["--session", str(session), "finish", "--code", "code#s"]) == 0
+    assert seen["user_agent"] == "axios/1.15.2"
+    assert "predates" in capsys.readouterr().out
+
+
+def test_finish_warns_rather_than_refusing_when_the_binary_is_gone(tmp_path, monkeypatch, capsys):
+    """An unreadable binary must not cost a working exchange. CI has no
+    /usr/bin/claude and neither would a recovery box holding only the session --
+    which is exactly the disaster this flow exists for."""
+    def no_binary(path=None):
+        raise OSError(2, "No such file or directory", "/usr/bin/claude")
+
+    monkeypatch.setattr(login, "read_binary_text", no_binary)
+    session = tmp_path / "session.json"
+    login.save_session(str(session), {
+        "code_verifier": "v", "state": "s", "client_id": "c",
+        "token_url": "u", "redirect_uri": "r", "created_at": 0,
+    })
+    seen = {}
+
+    def fake_post(url, body, timeout=30, user_agent=None):
+        seen["user_agent"] = user_agent
+        return 200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}
+
+    monkeypatch.setattr(login, "_post_json", fake_post)
+    assert login.main(["--session", str(session), "finish", "--code", "code#s"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "1010" in out
+    assert seen["user_agent"] is None
