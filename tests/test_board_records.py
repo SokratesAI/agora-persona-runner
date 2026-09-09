@@ -73,7 +73,10 @@ class FakeStore:
 def migrated(board="issue", markdown=BOARD):
     """`(parse_board's answer, a store holding the same board as records)`."""
     parsed = nova_boards.parse_board(markdown)
-    registry = entity_id.new_registry()
+    # `_rev` because a store that has been migrated has a *stored* registry,
+    # and `contents` reads exactly that to tell an unmigrated store from a
+    # clean board. A fake without it is not a migrated store.
+    registry = dict(entity_id.new_registry(), _rev="1-abc")
     docs, _projects, _milestones = preflight.records(
         parsed["items"], board, registry, details=parsed["details"])
     keys = rank_key.sequence(len(parsed["captures"]))
@@ -160,3 +163,55 @@ def test_split_keeps_the_order_it_was_given():
     assert rows == [d for d in docs if d["type"] == board_document.DOCUMENT_TYPE]
     assert captures == [
         d for d in docs if d["type"] == board_document.CAPTURE_DOCUMENT_TYPE]
+
+
+def test_an_unmigrated_store_raises_instead_of_reading_as_a_clean_board():
+    """The trap this guard exists for.
+
+    `read_rows` cannot tell "never written" from "every row closed" -- both
+    are `[]` -- so without this every reader below the seam exits 0 saying
+    the board is fine. The registry is the signal, so the store here holds
+    the real documents and only the registry is absent: a guard that keyed
+    off the row count would pass this test while missing the case it names.
+    """
+    _parsed, store = migrated()
+    store.registry = entity_id.new_registry()
+    with pytest.raises(board_records.UnmigratedStore):
+        board_records.contents("issue", store=store)
+
+
+def test_the_unmigrated_guard_is_a_record_error():
+    """Because that is how it reaches the readers.
+
+    Each converted reader catches `RecordError` to mean "this sweep did not
+    see that board" and exits non-zero. If this were a sibling exception,
+    every one of them would need editing and the ones not yet converted
+    would inherit the silent answer instead of the safe one.
+    """
+    assert issubclass(board_records.UnmigratedStore, board_records.RecordError)
+
+
+def test_a_genuinely_empty_board_under_a_stored_registry_still_returns():
+    """The other half, and the reason the guard is not "no rows".
+
+    A board whose rows are all gone is a real state a reader is entitled to
+    report on. Only the registry decides.
+    """
+    _parsed, store = migrated()
+    store.docs = []
+    assert board_records.contents("issue", store=store) == {
+        "captures": [], "captureReplies": [], "items": [], "details": {}}
+
+
+def test_the_registry_is_checked_before_the_documents_are_read():
+    """An unmigrated store is the more fundamental failure of the two.
+
+    A store with no registry *and* a junk document must name the migration,
+    not the document -- otherwise the first run against an empty store
+    reports whichever unrelated thing it happened to trip over.
+    """
+    _parsed, store = migrated()
+    store.registry = entity_id.new_registry()
+    store.docs = [{"_id": "board:issue:row:1", "board": "issue", "type": "nonsense"}]
+    with pytest.raises(board_records.UnmigratedStore):
+        board_records.contents("issue", store=store)

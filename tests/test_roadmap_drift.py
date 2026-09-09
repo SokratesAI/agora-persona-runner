@@ -50,8 +50,13 @@ def _row(board, number, status="⚪ Backlog", done=False):
 
 
 def _store(*docs):
-    """A store holding exactly these rows and an empty registry."""
-    return FakeStore(docs, entity_id.new_registry())
+    """A store holding exactly these rows and a *stored* empty registry.
+
+    `_rev` is what makes it stored, and `board_records.contents` refuses a
+    registry without one -- an unmigrated store answers `[]` for every board
+    and would otherwise read here as a board with no drift.
+    """
+    return FakeStore(docs, dict(entity_id.new_registry(), _rev="1-abc"))
 
 
 def _judge(roadmap, store):

@@ -42,6 +42,17 @@ class RecordError(ValueError):
     """A stored document contradicts the board it was read from."""
 
 
+class UnmigratedStore(RecordError):
+    """The store has never been written, so it cannot answer for a board.
+
+    It subclasses `RecordError` on purpose. Every reader issue #203 moves
+    already catches that to mean *"this sweep did not see that board"* and
+    exits non-zero, which is the right answer here too -- so the guard
+    reaches all twenty-one without twenty-one edits, and a reader that
+    forgets it inherits the safe behaviour rather than the silent one.
+    """
+
+
 def split_documents(docs):
     """One board's documents -> `(rows, captures)`, order preserved.
 
@@ -97,9 +108,25 @@ def contents(board, store=board_store):
 
     `store` is injected so a test can hand over a fake without a CouchDB;
     it needs `read_rows` and `read_registry`.
+
+    **An unmigrated store raises rather than reading as a clean board.**
+    `read_rows` answers `[]` for a board that has never been written and for
+    a board whose every row was closed, and those are the same value; every
+    reader below this seam would print "no drift", rank nothing, and exit 0
+    on either. The registry tells them apart, because `board_migrate` writes
+    it on every run and `read_registry` only omits `_rev` when the document
+    is genuinely absent -- so "no revision" means *nothing has ever been
+    migrated*, while an empty board under a stored registry is a real,
+    reportable empty board and still returns.
     """
-    rows, captures = split_documents(store.read_rows(board))
     registry = store.read_registry()
+    if registry.get("_rev") is None:
+        raise UnmigratedStore(
+            "the record store has never been written, so it cannot answer "
+            f"for board {board!r}: the registry document has no revision. Run "
+            "`python3 -m tools.board_migrate --board <board> --file <md> "
+            "--apply` first")
+    rows, captures = split_documents(store.read_rows(board))
     items = []
     for doc in rows:
         project_name, milestone_name = _names(registry, doc)
