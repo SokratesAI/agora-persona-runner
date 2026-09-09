@@ -737,6 +737,55 @@ def test_degraded_is_never_excused_by_a_suspended_cronjob():
     assert status == 2
 
 
+def test_a_cronjob_that_declares_no_suspend_field_is_not_read_as_paused():
+    """The reader promises absent and false are one answer. Nothing asked.
+
+    Every test above hands it an explicit `False`, so the branch that
+    turns a missing key into "running" was covered by nothing, and
+    defaulting that `.get` to `True` passes all 57 of them -- measured
+    before this test was written.
+
+    Where the two forms live is worth being exact about, because it
+    decides how alarming this is. **The API server defaults the field and
+    serves it on every object**, so a `kubectl get -o json` here does not
+    produce an absent one: measured 2026-09-09, 17 CronJobs, all
+    seventeen carrying `suspend`, 15 of them `false` and 2 `true`. The
+    absence is real one step upstream, in the manifests those objects are
+    built from -- most of `platform-config/cronjobs/*.yaml` never mentions
+    the field -- so this pins a documented invariant rather than a shape
+    today's caller can hand it. If it were the live shape, reading absent
+    as suspended would excuse a `Suspended` Application whose children
+    were all running: the check going quiet on a real fault.
+
+    The suspended CronJob in the same list is the precondition, not
+    decoration -- without it a reader that returned nothing at all would
+    satisfy both negatives and this test would pass on a dead tool.
+    """
+    runner = fake_kubectl(cronjobs=[
+        cronjob("no-field", suspend=None),
+        cronjob("running", suspend=False),
+        cronjob("paused", suspend=True),
+    ])
+    paused, why = argocd_health.read_suspended_cronjobs(runner)
+    assert why is None
+    assert paused == {("agents", "paused")}
+
+
+def test_suspended_still_raises_when_the_child_declares_no_suspend_field():
+    """The same absence, one layer up, through `report`.
+
+    A `Suspended` Application whose only CronJob child never asked to be
+    suspended is exactly the paused-Deployment case the excuse is not
+    allowed to cover.
+    """
+    lines, status = report_for(
+        [app("x", health="Suspended", cronjobs=[("agents", "nightly")])],
+        [],
+        cronjobs=[cronjob("nightly", suspend=None)])
+    assert status == 2
+    assert any(l.startswith("UNHEALTHY  x: Suspended") for l in lines)
+
+
 def test_main_does_not_read_cronjobs_when_nothing_is_suspended():
     # The read is a cluster-wide query a restricted account can be refused;
     # asking for it on a clean cluster would turn a green answer into
