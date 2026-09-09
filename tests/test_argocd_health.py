@@ -586,3 +586,69 @@ def test_an_unreadable_stamp_costs_the_age_and_not_the_remedy():
     assert any("the remedy is a cluster write this loop is refused" in l
                for l in lines)
     assert not any("it has been failing for" in l for l in lines)
+
+
+# --- Cycle 1270: `Progressing` with no time bound read as `ok` forever ---
+
+_NOW = datetime.datetime(2026, 9, 9, 8, 30, tzinfo=datetime.timezone.utc)
+
+
+def _progressing_app(since):
+    return {"name": "sokratesai-infra", "sync": "Synced", "health": "Progressing",
+            "since": since, "cronjobs": [], "sealed": []}
+
+
+def test_a_rollout_still_inside_the_grace_is_not_a_finding():
+    """The reason `Progressing` was excluded: a cycle's own deploy."""
+    app = _progressing_app("2026-09-09T08:25:00Z")  # 5 minutes
+    lines, status = argocd_health.report([app], {}, _NOW)
+    assert status == 0
+    assert any(line.startswith("ok      sokratesai-infra") for line in lines)
+    assert not any("STUCK PROGRESSING" in line for line in lines)
+
+
+def test_a_rollout_progressing_for_22_hours_raises():
+    """The live state on 2026-09-09: Progressing since 09-08 10:28Z."""
+    app = _progressing_app("2026-09-08T10:28:12Z")
+    lines, status = argocd_health.report([app], {}, _NOW)
+    assert status == 2
+    stuck = [line for line in lines if line.startswith("STUCK PROGRESSING")]
+    assert len(stuck) == 1
+    assert "sokratesai-infra" in stuck[0]
+    assert "22h" in stuck[0]
+    assert "2026-09-08T10:28:12Z" in stuck[0]
+    assert not any(line.startswith("ok      sokratesai-infra") for line in lines)
+
+
+def test_the_boundary_is_the_grace_itself_not_a_nearby_number():
+    """Exactly at the grace is still in flight; a second past it is not.
+
+    Pinned because the whole verdict is one comparison, and `<` and `<=`
+    read identically at every value except this one.
+    """
+    grace = argocd_health.PROGRESSING_GRACE_SECONDS
+    at = _NOW - datetime.timedelta(seconds=grace)
+    just_past = _NOW - datetime.timedelta(seconds=grace + 1)
+    stamp = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert argocd_health.report([_progressing_app(stamp(at))], {}, _NOW)[1] == 0
+    assert argocd_health.report([_progressing_app(stamp(just_past))], {}, _NOW)[1] == 2
+
+
+def test_an_unreadable_transition_time_is_not_reported_as_stuck():
+    """A clock problem must not be reported as a rollout problem — and it
+    must not read as measured either, so the age still prints."""
+    for since in ("", "not-a-timestamp", "2026-09-09T09:00:00Z"):  # last is future
+        lines, status = argocd_health.report([_progressing_app(since)], {}, _NOW)
+        assert status == 0, since
+        assert not any("STUCK PROGRESSING" in line for line in lines), since
+
+
+def test_a_healthy_app_never_trips_the_new_branch():
+    """The control: `Healthy` carries a lastTransitionTime older than any
+    grace on every app in this cluster, so a bound applied to the wrong
+    field would fire on all fourteen of them."""
+    app = {"name": "marcus-config", "sync": "Synced", "health": "Healthy",
+           "since": "2026-07-01T00:00:00Z", "cronjobs": [], "sealed": []}
+    lines, status = argocd_health.report([app], {}, _NOW)
+    assert status == 0
+    assert any(line.startswith("ok      marcus-config") for line in lines)
