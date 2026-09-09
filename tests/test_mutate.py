@@ -10,6 +10,7 @@ ran, and both of those have shipped in this journal as evidence.
 
 import os
 import sys
+import time
 
 import pytest
 
@@ -169,8 +170,9 @@ def _noisy(byte_count, exit_code=0):
 
 
 def test_output_under_the_bound_is_kept_whole():
-    code, text, total, dropped = mutate.run_bounded(
+    code, text, total, dropped, timed_out = mutate.run_bounded(
         [sys.executable, "-c", "print('hello')"], max_output_bytes=4096)
+    assert timed_out is False
     assert code == 0
     assert dropped == 0
     assert text == "hello\n"
@@ -179,8 +181,9 @@ def test_output_under_the_bound_is_kept_whole():
 
 def test_output_over_the_bound_is_truncated_not_held():
     """The whole point: 200x the bound printed, and the bound holds."""
-    code, text, total, dropped = mutate.run_bounded(
+    code, text, total, dropped, timed_out = mutate.run_bounded(
         _noisy(200_000), max_output_bytes=1000)
+    assert timed_out is False
     assert code == 0
     assert total > 200_000
     assert dropped > 199_000
@@ -218,3 +221,80 @@ def test_stderr_is_captured_too(repo, capsys):
                "import sys;sys.stderr.write('boom\\n');raise SystemExit(1)")
     assert code == 0
     assert "boom" in capsys.readouterr().out
+
+
+def test_a_command_that_hangs_is_killed_rather_than_held():
+    """The failure this deadline is for: a mutant that never returns.
+
+    Without it `run_bounded` blocks in `os.read` until the 45-minute turn
+    cap kills the whole cycle -- no reply, no journal entry, which is one
+    of the shapes idea #267 is counting.
+    """
+    started = time.monotonic()
+    code, text, total, dropped, timed_out = mutate.run_bounded(
+        [sys.executable, "-c", "import time;time.sleep(120)"],
+        timeout_seconds=1.0)
+    elapsed = time.monotonic() - started
+    assert timed_out is True
+    assert elapsed < 30, "it waited for the child instead of killing it"
+    assert code != 0
+
+
+def test_a_command_that_prints_without_stopping_hits_the_same_deadline():
+    """The deadline is wall-clock, not idle.
+
+    A runaway that prints keeps the pipe readable forever, so an
+    idle-timeout would never fire on the very case the memory bound was
+    built for. Only a deadline covers both.
+    """
+    started = time.monotonic()
+    code, text, total, dropped, timed_out = mutate.run_bounded(
+        [sys.executable, "-c",
+         "import sys\nwhile True: sys.stdout.write('x' * 4096)"],
+        max_output_bytes=1000, timeout_seconds=1.0)
+    elapsed = time.monotonic() - started
+    assert timed_out is True
+    assert elapsed < 30
+    assert total > 100_000, "the child was never actually printing"
+
+
+def test_a_run_inside_the_deadline_is_not_reported_as_timed_out():
+    """The precondition for the two tests above: this deadline can pass."""
+    code, text, total, dropped, timed_out = mutate.run_bounded(
+        [sys.executable, "-c", "print('quick')"], timeout_seconds=60)
+    assert timed_out is False
+    assert code == 0
+    assert text == "quick\n"
+
+
+def test_a_timed_out_round_is_not_graded_as_caught(repo, capsys):
+    """A killed command exits non-zero and that is NOT a caught mutation.
+
+    This is the whole reason the flag exists rather than the exit code
+    being read: `proc.kill()` gives 137, `count_failures` finds nothing,
+    and the old grading would have printed CAUGHT -- a control that
+    agrees with you because it never ran.
+    """
+    code = mutate.main(["--file", "subject.py", "--old", "True",
+                        "--new", "False", "--timeout-seconds", "1",
+                        "--", sys.executable, "-c",
+                        "import time;time.sleep(120)"])
+    out = capsys.readouterr()
+    assert code == 3
+    assert "TIMED OUT" in out.err
+    assert "CAUGHT" not in out.out
+    assert "SURVIVED" not in out.out
+    # The file still has to come back, same as any other round.
+    assert (repo / "subject.py").read_text() == TARGET
+
+
+def test_zero_seconds_means_no_deadline(repo, capsys):
+    """The escape hatch, because a genuinely slow suite must stay runnable."""
+    code = mutate.main(["--file", "subject.py", "--old", "True",
+                        "--new", "False", "--timeout-seconds", "0",
+                        "--", sys.executable, "-c",
+                        "import time;time.sleep(0.2);raise SystemExit(1)"])
+    out = capsys.readouterr()
+    assert code == 0
+    assert "CAUGHT" in out.out
+    assert "TIMED OUT" not in out.err
