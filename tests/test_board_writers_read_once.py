@@ -27,6 +27,14 @@ import importlib
 
 import pytest
 
+# The column order is `parse_board`'s, which reads by POSITION and ignores
+# the header text: # | Item | Status | Updated | Priority | Project | Size |
+# Milestone. This fixture spelled a different order until Cycle 1317 and
+# every row in it parsed shifted -- #100's status read as `Nova` and its
+# project as `08-24`. Nothing failed, because every test in here asserts on
+# a change rather than on a value, which is exactly how a misaligned
+# fixture survives: it is wrong in the same way on both sides of the
+# comparison.
 BOARD = """---
 type: log
 ---
@@ -39,10 +47,10 @@ type: log
 
 ## Board
 
-| # | Item | Project | Milestone | Status | Updated | Priority | Size |
-|---|------|---------|-----------|--------|---------|----------|------|
-| [[#100 — Weekly work\\|100]] | Weekly work | Nova | Cost | 🟡 In progress | 08-24 | 🟠 High | 🅼 Medium |
-| [[#104 — Metered API\\|104]] | Metered API | Nova | Cost | ⚪ Backlog | 08-24 | 🟠 High | 🅼 Medium |
+| # | Item | Status | Updated | Priority | Project | Size | Milestone |
+|---|------|--------|---------|----------|---------|------|-----------|
+| [[#100 — Weekly work\\|100]] | Weekly work | 🟡 In progress | 08-24 | 🟠 High | Nova | 🅼 Medium | Cost |
+| [[#104 — Metered API\\|104]] | Metered API | ⚪ Backlog | 08-24 | 🟠 High | Nova | 🅼 Medium | Cost |
 
 ## Done
 
@@ -167,6 +175,14 @@ def test_main_refuses_a_write_that_ate_a_bullet(tmp_path, monkeypatch, module_na
 
 
 @pytest.mark.parametrize("module_name,args", WRITERS)
+def test_main_refuses_a_write_that_grew_a_row_from_nowhere(
+    tmp_path, monkeypatch, module_name, args
+):
+    """The row-count half, which nothing exercised in the adding direction."""
+    assert _damage(module_name, args, tmp_path, monkeypatch, _add_a_row) == 1
+
+
+@pytest.mark.parametrize("module_name,args", WRITERS)
 def test_main_refuses_a_write_that_moved_a_row_it_was_not_asked_about(
     tmp_path, monkeypatch, module_name, args
 ):
@@ -186,8 +202,14 @@ def test_main_refuses_a_write_that_moved_a_row_it_was_not_asked_about(
 # subject. Each asserts it actually changed something, so a fixture edit that
 # breaks the substring fails the test instead of quietly making it vacuous.
 BULLET = "- 2026-08-26 (Cycle 480) — a bullet nothing here may touch\n"
-OPEN_ROW = "| Metered API | Nova | Cost | ⚪ Backlog |"
-MOVED_ROW = "| Metered API | Nova | Cost | 🟡 In progress |"
+# It moves the RATING and not the status, and that is the whole strength of
+# it. `board_row.check_from_contents` compared only `title` and `status` on a
+# pre-existing row until Cycle 1317, so a status damage is caught by the
+# narrow guard and the wide one alike and proves nothing about which of the
+# two is in the file. Measured: with the widening reverted, a status damage
+# leaves every test in here green and a rating damage fails this one.
+OPEN_ROW = "| Metered API | ⚪ Backlog | 08-24 | 🟠 High |"
+MOVED_ROW = "| Metered API | ⚪ Backlog | 08-24 | 🔴 Immediately |"
 
 
 def _eat_a_bullet(written):
@@ -198,6 +220,31 @@ def _eat_a_bullet(written):
 
 def _move_another_row(written):
     damaged = written.replace(OPEN_ROW, MOVED_ROW)
+    assert damaged != written, "the fixture's second row is not in the written board"
+    return damaged
+
+
+# A row that appeared out of nowhere, which is the damage NONE of these
+# guards had a test for. Every one of them owns a row-count check, and
+# deleting `board_status`' left the whole board suite green (mutation run,
+# Cycle 1317): a row that fell OFF is reported by the per-row loop as well,
+# so the count check is load-bearing for exactly one direction and that
+# direction was untested. The five single-cell writers expect no change and
+# `board_row` expects +1, so one extra row fails both.
+ADDED_ROW = (
+    "| [[#999 — Smuggled in\\|999]] | Smuggled in | ⚪ Backlog | 08-24 "
+    "| 🟠 High | Nova | 🅼 Medium | Cost |\n"
+)
+
+
+def _add_a_row(written):
+    # Inserted as a whole LINE after #104's whole line. Splicing after
+    # `OPEN_ROW` instead cuts that row's remaining cells onto the new line,
+    # so the guard reports #104 as damaged and the count check it is aiming
+    # at never has to fire -- a green test that measured the wrong thing.
+    lines = written.splitlines(keepends=True)
+    at = next(i for i, line in enumerate(lines) if OPEN_ROW in line)
+    damaged = "".join(lines[: at + 1] + [ADDED_ROW] + lines[at + 1 :])
     assert damaged != written, "the fixture's second row is not in the written board"
     return damaged
 
@@ -213,7 +260,7 @@ def _move_another_row(written):
 # live here rather than beside their tools.
 
 UNTAG_BOARD = BOARD.replace(
-    "| Metered API | Nova | Cost |", "| (Project: NAS) Metered API | Nova | Cost |"
+    "| Metered API |", "| (Project: NAS) Metered API |"
 ).replace("#104 — Metered API\\|104", "#104 — (Project: NAS) Metered API\\|104")
 
 
@@ -289,24 +336,28 @@ def test_board_row_main_refuses_a_write_that_ate_a_bullet(tmp_path, monkeypatch)
     assert _damage_board_row(tmp_path, monkeypatch, _eat_a_bullet) == 1
 
 
-def test_board_row_main_refuses_a_write_that_renamed_another_row(tmp_path, monkeypatch):
+def test_board_row_main_refuses_a_write_that_grew_a_row_from_nowhere(
+    tmp_path, monkeypatch
+):
+    """`board_row` expects exactly +1, so a second new row is +2 and refused."""
+    assert _damage_board_row(tmp_path, monkeypatch, _add_a_row) == 1
+
+
+def test_board_row_main_refuses_a_write_that_moved_a_row_it_was_not_asked_about(
+    tmp_path, monkeypatch
+):
     """The other-rows half, driven through `main` for the same reason.
 
-    It renames rather than re-statuses, because `board_row.check_from_contents`
-    compares only `title` and `status` on the rows that were already there
-    -- the five writers above compare the whole row, so `_move_another_row`
-    is enough for them and is not enough here. That narrowness is
-    pre-existing and filed rather than widened in this commit; the test
-    that has to pass is the one about which two documents `main` hands the
-    guard, and a damage the guard does not cover proves nothing about that.
+    This used to rename the other row instead, because
+    `board_row.check_from_contents` compared only `title` and `status` on a
+    pre-existing row where the five writers above compare the whole row
+    dict. That narrowness is gone (Cycle 1317), so this runs the *same*
+    `_move_another_row` damage as the parametrised test above -- and that
+    damage now moves a rating rather than a status, which is a cell the old
+    narrow guard could not see. One damage for all six writers, and it is
+    the widening it fails on.
     """
-
-    def rename_the_other_row(written):
-        damaged = written.replace("| Metered API |", "| Renamed |")
-        assert damaged != written, "the fixture's second row is not in the written board"
-        return damaged
-
-    assert _damage_board_row(tmp_path, monkeypatch, rename_the_other_row) == 1
+    assert _damage_board_row(tmp_path, monkeypatch, _move_another_row) == 1
 
 
 def test_untag_reads_the_document_once_per_version(tmp_path, monkeypatch):
@@ -364,8 +415,8 @@ def test_untag_main_refuses_a_write_that_moved_a_row_it_was_not_asked_about(
 
     def move_the_untouched_row(written):
         damaged = written.replace(
-            "| Weekly work | Nova | Cost | 🟡 In progress |",
-            "| Weekly work | Nova | Cost | ⚪ Backlog |",
+            "| Weekly work | 🟡 In progress | 08-24 |",
+            "| Weekly work | ⚪ Backlog | 08-24 |",
         )
         assert damaged != written, "the fixture's first row is not in the written board"
         return damaged

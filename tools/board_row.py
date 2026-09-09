@@ -82,8 +82,19 @@ def check_from_contents(old, new, old_notes, new_notes, number, title):
     Same shape as `roll_done_captures.check` and for the same reason: this
     edits a document the site parses, so the test that matters is what
     `parse_board` says afterwards, not what the string looks like. Every
-    row that was on the board stays on it with the same title and status,
-    and the new number is present exactly once.
+    row that was on the board stays on it **unchanged in every cell**, and
+    the new number is present exactly once.
+
+    That used to read "with the same title and status", and those were the
+    only two cells it compared -- so a write that moved another row's
+    rating, size, milestone, project or date passed the guard silently.
+    Measured on the fixture in `tests/test_board_row.py`: flipping #2 from
+    `🟠 High` to `🔴 Immediately` alongside a clean add returned no
+    problems at all. The five single-cell writers (`board_status` and its
+    four siblings) have always compared the whole row dict with `now !=
+    was`; this one was the outlier, and the reason is that `add_row` only
+    ever appends, so there is no cell on an existing row it is allowed to
+    touch and nothing to exempt.
 
     **The bullet stream is checked with `parse_notes`, not with
     `parse_board`'s `captures`, and the difference is the whole guard.**
@@ -121,7 +132,7 @@ def check_from_contents(old, new, old_notes, new_notes, number, title):
         now = new_by_number.get(was["number"])
         if now is None:
             problems.append(f"#{was['number']} fell off the board")
-        elif now["title"] != was["title"] or now["status"] != was["status"]:
+        elif now != was:
             problems.append(f"#{was['number']} changed underneath the new row")
 
     if old_notes != new_notes:
