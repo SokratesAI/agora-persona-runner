@@ -9,7 +9,21 @@ is specifically that the text moved verbatim.
 """
 
 from agora_runner.nova_boards import parse_board
-from tools.roll_done_captures import PROCESSED_HEADING, check, plan, rewrite
+import tools.roll_done_captures as roll_done_captures
+from tools.roll_done_captures import (
+    PROCESSED_HEADING, check_from_contents, plan, rewrite,
+)
+
+
+def check(before, after, moved):
+    """The old markdown-shaped signature, kept here and not in the tool.
+
+    `check_from_contents` takes the two parsed boards on purpose (#203)
+    and carries no door, so the parsing every existing test used to get
+    for free lives in the test file that wants it.
+    """
+    return check_from_contents(
+        parse_board(before), parse_board(after), before, after, moved)
 
 BOARD = """---
 type: board
@@ -259,3 +273,91 @@ def test_an_indented_bullet_with_nothing_above_it_is_still_his():
     )
     kept, _ = plan(stray)
     assert "  - a stray indented line" in [b[0] for b in kept]
+
+
+def _run(tmp_path, extra=()):
+    """One successful `--dry-run` roll of both finished captures."""
+    board = tmp_path / "issues.md"
+    board.write_text(BOARD, encoding="utf-8")
+    return roll_done_captures.main(
+        ["--file", str(board), "--dry-run", *extra])
+
+
+def test_main_reads_each_version_once(tmp_path, monkeypatch):
+    """Two versions of one document, one parse each -- #203's read-once rule.
+
+    `check` used to take the two markdown strings and parse both itself,
+    which on a string is free and on the record store is a round trip the
+    guard takes behind `main`'s back.
+    """
+    count = {"n": 0}
+    real = roll_done_captures.parse_board
+
+    def counting(markdown):
+        count["n"] += 1
+        return real(markdown)
+
+    monkeypatch.setattr(roll_done_captures, "parse_board", counting)
+    assert _run(tmp_path) == 0
+    assert count["n"] == 2
+
+
+def test_the_guard_cannot_parse_a_document(tmp_path, monkeypatch):
+    """`check_from_contents` is handed what it compares; it parses nothing.
+
+    The count above is satisfied by a guard that parses once and a `main`
+    that parses once, which is not the property that survives the
+    switchover. It still takes both raw documents on purpose -- the
+    capture-line half has no records-shaped question -- so what this pins
+    is that it never parses one.
+    """
+    guard = roll_done_captures.check_from_contents
+
+    def no_parsing_here(*a, **k):
+        monkeypatch.setattr(roll_done_captures, "parse_board", _refuse)
+        return guard(*a, **k)
+
+    monkeypatch.setattr(roll_done_captures, "check_from_contents", no_parsing_here)
+    assert _run(tmp_path) == 0
+
+
+def _refuse(*a, **k):
+    raise AssertionError("the guard parsed a document it was handed parsed")
+
+
+def _damaged_main(tmp_path, monkeypatch, damage):
+    real = roll_done_captures.rewrite
+
+    def damaged(markdown):
+        after, moved = real(markdown)
+        return damage(after), moved
+
+    monkeypatch.setattr(roll_done_captures, "rewrite", damaged)
+    return _run(tmp_path)
+
+
+def test_main_refuses_a_write_that_moved_one_of_his_rows(tmp_path, monkeypatch):
+    """The guard driven through `main`, not called as a function.
+
+    Every other test of it builds both sides itself, so nothing proved
+    `main` hands it the right two documents -- a `main` that parsed
+    `after` twice compares a board to itself and can never report
+    anything, while every direct test stays green.
+    """
+    assert _damaged_main(
+        tmp_path, monkeypatch,
+        lambda t: t.replace("| ⚪ Backlog | 08-20 |", "| ✅ Done | 08-20 |")) == 1
+
+
+def test_main_refuses_a_write_that_changed_one_of_his_write_ups(tmp_path, monkeypatch):
+    """The `# Details` half, through `main` for the same reason."""
+    assert _damaged_main(
+        tmp_path, monkeypatch,
+        lambda t: t.replace("Every letter dismisses it.", "Something else.")) == 1
+
+
+def test_main_refuses_a_write_that_lost_a_capture_line(tmp_path, monkeypatch):
+    """The raw-line half, which is why the guard still takes both texts."""
+    assert _damaged_main(
+        tmp_path, monkeypatch,
+        lambda t: t.replace("DONE (Cycle 9): answered on the row\n", "")) == 1

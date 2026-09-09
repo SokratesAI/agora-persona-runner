@@ -195,15 +195,29 @@ def rewrite(markdown):
     return "\n".join(parts), len(moved)
 
 
-def check(before, after, moved):
+def check_from_contents(old, new, before, after, moved):
     """Every way this rewrite could go wrong, asked of the reader.
 
     A list of complaints, empty when the two documents differ in exactly
     the way they were meant to. `parse_board` is the function the app
     renders from, so asking it is the only check that can see a write-up
     that silently stopped being part of its own heading.
+
+    Takes the two parsed boards rather than parsing them itself, the same
+    split #203 made in `board_capture`, `board_row`, `close_done_captures`
+    and the five single-cell writers: once the source is the record store
+    a parse the guard takes for itself is a second round trip a concurrent
+    write can land between, and this one would then be checking the rows
+    of one version of the board against the captures of another.
+
+    It still takes both raw documents, and that is deliberate rather than
+    an unfinished conversion. The last half of this guard compares the
+    capture *lines*, because a bullet dropped between the two sections is
+    a clean removal to `parse_board` and only the text shows it -- there
+    is no records-shaped question that asks it, and the generated markdown
+    view is what it is about. `main` reads each version once and hands
+    both forms of it here.
     """
-    old, new = parse_board(before), parse_board(after)
     problems = []
     if old["items"] != new["items"]:
         problems.append("board rows changed")
@@ -262,7 +276,8 @@ def main(argv=None):
         print("nothing to move")
         return 0
 
-    problems = check(before, after, moved)
+    problems = check_from_contents(
+        parse_board(before), parse_board(after), before, after, moved)
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
