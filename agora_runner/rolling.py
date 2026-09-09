@@ -347,6 +347,23 @@ def _archive_header(archive, spec):
     return header
 
 
+def _utf8_len(text):
+    """Bytes, not characters -- what `wc -c` and the vault both count.
+
+    The summary line below says "bytes" and used to print `len(text)`,
+    which is characters. The digest archive is full of em-dashes and
+    emoji, so on 2026-09-09 the two disagreed by 8,405: the tool read
+    the 1,456,801-byte archive and called it 1,448,396. Three cycles in
+    a row read that as the roll silently losing text, refused to write,
+    and handed the refusal on as a standing warning -- so the digest sat
+    at 15 lines instead of 12 and grew while the tool that trims it was
+    working correctly. A shrinking archive really is always the bug, so
+    the number a cycle checks that rule against has to be in the unit it
+    compares it in.
+    """
+    return len(text.encode("utf-8"))
+
+
 def dedup(entries):
     """Ordered unique -- first occurrence wins, later copies dropped."""
     seen, out = set(), []
@@ -511,8 +528,8 @@ def run(spec, argv=None, description=None):
     moved_noun = spec.noun[:-1] if moved == 1 and spec.noun.endswith("s") else spec.noun
     print(
         f"verified: {moved} {moved_noun} roll off, "
-        f"{len(live)} -> {len(new_live)} bytes live, "
-        f"{len(archive)} -> {len(new_archive)} bytes archived"
+        f"{_utf8_len(live)} -> {_utf8_len(new_live)} bytes live, "
+        f"{_utf8_len(archive)} -> {_utf8_len(new_archive)} bytes archived"
     )
     if args.dry_run:
         print("--dry-run: nothing written")
