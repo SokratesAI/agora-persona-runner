@@ -494,3 +494,169 @@ def test_a_refused_capture_read_raises_rather_than_reading_as_empty(monkeypatch)
                         lambda *a, **k: (500, {"error": "boom"}))
     with pytest.raises(board_store.StoreError):
         board_store.read_captures("issue")
+
+
+def _capture(board, capture_id, text="His capture", **fields):
+    return board_document.to_capture_document(text, board, capture_id, **fields)
+
+
+def test_write_captures_stores_a_capture_in_the_capture_range(couch):
+    """The migration's write path. Asserted through the fake's key range
+    rather than its dict, because the whole point of the second function is
+    which range the document lands in."""
+    doc = _capture("issue", "cap_1")
+    assert board_store.write_captures("issue", [doc])["written"] == 1
+
+    stored = list(couch.docs)
+    assert stored == [board_document.capture_document_id("issue", "cap_1")]
+    cap_start, cap_end = _range_of(board_store._capture_range_query("issue"))
+    assert cap_start <= stored[0] <= cap_end
+    assert board_store.read_captures("issue")[0]["text"] == "His capture"
+
+
+def test_writing_the_rows_does_not_tombstone_the_captures(couch):
+    """`write_rows`' prune is the reason captures got their own key range,
+    and this is that reason as a test: a migration that writes the rows of
+    a board the owner has written captures on must leave them alone."""
+    capture = _capture("issue", "cap_1")
+    couch.docs = {capture["_id"]: dict(capture, _rev="1-a")}
+
+    board_store.write_rows("issue", [_row("issue", 41, rank="V")])
+
+    assert capture["_id"] in couch.docs
+
+
+def test_writing_the_captures_does_not_tombstone_the_rows(couch):
+    """And the other way, which is the half a shared writer would break:
+    `write_captures` prunes its own range only."""
+    row = _row("issue", 41, rank="V")
+    couch.docs = {row["_id"]: dict(row, _rev="1-a")}
+
+    board_store.write_captures("issue", [_capture("issue", "cap_1")])
+
+    assert row["_id"] in couch.docs
+
+
+def test_a_capture_the_owner_deleted_is_tombstoned(couch):
+    gone = _capture("issue", "cap_1", text="Deleted from his board")
+    kept = _capture("issue", "cap_2", text="Still there")
+    couch.docs = {doc["_id"]: dict(doc, _rev="1-a") for doc in (gone, kept)}
+
+    summary = board_store.write_captures("issue", [kept])
+
+    assert summary["deleted"] == 1
+    assert list(couch.docs) == [kept["_id"]]
+
+
+def test_write_captures_prune_false_leaves_one_the_caller_did_not_send(couch):
+    held = _capture("issue", "cap_1")
+    couch.docs = {held["_id"]: dict(held, _rev="1-a")}
+
+    board_store.write_captures("issue", [_capture("issue", "cap_2")], prune=False)
+
+    assert held["_id"] in couch.docs
+
+
+def test_a_capture_write_never_prunes_the_other_board(couch):
+    theirs = _capture("idea", "cap_1", text="On the idea board")
+    couch.docs = {theirs["_id"]: dict(theirs, _rev="1-a")}
+
+    board_store.write_captures("issue", [_capture("issue", "cap_1")])
+
+    assert theirs["_id"] in couch.docs
+
+
+def test_an_unchanged_capture_is_not_written_again(couch):
+    doc = _capture("issue", "cap_1")
+    board_store.write_captures("issue", [doc])
+    couch.bulk_calls.clear()
+
+    summary = board_store.write_captures("issue", [doc])
+
+    assert (summary["written"], summary["unchanged"]) == (0, 1)
+    assert couch.bulk_calls == []
+
+
+def test_a_changed_capture_is_written_with_the_stored_revision(couch):
+    """He edits a capture's words; the id stays and the revision must ride
+    along, or CouchDB refuses the update as a conflict."""
+    board_store.write_captures("issue", [_capture("issue", "cap_1")])
+
+    board_store.write_captures(
+        "issue", [_capture("issue", "cap_1", text="What he meant")])
+
+    assert couch.bulk_calls[-1][0]["_rev"] == "2-b"
+    assert board_store.read_captures("issue")[0]["text"] == "What he meant"
+
+
+def test_a_row_document_is_refused_by_the_capture_writer(couch):
+    """It would land under `board:` and `write_rows` would then tombstone
+    it, so the loss would happen a whole migration later."""
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_captures("issue", [_row("issue", 41)])
+    assert not couch.docs
+
+
+def test_a_capture_document_is_refused_by_the_row_writer(couch):
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_rows("issue", [_capture("issue", "cap_1")])
+    assert not couch.docs
+
+
+def test_a_capture_from_the_wrong_board_is_refused(couch):
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_captures("issue", [_capture("idea", "cap_1")])
+    assert not couch.docs
+
+
+def test_write_captures_refuses_a_board_it_does_not_know(couch):
+    """`issues` is the filename; `issue` is the board. The plural is the
+    mistake every converted reader made, and here it must not open a third
+    key range."""
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_captures("issues", [])
+    assert not couch.docs
+
+
+@pytest.mark.parametrize("writer, docs", [
+    ("write_captures", lambda: [_capture("issue", "cap_1", text="First"),
+                                _capture("issue", "cap_1", text="Second")]),
+    ("write_rows", lambda: [_row("issue", 41, rank="V"),
+                            _row("issue", 41, rank="M")]),
+])
+def test_one_id_twice_in_a_batch_is_refused_rather_than_half_stored(
+        couch, writer, docs):
+    """`_bulk_docs` given the same id twice keeps one of the two and the
+    caller cannot tell which, so the batch is refused before the request.
+    For a capture that is one of his bullets vanishing inside the migration
+    that exists to preserve it."""
+    with pytest.raises(board_store.StoreError) as caught:
+        getattr(board_store, writer)("issue", docs())
+
+    assert "duplicate" in str(caught.value)
+    assert couch.bulk_calls == []
+    assert not couch.docs
+
+
+def test_a_refused_capture_write_raises(monkeypatch):
+    monkeypatch.setattr(ticket_docs, "_req",
+                        lambda *a, **k: (500, {"error": "boom"}))
+    with pytest.raises(board_store.StoreError):
+        board_store.write_captures("issue", [_capture("issue", "cap_1")])
+
+
+def test_a_capture_bulk_write_that_reports_an_error_is_not_reported_as_clean(
+        couch, monkeypatch):
+    """`failures` is what `board_migrate` refuses a partial migration on, so
+    a 200 carrying a per-document conflict must not read as written."""
+    real = couch.__call__
+
+    def failing(method, path, body=None, timeout=60):
+        if method == "POST" and path.endswith("_bulk_docs"):
+            return 200, [{"id": doc["_id"], "error": "conflict"}
+                         for doc in body["docs"]]
+        return real(method, path, body, timeout)
+
+    monkeypatch.setattr(ticket_docs, "_req", failing)
+    summary = board_store.write_captures("issue", [_capture("issue", "cap_1")])
+    assert len(summary["failures"]) == 1

@@ -69,6 +69,7 @@ removing it. A status change touches one row and must write one document.
 The `unchanged` count in the summary is what says whether that held.
 """
 
+import collections
 import json
 import urllib.parse
 
@@ -232,7 +233,33 @@ def write_rows(board, docs, prune=True):
         if doc["board"] != board:
             raise board_document.DocumentError(
                 f"document {doc['_id']!r} is not on board {board!r}")
-    stored = stored_documents(board)
+    return _bulk_write(docs, stored_documents(board), prune,
+                       what=f"{board} records")
+
+
+def _bulk_write(docs, stored, prune, what):
+    """One `_bulk_docs` request for an already-validated batch of documents.
+
+    Shared by `write_rows` and `write_captures` because the two differ only
+    in which documents are legal and which key range holds them -- the
+    revision handling, the unchanged skip and the pruning are one rule, and
+    two copies of it would let the capture range drift away from the row
+    range one fix at a time.
+
+    `stored` is the range's current contents, `{doc_id: document}`; the
+    caller fetches it, because that is the half that differs.
+    """
+    produced = {doc["_id"] for doc in docs}
+    if len(produced) != len(docs):
+        # `_bulk_docs` given one id twice stores one of the two and says
+        # nothing useful about the other, so the loss is silent and which
+        # one survives is CouchDB's choice. For captures that is one of
+        # his bullets disappearing during the migration that was meant to
+        # preserve it.
+        counts = collections.Counter(doc["_id"] for doc in docs)
+        repeated = sorted(doc_id for doc_id, n in counts.items() if n > 1)
+        raise StoreError(f"writing {what}: {len(docs) - len(produced)} "
+                         f"duplicate id(s) in one batch: {repeated}")
     written = []
     unchanged = 0
     for doc in docs:
@@ -241,7 +268,6 @@ def write_rows(board, docs, prune=True):
             unchanged += 1
             continue
         written.append(dict(doc, **({"_rev": held["_rev"]} if held else {})))
-    produced = {doc["_id"] for doc in docs}
     tombstones = []
     if prune:
         tombstones = [{"_id": doc_id, "_rev": held["_rev"], "_deleted": True}
@@ -252,7 +278,7 @@ def write_rows(board, docs, prune=True):
         "POST", f"{ticket_docs.TICKET_DB}/_bulk_docs",
         {"docs": written + tombstones})
     if status not in (200, 201):
-        raise StoreError(f"writing {board} records: {status} {json.dumps(body)[:200]}")
+        raise StoreError(f"writing {what}: {status} {json.dumps(body)[:200]}")
     failures = [row for row in body if row.get("error")]
     return {
         "written": len(written),
@@ -260,6 +286,36 @@ def write_rows(board, docs, prune=True):
         "unchanged": unchanged,
         "failures": failures,
     }
+
+
+def write_captures(board, docs, prune=True):
+    """Write one board's captures -- the owner's own bullets. Summary dict.
+
+    `docs` are documents from `board_document.to_capture_document`. The
+    twin of `write_rows` over the **other** key range, and the reason there
+    are two functions rather than one with a flag is that neither may reach
+    the other's range: `write_rows`' prune tombstones everything under
+    `board:<board>:` that the caller did not send, and captures live under
+    `capture:<board>:` precisely so that a migration writing the rows alone
+    cannot delete them. A single writer over both ranges would put that
+    back the first time a caller passed one list.
+
+    `prune=True` is the default for `write_rows`' reason -- a capture the
+    owner deleted from his board must not survive here as something the
+    read-back would render. **Pruning does not free the id**: the counter
+    lives in the registry as a high-water mark (`entity_id.mint_capture`),
+    so a deleted `cap_7` is never issued again and an old reply can never
+    land under new words.
+    """
+    _check_board(board)
+    docs = list(docs)
+    for doc in docs:
+        board_document._check_capture_identity(doc)
+        if doc["board"] != board:
+            raise board_document.DocumentError(
+                f"capture {doc['_id']!r} is not on board {board!r}")
+    return _bulk_write(docs, stored_capture_documents(board), prune,
+                       what=f"{board} captures")
 
 
 class RowConflict(StoreError):
