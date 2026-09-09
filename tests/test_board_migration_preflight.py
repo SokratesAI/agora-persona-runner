@@ -225,3 +225,43 @@ def test_round_trip_needs_exactly_one_board_file(tmp_path, capsys):
     with pytest.raises(SystemExit):
         preflight.main(["--board", str(path), "--board", str(path),
                         "--round-trip", "issue"])
+
+
+def test_round_trip_carries_the_detail_bodies_and_says_how_many():
+    """`render_identical` cannot see a lost `# Details` body -- the two
+    tables carry no prose -- so a round trip that dropped every one of them
+    reported a clean migration. The count is the separate control."""
+    store = FakeStore()
+    report, problems = preflight.round_trip(
+        items_of([(1, "Nova", ""), (2, "Agora", "")]), "issue", store=store,
+        details={1: "the reasoning for row 1\n"})
+    assert problems == []
+    assert report["details_in"] == 1 and report["details_back"] == 1
+    assert report["render_identical"] is True
+
+
+def test_round_trip_reports_a_store_that_loses_a_detail_body():
+    """The failure the count exists for, made to happen rather than assumed
+    impossible: every other number in the report still reads clean."""
+
+    class Stripped(FakeStore):
+        def read_rows(self, board):
+            return [{k: v for k, v in doc.items() if k != "detail"}
+                    for doc in super().read_rows(board)]
+
+    store = Stripped()
+    report, problems = preflight.round_trip(
+        items_of([(1, "Nova", "")]), "issue", store=store,
+        details={1: "the reasoning for row 1\n"})
+    assert report["read_back"] == 1 and report["render_identical"] is True
+    assert report["details_in"] == 1 and report["details_back"] == 0
+    assert any("detail body" in text for text in problems)
+
+
+def test_board_details_reads_the_prose_bodies_off_a_board_file():
+    """The reader `main` uses; `board_items` beside it returns rows only."""
+    markdown = board([(1, "Nova", "")]) + (
+        "\n# Details\n\n## #1 — Item 1\n\nthe reasoning for row 1\n")
+    details = preflight.board_details(markdown)
+    assert list(details) == [1]
+    assert "the reasoning for row 1" in details[1]

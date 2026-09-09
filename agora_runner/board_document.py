@@ -100,7 +100,8 @@ def document_id(board, number):
     return f"board:{board}:{number}"
 
 
-def to_document(item, board, project_id=None, milestone_id=None, rank=None):
+def to_document(item, board, project_id=None, milestone_id=None, rank=None,
+                detail=None):
     """A parsed row -> its record document.
 
     `project_id` and `milestone_id` come from `entity_id`, `rank` from
@@ -108,6 +109,13 @@ def to_document(item, board, project_id=None, milestone_id=None, rank=None):
     project, milestone or position in the markdown it was parsed from, and
     inventing one during the migration would be writing a fact nobody
     stated.
+
+    `detail` is the row's prose body -- `parse_board`'s `details[number]`,
+    which is a *separate* dict rather than a key on the item, so it has to
+    be passed in beside the row it belongs to. It is optional for the same
+    reason the three above are: most rows have no body, and a row with no
+    body must not become a row whose body is the empty string. See
+    `details_map` for the inverse.
     """
     number = item.get("number")
     doc = {
@@ -126,6 +134,14 @@ def to_document(item, board, project_id=None, milestone_id=None, rank=None):
         doc["milestoneId"] = milestone_id
     if rank is not None:
         doc["rank"] = rank
+    if detail is not None:
+        if not isinstance(detail, str):
+            raise DocumentError(f"detail must be a str, not {detail!r}")
+        # An empty body and an absent one are the same thing to
+        # `parse_board`, which simply has no entry for that number. Storing
+        # `""` would make the round trip mint a detail section nobody wrote.
+        if detail:
+            doc["detail"] = detail
     return doc
 
 
@@ -163,6 +179,27 @@ def from_document(doc, project_name=None, milestone_name=None):
         "order": doc.get("order"),
         "done": done,
     }
+
+
+def detail_of(doc):
+    """One document's prose body, or `""` if it carries none."""
+    return doc.get("detail") or ""
+
+
+def details_map(docs):
+    """Documents -> `parse_board`'s `details` dict, `{number: markdown}`.
+
+    Only rows that actually carry a body appear, which is what
+    `parse_board` does: a caller asking `details.get(n)` must be able to
+    tell "no detail section" from "a detail section that is empty".
+    """
+    out = {}
+    for doc in docs:
+        _check_identity(doc)
+        body = detail_of(doc)
+        if body:
+            out[doc["number"]] = body
+    return out
 
 
 def _check_identity(doc):

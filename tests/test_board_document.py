@@ -14,6 +14,8 @@ from agora_runner.board_document import (
     BOARDS,
     DOCUMENT_TYPE,
     DocumentError,
+    details_map,
+    detail_of,
     document_id,
     from_document,
     to_document,
@@ -163,3 +165,38 @@ def test_a_done_row_reads_as_done_whatever_its_status_cell_says():
     assert doc["done"] is True and doc["status"] == "🟡 In progress"
     assert from_document(doc)["statusKey"] == "done"
     assert nova_boards.status_key("🟡 In progress") != "done"
+
+
+def test_a_detail_body_survives_the_document_and_an_absent_one_stays_absent():
+    """A row's prose body is `parse_board`'s `details[number]`, a separate
+    dict rather than a key on the row, so nothing carried it into a record
+    until now -- and a document written without one loses it silently,
+    because `board_view` renders the two tables and no prose at all.
+
+    The pair matters as much as the survival: an absent body and an empty
+    one are the same thing to `parse_board`, which simply has no entry for
+    that number, so storing `""` would make the round trip mint a detail
+    section nobody wrote."""
+    with_body = to_document(by_number(41), "issue", detail="Why this matters.\n")
+    assert detail_of(with_body) == "Why this matters.\n"
+    for empty in (None, ""):
+        doc = to_document(by_number(41), "issue", detail=empty)
+        assert "detail" not in doc and detail_of(doc) == ""
+
+
+def test_details_map_gives_back_exactly_parse_boards_details_dict():
+    """The inverse the 15 modules reading `parse_board(...)["details"]` need.
+    Only rows that carry a body appear, so `details.get(n)` still tells
+    "no detail section" from "one that is empty"."""
+    docs = [
+        to_document(by_number(41), "issue", detail="first\n"),
+        to_document(by_number(40), "issue"),
+    ]
+    assert details_map(docs) == {41: "first\n"}
+
+
+def test_a_detail_that_is_not_text_is_refused_rather_than_stored():
+    """Stored unchecked it would come back out of CouchDB as JSON of some
+    other shape and be rendered into a board as its repr."""
+    with pytest.raises(DocumentError):
+        to_document(by_number(41), "issue", detail=["not", "text"])
