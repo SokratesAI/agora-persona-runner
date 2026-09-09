@@ -17,6 +17,7 @@ than no classifier, because the number still looks like a measurement.
 
 import pytest
 
+from tools import work_for_whom
 from tools.work_for_whom import (
     HIS,
     MINE,
@@ -256,3 +257,119 @@ def test_only_scaffolding_prs_are_listed_for_justification():
 def test_rules_flag_prints_the_table_and_exits_clean(capsys):
     assert main(["--rules"]) == 0
     assert "HOW A CHANGED FILE IS SORTED" in capsys.readouterr().out
+
+
+# --- Themes -------------------------------------------------------------
+#
+# The retrospective's finding was a share of a WINDOW ("the newest thirty"),
+# so every test here pins the window rather than the whole list: a mode that
+# quietly reads all 60 answers a different question than the one asked.
+
+
+def _titled(number, title):
+    return {"number": number, "title": title, "files": []}
+
+
+def test_a_phrase_only_one_pr_uses_is_not_a_theme():
+    judged, ranked = work_for_whom.theme_report(
+        [_titled(1, "widget alignment"), _titled(2, "kettle descaling")], window=30
+    )
+    assert judged == 2
+    assert ranked == []
+
+
+def test_the_top_theme_is_the_phrase_the_most_prs_share():
+    prs = [
+        _titled(1, "a cycle that leaves no journal entry"),
+        _titled(2, "the journal entry a cycle never wrote"),
+        _titled(3, "journal entry footer linting"),
+        _titled(4, "kettle descaling"),
+    ]
+    judged, ranked = work_for_whom.theme_report(prs, window=30)
+    assert judged == 4
+    phrase, count, numbers = ranked[0]
+    assert phrase == "journal entry"
+    assert count == 3
+    assert numbers == [1, 2, 3]
+
+
+def test_the_share_is_taken_over_the_window_not_the_whole_list():
+    """The finding being reproduced is 'the newest thirty are almost all of
+    it', so a window that silently widens reports a different, milder number.
+    """
+    shared = [_titled(n, "journal entry") for n in range(1, 4)]
+    older = [_titled(n, "kettle descaling") for n in range(4, 40)]
+    judged, ranked = work_for_whom.theme_report(shared + older, window=3)
+    assert judged == 3
+    assert ranked[0][:2] == ("journal entry", 3)
+    # Over the whole list the same phrase is a rounding error, which is the
+    # difference this window exists to keep.
+    judged_all, ranked_all = work_for_whom.theme_report(shared + older, window=39)
+    assert judged_all == 39
+    assert dict((p, c) for p, c, _ in ranked_all)["journal entry"] == 3
+
+
+def test_a_title_that_repeats_a_word_still_votes_once():
+    """Otherwise a long title outvotes a short one on nothing but length."""
+    judged, ranked = work_for_whom.theme_report(
+        [_titled(1, "journal journal journal"), _titled(2, "journal cards")], window=30
+    )
+    assert dict((p, c) for p, c, _ in ranked)["journal"] == 2
+
+
+def test_words_true_of_most_titles_are_thrown_away():
+    """`fix the ...` is every second title here; clustering on it groups
+    everything with everything and reports a 90% theme that means nothing."""
+    phrases = work_for_whom.theme_phrases("fix the journal entry")
+    assert "journal entry" in phrases
+    assert "fix" not in phrases
+    assert "the" not in phrases
+    assert not any("fix" in p.split() or "the" in p.split() for p in phrases)
+
+
+def test_a_pair_is_taken_across_a_dropped_word():
+    """Words are kept in order after the stopwords go, so `entry` and
+    `linting` are adjacent once `the` is gone. Splitting on the hole instead
+    would lose every theme phrased with an article in the middle."""
+    assert "entry linting" in work_for_whom.theme_phrases("entry the linting")
+
+
+def test_no_shared_phrase_is_reported_as_spread_out_not_as_a_failure():
+    text = work_for_whom.render_themes(
+        4, [], 30, "SokratesAI/agora-persona-runner"
+    )
+    assert "no theme to report" in text
+    assert "%" not in text
+
+
+def test_the_report_prints_how_many_it_judged_not_how_many_it_asked_for():
+    prs = [_titled(1, "journal entry"), _titled(2, "journal entry")]
+    judged, ranked = work_for_whom.theme_report(prs, window=30)
+    text = work_for_whom.render_themes(judged, ranked, 30, "repo")
+    assert "the newest 2 merged PRs" in text
+    assert "asked for 30" in text
+    assert "100%" in text
+
+
+def test_themes_mode_does_not_fetch_the_journal(monkeypatch, capsys):
+    """--themes reads no entry, so a journal fetch there is a network call
+    whose failure would be reported as a problem with a report it is not in."""
+    monkeypatch.setattr(
+        work_for_whom, "fetch_prs",
+        lambda repo, limit: ([_titled(1, "journal entry"), _titled(2, "journal entry")], None),
+    )
+
+    def _boom(*a, **k):  # pragma: no cover - the assertion is that it is not called
+        raise AssertionError("--themes fetched the journal")
+
+    monkeypatch.setattr(work_for_whom, "fetch_entries", _boom)
+    assert work_for_whom.main(["--themes"]) == 0
+    out = capsys.readouterr().out
+    assert "journal entry" in out
+    assert "A theme is a phrase two titles share, not a meaning" in out
+
+
+def test_rules_prints_the_words_themes_throws_away():
+    text = work_for_whom.render_rules()
+    assert "WORDS --themes THROWS AWAY" in text
+    assert "\n  fix\n" in text

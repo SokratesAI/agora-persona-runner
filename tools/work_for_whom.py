@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -123,6 +124,113 @@ def classify_pr(paths):
     if buckets == {HIS, MINE}:
         return "both"
     return "unclassified"
+
+
+# --- Themes -------------------------------------------------------------
+#
+# The 2026-09-09 retrospective measured 34 of 232 merged runner PRs in one
+# window sitting on a single theme, with the newest thirty carrying almost
+# all of it -- the loop working on whatever its own recent context made
+# salient. That number was taken by hand, once, which makes it the same
+# anecdote Cycle 172's ratio was before this tool existed.
+#
+# **A theme here is a phrase two PR titles share, not a meaning.** No model
+# reads these titles; the clustering is literally "which words recur". So
+# it will merge two unrelated changes that happen to use one word, and it
+# will miss two changes that describe the same work in different words.
+# That is a real limit and it is printed on every run rather than left for
+# a reader to infer from a suspiciously tidy percentage.
+
+THEME_WINDOW = 30
+
+# A word that appears in most titles regardless of subject carries no theme.
+# This list is printed by --rules for the same reason the file rules are:
+# a judgement that decides a headline number has to be visible beside it.
+THEME_STOPWORDS = frozenset(
+    """a an and are as at be been but by can did do does for from had has have
+    how in into is it its no not now of off on one only or our out over own so
+    than that the their then there these they this to two up was were what when
+    which who why will with without you your i me my""".split()
+    # Conventional-commit and housekeeping verbs: true of most PRs here, so
+    # they group everything with everything.
+    + "fix fixes fixed feat chore test tests docs doc refactor add adds added"
+    " update updates updated make makes made".split()
+)
+
+_THEME_WORD = re.compile(r"[a-z][a-z0-9_]+")
+
+
+def theme_phrases(title):
+    """The distinct phrases one PR title contributes: kept words, plus each
+    adjacent pair of kept words.
+
+    A pair is kept as well as its halves because "journal entry" is a theme
+    where "journal" alone is a topic. Returned as a set, so a title that
+    says a word twice still votes once -- otherwise a long title outvotes a
+    short one on nothing but length.
+    """
+    words = [
+        w for w in _THEME_WORD.findall((title or "").lower())
+        if w not in THEME_STOPWORDS and len(w) > 2
+    ]
+    phrases = set(words)
+    phrases.update(f"{a} {b}" for a, b in zip(words, words[1:]))
+    return phrases
+
+
+def theme_report(prs, window=THEME_WINDOW):
+    """How concentrated the newest `window` merged PRs are on one phrase.
+
+    Returns `(judged, ranked)` where `judged` is how many PRs were actually
+    looked at -- which is `len(prs)` when fewer answered than asked for, and
+    never the requested window, because printing the window either way is
+    the wrong-number-from-the-honest-tool mistake `_short` exists to stop.
+
+    `ranked` is `[(phrase, count, [pr numbers])]`, most-shared first, ties
+    broken alphabetically so two runs on the same data print the same.
+    """
+    recent = prs[:window]
+    hits = {}
+    for pr in recent:
+        for phrase in theme_phrases(pr.get("title", "")):
+            hits.setdefault(phrase, []).append(pr.get("number"))
+    ranked = [
+        (phrase, len(numbers), numbers)
+        for phrase, numbers in hits.items()
+        if len(numbers) > 1  # a phrase used once is a title, not a theme
+    ]
+    # A bigram and each of its halves tie whenever the bigram is the theme,
+    # so ties break toward the longer phrase: same evidence, more said. Then
+    # alphabetically, so two runs on the same data print the same.
+    ranked.sort(key=lambda row: (-row[1], -len(row[0].split()), row[0]))
+    return len(recent), ranked
+
+
+def render_themes(judged, ranked, window, repo, top=8):
+    lines = [
+        f"WHAT I HAVE BEEN WORKING ON — the newest {judged} merged PRs"
+        f" on {repo}{_short(judged, window)}"
+    ]
+    if not judged:
+        lines.append("  no merged PRs answered — see WHAT THIS CANNOT SEE")
+        return "\n".join(lines)
+    if not ranked:
+        lines.append(
+            "  no phrase is shared by two of them — no theme to report,"
+            " which is the spread-out answer rather than a failed read"
+        )
+        return "\n".join(lines)
+    top_phrase, top_count, _ = ranked[0]
+    lines.append(
+        f"  top theme  {_pct(top_count, judged)}  {top_count} of {judged}"
+        f"  \u201c{top_phrase}\u201d"
+    )
+    lines.append("")
+    for phrase, count, numbers in ranked[:top]:
+        shown = " ".join(f"#{n}" for n in numbers[:6])
+        more = f" +{len(numbers) - 6}" if len(numbers) > 6 else ""
+        lines.append(f"  {count:3d}  {_pct(count, judged)}  {phrase:28s} {shown}{more}")
+    return "\n".join(lines)
 
 
 def surface_report(prs):
@@ -275,6 +383,14 @@ def render_rules():
     lines.append("LOOKED AT ONLY WHEN A PR TOUCHES NOTHING ABOVE")
     for prefix, bucket, why in SUPPORTING:
         lines.append(f"  {prefix:34s} -> {bucket:5s}  {why}")
+    lines.append("")
+    lines.append(
+        f"WORDS --themes THROWS AWAY BEFORE CLUSTERING ({len(THEME_STOPWORDS)})"
+        " — they are true of most titles here, so they group everything"
+        " with everything"
+    )
+    for row in sorted(THEME_STOPWORDS):
+        lines.append(f"  {row}")
     return "\n".join(lines)
 
 
@@ -322,6 +438,12 @@ def main(argv=None):
                         help="how many journal entries to read (default 60)")
     parser.add_argument("--rules", action="store_true",
                         help="print the file-sorting table and exit")
+    parser.add_argument("--themes", action="store_true",
+                        help=f"report what the newest {THEME_WINDOW} merged PRs"
+                             " share, instead of whose surface they touched")
+    parser.add_argument("--theme-window", type=int, default=THEME_WINDOW,
+                        help=f"how many of the newest merged PRs --themes reads"
+                             f" (default {THEME_WINDOW})")
     args = parser.parse_args(argv)
 
     if args.rules:
@@ -332,9 +454,25 @@ def main(argv=None):
     prs, pr_problem = fetch_prs(args.repo, args.prs)
     if pr_problem:
         problems.append(pr_problem)
-    entries, entry_problem = fetch_entries(args.entries)
-    if entry_problem:
-        problems.append(entry_problem)
+    entries = []
+    if not args.themes:
+        entries, entry_problem = fetch_entries(args.entries)
+        if entry_problem:
+            problems.append(entry_problem)
+
+    if args.themes:
+        judged, ranked = theme_report(prs, args.theme_window)
+        print(render_themes(judged, ranked, args.theme_window, args.repo))
+        print("")
+        print("WHAT THIS CANNOT SEE")
+        print("  A theme is a phrase two titles share, not a meaning — nothing")
+        print("  here reads what a PR did, so one word can merge two unrelated")
+        print("  changes and two wordings can split one real theme.")
+        print(f"  One repo ({args.repo}). Work in the other repos is invisible here.")
+        print("  The words thrown away before clustering are printed by --rules.")
+        for problem in problems:
+            print(f"  {problem}")
+        return 1 if problems else 0
 
     counts, labelled = surface_report(prs)
     board = board_report(entries)
