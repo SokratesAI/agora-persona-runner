@@ -50,8 +50,8 @@ set of mutations and treat any non-zero as a finding.
 import argparse
 import glob
 import os
-import signal
 import select
+import signal
 import subprocess
 import sys
 import tempfile
