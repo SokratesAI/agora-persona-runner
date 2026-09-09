@@ -146,3 +146,75 @@ def test_drop_bytecode_leaves_a_non_python_file_alone(tmp_path):
     target.write_text("x")
     mutate.drop_bytecode(str(target))  # must not raise
     assert target.read_text() == "x"
+
+
+# --- the output bound -------------------------------------------------
+#
+# Cycle 1254. `subprocess.run(capture_output=True)` held everything a
+# mutant printed, and on 2026-09-09 at 02:15 Oslo one that printed
+# without stopping took this process to 3.9 GiB and the kernel killed
+# every process in the bridge container with it. The invariant these
+# pin is the one that stops that: what the tool keeps is bounded by
+# --max-output-bytes no matter what the child prints, and the verdict
+# is still read off the tail.
+
+
+def _noisy(byte_count, exit_code=0):
+    """A command that prints `byte_count` bytes of output and exits."""
+    return [sys.executable, "-c",
+            "import sys;sys.stdout.write('first line\\n');"
+            "sys.stdout.write('x' * %d);"
+            "sys.stdout.write('\\nlast line\\n');raise SystemExit(%d)"
+            % (byte_count, exit_code)]
+
+
+def test_output_under_the_bound_is_kept_whole():
+    code, text, total, dropped = mutate.run_bounded(
+        [sys.executable, "-c", "print('hello')"], max_output_bytes=4096)
+    assert code == 0
+    assert dropped == 0
+    assert text == "hello\n"
+    assert total == len(b"hello\n")
+
+
+def test_output_over_the_bound_is_truncated_not_held():
+    """The whole point: 200x the bound printed, and the bound holds."""
+    code, text, total, dropped = mutate.run_bounded(
+        _noisy(200_000), max_output_bytes=1000)
+    assert code == 0
+    assert total > 200_000
+    assert dropped > 199_000
+    # The kept text is the bound plus the one line that says what went.
+    assert len(text) < 1000 + 200
+    # Both ends are kept: the head is where a collection error prints,
+    # the tail is where the summary line is.
+    assert text.startswith("first line\n")
+    assert text.rstrip().endswith("last line")
+    assert "dropped by --max-output-bytes" in text
+
+
+def test_the_summary_line_survives_truncation(repo, capsys):
+    """`count_failures` reads the tail, so the count must still be there."""
+    command = [sys.executable, "-c",
+               "import sys;sys.stdout.write('x' * 300000);"
+               "print('\\n= 7 failed, 2 passed =');raise SystemExit(1)"]
+    code = mutate.main(["--file", "subject.py", "--old", "return True",
+                        "--new", "return False", "--max-output-bytes", "2000",
+                        "--", *command])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "CAUGHT — 7 test(s) failed" in out
+    assert "NOTE — the command printed 300" in out
+
+
+def test_no_note_when_nothing_was_dropped(repo, capsys):
+    code = run("return True", "return False", *_noisy(10, exit_code=1))
+    assert code == 0
+    assert "NOTE — the command printed" not in capsys.readouterr().out
+
+
+def test_stderr_is_captured_too(repo, capsys):
+    code = run("return True", "return False", sys.executable, "-c",
+               "import sys;sys.stderr.write('boom\\n');raise SystemExit(1)")
+    assert code == 0
+    assert "boom" in capsys.readouterr().out

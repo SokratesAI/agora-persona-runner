@@ -168,6 +168,69 @@ def count_failures(text):
     return None
 
 
+DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+
+
+def run_bounded(command, max_output_bytes=DEFAULT_MAX_OUTPUT_BYTES):
+    """Run the command, keeping only the head and the tail of what it prints.
+
+    `subprocess.run(capture_output=True)` holds the whole of a child's
+    output in one string, and a mutant is by definition code that is
+    known to be wrong -- a wrong loop bound prints without end. On
+    2026-09-09 at 02:15 Oslo that combination killed the bridge
+    container: a throwaway script ran nine mutants of `cycle_postmortem`,
+    one of them made pytest print without stopping, and this process
+    reached 3.9 GiB of anonymous memory against the pod's 4 GiB limit.
+    `memory.oom.group` is set on that cgroup, so the kernel killed every
+    process in the container rather than the greedy one -- tini included
+    -- and the cycle that ran it died mid-turn with no reply and no
+    journal entry.
+
+    So the bound belongs here, in the one place every mutation run goes
+    through, rather than in each throwaway script that a later cycle
+    writes from scratch. The head is kept because a collection error or
+    an import failure prints there; the tail is kept because pytest's
+    summary line lives there and `count_failures` reads it. What was
+    dropped is stated in the middle rather than silently elided, because
+    a verdict read off truncated output has to say it was truncated.
+
+    stderr is merged into stdout so that one bound covers both. The two
+    were concatenated anyway, and interleaved is the truer order.
+
+    Returns `(returncode, text, total_bytes, dropped_bytes)`.
+    """
+    half = max(1, max_output_bytes // 2)
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
+    head = bytearray()
+    tail = bytearray()
+    total = 0
+    with proc.stdout as stream:
+        while True:
+            chunk = stream.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if len(head) < half:
+                take = half - len(head)
+                head += chunk[:take]
+                chunk = chunk[take:]
+            if chunk:
+                tail += chunk
+                if len(tail) > half:
+                    del tail[:len(tail) - half]
+    returncode = proc.wait()
+    dropped = total - len(head) - len(tail)
+    parts = [bytes(head).decode("utf-8", "replace")]
+    if dropped > 0:
+        parts.append(
+            "\n\n... %d byte(s) of output dropped by --max-output-bytes %d; "
+            "the head and the tail are kept ...\n\n"
+            % (dropped, max_output_bytes))
+    parts.append(bytes(tail).decode("utf-8", "replace"))
+    return returncode, "".join(parts), total, dropped
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Break one file on purpose, run a command, restore the file.")
@@ -177,6 +240,11 @@ def main(argv=None):
                         help="literal text to replace; must occur exactly once")
     parser.add_argument("--new", required=True,
                         help="what to replace it with")
+    parser.add_argument("--max-output-bytes", type=int,
+                        default=DEFAULT_MAX_OUTPUT_BYTES,
+                        help="how much of the command's output to keep in "
+                             "memory; the head and the tail are kept and the "
+                             "middle is dropped with a line saying how much")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="-- followed by the test command to run")
     args = parser.parse_args(argv)
@@ -225,8 +293,8 @@ def main(argv=None):
     print("mutating %s (1 site), snapshot at %s" % (args.file, restorer.snapshot))
     try:
         restorer.write_mutation(text.replace(args.old, args.new).encode("utf-8"))
-        proc = subprocess.run(command, capture_output=True, text=True)
-        output = (proc.stdout or "") + (proc.stderr or "")
+        returncode, output, total, dropped = run_bounded(
+            command, args.max_output_bytes)
         sys.stdout.write(output)
     finally:
         restorer.restore()
@@ -244,10 +312,16 @@ def main(argv=None):
               "saved at %s; the original is back in place."
               % (args.file, restorer.clobbered))
 
+    if dropped > 0:
+        print("NOTE — the command printed %d bytes and only %d were kept. "
+              "A mutant that prints without stopping is what this bound is "
+              "for; the verdict below is read off the tail."
+              % (total, total - dropped))
+
     failures = count_failures(output)
-    if proc.returncode != 0:
+    if returncode != 0:
         detail = ("%d test(s) failed" % failures) if failures is not None \
-            else "the command exited %d" % proc.returncode
+            else "the command exited %d" % returncode
         print("CAUGHT — %s with the mutation in place. Say the number in the "
               "journal; a count is checkable and \"mutation-checked\" is not."
               % detail)
