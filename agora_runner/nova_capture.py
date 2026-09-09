@@ -70,6 +70,7 @@ from agora_runner.nova_boards import (
     extract_row,
     OUTDATED_STATUS,
     STATUS_LABELS,
+    set_row_order as _set_row_order_md,
     set_row_priority,
     set_row_project,
     set_row_status,
@@ -1264,6 +1265,50 @@ def set_priority(target, number, priority):
         if "409" not in result:
             break
     log(f"nova-capture failed rating #{number} on {target}: {result}")
+    return False, f"could not write to {target}: {result}"
+
+
+def set_row_order(target, number, position):
+    """Place one boarded row at `position` inside its milestone. Returns (ok, message).
+
+    Part 3 of `row-order-and-priority-migration.md`: *"make another cycle
+    remove the old priority system and order the tasks in the correct new
+    order and also adding functionality for me to change it."* The markdown
+    half shipped in #918 and nothing called it, so the Order cell existed and
+    he had no way to write one.
+
+    Same read-modify-write and same 409 retry as `set_priority` one function
+    up, against the same two documents and for the same reason -- a cycle
+    boarding these files is the concurrent writer.
+
+    **A missing file is a refusal, unlike `capture`'s.** A capture creates the
+    file because the first capture has to land somewhere; a position is a
+    statement about a list of rows, and a file with no rows has no list.
+
+    `set_row_order` in `nova_boards` answering `None` is not a write failure
+    and is not retried, the same distinction `set_priority` draws: the row is
+    gone, closed, or the position is outside its own group, and re-reading
+    returns the same answer.
+    """
+    path = CAPTURE_TARGETS.get(target)
+    if path is None:
+        return False, f"unknown target: {target!r}"
+
+    result = ""
+    for _ in range(WRITE_ATTEMPTS):
+        current, rev = vault_read_path_rev(path)
+        if current is None:
+            return False, f"{path} not found"
+        updated = _set_row_order_md(current, number, position)
+        if updated is None:
+            return False, f"cannot place #{number} on {target} at {position!r}"
+        result = vault_write_path(path, updated, if_rev=rev)
+        if result == "written":
+            log(f"nova-capture placed #{number} on {target} at {position}")
+            return True, f"#{number} is now #{position} in its milestone"
+        if "409" not in result:
+            break
+    log(f"nova-capture failed placing #{number} on {target}: {result}")
     return False, f"could not write to {target}: {result}"
 
 

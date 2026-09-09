@@ -139,6 +139,7 @@ from agora_runner.nova_capture import (
     edit_row,
     remove_row,
     set_priority,
+    set_row_order,
     set_project,
     set_project_priority,
     pin_milestone,
@@ -5145,6 +5146,75 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
+    def _post_row_order(self, payload):
+        """`POST /api/row/order` -- where a task sits inside its milestone.
+
+        Part 3 of `row-order-and-priority-migration.md`: *"Lets me
+        organise/sort the milestones and tasks aswell."* Milestones already
+        move (`/api/milestone/pin`) and projects already move
+        (`/api/project/order`); a task had the cell since #918 and no way to
+        write one, so the ordering he was promised existed only as a column
+        a cycle could fill in by hand.
+
+        Same three checks as `_post_priority` one function up, and for the
+        same reasons: `target` is a key into a dict of literal paths and
+        never a path, `number` is `int` only because `True` is an `int` in
+        Python and would address row 1, and `position` is checked as an
+        `int` here rather than coerced -- a client that sends `"2"` is one
+        that will one day send `"top"`, and the markdown layer is not where
+        a type is decided.
+
+        **Everything about the document is `set_row_order`'s to refuse**,
+        not this method's: an unknown row, a closed one, a position past the
+        end of that row's own milestone. This method cannot know which
+        milestone a number is in without parsing the board, and a second
+        parse here would be a second opinion about the same file.
+
+        **The scope of `position` is one board, and there is no page
+        driving this yet for that reason.** `set_row_order` groups by
+        (project, milestone) inside the document it is handed, while
+        `nova_next.rank` merges both boards -- so one milestone spanning
+        `issues.md` and `ideas.md` can hold two rows at position 1 and the
+        merged list cannot say which is first. That is a question about
+        what a milestone's order *means*, not about this route, and it is
+        filed rather than guessed at here.
+        """
+        target = payload.get("target")
+        number = payload.get("number")
+        position = payload.get("position")
+        if target not in BOARD_PATHS:
+            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
+            return
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            self._send_json(400, {"error": "number must be a positive integer"})
+            return
+        if not isinstance(position, int) or isinstance(position, bool) or position < 1:
+            self._send_json(400, {"error": "position must be an integer of 1 or more"})
+            return
+
+        try:
+            ok, message = set_row_order(target, number, position)
+        except Exception as e:
+            log(f"nova-site row order failed: {e}")
+            self._send_json(502, {"error": str(e)[:300]})
+            return
+
+        if ok:
+            # The board he is looking at still shows the old order, exactly
+            # the staleness `_post_priority` invalidates for.
+            invalidate("board:" + target)
+
+        audit(
+            "Nova",
+            "",
+            "nova_capture",
+            f"Place #{number} on {target} \u00b7 {'ok' if ok else message}",
+            after=str(position),
+            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
+            is_error=not ok,
+        )
+        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+
     def _post_project(self, payload):
         """`POST /api/board/project` -- the owner moving a row to a project.
 
@@ -6344,6 +6414,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/capture", "/api/capture/edit", "/api/capture/delete",
             "/api/capture/convert", "/api/capture/promote", "/api/comment",
             "/api/board/priority", "/api/board/project",
+            "/api/row/order",
             "/api/project/priority", "/api/project/order",
             "/api/project/satisfaction",
             "/api/project/lifecycle", "/api/milestone/pin",
@@ -6446,6 +6517,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/project/order":
             self._post_project_order(payload)
+            return
+        if path == "/api/row/order":
+            self._post_row_order(payload)
             return
         if path == "/api/project/satisfaction":
             self._post_project_satisfaction(payload)
