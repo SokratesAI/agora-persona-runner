@@ -19,6 +19,7 @@ from tools import argocd_health
 
 
 NOW = datetime.datetime(2026, 8, 27, 1, 30, tzinfo=datetime.timezone.utc)
+NOW_ISO = "2026-08-27T01:30:00Z"
 
 
 def app(name, sync="Synced", health="Healthy", since="", cronjobs=(), sealed=()):
@@ -61,13 +62,13 @@ def job(name, cronjob, created, failed=False, succeeded=False, namespace="agents
 
 
 def _which(args):
-    for kind in ("applications", "jobs", "sealedsecrets"):
+    for kind in ("applications", "cronjobs", "jobs", "sealedsecrets"):
         if kind in args:
             return kind
     raise AssertionError(f"unexpected kubectl call: {args}")
 
 
-def fake_kubectl(apps=(), jobs=(), sealed=(), fail_on=None, stdout=None):
+def fake_kubectl(apps=(), jobs=(), sealed=(), cronjobs=(), fail_on=None, stdout=None):
     """A `subprocess.run` that answers the two queries the tool makes."""
     def runner(args, **kwargs):
         which = _which(args)
@@ -75,20 +76,30 @@ def fake_kubectl(apps=(), jobs=(), sealed=(), fail_on=None, stdout=None):
             return subprocess.CompletedProcess(args, 1, "", "Error from server (Forbidden)")
         if stdout is not None and which == stdout[0]:
             return subprocess.CompletedProcess(args, 0, stdout[1], "")
-        items = {"applications": apps, "jobs": jobs, "sealedsecrets": sealed}[which]
+        items = {"applications": apps, "jobs": jobs, "sealedsecrets": sealed,
+                 "cronjobs": cronjobs}[which]
         return subprocess.CompletedProcess(args, 0, json.dumps({"items": list(items)}), "")
     return runner
 
 
-def report_for(apps, jobs, sealed=()):
-    runner = fake_kubectl(apps=apps, jobs=jobs, sealed=sealed)
+def cronjob(name, namespace="infra", suspend=False):
+    return {
+        "metadata": {"name": name, "namespace": namespace},
+        "spec": {"suspend": suspend},
+    }
+
+
+def report_for(apps, jobs, sealed=(), cronjobs=()):
+    runner = fake_kubectl(apps=apps, jobs=jobs, sealed=sealed, cronjobs=cronjobs)
     parsed, why = argocd_health.read_applications(runner)
     assert why is None
     by_owner, why = argocd_health.read_jobs(runner)
     assert why is None
     broken, why = argocd_health.read_sealed_secrets(runner)
     assert why is None
-    return argocd_health.report(parsed, by_owner, NOW, broken)
+    paused, why = argocd_health.read_suspended_cronjobs(runner)
+    assert why is None
+    return argocd_health.report(parsed, by_owner, NOW, broken, paused)
 
 
 # --- the clean case -------------------------------------------------
@@ -360,7 +371,7 @@ def test_jobs_are_not_read_at_all_when_every_application_is_healthy():
     assert asked == ["applications"]
 
 
-def test_jobs_and_sealed_secrets_are_read_once_something_is_unhealthy():
+def test_the_explaining_reads_happen_once_something_is_unhealthy():
     asked = []
 
     def runner(args, **kwargs):
@@ -371,7 +382,7 @@ def test_jobs_and_sealed_secrets_are_read_once_something_is_unhealthy():
             args, 0, json.dumps({"items": items}), "")
 
     assert argocd_health.main([], runner=runner, now=NOW) == 2
-    assert asked == ["applications", "jobs", "sealedsecrets"]
+    assert asked == ["applications", "jobs", "sealedsecrets", "cronjobs"]
 
 
 def test_kubectl_refused_on_sealed_secrets_is_status_one(capsys):
@@ -652,3 +663,73 @@ def test_a_healthy_app_never_trips_the_new_branch():
     lines, status = argocd_health.report([app], {}, _NOW)
     assert status == 0
     assert any(line.startswith("ok      marcus-config") for line in lines)
+
+# --- a deliberate pause is not a fault ------------------------------
+
+def test_a_suspended_app_explained_by_a_paused_cronjob_does_not_raise():
+    lines, status = report_for(
+        [app("infra", health="Suspended", since=NOW_ISO,
+             cronjobs=[("infra", "reaper")])],
+        [],
+        cronjobs=[cronjob("reaper", suspend=True)])
+    assert status == 0
+    assert any(line.startswith("SUSPENDED  infra:") for line in lines)
+    assert any("infra/reaper has spec.suspend: true" in line for line in lines)
+    assert not any(line.startswith("UNHEALTHY") for line in lines)
+
+
+def test_a_suspended_app_with_no_paused_cronjob_still_raises():
+    """The complement, and it is what makes the test above worth anything.
+
+    Without it the branch could excuse every `Suspended` and both tests
+    would still be green.
+    """
+    lines, status = report_for(
+        [app("infra", health="Suspended", since=NOW_ISO,
+             cronjobs=[("infra", "reaper")])],
+        [],
+        cronjobs=[cronjob("reaper", suspend=False)])
+    assert status == 2
+    assert any(line.startswith("UNHEALTHY  infra: Suspended") for line in lines)
+    assert not any(line.startswith("SUSPENDED") for line in lines)
+
+
+def test_a_paused_cronjob_in_another_app_does_not_excuse_this_one():
+    lines, status = report_for(
+        [app("infra", health="Suspended", since=NOW_ISO,
+             cronjobs=[("infra", "reaper")]),
+         app("other", health="Healthy", cronjobs=[("agents", "liveness")])],
+        [],
+        cronjobs=[cronjob("liveness", namespace="agents", suspend=True),
+                  cronjob("reaper", suspend=False)])
+    assert status == 2
+    assert any(line.startswith("UNHEALTHY  infra: Suspended") for line in lines)
+
+
+def test_a_paused_cronjob_does_not_excuse_a_degraded_app():
+    """Suspended is the only status a pause explains."""
+    lines, status = report_for(
+        [app("infra", health="Degraded", since=NOW_ISO,
+             cronjobs=[("infra", "reaper")])],
+        [],
+        cronjobs=[cronjob("reaper", suspend=True)])
+    assert status == 2
+    assert any(line.startswith("UNHEALTHY  infra: Degraded") for line in lines)
+
+
+def test_read_suspended_cronjobs_reads_the_spec_not_the_absence_of_jobs():
+    runner = fake_kubectl(cronjobs=[
+        cronjob("paused", suspend=True),
+        cronjob("running", suspend=False),
+        {"metadata": {"name": "no-field", "namespace": "infra"}, "spec": {}},
+    ])
+    paused, why = argocd_health.read_suspended_cronjobs(runner)
+    assert why is None
+    assert paused == {("infra", "paused")}
+
+
+def test_kubectl_refused_on_cronjobs_is_status_one(capsys):
+    runner = fake_kubectl(
+        apps=[app("infra", health="Suspended")], fail_on="cronjobs")
+    assert argocd_health.main([], runner=runner, now=NOW) == 1
+    assert "COULD NOT READ" in capsys.readouterr().out

@@ -256,6 +256,30 @@ def takeover_remedy(why, namespace, name):
     )
 
 
+def read_suspended_cronjobs(runner=subprocess.run):
+    """Every CronJob in the cluster carrying `spec.suspend: true`.
+
+    Returned as (set of (namespace, name), None) or (None, why). A suspended
+    CronJob is why an Application reads `Suspended`: the `batch_CronJob`
+    override in `argocd-cm` returns `Suspended` for one, ArgoCD takes the
+    worst status in the tree, and `Suspended` is worse than `Healthy`.
+
+    This reads `spec`, never `status`. A CronJob somebody paused on purpose
+    and a CronJob that is merely between firings look identical from the
+    Jobs underneath it, and only the field says which.
+    """
+    body, why = _run(runner, ["kubectl", "get", "cronjobs", "-A", "-o", "json"])
+    if why:
+        return None, why
+
+    paused = set()
+    for item in body.get("items") or []:
+        if (item.get("spec") or {}).get("suspend") is True:
+            meta = item.get("metadata") or {}
+            paused.add((meta.get("namespace") or "", meta.get("name") or ""))
+    return paused, None
+
+
 def unhealthy_children(app, broken_sealed):
     """The immediate children of `app` that are measurably unhealthy.
 
@@ -375,12 +399,13 @@ def _progressing_too_long(app, now):
     return seconds
 
 
-def report(apps, jobs_by_owner, now, broken_sealed=None):
+def report(apps, jobs_by_owner, now, broken_sealed=None, paused_cronjobs=None):
     """The printed lines and the exit status, as (lines, status)."""
     lines = []
     actionable = False
     unexplained = []
     broken_sealed = broken_sealed or {}
+    paused_cronjobs = paused_cronjobs or set()
 
     for app in sorted(apps, key=lambda a: a["name"]):
         age = _age(app["since"], now)
@@ -404,6 +429,25 @@ def report(apps, jobs_by_owner, now, broken_sealed=None):
                 lines.append(
                     f"ok      {app['name']}: Synced, {app['health']}{aged}")
             continue
+
+        if app["health"] == "Suspended":
+            paused = sorted(k for k in app["cronjobs"] if k in paused_cronjobs)
+            if paused:
+                # Deliberate, and it deliberately does not raise -- the same
+                # call `security_alerts` makes on an already-fixed advisory.
+                # Somebody set `spec.suspend: true`; no pull request closes
+                # that, so raising on it is a red that never goes green and
+                # stops being read. A `Suspended` this cannot explain still
+                # falls through and raises.
+                lines.append(
+                    f"SUSPENDED  {app['name']}: {len(paused)} CronJob(s) "
+                    f"suspended on purpose{aged} — ArgoCD takes the worst "
+                    "status in the tree and Suspended is worse than Healthy, "
+                    "so this is the pause showing through, not a fault")
+                for namespace, name in paused:
+                    lines.append(
+                        f"           {namespace}/{name} has spec.suspend: true")
+                continue
 
         actionable = True
         stale, live = stale_job_failures(app["cronjobs"], jobs_by_owner)
@@ -498,6 +542,7 @@ def main(argv=None, runner=subprocess.run, now=None):
     # answer into `COULD NOT READ` for data nothing was going to use.
     jobs_by_owner = {}
     broken_sealed = {}
+    paused_cronjobs = set()
     if any(a["health"] in UNHEALTHY for a in apps):
         jobs_by_owner, why = read_jobs(runner)
         if why:
@@ -507,11 +552,15 @@ def main(argv=None, runner=subprocess.run, now=None):
         if why:
             print(f"COULD NOT READ  {why}")
             return 1
+        paused_cronjobs, why = read_suspended_cronjobs(runner)
+        if why:
+            print(f"COULD NOT READ  {why}")
+            return 1
 
     lines, status = report(
         apps, jobs_by_owner,
         now or datetime.datetime.now(datetime.timezone.utc),
-        broken_sealed)
+        broken_sealed, paused_cronjobs)
     for line in lines:
         print(line)
     return status
