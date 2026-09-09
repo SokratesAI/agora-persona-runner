@@ -24,12 +24,18 @@ on them would be a number I chose standing in for the owner's.
 
 **Exit contract.** 2 when an item has drifted -- every named row is
 closed while the item is still open, or a named row is not on its board
-at all. 1 when a file could not be read, because a sweep that read one
-board of two must not report a clean roadmap. 0 otherwise.
+at all. 1 when a source could not be read -- the roadmap document or
+either board's records -- because a sweep that read one board of two must
+not report a clean roadmap. 0 otherwise.
 
-The vault reads are the tool's own by default; `--roadmap`, `--issues`
-and `--ideas` take local paths instead, which is how the tests drive it
-and how a cycle can check an edit before putting it.
+**The boards come out of the record store, not out of markdown** (issue
+#203). The roadmap is still a vault document read as text -- it is the
+owner's prose, not a board -- so `--roadmap` still takes a local path,
+which is how a cycle checks an edit before putting it. The two board
+flags this tool used to carry are gone with the parse: there is no board
+markdown left to point at, and a flag that let one board come from a
+file while the other came from the store would be exactly the two live
+sources of truth the switchover exists to remove.
 """
 
 import argparse
@@ -42,18 +48,17 @@ import sys
 # See tests/test_tools_run_as_scripts.py.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_boards import parse_board, status_key  # noqa: E402
-from agora_runner.nova_capture import CAPTURE_TARGETS  # noqa: E402
+from agora_runner import board_document, board_records, board_store  # noqa: E402
 from agora_runner.nova_plan import ROADMAP_PATH, next_items  # noqa: E402
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
-#: The two boards a `board:` field can name, in the singular form the field
-#: uses. `issue #131` -> `issues.md`. The board file paths come from
-#: `CAPTURE_TARGETS` rather than being spelled again here: they have moved
-#: once already (2026-08-12, out of the agora folder into his own), and a
-#: second copy of a path is a second thing to forget on the next move.
-BOARDS = {"issue": "issues", "idea": "ideas"}
+#: The boards a `board:` field can name. There is no mapping left to keep:
+#: the roadmap writes `issue #131` and `issue` is also the store's own
+#: board name, so this is `board_document.BOARDS` itself rather than a
+#: second copy of it. A third board would have to be taught to `_REF_RE`
+#: as well, and a test holds those two together so it cannot be half done.
+BOARDS = board_document.BOARDS
 
 #: `issue #131` / `idea #179`, the exact shape the roadmap writes. The
 #: number is required -- a bare `issue` names no row and is not a
@@ -90,24 +95,24 @@ def read_vault(path):
     return done.stdout
 
 
-def board_index(markdown):
-    """One board's markdown -> `{number: statusKey}`.
+def board_index(board, store=board_store):
+    """One board's records -> `{number: statusKey}`.
 
-    Both tables are read, not just `## Board`: `parse_board` already
-    merges `## Done` in and marks those rows, and a roadmap standing on a
-    row that has moved to the done table is the main case this tool
-    exists for.
+    There are no longer two tables to remember to read: a row the owner
+    finished is one record carrying `statusKey` `done`, wherever the old
+    markdown would have drawn it, and a roadmap still standing on it is
+    the main case this tool exists for.
+
+    `statusKey` is taken as given rather than re-derived. `from_document`
+    sets it on every row; the second normalisation this function used to
+    do on the markdown side was dead code, and a mutation of it survived,
+    which is how that was found out.
+
+    `store` is injected the same way `board_records.contents` injects it,
+    so a test drives this without a CouchDB.
     """
-    board = parse_board(markdown)
-    index = {}
-    for item in board["items"]:
-        # `parse_board` already writes `✅ Done` over whatever a `## Done`
-        # row's cells say -- that table's third column is `Updated`, not a
-        # status -- so a row moved there reads as closed here with nothing
-        # extra. A second normalisation on this side was dead code and a
-        # mutation of it survived, which is how I found that out.
-        index[item["number"]] = item.get("statusKey") or status_key(item.get("status", ""))
-    return index
+    records = board_records.contents(board, store=store)
+    return {item["number"]: item["statusKey"] for item in records["items"]}
 
 
 def references(field):
@@ -141,12 +146,11 @@ def judge(items, indexes):
         refs = references(item.get("board"))
         if not refs:
             continue
-        missing = [(k, n) for k, n in refs
-                   if n not in indexes[BOARDS[k]]]
+        missing = [(k, n) for k, n in refs if n not in indexes[k]]
         if missing:
             findings.append(("missing", item, missing))
             continue
-        closed = [(k, n, indexes[BOARDS[k]][n]) for k, n in refs]
+        closed = [(k, n, indexes[k][n]) for k, n in refs]
         if all(status in CLOSED_KEYS for _, _, status in closed):
             findings.append(("finished", item, closed))
     return findings
@@ -176,46 +180,49 @@ def render(items, findings):
                      "still stands on at least one open board row." % len(items))
     lines.append("")
     lines.append("Judged %d ```next block(s) in %s against both boards, read "
-                 "whole rather than by section, so a row moved to `## Done` is "
-                 "seen. NOT JUDGED whether the ranking or the reasoning is "
-                 "right — that is the Monday reprioritise run's job and this "
+                 "out of the record store, so a row the owner finished is "
+                 "seen wherever it sits. NOT JUDGED whether the ranking or the "
+                 "reasoning is right — that is the Monday reprioritise run's "
+                 "job and this "
                  "invents no verdict on it." % (len(items), ROADMAP_PATH))
     return "\n".join(lines)
 
 
-def main(argv=None):
+def main(argv=None, store=board_store):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--roadmap", help="local roadmap.md instead of the vault")
-    parser.add_argument("--issues", help="local issues.md instead of the vault")
-    parser.add_argument("--ideas", help="local ideas.md instead of the vault")
     args = parser.parse_args(argv)
 
-    sources = {"roadmap": (args.roadmap, ROADMAP_PATH)}
-    for kind, board in BOARDS.items():
-        sources[board] = (getattr(args, board), CAPTURE_TARGETS[board])
-
-    texts = {}
     unreadable = []
-    for name, (local, path) in sources.items():
-        if local:
-            try:
-                texts[name] = open(local, encoding="utf-8").read()
-            except OSError:
-                unreadable.append(local)
-        else:
-            text = read_vault(path)
-            if text is None:
-                unreadable.append(path)
-            else:
-                texts[name] = text
+    if args.roadmap:
+        try:
+            roadmap = open(args.roadmap, encoding="utf-8").read()
+        except OSError:
+            roadmap, unreadable = None, [args.roadmap]
+    else:
+        roadmap = read_vault(ROADMAP_PATH)
+        if roadmap is None:
+            unreadable = [ROADMAP_PATH]
+
+    indexes = {}
+    for board in BOARDS:
+        try:
+            indexes[board] = board_index(board, store=store)
+        except (board_store.StoreError, board_document.DocumentError,
+                board_records.RecordError, OSError) as exc:
+            # Every one of these means the same thing the unreadable vault
+            # file used to mean: this sweep did not see that board. A
+            # `RecordError` in particular is a document that contradicts
+            # its own board, and judging the roadmap against the rows that
+            # did parse would report the rest as missing.
+            unreadable.append("the %s records (%s)" % (board, exc))
     if unreadable:
         print("COULD NOT READ — %s. A roadmap judged against one board of two "
               "would report rows as missing that are simply unread, so nothing "
-              "is judged." % ", ".join(sorted(unreadable)))
+              "is judged." % ", ".join(unreadable))
         return 1
 
-    items = next_items(texts["roadmap"])
-    indexes = {board: board_index(texts[board]) for board in BOARDS.values()}
+    items = next_items(roadmap)
     findings = judge(items, indexes)
     print(render(items, findings))
     return 2 if findings else 0
