@@ -49,7 +49,12 @@ already has its own coverage in `board_view`, against these same files.
 import argparse
 import sys
 
-from agora_runner import entity_id, nova_boards, rank_key
+# Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
+# See tests/test_tools_run_as_scripts.py.
+import sys as _sys, pathlib as _pathlib  # noqa: E402
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
+
+from agora_runner import entity_id, nova_boards, rank_key  # noqa: E402
 
 
 def board_items(markdown):
