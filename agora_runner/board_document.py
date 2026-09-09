@@ -12,7 +12,12 @@ record actually **is**, and the spec does, once, in a code block:
       "rank": "0|hzzzzz:", "priority": "high", "size": "m",
       "status": "open", "updated": "2026-09-08T17:00:00Z" }
 
-This module is that shape, in both directions, and nothing else. The store
+This module is that shape, in both directions, and nothing else -- plus,
+since 2026-09-09, the one thing the spec's code block does not mention and
+six modules read anyway: a *capture*, the owner's own bullet above the first
+heading. See the `Captures` section at the foot of this file for why that is
+its own document with its own id space rather than a field on a row or a
+list on the board. The store
 that reads and writes these documents, the migration that creates them and
 the 23 markdown readers all move in one change -- the spec forbids a facade
 phase, because a facade is the window in which two stores are both live --
@@ -212,4 +217,170 @@ def _check_identity(doc):
     if actual is not None and actual != expected:
         raise DocumentError(
             f"document _id {actual!r} disagrees with board/number ({expected!r})"
+        )
+
+
+# --- Captures ---------------------------------------------------------
+#
+# A capture is one of the owner's own bullets above the first heading of a
+# board file, plus the replies cycles have written under it. Five modules
+# read `parse_board(...)["captures"]` and `nova_site` reads the parallel
+# `captureReplies`, and none of the eight merged primitives had anywhere
+# to put either -- a capture is not a row, so it needed a decision rather
+# than a field, and this is that decision.
+#
+# **A capture is its own document, not a field on the board's.** The
+# alternative was one `board:issue` document holding the whole list, which
+# is one write for every edit of any bullet, and `nova_site`'s Edit route
+# writes one capture at a time from his phone. A list-valued document
+# turns two people editing two different bullets into a `_rev` conflict
+# between them.
+#
+# **Its id is minted once and is not derived from its text.** Today a
+# capture is addressed *by its own words*: `nova_capture`'s Edit route
+# sends the text back as the address. That is already a live bug and the
+# docstring of `capture_entries` records what it cost -- when the address
+# and the stored text drifted apart by one welded-on reply, the route
+# answered "no longer in the list" and he lost an edit he had just typed.
+# Editing a capture changes its text, so a text-derived id changes under
+# the edit that uses it. Same argument as `entity_id`'s for projects, one
+# level down.
+#
+# **Order is a `rank_key`, not an index.** The list is newest-first and he
+# adds to the top, so an index-ordered store renumbers every sibling on
+# every capture he writes. `rank` is optional here for the same reason it
+# is on a row: the migration reads a file that states an order and nothing
+# else, and a capture nobody has placed by hand has `None`, which is a
+# different answer from first.
+#
+# **Replies are a list field, not documents.** They are written and read
+# only with the capture they sit under, nothing addresses one on its own,
+# and `parse_board` returns them as a list parallel to `captures`. A
+# reply document would buy an id for something that has never needed one.
+
+#: What a capture document's `type` reads. Not `DOCUMENT_TYPE`: a view
+#: that asks for rows must not be handed captures, and both live in the
+#: one database.
+CAPTURE_DOCUMENT_TYPE = "capture"
+
+
+def capture_document_id(board, capture_id):
+    """`("issue", "cap_7")` -> `"capture:issue:cap_7"`.
+
+    The board is part of the identity for the same reason it is on a row:
+    both files number from the top and one id has to name one bullet.
+    `capture_id` is the caller's to mint -- this module holds no counter
+    and will not derive one from the text, which is the whole point of
+    giving a capture an id at all.
+
+    **The prefix is `capture:` and not `board:`, and that is load-bearing
+    rather than cosmetic.** `board_store` selects a board's documents with
+    an `_all_docs` range over the literal prefix `board:<board>:` -- so an
+    id of `board:issue:capture:cap_7` would sit *inside* the row range.
+    `read_rows` would hand every capture back as a row with no number,
+    `sort_key` would file them all as unranked, and `write_rows` with the
+    default `prune=True` would tombstone every one of his captures the
+    first time a caller wrote the rows without them. Two id spaces that do
+    not overlap is a guarantee; a `type` filter at each call site is a
+    thing somebody forgets once.
+    """
+    if board not in BOARDS:
+        raise DocumentError(f"board must be one of {BOARDS}, not {board!r}")
+    if not isinstance(capture_id, str) or not capture_id.strip():
+        raise DocumentError(f"capture_id must be a non-empty str, not {capture_id!r}")
+    if ":" in capture_id:
+        # `board:issue:capture:a:b` would parse two ways and neither of
+        # them is wrong, so refuse it at the one place that builds the id.
+        raise DocumentError(f"capture_id must not contain ':': {capture_id!r}")
+    return f"capture:{board}:{capture_id}"
+
+
+def to_capture_document(text, board, capture_id, rank=None, replies=()):
+    """One of his bullets (and the replies under it) -> its record document.
+
+    `text` is his words alone, exactly as `capture_entries` splits them --
+    not his line with a cycle's answer welded onto the end, which is the
+    shape that broke the Edit route.
+    """
+    if not isinstance(text, str):
+        raise DocumentError(f"capture text must be a str, not {text!r}")
+    if not text.strip():
+        # `capture_entries` never yields one: a bare `- ` is not a capture.
+        # Storing it would put an empty bullet on his board on the way back.
+        raise DocumentError("capture text must not be empty")
+    replies = list(replies or ())
+    for reply in replies:
+        if not isinstance(reply, str):
+            raise DocumentError(f"a capture reply must be a str, not {reply!r}")
+    doc = {
+        "_id": capture_document_id(board, capture_id),
+        "type": CAPTURE_DOCUMENT_TYPE,
+        "board": board,
+        "captureId": capture_id,
+        "text": text,
+    }
+    if rank is not None:
+        doc["rank"] = rank
+    if replies:
+        # Absent and empty are the same thing to `parse_board`, which hands
+        # back `[]` for a bullet nobody has answered. Storing `[]` would
+        # make the two spellings differ in CouchDB and agree everywhere
+        # else, which is the split brain one field wide.
+        doc["replies"] = replies
+    return doc
+
+
+def capture_text_of(doc):
+    """One capture document's text, checked against its own `_id`."""
+    _check_capture_identity(doc)
+    return doc.get("text", "")
+
+
+def capture_replies_of(doc):
+    """The replies written under one capture, oldest first, `[]` if none."""
+    _check_capture_identity(doc)
+    return list(doc.get("replies") or ())
+
+
+def captures_map(docs):
+    """Capture documents -> `parse_board`'s two parallel lists.
+
+    Returns `{"captures": [text], "captureReplies": [[reply]]}`, the two
+    the same length, because six modules read them as a pair and index
+    one by the other's position.
+
+    Ranked captures come first in rank order, then unranked ones in the
+    order they were handed over. That pair is deliberate and it is
+    `board_store.sort_key`'s rule, which this deliberately restates rather
+    than imports -- `board_store` imports this module, so the arrow only
+    goes one way. `_all_docs` answers in lexical id order, so
+    `capture:issue:cap_10` sorts before `cap_2` and every read has to
+    re-sort in Python. Sorting on `rank or ""` instead would put every
+    unranked capture *first*, at the top of his board, which is where a
+    capture he never placed is most visible and least earned.
+    """
+    # Materialised before the check, because a caller handing over a
+    # generator (a `_all_docs` page, `reversed(...)`) would otherwise have
+    # it consumed by the check and sort an empty list.
+    docs = list(docs)
+    for doc in docs:
+        _check_capture_identity(doc)
+    ordered = sorted(
+        docs, key=lambda doc: (doc.get("rank") is None, doc.get("rank") or ""))
+    return {
+        "captures": [doc.get("text", "") for doc in ordered],
+        "captureReplies": [list(doc.get("replies") or ()) for doc in ordered],
+    }
+
+
+def _check_capture_identity(doc):
+    """Refuse a capture document whose `_id` disagrees with its own fields."""
+    for key in ("board", "captureId"):
+        if key not in doc:
+            raise DocumentError(f"capture is missing {key!r}: {doc.get('_id')!r}")
+    expected = capture_document_id(doc["board"], doc["captureId"])
+    actual = doc.get("_id")
+    if actual is not None and actual != expected:
+        raise DocumentError(
+            f"capture _id {actual!r} disagrees with board/captureId ({expected!r})"
         )

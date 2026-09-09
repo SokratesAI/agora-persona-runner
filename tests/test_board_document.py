@@ -9,15 +9,21 @@ a status key computed from a stale copy of a rule that has since moved.
 
 import pytest
 
-from agora_runner import nova_boards
+from agora_runner import nova_boards, rank_key
 from agora_runner.board_document import (
     BOARDS,
+    CAPTURE_DOCUMENT_TYPE,
     DOCUMENT_TYPE,
     DocumentError,
+    capture_document_id,
+    capture_replies_of,
+    capture_text_of,
+    captures_map,
     details_map,
     detail_of,
     document_id,
     from_document,
+    to_capture_document,
     to_document,
 )
 
@@ -200,3 +206,138 @@ def test_a_detail_that_is_not_text_is_refused_rather_than_stored():
     other shape and be rendered into a board as its repr."""
     with pytest.raises(DocumentError):
         to_document(by_number(41), "issue", detail=["not", "text"])
+
+
+# --- Captures ---------------------------------------------------------
+
+CAPTURE_BOARD = """---
+type: log
+---
+
+- Move the goals out of my obsidian vault and into yours.
+  - Done in cycle 789, all ten documents verified byte-identical first.
+- Be more humble in tone.
+
+## Board
+
+| # | Title |
+|---|---|
+"""
+
+
+def parsed_captures(markdown=CAPTURE_BOARD):
+    parsed = nova_boards.parse_board(markdown)
+    return parsed["captures"], parsed["captureReplies"]
+
+
+def test_a_capture_and_its_replies_survive_the_round_trip_in_order():
+    """The pair `parse_board` hands back is what six modules read, and they
+    index one list by the other's position -- so the two coming back the
+    same length and in the same order is the contract, not a detail."""
+    captures, replies = parsed_captures()
+    assert len(captures) == 2 and replies[0] and not replies[1]
+
+    ranks = rank_key.sequence(len(captures))
+    docs = [
+        to_capture_document(text, "issue", f"cap_{i}", rank=ranks[i], replies=reply)
+        for i, (text, reply) in enumerate(zip(captures, replies))
+    ]
+    # Handed back in the order CouchDB's `_all_docs` actually answers in --
+    # lexical by id, which is not insertion order once there are ten.
+    assert captures_map(reversed(docs)) == {
+        "captures": captures, "captureReplies": replies,
+    }
+
+
+def test_an_unranked_capture_lands_after_the_ranked_ones_not_before():
+    """`sorted` on `rank or ""` would read an unplaced capture as the
+    smallest key and print it at the top of his board -- the most visible
+    seat in the file, for the one bullet nobody has placed. The migration
+    reads a file that states an order and nothing else, so `None` has to
+    stay a different answer from first, the same as a row's `order`."""
+    placed = to_capture_document("placed", "issue", "cap_1", rank="0|b:")
+    unplaced = to_capture_document("unplaced", "issue", "cap_2")
+    assert "rank" not in unplaced
+    assert captures_map([unplaced, placed])["captures"] == ["placed", "unplaced"]
+
+
+def test_a_captures_id_is_minted_and_never_derived_from_its_text():
+    """Editing a capture changes its text, and today the Edit route
+    addresses a capture *by* its text -- which is how a welded-on reply
+    made the route answer "no longer in the list" and lose an edit he had
+    just typed. So the id has to survive the edit that uses it."""
+    before = to_capture_document("Be more humble.", "issue", "cap_7")
+    after = to_capture_document("Be more humble in tone.", "issue", "cap_7")
+    assert before["_id"] == after["_id"] == "capture:issue:cap_7"
+    assert capture_text_of(after) == "Be more humble in tone."
+
+
+def test_a_capture_is_not_a_row_and_a_row_view_must_not_see_it():
+    """One database for the whole vault: a view asking for `type == "row"`
+    would otherwise be handed bullets with no number."""
+    assert CAPTURE_DOCUMENT_TYPE != DOCUMENT_TYPE
+    assert to_capture_document("hi", "idea", "cap_1")["type"] == CAPTURE_DOCUMENT_TYPE
+
+
+def test_an_empty_reply_list_is_absent_rather_than_stored_empty():
+    """`parse_board` gives `[]` for an unanswered bullet. Storing `[]` puts
+    the same fact in CouchDB one way and everywhere else another way."""
+    doc = to_capture_document("hi", "issue", "cap_1", replies=[])
+    assert "replies" not in doc and capture_replies_of(doc) == []
+
+
+def test_a_malformed_capture_is_refused_rather_than_stored():
+    for bad in ("", "   "):
+        with pytest.raises(DocumentError):
+            to_capture_document(bad, "issue", "cap_1")
+    with pytest.raises(DocumentError):
+        to_capture_document(["not", "text"], "issue", "cap_1")
+    with pytest.raises(DocumentError):
+        to_capture_document("hi", "issue", "cap_1", replies=[7])
+    for bad_id in ("", "   ", "cap:1", None):
+        with pytest.raises(DocumentError):
+            to_capture_document("hi", "issue", bad_id)
+    with pytest.raises(DocumentError):
+        to_capture_document("hi", "roadmap", "cap_1")
+
+
+def test_a_capture_whose_id_disagrees_with_its_fields_is_refused():
+    """Same rule as a row's: `_id` is composed from `board` and the minted
+    id, so a document where they disagree has no winner to pick."""
+    doc = to_capture_document("hi", "issue", "cap_1")
+    for broken in (dict(doc, board="idea"), dict(doc, captureId="cap_2")):
+        with pytest.raises(DocumentError):
+            capture_text_of(broken)
+    missing = dict(doc)
+    missing.pop("captureId")
+    with pytest.raises(DocumentError):
+        capture_replies_of(missing)
+    with pytest.raises(DocumentError):
+        captures_map([dict(doc, board="idea")])
+
+
+def test_a_capture_id_sits_outside_the_range_the_store_reads_rows_with():
+    """`board_store` selects a board's rows with an `_all_docs` range over
+    the literal prefix `board:<board>:`, so an id under that prefix is a
+    row as far as every store call is concerned however its `type` reads.
+    A capture filed there comes back from `read_rows` as a row with no
+    number, and the next `write_rows(board, rows)` tombstones it, because
+    `prune=True` deletes what the caller did not send.
+
+    The bounds are read off the store rather than spelled out again here:
+    a test that restates the prefix would still pass on the day somebody
+    changes it."""
+    import json
+    import urllib.parse
+
+    from agora_runner import board_store
+
+    query = urllib.parse.parse_qs(board_store._range_query("issue"))
+    start = json.loads(query["startkey"][0])
+    end = json.loads(query["endkey"][0])
+
+    row_id = document_id("issue", 41)
+    assert start <= row_id < end
+
+    capture_id = capture_document_id("issue", "cap_1")
+    assert not (start <= capture_id < end)
