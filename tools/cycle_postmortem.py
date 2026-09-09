@@ -55,7 +55,12 @@ work happen**:
   and one document -- resolves to 276 rather than to a coin toss.
 * `silent` --- a conversation exists and the heartbeat never spoke in
   it. Agora's own system notices about other cycles do not count as
-  speaking; see `run_messages`.
+  speaking; see `run_messages`. Each of these carries a line saying
+  whether the runner process it ran inside was killed without warning,
+  drained cleanly, or is not in the ledger at all --- `read_lifecycle`
+  and `apply_runner_lifecycle` below, against the record `runner#939`
+  made the runner keep. That line never changes the verdict; it says
+  whether the pod dying is the answer.
 * `absent` --- no conversation for that number. Agora's own counter
   handed the number out and there is no record of a run.
 
@@ -144,6 +149,8 @@ from agora_runner.cycle_health import MAX_CYCLE_MINUTES, missing_cycles  # noqa:
 from agora_runner.nova_journal import entry_seq, file_cycle, parse_heading  # noqa: E402
 from agora_runner.cycle_number import _NAME_RE  # noqa: E402
 from agora_runner.heartbeat_liveness import AGORA_PUBLIC  # noqa: E402
+from agora_runner.runner_lifecycle import (  # noqa: E402
+    PATH as RUNNER_LIFECYCLE_PATH, lives)
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 JOURNAL_PREFIX = "projects/sokrates/projects/agora/nova/journal/"
@@ -1523,6 +1530,169 @@ def _branch_landing_lines(rows, base="main"):
     return lines
 
 
+#: What a `silent` row's lifecycle line says when the join lands. The
+#: verdicts are `agora_runner.runner_lifecycle.lives`' own, on purpose --
+#: that module wrote them to be the bridge's four words rather than a
+#: fifth vocabulary, and re-spelling them here would be the sixth.
+#:
+#: **`clean` is the one worth having and it is the one that looks like
+#: nothing.** Every other verdict names a way the pod died; `clean` says
+#: the runner process this cycle ran inside was asked to stop and
+#: finished draining, so whatever silenced the cycle was not the pod
+#: going away. A bucket that only ever prints causes cannot rule one out.
+_LIFE_SENTENCE = {
+    "no_signal": "the runner process it ran in was never asked to stop -- a SIGKILL at "
+                 "grace expiry, an OOM kill or a node eviction, which is what a silent "
+                 "cycle is made of",
+    "killed_mid_drain": "the runner process it ran in was asked to stop and never "
+                        "finished draining",
+    "clean": "the runner process it ran in drained cleanly, so the pod going away is "
+             "NOT what silenced this cycle",
+    "running": "the runner process it ran in is the one still running",
+}
+
+
+def read_lifecycle(runner=subprocess.run):
+    """`(records, error)` --- the runner's own lifecycle ledger, oldest first.
+
+    Read through `vault_tool.py` rather than `runner_lifecycle.read_records`,
+    which goes via `agora_runner.vault`: that module's credentials are the
+    runner Pod's and this check runs on the bridge Pod, where it answers 401
+    with an empty list. Same shape and same reason as
+    `heartbeat_gaps.read_drop_records`.
+
+    `([], None)` is a real measurement --- the ledger exists and holds
+    nothing, or has not been written yet. An error is never an empty list,
+    and neither one raises the exit status on its own: this explains rows
+    that are already being reported rather than finding anything itself.
+    """
+    try:
+        done = runner([sys.executable, VAULT_TOOL, "get", RUNNER_LIFECYCLE_PATH],
+                      capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        return [], f"could not run {VAULT_TOOL}: {error}"
+    if done.returncode != 0:
+        return [], f"{VAULT_TOOL} get {RUNNER_LIFECYCLE_PATH} exited {done.returncode}"
+    raw = done.stdout or ""
+    # `get` prints `[not found: <path>]` on stdout and exits 0, so a return
+    # code alone reads a vanished ledger as an empty one.
+    if not raw.strip() or raw.lstrip().startswith("[not found:"):
+        return [], None
+    try:
+        records = json.loads(raw)
+    except ValueError:
+        return [], f"{RUNNER_LIFECYCLE_PATH} is not JSON"
+    if not isinstance(records, list):
+        return [], f"{RUNNER_LIFECYCLE_PATH} does not hold a list"
+    return records, None
+
+
+def _stamp(row, key="at"):
+    """One ISO instant off a lifecycle row, or `None` if it will not parse."""
+    raw = (row or {}).get(key)
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def life_covering(grouped, at):
+    """The life whose window holds `at`, or `None`. -> dict or None
+
+    A life runs from its own `started` up to the next life's `started`;
+    the newest life has no end, so it runs forward forever. That boundary
+    is the honest one available: a life that ended `no_signal` was killed
+    with no row to record when, so the only instant the ledger knows is
+    when its successor came up.
+
+    `None` for an instant before the oldest `started` is the whole point
+    of the ledger being capped --- it cannot be written backwards, so a
+    cycle older than the first row must read as *not covered* rather than
+    as covered by the oldest life it happens to sit near.
+    """
+    if at is None:
+        return None
+    found = None
+    for life in grouped or []:
+        began = _stamp(life.get("started"))
+        if began is None or began > at:
+            continue
+        if found is None or _stamp(found.get("started")) < began:
+            found = life
+    return found
+
+
+def apply_runner_lifecycle(results, conversations, records):
+    """Attach a `runner_life` dict to every `silent` row, in place.
+
+    `{"verdict": ...}` when a life covers the conversation's `createdAt`,
+    `{"uncovered": <oldest started>}` when the ledger does not reach back
+    that far, and `{"no_clock": True}` when Agora gave no `createdAt` to
+    join on. Three separate answers because they mean different things and
+    a single `None` would merge them --- which is the failure this whole
+    tool keeps finding one layer down.
+    """
+    grouped = lives(records)
+    # The earliest instant the ledger can actually place, not the first row
+    # in it: a `started` whose stamp will not parse is a life this cannot
+    # join on, and taking `grouped[0]` blindly would report "the ledger is
+    # empty" for a ledger that is full of unreadable clocks.
+    began = [at for at in (_stamp(life.get("started")) for life in grouped)
+             if at is not None]
+    oldest = min(began) if began else None
+    for row in results:
+        if row.get("verdict") != "silent":
+            continue
+        conversation = (conversations or {}).get(row["number"]) or {}
+        created = _stamp(conversation, "createdAt")
+        if created is None:
+            row["runner_life"] = {"no_clock": True}
+            continue
+        life = life_covering(grouped, created)
+        if life is None:
+            row["runner_life"] = {"uncovered": oldest, "created": created}
+            continue
+        row["runner_life"] = {"verdict": life["verdict"],
+                              "started": _stamp(life.get("started")),
+                              "created": created}
+
+
+def _oslo(at):
+    """One UTC instant as an Oslo wall clock, for a line the owner reads.
+
+    Every stamp in the ledger and every `createdAt` Agora returns is UTC;
+    this loop writes Oslo, and reading one as the other is the summer
+    offset, every time.
+    """
+    from zoneinfo import ZoneInfo
+
+    return at.astimezone(ZoneInfo(_OSLO)).strftime("%Y-%m-%d %H:%M Oslo")
+
+
+def _runner_life_lines(life, error=None):
+    """The lifecycle line printed under a `silent` row, as lines."""
+    if error:
+        return [f"      the runner lifecycle ledger could not be read, so nothing "
+                f"here says whether the pod died: {error}"]
+    if not life:
+        return []
+    if life.get("no_clock"):
+        return ["      Agora gave this conversation no createdAt, so there is no "
+                "instant to join the runner lifecycle ledger on"]
+    if "uncovered" in life:
+        oldest = life["uncovered"]
+        reach = ("it holds no life this can place on a clock" if oldest is None
+                 else f"its oldest life starts {_oslo(oldest)}")
+        return [f"      the runner lifecycle ledger does not reach back to "
+                f"{_oslo(life['created'])} ({reach}), so the pod's own fate is "
+                f"not recorded for this cycle"]
+    sentence = _LIFE_SENTENCE.get(life["verdict"], life["verdict"])
+    return [f"      runner lifecycle: {sentence} "
+            f"(that process started {_oslo(life['started'])})"]
+
+
 def apply_branch_landing(results, root, clone, base="main", measure=None):
     """Attach a `branch_landing` list to every `lost` row, in place."""
     measure = measure or branch_landing
@@ -1533,7 +1703,8 @@ def apply_branch_landing(results, root, clone, base="main", measure=None):
                                         root, clone, base=base)
 
 
-def format_report(results, newest, error, window=DEFAULT_WINDOW, raise_all=False):
+def format_report(results, newest, error, window=DEFAULT_WINDOW,
+                  raise_all=False, lifecycle_error=None):
     """`(text, status)` --- the report and its exit code."""
     if error:
         return (f"COULD NOT READ — {error}\n"
@@ -1562,6 +1733,9 @@ def format_report(results, newest, error, window=DEFAULT_WINDOW, raise_all=False
             if verdict == "lost":
                 lines.extend(_recovered_reply_lines(row.get("reply")))
                 lines.extend(_branch_landing_lines(row.get("branch_landing")))
+            if verdict == "silent":
+                lines.extend(_runner_life_lines(row.get("runner_life"),
+                                                error=lifecycle_error))
 
     lines.append("")
     lines.append(f"{len(results)} cycle number(s) in the journal's range have no entry: "
@@ -1654,8 +1828,19 @@ def main(argv=None):
     if not error:
         apply_branch_landing(results, os.path.dirname(_REPO_ROOT),
                              os.path.basename(_REPO_ROOT))
+    # The `silent` bucket's own join, and the reason the runner writes a
+    # lifecycle ledger at all (runner#939). It changes no verdict either:
+    # a conversation with no message in it is silent whatever killed the
+    # pod, and the ledger only says whether the pod is the answer.
+    lifecycle, lifecycle_error = ([], None) if error else read_lifecycle()
+    # Not attached when the ledger could not be read: an empty ledger and an
+    # unreadable one are different facts and `{"uncovered": None}` would
+    # print the first sentence for the second.
+    if not error and lifecycle_error is None:
+        apply_runner_lifecycle(results, conversations, lifecycle)
     report, status = format_report(results, newest, error,
-                                   window=args.window, raise_all=args.raise_all)
+                                   window=args.window, raise_all=args.raise_all,
+                                   lifecycle_error=lifecycle_error)
     if not error:
         report = "\n".join([report] + format_misfiled(pairs)
                            + format_unnumbered(unnumbered)
