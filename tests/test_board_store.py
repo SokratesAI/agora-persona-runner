@@ -21,7 +21,7 @@ import urllib.parse
 
 import pytest
 
-from agora_runner import board_document, board_store, ticket_docs
+from agora_runner import board_document, board_store, entity_id, ticket_docs
 
 
 class FakeCouch:
@@ -30,6 +30,18 @@ class FakeCouch:
     def __init__(self, docs=()):
         self.docs = {doc["_id"]: dict(doc, _rev="1-a") for doc in docs}
         self.bulk_calls = []
+        self.revs = 1
+
+    @staticmethod
+    def _wire(doc):
+        """A round trip through JSON, because a real request is one.
+
+        Without it the fake hands back the caller's own nested dicts, so a
+        test that mutates a registry it already wrote silently mutates the
+        stored copy as well -- and a conditional write then compares a
+        document against itself and finds it unchanged.
+        """
+        return json.loads(json.dumps(doc))
 
     def __call__(self, method, path, body=None, timeout=60):
         if method == "POST" and path.endswith("_bulk_docs"):
@@ -39,22 +51,34 @@ class FakeCouch:
                 if doc.get("_deleted"):
                     self.docs.pop(doc["_id"], None)
                 else:
-                    self.docs[doc["_id"]] = dict(doc, _rev="2-b")
+                    self.docs[doc["_id"]] = self._wire(dict(doc, _rev="2-b"))
                 answer.append({"ok": True, "id": doc["_id"]})
             return 200, answer
         if method == "GET" and "_all_docs?" in path:
             query = urllib.parse.parse_qs(path.split("?", 1)[1])
             start = json.loads(query["startkey"][0])
             end = json.loads(query["endkey"][0])
-            rows = [{"id": doc_id, "doc": doc}
+            rows = [{"id": doc_id, "doc": self._wire(doc)}
                     # CouchDB answers in lexical id order, not numeric.
                     for doc_id, doc in sorted(self.docs.items())
                     if start <= doc_id <= end]
             return 200, {"rows": rows}
+        if method == "PUT":
+            doc_id = urllib.parse.unquote(path.split("/", 1)[1])
+            held = self.docs.get(doc_id)
+            # CouchDB's own rule, and the registry tests turn on it: a PUT
+            # must carry the stored revision, and a mismatch is a 409 rather
+            # than a write.
+            if (held or {}).get("_rev") != body.get("_rev"):
+                return 409, {"error": "conflict"}
+            self.revs += 1
+            stored = self._wire(dict(body, _rev=f"{self.revs}-r"))
+            self.docs[doc_id] = stored
+            return 201, {"ok": True, "id": doc_id, "rev": stored["_rev"]}
         if method == "GET":
             doc_id = urllib.parse.unquote(path.split("/", 1)[1])
             if doc_id in self.docs:
-                return 200, self.docs[doc_id]
+                return 200, self._wire(self.docs[doc_id])
             return 404, {"error": "not_found"}
         raise AssertionError(f"unexpected request: {method} {path}")
 
@@ -199,3 +223,93 @@ def test_a_round_trip_through_json_keeps_the_order(couch):
             _row("issue", 5, done=True)]
     board_store.write_rows("issue", json.loads(json.dumps(docs)))
     assert [doc["number"] for doc in board_store.read_rows("issue")] == [12, 3, 5]
+
+
+# --- the registry document -------------------------------------------------
+#
+# `entity_id` mints ids and touches no database; `board_store` is the only
+# layer that does. These cases are about the join between them, and two of
+# them cannot be reached from the live boards at all: an absent registry
+# (there is one now) and a lost conflict (one cycle at a time never sees it).
+
+
+def test_absent_registry_reads_as_an_empty_one(couch):
+    registry = board_store.read_registry()
+
+    assert registry["projects"] == {}
+    assert registry["milestones"] == {}
+    assert registry["_id"] == board_store.REGISTRY_ID
+    assert "_rev" not in registry
+
+
+def test_the_document_read_back_is_a_registry_entity_id_can_mint_into(couch):
+    registry = board_store.read_registry()
+    pid = entity_id.ensure_project(registry, "Nova")
+    entity_id.ensure_milestone(registry, pid, "Board records")
+    board_store.write_registry(registry)
+
+    stored = board_store.read_registry()
+
+    assert entity_id.resolve_project(stored, "nova") == pid
+    assert entity_id.resolve_milestone(stored, pid, "Board Records") is not None
+
+
+def test_the_registry_is_not_a_row_of_any_board(couch):
+    registry = board_store.read_registry()
+    entity_id.ensure_project(registry, "Nova")
+    board_store.write_registry(registry)
+    couch.docs.update({doc["_id"]: doc for doc in
+                       [dict(_row("issue", 7), _rev="1-a")]})
+
+    for board in board_document.BOARDS:
+        assert board_store.REGISTRY_ID not in board_store.stored_documents(board)
+    assert [doc["number"] for doc in board_store.read_rows("issue")] == [7]
+
+
+def test_an_unchanged_registry_is_not_written_again(couch):
+    registry = board_store.read_registry()
+    entity_id.ensure_project(registry, "Nova")
+    written = board_store.write_registry(registry)
+
+    again = board_store.write_registry(dict(written))
+
+    assert again["_rev"] == written["_rev"]
+
+
+def test_a_write_against_a_stale_revision_is_refused(couch):
+    first = board_store.read_registry()
+    entity_id.ensure_project(first, "Nova")
+    board_store.write_registry(first)
+
+    stale = dict(first)
+    entity_id.ensure_project(stale, "Marcus")
+    with pytest.raises(board_store.RegistryConflict):
+        board_store.write_registry(stale)
+
+    # And the winner's ids are still there, unchanged.
+    assert entity_id.resolve_project(board_store.read_registry(), "Marcus") is None
+
+
+def test_a_first_write_over_an_existing_registry_is_refused(couch):
+    board_store.write_registry(entity_id.new_registry())
+
+    with pytest.raises(board_store.RegistryConflict):
+        board_store.write_registry(entity_id.new_registry() | {"projects": {"prj_a": {}}})
+
+
+@pytest.mark.parametrize("bad", [
+    {},
+    {"projects": {}},
+    {"projects": {}, "milestones": []},
+    "projects",
+])
+def test_a_thing_that_is_not_a_registry_never_reaches_couchdb(couch, bad):
+    keep = board_store.read_registry()
+    entity_id.ensure_project(keep, "Nova")
+    board_store.write_registry(keep)
+    before = dict(couch.docs[board_store.REGISTRY_ID])
+
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_registry(bad)
+
+    assert couch.docs[board_store.REGISTRY_ID] == before

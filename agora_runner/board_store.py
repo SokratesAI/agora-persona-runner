@@ -38,6 +38,22 @@ come back in one fixed order -- a read that is only *mostly* deterministic
 is the kind of bug that shows up as a diff in the generated markdown view
 and nowhere else.
 
+## The registry is one document, and its write is conditional
+
+`entity_id` mints project and milestone ids into a plain dict and touches
+no database. That dict has to survive somewhere or every migration run
+mints a fresh set of ids for the same names, so it is stored here, as one
+document rather than one per project: a milestone is only valid against a
+project id in the *same* snapshot (`ensure_milestone` on an unknown
+project is an error), and splitting the two maps would let one half land
+and the other fail.
+
+The write sends the revision the caller read at, never the current one, so
+two cycles minting against two snapshots get a `RegistryConflict` instead
+of one silently overwriting the other's ids. That is the case the row path
+does not have: a row write is per row and per board, and a lost row write
+is a row; a lost registry write is every id on it.
+
 ## A document whose content has not changed is not written
 
 Straight from `ticket_docs.write_board`, and for the same measured reason:
@@ -50,7 +66,7 @@ The `unchanged` count in the summary is what says whether that held.
 import json
 import urllib.parse
 
-from . import board_document, ticket_docs
+from . import board_document, entity_id, ticket_docs
 
 #: The end of an `_all_docs` key range. Every id under the prefix sorts
 #: below it, and nothing real contains it.
@@ -181,3 +197,109 @@ def write_rows(board, docs, prune=True):
         "unchanged": unchanged,
         "failures": failures,
     }
+
+
+#: The project/milestone registry, one document beside the row records.
+#:
+#: The id deliberately carries no third segment, so it sits *outside* every
+#: `board:<board>:` key range and `stored_documents` cannot hand it back as
+#: a row. That is asserted in the tests rather than left to the reader: a
+#: registry that showed up in `read_rows` would reach `from_document` and
+#: fail there, one layer away from the naming decision that caused it.
+REGISTRY_ID = "board:registry"
+
+#: `board_document.DOCUMENT_TYPE` is the row type and the CouchDB views key
+#: on `doc.type`, so the registry needs its own or it joins a view built for
+#: a different shape.
+REGISTRY_TYPE = "board-registry"
+
+
+class RegistryConflict(StoreError):
+    """The stored registry moved between the read and the write."""
+
+
+def _check_registry(registry):
+    """Refuse anything that is not a registry, before it overwrites one.
+
+    `write_registry` replaces the whole document, so a caller that passed
+    `{}` -- a `new_registry()` that lost its assignment, a JSON load of the
+    wrong file -- would erase every minted id in one request, and every
+    `projectId` already stored on a row would become an orphan pointing at
+    a project that no longer exists. There is no undo for that short of a
+    database backup, so the shape is checked rather than trusted.
+    """
+    if not isinstance(registry, dict):
+        raise board_document.DocumentError(
+            f"registry must be a dict, not {type(registry).__name__}")
+    for field in ("projects", "milestones"):
+        if not isinstance(registry.get(field), dict):
+            raise board_document.DocumentError(
+                f"registry {field!r} must be a dict, not {registry.get(field)!r}")
+    return registry
+
+
+def read_registry():
+    """The stored registry document, or a fresh empty one.
+
+    The document *is* a registry in `entity_id`'s sense -- `ensure_project`
+    and `ensure_milestone` take it directly and mutate it in place -- with
+    `_id`, `type` and (once stored) `_rev` alongside the two maps. Keeping
+    them in one object is what lets a caller read, mint and write without
+    unpacking anything, and `entity_id` only ever reaches into `projects`
+    and `milestones`, so the extra keys ride along untouched.
+
+    An absent document reads as an empty registry rather than as `None`,
+    because "nothing has been minted yet" and "the registry is empty" are
+    the same state and every caller would otherwise write the same
+    `or new_registry()` after the call.
+    """
+    status, body = ticket_docs._req(
+        "GET", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(REGISTRY_ID, safe='')}")
+    if status == 200:
+        return body
+    if status == 404:
+        return dict(entity_id.new_registry(), _id=REGISTRY_ID, type=REGISTRY_TYPE)
+    raise StoreError(f"reading {REGISTRY_ID}: {status} {json.dumps(body)[:200]}")
+
+
+def write_registry(registry):
+    """Write the registry back, conditional on the revision it was read at.
+
+    Returns the document as it now stands, with the new `_rev`, so a caller
+    minting in two passes can write twice without re-reading.
+
+    A document whose content has not changed is not written, for the same
+    reason `write_rows` skips one: minting is idempotent, so a migration
+    re-run mints nothing and must cost no revision.
+
+    **A 409 raises `RegistryConflict` and is not retried.** Sending the same
+    body again with the winner's `_rev` is the one thing a caller must not
+    do: `entity_id.ensure_project` is idempotent against *one* snapshot, and
+    two cycles that mint the same new name against two snapshots produce two
+    different ids for one project -- which is the orphaning this whole piece
+    exists to prevent. Re-read, run the `ensure_*` calls again against the
+    text that won, and write that.
+    """
+    _check_registry(registry)
+    doc = {key: value for key, value in registry.items() if key != "_rev"}
+    doc["_id"] = REGISTRY_ID
+    doc["type"] = REGISTRY_TYPE
+    held = read_registry()
+    if held.get("_rev") is not None and ticket_docs._payload(held) == doc:
+        return held
+    # The caller's revision, never the one just read. Sending the *current*
+    # `_rev` would make every write succeed, which is the clobber this pair
+    # exists to refuse: a caller that read, minted, and was overtaken would
+    # overwrite the winner's ids instead of being told about them.
+    if registry.get("_rev") is not None:
+        doc["_rev"] = registry["_rev"]
+    status, body = ticket_docs._req(
+        "PUT", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(REGISTRY_ID, safe='')}",
+        doc)
+    if status == 409:
+        raise RegistryConflict(
+            f"{REGISTRY_ID} moved since it was read: re-read it, mint against "
+            f"the registry that won, and write that -- do not resend this one")
+    if status not in (200, 201):
+        raise StoreError(f"writing {REGISTRY_ID}: {status} {json.dumps(body)[:200]}")
+    return dict(doc, _rev=body["rev"])
