@@ -37,6 +37,14 @@ none. `type` still separates the documents, because a document that
 disagrees with the range it was stored in is a bug worth raising rather
 than silently filing under the other kind.
 
+**And the same join in the other direction, for the writers.** `store_item`
+is `contents`' mirror: it takes one row in `parse_board`'s shape and writes
+one document. It is here rather than in the ten `tools/board_*.py` writers
+for the reason `contents` is -- they hold *names* and the store wants ids,
+and ten copies of that lookup is ten chances to mint a second project called
+`Nova`, drop a write-up, or send a row to the bottom of the board by
+re-minting it without its rank.
+
 **A row carries `projectId`/`milestoneId`; `parse_board` carried names.**
 The registry is the only place the two are joined, and a row pointing at
 an id the registry does not hold raises rather than falling back to the
@@ -46,7 +54,9 @@ dangling id, which is precisely the orphan stable ids exist to prevent.
 Rendering it as `Nova` would put the orphan on his board looking re-filed.
 """
 
-from agora_runner import board_document, board_store
+import copy
+
+from agora_runner import board_document, board_store, entity_id
 
 
 class RecordError(ValueError):
@@ -164,3 +174,89 @@ def contents(board, store=board_store):
         "items": items,
         "details": board_document.details_map(rows),
     }
+
+
+def store_item(board, item, detail=None, store=board_store):
+    """One row in `parse_board`'s shape -> one written record document.
+
+    The write mirror of `contents`, and the seam the ten `tools/board_*.py`
+    writers need at the switchover. Each of them changes one cell of one row
+    and today does it by rewriting his markdown. `board_store.write_row`
+    already writes one document without pulling the whole board back, but it
+    takes a *document* -- id, ids, rank, `_rev` -- and a writer holds an
+    `item`, whose project and milestone are **names**. The registry is the
+    only place names and ids are joined, exactly as in `contents`, so that
+    join lives here and not in ten copies of itself.
+
+    Returns the document as it now stands, `_rev` included, which is
+    `board_store.write_row`'s contract.
+
+    Four things it does that a hand-rolled `to_document` + `write_row` would
+    not, and each of them loses something without an error:
+
+    **The registry is written before the row, and only when minting changed
+    it.** A row pointing at a project id the registry does not hold makes
+    `contents` raise for the *whole board* -- so the order is not a
+    preference, it is the difference between a failed write and a board
+    nothing can read. It fires the first time he files a row into a project
+    that is new, which is an ordinary Tuesday. An *unchanged* registry is not
+    rewritten, because every write burns a revision on the one document every
+    row of both boards points at, and the change is detected by comparing the
+    whole registry rather than by asking `resolve_*` twice -- `ensure_project`
+    may also touch an existing entry, and a comparison sees that where a
+    second resolve does not.
+
+    **The stored row's `rank` is carried forward.** `to_document` takes the
+    rank as an argument and leaves it out when it is absent, and
+    `board_store.in_order` puts an unranked document after every ranked one --
+    so re-minting a row to change its status would silently move it to the
+    bottom of his board. That is `capture_plan`'s bug in the row range.
+
+    **The stored row's `detail` is carried forward unless the caller passes
+    one.** A body is not a key on the item -- `parse_board` keeps `details` in
+    a separate dict -- so a writer that holds only the row has nothing to pass
+    and would otherwise delete his write-up. `detail=""` means *remove it* and
+    is deliberately distinct from `detail=None`, which means *leave whatever
+    is stored alone*.
+
+    **An unmigrated store raises rather than being seeded with one row**, for
+    `contents`' reason: `read_registry` answers a revisionless document for a
+    store nobody has migrated, so a writer that created its one row there
+    would leave behind a board whose every other row is missing, and
+    `contents` would then read that one row as the board.
+    """
+    registry = store.read_registry()
+    if registry.get("_rev") is None:
+        raise UnmigratedStore(
+            "the record store has never been written, so a row cannot be "
+            f"written into board {board!r}: the registry document has no "
+            "revision. Run `python3 -m tools.board_migrate --board <board> "
+            "--file <md> --apply` first")
+
+    held = store.read_row(board, item.get("number"))
+
+    # Minted on the same conditions as the migration (`records` in
+    # `tools/board_migration_preflight.py`): a milestone needs a project,
+    # because a milestone with no project is the orphan `entity_id` exists to
+    # prevent, and two projects may each have a `Backup`.
+    before = copy.deepcopy(registry)
+    project_id = milestone_id = None
+    project_name = item.get("project") or ""
+    milestone_name = item.get("milestone") or ""
+    if project_name:
+        project_id = entity_id.ensure_project(registry, project_name)
+        if milestone_name:
+            milestone_id = entity_id.ensure_milestone(
+                registry, project_id, milestone_name)
+    if registry != before:
+        store.write_registry(registry)
+
+    body = detail
+    if body is None and held is not None:
+        body = board_document.detail_of(held) or None
+    doc = board_document.to_document(
+        item, board, project_id=project_id, milestone_id=milestone_id,
+        rank=(held or {}).get("rank"), detail=body)
+    if held is not None:
+        doc["_rev"] = held["_rev"]
+    return store.write_row(doc)

@@ -278,3 +278,185 @@ def test_the_registry_is_checked_before_the_documents_are_read():
     store.docs = [{"_id": "board:issue:row:1", "board": "issue", "type": "nonsense"}]
     with pytest.raises(board_records.UnmigratedStore):
         board_records.contents("issue", store=store)
+
+
+class WritableFakeStore(FakeStore):
+    """`FakeStore` plus the three calls `store_item` writes through.
+
+    It is deliberately dumb about the rules `board_store` owns: it does not
+    refuse a revisionless update and it does not short-circuit an unchanged
+    document, because re-spelling `write_row`'s contract in the fake would
+    make these tests agree with themselves. What it does hold is `calls`, in
+    order, which is the only way to see that the registry was written *before*
+    the row -- an assertion about ordering needs a witness that remembers.
+    """
+
+    def __init__(self, docs, registry):
+        super().__init__(docs, registry)
+        self.calls = []
+
+    def read_row(self, board, number):
+        wanted = board_document.document_id(board, number)
+        for doc in self.docs:
+            if doc.get("_id") == wanted:
+                return doc
+        return None
+
+    def write_row(self, doc):
+        self.calls.append(("write_row", dict(doc)))
+        stored = dict(doc, _rev="2-written")
+        self.docs = [held for held in self.docs
+                     if held.get("_id") != doc.get("_id")] + [stored]
+        return stored
+
+    def write_registry(self, registry):
+        self.calls.append(("write_registry", dict(registry)))
+        self.registry = dict(registry, _rev="2-registry")
+        return self.registry
+
+
+def writable(board="issue", markdown=BOARD):
+    """`migrated()` against a store that can also be written to.
+
+    Every document gets a `_rev`, which `migrated()` leaves off because
+    `contents` never reads one. A store that has been written to has one on
+    every document it hands back, and `store_item` carries it into the update
+    -- so a fixture without it is not a store, and the tests below could not
+    tell a carried revision from a missing one.
+    """
+    parsed, store = migrated(board=board, markdown=markdown)
+    docs = [dict(doc, _rev="1-stored") for doc in store.docs]
+    return parsed, WritableFakeStore(docs, store.registry)
+
+
+def item_numbered(parsed, number):
+    return next(item for item in parsed["items"] if item["number"] == number)
+
+
+def test_one_changed_cell_leaves_the_rest_of_the_board_identical():
+    """The anchor: write one row back, read the whole board, one difference."""
+    parsed, store = writable()
+    item = dict(item_numbered(parsed, 42), status="🟡 In progress",
+                statusKey="in-progress")
+    board_records.store_item("issue", item, store=store)
+
+    assert board_records.contents("issue", store=store) == {
+        **parsed,
+        "items": [item if row["number"] == 42 else row
+                  for row in parsed["items"]],
+    }
+
+
+def test_the_stored_rank_is_carried_forward_so_the_row_stays_put():
+    """Re-minting a row must not move it to the bottom of his board."""
+    parsed, store = writable()
+    before = [row["number"] for row
+              in board_records.contents("issue", store=store)["items"]]
+    assert before[0] == 41, "the fixture's first row is what this test moves"
+
+    board_records.store_item(
+        "issue", dict(item_numbered(parsed, 41), status="⚪ Backlog"),
+        store=store)
+
+    after = [row["number"] for row
+             in board_records.contents("issue", store=store)["items"]]
+    assert after == before
+
+
+def test_the_write_up_survives_a_row_edit_that_says_nothing_about_it():
+    """`details` is a separate dict, so a writer holds no body to pass."""
+    parsed, store = writable()
+    assert parsed["details"][41], "the fixture's row 41 has a body"
+
+    board_records.store_item(
+        "issue", dict(item_numbered(parsed, 41), size="L"), store=store)
+
+    assert board_records.contents(
+        "issue", store=store)["details"] == parsed["details"]
+
+
+def test_an_empty_detail_removes_the_body_and_none_leaves_it():
+    """The two are different instructions and must not collapse."""
+    parsed, store = writable()
+    board_records.store_item(
+        "issue", item_numbered(parsed, 41), detail="", store=store)
+    assert 41 not in board_records.contents("issue", store=store)["details"]
+
+    board_records.store_item(
+        "issue", item_numbered(parsed, 41), detail="Rewritten.", store=store)
+    assert board_records.contents(
+        "issue", store=store)["details"][41] == "Rewritten."
+
+
+def test_a_row_filed_into_a_new_project_comes_back_under_that_name():
+    """The name -> id -> name join, both directions, through the store."""
+    parsed, store = writable()
+    board_records.store_item(
+        "issue", dict(item_numbered(parsed, 42), project="Newspaper",
+                      milestone="RSS"),
+        store=store)
+
+    row = item_numbered(board_records.contents("issue", store=store), 42)
+    assert (row["project"], row["milestone"]) == ("Newspaper", "RSS")
+
+
+def test_the_registry_is_written_before_the_row_that_points_at_it():
+    """The other order leaves a board `contents` raises on, not a bad write."""
+    parsed, store = writable()
+    board_records.store_item(
+        "issue", dict(item_numbered(parsed, 42), project="Newspaper"),
+        store=store)
+
+    assert [name for name, _ in store.calls] == ["write_registry", "write_row"]
+
+
+def test_an_unchanged_registry_is_not_rewritten():
+    """Every write burns a revision on the document every row points at."""
+    parsed, store = writable()
+    board_records.store_item(
+        "issue", dict(item_numbered(parsed, 41), size="L"), store=store)
+
+    assert [name for name, _ in store.calls] == ["write_row"]
+
+
+def test_an_update_carries_the_revision_it_was_read_at():
+    """`board_store.write_row` refuses one that does not, and is right to.
+
+    Asserted on the document handed to `write_row`, not on what the store
+    holds afterwards: a fake stamps a revision on whatever it is given, so
+    reading the result back would pass with the revision never carried.
+    """
+    parsed, store = writable()
+    held = store.read_row("issue", 41)
+    assert held["_rev"] == "1-stored", "the fixture's row is stored"
+
+    board_records.store_item(
+        "issue", dict(item_numbered(parsed, 41), size="L"), store=store)
+
+    written = [doc for name, doc in store.calls if name == "write_row"]
+    assert [doc.get("_rev") for doc in written] == ["1-stored"]
+
+
+def test_a_row_that_is_not_stored_is_created_with_no_revision():
+    """A new row has nothing to conflict with, so it must not invent one."""
+    parsed, store = writable()
+    written = board_records.store_item(
+        "issue", {"number": 99, "title": "A new row", "status": "⚪ Backlog",
+                  "project": "Nova"},
+        store=store)
+
+    assert "rank" not in written and "_rev" not in store.calls[0][1]
+    assert item_numbered(
+        board_records.contents("issue", store=store), 99)["title"] == "A new row"
+
+
+def test_an_unmigrated_store_is_not_seeded_with_one_row():
+    """`read_registry` answers a revisionless document; that is not a board."""
+    parsed, store = writable()
+    store.registry = {key: value for key, value in store.registry.items()
+                      if key != "_rev"}
+
+    with pytest.raises(board_records.UnmigratedStore):
+        board_records.store_item("issue", item_numbered(parsed, 41),
+                                 store=store)
+    assert store.calls == []
