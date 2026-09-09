@@ -11,7 +11,8 @@ reached a database pass every test in this file.
 """
 import pytest
 
-from agora_runner import board_document, board_store, entity_id, ticket_docs
+from agora_runner import (board_document, board_records, board_store,
+                          entity_id, ticket_docs)
 from tools import board_migrate
 
 from tests.test_board_store import FakeCouch
@@ -256,3 +257,145 @@ def test_the_capture_high_water_is_stored_with_the_captures(couch):
 
     stored = board_store.read_registry()
     assert entity_id.capture_high_water(stored, "issue") == 2
+
+
+# --verify: the switchover's own precondition
+#
+# `board_migration_preflight --round-trip` already sends the rows through
+# CouchDB, and it compares the *rendered markdown* -- the two tables. That
+# cannot see a wrong `statusKey`, a lost `order`, a dropped detail body or a
+# capture that never arrived, and those four are exactly what eighteen
+# readers are about to be handed in place of a parse. So these tests are
+# about `board_records.contents` agreeing with `nova_boards.parse_board`,
+# and about the run leaving nothing behind.
+
+
+def test_verify_agrees_with_the_parser_and_keeps_nothing(couch):
+    markdown = board(
+        [(1, "Nova", "Cycle reliability"), (2, "Marcus", "")],
+        details=[(1, "why one matters")],
+        captures=[("his bullet", ["a cycle answered"])],
+    )
+    report, problems = board_migrate.verify(markdown, "issue")
+    assert problems == []
+    assert report["contents_matches_parse"] is True
+    assert (report["rows"], report["rows_back"]) == (2, 2)
+    assert (report["captures"], report["captures_back"]) == (1, 1)
+    assert (report["details"], report["details_back"]) == (1, 1)
+    # Both key ranges, because emptying one is the half-migration state.
+    assert board_store.stored_documents("issue") == {}
+    assert board_store.stored_capture_documents("issue") == {}
+
+
+def test_verify_leaves_the_registry_alone(couch):
+    """The stated boundary of the run: it mints ids and stores none of them.
+
+    A registry document is the one thing here with no restore path -- ids are
+    permanent and there is no delete -- so a verify that wrote one and then
+    failed would leave `prj_*` ids behind forever.
+    """
+    board_migrate.verify(board([(1, "Nova", "")]), "issue")
+    assert board_store.read_registry().get("_rev") is None
+
+
+def test_verify_sees_a_capture_the_store_never_took(couch, monkeypatch):
+    """The control. `--round-trip` cannot fail this: captures are not in the
+    rendered tables at all, so a store that took none of them renders
+    identically."""
+    monkeypatch.setattr(board_store, "write_captures",
+                        lambda name, docs, prune=True: {"written": 0})
+    report, problems = board_migrate.verify(
+        board([(1, "Nova", "")], captures=[("his bullet", [])]), "issue")
+    assert report["contents_matches_parse"] is False
+    assert any("captures" in problem for problem in problems)
+
+
+def test_verify_sees_a_detail_body_the_store_never_took(couch, monkeypatch):
+    """Same control on the other thing the tables cannot carry."""
+    real = board_document.to_document
+
+    def without_the_body(item, name, **kwargs):
+        kwargs["detail"] = None
+        return real(item, name, **kwargs)
+
+    monkeypatch.setattr(board_document, "to_document", without_the_body)
+    report, problems = board_migrate.verify(
+        board([(1, "Nova", "")], details=[(1, "why one matters")]), "issue")
+    assert report["contents_matches_parse"] is False
+    assert any("details" in problem for problem in problems)
+
+
+def test_verify_refuses_a_board_that_already_holds_records(couch):
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    before = dict(board_store.stored_documents("issue"))
+    with pytest.raises(board_migrate.MigrationRefused):
+        board_migrate.verify(markdown, "issue")
+    assert board_store.stored_documents("issue") == before
+
+
+def test_verify_empties_the_store_when_the_read_back_raises(couch, monkeypatch):
+    """A failure in the middle must not leave a half-migration behind."""
+    def boom(name, store=None):
+        raise board_records.RecordError("no")
+
+    monkeypatch.setattr(board_records, "contents", boom)
+    with pytest.raises(board_records.RecordError):
+        board_migrate.verify(
+            board([(1, "Nova", "")], captures=[("his bullet", [])]), "issue")
+    assert board_store.stored_documents("issue") == {}
+    assert board_store.stored_capture_documents("issue") == {}
+
+
+def test_differences_names_the_field_of_the_row_that_moved():
+    want = {"captures": [], "captureReplies": [], "details": {},
+            "items": [{"number": 7, "title": "a", "order": 3}]}
+    got = {"captures": [], "captureReplies": [], "details": {},
+           "items": [{"number": 7, "title": "a", "order": None}]}
+    problems = board_migrate.differences(want, got)
+    assert len(problems) == 1
+    assert "row #7" in problems[0] and "order" in problems[0]
+
+
+def test_differences_reports_every_key_that_moved_not_just_the_first():
+    want = {"captures": ["a"], "captureReplies": [[]], "items": [],
+            "details": {1: "body"}}
+    got = {"captures": [], "captureReplies": [], "items": [],
+           "details": {}}
+    problems = board_migrate.differences(want, got)
+    assert len(problems) == 3
+
+
+def test_verify_and_apply_are_refused_together(couch, tmp_path, capsys):
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        board_migrate.main(
+            ["--board", "issue", "--file", str(path), "--verify", "--apply"])
+
+
+def test_the_cli_verify_exits_two_and_prints_the_problem(couch, tmp_path,
+                                                        capsys, monkeypatch):
+    monkeypatch.setattr(board_store, "write_captures",
+                        lambda name, docs, prune=True: {"written": 0})
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", "")], captures=[("his bullet", [])]),
+                    encoding="utf-8")
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--verify"])
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "verify.contents_matches_parse: False" in out
+    assert "PROBLEM:" in out
+
+
+def test_the_cli_verify_exits_zero_when_the_seam_agrees(couch, tmp_path,
+                                                       capsys):
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", "")], captures=[("his bullet", [])]),
+                    encoding="utf-8")
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--verify"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "verify.contents_matches_parse: True" in out

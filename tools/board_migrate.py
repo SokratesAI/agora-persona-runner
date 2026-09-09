@@ -2,6 +2,18 @@
 
     python3 -m tools.board_migrate --board issue --file issues.md
     python3 -m tools.board_migrate --board issue --file issues.md --apply
+    python3 -m tools.board_migrate --board issue --file issues.md --verify
+
+`--verify` is the switchover's own precondition and keeps nothing: it writes
+the board, reads it back through `board_records.contents` -- the seam all
+eighteen remaining readers are about to be handed in place of a parse -- and
+asserts that what comes back is exactly what `nova_boards.parse_board`
+returned, then empties both key ranges again. `board_migration_preflight
+--round-trip` already sends the rows through CouchDB and compares the
+*rendered markdown*, which is the two tables and nothing else, so it cannot
+see a wrong `statusKey`, a lost `order`, a dropped detail body or a capture
+that never arrived. Exit 2 means the seam disagreed, and the mismatch is
+printed as which field of which row moved.
 
 Issue #203 replaces the two markdown tables with one record per row. Eight
 primitives for that are merged and none of them is wired; this is the ninth
@@ -54,8 +66,8 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner import (board_document, board_store, entity_id,  # noqa: E402
-                          nova_boards, rank_key)
+from agora_runner import (board_document, board_records, board_store,  # noqa: E402
+                          entity_id, nova_boards, rank_key)
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
@@ -174,6 +186,165 @@ def migrate(markdown, board, apply=False, store=board_store):
     return report
 
 
+class _RegistryFromMemory:
+    """The real store for both key ranges, an in-memory registry.
+
+    `board_records.contents` reads three things: the two `_all_docs` key
+    ranges and the registry document. `verify` below wants the first two to
+    be the real CouchDB -- that is the half no test can reach, and the half
+    whose absence let a missing `read_captures` call stay green through a
+    whole module -- and it deliberately does not write the third. A registry
+    document is the one thing in this migration with no restore path: ids are
+    permanent by design, `write_registry` has no delete, and a verify run
+    that minted `prj_*` ids into the live registry and then failed would
+    leave them there forever. So the registry stays the dict this run minted.
+
+    The cost of that is stated rather than hidden: `contents` refuses a
+    registry with no `_rev` as an unmigrated store, so this hands it one, and
+    **`verify` therefore does not exercise that guard.** It is exercising the
+    join. `--apply` is what writes a registry, and `test_board_records.py`
+    is what holds the guard.
+    """
+
+    def __init__(self, store, registry):
+        self._store = store
+        self._registry = {**registry, "_rev": registry.get("_rev") or "0-verify"}
+
+    def read_rows(self, board):
+        return self._store.read_rows(board)
+
+    def read_captures(self, board):
+        return self._store.read_captures(board)
+
+    def read_registry(self):
+        return self._registry
+
+
+def _differing_keys(one, two):
+    """The field names two row dicts disagree on, sorted."""
+    return sorted(
+        key for key in set(one) | set(two) if one.get(key) != two.get(key))
+
+
+def differences(want, got):
+    """The first disagreement per key between two `parse_board` shapes.
+
+    One line per key rather than a full diff: `items` is four hundred rows
+    and a dump of both is unreadable, while *which field of which row* is
+    the whole finding. Every key is checked -- a mismatch on `items` must
+    not hide one on `captures`, because those are the two that broke
+    separately.
+    """
+    problems = []
+    for key in ("captures", "captureReplies", "items", "details"):
+        left, right = want.get(key), got.get(key)
+        if left == right:
+            continue
+        if isinstance(left, dict) and isinstance(right, dict):
+            missing = sorted(set(left) - set(right))
+            extra = sorted(set(right) - set(left))
+            if missing or extra:
+                problems.append(
+                    f"{key}: the markdown has {missing[:5]} the store does "
+                    f"not, the store has {extra[:5]} the markdown does not")
+                continue
+            for number in sorted(left):
+                if left[number] != right[number]:
+                    problems.append(f"{key}[{number}] differs")
+                    break
+            continue
+        if len(left) != len(right):
+            problems.append(
+                f"{key}: {len(left)} from the markdown, "
+                f"{len(right)} from the store")
+            continue
+        for index, (one, two) in enumerate(zip(left, right)):
+            if one == two:
+                continue
+            if isinstance(one, dict) and isinstance(two, dict):
+                fields = _differing_keys(one, two)
+                problems.append(
+                    f"{key}[{index}] (row #{one.get('number')}) differs on "
+                    f"{fields}: markdown "
+                    f"{ {f: one.get(f) for f in fields} } vs store "
+                    f"{ {f: two.get(f) for f in fields} }")
+            else:
+                problems.append(
+                    f"{key}[{index}] differs: markdown {one!r} "
+                    f"vs store {two!r}")
+            break
+    return problems
+
+
+def verify(markdown, board, store=board_store):
+    """Write the board, read it back through `board_records.contents`, restore.
+
+    Returns `(report, problems)`. `problems` empty means the seam the whole
+    switchover hangs on answers, on this board, with exactly what
+    `parse_board` answered.
+
+    This is the control nothing else takes. `board_migration_preflight
+    --round-trip` sends the rows through CouchDB and compares the *rendered
+    markdown*, which is the two tables and nothing else -- so it cannot see a
+    wrong `statusKey`, a lost `order`, a dropped detail body or a capture
+    that never arrived, and those are the four things eighteen readers are
+    about to be handed instead of a parse. `contents` is what they will call;
+    this is that call, against the real store, on his real board.
+
+    Reversible first, then act: it refuses a board that already holds
+    records, and it empties both key ranges again in a `finally`, so a
+    failure in the middle does not leave a half-migration behind.
+    """
+    if board not in board_document.BOARDS:
+        raise MigrationRefused(
+            f"board must be one of {board_document.BOARDS}, not {board!r}")
+
+    held = dict(store.stored_documents(board))
+    held.update(store.stored_capture_documents(board))
+    if held:
+        raise MigrationRefused(
+            f"{board} already holds {len(held)} record(s); this run would "
+            "have to delete them and cannot put them back")
+
+    registry = store.read_registry()
+    docs, details, captures = plan(markdown, board, registry)
+    try:
+        written = store.write_rows(board, docs)
+        if written.get("failures"):
+            raise MigrationRefused(
+                f"{len(written['failures'])} row(s) failed to write")
+        wrote_captures = store.write_captures(board, captures)
+        if wrote_captures.get("failures"):
+            raise MigrationRefused(
+                f"{len(wrote_captures['failures'])} capture(s) failed to write")
+        got = board_records.contents(
+            board, store=_RegistryFromMemory(store, registry))
+    finally:
+        store.write_rows(board, [])
+        store.write_captures(board, [])
+
+    want = nova_boards.parse_board(markdown)
+    problems = differences(want, got)
+    left_behind = len(store.stored_documents(board)) + \
+        len(store.stored_capture_documents(board))
+    report = {
+        "board": board,
+        "rows": len(docs),
+        "rows_back": len(got["items"]),
+        "details": len(details),
+        "details_back": len(got["details"]),
+        "captures": len(captures),
+        "captures_back": len(got["captures"]),
+        "contents_matches_parse": not problems,
+        "restored_to": left_behind,
+    }
+    if left_behind:
+        problems.append(
+            f"{left_behind} record(s) left behind after the restore")
+        report["contents_matches_parse"] = False
+    return report, problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--board", required=True,
@@ -183,10 +354,31 @@ def main(argv=None):
                         help="the board markdown file")
     parser.add_argument("--apply", action="store_true",
                         help="actually write; without it nothing is stored")
+    parser.add_argument("--verify", action="store_true",
+                        help="write the board, read it back through "
+                             "board_records.contents, compare with parse_board "
+                             "and empty the store again; nothing is kept")
     args = parser.parse_args(argv)
+    if args.verify and args.apply:
+        parser.error(
+            "--verify and --apply are opposites: --verify empties the store "
+            "again when it is done")
 
     with open(args.file, encoding="utf-8") as handle:
         markdown = handle.read()
+
+    if args.verify:
+        try:
+            report, problems = verify(markdown, args.board)
+        except (MigrationRefused, board_records.RecordError,
+                board_store.StoreError) as exc:
+            print(f"REFUSED: {exc}")
+            return 2
+        for name, value in report.items():
+            print(f"verify.{name}: {value}")
+        for problem in problems:
+            print(f"PROBLEM: {problem}")
+        return 2 if problems else 0
 
     try:
         report = migrate(markdown, args.board, apply=args.apply)
