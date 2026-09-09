@@ -14,9 +14,23 @@ his sentence came back byte-identical.
 
 import json
 
+import tools.close_done_captures as close_done_captures
 from agora_runner.nova_boards import parse_board
 from agora_runner.nova_claims import slug_for_capture
-from tools.close_done_captures import check, done_cycles, plan, rewrite
+from tools.close_done_captures import (
+    check_from_contents, done_cycles, plan, rewrite,
+)
+
+
+def check(before, after, marked):
+    """The old markdown-shaped signature, kept here and not in the tool.
+
+    `check_from_contents` takes the two parsed boards on purpose (#203) and
+    there is deliberately no door on it, so the parsing every existing test
+    used to get for free lives in the test file that wants it.
+    """
+    return check_from_contents(
+        parse_board(before or ""), parse_board(after or ""), marked)
 
 SHIPPED = "the search bar closes my keyboard"
 RATED = "make the chat modal full height"
@@ -84,8 +98,8 @@ def test_an_unclaimed_capture_is_left_alone():
 
 
 def test_the_finished_ones_are_marked_with_the_cycle_that_closed_them():
-    after, count = rewrite(BOARD, FINISHED)
-    assert count == 2
+    after, marks = rewrite(BOARD, FINISHED)
+    assert len(marks) == 2
     captures = parse_board(after)["captures"]
     assert captures[0] == f"DONE (Cycle 434): {SHIPPED}"
     # The rating stays where he put it: `split_capture_done` runs before
@@ -114,21 +128,21 @@ def test_marking_does_not_move_the_slug():
 def test_a_second_run_changes_nothing():
     once, first = rewrite(BOARD, FINISHED)
     twice, second = rewrite(once, FINISHED)
-    assert (first, second) == (2, 0)
+    assert (len(first), len(second)) == (2, 0)
     assert twice == once
 
 
 def test_the_board_rows_and_write_ups_survive():
     before = parse_board(BOARD)
-    after, _count = rewrite(BOARD, FINISHED)
+    after, _marks = rewrite(BOARD, FINISHED)
     assert parse_board(after)["items"] == before["items"]
     assert parse_board(after)["details"] == before["details"]
 
 
 def test_nothing_to_mark_returns_the_file_unchanged():
     """So the caller can skip the `put` rather than burn a revision."""
-    after, count = rewrite(BOARD, {})
-    assert (after, count) == (BOARD, 0)
+    after, marks = rewrite(BOARD, {})
+    assert (after, marks) == (BOARD, [])
 
 
 def test_a_reply_written_under_his_capture_is_not_marked():
@@ -148,8 +162,8 @@ def test_a_reply_written_under_his_capture_is_not_marked():
     # never reached, and the test passes whether or not it exists.
     ledger = dict(FINISHED)
     ledger[slug_for_capture(reply)] = 434
-    after, count = rewrite(with_reply, ledger)
-    assert count == 2
+    after, marks = rewrite(with_reply, ledger)
+    assert len(marks) == 2
     assert f"  - {reply}" in after.split("\n")
 
 
@@ -160,7 +174,8 @@ def test_check_catches_a_rewrite_that_ate_his_text():
     this file, and a guard only ever exercised by code that cannot trip it
     is one that passes because nothing reaches it.
     """
-    good, count = rewrite(BOARD, FINISHED)
+    good, marks = rewrite(BOARD, FINISHED)
+    count = len(marks)
     assert check(BOARD, good, count) == ""
     truncated = good.replace(f"DONE (Cycle 434): {SHIPPED}", "DONE (Cycle 434): the search bar")
     assert "beyond its DONE prefix" in check(BOARD, truncated, count)
@@ -170,7 +185,8 @@ def test_check_catches_a_rewrite_that_ate_his_text():
 
 
 def test_check_catches_a_broken_board():
-    good, count = rewrite(BOARD, FINISHED)
+    good, marks = rewrite(BOARD, FINISHED)
+    count = len(marks)
     broken = good.replace("| #2 | The search bar closes my keyboard", "| #2 | something else")
     assert check(BOARD, broken, count) == "board rows changed"
 
@@ -183,3 +199,106 @@ def test_the_slug_guard_refuses_a_mark_that_ate_a_word():
     assert mark_kept_its_slug(f"- DONE (Cycle 434): 🔵 Medium: {SHIPPED}", slug)
     assert not mark_kept_its_slug("- DONE (Cycle 434): the search bar", slug)
     assert not mark_kept_its_slug(f"- {SHIPPED}", slug)
+
+
+def _run(tmp_path, monkeypatch, extra=()):
+    """One successful `--dry-run` mark of both finished captures."""
+    board = tmp_path / "issues.md"
+    board.write_text(BOARD, encoding="utf-8")
+    ledger = tmp_path / "claims.json"
+    ledger.write_text(LEDGER, encoding="utf-8")
+    return close_done_captures.main(
+        ["--file", str(board), "--board", "issues",
+         "--claims", str(ledger), "--dry-run", *extra])
+
+
+def test_main_reads_each_version_once(tmp_path, monkeypatch):
+    """Two versions of one document, one read each -- #203's read-once rule.
+
+    `main` used to parse `before` inside `check` and run `plan` over it a
+    second time to print what it had marked, which on a string is free and
+    on the record store is a second round trip whose answer can differ from
+    the one that was written.
+    """
+    counts = {"parse_board": 0, "plan": 0}
+    for name in counts:
+        real = getattr(close_done_captures, name)
+
+        def counting(*a, _real=real, _name=name, **k):
+            counts[_name] += 1
+            return _real(*a, **k)
+
+        monkeypatch.setattr(close_done_captures, name, counting)
+
+    assert _run(tmp_path, monkeypatch) == 0
+    assert counts == {"parse_board": 2, "plan": 1}
+
+
+def test_the_guard_cannot_reach_a_document(tmp_path, monkeypatch):
+    """`check_from_contents` takes what it compares; it fetches nothing.
+
+    The count above is satisfied by a guard that parses once and a `main`
+    that parses once, which is not the property that survives the
+    switchover. So this runs the same mark with the module's parser
+    replaced by something that raises, after `main` has taken its reads.
+    """
+    guard = close_done_captures.check_from_contents
+
+    def no_document_here(*a, **k):
+        monkeypatch.setattr(close_done_captures, "parse_board", _refuse)
+        return guard(*a, **k)
+
+    monkeypatch.setattr(close_done_captures, "check_from_contents", no_document_here)
+    assert _run(tmp_path, monkeypatch) == 0
+
+
+def _refuse(*a, **k):
+    raise AssertionError("the guard reached back to the document it was handed")
+
+
+def test_main_refuses_a_write_that_ate_one_of_his_captures(tmp_path, monkeypatch):
+    """The guard, driven through `main` rather than called as a function.
+
+    Every other test of it builds both sides itself, so nothing proved
+    `main` hands it the *right* two documents -- a `main` that parsed
+    `before` twice, or `after` twice, compares a board to itself and can
+    never report anything while every direct test stays green.
+    """
+    real = close_done_captures.rewrite
+
+    def damaged(markdown, finished):
+        after, marks = real(markdown, finished)
+        return after.replace(f"- {FRESH}\n", ""), marks
+
+    monkeypatch.setattr(close_done_captures, "rewrite", damaged)
+    assert _run(tmp_path, monkeypatch) == 1
+
+
+def test_main_refuses_a_write_that_moved_one_of_his_rows(tmp_path, monkeypatch):
+    """The board-rows half, in the direction the capture guard cannot see."""
+    real = close_done_captures.rewrite
+
+    def damaged(markdown, finished):
+        after, marks = real(markdown, finished)
+        return after.replace("| ⚪ Backlog | 08-20 |", "| ✅ Done | 08-20 |"), marks
+
+    monkeypatch.setattr(close_done_captures, "rewrite", damaged)
+    assert _run(tmp_path, monkeypatch) == 1
+
+
+def test_main_refuses_a_write_that_changed_one_of_his_write_ups(tmp_path, monkeypatch):
+    """The `# Details` half, which nothing exercised in either direction.
+
+    Found by mutation: deleting the write-up comparison out of the guard
+    left all sixteen tests in this file green. It is the half most worth
+    having -- a row's body is his own prose, the page draws it, and an
+    edit to it is invisible in the table the other two halves compare.
+    """
+    real = close_done_captures.rewrite
+
+    def damaged(markdown, finished):
+        after, marks = real(markdown, finished)
+        return after.replace("Every letter dismisses it.", "Something else."), marks
+
+    monkeypatch.setattr(close_done_captures, "rewrite", damaged)
+    assert _run(tmp_path, monkeypatch) == 1

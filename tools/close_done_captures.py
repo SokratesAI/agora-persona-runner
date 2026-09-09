@@ -134,22 +134,30 @@ def plan(markdown, finished):
 
 
 def rewrite(markdown, finished):
-    """The file with every ledger-closed capture marked. `(text, count)`.
+    """The file with every ledger-closed capture marked. `(text, marks)`.
 
     Returns the input unchanged when there is nothing to mark, so the
     caller can skip the `put` rather than burn a revision on an identical
     document.
+
+    It returns the marks themselves rather than how many there were,
+    because `main` used to call `plan` a second time to print what it had
+    marked -- the same shape `board_status` and its four siblings carried
+    until #203 took it out of them. Two runs of `plan` over one document
+    is a report describing a plan other than the one that was written,
+    and once his captures come out of the record store rather than off a
+    string in memory the second run is a second round trip as well.
     """
     marks = plan(markdown, finished)
     if not marks:
-        return markdown, 0
+        return markdown, []
     lines = (markdown or "").split("\n")
     for index, _old, new, slug, _cycle in marks:
         if not mark_kept_its_slug(new, slug):
             raise SystemExit(
                 f"marking moved the slug of {slug}: refusing to write")
         lines[index] = new
-    return "\n".join(lines), len(marks)
+    return "\n".join(lines), marks
 
 
 def mark_kept_its_slug(line, slug):
@@ -174,7 +182,7 @@ def mark_kept_its_slug(line, slug):
     return slug_for_capture(text) == slug
 
 
-def check(before, after, marked):
+def check_from_contents(old, new, marked):
     """Ask the reader, not the writer, whether the rewrite was faithful.
 
     `roll_done_captures.check`'s lesson borrowed rather than re-learned:
@@ -183,8 +191,18 @@ def check(before, after, marked):
     identical, the capture list must keep exactly the same number of
     bullets in the same order, and the only difference in any of them
     must be a DONE prefix.
+
+    Takes the two parsed boards rather than the two markdown strings and
+    reaches for no document of its own -- `main` reads each version once
+    and hands the dicts here. Same split as `board_capture`, `board_row`
+    and the five single-cell writers before it (#203): on a string the
+    extra parses were free and could not disagree, but once the source is
+    the record store they are separate `_all_docs` queries a concurrent
+    write can land between, and this guard would then be comparing the
+    rows of one version of the board against the captures of another.
+    No markdown door, for the reason `board-records.md` gives: nothing
+    outside `main` and these tests has ever called it.
     """
-    old, new = parse_board(before or ""), parse_board(after or "")
     if old["items"] != new["items"]:
         return "board rows changed"
     if old.get("details") != new.get("details"):
@@ -223,18 +241,20 @@ def main(argv=None):
     with open(args.claims, encoding="utf-8") as handle:
         finished = done_cycles(handle.read())
 
-    after, marked = rewrite(before, finished)
+    after, marks = rewrite(before, finished)
+    marked = len(marks)
     if not marked:
         print(f"{args.board}: nothing to mark "
               f"({len(finished)} done capture claim(s) in the ledger)")
         return 0
 
-    problem = check(before, after, marked)
+    problem = check_from_contents(
+        parse_board(before or ""), parse_board(after or ""), marked)
     if problem:
         print(f"{args.board}: refusing to write — {problem}", file=sys.stderr)
         return 1
 
-    for _index, old, _new, _slug, cycle in plan(before, finished):
+    for _index, old, _new, _slug, cycle in marks:
         print(f"  DONE (Cycle {cycle}): {old.strip()[2:][:70]}")
     if args.dry_run:
         print(f"{args.board}: would mark {marked} capture(s) (dry run)")
