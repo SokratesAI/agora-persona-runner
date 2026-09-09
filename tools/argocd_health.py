@@ -49,12 +49,22 @@ Pods that were never the problem. A wrong explanation is worse than none.
 **What it names instead: an immediate child that is actually unhealthy.**
 This cluster's controller does not persist per-resource health, so every
 entry in `status.resources` comes back with no health at all and the
-Application object cannot say which child is red. The one signal that is
-both cheap and unambiguous is a SealedSecret whose `Synced` condition is
-False — the controller refusing to write the Secret git declares, which is
-a real GitOps outage in its own right and is what was actually wrong here.
+Application object cannot say which child is red. So a child's health is
+measured off the child, one kind at a time, and never read out of the
+Application.
+
+A SealedSecret whose `Synced` condition is False is the first: the
+controller refusing to write the Secret git declares, which is a real
+GitOps outage in its own right and is what was actually wrong here. A
+Deployment past its own availability budget is the second — the same
+verdict `tools.workload_health` reaches, reused rather than re-derived,
+because hand-probing the children of one Degraded Application cost cycle
+1271 nine minutes and that is exactly the work an instrument should do.
+
 Other kinds are deliberately not guessed at: a kind this cannot judge is
-named as unexplained rather than reported clean.
+named as unexplained rather than reported clean. The unexplained line says
+which probes ran, so "nothing found" cannot be confused with "nothing
+looked".
 
 `lastTransitionTime` is printed beside every verdict for the same reason
 `agentic_health` prints the streak and the last green date: "Degraded"
@@ -87,6 +97,8 @@ import datetime
 import json
 import subprocess
 import sys
+
+from tools import workload_health
 
 # ArgoCD's own health vocabulary. `Progressing` is deliberately not in
 # here: a sync in flight is the normal state a few seconds after every
@@ -179,6 +191,14 @@ def read_applications(runner=subprocess.run):
             for r in resources
             if r.get("kind") == "SealedSecret"
         ]
+        # Deployments are carried for the same reason CronJobs and
+        # SealedSecrets are: they are a kind whose health this can go and
+        # measure itself when the Application object refuses to name it.
+        deployments = [
+            (r.get("namespace") or "", r.get("name") or "")
+            for r in resources
+            if r.get("kind") == "Deployment"
+        ]
         apps.append({
             "name": meta.get("name", "?"),
             "sync": (status.get("sync") or {}).get("status") or "Unknown",
@@ -186,6 +206,7 @@ def read_applications(runner=subprocess.run):
             "since": health.get("lastTransitionTime") or "",
             "cronjobs": cronjobs,
             "sealed": sealed,
+            "deployments": deployments,
         })
     return apps, None
 
@@ -321,12 +342,36 @@ def declared_suspensions(app, suspended_cronjobs):
     )
 
 
-def unhealthy_children(app, broken_sealed):
+def _deployment_why(row):
+    """Why an unavailable Deployment is past its own budget, in one clause."""
+    budget = workload_health._duration(row["budget"].total_seconds())
+    reason = row.get("reason") or "no reason given"
+    if row.get("down") is None:
+        return (f"Available=False with no readable transition time, so it "
+                f"cannot be shown to be inside its own {budget} budget "
+                f"({reason})")
+    return (f"Available=False for "
+            f"{workload_health._duration(row['down'].total_seconds())}, past "
+            f"the {budget} its own terminationGracePeriodSeconds allows "
+            f"({reason})")
+
+
+def unhealthy_children(app, broken_sealed, past_budget=None):
     """The immediate children of `app` that are measurably unhealthy.
 
-    Immediate is the operative word and it is why this reads the
-    Application's own `status.resources` rather than the cluster: that list
-    is exactly what ArgoCD aggregates the App health from.
+    Immediate is the operative word and it is why the *set* of children comes
+    from the Application's own `status.resources` rather than from a sweep of
+    the cluster: that list is exactly what ArgoCD aggregates the App health
+    from.
+
+    Their *health*, though, cannot come from there. This controller does not
+    persist per-resource health, so every entry in `status.resources` carries
+    no health key at all and this function used to be able to name exactly one
+    kind of child — a SealedSecret, judged by a separate read. `past_budget`
+    is the second such read: `workload_health.unavailable`'s past-budget half,
+    keyed `(namespace, name)`, which is a real measurement of a Deployment
+    child taken off the Deployment itself. `None` means nobody probed, and is
+    not the same answer as `{}`, which means the probe ran and found nothing.
     """
     rows = []
     for key in app.get("sealed") or []:
@@ -338,6 +383,16 @@ def unhealthy_children(app, broken_sealed):
                 "name": key[1],
                 "why": broken["why"],
                 "since": broken.get("since") or "",
+            })
+    for key in app.get("deployments") or []:
+        down = (past_budget or {}).get(key)
+        if down:
+            rows.append({
+                "kind": "Deployment",
+                "namespace": key[0],
+                "name": key[1],
+                "why": _deployment_why(down),
+                "since": down.get("since") or "",
             })
     return rows
 
@@ -441,7 +496,7 @@ def _progressing_too_long(app, now):
 
 
 def report(apps, jobs_by_owner, now, broken_sealed=None,
-           suspended_cronjobs=None):
+           suspended_cronjobs=None, past_budget=None):
     """The printed lines and the exit status, as (lines, status)."""
     lines = []
     actionable = False
@@ -483,7 +538,7 @@ def report(apps, jobs_by_owner, now, broken_sealed=None,
 
         actionable = True
         stale, live = stale_job_failures(app["cronjobs"], jobs_by_owner)
-        children = unhealthy_children(app, broken_sealed)
+        children = unhealthy_children(app, broken_sealed, past_budget)
         lines.append(f"UNHEALTHY  {app['name']}: {app['health']}{aged}")
         for row in children:
             lines.append(
@@ -515,10 +570,16 @@ def report(apps, jobs_by_owner, now, broken_sealed=None,
                 f"{row['cronjob']} has not succeeded since")
         if not children:
             unexplained.append(f"{app['name']} ({app['health']}{aged})")
+            probed = (
+                "no Deployment child of it is past its own availability "
+                "budget either"
+                if past_budget is not None else
+                "and no Deployment child of it was probed")
             lines.append(
                 "           no immediate child of it is measurably unhealthy — "
-                "this controller does not persist per-resource health, so the "
-                "Application object cannot name the one that is")
+                f"{probed}. This controller does not persist per-resource "
+                "health, so for every other kind the Application object "
+                "cannot name the one that is")
         if stale:
             # History, not a cause. A Job owned by a CronJob is created by a
             # controller and appears in no application source, so it is not an
@@ -572,9 +633,13 @@ def main(argv=None, runner=subprocess.run, now=None):
     # `kubectl get jobs -A` is a cluster-wide read that a restricted account
     # can be refused. Asking for it on a clean cluster would turn a green
     # answer into `COULD NOT READ` for data nothing was going to use.
+    at = now or datetime.datetime.now(datetime.timezone.utc)
     jobs_by_owner = {}
     broken_sealed = {}
     suspended_cronjobs = set()
+    # None, not {}: "nobody probed" and "probed and found nothing" are
+    # different answers and the unexplained line prints which one it is.
+    past_budget = None
     if any(a["health"] == "Suspended" for a in apps):
         suspended_cronjobs, why = read_suspended_cronjobs(runner)
         if why:
@@ -589,11 +654,20 @@ def main(argv=None, runner=subprocess.run, now=None):
         if why:
             print(f"COULD NOT READ  {why}")
             return 1
+        # Same bargain as the Jobs read above: only paid for when something
+        # is actually unhealthy, and a refusal is `COULD NOT READ` rather
+        # than a quiet `no Deployment child is unhealthy`, which is what an
+        # unprobed cluster would otherwise look like.
+        deployments, why = workload_health.read_deployments(runner)
+        if why:
+            print(f"COULD NOT READ  {why}")
+            return 1
+        past, _rolling = workload_health.unavailable(deployments, at)
+        past_budget = {(d["namespace"], d["name"]): d for d in past}
 
     lines, status = report(
-        apps, jobs_by_owner,
-        now or datetime.datetime.now(datetime.timezone.utc),
-        broken_sealed, suspended_cronjobs)
+        apps, jobs_by_owner, at,
+        broken_sealed, suspended_cronjobs, past_budget)
     for line in lines:
         print(line)
     return status

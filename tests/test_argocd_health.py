@@ -15,13 +15,14 @@ import subprocess
 
 import pytest
 
-from tools import argocd_health
+from tools import argocd_health, workload_health
 
 
 NOW = datetime.datetime(2026, 8, 27, 1, 30, tzinfo=datetime.timezone.utc)
 
 
-def app(name, sync="Synced", health="Healthy", since="", cronjobs=(), sealed=()):
+def app(name, sync="Synced", health="Healthy", since="", cronjobs=(),
+        sealed=(), deployments=()):
     return {
         "metadata": {"name": name, "namespace": "argocd"},
         "status": {
@@ -33,6 +34,9 @@ def app(name, sync="Synced", health="Healthy", since="", cronjobs=(), sealed=())
             ] + [
                 {"kind": "SealedSecret", "namespace": ns, "name": nm}
                 for ns, nm in sealed
+            ] + [
+                {"kind": "Deployment", "namespace": ns, "name": nm}
+                for ns, nm in deployments
             ],
         },
     }
@@ -60,8 +64,25 @@ def job(name, cronjob, created, failed=False, succeeded=False, namespace="agents
     }
 
 
+def deployment(name, namespace="agents", available="False", replicas=1,
+               since="2026-08-27T01:00:00Z", reason="MinimumReplicasUnavailable",
+               grace=30):
+    """A Deployment as `workload_health.read_deployments` reads it."""
+    return {
+        "metadata": {"name": name, "namespace": namespace},
+        "spec": {
+            "replicas": replicas,
+            "template": {"spec": {"terminationGracePeriodSeconds": grace}},
+        },
+        "status": {"conditions": [
+            {"type": "Available", "status": available, "reason": reason,
+             "lastTransitionTime": since}]},
+    }
+
+
 def _which(args):
-    for kind in ("applications", "cronjobs", "jobs", "sealedsecrets"):
+    for kind in ("applications", "cronjobs", "jobs", "sealedsecrets",
+                 "deployments"):
         if kind in args:
             return kind
     raise AssertionError(f"unexpected kubectl call: {args}")
@@ -72,8 +93,8 @@ def cronjob(name, namespace="agents", suspend=False):
     return {"metadata": {"name": name, "namespace": namespace}, "spec": spec}
 
 
-def fake_kubectl(apps=(), jobs=(), sealed=(), cronjobs=(), fail_on=None,
-                 stdout=None):
+def fake_kubectl(apps=(), jobs=(), sealed=(), cronjobs=(), deployments=(),
+                 fail_on=None, stdout=None):
     """A `subprocess.run` that answers the two queries the tool makes."""
     def runner(args, **kwargs):
         which = _which(args)
@@ -82,13 +103,14 @@ def fake_kubectl(apps=(), jobs=(), sealed=(), cronjobs=(), fail_on=None,
         if stdout is not None and which == stdout[0]:
             return subprocess.CompletedProcess(args, 0, stdout[1], "")
         items = {"applications": apps, "jobs": jobs, "sealedsecrets": sealed,
-                 "cronjobs": cronjobs}[which]
+                 "cronjobs": cronjobs, "deployments": deployments}[which]
         return subprocess.CompletedProcess(args, 0, json.dumps({"items": list(items)}), "")
     return runner
 
 
-def report_for(apps, jobs, sealed=(), cronjobs=()):
-    runner = fake_kubectl(apps=apps, jobs=jobs, sealed=sealed, cronjobs=cronjobs)
+def report_for(apps, jobs, sealed=(), cronjobs=(), deployments=None):
+    runner = fake_kubectl(apps=apps, jobs=jobs, sealed=sealed,
+                          cronjobs=cronjobs, deployments=deployments or ())
     parsed, why = argocd_health.read_applications(runner)
     assert why is None
     by_owner, why = argocd_health.read_jobs(runner)
@@ -97,7 +119,16 @@ def report_for(apps, jobs, sealed=(), cronjobs=()):
     assert why is None
     paused, why = argocd_health.read_suspended_cronjobs(runner)
     assert why is None
-    return argocd_health.report(parsed, by_owner, NOW, broken, paused)
+    # `None` unless the caller supplied Deployments, so the existing tests
+    # keep exercising the unprobed path and the new ones the probed one.
+    past_budget = None
+    if deployments is not None:
+        read, why = workload_health.read_deployments(runner)
+        assert why is None
+        past, _ = workload_health.unavailable(read, NOW)
+        past_budget = {(d["namespace"], d["name"]): d for d in past}
+    return argocd_health.report(parsed, by_owner, NOW, broken, paused,
+                                past_budget)
 
 
 # --- the clean case -------------------------------------------------
@@ -369,7 +400,7 @@ def test_jobs_are_not_read_at_all_when_every_application_is_healthy():
     assert asked == ["applications"]
 
 
-def test_jobs_and_sealed_secrets_are_read_once_something_is_unhealthy():
+def test_children_are_probed_once_something_is_unhealthy():
     asked = []
 
     def runner(args, **kwargs):
@@ -380,7 +411,7 @@ def test_jobs_and_sealed_secrets_are_read_once_something_is_unhealthy():
             args, 0, json.dumps({"items": items}), "")
 
     assert argocd_health.main([], runner=runner, now=NOW) == 2
-    assert asked == ["applications", "jobs", "sealedsecrets"]
+    assert asked == ["applications", "jobs", "sealedsecrets", "deployments"]
 
 
 def test_kubectl_refused_on_sealed_secrets_is_status_one(capsys):
@@ -806,3 +837,101 @@ def test_main_refuses_rather_than_guessing_when_the_cronjob_read_fails():
         apps=[app("x", health="Suspended", cronjobs=[("agents", "n")])],
         fail_on="cronjobs")
     assert argocd_health.main([], runner=runner, now=NOW) == 1
+
+
+# --- a Deployment child is measured off the Deployment ----------------
+#
+# This is the half of `unhealthy_children` that did not exist until cycle
+# 1280. The Application object carries no health for any child, so before
+# this the only nameable cause was a SealedSecret and everything else came
+# out as "no immediate child of it is measurably unhealthy" — a sentence
+# that read as a measurement and was an empty field. Cycle 1271 hand-probed
+# the children of one Degraded Application for nine minutes to find what
+# these three tests now find.
+
+
+def test_a_deployment_child_past_its_budget_is_named_as_the_cause():
+    lines, status = report_for(
+        [app("agora", health="Degraded", deployments=[("agents", "nova-site")])],
+        [],
+        deployments=[deployment("nova-site", since="2026-08-27T00:00:00Z")])
+    assert status == 2
+    named = [l for l in lines if "Deployment agents/nova-site" in l]
+    assert named, lines
+    assert "Available=False for 1h 30m" in named[0]
+    assert "MinimumReplicasUnavailable" in named[0]
+    # Named means explained: it must not also be counted as unexplained.
+    assert not any("no immediate child" in l for l in lines)
+    assert not any("no immediate child this check can name" in l for l in lines)
+
+
+def test_a_deployment_inside_its_own_budget_is_not_named():
+    # 20 seconds down, against a 30s grace plus the start margin. The
+    # Application is still Degraded and still raises — what must not happen
+    # is a rollout in flight being reported as the cause of it.
+    lines, status = report_for(
+        [app("agora", health="Degraded", deployments=[("agents", "nova-site")])],
+        [],
+        deployments=[deployment("nova-site", since="2026-08-27T01:29:40Z")])
+    assert status == 2
+    assert not any("Deployment agents/nova-site" in l for l in lines)
+    assert any("no Deployment child of it is past its own availability budget"
+               in l for l in lines)
+
+
+def test_an_available_deployment_child_is_not_named():
+    lines, status = report_for(
+        [app("agora", health="Degraded", deployments=[("agents", "nova-site")])],
+        [],
+        deployments=[deployment("nova-site", available="True")])
+    assert status == 2
+    assert not any("Deployment agents/nova-site" in l for l in lines)
+
+
+def test_a_deployment_of_another_application_is_not_named():
+    # The set of children is the Application's own `status.resources`; a
+    # broken Deployment elsewhere in the cluster is somebody else's cause.
+    lines, status = report_for(
+        [app("agora", health="Degraded", deployments=[("agents", "nova-site")])],
+        [],
+        deployments=[deployment("marcus", namespace="marcus",
+                                since="2026-08-27T00:00:00Z")])
+    assert status == 2
+    assert not any("Deployment marcus/marcus" in l for l in lines)
+    assert any("no Deployment child of it is past its own availability budget"
+               in l for l in lines)
+
+
+def test_unprobed_and_probed_clean_are_different_sentences():
+    # `None` is "nobody looked" and `{}` is "looked and found nothing". A
+    # report that said the same thing for both would let a skipped probe
+    # read as a clean one, which is the empty field this replaced.
+    unprobed, _ = report_for([app("agora", health="Degraded")], [])
+    probed, _ = report_for([app("agora", health="Degraded")], [], deployments=[])
+    assert any("no Deployment child of it was probed" in l for l in unprobed)
+    assert any("no Deployment child of it is past its own availability budget"
+               in l for l in probed)
+
+
+def test_kubectl_refused_on_deployments_is_status_one(capsys):
+    # A refusal must not read as "no Deployment child is unhealthy".
+    runner = fake_kubectl(apps=[app("x", health="Degraded")],
+                          fail_on="deployments")
+    assert argocd_health.main([], runner=runner, now=NOW) == 1
+    assert "COULD NOT READ" in capsys.readouterr().out
+
+
+def test_main_names_the_deployment_child_end_to_end(capsys):
+    # `report_for` builds `past_budget` itself, so every test above this one
+    # would pass with `main`'s own wiring of it broken — measured: replacing
+    # `workload_health.unavailable(...)` with two empty lists SURVIVED all 65.
+    # This is the only test that reads the join `main` actually makes.
+    runner = fake_kubectl(
+        apps=[app("agora", health="Degraded",
+                  deployments=[("agents", "nova-site")])],
+        deployments=[deployment("nova-site", since="2026-08-27T00:00:00Z")])
+    assert argocd_health.main([], runner=runner, now=NOW) == 2
+    out = capsys.readouterr().out
+    assert "Deployment agents/nova-site is not healthy" in out
+    assert "Available=False for 1h 30m" in out
+    assert "no immediate child" not in out
