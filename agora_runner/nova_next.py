@@ -673,11 +673,50 @@ def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
     lists intact, for `top_board_rows`' reason: an empty ledger and an
     unreadable one look identical and mean opposite things, so the page
     has to be able to say which it got.
+
+    `issues_markdown` and `ideas_markdown` are the two board files. They
+    are the only markdown this function still needs and it hands them
+    straight to `parse_board`: everything below the first two lines is
+    `next_payload_from_contents`, which never sees a file. The two
+    `*_markdown` keyword arguments are `projects.md` and `milestones.md`,
+    which are not boards, are not part of issue #203, and stay markdown on
+    both sides of the door.
     """
-    captures = (unboarded_captures(issues_markdown, "issues")
-                + unboarded_captures(ideas_markdown, "ideas"))
-    rows = (open_rows(issues_markdown, "issue")
-            + open_rows(ideas_markdown, "idea"))
+    return next_payload_from_contents(
+        parse_board(issues_markdown or ""),
+        parse_board(ideas_markdown or ""),
+        claims_text, now, top=top, projects_markdown=projects_markdown,
+        milestones_markdown=milestones_markdown)
+
+
+def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
+                               now, top=5, projects_markdown="",
+                               milestones_markdown=""):
+    """The same answer, from `parse_board`'s return value instead of the files.
+
+    Same split, and the same reason, as `open_rows_from_contents`: issue
+    #203 replaces the two markdown tables with one record per row, and
+    `board_records.contents` returns exactly these four keys out of
+    CouchDB. The door above is what gets deleted when the last markdown
+    caller goes; this is where the shaping lives.
+
+    **The move fixes a second double read.** The old body called
+    `unboarded_captures` and `open_rows` on each file, and each of those
+    parsed it again -- four parses of two files, and, once the source is a
+    store rather than a string, four reads that a write can land between.
+    That is not merely wasteful here: `unboarded_captures` decides a bullet
+    is unboarded by looking at `boarded_capture_rows(items)`, so a capture
+    list read before a row list can report a bullet as unprocessed while
+    the row that boards it already exists -- printed to a waking cycle
+    under *"these outrank every row below"*, which is the exact failure
+    that function's docstring says cost cycle 1007 two finished items. One
+    `contents` per board makes the captures and the rows the same read by
+    construction.
+    """
+    captures = (unboarded_captures_from_contents(issues_contents, "issues")
+                + unboarded_captures_from_contents(ideas_contents, "ideas"))
+    rows = (open_rows_from_contents(issues_contents, "issue")
+            + open_rows_from_contents(ideas_contents, "idea"))
     claims_readable = True
     live = {}
     try:

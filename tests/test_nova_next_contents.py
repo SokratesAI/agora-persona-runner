@@ -16,9 +16,14 @@ capture list with no bullet syntax -- so a reader that quietly went back to
 parsing would have nothing to parse.
 """
 
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from agora_runner.nova_next import (
+    next_payload, next_payload_from_contents,
     open_rows, open_rows_from_contents,
     unboarded_captures, unboarded_captures_from_contents,
 )
@@ -136,3 +141,90 @@ def test_the_markdown_door_is_only_a_door(markdown_door, contents_door):
     """
     from agora_runner.nova_boards import parse_board
     assert markdown_door("", "issue") == contents_door(parse_board(""), "issue")
+
+
+# --- `next_payload`, the composition on top of the two readers -------------
+#
+# The split above gave the two readers a records-shaped door; this one gives
+# it to the function his phone actually calls. Same rule about markdown: not
+# a byte of it below either, so a payload builder that quietly went back to
+# parsing has nothing to parse.
+
+OSLO = ZoneInfo("Europe/Oslo")
+NOW = datetime(2026, 8, 30, 17, 0, tzinfo=OSLO)
+
+
+def test_the_whole_payload_comes_back_with_no_file_to_parse():
+    payload = next_payload_from_contents(
+        contents([row(7, priority="🔴 Immediately", priorityKey="immediate")],
+                 captures=["something he typed"]),
+        contents([row(64)]), json.dumps({"claims": []}), NOW)
+
+    assert [c["text"] for c in payload["captures"]] == ["something he typed"]
+    assert payload["captures"][0]["board"] == "issues"
+    assert [(r["board"], r["number"]) for r in payload["next"]] == [
+        ("issue", 7), ("idea", 64)]
+    assert payload["claimsReadable"] is True
+
+
+def test_the_payload_never_reaches_a_parser(monkeypatch):
+    """The records door must not be a facade over `parse_board`.
+
+    `board-records.md` bans an accessor that can fall back to the parser,
+    and the ban is only worth anything if something fails when one does.
+    Handing in records and then parsing would still return the right answer
+    for a caller that had markdown, which is exactly why this cannot be
+    left to reading the diff.
+    """
+    def explode(*_a, **_k):
+        raise AssertionError("next_payload_from_contents parsed markdown")
+
+    monkeypatch.setattr("agora_runner.nova_next.parse_board", explode)
+    payload = next_payload_from_contents(
+        contents([row(7)], captures=["a bullet"]), contents([row(64)]),
+        json.dumps({"claims": []}), NOW)
+    assert [r["number"] for r in payload["next"]] == [7, 64]
+
+
+def test_a_bullet_its_own_board_already_carries_is_not_offered_as_new():
+    """The captures and the rows of one board are a single read.
+
+    The old body called `unboarded_captures` and `open_rows` on the same
+    file, each parsing it again -- harmless on a string, two reads a write
+    can land between once the source is CouchDB. `unboarded_captures`
+    decides a bullet is unprocessed by looking at the *rows*, so a capture
+    list read before a row list reports a bullet whose row already exists,
+    and a waking cycle is handed it above the whole board as work nobody
+    has started. Cycle 1007 got two finished items that way.
+    """
+    boarded = row(7, title="fix the thing", statusKey="done",
+                  status="✅ Done", done=True)
+    payload = next_payload_from_contents(
+        contents([boarded], captures=["fix the thing"]),
+        contents(), json.dumps({"claims": []}), NOW)
+
+    assert payload["captures"] == []
+
+
+def test_an_unreadable_ledger_is_said_out_loud_and_keeps_the_rows():
+    """An empty ledger and an unreadable one mean opposite things, and the
+    door did not stop being the place that distinguishes them."""
+    payload = next_payload_from_contents(
+        contents([row(7)]), contents(), "{not json", NOW)
+
+    assert payload["claimsReadable"] is False
+    assert [r["number"] for r in payload["next"]] == [7]
+
+
+def test_the_markdown_door_onto_the_payload_is_only_a_door():
+    """`next_payload` is `parse_board` twice and nothing else.
+
+    Same pin as `test_the_markdown_door_is_only_a_door`, and the same
+    reason: the value of the split is that the composition stopped being
+    written twice, so a rule fixed on one shape and not the other is the
+    failure to catch.
+    """
+    from agora_runner.nova_boards import parse_board
+    empty = parse_board("")
+    assert next_payload("", "", "", NOW) == next_payload_from_contents(
+        empty, empty, "", NOW)
