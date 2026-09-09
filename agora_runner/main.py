@@ -18,6 +18,7 @@ from agora_runner.invoke_server import start_invoke_server
 from agora_runner.otel import init_tracing
 from agora_runner.catalog_refresh import start_catalog_refresh
 from agora_runner.heartbeat_pass import start_heartbeat_pass
+from agora_runner import runner_lifecycle
 
 # Set by the SIGTERM/SIGINT handler, read by the poll loop between ticks.
 # A plain module flag rather than a threading.Event on purpose: a signal
@@ -25,6 +26,11 @@ from agora_runner.heartbeat_pass import start_heartbeat_pass
 # in principle re-enter a lock that same thread is already holding inside
 # Event.wait(). A bool assignment cannot deadlock.
 _shutdown_requested = False
+
+# The signal number the handler saw, read by _drain_and_exit when it writes the
+# lifecycle row. A plain assignment for the same reason _shutdown_requested is
+# one: it is the only operation a signal handler can do without taking a lock.
+_shutdown_signum = None
 
 
 def shutdown_requested():
@@ -53,8 +59,9 @@ def _request_shutdown(signum, _frame):
     tick returns in milliseconds now. main() joins the running heartbeat
     threads too (heartbeats.join_running_heartbeats), which closes the
     gap this docstring used to record for workflow-mode heartbeats."""
-    global _shutdown_requested
+    global _shutdown_requested, _shutdown_signum
     _shutdown_requested = True
+    _shutdown_signum = signum
     log(f"received signal {signum}, draining: finishing the in-flight tick, then exiting")
 
 
@@ -97,12 +104,31 @@ def _drain_and_exit():
     cycle keeps its full budget; `join_running_heartbeats` below is what
     holds the process open, and an idle pod still exits immediately.
     """
+    # First, before the join: the join is the whole drain, minutes of it, and
+    # the row that says "Kubernetes asked" has to be on disk before the SIGKILL
+    # at grace expiry that this is built to distinguish from an OOM kill.
+    #
+    # Here rather than in _request_shutdown, and that placement is the point.
+    # `threading.Thread.start()` takes a lock the main thread may already hold
+    # -- it starts a thread per heartbeat run -- and a signal handler runs on
+    # that same thread between bytecodes, so recording from inside the handler
+    # can deadlock the process it is diagnosing. Same reasoning, and the same
+    # main thread, as the module comment on _shutdown_requested being a plain
+    # bool. The cost is up to one poll slice of delay; _sleep_between_ticks
+    # slices at 1.0s, and a kill inside that window reads as `no_signal`, which
+    # errs toward "nobody asked" rather than inventing a request that was made.
+    runner_lifecycle.record("signal", detail=f"signal {_shutdown_signum}")
     join_running_heartbeats()
 
 
 def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
+    # The first of three rows that outlive this Pod. A `started` with no
+    # `signal` before it is a process that was killed rather than asked to
+    # stop, which is the cause `cycle_postmortem` cannot recover for a
+    # `silent` cycle once the ReplicaSet is gone.
+    runner_lifecycle.record("started")
     # Before the server binds, so the first /invoke or /mcp call is
     # traced too. The name is passed rather than left to the module
     # default: this process and nova-site share an image, and an unnamed
@@ -145,6 +171,11 @@ def main():
             _sleep_between_ticks(POLL_INTERVAL_SECONDS)
         if _shutdown_requested:
             _drain_and_exit()
+            # On this thread, not a daemon one: the process is about to
+            # return and a daemon thread does not survive interpreter
+            # shutdown, so backgrounding this would drop the one row that
+            # separates a finished drain from a drain that ran out of grace.
+            runner_lifecycle.record("drained", blocking=True)
             log("drain complete, exiting")
             return
 
