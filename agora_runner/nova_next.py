@@ -35,7 +35,7 @@ from agora_runner.nova_boards import (
     capture_match_key, is_relayed, parse_board, parse_project_meta,
     near_miss_done_marker, parse_milestone_pins, split_capture_done,
     split_capture_priority, status_key,
-    unanswered_comment_bodies,
+    unanswered_comment_bodies, unanswered_comment_bodies_from_details,
 )
 from agora_runner.nova_claims import (
     ClaimError, held_by, load as load_claims, slug_for_capture,
@@ -106,8 +106,27 @@ def unboarded_captures(markdown, board):
     and the reader should be told where it already lives rather than have
     it hidden.
     """
+    return unboarded_captures_from_contents(parse_board(markdown or ""), board)
+
+
+def unboarded_captures_from_contents(contents, board):
+    """The same answer, from `parse_board`'s return value instead of the file.
+
+    This is where the rule actually lives now; the function above is the
+    markdown-shaped door onto it, exactly as `unanswered_comment_bodies` is
+    the door onto `unanswered_comment_bodies_from_details`. Issue #203 is
+    moving every board reader onto `board_records.contents`, which returns
+    these same four keys out of CouchDB and never parses anything -- so the
+    only part of this function that was ever about markdown was the first
+    line, and it is now the caller's.
+
+    It is not a facade over the parser and `board-records.md`'s ban on one
+    still holds: nothing here can *reach* markdown, and a caller holding
+    records passes them straight in. The door above is what will be deleted
+    when the last markdown caller goes, not this.
+    """
     captures = []
-    parsed = parse_board(markdown or "")
+    parsed = contents
     boarded = boarded_capture_rows(parsed["items"])
     # `index` counts every bullet in the list, including the finished ones
     # skipped below, because it is the address `/api/capture/comment`
@@ -167,9 +186,25 @@ def unboarded_captures(markdown, board):
 
 def open_rows(markdown, board):
     """Open rows of one board file, each tagged with which board it is on."""
+    return open_rows_from_contents(parse_board(markdown or ""), board)
+
+
+def open_rows_from_contents(contents, board):
+    """The same answer, from `parse_board`'s return value instead of the file.
+
+    Same split, and the same reason, as `unboarded_captures_from_contents`.
+    The one thing worth naming here: the old body read the file **twice**,
+    once through `parse_board` for the rows and once through
+    `unanswered_comment_bodies` for the threads, and the docstring on
+    `open_rows` promises a row and its thread can never come from two
+    different reads. Two reads of one string cannot disagree; two reads of
+    one CouchDB can, because a write may land between them. Taking both
+    halves out of a single `contents` is what keeps that promise true once
+    `board_records.contents` is the source.
+    """
     rows = []
-    waiting = unanswered_comment_bodies(markdown or "")
-    for item in parse_board(markdown or "")["items"]:
+    waiting = unanswered_comment_bodies_from_details(contents["details"])
+    for item in contents["items"]:
         if item["done"] or item["statusKey"] in _CLOSED:
             continue
         rows.append({
