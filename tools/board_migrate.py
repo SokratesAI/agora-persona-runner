@@ -5,10 +5,12 @@
     python3 -m tools.board_migrate --board issue --file issues.md --verify
 
 `--verify` is the switchover's own precondition and keeps nothing: it writes
-the board, reads it back through `board_records.contents` -- the seam all
+the board -- rows, captures and layout -- reads it back through
+`board_records.contents` and `board_store.read_layout` -- the seam all
 eighteen remaining readers are about to be handed in place of a parse -- and
 asserts that what comes back is exactly what `nova_boards.parse_board`
-returned, then empties both key ranges again. `board_migration_preflight
+returned and that the generated view still carries his prose, then restores
+the store. `board_migration_preflight
 --round-trip` already sends the rows through CouchDB and compares the
 *rendered markdown*, which is the two tables and nothing else, so it cannot
 see a wrong `statusKey`, a lost `order`, a dropped detail body or a capture
@@ -290,6 +292,41 @@ def differences(want, got):
     return problems
 
 
+def layout_differences(markdown, board, layout, layout_back):
+    """What the store did to a layout on the way through. One line per fault.
+
+    Separate from `differences` because it is a different question asked of
+    a different document. `differences` compares `board_records.contents`
+    with `parse_board`, and **neither side of that comparison can see a
+    layout at all** -- the layout is the record home for the blocks
+    `parse_board` does not model, so a comparison written in the parser's
+    four keys is guaranteed to agree about it whether it survived or not.
+    That is the positive result guaranteed in advance, and it is why this
+    is here rather than folded into the loop above.
+
+    Compared against the *normalised* blocks rather than the ones handed
+    in: `document_layout` keeps the owner's own table header in a tuple and
+    JSON has no tuple, so a raw comparison would report every board as
+    broken. `to_layout_document` is the one spelling of a stored layout and
+    `board_document` normalises through it; asking the same question here
+    keeps this check off the tuple and on the content.
+    """
+    if layout_back is None:
+        return [f"layout: nothing came back out of the store for {board}"]
+    wanted = board_document.layout_blocks_of(
+        board_document.to_layout_document(layout, board))
+    if wanted == layout_back:
+        return []
+    if len(wanted) != len(layout_back):
+        return [f"layout: {len(wanted)} block(s) written, "
+                f"{len(layout_back)} back"]
+    for index, (one, two) in enumerate(zip(wanted, layout_back)):
+        if one != two:
+            return [f"layout[{index}] differs: written {one!r} "
+                    f"vs store {two!r}"]
+    return []  # pragma: no cover -- unreachable: unequal lists differ somewhere
+
+
 def verify(markdown, board, store=board_store):
     """Write the board, read it back through `board_records.contents`, restore.
 
@@ -305,9 +342,25 @@ def verify(markdown, board, store=board_store):
     about to be handed instead of a parse. `contents` is what they will call;
     this is that call, against the real store, on his real board.
 
+    **The layout goes through too, and it is the half that had no control.**
+    A board file is more than the four keys: his `## Processed captures`
+    archive, `# Done — detail` and `ideas.md`'s `## Discarded` table are
+    19,653 and 6,469 words that `parse_board` does not model, and the
+    layout document is where they live. `board_migration_preflight` already
+    counts what a render drops, but from a layout it computed in memory one
+    line earlier -- so nothing measured the layout against a real store on
+    a real board. This writes it, reads it back, compares it as stored, and
+    renders the document from the records and *that* copy, which is the
+    pair the app will hold. `document_words_lost` in the report is that
+    number.
+
     Reversible first, then act: it refuses a board that already holds
     records, and it empties both key ranges again in a `finally`, so a
-    failure in the middle does not leave a half-migration behind.
+    failure in the middle does not leave a half-migration behind. The
+    layout is restored rather than emptied -- a board with no records can
+    still hold one, since a layout sits outside both guarded ranges, and
+    `write_layout(board, [])` is not the undo: an empty layout is a valid
+    layout that renders his board as frontmatter and nothing else.
     """
     if board not in board_document.BOARDS:
         raise MigrationRefused(
@@ -322,6 +375,13 @@ def verify(markdown, board, store=board_store):
 
     registry = store.read_registry()
     docs, details, captures = plan(markdown, board, registry)
+    layout = board_view.document_layout(markdown)
+    # Read before anything is written, so the restore below can put back
+    # whatever was there rather than assuming there was nothing. A layout
+    # is outside both key ranges the refusal above guards, so a board with
+    # no records can still hold one -- and deleting somebody else's layout
+    # is exactly the kind of loss this run exists to prove does not happen.
+    held_layout = store.read_layout(board)
     try:
         written = store.write_rows(board, docs)
         if written.get("failures"):
@@ -331,14 +391,27 @@ def verify(markdown, board, store=board_store):
         if wrote_captures.get("failures"):
             raise MigrationRefused(
                 f"{len(wrote_captures['failures'])} capture(s) failed to write")
+        store.write_layout(board, layout)
         got = board_records.contents(
             board, store=_RegistryFromMemory(store, registry))
+        layout_back = store.read_layout(board)
     finally:
         store.write_rows(board, [])
         store.write_captures(board, [])
+        # Absence is the restore, never `write_layout(board, [])`: an empty
+        # layout is a valid layout and renders his board as frontmatter,
+        # the capture box and nothing else.
+        if held_layout is None:
+            store.delete_layout(board)
+        else:
+            store.write_layout(board, held_layout)
 
     want = nova_boards.parse_board(markdown)
     problems = differences(want, got)
+    problems.extend(layout_differences(markdown, board, layout, layout_back))
+    document = board_view.render_document(
+        got, preflight.frontmatter_of(markdown), layout=layout_back)
+    lost = preflight.words_lost(markdown, document)
     left_behind = len(store.stored_documents(board)) + \
         len(store.stored_capture_documents(board))
     report = {
@@ -349,6 +422,9 @@ def verify(markdown, board, store=board_store):
         "details_back": len(got["details"]),
         "captures": len(captures),
         "captures_back": len(got["captures"]),
+        "layout_blocks": len(layout),
+        "layout_blocks_back": None if layout_back is None else len(layout_back),
+        "document_words_lost": len(lost),
         "contents_matches_parse": not problems,
         "restored_to": left_behind,
     }
@@ -369,9 +445,10 @@ def main(argv=None):
     parser.add_argument("--apply", action="store_true",
                         help="actually write; without it nothing is stored")
     parser.add_argument("--verify", action="store_true",
-                        help="write the board, read it back through "
-                             "board_records.contents, compare with parse_board "
-                             "and empty the store again; nothing is kept")
+                        help="write the board and its layout, read both "
+                             "back through board_records.contents and "
+                             "read_layout, compare with parse_board and "
+                             "restore the store; nothing is kept")
     args = parser.parse_args(argv)
     if args.verify and args.apply:
         parser.error(

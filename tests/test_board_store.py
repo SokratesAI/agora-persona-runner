@@ -80,6 +80,21 @@ class FakeCouch:
             stored = self._wire(dict(body, _rev=f"{self.revs}-r"))
             self.docs[doc_id] = stored
             return 201, {"ok": True, "id": doc_id, "rev": stored["_rev"]}
+        if method == "DELETE":
+            head, _, query = path.partition("?")
+            doc_id = urllib.parse.unquote(head.split("/", 1)[1])
+            held = self.docs.get(doc_id)
+            if held is None:
+                return 404, {"error": "not_found"}
+            # CouchDB's own rule again, and the reason this branch carries
+            # it rather than just popping: a delete that ignored `?rev=`
+            # would let a caller remove a document somebody else had since
+            # rewritten, and no test could tell.
+            sent = urllib.parse.parse_qs(query).get("rev", [None])[0]
+            if sent != held.get("_rev"):
+                return 409, {"error": "conflict"}
+            self.docs.pop(doc_id)
+            return 200, {"ok": True, "id": doc_id}
         if method == "GET":
             doc_id = urllib.parse.unquote(path.split("/", 1)[1])
             if doc_id in self.docs:
@@ -802,3 +817,51 @@ def test_a_re_migration_of_the_same_markdown_costs_no_revision(couch):
     assert again["_rev"] == first["_rev"]
     assert board_store.read_layout("idea") == [
         {"kind": "board", "columns": ["#", "Idea"]}]
+
+
+def test_delete_layout_removes_it_and_says_it_did(couch):
+    board_store.write_layout("issue", [{"kind": "board"}])
+
+    assert board_store.delete_layout("issue") is True
+    assert board_store.read_layout("issue") is None
+
+
+def test_delete_layout_on_a_board_with_none_is_not_an_error(couch):
+    """A caller restoring a store it may or may not have written to should
+    not have to look first."""
+    assert board_store.delete_layout("issue") is False
+
+
+def test_deleting_one_boards_layout_leaves_the_others(couch):
+    board_store.write_layout("issue", [{"kind": "board"}])
+    board_store.write_layout("idea", [{"kind": "board"}])
+
+    board_store.delete_layout("issue")
+
+    assert board_store.read_layout("idea") == [{"kind": "board"}]
+
+
+def test_delete_layout_is_absence_and_not_an_empty_layout(couch):
+    """The distinction the whole layout API turns on. `read_layout` hands
+    `[]` straight to `board_view.render_document`, which draws a board file
+    holding its frontmatter, the capture box and nothing else -- so a
+    delete that stored an empty list instead of removing the document would
+    erase every row and every write-up on the next render, silently."""
+    board_store.write_layout("issue", [{"kind": "board"}])
+
+    board_store.delete_layout("issue")
+
+    assert board_store.read_layout("issue") is not []
+    assert board_store.read_layout("issue") is None
+    assert board_document.layout_document_id("issue") not in couch.docs
+
+
+def test_delete_layout_reaches_for_no_other_document(couch):
+    """It is the only delete here that is not a prune, so the thing to pin
+    is that it names one id rather than sweeping a range."""
+    board_store.write_layout("issue", [{"kind": "board"}])
+    couch.calls.clear()
+
+    board_store.delete_layout("issue")
+
+    assert not any("_all_docs" in path for _method, path in couch.calls)

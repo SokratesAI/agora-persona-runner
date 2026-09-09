@@ -565,3 +565,37 @@ def write_layout(board, blocks):
         if status == 409 and attempt == 0:
             continue
         raise StoreError(f"writing {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
+def delete_layout(board):
+    """Remove one board's stored layout. `True` if there was one to remove.
+
+    The only delete in this module that is not a prune, and it exists for
+    one caller: `board_migrate.verify` writes a layout against the live
+    board and has to put the store back exactly as it found it. Rows and
+    captures are restored by re-running their writer with an empty list --
+    `write_rows(board, [])` tombstones the range -- and **that spelling is
+    unavailable here and would be a disaster if it were used.** An empty
+    layout is a *valid* layout: `read_layout` hands `[]` straight to
+    `board_view.render_document`, which draws a board file holding its
+    frontmatter, his capture box and nothing else. So "no layout" is the
+    absence of the document and never an empty one, and taking a layout
+    away means deleting it.
+
+    Absent is not an error. A caller restoring a store it may or may not
+    have written to should not have to look first, and the return value is
+    there for the caller that wants to say which happened.
+    """
+    _check_board(board)
+    doc_id = board_document.layout_document_id(board)
+    path = f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}"
+    status, held = ticket_docs._req("GET", path)
+    if status == 404:
+        return False
+    if status != 200:
+        raise StoreError(f"reading {doc_id}: {status} {json.dumps(held)[:200]}")
+    status, body = ticket_docs._req(
+        "DELETE", f"{path}?rev={urllib.parse.quote(held['_rev'], safe='')}")
+    if status in (200, 202):
+        return True
+    raise StoreError(f"deleting {doc_id}: {status} {json.dumps(body)[:200]}")

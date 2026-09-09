@@ -13,7 +13,7 @@ import pytest
 
 from agora_runner import (board_document, board_records, board_store,
                           board_view, entity_id, nova_boards, ticket_docs)
-from tools import board_migrate
+from tools import board_migrate, board_migration_preflight
 
 from tests.test_board_store import FakeCouch
 
@@ -491,3 +491,157 @@ def test_a_second_migration_of_the_same_board_is_refused_before_the_layout(couch
         board_migrate.migrate(board([(2, "Marcus", "")]), "issue", apply=True)
 
     assert board_store.read_layout("issue") == first
+
+
+# ---------------------------------------------------------------------------
+# `--verify` takes the layout through the real store too
+# ---------------------------------------------------------------------------
+
+
+def test_verify_carries_the_layout_through_the_store_and_keeps_none(couch):
+    """The control the switchover actually needs.
+
+    `verify` writes the board, reads it back through the seam the eighteen
+    remaining readers are about to be handed, and restores. Until now it
+    took the rows and the captures through and left the layout out -- so
+    the one document that holds his `## Processed captures` archive was the
+    only part of a migration nothing measured against a live board.
+    """
+    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
+
+    report, problems = board_migrate.verify(markdown, "issue")
+
+    assert problems == []
+    assert report["layout_blocks_back"] == report["layout_blocks"] >= 1
+    assert board_store.read_layout("issue") is None
+
+
+def test_verify_reports_the_words_the_generated_view_would_drop(couch):
+    """The number the switchover is waiting on, measured through the store.
+
+    `board_migration_preflight` already counts this, but from a layout it
+    computed in memory a line earlier. This one renders from the records
+    and from the layout CouchDB handed back, which is the pair the app will
+    actually hold.
+    """
+    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
+
+    report, _problems = board_migrate.verify(markdown, "issue")
+    without_layout = board_view.render_document(
+        nova_boards.parse_board(markdown),
+        board_migration_preflight.frontmatter_of(markdown))
+
+    assert "an old bullet he keeps" not in without_layout
+    assert report["document_words_lost"] < len(
+        board_migration_preflight.words_lost(markdown, without_layout))
+
+
+def test_verify_catches_a_layout_the_store_did_not_take(couch, monkeypatch):
+    """The guard, defused: a store that drops a block must fail the run.
+
+    Without this the test above passes against a `verify` that reads the
+    layout back and never compares it -- `differences` is written in
+    `parse_board`'s four keys and none of them can see a layout, so that
+    comparison agrees whether the layout survived or not.
+    """
+    real = board_store.read_layout
+
+    def one_block_short(name):
+        blocks = real(name)
+        return None if blocks is None else blocks[1:]
+
+    monkeypatch.setattr(board_store, "read_layout", one_block_short)
+    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
+
+    report, problems = board_migrate.verify(markdown, "issue")
+
+    assert report["contents_matches_parse"] is False
+    assert any("block(s) written" in problem for problem in problems)
+    # And the word count is taken from the copy the store handed back, not
+    # from the one this run computed. `> 0` would not say that: the full
+    # layout loses two words to `render_detail`'s heading reflow, so both
+    # sides are non-zero and the assertion could never fail. The number has
+    # to be the one the *short* layout produces.
+    contents = nova_boards.parse_board(markdown)
+    front = board_migration_preflight.frontmatter_of(markdown)
+    whole = board_view.document_layout(markdown)
+    from_stored = board_migration_preflight.words_lost(
+        markdown, board_view.render_document(contents, front,
+                                             layout=whole[1:]))
+    from_memory = board_migration_preflight.words_lost(
+        markdown, board_view.render_document(contents, front, layout=whole))
+    assert len(from_stored) > len(from_memory)
+    assert report["document_words_lost"] == len(from_stored)
+
+
+def test_verify_catches_a_layout_that_came_back_changed(couch, monkeypatch):
+    """The same length and different content -- the shape a count misses."""
+    real = board_store.read_layout
+
+    def relabelled(name):
+        blocks = real(name)
+        if not blocks:
+            return blocks
+        return [{**blocks[0], "kind": "verbatim", "markdown": "not his"}] \
+            + blocks[1:]
+
+    monkeypatch.setattr(board_store, "read_layout", relabelled)
+
+    report, problems = board_migrate.verify(board([(1, "Nova", "")]), "issue")
+
+    assert report["contents_matches_parse"] is False
+    assert any(problem.startswith("layout[0] differs") for problem in problems)
+
+
+def test_verify_puts_back_a_layout_that_was_already_stored(couch):
+    """A layout sits outside both key ranges the refusal guards, so a board
+    with no records can still hold one. Deleting it would be the loss this
+    run exists to prove does not happen.
+
+    The stored layout and the one this run computes are deliberately
+    **different documents** -- the first has an archive section, the second
+    does not. A verify that simply left its own layout behind would restore
+    the right answer by accident if the two agreed, and the assertion could
+    never fail.
+    """
+    board_migrate.migrate(
+        _with_archive(board([(1, "Nova", "")], details=[(1, "why")])),
+        "issue", apply=True)
+    before = board_store.read_layout("issue")
+    board_store.write_rows("issue", [])
+    board_store.write_captures("issue", [])
+
+    board_migrate.verify(board([(2, "Marcus", "")]), "issue")
+
+    assert board_store.read_layout("issue") == before
+
+
+def test_verify_empties_the_layout_when_the_read_back_raises(couch, monkeypatch):
+    """The `finally` covers the layout too, not just the two key ranges."""
+    def boom(name, store=None):
+        raise board_records.RecordError("nope")
+
+    monkeypatch.setattr(board_records, "contents", boom)
+    with pytest.raises(board_records.RecordError):
+        board_migrate.verify(board([(1, "Nova", "")]), "issue")
+
+    assert board_store.read_layout("issue") is None
+
+
+def test_verify_catches_a_layout_that_never_came_back(couch, monkeypatch):
+    """`read_layout` answers `None` for a document that is not there, and a
+    verify that wrote one and read `None` has found the store dropping it.
+
+    Absent is not the same fault as changed and it takes its own branch:
+    `layout_differences` cannot compare `None` block by block, so without
+    this the one case where the layout vanished entirely would be the one
+    case that passed.
+    """
+    monkeypatch.setattr(board_store, "read_layout", lambda name: None)
+
+    report, problems = board_migrate.verify(board([(1, "Nova", "")]), "issue")
+
+    assert report["layout_blocks_back"] is None
+    assert report["contents_matches_parse"] is False
+    assert any("nothing came back out of the store" in problem
+               for problem in problems)
