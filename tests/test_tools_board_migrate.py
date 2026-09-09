@@ -11,7 +11,7 @@ reached a database pass every test in this file.
 """
 import pytest
 
-from agora_runner import board_store, entity_id, ticket_docs
+from agora_runner import board_document, board_store, entity_id, ticket_docs
 from tools import board_migrate
 
 from tests.test_board_store import FakeCouch
@@ -23,14 +23,24 @@ HEADER = (
 )
 
 
-def board(rows, details=()):
-    """Board markdown for `(number, project, milestone)` triples."""
+def board(rows, details=(), captures=()):
+    """Board markdown for `(number, project, milestone)` triples.
+
+    `captures` are `(text, replies)` pairs, written above the first heading
+    the way he writes them from his phone -- newest first, with whatever a
+    cycle answered indented underneath.
+    """
     lines = [
         f"| [[#{n} — Item {n}\\|{n}]] | Item {n} | ⚪ Backlog | 09-09 "
         f"| 🟡 Medium | {project} | | {milestone} | |"
         for n, project, milestone in rows
     ]
-    text = HEADER + "\n".join(lines) + "\n"
+    top = ""
+    for capture_text, replies in captures:
+        top += f"- {capture_text}\n"
+        for reply in replies:
+            top += f"  - {reply}\n"
+    text = (top + "\n" if top else "") + HEADER + "\n".join(lines) + "\n"
     if details:
         text += "\n# Details\n"
         for number, body in details:
@@ -169,3 +179,80 @@ def test_the_cli_exits_two_when_the_board_is_already_migrated(couch, tmp_path, c
 
     assert code == 2
     assert "REFUSED" in capsys.readouterr().out
+
+
+def stored_captures(name):
+    """His two parallel lists, read back the way `nova_site` reads them."""
+    return board_document.captures_map(board_store.read_captures(name))
+
+
+def test_a_capture_makes_the_trip_with_the_reply_under_it(couch):
+    """The bug this whole commit is about: every earlier version of the
+    migration composed the rows and silently left his own bullets in the
+    markdown, and the registry it wrote was what `board_records.contents`
+    reads to call the board migrated."""
+    markdown = board(
+        [(1, "Nova", "")],
+        captures=[("move marcus to the other node", ["done, cycle 1200"])])
+
+    report = board_migrate.migrate(markdown, "issue", apply=True)
+
+    assert report["captures"] == 1
+    assert report["captures_written"] == 1
+    assert stored_captures("issue") == {
+        "captures": ["move marcus to the other node"],
+        "captureReplies": [["done, cycle 1200"]],
+    }
+
+
+def test_his_order_survives_past_ten_captures(couch):
+    """The rank is not decoration. `read_captures` is unsorted and `_all_docs`
+    answers lexically, so `cap_10` comes back before `cap_2`; a migration that
+    minted no rank stores every capture and hands the list back shuffled, with
+    nothing missing and nothing to notice. Eleven, because ten sort right."""
+    texts = [f"capture number {i}" for i in range(1, 12)]
+    markdown = board([(1, "Nova", "")], captures=[(t, []) for t in texts])
+
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    assert stored_captures("issue")["captures"] == texts
+
+
+def test_a_dry_run_counts_his_captures_and_writes_none(couch):
+    markdown = board([(1, "Nova", "")], captures=[("a bullet", [])])
+
+    report = board_migrate.migrate(markdown, "issue")
+
+    assert report["captures"] == 1
+    assert report["applied"] is False
+    assert not board_store.stored_capture_documents("issue")
+    assert couch.bulk_calls == []
+
+
+def test_a_board_holding_captures_but_no_rows_is_refused(couch):
+    """A rows-only check calls this board clean, and the next run's
+    `write_captures` prunes every capture it did not send -- so the state a
+    half-finished earlier run leaves behind is the one that loses his words."""
+    registry = board_store.read_registry()
+    doc = board_document.to_capture_document(
+        "his bullet", "issue", entity_id.mint_capture(registry, "issue"))
+    board_store.write_captures("issue", [doc])
+    before = len(couch.bulk_calls)
+
+    with pytest.raises(board_migrate.MigrationRefused):
+        board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
+
+    assert couch.bulk_calls[before:] == [], "the refused run still wrote"
+    assert stored_captures("issue")["captures"] == ["his bullet"]
+
+
+def test_the_capture_high_water_is_stored_with_the_captures(couch):
+    """Same pass as the captures, deliberately: the counter is what stops a
+    later capture reusing `cap_1`, and a stored capture whose number the
+    registry never recorded is that reuse waiting to happen."""
+    markdown = board([(1, "Nova", "")], captures=[("one", []), ("two", [])])
+
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    stored = board_store.read_registry()
+    assert entity_id.capture_high_water(stored, "issue") == 2
