@@ -185,10 +185,10 @@ def mark_kept_its_slug(line, slug):
 def check_from_contents(old, new, marked):
     """Ask the reader, not the writer, whether the rewrite was faithful.
 
-    `roll_done_captures.check`'s lesson borrowed rather than re-learned:
-    these files draw his two board pages, and the failure mode of editing
-    one is silent. So the board rows and their write-ups must come back
-    identical, the capture list must keep exactly the same number of
+    `roll_done_captures.check_from_contents`'s lesson borrowed rather
+    than re-learned: these files draw his two board pages, and the failure
+    mode of editing one is silent. So the board rows and their write-ups
+    must come back identical, the capture list must keep exactly the same number of
     bullets in the same order, and the only difference in any of them
     must be a DONE prefix.
 

@@ -79,11 +79,11 @@ def _priority_choices():
 def check_from_contents(old, new, old_notes, new_notes, number, title):
     """Refuse the write unless the row is really there and nothing else moved.
 
-    Same shape as `roll_done_captures.check` and for the same reason: this
-    edits a document the site parses, so the test that matters is what
-    `parse_board` says afterwards, not what the string looks like. Every
-    row that was on the board stays on it **unchanged in every cell**, and
-    the new number is present exactly once.
+    Same shape as `roll_done_captures.check_from_contents`, and for the
+    same reason: this edits a document the site parses, so the test that
+    matters is what `parse_board` says afterwards, not what the string
+    looks like. Every row that was on the board stays on it **unchanged in
+    every cell**, and the new number is present exactly once.
 
     That used to read "with the same title and status", and those were the
     only two cells it compared -- so a write that moved another row's
