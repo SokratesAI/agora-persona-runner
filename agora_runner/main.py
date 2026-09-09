@@ -18,6 +18,7 @@ from agora_runner.invoke_server import start_invoke_server
 from agora_runner.otel import init_tracing
 from agora_runner.catalog_refresh import start_catalog_refresh
 from agora_runner.heartbeat_pass import start_heartbeat_pass
+from agora_runner import runner_lifecycle
 
 # Set by the SIGTERM/SIGINT handler, read by the poll loop between ticks.
 # A plain module flag rather than a threading.Event on purpose: a signal
@@ -56,6 +57,10 @@ def _request_shutdown(signum, _frame):
     global _shutdown_requested
     _shutdown_requested = True
     log(f"received signal {signum}, draining: finishing the in-flight tick, then exiting")
+    # Off the handler's own thread -- see runner_lifecycle's docstring. A
+    # blocking CouchDB write in here is how a drain becomes a hang, and this
+    # row is what later tells "Kubernetes asked" from "the kernel did not".
+    runner_lifecycle.record("signal", detail=f"signal {signum}")
 
 
 def _sleep_between_ticks(seconds):
@@ -103,6 +108,11 @@ def _drain_and_exit():
 def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
+    # The first of three rows that outlive this Pod. A `started` with no
+    # `signal` before it is a process that was killed rather than asked to
+    # stop, which is the cause `cycle_postmortem` cannot recover for a
+    # `silent` cycle once the ReplicaSet is gone.
+    runner_lifecycle.record("started")
     # Before the server binds, so the first /invoke or /mcp call is
     # traced too. The name is passed rather than left to the module
     # default: this process and nova-site share an image, and an unnamed
@@ -145,6 +155,11 @@ def main():
             _sleep_between_ticks(POLL_INTERVAL_SECONDS)
         if _shutdown_requested:
             _drain_and_exit()
+            # On this thread, not a daemon one: the process is about to
+            # return and a daemon thread does not survive interpreter
+            # shutdown, so backgrounding this would drop the one row that
+            # separates a finished drain from a drain that ran out of grace.
+            runner_lifecycle.record("drained", blocking=True)
             log("drain complete, exiting")
             return
 
