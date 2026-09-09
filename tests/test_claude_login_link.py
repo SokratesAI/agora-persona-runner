@@ -452,3 +452,29 @@ def test_finish_fills_in_a_user_agent_a_older_session_never_had(tmp_path, monkey
     assert login.main(["--session", str(session), "finish", "--code", "code#s"]) == 0
     assert seen["user_agent"] == "axios/1.15.2"
     assert "predates" in capsys.readouterr().out
+
+
+def test_finish_warns_rather_than_refusing_when_the_binary_is_gone(tmp_path, monkeypatch, capsys):
+    """An unreadable binary must not cost a working exchange. CI has no
+    /usr/bin/claude and neither would a recovery box holding only the session --
+    which is exactly the disaster this flow exists for."""
+    def no_binary(path=None):
+        raise OSError(2, "No such file or directory", "/usr/bin/claude")
+
+    monkeypatch.setattr(login, "read_binary_text", no_binary)
+    session = tmp_path / "session.json"
+    login.save_session(str(session), {
+        "code_verifier": "v", "state": "s", "client_id": "c",
+        "token_url": "u", "redirect_uri": "r", "created_at": 0,
+    })
+    seen = {}
+
+    def fake_post(url, body, timeout=30, user_agent=None):
+        seen["user_agent"] = user_agent
+        return 200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}
+
+    monkeypatch.setattr(login, "_post_json", fake_post)
+    assert login.main(["--session", str(session), "finish", "--code", "code#s"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "1010" in out
+    assert seen["user_agent"] is None

@@ -499,12 +499,21 @@ def _cmd_finish(args) -> int:
         print("REFUSED  the state in that code is not the one this session minted")
         return 2
     if not session.get("user_agent"):
+        # Every session on disk today was minted before `start` wrote this
+        # field. Reading it back out of the binary is the whole point, but an
+        # unreadable binary must not turn `finish` into a refusal -- that would
+        # take a working exchange away from a box that has the session and not
+        # the CLI. It warns and goes out with urllib's default instead, naming
+        # the failure that produces so it is not diagnosed twice.
         try:
             session["user_agent"] = read_token_user_agent(read_binary_text(args.binary))
+            print(f"session predates the User-Agent field; using {session['user_agent']}")
         except (OSError, CannotSee) as problem:
-            print(f"CANNOT SEE  {problem}")
-            return 1
-        print(f"session predates the User-Agent field; using {session['user_agent']}")
+            print(
+                f"WARNING  cannot read the CLI's User-Agent ({problem}) -- this "
+                "exchange goes out with urllib's default, which Cloudflare "
+                "answers with `403 error code: 1010` in front of the token endpoint"
+            )
     try:
         payload = exchange(session, code)
     except (urllib.error.URLError, OSError, CannotSee, KeyError, ValueError) as problem:
