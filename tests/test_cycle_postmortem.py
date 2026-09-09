@@ -9,6 +9,10 @@ Every fixture string below is a verbatim closing line taken off a real
 conversation on 2026-08-29, not one invented to match the regex.
 """
 
+import json
+import types
+from datetime import datetime as _dt, timezone as _tz
+
 import pytest
 
 from tools import cycle_postmortem
@@ -1547,3 +1551,160 @@ def test_format_report_prints_the_branch_line_under_a_lost_row():
     # The branch line explains; it does not excuse. The entry really is
     # missing, so `lost` must still be a raising verdict.
     assert status == 2 or "lost" in cycle_postmortem.RAISING_VERDICTS
+
+
+# --- the silent bucket's join against the runner lifecycle ledger (idea #267) ---
+#
+# Cycle 1258 gave the runner process a durable record of how it started and
+# stopped and said in its own handoff that nothing read it. This is the
+# reader. The rows below are shaped exactly like the live ledger:
+# `{"event": ..., "at": <ISO UTC>}`, oldest first.
+
+def _life_rows(*pairs):
+    return [{"event": event, "at": at} for event, at in pairs]
+
+
+def test_read_lifecycle_reads_not_found_as_an_empty_ledger():
+    # `vault_tool.py get` prints this on stdout and exits 0, so a return
+    # code alone reads a vanished ledger as an empty one.
+    def runner(argv, **kwargs):
+        return types.SimpleNamespace(
+            returncode=0, stdout="[not found: whatever]\n", stderr="")
+
+    records, error = cycle_postmortem.read_lifecycle(runner=runner)
+    assert (records, error) == ([], None)
+
+
+def test_read_lifecycle_reports_a_non_list_rather_than_returning_it():
+    def runner(argv, **kwargs):
+        return types.SimpleNamespace(returncode=0, stdout='{"event": "started"}',
+                                     stderr="")
+
+    records, error = cycle_postmortem.read_lifecycle(runner=runner)
+    assert records == []
+    assert "does not hold a list" in error
+
+
+def test_read_lifecycle_returns_the_rows():
+    rows = _life_rows(("started", "2026-09-09T02:38:22+00:00"))
+
+    def runner(argv, **kwargs):
+        assert argv[2] == "get"
+        assert argv[3] == cycle_postmortem.RUNNER_LIFECYCLE_PATH
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(rows),
+                                     stderr="")
+
+    assert cycle_postmortem.read_lifecycle(runner=runner) == (rows, None)
+
+
+def test_life_covering_picks_the_life_the_instant_falls_inside():
+    grouped = cycle_postmortem.lives(_life_rows(
+        ("started", "2026-09-09T00:00:00+00:00"),
+        ("started", "2026-09-09T02:00:00+00:00"),
+        ("signal", "2026-09-09T03:00:00+00:00"),
+        ("drained", "2026-09-09T03:01:00+00:00"),
+        ("started", "2026-09-09T04:00:00+00:00")))
+    at = _dt(2026, 9, 9, 2, 30, tzinfo=_tz.utc)
+    life = cycle_postmortem.life_covering(grouped, at)
+    # The middle life: asked to stop and drained, so `clean`. Picking the
+    # first or the last would both still return "a life", which is why this
+    # asserts which one rather than that one came back.
+    assert life["started"]["at"] == "2026-09-09T02:00:00+00:00"
+    assert life["verdict"] == "clean"
+
+
+def test_life_covering_refuses_an_instant_older_than_the_ledger():
+    # The ledger is capped and cannot be written backwards, so a cycle from
+    # before its first row must read as not covered rather than as covered
+    # by the oldest life it happens to sit near.
+    grouped = cycle_postmortem.lives(
+        _life_rows(("started", "2026-09-09T02:00:00+00:00")))
+    at = _dt(2026, 9, 8, 12, 0, tzinfo=_tz.utc)
+    assert cycle_postmortem.life_covering(grouped, at) is None
+
+
+def test_apply_runner_lifecycle_names_a_pod_killed_without_warning():
+    results = [{"number": 900, "verdict": "silent"},
+               {"number": 901, "verdict": "lost"}]
+    conversations = {900: {"createdAt": "2026-09-09T01:00:00.000Z"},
+                     901: {"createdAt": "2026-09-09T01:00:00.000Z"}}
+    records = _life_rows(("started", "2026-09-09T00:00:00+00:00"),
+                         ("started", "2026-09-09T02:00:00+00:00"),
+                         ("started", "2026-09-09T04:00:00+00:00"))
+    cycle_postmortem.apply_runner_lifecycle(results, conversations, records)
+    assert results[0]["runner_life"]["verdict"] == "no_signal"
+    # Only `silent` rows are joined; every other bucket has its own answer.
+    assert "runner_life" not in results[1]
+
+
+def test_apply_runner_lifecycle_rules_the_pod_out_on_a_clean_drain():
+    # The half that makes this worth printing: a `clean` life says the pod
+    # going away is NOT the explanation, and that is the answer a bucket
+    # which only ever prints causes can never give.
+    results = [{"number": 900, "verdict": "silent"}]
+    conversations = {900: {"createdAt": "2026-09-09T01:00:00.000Z"}}
+    records = _life_rows(("started", "2026-09-09T00:00:00+00:00"),
+                         ("signal", "2026-09-09T01:50:00+00:00"),
+                         ("drained", "2026-09-09T01:55:00+00:00"),
+                         ("started", "2026-09-09T02:00:00+00:00"))
+    cycle_postmortem.apply_runner_lifecycle(results, conversations, records)
+    assert results[0]["runner_life"]["verdict"] == "clean"
+
+
+def test_apply_runner_lifecycle_separates_uncovered_from_no_clock():
+    results = [{"number": 900, "verdict": "silent"},
+               {"number": 901, "verdict": "silent"}]
+    conversations = {900: {"createdAt": "2026-09-01T01:00:00.000Z"},
+                     901: {}}
+    records = _life_rows(("started", "2026-09-09T00:00:00+00:00"))
+    cycle_postmortem.apply_runner_lifecycle(results, conversations, records)
+    # Three different answers, never merged into one absent field: the
+    # ledger does not reach back, versus Agora gave nothing to join on.
+    # The instant it names has to be the ledger's real reach, not just
+    # present: a bare `oldest = None` would still put the key here and the
+    # line would then tell a reader the ledger holds nothing placeable.
+    assert results[0]["runner_life"]["uncovered"] == _dt(
+        2026, 9, 9, 0, 0, tzinfo=_tz.utc)
+    assert "oldest life starts 2026-09-09 02:00 Oslo" in "".join(
+        cycle_postmortem._runner_life_lines(results[0]["runner_life"]))
+    assert results[1]["runner_life"] == {"no_clock": True}
+
+
+def test_format_report_prints_the_lifecycle_line_under_a_silent_row():
+    results = [{"number": 900, "verdict": "silent", "detail": "nothing spoke",
+                "messages": 0, "recent": True,
+                "runner_life": {"verdict": "no_signal", "started": _dt(
+                    2026, 9, 9, 0, 0, tzinfo=_tz.utc)}}]
+    text, _status = cycle_postmortem.format_report(results, 901, None)
+    assert "never asked to stop" in text
+    # UTC in, Oslo out — 00:00Z is 02:00 Oslo in September, and reading one
+    # as the other is the summer offset every time.
+    assert "2026-09-09 02:00 Oslo" in text
+
+
+def test_format_report_says_the_ledger_was_unreadable_rather_than_empty():
+    results = [{"number": 900, "verdict": "silent", "detail": "nothing spoke",
+                "messages": 0, "recent": True}]
+    text, _status = cycle_postmortem.format_report(
+        results, 901, None, lifecycle_error="vault_tool.py get exited 1")
+    assert "could not be read" in text
+    assert "empty" not in text
+
+
+def test_a_silent_row_with_no_lifecycle_field_prints_no_line():
+    # A row this never got to join must add nothing rather than a sentence
+    # asserting something it did not measure.
+    assert cycle_postmortem._runner_life_lines(None) == []
+
+
+def test_uncovered_does_not_call_an_unreadable_ledger_empty():
+    # A `started` row whose stamp will not parse is a life this cannot join
+    # on. Reporting it as "the ledger is empty" would merge two causes, so
+    # the sentence says what is actually true of it.
+    results = [{"number": 900, "verdict": "silent"}]
+    conversations = {900: {"createdAt": "2026-09-09T01:00:00.000Z"}}
+    cycle_postmortem.apply_runner_lifecycle(
+        results, conversations, _life_rows(("started", "not a clock")))
+    line = cycle_postmortem._runner_life_lines(results[0]["runner_life"])[0]
+    assert "no life this can place on a clock" in line
+    assert "empty" not in line
