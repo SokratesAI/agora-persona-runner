@@ -1214,3 +1214,144 @@ def test_board_payload_asks_the_store_before_it_fetches(board_md, notes_md):
     assert asked == ["issues"]
     assert BOARD_PATHS["issues"]["edvard"] not in seen
     assert payload["items"]
+
+
+# --- His half of the page composes from records, not from a file ---------
+#
+# Issue #203. `board_payload`'s fallback branch used to parse his board and
+# then apply the three ticket-store merges inline, so the composition and
+# the markdown were one block of code and nothing could exercise either
+# without the other. `his_board_from_contents` is the composition; the
+# `parse_board` call feeding it is the door, and the door is what gets
+# deleted the day the source is `board_records.contents`.
+#
+# **No test below holds a line of markdown, on purpose.** A test that
+# builds a board file and parses it agrees with a converted and an
+# unconverted reader alike, so every input here is a hand-built dict, and
+# one of them carries a shape a board file cannot express -- a write-up
+# for a number that is on no row at all.
+
+
+def _contents(**over):
+    contents = {
+        "items": [{"number": 9, "title": "b"}, {"number": 4, "title": "a"}],
+        # A body for 7, which is on no row above. `parse_board` can
+        # produce that from a `# Details` heading with no table row, and
+        # it is the cheapest proof that nothing here re-derives the
+        # details from the items.
+        "details": {9: "nine", 7: "orphan"},
+        "captures": ["first", "second"],
+        "captureReplies": [[], ["answered"]],
+    }
+    contents.update(over)
+    return contents
+
+
+def _no_markdown(monkeypatch):
+    """Make every route from this module to a board file raise."""
+    def refuse(*args, **kwargs):
+        raise AssertionError("reached markdown")
+
+    monkeypatch.setattr(nova_site, "parse_board", refuse)
+    monkeypatch.setattr(nova_site, "edvard_board_markdown", refuse)
+
+
+def test_his_board_composes_without_ever_reaching_markdown(monkeypatch):
+    # A records door that quietly fell back to the parser would return the
+    # right answer for any caller that still holds markdown, so nothing
+    # but a raising parser can catch it.
+    _no_markdown(monkeypatch)
+    contents = _contents()
+    with patch.object(nova_site, "read_rows", side_effect=Exception("no db")), \
+            patch.object(nova_site, "read_details", side_effect=Exception("no db")), \
+            patch.object(nova_site, "read_head", side_effect=Exception("no db")):
+        board = nova_site.his_board_from_contents("issues", contents)
+
+    assert board["items"] == contents["items"]
+    assert board["details"] == {9: "nine", 7: "orphan"}
+    assert board["captures"] == ["first", "second"]
+    assert board["captureReplies"] == [[], ["answered"]]
+
+
+def test_composing_his_board_does_not_write_into_the_records_it_was_given(
+        monkeypatch):
+    # The caller's dict is the store's answer once the door goes, and a
+    # composition that rewrote it in place would hand a cached record set
+    # back to the next reader with the page's merges already baked in.
+    _no_markdown(monkeypatch)
+    contents = _contents()
+    before = json.loads(json.dumps(contents, default=str))
+    with patch.object(nova_site, "read_rows", side_effect=Exception("no db")), \
+            patch.object(nova_site, "read_details", side_effect=Exception("no db")), \
+            patch.object(nova_site, "read_head", side_effect=Exception("no db")):
+        board = nova_site.his_board_from_contents("issues", contents)
+
+    assert json.loads(json.dumps(contents, default=str)) == before
+    assert board is not contents
+
+
+def test_each_of_his_three_halves_goes_through_its_own_store_reader(
+        monkeypatch):
+    # Each merge is what decides whether the owner is shown the store or
+    # the file, so a composition that dropped one would silently stop
+    # answering that question for that half of the page.
+    _no_markdown(monkeypatch)
+    seen = {}
+
+    def rows(name, parsed):
+        seen["rows"] = (name, parsed)
+        return [{"number": 1, "title": "from rows"}]
+
+    def details(name, parsed):
+        seen["details"] = (name, parsed)
+        return {1: "from details"}
+
+    def captures(name, parsed):
+        seen["captures"] = (name, parsed)
+        return (["from captures"], ["from replies"])
+
+    with patch.object(nova_site, "_rows_from_store", rows), \
+            patch.object(nova_site, "_details_from_store", details), \
+            patch.object(nova_site, "_captures_from_store", captures):
+        board = nova_site.his_board_from_contents("ideas", _contents())
+
+    assert seen["rows"] == ("ideas", _contents()["items"])
+    assert seen["details"] == ("ideas", _contents()["details"])
+    # The pair travels together. Two parallel lists merged separately can
+    # come back from different reads, which puts my answer under his next
+    # bullet -- that is why `_captures_from_store` takes and returns both.
+    assert seen["captures"] == ("ideas", (["first", "second"], [[], ["answered"]]))
+    assert board["items"] == [{"number": 1, "title": "from rows"}]
+    assert board["details"] == {1: "from details"}
+    assert board["captures"] == ["from captures"]
+    assert board["captureReplies"] == ["from replies"]
+
+
+def test_the_fallback_path_parses_his_board_exactly_once(monkeypatch):
+    # Two parses of one document is the defect every reader converted for
+    # #203 turned out to be carrying: free and always-agreeing on a
+    # string, two `_all_docs` pairs a write can land between once the
+    # source is the record store.
+    parses = []
+    real_parse = nova_site.parse_board
+
+    def counting_parse(markdown):
+        parses.append(markdown)
+        # Only his board is faked. My own two files go through the real
+        # parser, because the rest of `board_payload` composes them and a
+        # stub there would fail for a reason that has nothing to do with
+        # how many times his file was read.
+        return _contents() if markdown == "HIS" else real_parse(markdown)
+
+    monkeypatch.setattr(nova_site, "parse_board", counting_parse)
+    monkeypatch.setattr(nova_site, "edvard_board_markdown", lambda name: "HIS")
+    monkeypatch.setattr(nova_site, "_board_from_store", lambda name: None)
+    monkeypatch.setattr(nova_site, "_rows_from_store", lambda name, parsed: parsed)
+    monkeypatch.setattr(nova_site, "_details_from_store", lambda name, parsed: parsed)
+    monkeypatch.setattr(nova_site, "_captures_from_store", lambda name, parsed: parsed)
+    monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
+
+    payload = nova_site.board_payload("issues")
+
+    assert [m for m in parses if m == "HIS"] == ["HIS"], parses
+    assert [item["number"] for item in payload["items"]] == [9, 4]

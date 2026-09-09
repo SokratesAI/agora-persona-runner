@@ -985,6 +985,45 @@ def _board_from_store(name):
     }
 
 
+def his_board_from_contents(name, contents):
+    """His board, composed from an already-parsed board and nothing else.
+
+    The records-shaped half of `board_payload`'s fallback path, split out
+    for issue #203 the same way `nova_next.next_payload_from_contents` and
+    `top_board_rows.closed_rows_waiting_from_contents` were: `contents` is
+    the four keys `nova_boards.parse_board` returns and the four keys
+    `board_records.contents` will return, and **nothing reachable from
+    here can read markdown or a path**. The `parse_board` call that feeds
+    it is the door, and the door is what gets deleted the day the source
+    is the record store.
+
+    The one rule that lives here is the pairing: `captures` and
+    `captureReplies` are parallel lists and `_captures_from_store` takes
+    and returns them together, so a caller that merged one and not the
+    other would put my answer under his next bullet. Keeping the three
+    merges in one place is what makes that impossible to get wrong from
+    the outside.
+    """
+    board = dict(contents)
+    board["items"] = _rows_from_store(name, board["items"])
+    # The write-up and the conversation appended under it, told apart
+    # further down rather than on the page: `render_blocks` flattens
+    # both into the same list of paragraphs, and once that has
+    # happened nothing downstream can tell his question from my
+    # answer from the problem statement above them both. His capture,
+    # 2026-08-26: *"boarded issues does not have those nice colored
+    # comments like there are now in the 'not boarded yet' box"*.
+    board["details"] = _details_from_store(name, board["details"])
+    # His unboarded captures. They are not tickets, so there was
+    # nothing to read them back off until `to_records` started filing
+    # every line that is neither a row nor a write-up as a text block
+    # in the layout -- the bullets above `## Board` are the layout's
+    # opening run of text, and `ticket_docs.read_head` returns it.
+    board["captures"], board["captureReplies"] = _captures_from_store(
+        name, (board["captures"], board["captureReplies"]))
+    return board
+
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -1011,23 +1050,14 @@ def board_payload(name):
         # store's answer *only when it matches the file field by field*,
         # and say so out loud when it does not, which is what proved the
         # store trustworthy enough for the fast path above to exist.
-        board = parse_board(edvard_board_markdown(name))
-        board["items"] = _rows_from_store(name, board["items"])
-        # The write-up and the conversation appended under it, told apart
-        # further down rather than on the page: `render_blocks` flattens
-        # both into the same list of paragraphs, and once that has
-        # happened nothing downstream can tell his question from my
-        # answer from the problem statement above them both. His capture,
-        # 2026-08-26: *"boarded issues does not have those nice colored
-        # comments like there are now in the 'not boarded yet' box"*.
-        board["details"] = _details_from_store(name, board["details"])
-        # His unboarded captures. They are not tickets, so there was
-        # nothing to read them back off until `to_records` started filing
-        # every line that is neither a row nor a write-up as a text block
-        # in the layout -- the bullets above `## Board` are the layout's
-        # opening run of text, and `ticket_docs.read_head` returns it.
-        board["captures"], board["captureReplies"] = _captures_from_store(
-            name, (board["captures"], board["captureReplies"]))
+        #
+        # **The parse is the door and the composition is behind it.**
+        # Everything this branch used to do inline now lives in
+        # `his_board_from_contents`, which takes the four keys
+        # `board_records.contents` also returns; this line is the only
+        # markdown left on his half of the page (issue #203).
+        board = his_board_from_contents(
+            name, parse_board(edvard_board_markdown(name)))
     nova_markdown, nova_archive_markdown = nova_board_markdown(name)
     # Which rows he asked a question on and nobody answered. Stamped onto
     # the row here rather than worked out again by whoever needs it,
