@@ -27,6 +27,11 @@ from agora_runner import runner_lifecycle
 # Event.wait(). A bool assignment cannot deadlock.
 _shutdown_requested = False
 
+# The signal number the handler saw, read by _drain_and_exit when it writes the
+# lifecycle row. A plain assignment for the same reason _shutdown_requested is
+# one: it is the only operation a signal handler can do without taking a lock.
+_shutdown_signum = None
+
 
 def shutdown_requested():
     return _shutdown_requested
@@ -54,13 +59,10 @@ def _request_shutdown(signum, _frame):
     tick returns in milliseconds now. main() joins the running heartbeat
     threads too (heartbeats.join_running_heartbeats), which closes the
     gap this docstring used to record for workflow-mode heartbeats."""
-    global _shutdown_requested
+    global _shutdown_requested, _shutdown_signum
     _shutdown_requested = True
+    _shutdown_signum = signum
     log(f"received signal {signum}, draining: finishing the in-flight tick, then exiting")
-    # Off the handler's own thread -- see runner_lifecycle's docstring. A
-    # blocking CouchDB write in here is how a drain becomes a hang, and this
-    # row is what later tells "Kubernetes asked" from "the kernel did not".
-    runner_lifecycle.record("signal", detail=f"signal {signum}")
 
 
 def _sleep_between_ticks(seconds):
@@ -102,6 +104,20 @@ def _drain_and_exit():
     cycle keeps its full budget; `join_running_heartbeats` below is what
     holds the process open, and an idle pod still exits immediately.
     """
+    # First, before the join: the join is the whole drain, minutes of it, and
+    # the row that says "Kubernetes asked" has to be on disk before the SIGKILL
+    # at grace expiry that this is built to distinguish from an OOM kill.
+    #
+    # Here rather than in _request_shutdown, and that placement is the point.
+    # `threading.Thread.start()` takes a lock the main thread may already hold
+    # -- it starts a thread per heartbeat run -- and a signal handler runs on
+    # that same thread between bytecodes, so recording from inside the handler
+    # can deadlock the process it is diagnosing. Same reasoning, and the same
+    # main thread, as the module comment on _shutdown_requested being a plain
+    # bool. The cost is up to one poll slice of delay; _sleep_between_ticks
+    # slices at 1.0s, and a kill inside that window reads as `no_signal`, which
+    # errs toward "nobody asked" rather than inventing a request that was made.
+    runner_lifecycle.record("signal", detail=f"signal {_shutdown_signum}")
     join_running_heartbeats()
 
 

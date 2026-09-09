@@ -223,14 +223,35 @@ def test_main_records_drained_blocking_after_the_drain():
     assert order.index("join") < len(order) - 1
 
 
-def test_the_signal_handler_records_off_thread():
-    """A blocking write inside a signal handler turns a drain into a hang."""
+def test_the_signal_handler_writes_nothing_itself():
+    """`Thread.start()` takes a lock the main thread may already hold, and a
+    handler runs on that thread -- so the handler records nothing at all."""
     seen = []
     with patch.object(main, "runner_lifecycle") as ledger:
         ledger.record.side_effect = lambda *a, **k: seen.append((a, k))
         try:
             main._request_shutdown(15, None)
+            assert seen == []
+            assert main._shutdown_signum == 15
         finally:
             main._shutdown_requested = False
-    assert seen == [(("signal",), {"detail": "signal 15"})]
-    assert not any(k.get("blocking") for _a, k in seen)
+            main._shutdown_signum = None
+
+
+def test_the_signal_row_lands_before_the_join():
+    """The join is the whole drain, minutes of it. A row written after it
+    would be missing on exactly the kill it exists to name."""
+    order = []
+    with patch.object(main, "runner_lifecycle") as ledger, \
+         patch.object(main, "join_running_heartbeats",
+                      side_effect=lambda: order.append("join")):
+        ledger.record.side_effect = lambda *a, **k: order.append((a, k))
+        main._shutdown_signum = 15
+        try:
+            main._drain_and_exit()
+        finally:
+            main._shutdown_signum = None
+    assert order == [(("signal",), {"detail": "signal 15"}), "join"]
+    # Not blocking: there is a live process behind this one, and a CouchDB
+    # write on the drain's own thread delays the drain.
+    assert order[0][1].get("blocking") is None
