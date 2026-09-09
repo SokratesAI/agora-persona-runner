@@ -89,12 +89,14 @@ def test_renaming_a_project_back_to_a_name_it_already_answers_to():
     assert registry["projects"][pid]["aliases"] == ["aurora"]
 
 
-def test_a_new_project_may_take_a_freed_name_without_taking_the_id():
+def test_a_renamed_away_name_is_not_free_for_a_new_project():
     registry = new_registry()
     old = ensure_project(registry, "Nova")
     rename_project(registry, old, "Aurora")
-    # "Nova" is still an alias of `old`, so the freed name is not free --
-    # resolving it must not mint, and must not hand back a shared id.
+    # "Nova" is still an alias of `old`, so it resolves to `old` rather than
+    # minting a second project. That is deliberate: a row written before the
+    # rename means the old project, and there is no way to tell it apart from
+    # a row that means a hypothetical new one. Rows win.
     assert ensure_project(registry, "Nova") == old
 
 
