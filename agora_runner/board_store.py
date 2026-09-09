@@ -157,10 +157,15 @@ def write_rows(board, docs, prune=True):
     as something the read-back would render.
 
     `prune=False` turns the tombstoning off, for a caller writing a subset
-    on purpose -- one moved row rather than a whole board. It is not the
-    default: a migration that silently left deleted rows behind is the
-    failure this store exists to make impossible, so dropping rows is what
-    you get unless you say otherwise.
+    on purpose. It is not the default: a migration that silently left
+    deleted rows behind is the failure this store exists to make
+    impossible, so dropping rows is what you get unless you say otherwise.
+
+    **For one row, use `write_row` rather than this with a one-item list.**
+    Both write the same document, but this one lists the whole board to
+    find that row's revision, and it takes the stored revision rather than
+    the one the caller read -- right for a migration, where the batch is
+    the truth, and a clobber for a cycle changing one cell.
     """
     _check_board(board)
     docs = list(docs)
@@ -197,6 +202,73 @@ def write_rows(board, docs, prune=True):
         "unchanged": unchanged,
         "failures": failures,
     }
+
+
+class RowConflict(StoreError):
+    """The stored row moved between the read and the write."""
+
+
+def write_row(doc):
+    """Write one row's record, conditional on the revision it was read at.
+
+    `write_rows(board, [doc], prune=False)` already writes a subset, and it
+    is the wrong shape for the ten `tools/board_*.py` writers that change
+    one cell: it lists the whole board with `include_docs=true` to find one
+    `_rev`, so setting a status pulls back every stored row and every
+    write-up body with it -- on the live issues board that is the 123KB of
+    `# Details` `roll_health` measures, fetched to write one document. This
+    reads the one document instead, which is what the spec's definition of
+    done means by *"moving one row writes one document"*.
+
+    Returns the document as it now stands, `_rev` included, so a caller
+    writing twice does not have to read again.
+
+    Three rules, and the middle one is why this is not a thin wrapper:
+
+    - A row that is not stored is created.
+    - **An update must carry the `_rev` it was read at.** A document fresh
+      out of `board_document.to_document` has none, so a caller that read a
+      row, changed a cell and re-minted it would otherwise be written on top
+      of whatever is stored *now* -- last-writer-wins between two cycles
+      editing two different cells of the same row, which is exactly the
+      clobber `write_registry` refuses. Falling back to the stored revision
+      would make every such write succeed, so it is refused instead.
+    - A document whose content already matches what is stored is not
+      written and needs no revision, so a re-run costs nothing.
+
+    **A 409 raises `RowConflict` and is not retried**, for `write_registry`'s
+    reason: the change was computed against text that lost, so the answer is
+    to read the row that won and apply the change to that -- never to resend
+    this body with the winner's revision.
+    """
+    board_document._check_identity(doc)
+    # No `_check_board` beside it: `_check_identity` derives the expected id
+    # through `document_id`, which refuses an unknown board itself, so a
+    # second guard here would be a line no input can reach.
+    board = doc["board"]
+    doc_id = board_document.document_id(board, doc["number"])
+    body = dict(doc, _id=doc_id)
+    rev = body.pop("_rev", None)
+    held = read_row(board, doc["number"])
+    if held is not None and ticket_docs._payload(held) == body:
+        return held
+    if held is not None and rev is None:
+        raise board_document.DocumentError(
+            f"{doc_id} is already stored: an update must carry the `_rev` it "
+            "was read at, or it overwrites whatever is there now")
+    if rev is not None:
+        body["_rev"] = rev
+    status, answer = ticket_docs._req(
+        "PUT", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}",
+        body)
+    if status == 409:
+        raise RowConflict(
+            f"{doc_id} moved since it was read: re-read the row, apply the "
+            "change to the record that won, and write that -- do not resend "
+            "this one")
+    if status not in (200, 201):
+        raise StoreError(f"writing {doc_id}: {status} {json.dumps(answer)[:200]}")
+    return dict(body, _rev=answer["rev"])
 
 
 #: The project/milestone registry, one document beside the row records.

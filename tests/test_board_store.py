@@ -30,6 +30,10 @@ class FakeCouch:
     def __init__(self, docs=()):
         self.docs = {doc["_id"]: dict(doc, _rev="1-a") for doc in docs}
         self.bulk_calls = []
+        # Every request, so a test can assert what a write *did not* fetch.
+        # `write_row` exists to write one document without listing the
+        # board, and nothing in its return value shows that.
+        self.calls = []
         self.revs = 1
 
     @staticmethod
@@ -44,6 +48,7 @@ class FakeCouch:
         return json.loads(json.dumps(doc))
 
     def __call__(self, method, path, body=None, timeout=60):
+        self.calls.append((method, path))
         if method == "POST" and path.endswith("_bulk_docs"):
             self.bulk_calls.append(body["docs"])
             answer = []
@@ -313,3 +318,73 @@ def test_a_thing_that_is_not_a_registry_never_reaches_couchdb(couch, bad):
         board_store.write_registry(bad)
 
     assert couch.docs[board_store.REGISTRY_ID] == before
+
+
+def test_write_row_writes_one_document_without_listing_the_board(couch):
+    """The whole point of it beside `write_rows`, and the return value hides it.
+
+    `write_rows(board, [doc], prune=False)` writes the same document and
+    lists every row of the board with `include_docs=true` first, which on
+    the live issues board drags back every `# Details` write-up to find one
+    revision. Asserted on the requests made rather than on the result,
+    because both calls produce the same stored document.
+    """
+    couch.docs = {doc["_id"]: doc for doc in (_row("issue", 1, rank="a"),
+                                              _row("issue", 2, rank="b"))}
+    couch.calls.clear()
+    written = board_store.write_row(_row("issue", 3, rank="c"))
+    assert written["number"] == 3
+    assert couch.docs[board_document.document_id("issue", 3)]["rank"] == "c"
+    assert not [path for method, path in couch.calls if "_all_docs" in path]
+
+
+def test_an_update_must_carry_the_revision_it_was_read_at(couch):
+    """The clobber this refuses: two cycles editing two cells of one row.
+
+    `board_document.to_document` mints a document with no `_rev`, so a
+    caller that read a row, changed a cell and re-minted it has one --
+    and writing it against the *stored* revision would succeed whatever
+    happened in between.
+    """
+    couch.docs = {doc["_id"]: doc for doc in (_row("issue", 5, rank="a"),)}
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_row(_row("issue", 5, rank="z"))
+    assert couch.docs[board_document.document_id("issue", 5)]["rank"] == "a"
+
+
+def test_a_row_that_is_not_stored_needs_no_revision(couch):
+    """The same missing `_rev` is a create, not a clobber -- nothing to lose."""
+    stored = board_store.write_row(_row("idea", 9, rank="m"))
+    assert stored["_rev"] == couch.docs[board_document.document_id("idea", 9)]["_rev"]
+
+
+def test_an_unchanged_row_costs_no_revision(couch):
+    """A re-run must be free, and it must not need a `_rev` to be free."""
+    board_store.write_row(_row("issue", 7, rank="a"))
+    before = couch.docs[board_document.document_id("issue", 7)]["_rev"]
+    again = board_store.write_row(_row("issue", 7, rank="a"))
+    assert again["_rev"] == before
+    assert couch.docs[board_document.document_id("issue", 7)]["_rev"] == before
+
+
+def test_a_lost_revision_raises_rather_than_overwriting_the_winner(couch):
+    """A 409 is the other cycle's write, so this one's body is stale."""
+    stale = board_store.write_row(_row("issue", 4, rank="a"))
+    board_store.write_row(dict(stale, rank="b"))
+    with pytest.raises(board_store.RowConflict):
+        board_store.write_row(dict(stale, rank="c"))
+    assert couch.docs[board_document.document_id("issue", 4)]["rank"] == "b"
+
+
+def test_write_row_refuses_a_board_it_does_not_know(couch):
+    """Spelled out by hand: `_row` would raise before `write_row` was called.
+
+    The first version of this test built its document through `_row`, whose
+    `document_id` refuses the plural board itself -- so it passed against a
+    `write_row` that did no checking at all.
+    """
+    with pytest.raises(board_document.DocumentError):
+        board_store.write_row({"_id": "board:issues:1",
+                               "type": board_document.DOCUMENT_TYPE,
+                               "board": "issues", "number": 1, "done": False})
+    assert not couch.docs
