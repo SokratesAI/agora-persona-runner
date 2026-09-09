@@ -76,7 +76,7 @@ def _priority_choices():
     ]
 
 
-def check(before, after, number, title):
+def check_from_contents(old, new, old_notes, new_notes, number, title):
     """Refuse the write unless the row is really there and nothing else moved.
 
     Same shape as `roll_done_captures.check` and for the same reason: this
@@ -95,10 +95,14 @@ def check(before, after, number, title):
     against the live `resources/issues.md`: `captures` is `[]`,
     `parse_notes` is 764. Reviewer finding on runner#422, and it is the
     one that was dead rather than merely narrow.
+
+    `old` and `new` are the two parsed record sets and `old_notes` /
+    `new_notes` the two bullet streams, all four read by `main`. This
+    reaches for no document itself: #203 turns the source into a CouchDB
+    range query, and a guard that fetched its own copy would be checking
+    a version of the board the caller never saw.
     """
     problems = []
-    old = parse_board(before)
-    new = parse_board(after)
     old_by_number = {item["number"]: item for item in old["items"]}
     new_by_number = {item["number"]: item for item in new["items"]}
 
@@ -120,8 +124,6 @@ def check(before, after, number, title):
         elif now["title"] != was["title"] or now["status"] != was["status"]:
             problems.append(f"#{was['number']} changed underneath the new row")
 
-    old_notes = [note["text"] for note in parse_notes(before)]
-    new_notes = [note["text"] for note in parse_notes(after)]
     if old_notes != new_notes:
         problems.append(
             f"the '## Entries' bullet stream changed: "
@@ -183,6 +185,8 @@ def main(argv=None):
             return 1
 
     before = open(args.file, encoding="utf-8").read()
+    before_board = parse_board(before)
+    before_notes = [note["text"] for note in parse_notes(before)]
     after, number = add_row(
         before, args.title, args.dated, args.priority, write_up=write_up
     )
@@ -194,7 +198,11 @@ def main(argv=None):
         )
         return 1
 
-    problems = check(before, after, number, args.title.strip())
+    after_board = parse_board(after)
+    after_notes = [note["text"] for note in parse_notes(after)]
+    problems = check_from_contents(
+        before_board, after_board, before_notes, after_notes, number, args.title.strip()
+    )
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)

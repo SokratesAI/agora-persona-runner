@@ -14,7 +14,33 @@ the same regex agrees with perfectly.
 """
 
 from agora_runner.nova_boards import board_projects, parse_board
-from tools.board_untag_project import check, main, tagged_rows, untag
+from agora_runner.nova_boards import parse_board, parse_notes
+from tools.board_untag_project import (
+    check_from_contents,
+    main,
+    tagged_rows_from_contents,
+)
+from tools import board_untag_project as _untag_module
+
+
+def _texts(markdown):
+    """The bullet stream `check_from_contents` compares, read the way `main` reads it."""
+    return [note["text"] for note in parse_notes(markdown)]
+
+
+def check(before, after, moves):
+    """The guard called the way `main` calls it: every read taken here."""
+    return check_from_contents(
+        parse_board(before), parse_board(after), _texts(before), _texts(after), moves
+    )
+
+
+def tagged_rows(markdown, numbers=None):
+    return tagged_rows_from_contents(parse_board(markdown), numbers)
+
+
+def untag(markdown, numbers=None):
+    return _untag_module.untag(markdown, parse_board(markdown), numbers)
 
 BOARD = """---
 type: board

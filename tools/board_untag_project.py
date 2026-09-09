@@ -59,16 +59,23 @@ from agora_runner.nova_boards import (  # noqa: E402
 )
 
 
-def tagged_rows(markdown, numbers=None):
+def tagged_rows_from_contents(board, numbers=None):
     """`[(number, project, old_title, new_title)]` for every row carrying a tag.
 
-    Read off `parse_board` rather than off the raw table, so a row this
-    reports is a row the site sees. `numbers` narrows it; `None` is all of
-    them.
+    Read off a parsed record set rather than off the raw table, so a row
+    this reports is a row the site sees. `numbers` narrows it; `None` is
+    all of them.
+
+    `board` is the caller's already-parsed board. It takes no markdown of
+    its own: #203 turns the source into a CouchDB range query, and this
+    rule used to parse the same document `check` then parsed twice more --
+    three reads a concurrent write can land between, with the rule
+    choosing rows off one version of the board and the guard approving
+    another.
     """
     wanted = set(numbers or ())
     found = []
-    for item in parse_board(markdown)["items"]:
+    for item in board["items"]:
         if wanted and item["number"] not in wanted:
             continue
         project, rest = split_capture_project(item["title"])
@@ -81,11 +88,14 @@ def tagged_rows(markdown, numbers=None):
     return found
 
 
-def check(before, after, moves):
-    """Refuse the write unless exactly those rows moved, exactly that far."""
+def check_from_contents(old, new, old_notes, new_notes, moves):
+    """Refuse the write unless exactly those rows moved, exactly that far.
+
+    `old` and `new` are the two parsed record sets and `old_notes` /
+    `new_notes` the two bullet streams, all four read by `main`. Same
+    split, and the same reason, as `tools.board_status.check_from_contents`.
+    """
     problems = []
-    old = parse_board(before)
-    new = parse_board(after)
     old_by_number = {item["number"]: item for item in old["items"]}
     new_by_number = {item["number"]: item for item in new["items"]}
     expected = {number: (project, new_title) for number, project, _, new_title in moves}
@@ -132,8 +142,6 @@ def check(before, after, moves):
         elif now != was:
             problems.append(f"#{was['number']} changed underneath the retag")
 
-    old_notes = [note["text"] for note in parse_notes(before)]
-    new_notes = [note["text"] for note in parse_notes(after)]
     if old_notes != new_notes:
         problems.append(
             f"the bullet stream changed: {len(old_notes)} -> {len(new_notes)} note(s)"
@@ -149,9 +157,15 @@ def check(before, after, moves):
     return problems
 
 
-def untag(markdown, numbers=None):
-    """`(after, moves, skipped)`. `after is None` means nothing to do."""
-    moves = tagged_rows(markdown, numbers)
+def untag(markdown, board, numbers=None):
+    """`(after, moves, skipped)`. `after is None` means nothing to do.
+
+    `board` is `markdown` already parsed. It is a required argument
+    rather than an optional one on purpose: a default that re-parsed
+    would put the second read straight back in, silently, for every
+    caller that forgot it.
+    """
+    moves = tagged_rows_from_contents(board, numbers)
     after = markdown
     done, skipped = [], []
     for number, project, old_title, new_title in moves:
@@ -185,7 +199,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     before = open(args.file, encoding="utf-8").read()
-    after, moves, skipped = untag(before, args.number)
+    before_board = parse_board(before)
+    before_notes = [note["text"] for note in parse_notes(before)]
+    after, moves, skipped = untag(before, before_board, args.number)
 
     for number, project, reason in skipped:
         print(f"SKIPPED #{number} ({project!r}): {reason}", file=sys.stderr)
@@ -193,7 +209,11 @@ def main(argv=None):
         print("nothing to do: no boarded row carries a '(Project: X)' title")
         return 0 if not skipped else 1
 
-    problems = check(before, after, moves)
+    after_board = parse_board(after)
+    after_notes = [note["text"] for note in parse_notes(after)]
+    problems = check_from_contents(
+        before_board, after_board, before_notes, after_notes, moves
+    )
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
