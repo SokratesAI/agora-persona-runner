@@ -84,19 +84,39 @@ def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_M
 
     **`cadence_minutes` and `spend_cadence_minutes` are two different
     questions and only collapse into one while the cadence is unchanged.**
-    `cadence_minutes` is what the heartbeat is set to *now*, and it is what
-    the wake-up counts are in -- those are forward-looking. `pct_per_day`
-    was earned over the trailing sample, at whatever interval was in force
-    *then*, and `_needed_cadence` scales that rate, so it must divide by
-    the interval that produced it. Passing the new one double-counts a
-    cadence change: on 2026-08-27 the loop moved from 20 to 30 minutes and
-    the suggestion jumped from 29 to 43 the moment it read the new
-    schedule, having measured nothing new. Defaults to `cadence_minutes`,
-    which is right whenever the schedule has not just moved.
+    `cadence_minutes` is what the heartbeat is set to *now*, and everything
+    this returns is forward-looking, so everything this returns is in it.
+    `pct_per_day` is the one input that is not: it was earned over the
+    trailing sample, at whatever interval was in force *then*. So it is
+    scaled by `spend_cadence_minutes / cadence_minutes` before anything is
+    computed from it, and the suggestion then divides by the new interval
+    like everything else. Defaults to `cadence_minutes`, which is right
+    whenever the schedule has not just moved -- and the two are equal
+    there, so the scaling is exactly 1 and this is a no-op.
+
+    The suggested interval is unchanged by the scaling, which is the
+    invariant worth keeping: on 2026-08-27 the loop moved from 20 to 30
+    minutes and the suggestion jumped from 29 to 43 the moment it read the
+    new schedule, having measured nothing new. Scaling the rate down by
+    20/30 and then dividing by 30 gives back the same 29.
     """
     if spend_cadence_minutes is None:
         spend_cadence_minutes = cadence_minutes
     lines = []
+
+    # **The verdict is forward-looking, so it has to use a forward-looking
+    # rate.** `pct_per_day` was earned at `spend_cadence_minutes`; the loop
+    # is about to run at `cadence_minutes`. Cost is linear in cadence --
+    # every cycle is a cold session, so the setup is paid per wake-up and
+    # not per hour -- which is the premise `_needed_cadence` has always
+    # stood on. Until Cycle 1275 only that one suggestion used it, and the
+    # runway, the dark hours and the HEALTHY/TIGHT/DARK verdict were all
+    # computed from the old cadence's rate. Live reading that morning: 10%
+    # left at a rate earned near 25 minutes with the heartbeat now at 15,
+    # printed as `HEALTHY ... lasts 14.1h` against 9.1h to the reset, when
+    # the honest projection was 8.5h and two heartbeats short.
+    if cadence_minutes and spend_cadence_minutes:
+        pct_per_day = pct_per_day * spend_cadence_minutes / cadence_minutes
 
     if remaining_pct <= 0:
         cycles = int(hours_to_reset * 60 // cadence_minutes)
@@ -152,7 +172,7 @@ def runway(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes=CADENCE_M
         "  The lever is cadence, and `tools.cadence_control` now pulls it. "
         "Slowing the heartbeat "
         f"enough to stretch {remaining_pct:.0f}% over {hours_to_reset:.1f}h means "
-        f"about {_needed_cadence(remaining_pct, hours_to_reset, pct_per_day, spend_cadence_minutes):.0f} "
+        f"about {_needed_cadence(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes):.0f} "
         "minutes between cycles."
     )
     return DARK, hours_of_runway, dark_hours, cycles_lost, lines
@@ -165,9 +185,10 @@ def _needed_cadence(remaining_pct, hours_to_reset, pct_per_day, cadence_minutes)
     the setup is paid per wake-up, not per hour -- so halving the rate
     means doubling the interval.
 
-    `cadence_minutes` here is the interval `pct_per_day` was *measured*
-    at, which is not always the one the heartbeat is set to -- see
-    `runway`'s `spend_cadence_minutes`.
+    `cadence_minutes` and `pct_per_day` here have to describe the same
+    interval. `runway` projects the measured rate onto the interval now in
+    force before calling this, so it passes the new one; a caller holding
+    an unprojected rate must pass the interval that earned it instead.
     """
     needed_rate = remaining_pct / (hours_to_reset / 24)
     return cadence_minutes * pct_per_day / needed_rate
@@ -397,32 +418,35 @@ def main_argv(argv=None):
     )
     for line in lines:
         print(line)
-    for line in _cadence_change_note(cadence, spend_cadence):
+    for line in _cadence_change_note(cadence, spend_cadence, rate):
         print(line)
     for line in _cadence_note(source, cadence, history, now):
         print(line)
     return 0 if state == HEALTHY else 2
 
 
-def _cadence_change_note(cadence, spend_cadence):
+def _cadence_change_note(cadence, spend_cadence, measured_rate):
     """Say so when the schedule and the realised interval disagree.
 
-    Silence here would present a suggestion built on a rate from the old
-    cadence as though it described the new one. The disagreement is
-    temporary and self-healing -- once the sample is all at the new
-    interval the two converge -- but for those hours the reader needs to
-    know which number the advice is standing on.
+    The reader has to be told that the rate in the verdict is not the rate
+    in the history file. `runway` projects the measured rate onto the
+    interval now in force, which is the honest forward-looking number and
+    is also not the one anybody would get by reading
+    `quota-history.jsonl` by hand. The disagreement is temporary and
+    self-healing -- once the sample is all at the new interval the two
+    converge -- but for those hours both numbers belong in the output.
     """
-    if not spend_cadence or round(spend_cadence) == round(cadence):
+    if not spend_cadence or not cadence or round(spend_cadence) == round(cadence):
         return []
     direction = "slower" if cadence > spend_cadence else "faster"
+    projected = measured_rate * spend_cadence / cadence
     return [
         f"  NOTE: the heartbeat is set to {cadence:.0f} minutes but the burn "
-        f"rate above was earned at about {spend_cadence:.0f} -- the schedule "
-        f"moved {direction} inside the sample. The suggested interval is "
-        f"scaled from the {spend_cadence:.0f} that produced the rate, so it is "
-        f"directly comparable to the {cadence:.0f} now set. The rate itself is "
-        f"still the old cadence's and will fall as the sample rolls over."
+        f"rate was measured at about {spend_cadence:.0f} -- the schedule moved "
+        f"{direction} inside the sample. The {projected:.1f}%/day above is the "
+        f"measured {measured_rate:.1f}%/day scaled onto the {cadence:.0f} now "
+        f"in force, because every cycle is a cold session and so cost is "
+        f"linear in cadence. The two converge as the sample rolls over."
     ]
 
 

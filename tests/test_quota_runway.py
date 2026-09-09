@@ -425,24 +425,62 @@ def test_an_observed_cadence_says_so_and_shows_its_sample(tmp_path, capsys):
 
 
 def test_the_suggested_interval_scales_from_the_cadence_that_earned_the_rate():
-    """20%/day over a 20-minute sample needs 29 minutes. Reading the new
-    30-minute schedule must not turn that into 43."""
-    at_twenty = runway(90.0, 155.9, 20.0, 20)[4]
-    after_change = runway(90.0, 155.9, 20.0, 30, spend_cadence_minutes=20)[4]
-    assert "about 29 minutes" in at_twenty[-1]
-    assert "about 29 minutes" in after_change[-1]
+    """40%/day over a 20-minute sample needs 58 minutes. Reading the new
+    30-minute schedule must not turn that into 87.
+
+    This is the invariant the projection has to preserve: scaling the rate
+    down by 20/30 and then dividing by 30 gives back the number that came
+    out of dividing the unscaled rate by 20.
+    """
+    at_twenty = runway(90.0, 155.9, 40.0, 20)[4]
+    after_change = runway(90.0, 155.9, 40.0, 30, spend_cadence_minutes=20)[4]
+    assert "about 58 minutes" in at_twenty[-1]
+    assert "about 58 minutes" in after_change[-1]
 
 
-def test_the_wake_up_count_still_uses_the_schedule_not_the_old_cadence():
-    """The two are separate questions: how many heartbeats will fire from
-    now on is forward-looking and belongs to the new schedule."""
-    _, _, _, lost_20, _ = runway(90.0, 155.9, 20.0, 20)
-    _, _, _, lost_30, _ = runway(90.0, 155.9, 20.0, 30, spend_cadence_minutes=20)
+def test_a_slower_schedule_stretches_the_runway_as_well_as_the_divisor():
+    """Both halves move, and until Cycle 1275 only one of them did.
+
+    Running 30 minutes apart instead of 20 means two thirds as many cold
+    sessions per hour, so the budget lasts half again as long *and* fewer
+    wake-ups fall in the gap. Holding the runway fixed across a cadence
+    change says spending is unaffected by running fewer cycles, which
+    contradicts the premise `_needed_cadence` stands on.
+    """
+    _, hours_20, dark_20, lost_20, _ = runway(90.0, 155.9, 40.0, 20)
+    _, hours_30, dark_30, lost_30, _ = runway(
+        90.0, 155.9, 40.0, 30, spend_cadence_minutes=20
+    )
+    assert hours_30 > hours_20, "a slower heartbeat buys more runway"
     assert lost_20 > lost_30, "a slower heartbeat wastes fewer wake-ups"
-    # Worked by hand, not restated from the source: 90% at 20%/day is 108h of
-    # runway against 155.9h to the reset, so 47.9h dark = 2874 minutes.
-    # 2874 // 30 = 95 wake-ups, 2874 // 20 = 143.
-    assert (lost_20, lost_30) == (143, 95)
+    # Worked by hand, not restated from the source. At 20 the rate is
+    # unscaled: 90% at 40%/day is 54h of runway against 155.9h, so 101.9h
+    # dark = 6114 minutes, // 20 = 305 wake-ups. At 30 the rate projects to
+    # 40 * 20/30 = 26.67%/day: 81h of runway, 74.9h dark = 4494 minutes,
+    # // 30 = 149.
+    assert (round(hours_20), round(hours_30)) == (54, 81)
+    assert (lost_20, lost_30) == (305, 149)
+
+
+def test_a_faster_schedule_can_turn_healthy_into_dark():
+    """The live 2026-09-09 reading, which is why this was found.
+
+    10% left, 9.1h to the reset, and a 17.0%/day rate earned at about 25
+    minutes with the heartbeat now set to 15. Unprojected that is 14.1h of
+    runway and prints HEALTHY. Projected onto 15 minutes the rate is
+    17.0 * 25/15 = 28.3%/day, which is 8.5h -- 38 minutes short, two
+    heartbeats that wake with nothing.
+    """
+    state, hours, dark, lost, lines = runway(
+        10.0, 9.1, 17.0, 15, spend_cadence_minutes=25
+    )
+    assert state == DARK
+    assert round(hours, 1) == 8.5
+    assert lost == 2
+    assert "28.3%/day" in lines[0]
+
+    unprojected, _, _, _, _ = runway(10.0, 9.1, 17.0, 15)
+    assert unprojected == HEALTHY, "the old reading, kept as the control"
 
 
 def test_an_unchanged_cadence_needs_no_second_number():
@@ -472,8 +510,12 @@ def test_a_moved_schedule_says_which_number_the_advice_stands_on(tmp_path, capsy
     )
     out = capsys.readouterr().out
     assert "the heartbeat is set to 180 minutes" in out
-    assert "earned at about 120" in out
+    assert "measured at about 120" in out
     assert "moved slower inside the sample" in out
+    # Both numbers, because the rate in the verdict is not the rate anyone
+    # reading quota-history.jsonl by hand would get: 19.0%/day over the
+    # sample, scaled by 120/180 onto the schedule now in force.
+    assert "12.7%/day above is the measured 19.0%/day scaled onto the 180" in out
 
 
 def test_an_unmoved_schedule_stays_quiet(tmp_path, capsys):
