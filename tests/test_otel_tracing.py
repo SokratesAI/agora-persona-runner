@@ -254,7 +254,7 @@ def test_invoke_send_response_only_survives_a_handler_with_no_span(monkeypatch):
     assert sent == [200]
 
 
-def test_each_entrypoint_names_its_own_service(monkeypatch):
+def test_each_entrypoint_names_its_own_service(monkeypatch, lifecycle_events):
     """The two processes share an image, so a runner that inherited the
     module default would file its spans under `nova-site` and quietly mix
     two services' latency into one line on the Traces row."""
@@ -266,6 +266,9 @@ def test_each_entrypoint_names_its_own_service(monkeypatch):
     with pytest.raises(_StopMain):
         runner_main.main()
     assert named == ["agora-persona-runner"]
+    # The fixture is why this test does not leak a vault-writing thread past
+    # its own patches; assert it caught the call rather than trusting it did.
+    assert ("started", {}) in lifecycle_events
 
     named.clear()
     monkeypatch.setattr(nova_site_main, "init_tracing", lambda name=None: named.append(name))

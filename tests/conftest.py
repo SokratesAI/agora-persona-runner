@@ -24,6 +24,7 @@ before the first test runs.
 """
 import pytest
 import socket
+import sys
 import threading
 
 BLOCKED_MESSAGE = (
@@ -149,3 +150,38 @@ def _clear_nova_site_cache():
         if thread.name.startswith("nova-site-"):
             thread.join(timeout=5)
     reset_cache()
+
+
+@pytest.fixture
+def lifecycle_events(monkeypatch):
+    """Every `runner_lifecycle` call `main()` makes, with nothing written.
+
+    Ask for this in any test that runs `agora_runner.main.main()`. That
+    function's first act is `runner_lifecycle.record("started")`, which
+    starts a daemon thread to write the row to the vault -- so a test that
+    calls `main()` and does not patch the ledger leaks that thread past its
+    own patches, and the teardown hook above correctly fails it. Two tests
+    did exactly that (`test_otel_tracing`, `test_catalog_refresh`) and both
+    only showed it when their file ran alone.
+
+    It yields the calls rather than swallowing them so the test can assert
+    the patch actually intercepted something. A stub nothing called would
+    make the leak disappear for the wrong reason -- if `main()` stopped
+    recording, or if this patched a reference it does not use, an empty
+    list is the only thing that says so.
+    """
+    # `agora_runner/__init__.py` re-exports every public name flat, so
+    # `from agora_runner import main` hands back the *function*. Reach for
+    # the module, the way `tests/test_runner_lifecycle.py` already does.
+    import agora_runner.main  # noqa: F401  -- import for the side effect
+    runner_main = sys.modules["agora_runner.main"]
+
+    events = []
+
+    class Ledger:
+        def record(self, event, **kwargs):
+            events.append((event, kwargs))
+            return None
+
+    monkeypatch.setattr(runner_main, "runner_lifecycle", Ledger())
+    return events

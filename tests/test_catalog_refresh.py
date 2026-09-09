@@ -84,7 +84,7 @@ def test_starting_twice_does_not_start_a_second_thread(monkeypatch):
     catalog_refresh._thread = None
 
 
-def test_main_starts_the_refresher(monkeypatch):
+def test_main_starts_the_refresher(monkeypatch, lifecycle_events):
     """The wire, not the callee. Cycle 445's finding: when the change is
     "call X from Y", a test that calls X directly asserts nothing about the
     change -- the mutation that catches it is deleting the call site."""
@@ -106,3 +106,6 @@ def test_main_starts_the_refresher(monkeypatch):
     runner_main.main()
 
     assert started == [1]
+    # See the fixture: main() records "started" on a daemon thread, and a
+    # test that leaves that thread running has outlived its own patches.
+    assert ("started", {}) in lifecycle_events
