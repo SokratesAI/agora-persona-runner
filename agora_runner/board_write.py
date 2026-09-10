@@ -587,7 +587,13 @@ def change_capture_text(board, doc, text, store=board_store):
     `delete_capture` refuses `write_captures(prune=True)` for.
 
     Returns `(old_text, text)`. Raises `CaptureRefused` before writing
-    anything, or `BoardDamaged` after a write that did not land cleanly.
+    anything, or `BoardDamaged` after a write that did not land cleanly --
+    and lets `board_store.CaptureConflict` through untouched, which is the
+    third outcome and the one a caller has to handle rather than report.
+    `write_capture` sends the revision this document was read at, so a
+    concurrent edit of *this* bullet is refused by CouchDB itself; that is
+    a lost race and not damage, and the answer to it is to re-read and try
+    again.
     """
     if not isinstance(doc, dict):
         raise CaptureRefused(
@@ -602,10 +608,25 @@ def change_capture_text(board, doc, text, store=board_store):
         raise CaptureRefused(
             f"the capture {doc.get('_id')!r} is on board "
             f"{doc.get('board')!r}, not {board!r}")
+    if not doc.get("captureId"):
+        raise CaptureRefused(
+            f"the capture {doc.get('_id')!r} carries no captureId, so there "
+            "is no document for this write to be aimed at")
     if not isinstance(text, str) or not text.strip():
         raise CaptureRefused(
             "a capture with no words is a capture deleted; use "
             "board_store.delete_capture if that is what you meant")
+    # `refuse_cell` and `_note_line` both refuse these and say why: a
+    # capture is rendered as `- {text}`, so a newline in it puts a bare
+    # paragraph line between two list items in the file he opens in
+    # Obsidian, and CommonMark makes a lone `\r` a line ending too. The
+    # after-check below compares text and cannot see format, so "nothing
+    # else moved" is satisfied while the one thing that moved is broken.
+    if "\n" in text or "\r" in text:
+        raise CaptureRefused(
+            "a capture is one bullet, so its words may not contain a line "
+            "break -- his board would render the remainder as a bare "
+            "paragraph between two list items")
     old_text = board_document.capture_text_of(doc)
     if text == old_text:
         raise CaptureRefused(

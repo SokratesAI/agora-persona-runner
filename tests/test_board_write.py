@@ -879,3 +879,39 @@ def test_a_write_that_landed_as_something_else_is_caught():
         board_write.change_capture_text(
             "issue", doc, "rewritten at length", store=store)
     assert "not as written" in str(damaged.value)
+
+
+@pytest.mark.parametrize("text", [
+    "DONE (Cycle 1340): line one\nand a second line",
+    "DONE (Cycle 1340): line one\rand a second line",
+])
+def test_a_line_break_in_the_words_is_refused_with_nothing_written(text):
+    """`board_view.render_document` writes a capture as `- {text}`, so the
+    remainder of a two-line bullet lands as a bare paragraph between two
+    list items in the file he opens in Obsidian -- and the after-check
+    compares text, never format, so it comes back clean.
+
+    `refuse_cell` and `_note_line` already refuse both characters for this
+    reason; this is the third writer of owner-visible text and was the one
+    without the rule.
+    """
+    _parsed, store = writable()
+    doc = _first_capture(store)
+    with pytest.raises(board_write.CaptureRefused) as refused:
+        board_write.change_capture_text("issue", doc, text, store=store)
+    assert "line break" in str(refused.value)
+    assert store.calls == []
+
+
+def test_a_document_with_no_captureid_is_refused_as_a_capturerefused():
+    """The docstring promises `CaptureRefused` before any write. Reaching
+    `capture_text_of` with a document like this raises `DocumentError`
+    instead, out of a different hierarchy, so a caller catching what it was
+    told to catch does not catch it."""
+    _parsed, store = writable()
+    doc = dict(_first_capture(store))
+    doc.pop("captureId")
+    with pytest.raises(board_write.CaptureRefused) as refused:
+        board_write.change_capture_text("issue", doc, "rewritten", store=store)
+    assert "captureId" in str(refused.value)
+    assert store.calls == []
