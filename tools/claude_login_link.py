@@ -439,6 +439,30 @@ def build_parser():
     return parser
 
 
+def notify_key_for(base: str, state: str) -> str:
+    """The dedupe key for one link, not for the idea of a link.
+
+    `tools.notify` holds a message whose key it has already sent inside the
+    window, and `start` passed a constant key with a 24-hour window while the
+    link itself lives `SESSION_TTL_SECONDS` -- one hour. So the second link of
+    any day was minted, invalidated the first, and was never sent, while
+    `start` printed the held line and exited 0.
+
+    That is not a near miss. The owner pasted a code at 09:17 Oslo on
+    2026-09-10, it came back `invalid_grant`, and the replacement this loop
+    minted for him went nowhere: `notify: held: 'claude-login-link' was
+    already sent 2.0h ago, inside the 24h window`. `--force` had already
+    invalidated the link he was holding, so the run left him strictly worse
+    off than doing nothing, and said so only in a line that reads like
+    housekeeping.
+
+    Keying on the state makes each minted link its own message, so a new link
+    is always sent and re-announcing the *same* link inside the hour is still
+    held -- which is the case the dedupe was for.
+    """
+    return f"{base}:{state}"
+
+
 def _cmd_start(args) -> int:
     try:
         bundle = read_binary_text(args.binary)
@@ -480,11 +504,20 @@ def _cmd_start(args) -> int:
 
         status, line = notify_tool.notify(
             "Claude login link (opens on your phone, then paste the code back): " + url,
-            key=args.notify_key,
-            dedupe_hours=24,
+            key=notify_key_for(args.notify_key, state),
+            dedupe_hours=SESSION_TTL_SECONDS / 3600,
         )
         print(f"notify: {line}")
-        return 0 if status in (0, 3) else status
+        if status != 0:
+            # A link he never received is not a link, and this used to answer 0
+            # on a held one -- see `notify_key_for`. The session is minted
+            # either way, so `finish` still works if he has the URL by some
+            # other route; the caller just has to know it did not reach him.
+            print(
+                "REFUSED  the link was minted but not delivered -- give him "
+                "this URL by another route, or fix the reason above"
+            )
+            return status
     return 0
 
 

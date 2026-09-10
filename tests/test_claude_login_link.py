@@ -478,3 +478,74 @@ def test_finish_warns_rather_than_refusing_when_the_binary_is_gone(tmp_path, mon
     out = capsys.readouterr().out
     assert "WARNING" in out and "1010" in out
     assert seen["user_agent"] is None
+
+
+def test_the_dedupe_key_carries_the_link_so_a_new_one_is_never_held(tmp_path, capsys, monkeypatch):
+    """Two links minted the same day are two messages, not one repeated one.
+
+    The failure this pins is not hypothetical: on 2026-09-10 the owner's code
+    came back `invalid_grant`, `--force` invalidated the link he was holding,
+    and the replacement was held by a 24-hour dedupe on a constant key. He was
+    left with no link at all and `start` exited 0.
+    """
+    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE_WITH_UA)
+    session = tmp_path / "session.json"
+    creds = str(tmp_path / "absent.json")
+    seen = []
+
+    def fake_notify(text, key, dedupe_hours=None, **kw):
+        seen.append({"key": key, "dedupe_hours": dedupe_hours, "text": text})
+        return 0, "sent"
+
+    from tools import notify as notify_tool
+    monkeypatch.setattr(notify_tool, "notify", fake_notify)
+
+    assert login.main([
+        "--session", str(session), "start", "--credentials", creds, "--notify",
+    ]) == 0
+    first_state = json.loads(session.read_text())["state"]
+
+    assert login.main([
+        "--session", str(session), "start", "--credentials", creds,
+        "--notify", "--force",
+    ]) == 0
+    second_state = json.loads(session.read_text())["state"]
+
+    assert first_state != second_state
+    assert len(seen) == 2
+    assert seen[0]["key"] != seen[1]["key"], "two links must not share a dedupe key"
+    assert seen[0]["key"].endswith(":" + first_state)
+    assert seen[1]["key"].endswith(":" + second_state)
+    # The window matches the life of the thing it is announcing, in hours.
+    assert seen[0]["dedupe_hours"] == login.SESSION_TTL_SECONDS / 3600
+    assert seen[1]["dedupe_hours"] == login.SESSION_TTL_SECONDS / 3600
+
+
+def test_notify_key_for_still_holds_a_re_announcement_of_one_link():
+    """The dedupe is not disabled -- the same link keeps the same key."""
+    assert login.notify_key_for("k", "abc") == login.notify_key_for("k", "abc")
+    assert login.notify_key_for("k", "abc") != login.notify_key_for("k", "abd")
+    assert login.notify_key_for("k", "abc").startswith("k")
+
+
+def test_a_held_link_is_not_reported_as_delivered(tmp_path, capsys, monkeypatch):
+    """`notify` answers 3 when it holds a message. That is a link he does not
+    have, so `start` must not exit 0 on it -- the old code mapped 3 to 0."""
+    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE_WITH_UA)
+    session = tmp_path / "session.json"
+    creds = str(tmp_path / "absent.json")
+
+    from tools import notify as notify_tool
+    monkeypatch.setattr(
+        notify_tool, "notify",
+        lambda text, key, dedupe_hours=None, **kw: (3, "held: quiet hours"))
+
+    status = login.main([
+        "--session", str(session), "start", "--credentials", creds, "--notify",
+    ])
+    out = capsys.readouterr().out
+    assert status == 3, "a held link must not read as a delivered one"
+    assert "REFUSED" in out
+    assert "held: quiet hours" in out
+    # The session is still minted, so `finish` works if he gets the URL another way.
+    assert json.loads(session.read_text())["state"]
