@@ -169,3 +169,153 @@ def test_the_cli_exits_two_when_the_board_is_already_migrated(couch, tmp_path, c
 
     assert code == 2
     assert "REFUSED" in capsys.readouterr().out
+
+
+ARCHIVE = "## Processed captures\n\nAn archive the four keys do not model.\n"
+
+
+def board_with_captures(rows, captures=(), tail=""):
+    """`board()` plus his own bullets above the first heading, and a tail.
+
+    His bullets and anything after the tables are the half of the document
+    `parse_board`'s four keys do not carry, which is the half a seed of the
+    rows alone silently drops.
+    """
+    bullets = "".join(f"- {text}\n" for text in captures) + "- \n\n"
+    return bullets + board(rows) + tail
+
+
+def test_his_capture_bullets_are_stored_and_read_back(couch):
+    """The bullets live in their own key range so that a writer touching the
+    rows cannot reach them -- which also means a migration writing the rows
+    alone leaves them out, and a view rendered off that store hands his board
+    back with the box he types into emptied."""
+    from agora_runner import board_records
+
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["first thing he wrote", "second thing"])
+
+    report = board_migrate.migrate(markdown, "issue", apply=True)
+
+    assert report["captures"] == 2
+    assert report["captures_stored"] == 2
+    assert board_records.contents("issue")["captures"] == [
+        "first thing he wrote", "second thing"]
+
+
+def test_the_capture_order_is_the_order_he_wrote_them_in(couch):
+    """Rank is his position in the file. Without it `captures_in_order` puts
+    every unranked bullet in wire order, which CouchDB decides by id."""
+    from agora_runner import board_records
+
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["alpha", "beta", "gamma"])
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    assert board_records.contents("issue")["captures"] == [
+        "alpha", "beta", "gamma"]
+    ranks = [doc.get("rank") for doc
+             in board_store.stored_capture_documents("issue").values()]
+    assert None not in ranks, "an unranked capture is ordered by its id"
+
+
+def test_the_layout_is_stored_and_it_is_what_keeps_his_archive(couch):
+    """The strong version of this test is a comparison, not an assertion that
+    a document exists: rendering the same stored board with and without the
+    layout has to differ, and differ by his prose. Asserting only that
+    `read_layout` is not `None` would pass for a layout that had lost every
+    verbatim block on the way in."""
+    from agora_runner import board_records, board_view
+
+    markdown = board_with_captures([(1, "Nova", "")], tail="\n" + ARCHIVE)
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    layout = board_store.read_layout("issue")
+    assert layout is not None
+    contents = board_records.contents("issue")
+    assert "An archive the four keys do not model." in board_view.render_document(
+        contents, layout=layout)
+    assert "An archive the four keys do not model." not in \
+        board_view.render_document(contents)
+
+
+def test_a_dry_run_stores_no_captures_and_no_layout(couch):
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["something"], tail="\n" + ARCHIVE)
+
+    report = board_migrate.migrate(markdown, "issue")
+
+    assert report["captures"] == 1
+    assert report["layout_blocks"] > 0
+    assert report["captures_stored"] == 0
+    assert board_store.stored_capture_documents("issue") == {}
+    assert board_store.read_layout("issue") is None
+
+
+def test_a_board_holding_captures_but_no_rows_is_refused(couch):
+    """The state a half-finished migration leaves behind. Reading only
+    `stored_documents` there calls the board empty and mints a second id for
+    every bullet he has written, which is how an old reply lands under new
+    words."""
+    from agora_runner import board_document
+
+    registry = board_store.read_registry()
+    board_store.write_captures("issue", [board_document.to_capture_document(
+        "his bullet", "issue", entity_id.mint_capture(registry, "issue"))])
+    board_store.write_registry(registry)
+    before = len(couch.bulk_calls)
+
+    with pytest.raises(board_migrate.MigrationRefused):
+        board_migrate.migrate(board_with_captures(
+            [(1, "Nova", "")], captures=["his bullet"]), "issue", apply=True)
+
+    assert couch.bulk_calls[before:] == [], "the refused run still wrote"
+    assert len(board_store.stored_capture_documents("issue")) == 1
+
+
+def test_a_board_holding_a_layout_but_no_rows_is_refused(couch):
+    from agora_runner import board_view
+
+    board_store.write_layout("issue", board_view.document_layout(
+        board([(1, "Nova", "")])))
+    before = len(couch.bulk_calls)
+
+    with pytest.raises(board_migrate.MigrationRefused):
+        board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
+
+    assert couch.bulk_calls[before:] == [], "the refused run still wrote"
+
+
+def test_the_cli_prints_the_capture_and_layout_counts(couch, tmp_path, capsys):
+    path = tmp_path / "issues.md"
+    path.write_text(board_with_captures(
+        [(1, "Nova", "")], captures=["something"], tail="\n" + ARCHIVE),
+        encoding="utf-8")
+
+    code = board_migrate.main(["--board", "issue", "--file", str(path), "--apply"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "captures: 1" in out
+    assert "captures_stored: 1" in out
+    assert "layout_stored: " in out
+
+
+def test_the_replies_under_a_bullet_make_the_trip(couch):
+    """A reply is a cycle's answer to him, indented under his own words, and
+    it is a separate field on the capture document -- so a migration that
+    carried the bullets and dropped the replies would store his board with
+    every answer he has been given deleted, and count the captures right."""
+    from agora_runner import board_records
+
+    markdown = ("- his bullet\n"
+                "    - Nova, cycle 1: the answer\n"
+                "    - Nova, cycle 2: and again\n"
+                "- \n\n") + board([(1, "Nova", "")])
+
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    contents = board_records.contents("issue")
+    assert contents["captures"] == ["his bullet"]
+    assert contents["captureReplies"] == [
+        ["Nova, cycle 1: the answer", "Nova, cycle 2: and again"]]
