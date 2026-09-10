@@ -386,13 +386,59 @@ def test_a_qualified_mirror_read_is_a_mirror_surface():
 
 
 def test_the_record_stores_own_read_rows_is_not_the_mirror():
-    """The collision this surface has to survive, pinned against the real
-    file: `board_store.read_rows` reads the *records*, and a bare-name match
-    would count the replacement as the thing being retired."""
+    """The collision this surface has to survive: `board_store.read_rows`
+    reads the *records*, so a converted module calling it must not be read
+    as still on the mirror. Written as the qualified call a reader actually
+    makes -- asserting it against `board_store.py` itself proves nothing,
+    because that file only ever spells the name as a `def`."""
+    assert inv.surfaces("rows = board_store.read_rows('issue')") == ()
+    assert inv.surfaces(
+        "from agora_runner.board_store import read_rows") == ()
     text = (ROOT / "agora_runner" / "board_store.py").read_text(encoding="utf-8")
     assert "def read_rows(" in text, "board_store no longer has the collision"
     assert "ticket_docs" in text, "board_store no longer imports the mirror"
     assert inv.MIRROR not in inv.surfaces(text, "agora_runner/board_store.py")
+
+
+def test_the_mirror_is_reached_by_more_than_the_four_obvious_reads():
+    """`currency` reads nova_tickets too, through `stored_source_rev`, and
+    it is the call a conversion leaves behind: `nova_site._store_currency`
+    reads as a health banner rather than a store read."""
+    assert inv.surfaces("v, why = ticket_docs.currency(path, rev)") == ("mirror",)
+    assert inv.surfaces("r = ticket_docs.stored_source_rev(path)") == ("mirror",)
+
+
+def test_every_spelling_of_the_import_reaches_the_same_module():
+    """A miss here is the dangerous direction -- the gate reads zero while a
+    reader remains -- so all four spellings are pinned, not just the two the
+    live tree happens to use today."""
+    for source in (
+            "import agora_runner.ticket_docs\n"
+            "rows = agora_runner.ticket_docs.read_rows(p)",
+            "import agora_runner.ticket_docs as td\nrows = td.read_rows(p)",
+            "from agora_runner import ticket_docs as td\nrows = td.read_rows(p)",
+            "from agora_runner import ticket_docs\n"
+            "rows = ticket_docs.read_rows(p)"):
+        assert inv.surfaces(source) == ("mirror",), source
+
+
+def test_a_file_that_will_not_parse_still_reports_its_mirror_read():
+    """Over-reporting a reader is recoverable during a migration; missing
+    one is not. `x = = 1` lexes and does not parse, so this is the branch
+    `tokenizes` cannot warn about."""
+    assert inv.surfaces("x = = 1\nrows = ticket_docs.read_rows(p)") == ("mirror",)
+
+
+def test_a_module_on_both_surfaces_is_counted_once(tmp_path, capsys):
+    """`nova_site` parses his board AND reads the mirror; naming it twice in
+    the gate's own headline is how a count stops being a count."""
+    (tmp_path / "agora_runner").mkdir()
+    (tmp_path / "agora_runner" / "nova_site.py").write_text(
+        "rows = ticket_docs.read_rows(p)\nboard = parse_board(text)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+    out = capsys.readouterr().out
+    assert out.count("agora_runner/nova_site.py") == 3, out
+    assert "1 module(s) still read a board" in out
 
 
 def test_the_site_still_reads_his_board_out_of_the_mirror():

@@ -127,7 +127,12 @@ widening the gate.
 
 What it does not detect: a module that builds a markdown row by hand
 instead of calling `parse_board`. That is the same split brain and it has
-no name to grep for. This is a coverage floor, not a proof.
+no name to grep for. Nor a module that reaches `nova_tickets` through
+`ticket_docs._req` and `TICKET_DB` rather than through one of
+`MIRROR_READS` -- that idiom cannot be flagged, because
+`agora_runner/board_store.py` is written in it and is the *replacement*,
+so a rule against it would block the gate forever on the one module that
+must survive. This is a coverage floor, not a proof.
 """
 import argparse
 import ast
@@ -174,6 +179,13 @@ MIRROR_MODULE = "ticket_docs"
 MIRROR_READS = frozenset({
     "read_board", "read_rows", "read_details", "read_head", "row_order",
     "render_from_couch",
+    # `currency` and the `stored_source_rev` under it are GETs against
+    # nova_tickets too, and they are the ones a conversion leaves behind:
+    # `nova_site._store_currency` reads as a health banner rather than a
+    # store read, so converting the four obvious calls and keeping this
+    # one would clear the gate with every board render still fetching the
+    # superseded store.
+    "currency", "stored_source_rev",
 })
 
 #: The mirror's own module, which leaves the count by having that half
@@ -287,18 +299,51 @@ def mirror_reads(text, rel=None):
         return any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                    and node.name in MIRROR_READS
                    for node in tree.body)
+    aliases = {MIRROR_MODULE}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             module = (node.module or "").split(".")[-1]
             if module == MIRROR_MODULE and any(
                     alias.name in MIRROR_READS for alias in node.names):
                 return True
-        elif isinstance(node, ast.Attribute):
-            if (node.attr in MIRROR_READS
-                    and isinstance(node.value, ast.Name)
-                    and node.value.id == MIRROR_MODULE):
+            if any(alias.name == MIRROR_MODULE for alias in node.names):
+                aliases.update(_bound_names(node))
+        elif isinstance(node, ast.Import):
+            if any(alias.name.split(".")[-1] == MIRROR_MODULE
+                   for alias in node.names):
+                aliases.update(_bound_names(node))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in MIRROR_READS:
+            if _root_name(node.value) in aliases:
                 return True
     return False
+
+
+def _bound_names(node):
+    """The local names an `import` statement binds to `ticket_docs`.
+
+    `import a.b.ticket_docs` binds `a`, and the call is written out in
+    full; `import a.b.ticket_docs as td` and `from a.b import ticket_docs
+    as td` bind `td`. All three reach the same module, and only the
+    unaliased `from ... import ticket_docs` shape was matched before.
+    """
+    names = set()
+    for alias in node.names:
+        if alias.asname:
+            names.add(alias.asname)
+        else:
+            names.add(alias.name.split(".")[0])
+            names.add(alias.name.split(".")[-1])
+    return names
+
+
+def _root_name(node):
+    """`ticket_docs` out of `ticket_docs`, `a.b.ticket_docs`, or None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
 
 
 def surfaces(text, rel=None):
@@ -370,8 +415,9 @@ def report(found, refs, unreadable, untokenized=(), assert_migrated=False,
           f"parsing markdown.", file=out)
     if mirrors:
         print(f"{len(mirrors)} of them read the owner's board out of the "
-              "superseded nova_tickets store instead, which the parse_board "
-              "grep cannot see and --assert-migrated does wait for: "
+              "superseded nova_tickets store — a separate surface from the "
+              "count above, not a slice of it, and one the parse_board grep "
+              "cannot see; --assert-migrated does wait for these: "
               + ", ".join(mirrors), file=out)
     if exempt:
         print(f"{len(exempt)} of those parse a document that is not one of "
