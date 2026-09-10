@@ -197,7 +197,23 @@ def capture_documents(board, store=board_store):
     function's, so this reaches for the capture range only: raising here as
     well would be a second copy of a rule that is already enforced on every
     read of the board.
+
+    **An unmigrated store raises here too, and that is not a second copy of
+    `contents`' check -- it is the same rule on a path that went around it.**
+    `read_captures` answers `[]` for a board that has never been written and
+    for a board whose box he has emptied, and those are the same value.
+    Measured 2026-09-10 against the live store, which is not migrated yet:
+    `contents('issue')` raised and `capture_documents('issue')` returned `[]`,
+    so `tools.close_done_captures` printed "nothing to mark" and exited 0
+    having looked at nothing. The registry tells the two apart because
+    `board_migrate` writes it on every run.
     """
+    if store.read_registry().get("_rev") is None:
+        raise UnmigratedStore(
+            "the record store has never been written, so it holds no "
+            f"captures for board {board!r}: the registry document has no "
+            "revision. Run `python3 -m tools.board_migrate --board <board> "
+            "--file <md> --apply` first")
     _, captures = split_documents(store.read_captures(board))
     return board_document.captures_in_order(captures)
 

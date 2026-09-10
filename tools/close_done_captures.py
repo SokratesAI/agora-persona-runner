@@ -216,8 +216,19 @@ def main(argv=None):
         try:
             board_write.change_capture_text(
                 args.board, doc, new, store=board_store)
-        except (board_write.WriteRefused, board_write.BoardDamaged,
-                board_records.RecordError, StoreError) as problem:
+        except board_write.BoardDamaged as problem:
+            # Counted, and that is the difference between this clause and
+            # the one below it. `BoardDamaged` is raised *after* the write
+            # has landed -- it is the after-check refusing what it read back
+            # -- so this bullet is marked in the store, and a count that
+            # skipped it would send the next cycle looking for a bullet
+            # nothing has to do.
+            written += 1
+            print(f"{args.board}: marked {written} capture(s), the last of "
+                  f"which came back wrong — {problem}", file=sys.stderr)
+            return 1
+        except (board_write.WriteRefused, board_records.RecordError,
+                StoreError) as problem:
             print(f"{args.board}: marked {written} capture(s), then stopped — "
                   f"{problem}", file=sys.stderr)
             return 1

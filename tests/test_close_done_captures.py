@@ -248,18 +248,32 @@ def test_a_dry_run_writes_nothing(store, ledger, capsys):
 
 
 def test_an_unmigrated_board_is_refused_rather_than_read_empty(monkeypatch, ledger, capsys):
-    """`capture_documents` raises `UnmigratedStore`; an empty walk would not.
+    """A store nothing has ever written must not read as an empty box.
 
-    A store with no records answers "no captures", which reads exactly like
-    a board whose bullets are all marked already -- and the run would exit 0
-    having looked at nothing.
+    Driven through a real store rather than a patched `capture_documents`,
+    because a patch asserts the behaviour I wanted rather than the one that
+    is there -- and the one that was there did the opposite. Measured against
+    the live store on 2026-09-10, which is not migrated yet: `contents`
+    raised and `capture_documents` returned `[]`, so this tool printed
+    "nothing to mark" and exited 0 having looked at nothing. `read_captures`
+    answers `[]` for a store with no records and for a box he has emptied,
+    and only the registry tells them apart.
     """
-    def unmigrated(*args, **kwargs):
-        raise board_records.UnmigratedStore("no records here")
-
-    monkeypatch.setattr(board_records, "capture_documents", unmigrated)
+    _, fake = writable(board="issue", markdown=BOARD)
+    fake.registry = dict(fake.registry)
+    fake.registry.pop("_rev", None)
+    monkeypatch.setattr(close_done_captures, "board_store", fake)
+    before = [dict(doc) for doc in fake.docs]
     assert _run(ledger) == 1
-    assert "no records here" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    # On the capture walk's own message, not on `contents`'. Without the
+    # first half of this assertion the test passes with the check deleted:
+    # the walk then finds two bullets, hands the first to
+    # `change_capture_text`, and *that* reads `contents`, which refuses with
+    # a message carrying the same "never been written" words. Same exit
+    # code, same phrase, one write attempted. Found by mutation.
+    assert "holds no captures" in err and "board_migrate" in err
+    assert [dict(doc) for doc in fake.docs] == before
 
 
 def test_a_mark_that_moved_a_slug_stops_the_run_before_any_write(store, ledger, monkeypatch, capsys):
@@ -284,3 +298,34 @@ def test_a_mark_that_moved_a_slug_stops_the_run_before_any_write(store, ledger, 
     assert _run(ledger) == 1
     assert "marking moved the slug" in capsys.readouterr().err
     assert [dict(doc) for doc in _docs(store)] == before
+
+
+def test_a_damaged_board_counts_the_write_that_landed(store, ledger, capsys):
+    """`BoardDamaged` is raised after the write, so that bullet IS marked.
+
+    The reviewer's finding. `change_capture_text` writes first and reads the
+    whole board back afterwards, so `BoardDamaged` means the store took the
+    rewrite and then failed to agree with itself -- unlike every other
+    exception in that loop, which is raised before anything is sent. A count
+    that skipped it would send the next cycle looking for a bullet nothing
+    has left to do, and the count is the only thing this run leaves behind.
+    """
+    real = board_write.change_capture_text
+    calls = {"n": 0}
+
+    def damage_the_second(*args, **kwargs):
+        calls["n"] += 1
+        answer = real(*args, **kwargs)
+        if calls["n"] == 2:
+            raise board_write.BoardDamaged("the board came back wrong")
+        return answer
+
+    close_done_captures.board_write.change_capture_text = damage_the_second
+    try:
+        assert _run(ledger) == 1
+    finally:
+        close_done_captures.board_write.change_capture_text = real
+    assert "marked 2 capture(s), the last of which came back wrong" in capsys.readouterr().err
+    # Both really landed, which is what makes 2 the honest number.
+    assert _captures(store)[0].startswith("DONE (Cycle 434):")
+    assert _captures(store)[1].startswith("DONE (Cycle 435):")
