@@ -51,9 +51,29 @@ board paths a module's code actually names (`board_paths_named`), never by
 listing its name here, and a module whose paths do not resolve stays a
 blocker -- otherwise the gate becomes a way of not being counted.
 
+**The path rule cannot see most of the modules it has to excuse**, because
+they are handed their text at runtime and name no path at all:
+`roll_done_details` is `roll_health`'s roller and takes the pairs it is
+given, `board_row` takes `--file`, and `nova_own_board` takes the markdown
+`nova_site` fetched for it. So those keep a named entry, `NOT_A_BOARD`,
+with a reason each -- and the path rule still gets a veto over a name: an
+entry whose module names one of *his* board paths is refused and reported,
+because that is the one thing the path rule can measure and a name must not
+outvote a measurement. `READS_MARKDOWN_BY_DESIGN` is the second list and a
+different reason: `board_migration_preflight` parses his real boards on
+purpose, to prove the records answer what the parser did.
+
+And one surface the `parse_board` grep cannot see at all: the superseded
+`nova_tickets` store (`MIRROR_READS`). The site reads his rows out of its
+views today without parsing anything, so a branch could reach zero parsers
+with every render still on the store #203 is meant to retire.
+
 What it does not detect: a module that builds a markdown row by hand
 instead of calling `parse_board`. That is the same split brain and it has
-no name to grep for. This is a coverage floor, not a proof.
+no name to grep for. Nor a module that reaches `nova_tickets` through
+`ticket_docs._req` rather than through one of `MIRROR_READS` -- that idiom
+cannot be flagged, because `agora_runner/board_store.py` is written in it
+and is the *replacement*. This is a coverage floor, not a proof.
 """
 import argparse
 import ast
@@ -98,6 +118,54 @@ MY_BOARD_PATHS = frozenset(
     for paths in BOARD_PATHS.values()
     for key in ("nova", "nova_archive"))
 
+#: Modules whose `parse_board` call is on one of my own board documents but
+#: whose code names no path the rule above can resolve, mapped to why. They
+#: still show under `parses` -- they really do call it -- and
+#: `--assert-migrated` does not wait for them, unless the module's code
+#: names one of his board paths, in which case the entry is vetoed.
+NOT_A_BOARD = {
+    "tools/roll_done_details.py":
+        "is roll_health's roller for my own two files -- roll_health is "
+        "its only caller in this tree and hands it the pairs it names",
+    "tools/board_row.py":
+        "boards a row on my own nova/resources/issues.md or ideas.md via "
+        "--file -- board_document.BOARDS has no name for those two",
+    "agora_runner/nova_own_board.py":
+        "holds the two parse_board calls board_payload makes on "
+        "BOARD_PATHS['nova'] and its roll archive, split out of nova_site "
+        "so the site keeps one door on his board and can leave the count",
+}
+
+#: Modules that parse *his* boards and must go on doing so after the
+#: switchover, mapped to why. Not vetoed by the path rule: naming his board
+#: is the point of them.
+READS_MARKDOWN_BY_DESIGN = {
+    "tools/board_migration_preflight.py":
+        "compares a board's markdown against the records it would produce, "
+        "so both sides of that comparison are its subject",
+}
+
+#: The superseded store, and the surface `parse_board` cannot see: slice 1 of
+#: the 2026-09-02 migration put his boards into `nova_tickets`, and
+#: `nova_site` reads his rows out of its views without parsing anything.
+#: Matched on the *qualified* use only, because `board_store` has its own
+#: `read_rows` over the record store and that is the replacement.
+MIRROR = "mirror"
+MIRROR_MODULE = "ticket_docs"
+MIRROR_READS = frozenset({
+    "read_board", "read_rows", "read_details", "read_head", "row_order",
+    "render_from_couch",
+    # GETs against nova_tickets too; `nova_site._store_currency` reads as a
+    # health banner, so converting the four obvious calls and keeping this
+    # one would clear the gate with every render still fetching the store.
+    "currency", "stored_source_rev",
+})
+
+#: The mirror's own module counts by *defining* the read API, not by its
+#: name: `board_store` keeps importing it for credentials and HTTP after the
+#: views are gone, so a name-based entry could never clear.
+MIRROR_DEFINES = "agora_runner/ticket_docs.py"
+
 #: Token types that are prose rather than code. `FSTRING_MIDDLE` is here
 #: because Python 3.12 stopped emitting an f-string as one STRING token --
 #: its literal text arrives as its own type and its `{...}` holes arrive as
@@ -136,10 +204,71 @@ def tokenizes(text):
     return True
 
 
-def surfaces(text):
-    """The board-markdown surfaces this file's *code* uses, in a stable order."""
+def mirror_reads(text, rel=None):
+    """True when this file reads a board out of the superseded `nova_tickets`.
+
+    Qualified uses only -- `ticket_docs.read_rows(...)` or a
+    `from agora_runner.ticket_docs import read_rows`. `rel` is the file's
+    path relative to the scanned root; `MIRROR_DEFINES` counts by defining
+    the API instead. A file that will not parse falls back to raw text,
+    the same over-reporting direction `code_only` fails in.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return any(f"{MIRROR_MODULE}.{name}" in text for name in MIRROR_READS)
+    if rel == MIRROR_DEFINES:
+        return any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and node.name in MIRROR_READS
+                   for node in tree.body)
+    aliases = {MIRROR_MODULE}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = (node.module or "").split(".")[-1]
+            if module == MIRROR_MODULE and any(
+                    alias.name in MIRROR_READS for alias in node.names):
+                return True
+            if any(alias.name == MIRROR_MODULE for alias in node.names):
+                aliases.update(_bound_names(node))
+        elif isinstance(node, ast.Import):
+            if any(alias.name.split(".")[-1] == MIRROR_MODULE
+                   for alias in node.names):
+                aliases.update(_bound_names(node))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in MIRROR_READS:
+            if _root_name(node.value) in aliases:
+                return True
+    return False
+
+
+def _bound_names(node):
+    """The local names an `import` statement binds to `ticket_docs`."""
+    names = set()
+    for alias in node.names:
+        if alias.asname:
+            names.add(alias.asname)
+        else:
+            names.add(alias.name.split(".")[0])
+            names.add(alias.name.split(".")[-1])
+    return names
+
+
+def _root_name(node):
+    """`ticket_docs` out of `ticket_docs`, `a.b.ticket_docs`, or None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def surfaces(text, rel=None):
+    """The board surfaces this file's *code* uses, in a stable order."""
     code = code_only(text)
-    return tuple(name for name, pattern in _SURFACES if pattern.search(code))
+    used = [name for name, pattern in _SURFACES if pattern.search(code)]
+    if mirror_reads(text, rel):
+        used.append(MIRROR)
+    return tuple(used)
 
 
 def board_paths_named(text):
@@ -194,6 +323,15 @@ def reads_only_my_boards(text):
     return bool(named) and named <= MY_BOARD_PATHS
 
 
+def names_his_board(text):
+    """True when this module's code names one of his board documents.
+
+    The veto over a `NOT_A_BOARD` entry: a name list may excuse a module the
+    path rule cannot resolve, never one the path rule says reads his board.
+    """
+    return bool(board_paths_named(text) & HIS_BOARD_PATHS)
+
+
 def refs_only(text):
     """True when a file matches the spec's grep only via `parse_board_refs`."""
     return bool(_REFS.search(code_only(text))) and not surfaces(text)
@@ -207,7 +345,7 @@ def scan(root=ROOT, include_tests=False):
     Also returns the files that would not tokenize, whose surfaces were
     matched against raw text and may therefore be prose.
     """
-    found, refs, unreadable, untokenized, mine = {}, [], [], [], []
+    found, refs, unreadable, untokenized, mine, vetoed = {}, [], [], [], [], []
     for path in sorted(root.rglob("*.py")):
         if any(part in SKIP_DIRS for part in path.parts):
             continue
@@ -221,7 +359,7 @@ def scan(root=ROOT, include_tests=False):
         except (OSError, UnicodeDecodeError):
             unreadable.append(rel)
             continue
-        used = surfaces(text)
+        used = surfaces(text, rel)
         if used or refs_only(text):
             if not tokenizes(text):
                 untokenized.append(rel)
@@ -229,30 +367,61 @@ def scan(root=ROOT, include_tests=False):
             found[rel] = used
             if PARSES in used and reads_only_my_boards(text):
                 mine.append(rel)
+            elif PARSES in used and rel in NOT_A_BOARD \
+                    and names_his_board(text):
+                vetoed.append(rel)
         elif refs_only(text):
             refs.append(rel)
-    return found, refs, unreadable, untokenized, mine
+    return found, refs, unreadable, untokenized, mine, vetoed
 
 
-def report(found, refs, unreadable, untokenized=(), mine=(),
+def report(found, refs, unreadable, untokenized=(), mine=(), vetoed=(),
            assert_migrated=False, out=None):
     # `out=sys.stdout` as a default binds at import and writes past a
     # replaced stdout, which is how the first run of this file's own
     # test read an empty capture on a report that had printed.
     out = sys.stdout if out is None else out
     parsers = sorted(rel for rel, used in found.items() if PARSES in used)
-    blockers = [rel for rel in parsers if rel not in set(mine)]
+    named = [rel for rel in parsers if rel in NOT_A_BOARD
+             and rel not in set(mine) and rel not in set(vetoed)]
+    by_design = [rel for rel in parsers if rel in READS_MARKDOWN_BY_DESIGN]
+    excused = set(mine) | set(named) | set(by_design)
+    mirrors = sorted(rel for rel, used in found.items() if MIRROR in used)
+    blockers = [rel for rel in parsers if rel not in excused]
+    blockers += [rel for rel in mirrors if rel not in blockers]
     for rel in sorted(found):
         used = found[rel]
         print(f"{'parses' if PARSES in used else '      '}  "
-              f"{'paths' if PATHS in used else '     '}  {rel}", file=out)
+              f"{'paths' if PATHS in used else '     '}  "
+              f"{'mirror' if MIRROR in used else '      '}  {rel}", file=out)
     print(f"{len(found)} module(s) touch a board, {len(parsers)} of them by "
           f"parsing markdown.", file=out)
+    if mirrors:
+        print(f"{len(mirrors)} of them read his board out of the superseded "
+              "nova_tickets store — a separate surface the parse_board grep "
+              "cannot see, and --assert-migrated waits for these: "
+              + ", ".join(mirrors), file=out)
     if mine:
         print(f"{len(mine)} of those {len(parsers)} read only MY OWN board "
               "files under nova/resources/, which issue #203 does not "
               "migrate — they keep parsing markdown after the flip and are "
               "not blockers: " + ", ".join(sorted(mine)), file=out)
+    if named:
+        print(f"{len(named)} more parse my own boards through a path handed "
+              "to them at runtime, which the path rule cannot resolve, so "
+              "they are excused by name: "
+              + ", ".join(f"{rel} ({NOT_A_BOARD[rel]})" for rel in named),
+              file=out)
+    if vetoed:
+        print(f"{len(vetoed)} NOT_A_BOARD entr(y/ies) VETOED — the module's "
+              "code names one of his board paths, so the name does not "
+              "excuse it: " + ", ".join(sorted(vetoed)), file=out)
+    if by_design:
+        print(f"{len(by_design)} parse his boards and must keep doing so "
+              "after the switchover, so --assert-migrated does not wait for "
+              "them either: "
+              + ", ".join(f"{rel} ({READS_MARKDOWN_BY_DESIGN[rel]})"
+                          for rel in by_design), file=out)
     if refs:
         print(f"{len(refs)} module(s) match the spec's grep only via "
               "parse_board_refs, which reads a journal entry's PR list and "
@@ -269,13 +438,14 @@ def report(found, refs, unreadable, untokenized=(), mine=(),
     if not assert_migrated:
         return 0
     if blockers:
-        print(f"NOT MIGRATED — {len(blockers)} module(s) still parse one of "
-              f"his boards: {', '.join(blockers)}", file=out)
+        print(f"NOT MIGRATED — {len(blockers)} module(s) still read one of "
+              "his boards from somewhere other than the records: "
+              f"{', '.join(sorted(blockers))}", file=out)
         return 2
-    print("MIGRATED — no module parses one of his boards. A module still "
-          "reading BOARD_PATHS is expected: the generated markdown view has "
-          "to know where to write, and so do my own two board files.",
-          file=out)
+    print("MIGRATED — no module parses one of his boards and none reads the "
+          "nova_tickets mirror. A module still reading BOARD_PATHS is "
+          "expected: the generated markdown view has to know where to "
+          "write, and so do my own two board files.", file=out)
     return 0
 
 

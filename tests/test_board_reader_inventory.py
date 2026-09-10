@@ -93,7 +93,7 @@ def test_a_file_that_will_not_tokenize_falls_back_and_says_so(tmp_path,
     may be a comment."""
     (tmp_path / "broken.py").write_text("def f(:\n  # parse_board\n")
     assert not inv.tokenizes((tmp_path / "broken.py").read_text())
-    found, refs, unreadable, untokenized, mine = inv.scan(tmp_path)
+    found, refs, unreadable, untokenized, mine, vetoed = inv.scan(tmp_path)
     assert found == {"broken.py": ("parse_board",)}
     assert untokenized == ["broken.py"]
     assert inv.main(["--root", str(tmp_path)]) == 0
@@ -235,8 +235,162 @@ def test_only_a_parser_can_be_excused_as_reading_my_boards(tmp_path, capsys):
     """`mine` is printed as a count out of the parsers, so a path-only
     module in it makes that sentence say more than it counted."""
     (tmp_path / "paths_only.py").write_text(f'p = "{MY_ISSUES}"\nBOARD_PATHS\n')
-    found, refs, unreadable, untokenized, mine = inv.scan(tmp_path)
+    found, refs, unreadable, untokenized, mine, vetoed = inv.scan(tmp_path)
     assert found == {"paths_only.py": ("BOARD_PATHS",)}
     assert mine == []
     inv.main(["--root", str(tmp_path)])
     assert "read only MY OWN" not in capsys.readouterr().out
+
+
+# The excusals the path rule cannot resolve, ported back after the merge of
+# main into #968 (cycle 1376) dropped them: a module handed its text at
+# runtime names no path, so the path rule alone cannot excuse it.
+
+
+def test_every_named_exemption_names_a_file_that_really_still_parses():
+    """A stale exemption is a gate widened by accident."""
+    for table in (inv.NOT_A_BOARD, inv.READS_MARKDOWN_BY_DESIGN):
+        assert table, "an empty list needs no code path"
+        for rel, reason in table.items():
+            path = ROOT / rel
+            assert path.exists(), f"{rel} is exempt and does not exist"
+            assert inv.PARSES in inv.surfaces(path.read_text()), \
+                f"{rel} is exempt from a parse gate and does not parse"
+            assert reason.strip(), f"{rel} is exempt for no stated reason"
+
+
+def test_the_two_exemption_lists_do_not_overlap():
+    assert not (set(inv.NOT_A_BOARD) & set(inv.READS_MARKDOWN_BY_DESIGN))
+
+
+def test_no_named_exemption_is_one_the_path_rule_already_makes():
+    """A name on a module the path rule resolves is a second reason nobody
+    needs, and the next edit to one of them diverges from the other."""
+    for rel in inv.NOT_A_BOARD:
+        assert not inv.reads_only_my_boards((ROOT / rel).read_text()), rel
+
+
+def test_no_live_named_exemption_names_his_board():
+    """The veto, on the real files: every NOT_A_BOARD entry is honest today."""
+    for rel in inv.NOT_A_BOARD:
+        assert not inv.names_his_board((ROOT / rel).read_text()), rel
+
+
+def test_a_named_module_does_not_block_assert_migrated(tmp_path, capsys):
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "board_row.py").write_text("parse_board(text)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "1 module(s) touch a board, 1 of them by parsing markdown." in out
+    assert inv.NOT_A_BOARD["tools/board_row.py"] in out
+    (tmp_path / "tools" / "other.py").write_text("parse_board(text)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+
+
+def test_a_named_module_that_names_his_board_is_vetoed(tmp_path, capsys):
+    """A name must not outvote the one thing the path rule can measure."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "board_row.py").write_text(
+        f'P = "{HIS_ISSUES}"\nparse_board(read(P))')
+    assert inv.scan(tmp_path)[5] == ["tools/board_row.py"]
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+    out = capsys.readouterr().out
+    assert "VETOED" in out
+    line = next(l for l in out.split("\n") if l.startswith("NOT MIGRATED"))
+    assert "tools/board_row.py" in line
+
+
+def test_a_by_design_module_is_not_vetoed_for_naming_his_board(tmp_path):
+    """Naming his board is the point of the migration's own comparison."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "board_migration_preflight.py").write_text(
+        f'P = "{HIS_ISSUES}"\nparse_board(read(P))')
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
+
+
+def test_the_gate_names_none_of_the_excused_modules(capsys):
+    """On the live tree, so this is about the real exemptions."""
+    assert inv.main(["--assert-migrated"]) == 2
+    line = next(l for l in capsys.readouterr().out.split("\n")
+                if l.startswith("NOT MIGRATED"))
+    for rel in (*inv.NOT_A_BOARD, *inv.READS_MARKDOWN_BY_DESIGN,
+                "tools/roll_health.py"):
+        assert rel not in line, rel
+    assert "agora_runner/nova_boards.py" in line
+
+
+# The mirror surface: `nova_tickets`, which the parse_board grep cannot see.
+
+def test_a_qualified_mirror_read_is_a_mirror_surface():
+    assert inv.surfaces("rows = ticket_docs.read_rows(path)") == ("mirror",)
+    assert inv.surfaces(
+        "from agora_runner.ticket_docs import read_head") == ("mirror",)
+
+
+def test_the_record_stores_own_read_rows_is_not_the_mirror():
+    assert inv.surfaces("rows = board_store.read_rows('issue')") == ()
+    assert inv.surfaces(
+        "from agora_runner.board_store import read_rows") == ()
+    text = (ROOT / "agora_runner" / "board_store.py").read_text(encoding="utf-8")
+    assert "def read_rows(" in text, "board_store no longer has the collision"
+    assert inv.MIRROR not in inv.surfaces(text, "agora_runner/board_store.py")
+
+
+def test_the_mirror_is_reached_by_more_than_the_four_obvious_reads():
+    assert inv.surfaces("v, why = ticket_docs.currency(path, rev)") == ("mirror",)
+    assert inv.surfaces("r = ticket_docs.stored_source_rev(path)") == ("mirror",)
+
+
+def test_every_spelling_of_the_import_reaches_the_same_module():
+    for source in (
+            "import agora_runner.ticket_docs\n"
+            "rows = agora_runner.ticket_docs.read_rows(p)",
+            "import agora_runner.ticket_docs as td\nrows = td.read_rows(p)",
+            "from agora_runner import ticket_docs as td\nrows = td.read_rows(p)",
+            "from agora_runner import ticket_docs\n"
+            "rows = ticket_docs.read_rows(p)"):
+        assert inv.surfaces(source) == ("mirror",), source
+
+
+def test_a_file_that_will_not_parse_still_reports_its_mirror_read():
+    assert inv.surfaces("x = = 1\nrows = ticket_docs.read_rows(p)") == ("mirror",)
+
+
+def test_a_module_on_both_surfaces_is_counted_once(tmp_path, capsys):
+    (tmp_path / "agora_runner").mkdir()
+    (tmp_path / "agora_runner" / "nova_site.py").write_text(
+        "rows = ticket_docs.read_rows(p)\nboard = parse_board(text)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+    out = capsys.readouterr().out
+    assert out.count("agora_runner/nova_site.py") == 3, out
+    assert "NOT MIGRATED — 1 module(s)" in out
+
+
+def test_the_site_still_reads_his_board_out_of_the_mirror():
+    rel = "agora_runner/nova_site.py"
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    assert inv.mirror_reads(text, rel), f"{rel} no longer reads nova_tickets"
+
+
+def test_the_mirror_module_counts_by_defining_the_api_not_by_its_name():
+    text = (ROOT / inv.MIRROR_DEFINES).read_text(encoding="utf-8")
+    assert inv.mirror_reads(text, inv.MIRROR_DEFINES)
+    stripped = text
+    for name in inv.MIRROR_READS:
+        stripped = stripped.replace(f"def {name}(", f"def _gone_{name}(")
+    assert not inv.mirror_reads(stripped, inv.MIRROR_DEFINES)
+
+
+def test_naming_the_mirror_in_prose_is_not_reading_it():
+    assert inv.surfaces('"""ticket_docs.read_rows is what this replaces."""') == ()
+    assert inv.surfaces("# ticket_docs.read_details used to answer here") == ()
+
+
+def test_a_mirror_reader_blocks_assert_migrated(tmp_path, capsys):
+    (tmp_path / "agora_runner").mkdir()
+    reader = tmp_path / "agora_runner" / "nova_site.py"
+    reader.write_text("rows = ticket_docs.read_rows(path)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+    assert "nova_tickets" in capsys.readouterr().out
+    reader.write_text("rows = board_records.contents('issue')")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
