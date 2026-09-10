@@ -21,9 +21,20 @@ rather than a new ranking -- the ranking has to exist once, and it has
 to exist on the side of the line the app can see. `top_board_rows`
 imports it back and its output is unchanged.
 
-`next_payload` is the only new logic here and it does no I/O: markdown
-and the claims ledger arrive as text, the payload leaves as a dict, the
-same split `nova_plan` and `nova_retro` follow.
+`next_payload_from_contents` is the only new logic here and it does no
+I/O: the two boards arrive as `parse_board`'s four keys, the claims
+ledger as text, the payload leaves as a dict, the same split `nova_plan`
+and `nova_retro` follow.
+
+**Three functions here take a board twice over, and the pair is issue
+#203's migration seam.** `unboarded_captures`, `open_rows` and
+`next_payload` take a markdown string; the `*_from_contents` function
+under each takes the dict `parse_board` returns -- which is byte-for-byte
+what `board_records.contents` returns out of CouchDB. So a caller moves
+off the markdown one at a time, by passing `contents` instead of a file,
+and the door it stops using is deleted when the last caller leaves.
+Nothing here reads the store itself: this module still does no I/O, and
+that has not changed.
 """
 
 import json
@@ -35,7 +46,7 @@ from agora_runner.nova_boards import (
     capture_match_key, is_relayed, parse_board, parse_project_meta,
     near_miss_done_marker, parse_milestone_pins, split_capture_done,
     split_capture_priority, status_key,
-    unanswered_comment_bodies,
+    unanswered_comment_bodies_from_details,
 )
 from agora_runner.nova_claims import (
     ClaimError, held_by, load as load_claims, slug_for_capture,
@@ -65,7 +76,7 @@ _CLOSED = _CLOSED_STATUS_KEYS
 _BLOCKED = status_key(BLOCKED_STATUS)
 
 
-def unboarded_captures(markdown, board):
+def unboarded_captures_from_contents(contents, board):
     """The bare bullets above `## Board` -- the owner talking, unfiled.
 
     These outrank every row this tool ranks. `prompt.md` step 2 puts an
@@ -105,9 +116,18 @@ def unboarded_captures(markdown, board):
     an open row keeps it and stamps it, because that work really is open
     and the reader should be told where it already lives rather than have
     it hidden.
+
+    Takes `parse_board`'s four keys, from wherever the caller got them --
+    a file through the `unboarded_captures` door below, or
+    `board_records.contents` once the caller is converted. Note that this
+    decides a bullet is unboarded by looking at the *rows*, so the two
+    have to come out of one read: a capture list read before a row list
+    can report a bullet as unprocessed while the row that boards it
+    already exists, printed to a waking cycle under "these outrank every
+    row below".
     """
     captures = []
-    parsed = parse_board(markdown or "")
+    parsed = contents
     boarded = boarded_capture_rows(parsed["items"])
     # `index` counts every bullet in the list, including the finished ones
     # skipped below, because it is the address `/api/capture/comment`
@@ -165,11 +185,38 @@ def unboarded_captures(markdown, board):
     return captures
 
 
-def open_rows(markdown, board):
-    """Open rows of one board file, each tagged with which board it is on."""
+def unboarded_captures(markdown, board):
+    """The markdown-shaped door onto `unboarded_captures_from_contents`.
+
+    Issue #203 replaces his two board tables with one CouchDB document per
+    row, and `board_records.contents` hands back exactly the four keys
+    `parse_board` does. So the rule moved down into the function above and
+    this is the door that still takes a file, for the callers that have not
+    been converted yet. It is a migration seam and it is meant to be
+    deleted, not kept: the day the last caller passes `contents`, this goes
+    with it, because a permanent markdown facade over a record store is the
+    second source of truth `board-records.md` bans.
+    """
+    return unboarded_captures_from_contents(parse_board(markdown or ""), board)
+
+
+def open_rows_from_contents(contents, board):
+    """Open rows of one board, each tagged with which board it is on.
+
+    Takes `parse_board`'s four keys, from wherever the caller got them --
+    same split, and the same reason, as `unboarded_captures_from_contents`.
+    The one thing worth naming here: the `open_rows` door below reads the
+    file **twice**, once through `parse_board` for the rows and once
+    through `unanswered_comment_bodies` for the threads, and this function
+    promises a row and its thread can never come from two different reads.
+    Two reads of one string cannot disagree; two reads of one CouchDB can,
+    because a write may land between them. Taking both halves out of a
+    single `contents` is what keeps that promise true once
+    `board_records.contents` is the source (issue #203).
+    """
     rows = []
-    waiting = unanswered_comment_bodies(markdown or "")
-    for item in parse_board(markdown or "")["items"]:
+    waiting = unanswered_comment_bodies_from_details(contents["details"])
+    for item in contents["items"]:
         if item["done"] or item["statusKey"] in _CLOSED:
             continue
         rows.append({
@@ -181,9 +228,9 @@ def open_rows(markdown, board):
             "priorityKey": item["priorityKey"],
             "statusKey": item["statusKey"],
             "updated": item["updated"],
-            # A row whose write-up ends on one of his comments. Read off the
-            # same markdown the rows come from, so a row and its thread can
-            # never be sourced from two different reads of the file.
+            # A row whose write-up ends on one of his comments. Read out
+            # of the same `contents` the rows come from, so a row and its
+            # thread can never be sourced from two different reads.
             "waiting": item["number"] in waiting,
             # Whether that comment says of itself that Sokrates relayed it.
             # Read off the comment body, not the row, because the row does
@@ -218,6 +265,21 @@ def open_rows(markdown, board):
             "replySlug": _reply_slug(board, item["number"], waiting),
         })
     return rows
+
+
+def open_rows(markdown, board):
+    """The markdown-shaped door onto `open_rows_from_contents`.
+
+    Same seam, same reason, same expiry as `unboarded_captures` above.
+    One thing is deliberately *not* preserved across it: the function
+    above takes the rows and the comment threads out of one `contents`,
+    where this door parses the string twice. That is safe here and only
+    here -- two reads of one string cannot disagree -- and it is exactly
+    what stops being safe when the source is a store, which is why the
+    conversion goes this way round rather than teaching the store to
+    render markdown.
+    """
+    return open_rows_from_contents(parse_board(markdown or ""), board)
 
 
 def _reply_slug(board, number, bodies):
@@ -603,8 +665,9 @@ def rank(rows, projects=None, milestones=None):
     ))
 
 
-def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
-                 projects_markdown="", milestones_markdown=""):
+def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
+                               now, top=5, projects_markdown="",
+                               milestones_markdown=""):
     """What a cycle waking up now would take, in the order it would take it.
 
     Three lists, and the order between them is `prompt.md` step 2's, not
@@ -639,10 +702,10 @@ def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
     unreadable one look identical and mean opposite things, so the page
     has to be able to say which it got.
     """
-    captures = (unboarded_captures(issues_markdown, "issues")
-                + unboarded_captures(ideas_markdown, "ideas"))
-    rows = (open_rows(issues_markdown, "issue")
-            + open_rows(ideas_markdown, "idea"))
+    captures = (unboarded_captures_from_contents(issues_contents, "issues")
+                + unboarded_captures_from_contents(ideas_contents, "ideas"))
+    rows = (open_rows_from_contents(issues_contents, "issue")
+            + open_rows_from_contents(ideas_contents, "idea"))
     claims_readable = True
     live = {}
     try:
@@ -698,6 +761,33 @@ def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
         "projects": projects,
         "claimsReadable": claims_readable,
     }
+
+
+def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
+                 projects_markdown="", milestones_markdown=""):
+    """The markdown-shaped door onto `next_payload_from_contents`.
+
+    Same seam and same expiry as the two doors above. **The double read it
+    hides is worse than theirs**, and naming it is the point of this
+    docstring: this body parses each file twice more, once for the
+    captures and once for the rows, so a converted caller that reached the
+    store through here would take four reads where one is needed -- and
+    `unboarded_captures_from_contents` decides a bullet is unboarded by
+    looking at the rows, so a capture list read before a row list can
+    report a bullet as unprocessed while the row that boards it already
+    exists. Two reads of one string cannot disagree, which is why this is
+    safe until the source is a store and not one moment after.
+
+    `projects_markdown` and `milestones_markdown` are not part of that:
+    neither is a board, neither is part of issue #203, and both stay
+    markdown on the far side of the switchover.
+    """
+    return next_payload_from_contents(
+        parse_board(issues_markdown or ""),
+        parse_board(ideas_markdown or ""),
+        claims_text, now, top=top,
+        projects_markdown=projects_markdown,
+        milestones_markdown=milestones_markdown)
 
 
 #: The satisfaction score at or below which the spec forces a diagnosis.
