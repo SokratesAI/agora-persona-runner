@@ -438,3 +438,55 @@ def test_a_layout_document_served_under_the_wrong_board_is_refused():
 def test_a_layout_for_a_board_that_is_not_his_is_refused():
     with pytest.raises(board_document.DocumentError):
         board_document.layout_document_id("roadmap")
+
+
+def test_the_source_document_id_sits_outside_both_board_ranges():
+    """The same prefix decision `layout_document_id` makes.
+
+    `board_store` selects a board's rows with an `_all_docs` range over the
+    literal prefix `board:<board>:`, and `write_rows` prunes everything in
+    it that the caller did not send. A source stamp under that prefix would
+    be tombstoned by the first migration that wrote the rows alone.
+    """
+    for board in board_document.BOARDS:
+        doc_id = board_document.source_document_id(board)
+        assert not doc_id.startswith(f"board:{board}:")
+        assert not doc_id.startswith(f"capture:{board}:")
+
+    assert (board_document.source_document_id("issue")
+            != board_document.source_document_id("idea"))
+    assert (board_document.source_document_id("issue")
+            != board_document.layout_document_id("issue"))
+
+
+def test_a_source_document_round_trips_its_revision():
+    doc = board_document.to_source_document("42-abc", "issue")
+
+    assert board_document.source_rev_of(doc) == "42-abc"
+    assert doc["_id"] == board_document.source_document_id("issue")
+
+
+def test_a_source_document_refuses_an_id_that_disagrees_with_its_board():
+    """A stamp served under the wrong board would certify one board's
+    records as current from the other board's write."""
+    doc = board_document.to_source_document("42-abc", "issue")
+    doc["board"] = "idea"
+
+    with pytest.raises(board_document.DocumentError):
+        board_document.source_rev_of(doc)
+
+
+def test_a_source_revision_must_be_a_non_empty_string():
+    """The only thing anybody does with this value is compare it for
+    equality against a live revision, so a value that arrived as an int
+    would compare unequal to the same revision read back as text -- and
+    `currency` would answer `stale` on records that are current."""
+    for bad in (None, "", "   ", 42, ["42-abc"]):
+        with pytest.raises(board_document.DocumentError):
+            board_document.to_source_document(bad, "issue")
+
+    for bad in (None, "", "   ", 42):
+        doc = dict(board_document.to_source_document("42-abc", "issue"),
+                   sourceRev=bad)
+        with pytest.raises(board_document.DocumentError):
+            board_document.source_rev_of(doc)

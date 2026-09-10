@@ -620,6 +620,57 @@ def write_registry(registry):
     return dict(doc, _rev=body["rev"])
 
 
+def read_source(board):
+    """The vault revision one board's records were built from, or `None`.
+
+    `None` means the store carries no stamp for this board -- which is not
+    the same as the records being behind, and the two must never be folded
+    together. A board nobody has stamped and a board whose stamp is old are
+    different findings: the first says the question cannot be answered, the
+    second answers it.
+    """
+    _check_board(board)
+    doc_id = board_document.source_document_id(board)
+    status, body = ticket_docs._req(
+        "GET", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}")
+    if status == 200:
+        return board_document.source_rev_of(body)
+    if status == 404:
+        return None
+    raise StoreError(f"reading {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
+def write_source(board, source_rev):
+    """Stamp the revision one board's records were built from.
+
+    Retries a 409 against the winner's revision, the way `write_layout`
+    does and for the same reason: this document holds no identity, only a
+    fact about the markdown two writers computed from the same file. It
+    skips an unchanged write for the reason every writer here does -- a
+    resync that changed nothing must cost no revision.
+    """
+    _check_board(board)
+    doc = board_document.to_source_document(source_rev, board)
+    doc_id = doc["_id"]
+    path = f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}"
+    for attempt in (0, 1):
+        status, held = ticket_docs._req("GET", path)
+        if status == 200:
+            if ticket_docs._payload(held) == ticket_docs._payload(doc):
+                return held
+            doc["_rev"] = held["_rev"]
+        elif status == 404:
+            doc.pop("_rev", None)
+        else:
+            raise StoreError(f"reading {doc_id}: {status} {json.dumps(held)[:200]}")
+        status, body = ticket_docs._req("PUT", path, doc)
+        if status in (200, 201):
+            return dict(doc, _rev=body["rev"])
+        if status == 409 and attempt == 0:
+            continue
+        raise StoreError(f"writing {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
 def read_layout(board):
     """The stored block order for one board, or `None` if there is none.
 

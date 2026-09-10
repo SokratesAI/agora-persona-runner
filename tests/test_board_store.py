@@ -982,3 +982,62 @@ def test_delete_capture_reaches_for_no_other_document(couch):
     couch.calls.clear()
     board_store.delete_capture(stored)
     assert [method for method, _ in couch.calls] == ["DELETE"]
+
+
+def test_an_unstamped_board_reads_as_none_and_a_stamped_one_comes_back(couch):
+    assert board_store.read_source("issue") is None
+
+    board_store.write_source("issue", "42-abc")
+
+    assert board_store.read_source("issue") == "42-abc"
+
+
+def test_one_boards_source_stamp_is_not_the_others(couch):
+    board_store.write_source("issue", "42-abc")
+    board_store.write_source("idea", "7-def")
+
+    assert board_store.read_source("issue") == "42-abc"
+    assert board_store.read_source("idea") == "7-def"
+
+
+def test_the_source_stamp_is_not_handed_back_as_a_row_or_a_capture(couch):
+    """The prefix guard, measured through the store rather than the id.
+
+    A stamp filed inside `board:<board>:` would arrive in `read_rows` as a
+    row with no number, and `write_rows`' prune would tombstone it the
+    first time a migration wrote the rows alone -- so `currency` would
+    answer `unknown` after every successful resync.
+    """
+    board_store.write_source("issue", "42-abc")
+    board_store.write_rows("issue", [_row("issue", 1, rank="0|a:")])
+
+    assert sorted(dict(board_store.stored_documents("issue"))) == [
+        "board:issue:1"]
+    assert dict(board_store.stored_capture_documents("issue")) == {}
+    assert board_store.read_source("issue") == "42-abc"
+
+
+def test_a_rewrite_of_the_rows_does_not_tombstone_the_source_stamp(couch):
+    board_store.write_source("issue", "42-abc")
+    board_store.write_rows("issue", [_row("issue", 1, rank="0|a:")])
+
+    board_store.write_rows("issue", [])
+
+    assert dict(board_store.stored_documents("issue")) == {}
+    assert board_store.read_source("issue") == "42-abc"
+
+
+def test_restamping_the_same_revision_costs_no_new_revision(couch):
+    first = board_store.write_source("issue", "42-abc")
+
+    again = board_store.write_source("issue", "42-abc")
+
+    assert again["_rev"] == first["_rev"]
+
+
+def test_a_new_revision_overwrites_the_stamp(couch):
+    board_store.write_source("issue", "42-abc")
+
+    board_store.write_source("issue", "43-xyz")
+
+    assert board_store.read_source("issue") == "43-xyz"

@@ -107,7 +107,7 @@ import sys
 import pathlib as _pathlib  # noqa: E402
 sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner import board_store, ticket_docs  # noqa: E402
+from agora_runner import board_records, board_store, ticket_docs  # noqa: E402
 from tools import board_migrate  # noqa: E402
 from tools.ticket_migrate import VAULT_TOOL, strip_the_print_newline  # noqa: E402
 
@@ -261,7 +261,44 @@ def follow_records(board, source):
     )
 
 
-def follow(path, source, out=None):
+def stamp(board, source_rev, out=None):
+    """Stamp the revision the records were just built from. `True` if stamped.
+
+    Runs only after the resync reported success, because the stamp is a
+    claim about records that are already stored: one written first would
+    certify a write that then failed.
+
+    A missing `source_rev` is a skip and not a failure. `main` clears it
+    when the vault moved between the write and the read-back, and the
+    records themselves are still correct for the text they were built from
+    -- what is unavailable is the *proof*, so `currency` answers `unknown`,
+    which is the honest verdict and the one thing it must never be able to
+    confuse with `current`.
+
+    **A hand-run `board_migrate --resync` does not stamp**, so a board
+    repaired that way reads `stale` until the next write through here. That
+    is the safe direction and it is deliberate: the wrong answer is a
+    `current` verdict on records nothing can vouch for, and a `stale` one
+    on records that are fine costs a re-read.
+    """
+    out = out or sys.stderr
+    if not source_rev:
+        print("records: not stamped -- no source revision to stamp, so "
+              "`board_records.currency` will answer unknown", file=out)
+        return False
+    try:
+        board_records.stamp_source_rev(board, source_rev)
+    except Exception as exc:  # noqa: BLE001 -- the message is the report
+        print(f"records: not stamped -- {type(exc).__name__}: {exc}. The "
+              "records themselves followed; only the currency stamp is "
+              "missing, so `board_records.currency` will answer unknown.",
+              file=out)
+        return False
+    print(f"records: stamped at {source_rev}")
+    return True
+
+
+def follow(path, source, source_rev=None, out=None):
     """Bring the board records behind `path` back into line. `True` if the
     records are current afterwards -- which includes a board that has no
     records to keep current."""
@@ -290,6 +327,12 @@ def follow(path, source, out=None):
               "--apply", file=out)
         return False
     print(f"records: {message}")
+    # The stamp is reported and deliberately does NOT decide the return.
+    # The records are in line with the markdown either way; an unstamped
+    # board is one `currency` cannot speak for, which is a weaker
+    # instrument and not a store that is behind. Failing here would make
+    # `board_put` exit 4 on a write that fully succeeded.
+    stamp(board, source_rev, out=out)
     return True
 
 
@@ -399,7 +442,7 @@ def main(argv=None):
     # -- and leaving them behind as well would make one broken store into
     # two. Both are attempted, both are reported, and either one falling
     # behind is the same exit 4: the markdown landed and a store did not.
-    records_ok = follow(args.path, source)
+    records_ok = follow(args.path, source, source_rev=source_rev)
     return 0 if (ok and records_ok) else 4
 
 
