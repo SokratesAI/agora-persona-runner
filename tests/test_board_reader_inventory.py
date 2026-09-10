@@ -93,7 +93,7 @@ def test_a_file_that_will_not_tokenize_falls_back_and_says_so(tmp_path,
     may be a comment."""
     (tmp_path / "broken.py").write_text("def f(:\n  # parse_board\n")
     assert not inv.tokenizes((tmp_path / "broken.py").read_text())
-    found, refs, unreadable, untokenized = inv.scan(tmp_path)
+    found, refs, unreadable, untokenized, mine = inv.scan(tmp_path)
     assert found == {"broken.py": ("parse_board",)}
     assert untokenized == ["broken.py"]
     assert inv.main(["--root", str(tmp_path)]) == 0
@@ -144,3 +144,99 @@ def test_an_f_string_is_prose_but_its_holes_are_code():
     a call until the tokenizer's f-string types were added."""
     assert inv.surfaces('msg = f"still call parse_board: {n}"') == ()
     assert inv.surfaces('msg = f"rows: {parse_board(t)}"') == ("parse_board",)
+
+
+HIS_ISSUES = "projects/sokrates/projects/nova/issues.md"
+MY_ISSUES = "projects/sokrates/projects/agora/nova/resources/issues.md"
+
+
+def test_the_two_path_sets_are_read_out_of_board_paths_and_do_not_overlap():
+    """Spelling either set again here is how a fifth board file gets into
+    one place and not the other."""
+    assert HIS_ISSUES in inv.HIS_BOARD_PATHS
+    assert MY_ISSUES in inv.MY_BOARD_PATHS
+    assert not (inv.HIS_BOARD_PATHS & inv.MY_BOARD_PATHS)
+    assert len(inv.HIS_BOARD_PATHS) == 2 and len(inv.MY_BOARD_PATHS) == 4
+
+
+def test_a_concatenated_path_resolves_because_that_is_how_roll_health_spells_it():
+    text = f'BASE = "projects/sokrates/projects/agora/nova/resources/"\n' \
+           f'PAIRS = (BASE + "issues.md",)\n'
+    assert inv.board_paths_named(text) == {MY_ISSUES}
+    assert inv.reads_only_my_boards(text)
+
+
+def test_naming_one_of_his_boards_is_a_blocker_even_beside_one_of_mine():
+    text = f'A = "{MY_ISSUES}"\nB = "{HIS_ISSUES}"\n'
+    assert inv.board_paths_named(text) == {MY_ISSUES, HIS_ISSUES}
+    assert not inv.reads_only_my_boards(text)
+
+
+def test_naming_no_board_path_at_all_is_a_blocker():
+    """"I could not tell" and "it reads his board" must give the same
+    answer, or the gate becomes a way of not being counted."""
+    assert inv.board_paths_named("rows = parse_board(text)") == set()
+    assert not inv.reads_only_my_boards("rows = parse_board(text)")
+    assert not inv.reads_only_my_boards('p = BOARD_PATHS["issues"]["nova"]')
+
+
+def test_an_unparseable_file_resolves_no_paths():
+    assert inv.board_paths_named("def f(:\n") == set()
+    assert not inv.reads_only_my_boards(f'def f(:\n  x = "{MY_ISSUES}"\n')
+
+
+def test_roll_health_reads_only_my_boards_and_is_not_a_blocker(capsys):
+    """Pinned against the live file: it parses markdown, and every board
+    document it names is one of mine, so #203 does not move it."""
+    text = (ROOT / "tools/roll_health.py").read_text(encoding="utf-8")
+    assert inv.surfaces(text) == ("parse_board",)
+    assert inv.reads_only_my_boards(text)
+    assert "tools/roll_health.py" in inv.scan()[4]
+    inv.main([])
+    out = capsys.readouterr().out
+    assert "read only MY OWN board files" in out
+    assert "tools/roll_health.py" in out.split("read only MY OWN")[1]
+
+
+def test_a_module_that_only_reads_my_boards_does_not_hold_the_gate(tmp_path,
+                                                                   capsys):
+    (tmp_path / "mine.py").write_text(f'p = "{MY_ISSUES}"\nparse_board(p)\n')
+    assert inv.main(["--root", str(tmp_path), "--assert-migrated"]) == 0
+    assert "MIGRATED — no module parses one of his boards" in capsys.readouterr().out
+    (tmp_path / "his.py").write_text(f'p = "{HIS_ISSUES}"\nparse_board(p)\n')
+    assert inv.main(["--root", str(tmp_path), "--assert-migrated"]) == 2
+    assert "his.py" in capsys.readouterr().out
+
+
+def test_board_put_does_not_exclude_my_boards_for_having_no_rows():
+    """The stated reason was false -- my boards do have `## Board` tables --
+    and a cycle acting on it would have seeded them into his record store.
+    The exclusion is ownership, so it must hold for a board file of mine
+    that parses to rows."""
+    from agora_runner.nova_boards import parse_board
+    from tools import board_put
+    assert board_put.record_board(MY_ISSUES) is None
+    assert board_put.record_board(HIS_ISSUES) == "issue"
+    source = (ROOT / "tools/board_put.py").read_text(encoding="utf-8")
+    assert "used to be false" in source, \
+        "keep the correction, and keep the false reason quoted under it"
+    assert "table, no rows" in source
+    assert "35 rows" in source and "26 write-ups" in source
+    rows = parse_board(
+        "## Board\n\n"
+        "| # | Item | Status | Updated | Priority |\n"
+        "|---|------|--------|---------|---|\n"
+        "| [[#1 \u2014 x|1]] | x | \u26aa Backlog | 09-10 | \u26aa Low |\n"
+    )["items"]
+    assert [r["number"] for r in rows] == [1]
+
+
+def test_only_a_parser_can_be_excused_as_reading_my_boards(tmp_path, capsys):
+    """`mine` is printed as a count out of the parsers, so a path-only
+    module in it makes that sentence say more than it counted."""
+    (tmp_path / "paths_only.py").write_text(f'p = "{MY_ISSUES}"\nBOARD_PATHS\n')
+    found, refs, unreadable, untokenized, mine = inv.scan(tmp_path)
+    assert found == {"paths_only.py": ("BOARD_PATHS",)}
+    assert mine == []
+    inv.main(["--root", str(tmp_path)])
+    assert "read only MY OWN" not in capsys.readouterr().out

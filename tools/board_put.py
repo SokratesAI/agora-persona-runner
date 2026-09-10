@@ -197,10 +197,16 @@ def push(path, source, source_rev=None):
 
 
 #: His two board files, and the record-store board each one holds. The two
-#: under `nova/resources/` are deliberately absent: they are my own flat
-#: capture lists -- no `## Board` table, no rows -- so `board_document`
-#: has no board name for them and a resync there would be a resync of
-#: something that was never seeded.
+#: under `nova/resources/` are deliberately absent, and the reason written
+#: here used to be false: it said they are "my own flat capture lists -- no
+#: `## Board` table, no rows". They are not. Measured on the live
+#: `nova/resources/issues.md`, 2026-09-10: a real `## Board` table, 35 rows
+#: and 26 write-ups. The true reason is ownership, not shape -- issue #203's
+#: spec and his standing instruction of 2026-09-09 are about the two boards
+#: *he* writes, so `board_document` has no board name for mine and a resync
+#: there would be a resync of something that was never seeded. Keep the
+#: distinction on that footing: a cycle reading the old reason would "fix"
+#: the exclusion the moment it noticed the rows.
 RECORD_BOARDS = {
     "projects/sokrates/projects/nova/issues.md": "issue",
     "projects/sokrates/projects/nova/ideas.md": "idea",
