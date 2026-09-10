@@ -384,3 +384,105 @@ def test_an_unmigrated_registry_reads_as_never_seeded():
 def test_the_path_is_matched_case_insensitively():
     assert board_put.record_board(BOARD.upper()) == "idea"
     assert board_put.record_board(None) is None
+
+
+def _stamped(monkeypatch, answer=None):
+    """Record every `board_records.stamp_source_rev` the run makes."""
+    seen = []
+
+    def fake(board, source_rev, store=None):
+        seen.append((board, source_rev))
+        if isinstance(answer, Exception):
+            raise answer
+        return {"sourceRev": source_rev}
+
+    monkeypatch.setattr(board_put.board_records, "stamp_source_rev", fake)
+    return seen
+
+
+def test_a_landed_resync_stamps_the_revision_the_records_were_built_from(
+        monkeypatch, board_file):
+    """The whole point of the stamp: after the switchover `nova_site` has
+    to ask whether the records are still current without re-reading his
+    700KB `issues.md` to compare against."""
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    _resynced(monkeypatch, RESYNC)
+    seen = _stamped(monkeypatch)
+
+    assert board_put.main([BOARD, board_file]) == 0
+    assert seen == [("idea", "7-abc")]
+
+
+def test_the_stamp_is_the_same_revision_the_tickets_were_stamped_with(
+        monkeypatch, board_file):
+    """Two stores, one fact. A stamp that disagreed with the ticket
+    store's would make one of the two verdicts wrong with nothing to
+    say which."""
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    pushed = _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    _resynced(monkeypatch, RESYNC)
+    stamped = _stamped(monkeypatch)
+
+    assert board_put.main([BOARD, board_file]) == 0
+    assert stamped[0][1] == pushed[0][2]
+
+
+def test_a_resync_that_failed_does_not_stamp(monkeypatch, board_file):
+    """The stamp is a claim about records that are already stored. One
+    written after a failed write would certify a store that is behind."""
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    _resynced(monkeypatch, RuntimeError("writing board:idea:41: 503"))
+    seen = _stamped(monkeypatch)
+
+    assert board_put.main([BOARD, board_file]) == 4
+    assert seen == []
+
+
+def test_a_vault_that_moved_between_the_write_and_the_read_back_is_not_stamped(
+        monkeypatch, board_file):
+    """`main` clears the revision when somebody wrote in between, because
+    it belongs to text the store is not about to hold. Stamping it would
+    claim a currency the records cannot prove."""
+    monkeypatch.setattr(board_put.subprocess, "run",
+                        _run(0, read_back="somebody else's board\n"))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    _resynced(monkeypatch, RESYNC)
+    seen = _stamped(monkeypatch)
+
+    assert board_put.main([BOARD, board_file]) == 0
+    assert seen == []
+
+
+def test_a_stamp_that_failed_is_reported_and_is_not_exit_4(
+        monkeypatch, board_file, capsys):
+    """An unstamped board is one `currency` cannot speak for -- a weaker
+    instrument, not a store that is behind. The records landed, so the
+    write succeeded and the exit code has to say so."""
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    _resynced(monkeypatch, RESYNC)
+    _stamped(monkeypatch, RuntimeError("writing board:source:idea: 503"))
+
+    assert board_put.main([BOARD, board_file]) == 0
+    assert "not stamped" in capsys.readouterr().err
+
+
+def test_a_board_with_no_records_stamps_nothing(monkeypatch, tmp_path):
+    mine = "projects/sokrates/projects/agora/nova/resources/ideas.md"
+    local = tmp_path / "mine.md"
+    local.write_text("## Entries\n\n- one\n", encoding="utf-8")
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    _resynced(monkeypatch, RESYNC)
+    seen = _stamped(monkeypatch)
+
+    assert board_put.main([mine, str(local)]) == 0
+    assert seen == []
