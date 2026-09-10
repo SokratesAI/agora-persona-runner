@@ -918,3 +918,67 @@ def test_write_capture_refuses_a_document_that_is_not_a_capture(couch):
     with pytest.raises(board_document.DocumentError):
         board_store.write_capture(_row("issue", 5))
     assert couch.docs == {}
+
+
+def test_delete_capture_removes_it_and_says_it_did(couch):
+    """The half of boarding a capture that `write_capture` cannot do."""
+    stored = board_store.write_capture(_capture("issue", "cap_1"))
+    assert board_store.delete_capture(stored) is True
+    assert board_store.read_capture("issue", "cap_1") is None
+
+
+def test_delete_capture_leaves_the_other_bullets_alone(couch):
+    """`write_captures(prune=True)` is the spelling this replaces, and it
+    expresses a deletion as an absence from the caller's list -- so a list
+    built from a stale read takes every bullet the winner added with it."""
+    board_store.write_captures("issue", [_capture("issue", "cap_1"),
+                                         _capture("issue", "cap_2")])
+    board_store.delete_capture(board_store.read_capture("issue", "cap_1"))
+
+    assert board_store.read_capture("issue", "cap_2") is not None
+
+
+def test_a_capture_delete_must_carry_the_revision_it_was_read_at(couch):
+    """`_write_one`'s middle rule pointed at a delete.
+
+    A document straight out of `to_capture_document` has no revision, so
+    deleting on it would remove whatever is stored *now* -- including a
+    reply written under his words while I was deciding to board the bullet.
+    """
+    board_store.write_capture(_capture("issue", "cap_1", text="His words"))
+    with pytest.raises(board_document.DocumentError):
+        board_store.delete_capture(_capture("issue", "cap_1"))
+    assert board_store.read_capture("issue", "cap_1")["text"] == "His words"
+
+
+def test_a_capture_delete_on_a_stale_revision_raises_its_own_conflict(couch):
+    """Not `RowConflict`, and not a silent success: the bullet moved."""
+    stale = board_store.write_capture(_capture("issue", "cap_1", text="a"))
+    board_store.write_capture(dict(stale, text="b"))
+    with pytest.raises(board_store.CaptureConflict):
+        board_store.delete_capture(stale)
+    assert board_store.read_capture("issue", "cap_1")["text"] == "b"
+
+
+def test_deleting_a_capture_that_has_already_gone_is_not_an_error(couch):
+    """`delete_layout`'s contract, and a re-run is reachable here: the caller
+    adds the row and then removes the bullet, so a cycle that died between
+    the two comes back to a board holding both."""
+    stored = board_store.write_capture(_capture("issue", "cap_1"))
+    assert board_store.delete_capture(stored) is True
+    assert board_store.delete_capture(stored) is False
+
+
+def test_delete_capture_refuses_a_row_document(couch):
+    """A row handed here would name an id outside the capture range."""
+    with pytest.raises(board_document.DocumentError):
+        board_store.delete_capture(dict(_row("issue", 5), _rev="1-a"))
+
+
+def test_delete_capture_reaches_for_no_other_document(couch):
+    """One bullet out of the box is one request. `write_captures` lists the
+    whole range with `include_docs=true` to do the same thing."""
+    stored = board_store.write_capture(_capture("issue", "cap_1"))
+    couch.calls.clear()
+    board_store.delete_capture(stored)
+    assert [method for method, _ in couch.calls] == ["DELETE"]

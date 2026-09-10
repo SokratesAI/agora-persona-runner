@@ -443,6 +443,67 @@ def write_capture(doc):
                       CaptureConflict)
 
 
+def delete_capture(doc):
+    """Remove one capture's record, conditional on the revision it was read at.
+
+    The half of "board a capture" that `write_capture` cannot do. Boarding an
+    item is one row added and one bullet taken out of the box he types into,
+    and until this existed only the first of those had a records spelling --
+    so `tools.board_capture` was the one writer left with no door, which is
+    what the last handoff means by *"`board_capture` itself is NOT converted
+    and needs one more primitive"*.
+
+    **`write_captures(board, [...], prune=True)` already deletes a capture and
+    is the wrong shape for this**, twice over and for `write_capture`'s own
+    reasons: it lists the whole range with `include_docs=true`, so dropping
+    one bullet fetches every bullet and every reply he has ever been answered
+    with, and the deletion is expressed as an *absence* from the list the
+    caller passes. An absence is not a statement. A caller that built its list
+    from a read that lost a race deletes whatever the winner added, silently,
+    and the request looks exactly like a correct one.
+
+    So this takes the document itself, as read, and the `_rev` is not
+    optional. That is `_write_one`'s middle rule pointed at a delete, and it
+    matters more here than there: a capture carries the owner's own words and
+    every reply written under them, and a blind delete of a bullet somebody
+    answered while I was deciding to board it destroys both with nothing left
+    to compare against. A document with no revision has not been read from
+    this store, so there is nothing to be conditional on and it is refused
+    rather than fetched -- fetching the revision here would make every
+    unconditional delete succeed, which is the failure the rule exists for.
+
+    Absent is not an error and the return says which happened, `delete_layout`'s
+    contract: `True` if there was a document to remove, `False` if it had
+    already gone. That makes a re-run free, and a re-run is reachable -- the
+    caller writes a row and then deletes a bullet, so a cycle that died
+    between the two comes back to a board holding both.
+
+    A 409 raises `CaptureConflict`, and it is the same recovery as the
+    writer's: the capture moved, so re-read it and decide against what won.
+    Never re-send this delete with the winner's revision, which would be the
+    blind delete this signature exists to refuse.
+    """
+    board_document._check_capture_identity(doc)
+    rev = doc.get("_rev")
+    if not rev:
+        raise board_document.DocumentError(
+            "deleting a capture must carry the `_rev` it was read at, or it "
+            "removes whatever is stored now -- read it first")
+    doc_id = board_document.capture_document_id(doc["board"], doc["captureId"])
+    path = f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}"
+    status, body = ticket_docs._req(
+        "DELETE", f"{path}?rev={urllib.parse.quote(rev, safe='')}")
+    if status in (200, 202):
+        return True
+    if status == 404:
+        return False
+    if status == 409:
+        raise CaptureConflict(
+            f"{doc_id} moved since it was read: re-read it and decide against "
+            "the record that won -- do not re-send this delete")
+    raise StoreError(f"deleting {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
 #: The project/milestone registry, one document beside the row records.
 #:
 #: The id deliberately carries no third segment, so it sits *outside* every
