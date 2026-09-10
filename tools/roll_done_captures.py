@@ -44,6 +44,17 @@ document for it and moves on -- the duplicate is visible on his page and
 recoverable by hand. A run that deleted first and died would have removed
 a sentence of his with no copy anywhere.
 
+**That covers this run dying, and it does not cover two runs overlapping.**
+`board_store.write_layout` retries a 409 against the winner's revision and
+resends the caller's blocks verbatim, which is right for `board_migrate`,
+where two cycles compute the same layout from the same markdown. An append
+is not that: two rolls of the same board in the same window each read the
+layout once, and the second overwrites the first's archived bullet while its
+capture document is already deleted. So the guarantee is "this run cannot
+lose a bullet", not "a bullet cannot be lost" -- the second would need a
+conditional write this module does not have. Reviewer finding on #968; the
+`[claim: ...]` in step 2 is what keeps two cycles off one board today.
+
 **A board with no stored layout is refused rather than given a fresh
 one.** `board_store.read_layout` answers `None` for a board that has
 never been migrated and that is not the same as an empty archive: minting
@@ -68,6 +79,7 @@ documents left and reports `nothing to move`.
 
 import argparse
 import sys
+from collections import Counter
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
@@ -189,8 +201,14 @@ def check_after(before, after, layout_markdown, moved):
         problems.append("detail write-ups changed")
 
     texts = [capture_text_of(doc) for doc in moved]
-    gone = [text for text in before["captures"] if text not in after["captures"]]
-    if sorted(gone) != sorted(texts):
+    # A multiset, not a membership test. Two bullets can carry the same
+    # sentence -- his own text is not unique and nothing stops him typing a
+    # line twice -- and `text not in after` reads both copies as still
+    # present when one of them was deleted, so the count that is supposed to
+    # catch a delete this run did not intend comes back zero.
+    gone = sorted((Counter(before["captures"]) - Counter(after["captures"])
+                   ).elements())
+    if gone != sorted(texts):
         problems.append(
             f"{len(gone)} capture(s) left the box, expected {len(texts)}")
     for text in after["captures"]:
@@ -280,8 +298,19 @@ def main(argv=None):
 
     problems = check_after(before, after, _archive_markdown(stored), moved)
     if problems:
+        # Not `REFUSED`, and the difference is not cosmetic. Every other
+        # refusal in this tool happens before a byte is written, so a cycle
+        # reading one may assume the board is as it found it. This one is
+        # the after-check, and by the time it speaks the archive is written
+        # and the captures are deleted -- the predecessor could not reach
+        # this state because it rewrote a string in memory and checked it
+        # before the caller ever put the file. Reviewer finding on #968.
+        print(f"{args.board}: the roll LANDED — archived {len(moved)}, "
+              f"removed {removed} from the box — and then the board came "
+              "back wrong. Nothing here undoes it; read the board before "
+              "writing to it again.", file=sys.stderr)
         for problem in problems:
-            print(f"REFUSED: {problem}", file=sys.stderr)
+            print(f"  {problem}", file=sys.stderr)
         return 1
 
     print(f"{args.board}: moved {removed} finished capture(s) to "

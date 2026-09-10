@@ -1632,8 +1632,10 @@ def capture_entries(markdown):
                 # above it, not something the owner just typed. Reading it
                 # as its own capture is what put a cycle's own closing note
                 # at the top of his `issues.md` and ranked it first on every
-                # cycle's board ranking -- see `roll_done_captures.plan`,
-                # which had the same blind spot and orphaned it there.
+                # cycle's board ranking. `roll_done_captures` used to have
+                # the same blind spot and orphaned it there; #203 deleted
+                # that walk outright, because a reply is `replies` on the
+                # capture document and no bullet in the records is one.
                 begin, _, text, replies = entries[-1]
                 entries[-1] = (begin, i + 1, text, replies + [stripped[2:].strip()])
             else:

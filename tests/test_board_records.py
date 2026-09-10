@@ -403,10 +403,20 @@ class WritableFakeStore(FakeStore):
         return self.layouts.get(board)
 
     def write_layout(self, board, blocks):
-        self.calls.append(("write_layout", board, [dict(b) for b in blocks]))
-        self.layouts[board] = [dict(b) for b in blocks]
-        return {"_id": board_document.layout_document_id(board),
-                "board": board, "blocks": self.layouts[board]}
+        """Store the blocks, through the real document check.
+
+        Dumb about the rules `board_store` owns -- it does not skip an
+        unchanged document and it does not retry a 409 -- but **not** about
+        `_check_layout_blocks`, which the real one reaches through
+        `to_layout_document`. That check refuses a block whose `kind` is not
+        one `board_view` draws, and `render_document` silently drops such a
+        block: a fake that stored anything handed to it would pass a caller
+        that deletes his archive against CouchDB. Reviewer finding on #968.
+        """
+        doc = board_document.to_layout_document(blocks, board)
+        self.calls.append(("write_layout", board, list(doc["blocks"])))
+        self.layouts[board] = list(doc["blocks"])
+        return dict(doc, _rev="2-layout")
 
 
 def writable(board="issue", markdown=BOARD):

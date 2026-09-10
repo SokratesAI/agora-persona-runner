@@ -273,3 +273,42 @@ def test_the_check_catches_an_unfinished_capture_that_left_the_box():
 def test_the_tool_reaches_the_store_module_and_not_a_second_import():
     """The monkeypatched seam is the one `main` actually calls."""
     assert roll_done_captures.board_store is board_store
+
+
+def test_the_check_counts_bullets_and_not_distinct_sentences():
+    """Nothing stops him typing the same line twice, and a membership test
+    reads both copies as still there when one of them was deleted."""
+    before = {"items": [], "details": {}, "captures": ["same", "same"]}
+    after = {"items": [], "details": {}, "captures": ["same"]}
+
+    problems = check_after(before, after, "", [])
+
+    assert problems == ["1 capture(s) left the box, expected 0"]
+
+
+def test_a_failed_after_check_says_the_roll_already_landed(store, monkeypatch, capsys):
+    """The one refusal in this tool that does not mean "nothing happened".
+
+    Every other one fires before a byte is written. This one fires after the
+    archive write and the deletes, and a cycle that read it as "untouched"
+    would go on to write the board again on top of a roll that succeeded.
+    """
+    monkeypatch.setattr(roll_done_captures, "check_after",
+                        lambda *a, **k: ["board rows changed"])
+
+    assert roll_done_captures.main(["--board", "issue"]) == 1
+    err = capsys.readouterr().err
+    assert "the roll LANDED" in err
+    assert "REFUSED" not in err
+    assert texts(store) == [OPEN], "and it really did land"
+
+
+def test_the_fake_store_refuses_a_block_kind_the_renderer_cannot_draw(store):
+    """The fake goes through `to_layout_document`, as `board_store` does.
+
+    `render_document` silently drops a block it does not recognise, so a
+    fake that stored whatever it was handed would let a caller pass here
+    and delete his archive against CouchDB. Reviewer finding on #968.
+    """
+    with pytest.raises(board_document.DocumentError):
+        store.write_layout("issue", [{"kind": "nonsense"}])
