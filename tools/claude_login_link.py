@@ -36,6 +36,17 @@ So the flow this gives him is three messages long:
 2. He opens it, approves, and the callback page shows `<code>#<state>`.
 3. `finish` exchanges that for a credential and prints what it got.
 
+**Step 3 is the one that kept failing, and not for a reason in this module.**
+The link lives an hour; the authorization code behind it is good for minutes.
+The loop that mints the link wakes every 30 minutes, so the run that sends the
+link and the run that spends the code are almost never the same run -- on
+2026-09-10 he answered at 09:43 Oslo and the next cycle reached `finish` at
+10:09, against a live session with a matching state, and got `invalid_grant`.
+That is why `wait` exists: it polls Telegram from inside the run that minted
+the link and exchanges the code as soon as it arrives, so `start --notify`
+followed by `wait` is one uninterrupted flow rather than two runs half an hour
+apart.
+
 **Nothing here is a table of constants.** Every URL and the client id are read
 back out of the binary this loop is actually running, because a second copy of
 them is a copy that goes stale exactly the way a pin does (`tools.pin_drift`'s
@@ -330,8 +341,41 @@ def _post_json(url: str, body: dict, timeout: int = 30, user_agent: str | None =
         headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.status, json.loads(response.read().decode())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode()
+            status = response.status
+    except urllib.error.HTTPError as refusal:
+        # `urlopen` raises on every 4xx and 5xx, so `exchange`'s own
+        # `status != 200` branch could never run and the response body -- the
+        # only thing that says *why* -- went out with the exception. That is
+        # what made 2026-09-10 a guessing game: three cycles saw
+        # `HTTP Error 400: Bad Request` and could not tell a spent code from an
+        # expired one from a rate limit, and one of them wrote the wrong cause
+        # into the handoff. The body is readable off the exception; read it.
+        raw, status = refusal.read().decode(errors="replace"), refusal.code
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        # Cloudflare's 1010 block is HTML, not JSON, and it is a refusal this
+        # module has already been bitten by. A body we cannot parse is still
+        # the evidence, so it travels as text rather than becoming a
+        # `ValueError` from a line that looks like a parse bug.
+        return status, {"error": "unparsed_body", "error_description": raw[:400]}
+
+
+def describe_refusal(payload) -> str:
+    """What the token endpoint said, in one line. `invalid_grant` alone is not
+    a diagnosis -- Anthropic answers it for a code that was already spent and
+    for one that expired, and those have different next steps -- so the
+    description travels beside it rather than being reduced to the code."""
+    if not isinstance(payload, dict):
+        return str(payload)[:400]
+    error = payload.get("error")
+    detail = payload.get("error_description") or payload.get("message")
+    if error and detail:
+        return f"{error}: {detail}"
+    return str(error or detail or payload)[:400]
 
 
 def exchange(session: dict, code: str, post=None):
@@ -356,7 +400,7 @@ def exchange(session: dict, code: str, post=None):
     }
     status, payload = post(session["token_url"], body, user_agent=session.get("user_agent"))
     if status != 200:
-        raise CannotSee(f"token exchange failed ({status})")
+        raise CannotSee(f"token exchange failed ({status}): {describe_refusal(payload)}")
     return payload
 
 
@@ -413,6 +457,68 @@ def describe(credential: dict) -> list:
     return lines
 
 
+def code_from_messages(rows, state: str):
+    """(code, message id) for the newest unacked Telegram message that carries
+    a code for *this* session, or (None, None).
+
+    Matching on the state rather than on "the newest message" is the whole
+    filter. He pastes `<code>#<state>`, and a stale reply to a link this loop
+    already invalidated is indistinguishable from a fresh one by arrival time
+    alone -- `finish` would then refuse on the state mismatch and the real
+    code, sitting one message further down, would never be tried."""
+    if not isinstance(rows, list) or not state:
+        # Without a state there is nothing to match on, and `split_pasted_code`
+        # answers None for the state half of any message with no `#` in it --
+        # so a falsy state here would claim "thanks" as a code.
+        return None, None
+    for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        code, pasted = split_pasted_code(str(row.get("text") or ""))
+        if code and pasted == state:
+            return code, row.get("id")
+    return None, None
+
+
+def await_code(state: str, timeout: float, poll: float = 15.0,
+               fetch_rows=None, sleep=time.sleep, now=time.monotonic):
+    """Block until he replies with a code for this session, or `timeout`
+    seconds pass. Returns (code, message id) or (None, None).
+
+    This exists because the code, not the link, is what expires. A link lives
+    an hour; the authorization code behind it is good for minutes. On
+    2026-09-10 a link went out at 09:42 Oslo, he answered at 09:43, and the
+    next cycle did not run `finish` until 10:09 -- 26 minutes later, against a
+    live session with a matching state, and the exchange came back
+    `invalid_grant`. Nothing was broken and no cycle was slow; the loop simply
+    wakes every 30 minutes and the window is shorter than that. So the run
+    that mints the link is the only thing here that can reliably spend it, and
+    waiting is what makes that possible.
+
+    `sleep` and `now` are injected together and read from the same clock, so a
+    test cannot leave one of them real and pass on a timeout it never took."""
+    if fetch_rows is None:
+        def fetch_rows():
+            from tools.telegram import DEFAULT_URL, _get
+
+            status, body = _get(DEFAULT_URL, "/inbox", urllib.request.urlopen, 15)
+            return body.get("messages") if status == 200 else []
+    deadline = now() + timeout
+    while True:
+        try:
+            rows = fetch_rows()
+        except Exception as unreachable:  # the bridge is not worth dying over
+            print(f"  inbox unreadable ({unreachable}) -- retrying")
+            rows = []
+        code, message_id = code_from_messages(rows, state)
+        if code is not None:
+            return code, message_id
+        remaining = deadline - now()
+        if remaining <= 0:
+            return None, None
+        sleep(min(poll, remaining))
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--binary", default=DEFAULT_BINARY)
@@ -428,6 +534,15 @@ def build_parser():
         action="store_true",
         help="mint a new link even though an unspent one exists, invalidating it",
     )
+
+    wait = sub.add_parser(
+        "wait", help="poll Telegram for his reply to the live session and exchange it"
+    )
+    wait.add_argument("--timeout", type=float, default=600.0,
+                      help="seconds to wait for his reply (default 600)")
+    wait.add_argument("--poll", type=float, default=15.0, help="seconds between inbox reads")
+    wait.add_argument("--install", metavar="PATH",
+                      help="write the credential here; without it nothing is written")
 
     finish = sub.add_parser("finish", help="exchange the code he pasted back")
     finish.add_argument("--code", required=True, help="the `<code>#<state>` from the callback page")
@@ -578,10 +693,49 @@ def _cmd_finish(args) -> int:
     return 0
 
 
+def _cmd_wait(args) -> int:
+    try:
+        session = load_session(args.session)
+    except (OSError, ValueError) as problem:
+        print(f"CANNOT SEE  no usable session at {args.session}: {problem}")
+        return 1
+    state = session.get("state")
+    if not state:
+        print(f"CANNOT SEE  the session at {args.session} carries no state to match on")
+        return 1
+    print(f"waiting up to {int(args.timeout)}s for a code ending in #{state}")
+    code, message_id = await_code(state, args.timeout, poll=args.poll)
+    if code is None:
+        print(
+            f"REFUSED  no reply carrying this session's state in {int(args.timeout)}s -- "
+            "the link is still live, so `finish --code` works whenever it arrives"
+        )
+        return 2
+    print(f"got a code from Telegram message #{message_id}")
+    status = _cmd_finish(
+        argparse.Namespace(
+            session=args.session,
+            binary=args.binary,
+            code=f"{code}#{state}",
+            install=args.install,
+        )
+    )
+    if status == 0 and message_id is not None:
+        # Only on a spent code. Acking a message whose exchange failed would
+        # hide the one thing a later cycle needs to retry with.
+        from tools import telegram_inbox
+
+        _, line = telegram_inbox.ack(message_id)
+        print(f"telegram ack: {line}")
+    return status
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "start":
         return _cmd_start(args)
+    if args.command == "wait":
+        return _cmd_wait(args)
     return _cmd_finish(args)
 
 
