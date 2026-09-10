@@ -111,8 +111,8 @@ def refuse_cell(value, flag, allow_blank=False):
     sentence in every one of them: `board_status` had the only copy and
     `board_milestone` would have been the second, with `board_size` and
     `board_priority` still to convert. Four copies of a cell rule is how two
-    of them come to disagree. Three of the four are here now; `board_priority`
-    is the one still on markdown, and `board_size` deliberately does **not**
+    of them come to disagree. All four are here now (`board_priority` was the
+    last, Cycle 1377), and `board_size` deliberately does **not**
     route its own `--size` through this -- that value is bounded to four
     constants, so the vocabulary check is already the cell check.
 

@@ -6,7 +6,7 @@ in `agora_runner.vault.vault_write_path`, which is the one place an
 in-process board write lands. Its own handoff named what that does not
 cover, and this is it.
 
-**`tools.board_capture`, `board_row` and `board_priority`
+**`tools.board_capture` and `board_row`
 write a local file, and a cycle then puts that file
 into the vault with `/app/bridge/vault_tool.py put`** -- a different
 program, in a different repo, in a different process, that knows nothing
