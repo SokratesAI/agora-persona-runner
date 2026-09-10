@@ -262,9 +262,22 @@ def _head(block):
     captures` archive. The finding is *which* block moved, and nothing here
     is data he loses by not seeing it twice -- the block is a verbatim slice
     of the markdown file the run was handed, at the index this line names.
+
+    **A table block carries no markdown at all and this used to describe it
+    as empty.** The two tables are stored as their kind and their column
+    names -- the rows live in the row documents -- so the generic line below
+    reads `'board' block, 0 char(s), starting ''` on both sides of a real
+    disagreement, which is a finding with the finding taken out. Measured
+    2026-09-10 against his live `ideas.md`, whose board table has eight
+    columns while `board_view` draws nine: `tools.board_publish` refused,
+    correctly, and could say nothing about why. So a block that has columns
+    is named by its columns.
     """
     if not isinstance(block, dict):
         return repr(block)[:120]
+    columns = block.get("columns")
+    if columns is not None:
+        return f"{block.get('kind')!r} block, columns {list(columns)}"
     text = str(block.get("markdown") or "")
     first = text.splitlines()[0] if text.splitlines() else ""
     return (f"{block.get('kind')!r} block, {len(text)} char(s), "
