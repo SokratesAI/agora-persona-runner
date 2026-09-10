@@ -435,6 +435,39 @@ def verify(markdown, board, store=board_store):
     return report, problems
 
 
+def status(markdown, board, store=board_store):
+    """Does the live store still answer what this markdown parses to?
+
+    Returns `(verdict, problems)`, and writes nothing at all. Three
+    verdicts: `NEVER MIGRATED` (the store has never been written for this
+    board), `AGREES`, `DRIFTED`.
+
+    `verify` above already compares the two, and it is not this: it
+    *writes* the board first and restores afterwards, so what it proves is
+    that the seam round-trips -- it cannot answer the question about a
+    store somebody else wrote. That question only has an answer once the
+    switchover flips, and it is the one that decides whether the flip may
+    happen: **`board_records.contents` refuses an unmigrated store loudly
+    and answers a stale one silently**, so the moment a board is seeded the
+    protection `UnmigratedStore` gives every unconverted reader is gone and
+    nothing replaces it. Measured 2026-09-10: nothing on `main` reads the
+    record store, so seeding it before the readers merge would leave
+    exactly that -- documents that go stale on his next board edit, with no
+    check that could tell.
+
+    `UnmigratedStore` is caught and reported as a verdict rather than
+    raised, because "never written" is an answer to this question. Any
+    other `RecordError` is a store that exists and cannot be read, which is
+    not, and it propagates.
+    """
+    try:
+        got = board_records.contents(board, store=store)
+    except board_records.UnmigratedStore as exc:
+        return "NEVER MIGRATED", [str(exc)]
+    problems = differences(nova_boards.parse_board(markdown), got)
+    return ("DRIFTED" if problems else "AGREES"), problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--board", required=True,
@@ -444,12 +477,20 @@ def main(argv=None):
                         help="the board markdown file")
     parser.add_argument("--apply", action="store_true",
                         help="actually write; without it nothing is stored")
+    parser.add_argument("--status", action="store_true",
+                        help="read-only: compare the live store against "
+                             "this markdown and say whether it agrees, "
+                             "has drifted, or was never migrated")
     parser.add_argument("--verify", action="store_true",
                         help="write the board and its layout, read both "
                              "back through board_records.contents and "
                              "read_layout, compare with parse_board and "
                              "restore the store; nothing is kept")
     args = parser.parse_args(argv)
+    if args.status and (args.apply or args.verify):
+        parser.error(
+            "--status writes nothing; --apply and --verify both write, so "
+            "asking for either alongside it asks two different questions")
     if args.verify and args.apply:
         parser.error(
             "--verify and --apply are opposites: --verify empties the store "
@@ -457,6 +498,18 @@ def main(argv=None):
 
     with open(args.file, encoding="utf-8") as handle:
         markdown = handle.read()
+
+    if args.status:
+        try:
+            verdict, problems = status(markdown, args.board)
+        except (board_records.RecordError, board_store.StoreError) as exc:
+            print(f"UNREADABLE: {exc}")
+            return 2
+        print(f"status.board: {args.board}")
+        print(f"status.verdict: {verdict}")
+        for problem in problems:
+            print(f"status.why: {problem}")
+        return 0 if verdict == "AGREES" else 2
 
     if args.verify:
         try:

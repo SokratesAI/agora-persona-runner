@@ -645,3 +645,109 @@ def test_verify_catches_a_layout_that_never_came_back(couch, monkeypatch):
     assert report["contents_matches_parse"] is False
     assert any("nothing came back out of the store" in problem
                for problem in problems)
+
+
+def test_status_says_never_migrated_before_anything_is_written(couch, capsys):
+    """The verdict that decides whether the switchover may flip.
+
+    `board_records.contents` raises `UnmigratedStore` here, and that raise is
+    the only thing protecting an unconverted reader from a store nobody has
+    written. `status` reports it as an answer instead of propagating it,
+    because "never written" IS the answer to the question this asks.
+    """
+    verdict, problems = board_migrate.status(board([(1, "Nova", "")]), "issue")
+    assert verdict == "NEVER MIGRATED"
+    assert problems and "never been written" in problems[0]
+
+
+def test_status_agrees_with_a_store_it_did_not_write(couch):
+    """The question `verify` structurally cannot ask.
+
+    `verify` writes the board itself and restores afterwards, so it proves the
+    seam round-trips and says nothing about a store somebody else left behind.
+    Here the migration runs first and `status` is handed the result cold.
+    """
+    markdown = board(
+        [(1, "Nova", "Cycle reliability"), (2, "Marcus", "")],
+        details=[(1, "why one matters")],
+        captures=[("his bullet", ["a cycle answered"])],
+    )
+    board_migrate.migrate(markdown, "issue", apply=True)
+    verdict, problems = board_migrate.status(markdown, "issue")
+    assert (verdict, problems) == ("AGREES", [])
+
+
+def test_status_catches_a_board_the_owner_edited_after_the_migration(couch):
+    """Drift, which is the whole reason this is not `verify`.
+
+    Nothing on `main` writes the record store, so a board seeded today goes
+    stale the moment he adds a row -- and a stale store answers silently where
+    an unmigrated one raises. A verdict that could not tell those apart would
+    be worse than no check.
+    """
+    seeded = board([(1, "Nova", "")])
+    board_migrate.migrate(seeded, "issue", apply=True)
+    verdict, problems = board_migrate.status(
+        board([(1, "Nova", ""), (2, "Nova", "")]), "issue")
+    assert verdict == "DRIFTED"
+    assert any("items" in problem for problem in problems)
+
+
+def test_status_asks_the_store_it_was_handed(couch):
+    """`store=` has to be honoured, not decorated.
+
+    Every other test here reaches the store through the fake CouchDB, so the
+    default argument answers them all and an implementation that dropped the
+    parameter would pass every one of them -- measured, that mutation
+    SURVIVED until this test existed. The stub says "never migrated" while
+    the real store is migrated, so the two answers cannot be confused.
+    """
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    assert board_migrate.status(markdown, "issue")[0] == "AGREES"
+
+    class NeverMigrated:
+        """Enough of `board_store` for `contents` to reach its first check."""
+        @staticmethod
+        def read_registry():
+            return {}
+
+    verdict, _ = board_migrate.status(markdown, "issue", store=NeverMigrated)
+    assert verdict == "NEVER MIGRATED"
+
+
+def test_status_writes_nothing(couch):
+    """It is offered as the read-only one; a write here would be a trap.
+
+    Compared against both key ranges and the registry, because minting a
+    project id is the one write in this module with no restore path.
+    """
+    board_migrate.status(board([(1, "Nova", "Cycle reliability")]), "issue")
+    assert board_store.stored_documents("issue") == {}
+    assert board_store.stored_capture_documents("issue") == {}
+    assert board_store.read_registry().get("_rev") is None
+
+
+def test_status_exits_2_on_drift_and_0_on_agreement(couch, tmp_path, capsys):
+    """`main`'s contract, which is what preflight would read."""
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
+    assert board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status"]) == 2
+    assert "status.verdict: NEVER MIGRATED" in capsys.readouterr().out
+
+    board_migrate.migrate(path.read_text(encoding="utf-8"), "issue", apply=True)
+    assert board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status"]) == 0
+    assert "status.verdict: AGREES" in capsys.readouterr().out
+
+
+def test_status_refuses_to_be_combined_with_a_write(tmp_path):
+    """`--status` beside `--apply` is two questions, and the write would win."""
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
+    for other in ("--apply", "--verify"):
+        with pytest.raises(SystemExit) as raised:
+            board_migrate.main(
+                ["--board", "issue", "--file", str(path), "--status", other])
+        assert raised.value.code == 2
