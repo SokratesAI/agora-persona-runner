@@ -96,6 +96,40 @@ class BoardDamaged(RuntimeError):
     """
 
 
+def refuse_cell(value, flag, allow_blank=False):
+    """Why `value` may not go in a cell of the generated board view, or `None`.
+
+    A `|` splits the cell and a `\\r` or `\\n` splits the row, in the markdown
+    the daily GitHub backup renders off these records. The store itself would
+    hold any of the three quite happily, which is why the rule has to live
+    somewhere a writer cannot skip -- and CommonMark makes a bare `\\r` a line
+    ending, so Obsidian breaks the row on his phone even though a `"\\n" in
+    value` check sees nothing.
+
+    It lives here rather than in each CLI because the rule is the same
+    sentence in every one of them: `board_status` had the only copy and
+    `board_milestone` would have been the second, with `board_priority` and
+    `board_size` still to convert. Four copies of a cell rule is how two of
+    them come to disagree.
+
+    `allow_blank` is for `--milestone ''`, the one flag whose empty value is a
+    real instruction: clearing a row back to ungrouped has to stay reachable,
+    and unlike a size or a status an empty milestone cannot be confused with
+    a typo. Everywhere else blank means the caller passed nothing useful.
+    """
+    if value is None:
+        return None
+    if not value.strip() and not allow_blank:
+        return f"{flag} may not be blank"
+    for character in "|\r\n":
+        shown = {"\r": "a carriage return", "\n": "a newline"}.get(
+            character, f"a {character!r}")
+        if character in value:
+            return (f"{flag} carries {shown}, which escapes its own cell in "
+                    "the generated board view")
+    return None
+
+
 def _differences(before, after, number):
     """Every way the board moved other than row `number`'s declared keys."""
     problems = []

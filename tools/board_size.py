@@ -17,8 +17,8 @@ dependency rather than a preference.
         --dated 09-06 --note 'why it is L' --cycle 1090
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.board_row`, `tools.board_milestone` and `tools.board_priority`
-hold, so the caller owns the compare-and-swap: `vault_tool.py get
+contract `tools.board_row` and `tools.board_priority` hold (`board_milestone`
+held it until #203 converted it onto the record store), so the caller owns the compare-and-swap: `vault_tool.py get
 --rev-file` before, `board_put --if-rev-file` after.
 
 **A size is mine to set, and that is the spec's assignment rather than a

@@ -1,7 +1,7 @@
 """The single-cell board writers still on markdown read each document once.
 
 Issue #203, the owner's decision that the boards get a real schema. Each of
-`board_priority`, `board_size` and `board_milestone`
+`board_priority` and `board_size`
 used to parse the file it is editing **twice** inside one
 read-modify-write: once inside `check`, which took the two markdown strings
 and parsed them itself, and once more in `main` to print what the cell
@@ -80,7 +80,6 @@ Body text nothing here may touch.
 WRITERS = [
     ("tools.board_priority", ["--number", "100", "--priority", "medium"]),
     ("tools.board_size", ["--number", "100", "--size", "large"]),
-    ("tools.board_milestone", ["--number", "100", "--milestone", "Quota"]),
 ]
 
 
@@ -140,7 +139,6 @@ def _refuse(*a, **k):
 MUTATORS = {
     "tools.board_priority": "set_row_priority",
     "tools.board_size": "set_row_size",
-    "tools.board_milestone": "set_row_milestone",
 }
 
 

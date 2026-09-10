@@ -38,7 +38,9 @@ The other refusals are unchanged and each one is a way this could still hand
 him a broken board: a status outside the five `STATUS_LABELS` spellings; a
 `--dated` or `--note` that is blank or carries a `|` or a line break, either of
 which splits a cell or a row in the generated markdown view the daily backup
-renders; a `--note` with no `--dated` to stamp it with; and `change_row`'s own
+renders (`board_write.refuse_cell`, which this module held the only copy of
+until `board_milestone` became its second caller); a `--note` with no `--dated`
+to stamp it with; and `change_row`'s own
 after-check, which refuses when anything other than the named row's named keys
 moved. Closing a row deliberately blanks its rating -- `set_row_priority`
 refuses to rate a finished row, so a chip left behind could never be cleared
@@ -55,6 +57,7 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import board_records, board_store, board_write
+from agora_runner.board_write import refuse_cell
 from agora_runner.board_document import BOARDS
 from agora_runner.nova_boards import STATUS_LABELS, priority_key, status_key
 
@@ -106,25 +109,6 @@ def status_changes(status, dated=None):
     if dated is not None:
         changes["updated"] = dated
     return changes
-
-
-def refuse_cell(value, flag):
-    """Why `value` may not go in a cell, or `None` if it may.
-
-    A `|` splits the cell and a `\\r` or `\\n` splits the row, in the markdown
-    view the daily GitHub backup renders. The store would hold any of them.
-    """
-    if value is None:
-        return None
-    if not value.strip():
-        return f"{flag} may not be blank"
-    for character in "|\r\n":
-        shown = {"\r": "a carriage return", "\n": "a newline"}.get(
-            character, f"a {character!r}")
-        if character in value:
-            return (f"{flag} carries {shown}, which escapes its own cell in "
-                    "the generated board view")
-    return None
 
 
 def refuse_row(contents, number):
