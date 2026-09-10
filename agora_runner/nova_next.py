@@ -65,15 +65,15 @@ _CLOSED = _CLOSED_STATUS_KEYS
 _BLOCKED = status_key(BLOCKED_STATUS)
 
 
-def unboarded_captures(markdown, board):
+def unboarded_captures_from_contents(contents, board):
     """The bare bullets above `## Board` -- the owner talking, unfiled.
 
     These outrank every row this tool ranks. `prompt.md` step 2 puts an
     unprocessed capture above a live incident, above the board and above
     the handoff; step 1c calls them *"the strongest signal you will get
     all cycle"*. This tool nonetheless could not see them, because
-    `open_rows` asked `parse_board` for `items` and dropped the
-    `captures` key sitting beside it in the same return value.
+    the deleted `open_rows` door asked `parse_board` for `items` and
+    dropped the `captures` key sitting beside it in the same return value.
 
     That is not a theoretical gap. Cycle 241 ran this tool, took the row
     it named, and three of the owner's captures were sitting above the board
@@ -105,25 +105,15 @@ def unboarded_captures(markdown, board):
     an open row keeps it and stamps it, because that work really is open
     and the reader should be told where it already lives rather than have
     it hidden.
-    """
-    return unboarded_captures_from_contents(parse_board(markdown or ""), board)
 
-
-def unboarded_captures_from_contents(contents, board):
-    """The same answer, from `parse_board`'s return value instead of the file.
-
-    This is where the rule actually lives now; the function above is the
-    markdown-shaped door onto it, exactly as `unanswered_comment_bodies` is
-    the door onto `unanswered_comment_bodies_from_details`. Issue #203 is
-    moving every board reader onto `board_records.contents`, which returns
-    these same four keys out of CouchDB and never parses anything -- so the
-    only part of this function that was ever about markdown was the first
-    line, and it is now the caller's.
-
-    It is not a facade over the parser and `board-records.md`'s ban on one
-    still holds: nothing here can *reach* markdown, and a caller holding
-    records passes them straight in. The door above is what will be deleted
-    when the last markdown caller goes, not this.
+    Takes `parse_board`'s four keys, from wherever the caller got them.
+    There used to be an `unboarded_captures(markdown, board)` door above
+    this that read the file itself; issue #203 deleted it once the last
+    caller handing it a string was gone, so the only part of this that was
+    ever about markdown is now the caller's. It is not a facade over the
+    parser and `board-records.md`'s ban on one still holds: nothing here
+    can *reach* markdown, and a caller holding `board_records.contents`
+    passes them straight in.
     """
     captures = []
     parsed = contents
@@ -184,19 +174,15 @@ def unboarded_captures_from_contents(contents, board):
     return captures
 
 
-def open_rows(markdown, board):
-    """Open rows of one board file, each tagged with which board it is on."""
-    return open_rows_from_contents(parse_board(markdown or ""), board)
-
-
 def open_rows_from_contents(contents, board):
-    """The same answer, from `parse_board`'s return value instead of the file.
+    """Open rows of one board, each tagged with which board it is on.
 
-    Same split, and the same reason, as `unboarded_captures_from_contents`.
-    The one thing worth naming here: the old body read the file **twice**,
-    once through `parse_board` for the rows and once through
-    `unanswered_comment_bodies` for the threads, and the docstring on
-    `open_rows` promises a row and its thread can never come from two
+    Takes `parse_board`'s four keys, from wherever the caller got them --
+    same split, and the same reason, as `unboarded_captures_from_contents`.
+    The one thing worth naming here: the deleted `open_rows(markdown,
+    board)` door read the file **twice**, once through `parse_board` for
+    the rows and once through `unanswered_comment_bodies` for the threads,
+    and this function promises a row and its thread can never come from two
     different reads. Two reads of one string cannot disagree; two reads of
     one CouchDB can, because a write may land between them. Taking both
     halves out of a single `contents` is what keeps that promise true once
@@ -264,10 +250,10 @@ def _reply_slug(board, number, bodies):
 def row_slug(item):
     """The claim slug for a row or capture, derived if it is not carried.
 
-    `open_rows` and `unboarded_captures` both stamp `slug` as they build,
-    and this returns that. The fallback is for a row assembled anywhere
-    else -- the tests build them by hand, and `closed_rows_waiting` builds
-    a shape with no rating -- because a slug that is *derived* from the
+    Both readers above stamp `slug` as they build, and this returns that.
+    The fallback is for a row assembled anywhere else -- the tests build
+    them by hand, and `closed_rows_waiting` builds a shape with no rating
+    -- because a slug that is *derived* from the
     board and the number is the same slug either way, and a line printing
     no claim name at all is the one outcome that would quietly leave a row
     unclaimable.
@@ -704,8 +690,8 @@ def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
     `unboarded_captures` and `open_rows` on each file, and each of those
     parsed it again -- four parses of two files, and, once the source is a
     store rather than a string, four reads that a write can land between.
-    That is not merely wasteful here: `unboarded_captures` decides a bullet
-    is unboarded by looking at `boarded_capture_rows(items)`, so a capture
+    That is not merely wasteful here: `unboarded_captures_from_contents`
+    decides a bullet is unboarded by looking at the rows, so a capture
     list read before a row list can report a bullet as unprocessed while
     the row that boards it already exists -- printed to a waking cycle
     under *"these outrank every row below"*, which is the exact failure

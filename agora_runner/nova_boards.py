@@ -448,7 +448,7 @@ def near_miss_done_marker(bullet):
     marker, 130 of them parse, and the one that does not is Cycle 964's
     `DONE (Cycle 964) for the first half: ...` -- five words of report
     wedged between the paren and the colon. `split_capture_done` returned
-    `("", bullet)` for it, so `unboarded_captures` kept it, and
+    `("", bullet)` for it, so `unboarded_captures_from_contents` kept it, and
     `top_board_rows` printed a finished item at the very top of the
     ranking under *"these outrank every row below. Take one"* for a day.
     That is issue #88's failure exactly: a section that is partly noise

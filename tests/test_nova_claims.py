@@ -791,9 +791,9 @@ def test_two_different_captures_do_not_share_a_slug():
 
 
 def test_a_capture_slug_is_a_legal_claim_slug_for_an_empty_bullet_too():
-    # `unboarded_captures` filters the trailing empty bullet out, but the
-    # function must not be the thing that decides that -- an unclaimable
-    # slug would raise inside `take` rather than refuse.
+    # `unboarded_captures_from_contents` filters the trailing empty bullet
+    # out, but the slug function must not be the thing that decides that --
+    # an unclaimable slug would raise inside `take` rather than refuse.
     for text in ("", "   ", "a", "\u00e5 \u00f8 \u00e6 emoji \U0001f534", "x" * 4000):
         assert SLUG_RE.match(slug_for_capture(text)), repr(text[:20])
 

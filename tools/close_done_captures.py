@@ -48,8 +48,8 @@ from once a row is gone.
 
 **The invariant that makes it safe is that the slug does not move.**
 `slug_for_capture` is hashed off the bullet with the DONE marker and the
-rating already stripped (`top_board_rows.unboarded_captures`), so
-marking a bullet cannot change its own identity. That is what makes this
+rating already stripped (`top_board_rows.unboarded_captures_from_contents`),
+so marking a bullet cannot change its own identity. That is what makes this
 idempotent, and it is asserted per bullet before the write is attempted
 rather than trusted from the docstring.
 

@@ -22,10 +22,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from agora_runner import nova_next
 from agora_runner.nova_next import (
     next_payload, next_payload_from_contents,
-    open_rows, open_rows_from_contents,
-    unboarded_captures, unboarded_captures_from_contents,
+    open_rows_from_contents, unboarded_captures_from_contents,
 )
 
 
@@ -60,7 +60,7 @@ def test_waiting_is_read_out_of_the_details_the_caller_handed_in():
     """The half that would silently vanish if `details` were dropped.
 
     A row is `waiting` because of text in `details`, which lives nowhere in
-    `items`. Reading it from the same dict is what keeps `open_rows`'
+    `items`. Reading it from the same dict is what keeps `open_rows_from_contents`'
     promise that a row and its thread cannot come from two different reads
     -- true for free on one string, and something a records reader has to
     actually do, since two queries against a live store can straddle a
@@ -127,20 +127,27 @@ def test_a_capture_already_closed_as_a_row_drops_out():
     assert got == []
 
 
-@pytest.mark.parametrize("markdown_door,contents_door", [
-    (open_rows, open_rows_from_contents),
-    (unboarded_captures, unboarded_captures_from_contents),
+@pytest.mark.parametrize("door,reader", [
+    ("open_rows", "open_rows_from_contents"),
+    ("unboarded_captures", "unboarded_captures_from_contents"),
 ])
-def test_the_markdown_door_is_only_a_door(markdown_door, contents_door):
-    """The file-shaped function is the parse and nothing else.
+def test_the_markdown_door_is_gone_and_the_reader_is_not(door, reader):
+    """The file-shaped function is deleted, not deprecated.
 
-    Pinned rather than assumed: the whole value of the split is that the
-    rule stopped being duplicated, so a fix applied to one shape and not
-    the other is the failure to catch. `parse_board` on an empty string is
-    the contents of an empty board, and both must answer it the same way.
+    It used to be the parse and nothing else, and this test used to pin
+    the two answers equal. Issue #203 deleted it once the last source
+    caller was gone: while a `<name>(markdown, board)` exists, a module
+    being migrated can reach a board by importing it, and the switchover's
+    whole claim is that after conversion there is one way in. A door
+    nothing calls today is the one a future caller finds.
+
+    The second assertion is not decoration. `hasattr` on a name nobody
+    defines is `False` for a module that never had it, for a typo, and for
+    a module that failed to import the way this test expects -- so the
+    absence only means anything beside a name that must be present.
     """
-    from agora_runner.nova_boards import parse_board
-    assert markdown_door("", "issue") == contents_door(parse_board(""), "issue")
+    assert not hasattr(nova_next, door)
+    assert callable(getattr(nova_next, reader))
 
 
 # --- `next_payload`, the composition on top of the two readers -------------
@@ -189,9 +196,9 @@ def test_the_payload_never_reaches_a_parser(monkeypatch):
 def test_a_bullet_its_own_board_already_carries_is_not_offered_as_new():
     """The captures and the rows of one board are a single read.
 
-    The old body called `unboarded_captures` and `open_rows` on the same
+    The old body called the two deleted markdown doors on the same
     file, each parsing it again -- harmless on a string, two reads a write
-    can land between once the source is CouchDB. `unboarded_captures`
+    can land between once the source is CouchDB. `unboarded_captures_from_contents`
     decides a bullet is unprocessed by looking at the *rows*, so a capture
     list read before a row list reports a bullet whose row already exists,
     and a waking cycle is handed it above the whole board as work nobody

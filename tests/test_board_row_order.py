@@ -117,7 +117,8 @@ def _ranked(markdown):
     # the milestone tier, and it is what separates one group's seats from
     # another's. Ranking flat here would be testing a call shape nothing
     # makes on board rows, and the seats would interleave across groups.
-    rows = nova_next.open_rows(markdown, "idea")
+    rows = nova_next.open_rows_from_contents(
+        parse_board(markdown), "idea")
     return [row["number"] for row in nova_next.rank(
         rows, None, nova_next.milestone_ranks(rows))]
 

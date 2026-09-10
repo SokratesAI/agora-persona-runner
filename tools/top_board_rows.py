@@ -28,7 +28,7 @@ Above the ranking sit the owner's **unprocessed captures** -- the bare
 bullets he types above `## Board`, which `prompt.md` step 2 places above
 the board, above the handoff and above everything else. They are printed
 first and unranked, because a capture has no rating cell to sort on and
-because there are never many; see `unboarded_captures`.
+because there are never many; see `unboarded_captures_from_contents`.
 
 Ranking is rating first (Immediately > High > Medium > Low > unrated),
 then oldest `Updated` first, then issues before ideas, then row number.
@@ -99,9 +99,9 @@ from agora_runner import board_records, board_store
 # be able to import it and could not: `tools/` is not in the image. Same
 # functions, one definition -- see `nova_next`'s docstring.
 from agora_runner.nova_next import (
-    _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims, open_rows,
+    _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims,
     low_satisfaction, load_diagnoses, milestone_ranks, open_rows_from_contents,
-    project_ranks, rank, reserve_maintenance, row_slug, unboarded_captures,
+    project_ranks, rank, reserve_maintenance, row_slug,
     unboarded_captures_from_contents,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
@@ -376,7 +376,8 @@ def _reply_claim(row):
     failure the hash is there to prevent.
 
     Printing nothing is therefore the honest answer, and the guarantee is
-    kept where it can be: `open_rows` and `closed_rows_waiting` stamp
+    kept where it can be: `open_rows_from_contents` and
+    `closed_rows_waiting_from_contents` stamp
     `replySlug` on every waiting row they build, which is pinned by a
     test. Only a row built by hand reaches this fallback.
     """
@@ -392,7 +393,8 @@ def closed_rows_waiting_from_contents(contents, board):
     already hands back exactly the four keys `parse_board` does, so the reader
     above this line is a door onto a function that never sees a file.
 
-    The double read this closes is the same one `open_rows` had, and it is
+    The double read this closes is the same one the deleted `open_rows`
+    door had, and it is
     worse here. The old body called `unanswered_comment_bodies` on the file
     and then `parse_board` on it again -- two reads of one string, which
     cannot disagree, but two `_all_docs` queries against a live CouchDB,
@@ -560,8 +562,8 @@ def _capture_line(capture):
     # reason to read the line differently rather than a property of the item:
     # somebody already worked this and their DONE marker did not parse, so
     # the bullet is sitting in a section that says "take one" by accident.
-    # Not filtered out here -- see `unboarded_captures` for why the reader
-    # gets told instead.
+    # Not filtered out here -- see `unboarded_captures_from_contents` for
+    # why the reader gets told instead.
     held += ("⚠ MARKER DID NOT PARSE — a cycle closed this and wrote "
              "`DONE (Cycle N)` with prose before the colon; check the bullet "
              "still holds his words, then fix the marker  "

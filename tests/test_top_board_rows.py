@@ -51,6 +51,34 @@ def _no_live_diagnoses_read(monkeypatch):
     monkeypatch.setattr(top_board_rows, "fetch_diagnoses", lambda: ("", True))
 
 
+def _open_rows(markdown, board):
+    """The rows of one board, from markdown, for the tests written that way.
+
+    `nova_next.open_rows(markdown, board)` used to be this — a door that
+    parsed the file and handed the result to `open_rows_from_contents`.
+    Issue #203 deleted the door once the last source caller was gone, so
+    that a module cannot quietly grow a second way to reach a board. The
+    79 tests below are about the *ranking* rule rather than about where
+    the bytes came from, and their fixtures are board markdown, so the
+    parse moves here rather than each of them being rewritten.
+
+    Deliberately not routed through `_store`: that composes the markdown
+    into records and is what the tests of `main` need, because `main`
+    reads the store. These do not — `open_rows_from_contents` takes the
+    same four keys from either source — and pushing 79 assertions through
+    a migration would change what they check in the same commit that
+    moves them.
+    """
+    return top_board_rows.open_rows_from_contents(
+        nova_boards.parse_board(markdown or ""), board)
+
+
+def _captures(markdown, board):
+    """The unboarded captures of one board, from markdown. See `_open_rows`."""
+    return top_board_rows.unboarded_captures_from_contents(
+        nova_boards.parse_board(markdown or ""), board)
+
+
 def _store(issues=None, ideas=None):
     """A record store holding one or both boards, built from board markdown.
 
@@ -120,8 +148,8 @@ OUTDATED = STATUS_LABELS["outdated"]
 def test_immediately_outranks_high_across_both_boards():
     issues = board((10, "a high issue", BACKLOG, "2026-08-01", HIGH))
     ideas = board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE))
-    rows = (top_board_rows.open_rows(issues, "issue")
-            + top_board_rows.open_rows(ideas, "idea"))
+    rows = (_open_rows(issues, "issue")
+            + _open_rows(ideas, "idea"))
     top = top_board_rows.rank(rows)[0]
     assert (top["board"], top["number"]) == ("idea", 64)
 
@@ -129,7 +157,7 @@ def test_immediately_outranks_high_across_both_boards():
 def test_older_row_wins_at_equal_rating():
     text = board((4, "old and high", BACKLOG, "2026-08-04", HIGH),
                  (88, "new and high", IN_PROGRESS, "2026-08-15", HIGH))
-    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    ranked = top_board_rows.rank(_open_rows(text, "issue"))
     assert [r["number"] for r in ranked] == [4, 88]
 
 
@@ -137,21 +165,21 @@ def test_a_full_date_sorts_against_the_short_form_the_boards_use():
     """Live rows write `08-04`; a hand-typed `2026-08-04` must not sink."""
     text = board((4, "old, written long", BACKLOG, "2026-08-04", HIGH),
                  (88, "new, written short", IN_PROGRESS, "08-15", HIGH))
-    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    ranked = top_board_rows.rank(_open_rows(text, "issue"))
     assert [r["number"] for r in ranked] == [4, 88]
 
 
 def test_a_row_with_no_usable_date_sorts_last_in_its_rating():
     text = board((1, "no date", BACKLOG, "", HIGH),
                  (2, "dated", BACKLOG, "08-14", HIGH))
-    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    ranked = top_board_rows.rank(_open_rows(text, "issue"))
     assert [r["number"] for r in ranked] == [2, 1]
 
 
 def test_unrated_sorts_below_low_rather_than_above_everything():
     text = board((1, "unrated", BACKLOG, "2026-08-01", ""),
                  (2, "rated low", BACKLOG, "2026-08-14", LOW))
-    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    ranked = top_board_rows.rank(_open_rows(text, "issue"))
     assert [r["number"] for r in ranked] == [2, 1]
 
 
@@ -160,20 +188,20 @@ def test_closed_rows_are_not_candidates(status):
     """Cycle 219's complaint was about an open 🔴; a shipped one must not pull."""
     text = board((5, "shipped", status, "2026-08-10", IMMEDIATE),
                  (6, "still open", BACKLOG, "2026-08-10", LOW))
-    rows = top_board_rows.open_rows(text, "issue")
+    rows = _open_rows(text, "issue")
     assert [r["number"] for r in rows] == [6]
 
 
 def test_done_table_rows_are_not_candidates():
     text = board((6, "still open", BACKLOG, "2026-08-10", LOW),
                  done=[(64, "already built", "2026-08-15", "runner#209")])
-    rows = top_board_rows.open_rows(text, "issue")
+    rows = _open_rows(text, "issue")
     assert [r["number"] for r in rows] == [6]
 
 
 def test_render_names_the_row_and_asks_for_a_reason():
     text = board((64, "comment threads", BACKLOG, "2026-08-12", IMMEDIATE))
-    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"))
+    out = top_board_rows.render(_open_rows(text, "idea"))
     assert "idea #64" in out
     assert IMMEDIATE in out
     assert "why you did not" in out
@@ -228,7 +256,7 @@ def test_a_real_board_body_still_reads_as_success(monkeypatch):
     monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
     text = top_board_rows._fetch("some/path.md")
     assert text is not None
-    assert [r["number"] for r in top_board_rows.open_rows(text, "issue")] == [1]
+    assert [r["number"] for r in _open_rows(text, "issue")] == [1]
 
 
 class _RaisingStore:
@@ -318,8 +346,8 @@ def test_an_unanswered_comment_outranks_an_immediate_rating():
     issues = board((10, "waiting", BACKLOG, "2026-08-01", LOW)) + details(
         (10, "waiting", "Problem.\n\n**Edvard, 08-15:** what about this?"))
     ideas = board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE))
-    rows = (top_board_rows.open_rows(issues, "issue")
-            + top_board_rows.open_rows(ideas, "idea"))
+    rows = (_open_rows(issues, "issue")
+            + _open_rows(ideas, "idea"))
     top = top_board_rows.rank(rows)[0]
     assert (top["board"], top["number"]) == ("issue", 10)
     assert top["waiting"] is True
@@ -329,7 +357,7 @@ def test_a_thread_i_already_answered_is_not_waiting():
     text = board((7, "answered", BACKLOG, "2026-08-01", HIGH)) + details(
         (7, "answered", "Problem.\n\n**Edvard, 08-14:** first?\n\n"
                         "**Nova, 08-14 (Cycle 200):** answered."))
-    assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
+    assert _open_rows(text, "issue")[0]["waiting"] is False
 
 
 def test_he_gets_the_last_word_after_my_reply_and_is_waiting_again():
@@ -337,14 +365,14 @@ def test_he_gets_the_last_word_after_my_reply_and_is_waiting_again():
     text = board((11, "reopened", BACKLOG, "2026-08-01", LOW)) + details(
         (11, "reopened", "Problem.\n\n**Edvard, 08-13:** one\n\n"
                          "**Nova, 08-13 (Cycle 1):** two\n\n**Edvard, 08-15:** three"))
-    assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is True
+    assert _open_rows(text, "issue")[0]["waiting"] is True
 
 
 def test_my_own_status_notes_never_make_a_row_look_waiting():
     """Every closed row carries one of these; none of them is a question."""
     text = board((9, "noted", BACKLOG, "2026-08-01", HIGH)) + details(
         (9, "noted", "Problem.\n\n**Nova, 08-15 (Cycle 220):** status note."))
-    assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
+    assert _open_rows(text, "issue")[0]["waiting"] is False
 
 
 def test_every_waiting_row_is_listed_even_below_the_runners_up_window():
@@ -378,7 +406,7 @@ def test_two_questions_answered_by_one_reply_is_not_waiting():
     text = board((12, "twice", BACKLOG, "2026-08-01", LOW)) + details(
         (12, "twice", "**Edvard, 08-13:** one\n\n**Edvard, 08-13:** two\n\n"
                       "**Nova, 08-13 (Cycle 1):** both answered"))
-    assert top_board_rows.open_rows(text, "issue")[0]["waiting"] is False
+    assert _open_rows(text, "issue")[0]["waiting"] is False
 
 
 # --- The owner's unboarded captures, which this tool could not see at all ---
@@ -397,14 +425,14 @@ def with_captures(text, *bullets):
 def test_a_bare_capture_is_read_off_the_board_file():
     text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
                          "the thing I typed on my phone")
-    got = top_board_rows.unboarded_captures(text, "issue")
+    got = _captures(text, "issue")
     assert [c["text"] for c in got] == ["the thing I typed on my phone"]
     assert got[0]["board"] == "issue"
 
 
 def test_a_rating_on_a_capture_is_read_off_the_front_of_the_bullet():
     text = with_captures(board(), f"{IMMEDIATE}{CAPTURE_PRIORITY_SEP}this one is on fire")
-    got = top_board_rows.unboarded_captures(text, "idea")
+    got = _captures(text, "idea")
     assert got[0]["priority"] == IMMEDIATE
     assert got[0]["text"] == "this one is on fire"
 
@@ -415,7 +443,7 @@ def test_a_capture_a_cycle_already_closed_is_not_unprocessed():
     text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
                          "DONE (Cycle 247): shipped in runner#228 — the old ask",
                          "the thing I typed on my phone")
-    got = top_board_rows.unboarded_captures(text, "issue")
+    got = _captures(text, "issue")
     assert [c["text"] for c in got] == ["the thing I typed on my phone"]
 
 
@@ -438,7 +466,7 @@ def test_a_rating_survives_being_written_behind_a_done_marker():
 
 def test_the_word_done_inside_his_sentence_is_prose_not_a_marker():
     text = with_captures(board(), "I am DONE (Cycle whatever) with this page")
-    got = top_board_rows.unboarded_captures(text, "issue")
+    got = _captures(text, "issue")
     assert [c["text"] for c in got] == ["I am DONE (Cycle whatever) with this page"]
 
 
@@ -447,8 +475,8 @@ def test_a_capture_on_an_open_row_says_which_row_carries_it():
     text = with_captures(board((64, "move something to server2", BACKLOG,
                                 "09-05", IMMEDIATE)),
                          "move something to server2")
-    caps = top_board_rows.unboarded_captures(text, "idea")
-    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"),
+    caps = _captures(text, "idea")
+    out = top_board_rows.render(_open_rows(text, "idea"),
                                 captures=caps)
     assert "already boarded as #64" in out
     assert "cut this bullet" in out
@@ -457,23 +485,23 @@ def test_a_capture_on_an_open_row_says_which_row_carries_it():
 def test_a_capture_that_matches_no_row_gets_no_boarding_note():
     text = with_captures(board((64, "some other row", BACKLOG, "09-05", IMMEDIATE)),
                          "please look at the login page")
-    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"),
-                                captures=top_board_rows.unboarded_captures(text, "idea"))
+    out = top_board_rows.render(_open_rows(text, "idea"),
+                                captures=_captures(text, "idea"))
     assert "please look at the login page" in out
     assert "already boarded" not in out
 
 
 def test_his_empty_cursor_bullet_is_not_a_capture():
     text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)))
-    assert top_board_rows.unboarded_captures(text, "issue") == []
+    assert _captures(text, "issue") == []
 
 
 def test_a_capture_is_printed_above_the_top_row_and_takes_the_contract():
     """The 'take this' sentence has to move, or the row still wins by default."""
     text = with_captures(board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE)),
                          "please look at the login page")
-    out = top_board_rows.render(top_board_rows.open_rows(text, "idea"),
-                                captures=top_board_rows.unboarded_captures(text, "idea"))
+    out = top_board_rows.render(_open_rows(text, "idea"),
+                                captures=_captures(text, "idea"))
     assert out.index("please look at the login page") < out.index("idea #64")
     assert "these outrank every row below" in out
     # The row is still shown -- printing the capture must not throw the board away.
@@ -492,8 +520,8 @@ def test_the_contract_sentence_moves_onto_the_captures_and_only_then():
     """
     text = with_captures(board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE)),
                          "something I typed")
-    rows = top_board_rows.open_rows(text, "idea")
-    caps = top_board_rows.unboarded_captures(text, "idea")
+    rows = _open_rows(text, "idea")
+    caps = _captures(text, "idea")
     without = top_board_rows.render(rows, captures=[])
     assert "why you did not" in without
     assert "UNPROCESSED CAPTURES" not in without
@@ -505,7 +533,7 @@ def test_the_contract_sentence_moves_onto_the_captures_and_only_then():
 def test_a_capture_is_still_shown_when_neither_board_has_an_open_row():
     """The one case where a capture is the only thing there is to report."""
     text = with_captures(board(), "the only thing waiting on me")
-    out = top_board_rows.render([], captures=top_board_rows.unboarded_captures(text, "issue"))
+    out = top_board_rows.render([], captures=_captures(text, "issue"))
     assert "the only thing waiting on me" in out
     assert "no open rows" in out
 
@@ -623,12 +651,12 @@ def test_a_nova_note_moves_the_row_it_was_written_on_down_the_ranking():
         (11, "genuinely untouched", IN_PROGRESS, "08-17", HIGH),
     ) + "\n# Details\n\n## 10 — worked this morning\n\nHis statement of it.\n"
 
-    stale = top_board_rows.rank(top_board_rows.open_rows(issues, "issue"))
+    stale = top_board_rows.rank(_open_rows(issues, "issue"))
     assert [r["number"] for r in stale] == [10, 11]
 
     fresh_md = append_detail_note(issues, 10, "Shipped the first half.", "08-20",
                                   cycle=273)
-    fresh = top_board_rows.rank(top_board_rows.open_rows(fresh_md, "issue"))
+    fresh = top_board_rows.rank(_open_rows(fresh_md, "issue"))
     assert [r["number"] for r in fresh] == [11, 10]
     assert fresh[1]["updated"] == "08-20"
     # And the note did not do it by marking the row as waiting on a reply.
@@ -646,14 +674,14 @@ def test_a_blocked_row_sinks_below_a_lower_rated_actionable_one():
     """
     text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
                  (99, "a low one I can actually take", BACKLOG, "08-20", LOW))
-    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    ranked = top_board_rows.rank(_open_rows(text, "issue"))
     assert [r["number"] for r in ranked] == [99, 94]
 
 
 def test_a_blocked_row_is_still_open_and_keeps_its_rating():
     """Ranked down, never closed — the row comes back the moment he acts."""
     text = board((94, "needs his click", BLOCKED, "08-16", HIGH))
-    rows = top_board_rows.open_rows(text, "issue")
+    rows = _open_rows(text, "issue")
     assert [(r["number"], r["priority"]) for r in rows] == [(94, HIGH)]
 
 
@@ -670,7 +698,7 @@ def test_an_unanswered_comment_still_beats_blocked():
                   (95, "ordinary", BACKLOG, "08-01", HIGH))
             + "\n# Details\n\n### #94 — needs his click\n\n"
               "**Edvard, 08-21:** done, I clicked it.\n")
-    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    ranked = top_board_rows.rank(_open_rows(text, "issue"))
     assert [r["number"] for r in ranked] == [94, 95]
 
 
@@ -691,7 +719,7 @@ def _first_ranked_line(out):
 def test_render_names_the_blocked_rows_rather_than_hiding_them():
     text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
                  (99, "actionable", BACKLOG, "08-20", LOW))
-    out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
+    out = top_board_rows.render(_open_rows(text, "issue"))
     assert "issue #99" in _first_ranked_line(out)[1]
     assert "blocked on Edvard" in out
     # The row itself, in full, on its own line -- not a bare number folded
@@ -716,7 +744,7 @@ def test_the_nothing_to_build_line_cannot_be_read_as_a_verdict_on_the_ranking():
     """
     text = board((94, "needs his click", BLOCKED, "08-16", HIGH),
                  (7, "a real build", BACKLOG, "08-20", HIGH))
-    out = top_board_rows.render(top_board_rows.open_rows(text, "issue"))
+    out = top_board_rows.render(_open_rows(text, "issue"))
     assert "on these" not in out, "the dangling pronoun is what misread"
     # The claim is scoped to the rows printed under it...
     verdict = next(line for line in out.splitlines()
@@ -751,7 +779,7 @@ def test_a_comment_on_a_done_row_is_not_lost_with_the_row():
                                "**Edvard, 08-22:** this Done looks premature?"))
     # Against a literal, not against another call to `open_rows` -- a
     # mutation moves both sides of that equally (rubric item 13).
-    assert [r["number"] for r in top_board_rows.open_rows(text, "idea")] == [10]
+    assert [r["number"] for r in _open_rows(text, "idea")] == [10]
     got = top_board_rows.closed_rows_waiting_from_contents(
         nova_boards.parse_board(text), "idea")
     assert [(r["board"], r["number"]) for r in got] == [("idea", 63)]
@@ -829,7 +857,7 @@ def test_a_done_marker_may_name_where_the_work_landed():
     text = with_captures(board((10, "a row", BACKLOG, "08-01", HIGH)),
                          "DONE (Cycle 337, platform-config#516): the old ask",
                          "the thing I typed on my phone")
-    got = top_board_rows.unboarded_captures(text, "issue")
+    got = _captures(text, "issue")
     assert [c["text"] for c in got] == ["the thing I typed on my phone"]
 
 
@@ -1033,7 +1061,7 @@ def test_a_waiting_row_always_carries_a_reply_slug():
     row built by hand and would be silent data loss if a real waiting row
     could reach it. This is where that cannot happen.
     """
-    row = top_board_rows.open_rows(_waiting_board(), "issue")[0]
+    row = _open_rows(_waiting_board(), "issue")[0]
     assert row["waiting"] is True
     assert row["replySlug"].startswith("reply-issue-7-")
 
@@ -1041,7 +1069,7 @@ def test_a_waiting_row_always_carries_a_reply_slug():
 def test_an_unwaiting_row_has_no_reply_slug_to_claim():
     text = board((7, "a row", BACKLOG, "2026-08-01", HIGH)) + details(
         (7, "a row", "Problem.\n\n**Nova, 08-23 (Cycle 1):** answered"))
-    assert top_board_rows.open_rows(text, "issue")[0]["replySlug"] is None
+    assert _open_rows(text, "issue")[0]["replySlug"] is None
 
 
 def test_the_reply_slug_is_not_the_row_slug():
@@ -1050,7 +1078,7 @@ def test_the_reply_slug_is_not_the_row_slug():
     `prompt.md`: reply "even if you do not take it as this cycle's work".
     One slug for both would make those the same act.
     """
-    row = top_board_rows.open_rows(_waiting_board(), "issue")[0]
+    row = _open_rows(_waiting_board(), "issue")[0]
     assert row["replySlug"] != row["slug"] == "issue-7"
 
 
@@ -1060,8 +1088,8 @@ def test_a_second_comment_on_the_same_row_is_a_different_claim():
     So a reply slug derived from the row alone would make the second
     question the owner ever asks on a row permanently unclaimable.
     """
-    first = top_board_rows.open_rows(_waiting_board(), "issue")[0]["replySlug"]
-    second = top_board_rows.open_rows(
+    first = _open_rows(_waiting_board(), "issue")[0]["replySlug"]
+    second = _open_rows(
         _waiting_board("**Edvard, 08-23:** and one more thing"), "issue")[0]["replySlug"]
     assert first != second
 
@@ -1069,7 +1097,7 @@ def test_a_second_comment_on_the_same_row_is_a_different_claim():
 def test_a_held_reply_stops_the_row_jumping_the_queue():
     """The raise exists to get him answered. Once somebody is answering, it
     is only pointing the next cycle at a duplicate."""
-    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    rows = _open_rows(_waiting_board(), "issue")
     rows.append({"board": "issue", "number": 3, "title": "immediate", "status": BACKLOG,
                  "updated": "2026-08-02", "priority": IMMEDIATE,
                  "priorityKey": "immediate", "statusKey": "backlog", "waiting": False})
@@ -1080,14 +1108,14 @@ def test_a_held_reply_stops_the_row_jumping_the_queue():
 
 
 def test_my_own_reply_claim_is_not_somebody_elses():
-    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    rows = _open_rows(_waiting_board(), "issue")
     top_board_rows.apply_claims(rows, {rows[0]["replySlug"]: 344}, my_cycle=344)
     assert rows[0]["replyHeldBy"] is None
 
 
 def test_render_prints_the_reply_slug_next_to_the_row_slug():
     rows = top_board_rows.apply_claims(
-        top_board_rows.open_rows(_waiting_board(), "issue"), {})
+        _open_rows(_waiting_board(), "issue"), {})
     out = top_board_rows.render(rows)
     assert "💬 UNANSWERED" in out
     assert f"[claim: issue-7]  [reply-claim: {rows[0]['replySlug']}]" in out
@@ -1097,7 +1125,7 @@ def test_render_prints_the_reply_slug_next_to_the_row_slug():
 def test_a_held_reply_is_marked_and_dropped_from_the_go_and_reply_list():
     """The mark stays on the ranked line; the instruction to go and type a
     reply does not, because that is the line that produces the second one."""
-    rows = top_board_rows.open_rows(_waiting_board(), "issue")
+    rows = _open_rows(_waiting_board(), "issue")
     top_board_rows.apply_claims(rows, {rows[0]["replySlug"]: 99}, my_cycle=344)
     out = top_board_rows.render(rows)
     assert "🔒 REPLY HELD by cycle 99" in out
@@ -1167,7 +1195,7 @@ def _spent(item, cycle, outcome):
 
 
 def test_a_spent_slug_prints_the_outcome_instead_of_a_take_command():
-    rows = top_board_rows.open_rows(
+    rows = _open_rows(
         board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
     top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "built the last piece"}})
     line = top_board_rows._line(rows[0])
@@ -1177,14 +1205,14 @@ def test_a_spent_slug_prints_the_outcome_instead_of_a_take_command():
 
 
 def test_an_unspent_slug_still_prints_the_take_command():
-    rows = top_board_rows.open_rows(
+    rows = _open_rows(
         board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
     top_board_rows.apply_finished(rows, {})
     assert "[claim: idea-63]" in top_board_rows._line(rows[0])
 
 
 def test_a_spent_claim_with_no_outcome_says_so_rather_than_printing_nothing():
-    rows = top_board_rows.open_rows(
+    rows = _open_rows(
         board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
     top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": None}})
     assert "no outcome recorded" in top_board_rows._line(rows[0])
@@ -1197,9 +1225,9 @@ def test_a_spent_claim_does_not_move_the_row_down_the_ranking():
     on this one, and `prompt.md` still ranks a 🔴 above everything -- so
     hiding it would be the tool making the judgement the reader has to.
     """
-    rows = (top_board_rows.open_rows(
+    rows = (_open_rows(
                 board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
-            + top_board_rows.open_rows(
+            + _open_rows(
                 board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)), "idea"))
     top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "part of it"}})
     assert top_board_rows.rank(rows)[0]["number"] == 63
@@ -1267,7 +1295,7 @@ def test_a_progressed_slug_keeps_its_take_command_and_gains_the_note():
     Printing ⛔ here would be the same bug in reverse -- a row a cycle can
     take, read as one it cannot.
     """
-    rows = top_board_rows.open_rows(
+    rows = _open_rows(
         board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
     top_board_rows.apply_progress(
         rows, {"idea-63": {"cycle": 347, "outcome": "three of four pieces built"}})
@@ -1285,7 +1313,7 @@ def test_a_spent_slug_wins_over_a_progressed_one_on_the_same_row():
     from a caller that stamps stale data, and printing a take command for
     a slug `take` refuses is the failure runner#312 already fixed once.
     """
-    rows = top_board_rows.open_rows(
+    rows = _open_rows(
         board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
     top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "done"}})
     top_board_rows.apply_progress(rows, {"idea-63": {"cycle": 340, "outcome": "half"}})
@@ -1295,7 +1323,7 @@ def test_a_spent_slug_wins_over_a_progressed_one_on_the_same_row():
 
 
 def test_a_progressed_outcome_cannot_split_the_row_either():
-    rows = top_board_rows.open_rows(
+    rows = _open_rows(
         board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
     top_board_rows.apply_progress(
         rows, {"idea-63": {"cycle": 347, "outcome": "did this\nand\tthat"}})
@@ -1328,7 +1356,7 @@ def test_main_marks_a_progressed_capture_from_the_ledger_it_reads(tmp_path, caps
 def test_a_multi_line_outcome_cannot_split_the_row_it_is_printed_on():
     """`release --outcome` is free shell text and this output is one item
     per line: a newline in there would read as a second board entry."""
-    rows = top_board_rows.open_rows(
+    rows = _open_rows(
         board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
     top_board_rows.apply_finished(
         rows, {"idea-63": {"cycle": 347, "outcome": "built it\nand broke\tthe line"}})
@@ -1466,8 +1494,8 @@ def test_a_relayed_comment_does_not_jump_the_queue():
     relayed = board((10, "relayed", BACKLOG, "2026-08-01", LOW)) + details(
         (10, "relayed", f"Problem.\n\n**Edvard, 08-29:** {RELAY}do the thing."))
     other = board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE))
-    rows = (top_board_rows.open_rows(relayed, "issue")
-            + top_board_rows.open_rows(other, "idea"))
+    rows = (_open_rows(relayed, "issue")
+            + _open_rows(other, "idea"))
     top = top_board_rows.rank(rows)[0]
     assert (top["board"], top["number"]) == ("idea", 64)
 
@@ -1478,7 +1506,7 @@ def test_a_typed_comment_still_outranks_a_relayed_one():
                  (11, "typed", BACKLOG, "2026-08-02", LOW)) + details(
         (10, "relayed", f"P.\n\n**Edvard, 08-29:** {RELAY}do the thing."),
         (11, "typed", "P.\n\n**Edvard, 08-29:** what about this?"))
-    ranked = top_board_rows.rank(top_board_rows.open_rows(text, "issue"))
+    ranked = top_board_rows.rank(_open_rows(text, "issue"))
     assert [r["number"] for r in ranked] == [11, 10]
 
 
@@ -1486,7 +1514,7 @@ def test_a_relayed_comment_is_still_owed_a_reply():
     """It sinks in the ranking; it does not stop being an unanswered question."""
     text = board((10, "relayed", BACKLOG, "2026-08-01", LOW)) + details(
         (10, "relayed", f"P.\n\n**Edvard, 08-29:** {RELAY}do the thing."))
-    rows = top_board_rows.open_rows(text, "issue")
+    rows = _open_rows(text, "issue")
     assert rows[0]["waiting"] is True
     assert rows[0]["relayed"] is True
     out = top_board_rows.render(rows)
@@ -1507,7 +1535,7 @@ def test_the_newest_note_decides_even_when_an_older_one_was_relayed():
         (10, "mixed", f"P.\n\n**Edvard, 08-28:** {RELAY}first.\n\n"
                       "**Nova, 08-28 (Cycle 600):** done.\n\n"
                       "**Edvard, 08-29:** and now this?"))
-    row = top_board_rows.open_rows(older_relayed, "issue")[0]
+    row = _open_rows(older_relayed, "issue")[0]
     assert row["waiting"] is True
     assert row["relayed"] is False
 
@@ -1515,7 +1543,7 @@ def test_the_newest_note_decides_even_when_an_older_one_was_relayed():
         (10, "mixed", "P.\n\n**Edvard, 08-28:** first?\n\n"
                       "**Nova, 08-28 (Cycle 600):** done.\n\n"
                       f"**Edvard, 08-29:** {RELAY}and now this."))
-    row = top_board_rows.open_rows(newest_relayed, "issue")[0]
+    row = _open_rows(newest_relayed, "issue")[0]
     assert row["waiting"] is True
     assert row["relayed"] is True
 
@@ -1532,14 +1560,14 @@ def test_a_relayed_comment_on_a_closed_row_is_marked_in_the_reply_list():
         nova_boards.parse_board(text), "issue")
     assert [c["number"] for c in closed] == [7]
     assert closed[0]["relayed"] is True
-    out = top_board_rows.render(top_board_rows.open_rows(text, "issue"),
+    out = top_board_rows.render(_open_rows(text, "issue"),
                                 closed_waiting=closed)
     assert "issue #7 (✅ Done) (relayed)" in out
 
 
 def test_a_relayed_capture_is_marked_and_sinks_within_the_section():
     text = with_captures(board(), f"{RELAY}the relayed one", "the one he typed")
-    captures = top_board_rows.unboarded_captures(text, "issue")
+    captures = _captures(text, "issue")
     assert [c["relayed"] for c in captures] == [True, False]
     out = top_board_rows.render([], captures=captures)
     assert "UNPROCESSED CAPTURES FROM EDVARD (2, 1 of them relayed by Sokrates)" in out
@@ -1559,8 +1587,8 @@ def test_a_silent_relay_keeps_his_priority_and_that_is_the_open_hole():
     text = board((10, "silent relay", BACKLOG, "2026-08-01", LOW)) + details(
         (10, "silent relay", "P.\n\n**Edvard, 08-29:** do the thing."))
     other = board((64, "on fire", BACKLOG, "2026-08-12", IMMEDIATE))
-    rows = (top_board_rows.open_rows(text, "issue")
-            + top_board_rows.open_rows(other, "idea"))
+    rows = (_open_rows(text, "issue")
+            + _open_rows(other, "idea"))
     top = top_board_rows.rank(rows)[0]
     assert (top["board"], top["number"]) == ("issue", 10)
     assert top["relayed"] is False
@@ -1568,7 +1596,7 @@ def test_a_silent_relay_keeps_his_priority_and_that_is_the_open_hole():
 
 def test_a_capture_he_typed_himself_carries_no_relay_note():
     text = with_captures(board(), "just me typing")
-    captures = top_board_rows.unboarded_captures(text, "issue")
+    captures = _captures(text, "issue")
     assert captures[0]["relayed"] is False
     out = top_board_rows.render([], captures=captures)
     assert "UNPROCESSED CAPTURES FROM EDVARD (1) —" in out
@@ -1596,13 +1624,13 @@ def test_a_near_miss_done_marker_is_still_an_unprocessed_capture():
     the whole value of the mark rests on the bullet still being here.
     """
     text = with_captures(board(), NEAR_MISS)
-    got = top_board_rows.unboarded_captures(text, "issue")
+    got = _captures(text, "issue")
     assert [c["text"] for c in got] == [NEAR_MISS]
 
 
 def test_a_near_miss_done_marker_is_stamped_and_a_real_one_is_not():
     text = with_captures(board(), NEAR_MISS, "the thing I typed on my phone")
-    got = top_board_rows.unboarded_captures(text, "issue")
+    got = _captures(text, "issue")
     assert [c["nearMissDone"] for c in got] == [True, False]
 
 
@@ -1628,10 +1656,10 @@ def test_the_word_done_further_into_his_sentence_is_not_a_near_miss():
 
 def test_the_capture_line_says_the_marker_did_not_parse():
     text = with_captures(board(), NEAR_MISS)
-    got = top_board_rows.unboarded_captures(text, "issue")
+    got = _captures(text, "issue")
     line = top_board_rows._capture_line(got[0])
     assert "MARKER DID NOT PARSE" in line
-    plain = top_board_rows.unboarded_captures(
+    plain = _captures(
         with_captures(board(), "the thing I typed on my phone"), "issue")
     assert "MARKER DID NOT PARSE" not in top_board_rows._capture_line(plain[0])
 
@@ -1661,7 +1689,7 @@ PROJECTS_MD = "\n".join([
 def test_the_printed_line_names_the_project_and_its_rating():
     """Both ratings, each labelled. A line carrying only the row's own tag
     would show a Medium above a High and look like a bug."""
-    rows = top_board_rows.open_rows(
+    rows = _open_rows(
         project_board((10, "a medium row", BACKLOG, "08-01",
                        PRIORITY_LABELS["medium"], "Marcus")), "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
@@ -1798,7 +1826,7 @@ def test_the_milestone_tier_orders_the_printed_ranking():
         (11, "medium row in a lean milestone", BACKLOG, "08-01",
          PRIORITY_LABELS["medium"], "Marcus", "S", "quick"),
     )
-    rows = top_board_rows.open_rows(board, "issue")
+    rows = _open_rows(board, "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
     # medium/S scores 2.0, high/XL scores 1.0, so `quick` is the better
     # milestone and its Medium row is the pick.
@@ -1818,7 +1846,7 @@ def test_the_row_rating_still_decides_inside_one_milestone():
         (11, "a medium row", BACKLOG, "08-01",
          PRIORITY_LABELS["medium"], "Marcus", "S", "one group"),
     )
-    rows = top_board_rows.open_rows(board, "issue")
+    rows = _open_rows(board, "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
     assert _ranked_numbers(out)[0] == 10
 
@@ -1834,7 +1862,7 @@ def test_an_ungrouped_row_sinks_behind_a_grouped_one_in_its_project():
         (11, "a grouped medium row", BACKLOG, "08-01",
          PRIORITY_LABELS["medium"], "Marcus", "S", "quick"),
     )
-    rows = top_board_rows.open_rows(board, "issue")
+    rows = _open_rows(board, "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
     assert _ranked_numbers(out)[0] == 11
 
@@ -1852,7 +1880,7 @@ def test_the_project_tier_still_outranks_the_milestone_tier():
         (11, "a demos row in a lean milestone", BACKLOG, "08-01",
          PRIORITY_LABELS["high"], "Demos", "S", "quick"),
     )
-    rows = top_board_rows.open_rows(board, "issue")
+    rows = _open_rows(board, "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
     assert _ranked_numbers(out)[0] == 10
 
@@ -1865,7 +1893,7 @@ def test_the_printed_line_names_the_milestone():
         (10, "a grouped row", BACKLOG, "08-01",
          PRIORITY_LABELS["medium"], "Marcus", "S", "Reminders"),
     )
-    rows = top_board_rows.open_rows(board, "issue")
+    rows = _open_rows(board, "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
     assert f"Marcus (project {IMMEDIATE}, milestone Reminders)" in out
 
@@ -1877,7 +1905,7 @@ def test_an_ungrouped_row_says_so_rather_than_printing_nothing():
         (10, "an ungrouped row", BACKLOG, "08-01",
          PRIORITY_LABELS["medium"], "Marcus", "S", ""),
     )
-    rows = top_board_rows.open_rows(board, "issue")
+    rows = _open_rows(board, "issue")
     out = top_board_rows.render(rows, projects_markdown=PROJECTS_MD)
     assert f"Marcus (project {IMMEDIATE}, ungrouped)" in out
 
