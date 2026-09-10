@@ -1355,3 +1355,30 @@ def test_the_fallback_path_parses_his_board_exactly_once(monkeypatch):
 
     assert [m for m in parses if m == "HIS"] == ["HIS"], parses
     assert [item["number"] for item in payload["items"]] == [9, 4]
+
+
+def test_the_fallback_path_reads_the_board_it_was_asked_for(monkeypatch):
+    # The fallback's one door is `his_board_file_contents(name)` now (#203),
+    # and the test above counts parses without ever asking WHICH file was
+    # read -- handing it the literal "issues" left the suite green, so
+    # every ideas page would have drawn his issues whenever the store
+    # could not prove it was current.
+    asked = []
+    real_parse = nova_site.parse_board
+
+    def markdown(name):
+        asked.append(name)
+        return "HIS"
+
+    monkeypatch.setattr(nova_site, "parse_board",
+                        lambda m: _contents() if m == "HIS" else real_parse(m))
+    monkeypatch.setattr(nova_site, "edvard_board_markdown", markdown)
+    monkeypatch.setattr(nova_site, "_board_from_store", lambda name: None)
+    monkeypatch.setattr(nova_site, "_rows_from_store", lambda name, parsed: parsed)
+    monkeypatch.setattr(nova_site, "_details_from_store", lambda name, parsed: parsed)
+    monkeypatch.setattr(nova_site, "_captures_from_store", lambda name, parsed: parsed)
+    monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
+
+    nova_site.board_payload("ideas")
+
+    assert "ideas" in asked and "issues" not in asked, asked

@@ -6304,3 +6304,39 @@ def test_a_revision_check_that_cannot_run_draws_the_file():
         payload = nova_site.next_up_payload()
     assert fetched.call_count == 2
     assert payload["next"] == []
+
+
+def test_the_next_fallback_reads_each_board_from_its_own_file(monkeypatch):
+    """When the records cannot prove they are current, `/api/next` draws his
+    two files -- and each board has to come from its own file.
+
+    Issue #203 moved this fallback off `nova_next.next_payload` onto
+    `next_payload_from_contents` through `his_board_file_contents`. Nothing
+    pinned which name went to which argument: reading `issues` twice ranks
+    his issues as ideas and drops every idea, and the whole suite stayed
+    green under exactly that mutation. So the files here differ, and the
+    answer has to carry one row out of each.
+    """
+    from tests.test_nova_next import BACKLOG, HIGH, IMMEDIATE, board
+
+    nova_site.reset_cache()
+    files = {"issues": board((10, "an issue", BACKLOG, "08-01", HIGH)),
+             "ideas": board((64, "an idea", BACKLOG, "08-12", IMMEDIATE))}
+    asked = []
+
+    def markdown(name):
+        asked.append(name)
+        return files[name]
+
+    monkeypatch.setattr(nova_site, "_next_from_records", lambda: None)
+    monkeypatch.setattr(nova_site, "edvard_board_markdown", markdown)
+    monkeypatch.setattr(nova_site, "claims_ledger_json",
+                        lambda: json.dumps({"claims": []}))
+    monkeypatch.setattr(nova_site, "project_meta_markdown", lambda: "")
+    monkeypatch.setattr(nova_site, "milestone_pins_markdown", lambda: "")
+
+    payload = nova_site.next_up_payload()
+
+    assert sorted(asked) == ["ideas", "issues"]
+    assert sorted((r["board"], r["number"]) for r in payload["next"]) == [
+        ("idea", 64), ("issue", 10)]
