@@ -361,8 +361,12 @@ def test_the_tail_a_caller_carries_closes_the_hole():
     extra = "## Processed captures\n\n- DONE (Cycle 9): shipped it"
     damaged = BOARD_DOC + "\n" + extra + "\n"
     was = nova_boards.parse_board(damaged)
+    # The layout carries his header -- `board_view.board_width` is a floor,
+    # so without it a header with `Order` and no positioned row loses the
+    # column (#980). `document_round_trip` always passes it.
     rendered = board_view.render_document(
-        was, preflight.frontmatter_of(damaged), tail=extra)
+        was, preflight.frontmatter_of(damaged),
+        layout=board_view.document_layout(BOARD_DOC), tail=extra)
     assert preflight.words_lost(damaged, rendered) == []
 
 

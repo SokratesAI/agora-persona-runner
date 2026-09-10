@@ -3577,17 +3577,6 @@ def test_a_warm_that_cannot_reach_the_vault_costs_only_the_warm():
     assert "journal" not in nova_site._cache, "a failed build must not be cached"
 
 
-def _no_records(*_a, **_k):
-    """An empty board out of the record store, for the warm tests.
-
-    `/api/next` reads his two boards through `board_records.contents`
-    since issue #203, which goes to CouchDB rather than through
-    `nova_sources.vault_read_path` -- so patching the vault reader no
-    longer covers that payload and the warm would log it as a failure.
-    """
-    return {"items": [], "details": {}, "captures": [], "captureReplies": []}
-
-
 def test_the_first_press_on_next_does_not_pay_for_its_own_build():
     """`/api/next` is the slowest payload this server builds -- 7.41s cold
     against the live pod on 2026-09-07, where every other unwarmed payload
@@ -3606,9 +3595,7 @@ def test_the_first_press_on_next_does_not_pay_for_its_own_build():
         builds.append(1)
         return {"projects": [], "waiting": []}
 
-    with patch.object(nova_site, "next_payload_from_contents",
-                      side_effect=counted), \
-            patch.object(nova_site.board_records, "contents", _no_records), \
+    with patch.object(nova_site, "next_payload", side_effect=counted), \
             patch.object(nova_site, "edvard_board_markdown", return_value=""), \
             patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
             patch.object(nova_site, "project_meta_markdown", return_value=""), \
@@ -5819,7 +5806,6 @@ def test_the_warm_logs_what_each_payload_cost(journal_md):
     nova_site.reset_cache()
     lines = []
     with patch.object(nova_sources, "vault_read_path", return_value=journal_md), \
-            patch.object(nova_site.board_records, "contents", _no_records), \
             patch.object(nova_site, "log", side_effect=lines.append):
         nova_site.warm_cache()
     timed = [ln for ln in lines if ln.startswith("nova-site warm ")]
@@ -5898,7 +5884,6 @@ def test_the_warm_total_covers_the_whole_run_not_one_payload(journal_md):
         return real(name, build)
 
     with patch.object(nova_sources, "vault_read_path", return_value=journal_md), \
-            patch.object(nova_site.board_records, "contents", _no_records), \
             patch.object(nova_site, "cached_payload", side_effect=slow), \
             patch.object(nova_site, "log", side_effect=lines.append):
         nova_site.warm_cache()

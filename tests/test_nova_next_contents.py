@@ -138,6 +138,7 @@ def test_a_capture_already_closed_as_a_row_drops_out():
     assert got == []
 
 
+@pytest.mark.xfail(strict=True, reason="the switchover end state: main keeps the nova_next doors and /api/next's currency-gated fallback until the flip (#984, #987) -- when the flip deletes them this passes and strict fails it, so remove this marker then")
 @pytest.mark.parametrize("door,reader", [
     ("open_rows", "open_rows_from_contents"),
     ("unboarded_captures", "unboarded_captures_from_contents"),
@@ -186,6 +187,7 @@ def test_the_whole_payload_comes_back_with_no_file_to_parse():
     assert payload["claimsReadable"] is True
 
 
+@pytest.mark.xfail(strict=True, reason="the switchover end state: main keeps the nova_next doors and /api/next's currency-gated fallback until the flip (#984, #987) -- when the flip deletes them this passes and strict fails it, so remove this marker then")
 def test_the_payload_never_reaches_a_parser():
     """The records door must not be a facade over `parse_board`.
 
@@ -239,6 +241,7 @@ def test_an_unreadable_ledger_is_said_out_loud_and_keeps_the_rows():
     assert [r["number"] for r in payload["next"]] == [7]
 
 
+@pytest.mark.xfail(strict=True, reason="the switchover end state: main keeps the nova_next doors and /api/next's currency-gated fallback until the flip (#984, #987) -- when the flip deletes them this passes and strict fails it, so remove this marker then")
 def test_the_site_route_builds_the_payload_off_the_records():
     """`next_up_payload` was `next_payload`'s last source caller.
 
@@ -269,6 +272,7 @@ def test_the_site_route_builds_the_payload_off_the_records():
         ("issue", 7), ("idea", 64)]
 
 
+@pytest.mark.xfail(strict=True, reason="the switchover end state: main keeps the nova_next doors and /api/next's currency-gated fallback until the flip (#984, #987) -- when the flip deletes them this passes and strict fails it, so remove this marker then")
 def test_the_site_route_refuses_an_unmigrated_store_rather_than_emptying_it():
     """A store that cannot answer must reach the client as an error.
 

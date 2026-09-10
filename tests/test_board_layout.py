@@ -128,11 +128,15 @@ def test_the_owners_own_column_name_is_kept():
 
 
 def test_a_short_header_is_padded_out_to_the_width_of_its_rows():
-    """His header stops at `Updated`; `render_row` writes nine cells."""
+    """His header stops at `Updated`; it is padded to the rows' own width.
+
+    No row here carries a position, so `board_view.board_width` stops at
+    `Milestone` -- `Order` is drawn only once a row can fill it (#980).
+    """
     header = [
         line for line in rendered(BOARD).split("\n")
         if line.startswith("| # |")][0]
-    assert header == "| " + " | ".join(("#", "Idea") + BOARD_COLUMNS[2:]) + " |"
+    assert header == "| " + " | ".join(("#", "Idea") + BOARD_COLUMNS[2:-1]) + " |"
 
 
 def test_a_write_up_added_since_the_layout_was_taken_is_still_written():

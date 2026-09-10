@@ -11,9 +11,8 @@ reached a database pass every test in this file.
 """
 import pytest
 
-from agora_runner import (board_document, board_records, board_store,
-                          board_view, entity_id, nova_boards, ticket_docs)
-from tools import board_migrate, board_migration_preflight
+from agora_runner import board_store, entity_id, ticket_docs
+from tools import board_migrate
 
 from tests.test_board_store import FakeCouch
 
@@ -24,24 +23,14 @@ HEADER = (
 )
 
 
-def board(rows, details=(), captures=()):
-    """Board markdown for `(number, project, milestone)` triples.
-
-    `captures` are `(text, replies)` pairs, written above the first heading
-    the way he writes them from his phone -- newest first, with whatever a
-    cycle answered indented underneath.
-    """
+def board(rows, details=()):
+    """Board markdown for `(number, project, milestone)` triples."""
     lines = [
         f"| [[#{n} — Item {n}\\|{n}]] | Item {n} | ⚪ Backlog | 09-09 "
         f"| 🟡 Medium | {project} | | {milestone} | |"
         for n, project, milestone in rows
     ]
-    top = ""
-    for capture_text, replies in captures:
-        top += f"- {capture_text}\n"
-        for reply in replies:
-            top += f"  - {reply}\n"
-    text = (top + "\n" if top else "") + HEADER + "\n".join(lines) + "\n"
+    text = HEADER + "\n".join(lines) + "\n"
     if details:
         text += "\n# Details\n"
         for number, body in details:

@@ -150,11 +150,7 @@ def migrate(markdown, board, apply=False, store=board_store):
         raise MigrationRefused(
             f"board must be one of {board_document.BOARDS}, not {board!r}")
 
-    # Both key ranges, because both are written with `prune=True` and a
-    # board holding captures but no rows is exactly what a half-finished
-    # earlier run leaves behind -- the state a rows-only check calls clean.
-    held = dict(store.stored_documents(board))
-    held.update(store.stored_capture_documents(board))
+    held = store.stored_documents(board)
     if held:
         raise MigrationRefused(
             f"{board} already holds {len(held)} record(s); empty the board "
@@ -186,8 +182,6 @@ def migrate(markdown, board, apply=False, store=board_store):
         "board": board,
         "rows": len(docs),
         "details": len(details),
-        "captures": len(captures),
-        "layout_blocks": len(layout),
         "projects": len(registry.get("projects") or {}),
         "milestones": len(registry.get("milestones") or {}),
         "captures": len(capture_docs),
@@ -201,32 +195,13 @@ def migrate(markdown, board, apply=False, store=board_store):
     if not apply:
         return report
 
-    # The registry carries the capture high-water mark this run just moved,
-    # so it is written in the same pass as the captures themselves. A run
-    # that stored the registry and not the captures is the partial migration
-    # `board_records.contents` cannot detect: the registry is what it reads
-    # to answer "has this board been migrated", so it would certify a board
-    # whose captures never arrived.
     store.write_registry(registry)
     written = store.write_rows(board, docs)
     if written.get("failures"):
         raise MigrationRefused(
             f"{len(written['failures'])} row(s) failed to write; the store "
             "now holds a partial migration and must be emptied before a retry")
-    wrote_captures = store.write_captures(board, captures)
-    if wrote_captures.get("failures"):
-        raise MigrationRefused(
-            f"{len(wrote_captures['failures'])} capture(s) failed to write; "
-            "the store now holds a partial migration and must be emptied "
-            "before a retry")
-    # After both key ranges and before the report, because a layout stored
-    # over rows that failed to write would describe a board that is not
-    # there; the two `MigrationRefused` raises above leave the store
-    # partial and this must not add to it.
-    store.write_layout(board, layout)
-    report["layout_written"] = True
     report["written"] = written.get("written") or 0
-    report["captures_written"] = wrote_captures.get("written") or 0
     report["stored"] = len(store.stored_documents(board))
 
     # After the rows on purpose. `write_rows` prunes its own key range and
@@ -550,14 +525,6 @@ def main(argv=None):
                              "markdown, keeping the ids of unchanged "
                              "captures; needs --apply to write")
     args = parser.parse_args(argv)
-    if args.status and (args.apply or args.verify):
-        parser.error(
-            "--status writes nothing; --apply and --verify both write, so "
-            "asking for either alongside it asks two different questions")
-    if args.verify and args.apply:
-        parser.error(
-            "--verify and --apply are opposites: --verify empties the store "
-            "again when it is done")
 
     # Refused rather than silently preferring one, because the two modes
     # differ on whether the run writes -- and a caller who asked for both

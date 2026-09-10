@@ -253,9 +253,9 @@ def _titles(milestones_markdown):
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from tests.test_nova_next import _payload
+    from agora_runner.nova_next import next_payload
 
-    payload = _payload(
+    payload = next_payload(
         EMPTY_BOARD, BOARD, '{"claims": []}',
         datetime(2026, 9, 7, 3, 0, tzinfo=ZoneInfo("Europe/Oslo")),
         milestones_markdown=milestones_markdown)
