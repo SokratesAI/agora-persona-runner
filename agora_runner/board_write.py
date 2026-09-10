@@ -78,7 +78,8 @@ what `_touch_row_updated` was doing as a second pass over the markdown.
 
 import copy
 
-from agora_runner import board_records, board_store
+from agora_runner import (
+    board_document, board_records, board_store, nova_boards, rank_key)
 from agora_runner.nova_boards import NOTE_AUTHORS
 
 
@@ -133,15 +134,27 @@ def refuse_cell(value, flag, allow_blank=False):
     return None
 
 
-def _differences(before, after, number):
-    """Every way the board moved other than row `number`'s declared keys."""
+def _differences(before, after, number, added=False):
+    """Every way the board moved other than row `number`'s declared keys.
+
+    `added=True` is `add_row`'s case: row `number` is expected to appear, at
+    the *top*, and every other row is expected to keep its place under it. The
+    flag rather than a looser comparison, because "the set of rows changed" is
+    the whole check for a writer that changes a cell -- a version that tolerated
+    an extra row for everybody would stop seeing the row `change_row` duplicated.
+    """
     problems = []
     numbers_before = [item.get("number") for item in before["items"]]
     numbers_after = [item.get("number") for item in after["items"]]
-    if numbers_before != numbers_after:
+    expected = ([number] + numbers_before) if added else numbers_before
+    if expected != numbers_after:
         problems.append(
             "the row order or the set of rows changed: "
-            f"{numbers_before} -> {numbers_after}")
+            f"{numbers_before} -> {numbers_after}"
+            + (f", expected #{number} at the top of them" if added else ""))
+        return problems
+    if added:
+        after = {**after, "items": after["items"][1:]}
     for was, now in zip(before["items"], after["items"]):
         if was.get("number") != now.get("number"):
             continue
@@ -382,3 +395,165 @@ def append_note(board, number, note, dated, cycle=None, author=None,
     # blank line there renders as one.
     detail = "\n".join(lines + ["", line]) if lines else line
     return change_row(board, number, changes, detail=detail, store=store)
+
+
+class RowRefused(WriteRefused):
+    """The new row itself was not writable -- no title, a rating that is not
+    one, a cell that would escape itself. Nothing was written."""
+
+
+def _next_number(rows):
+    """The lowest number no stored row is using -- `next_row_number`'s rule.
+
+    Highest plus one, never the first gap. `nova_boards.next_row_number` says
+    why and the reason survives the move to records unchanged: a closed row's
+    number is still spoken for by every journal entry, claim slug and comment
+    that ever pointed at it, so handing it out again re-labels history. It
+    reads all three of the markdown's places a number can live; against records
+    there is only one, because a `## Done` row is an ordinary document with
+    `done` set and a write-up is a field on the row rather than a heading of
+    its own.
+    """
+    highest = 0
+    for doc in rows:
+        number = doc.get("number")
+        if isinstance(number, int) and not isinstance(number, bool):
+            highest = max(highest, number)
+    return highest + 1
+
+
+def add_row(board, title, dated, priority, status="backlog", write_up="",
+            notes=(), project="", cycle=None, author=None, store=board_store):
+    """Board a new row. Returns the row it wrote, in `parse_board`'s shape.
+
+    The records half of `nova_boards.add_row`, and the door the next three
+    writers are blocked on: `board_capture` promotes one of his bare captures
+    into a row, `board_row` boards one on Nova's own two files, and
+    `close_done_captures` needs the same call. Every writer converted before
+    this one *changes* a row that already exists -- `change_row` and
+    `append_note` between them cover all of that -- and none of them can
+    create one.
+
+    **The new row goes to the top, because that is where the markdown put
+    it.** `nova_boards._board_insert_line` inserts directly under the header
+    rule and says why in its own comment: newest first is the order every one
+    of these tables already reads in. Against records the position is a rank,
+    so this is `rank_key.between(None, first)` -- one key, written on this row
+    alone, touching no other. A row minted with no rank at all would land
+    *below* every ranked row instead, because `board_store.sort_key` puts the
+    unranked last, so leaving it out is not neutral: it is the opposite of
+    what he sees today.
+
+    **`notes` ride across as dated lines under the write-up.** They are the
+    replies a cycle already wrote under his capture, and they go through
+    `_note_line` -- the same renderer and the same refusals as `append_note`,
+    because they are the same kind of line and end up matched by the same
+    `_COMMENT_NOTE_RE`. A note this function cannot render is a refusal rather
+    than a line dropped in silence: the thread surviving the promotion is the
+    point of carrying them at all.
+
+    **The number is minted from the store, not passed in.** A caller holding
+    the number would have had to read the board to get it, and two callers
+    reading the same board mint the same number -- which against markdown was
+    a merge conflict and against records is one document silently taking the
+    other's place. `board_store.write_row` refuses a document whose id is
+    already stored, so the collision surfaces as a refusal here rather than as
+    a lost row.
+    """
+    # Stripped, never collapsed. `" ".join(title.split())` would turn a
+    # newline into a space and quietly hand `refuse_cell` a title it approves
+    # of -- one cell rule, in one place, is the point of that function.
+    title = (title or "").strip()
+    if not title:
+        raise RowRefused("a row needs a title")
+    for value, flag in ((title, "title"), (dated, "dated"), (project, "project")):
+        refusal = refuse_cell(value or "", flag, allow_blank=(flag == "project"))
+        if refusal:
+            raise RowRefused(refusal)
+    label = nova_boards.canonical_priority(priority)
+    if label is None:
+        raise RowRefused(
+            f"{priority!r} is not a rating. One of: "
+            + ", ".join(key for key in nova_boards.PRIORITY_LABELS if key))
+    if status not in nova_boards.STATUS_LABELS:
+        raise RowRefused(
+            f"{status!r} is not a status. One of: "
+            + ", ".join(nova_boards.STATUS_LABELS))
+
+    body_lines = []
+    written = (write_up or "").strip()
+    if written:
+        body_lines.append(written)
+    for note in notes or ():
+        line = _note_line(str(note), dated, cycle, author)
+        if line is None:
+            raise RowRefused(
+                f"the reply {str(note)[:60]!r} cannot be written as a dated "
+                "note under the new row -- it is empty, carries a line break, "
+                "or names an author that is not one of "
+                + ", ".join(sorted(set(NOTE_AUTHORS.values()))))
+        body_lines.append(line)
+    detail = "\n\n".join(body_lines)
+
+    before = board_records.contents(board, store=store)
+    rows, _ = board_records.split_documents(store.read_rows(board))
+    number = _next_number(rows)
+    first = board_store.in_order(rows)[0].get("rank") if rows else None
+    label_status = nova_boards.STATUS_LABELS[status]
+    wanted = {
+        "number": number,
+        "title": title,
+        "status": label_status,
+        "statusKey": status,
+        "updated": dated,
+        "where": "",
+        "priority": label,
+        "priorityKey": nova_boards.priority_key(label),
+        "project": project or nova_boards.DEFAULT_PROJECT,
+        "size": "",
+        "sizeKey": nova_boards.size_key(""),
+        "milestone": "",
+        "order": None,
+        "done": status == "done",
+    }
+    # The registry join is `store_item`'s and lives nowhere else, so the row
+    # goes through it rather than straight to `write_row` -- a project named
+    # here and minted nowhere is the dangling id `board_records._names` raises
+    # on, and it breaks the read of the whole board rather than of this row.
+    board_records.store_item(
+        board, wanted, detail=detail,
+        rank=rank_key.between(None, first), store=store)
+
+    after = board_records.contents(board, store=store)
+    problems = _differences(before, after, number, added=True)
+    landed = next(
+        (item for item in after["items"] if item.get("number") == number), None)
+    if landed is None:
+        problems.append(f"row #{number} is not on the board afterwards")
+    elif landed != wanted:
+        missed = sorted(
+            key for key in set(wanted) | set(landed)
+            if wanted.get(key) != landed.get(key))
+        problems.append(
+            f"row #{number} came back with {', '.join(missed)} not as written")
+    if len(after["items"]) != len(before["items"]) + 1:
+        problems.append(
+            f"row count went {len(before['items'])} -> {len(after['items'])}, "
+            "expected +1")
+    expected_details = dict(before["details"])
+    if detail:
+        expected_details[number] = detail
+    if after["details"] != expected_details:
+        changed = sorted(
+            key for key in set(expected_details) | set(after["details"])
+            if expected_details.get(key) != after["details"].get(key))
+        problems.append(
+            "the write-up under "
+            f"{', '.join('#' + str(key) for key in changed)} changed")
+    if problems:
+        raise BoardDamaged(
+            f"the new row #{number} on board {board!r} landed and the board "
+            "came back wrong: " + "; ".join(problems)
+            + " -- if another cycle wrote to this board in between, re-read it "
+            "and try again; this check cannot tell that apart from damage")
+    return landed

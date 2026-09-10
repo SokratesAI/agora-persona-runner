@@ -176,7 +176,7 @@ def contents(board, store=board_store):
     }
 
 
-def store_item(board, item, detail=None, store=board_store):
+def store_item(board, item, detail=None, rank=None, store=board_store):
     """One row in `parse_board`'s shape -> one written record document.
 
     The write mirror of `contents`, and the seam the ten `tools/board_*.py`
@@ -205,6 +205,15 @@ def store_item(board, item, detail=None, store=board_store):
     whole registry rather than by asking `resolve_*` twice -- `ensure_project`
     may also touch an existing entry, and a comparison sees that where a
     second resolve does not.
+
+    **`rank` is for a row that has none stored yet, and it is ignored for
+    one that has.** A row already on his board holds the position he put it
+    in, and a writer changing a cell must not move it; a row being created has
+    no stored rank to carry forward, and `board_store.sort_key` puts an
+    unranked document *below* every ranked one -- so a new row minted without
+    one lands at the bottom of his board rather than at the top, which is
+    where `nova_boards.add_row` puts it. The caller mints the key, because
+    only the caller knows which neighbours it goes between.
 
     **The stored row's `rank` is carried forward.** `to_document` takes the
     rank as an argument and leaves it out when it is absent, and
@@ -256,7 +265,7 @@ def store_item(board, item, detail=None, store=board_store):
         body = board_document.detail_of(held) or None
     doc = board_document.to_document(
         item, board, project_id=project_id, milestone_id=milestone_id,
-        rank=(held or {}).get("rank"), detail=body)
+        rank=(held or {}).get("rank") or rank, detail=body)
     if held is not None:
         doc["_rev"] = held["_rev"]
     return store.write_row(doc)

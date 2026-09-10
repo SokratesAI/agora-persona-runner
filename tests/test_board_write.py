@@ -534,3 +534,149 @@ def test_a_write_up_ending_in_blank_lines_still_gets_the_note_directly_under_it(
 
     board_write.append_note("issue", _NOTE_ROW, "under it", "09-10", store=store)
     assert _details(store)[_NOTE_ROW] == "prose.\n\n**Nova, 09-10:** under it"
+
+
+# --- add_row: the door the next three writers are blocked on ----------------
+
+
+def test_add_row_lands_at_the_top_of_the_board_like_the_markdown_did():
+    """Newest first. An unranked row would sort to the bottom instead."""
+    parsed, store = writable()
+    before = [row["number"] for row
+              in board_records.contents("issue", store=store)["items"]]
+
+    landed = board_write.add_row(
+        "issue", "A brand new thing", "09-10", "high", store=store)
+
+    after = board_records.contents("issue", store=store)
+    assert [row["number"] for row in after["items"]] == [landed["number"]] + before
+    assert landed["title"] == "A brand new thing"
+    assert landed["priority"] == "🟠 High"
+    assert landed["status"] == "⚪ Backlog"
+
+
+def test_add_row_mints_the_highest_number_plus_one_never_a_gap():
+    """A closed row's number is still spoken for by everything that cited it."""
+    parsed, store = writable()
+    highest = max(row["number"] for row in parsed["items"])
+
+    first = board_write.add_row("issue", "One", "09-10", "low", store=store)
+    second = board_write.add_row("issue", "Two", "09-10", "low", store=store)
+
+    assert first["number"] == highest + 1
+    assert second["number"] == highest + 2
+
+
+def test_add_row_carries_the_write_up_and_the_replies_as_dated_notes():
+    """The thread under his capture has to survive the promotion."""
+    _, store = writable()
+    landed = board_write.add_row(
+        "issue", "Boarded", "09-10", "medium",
+        write_up="He wrote this, verbatim.",
+        notes=["I answered it once.", "And again."],
+        cycle=1336, store=store)
+
+    body = board_records.contents("issue", store=store)["details"][landed["number"]]
+    assert body.splitlines()[0] == "He wrote this, verbatim."
+    assert "**Nova, 09-10 (Cycle 1336):** I answered it once." in body
+    assert "**Nova, 09-10 (Cycle 1336):** And again." in body
+
+
+def test_add_row_refuses_a_reply_it_cannot_render_rather_than_dropping_it():
+    """A note lost in silence is the thread this argument exists to keep."""
+    _, store = writable()
+    with pytest.raises(board_write.RowRefused) as refusal:
+        board_write.add_row(
+            "issue", "Boarded", "09-10", "medium",
+            notes=["one line", "two\nlines"], store=store)
+    assert "two" in str(refusal.value)
+    assert board_records.contents("issue", store=store)["items"] == \
+        board_records.contents("issue", store=store)["items"]
+
+
+def test_add_row_writes_nothing_when_a_reply_is_refused():
+    """The refusal is before the write, not halfway through it."""
+    parsed, store = writable()
+    before = board_records.contents("issue", store=store)
+    with pytest.raises(board_write.RowRefused):
+        board_write.add_row("issue", "Boarded", "09-10", "medium",
+                            notes=["\r"], store=store)
+    assert board_records.contents("issue", store=store) == before
+
+
+def test_add_row_refuses_a_title_that_would_escape_its_own_cell():
+    _, store = writable()
+    for bad in ("a | b", "a\nb", "a\rb", "   "):
+        with pytest.raises(board_write.RowRefused):
+            board_write.add_row("issue", bad, "09-10", "high", store=store)
+
+
+def test_add_row_refuses_a_rating_that_is_not_one():
+    _, store = writable()
+    with pytest.raises(board_write.RowRefused) as refusal:
+        board_write.add_row("issue", "Boarded", "09-10", "banana", store=store)
+    assert "not a rating" in str(refusal.value)
+
+
+def test_add_row_refuses_a_status_that_is_not_one():
+    _, store = writable()
+    with pytest.raises(board_write.RowRefused) as refusal:
+        board_write.add_row("issue", "Boarded", "09-10", "high",
+                            status="shipped", store=store)
+    assert "not a status" in str(refusal.value)
+
+
+def test_add_row_boards_a_done_capture_as_done_on_both_halves():
+    """`done` says which table and `status` says what the cell reads."""
+    _, store = writable()
+    landed = board_write.add_row(
+        "issue", "Already shipped", "09-10", "high", status="done", store=store)
+    assert landed["done"] is True
+    assert landed["status"] == "✅ Done"
+    assert landed["statusKey"] == "done"
+
+
+def test_add_row_files_the_row_under_a_project_the_registry_now_holds():
+    """A project named here and minted nowhere breaks the read of the board."""
+    _, store = writable()
+    landed = board_write.add_row(
+        "issue", "Filed", "09-10", "high", project="Marcus", store=store)
+    assert landed["project"] == "Marcus"
+    # The join is the registry's, so the whole board has to still read.
+    assert board_records.contents("issue", store=store)["items"][0] == landed
+
+
+def test_add_row_leaves_every_capture_and_every_other_row_alone():
+    """The after-check's subject: nothing but the new row moved."""
+    parsed, store = writable()
+    landed = board_write.add_row("issue", "New", "09-10", "high", store=store)
+    after = board_records.contents("issue", store=store)
+    assert after["captures"] == parsed["captures"]
+    assert after["captureReplies"] == parsed["captureReplies"]
+    assert [row for row in after["items"] if row["number"] != landed["number"]] \
+        == parsed["items"]
+    assert after["details"] == parsed["details"]
+
+
+def test_add_row_raises_board_damaged_when_the_store_drops_the_rank():
+    """A store that loses the position sends the new row to the bottom."""
+    parsed, store = writable()
+    damaged = _DropsTheRank(store.docs, store.registry)
+    with pytest.raises(board_write.BoardDamaged):
+        board_write.add_row("issue", "New", "09-10", "high", store=damaged)
+
+
+def test_add_row_catches_a_write_that_also_nudged_a_row_nobody_named():
+    """The per-row comparison has to skip past the new row, not zip through it.
+
+    With the new row left in place the pairs are off by one, every pair
+    disagrees on `number`, and the loop's own `continue` then compares nothing
+    at all -- so the check reads clean while a sibling row was rewritten. Every
+    other test here has one added row and no damaged sibling, which is exactly
+    the shape that cannot see it.
+    """
+    parsed, source = writable()
+    store = _NudgesASibling(source.docs, source.registry)
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.add_row("issue", "New", "09-10", "high", store=store)
+    assert "title" in str(damaged.value)
