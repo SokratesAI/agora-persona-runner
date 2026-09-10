@@ -8,6 +8,7 @@ failure the module's own docstring is careful about. Every blob below
 omits those keys entirely, which also means a test would fail loudly if
 the module ever started requiring them.
 """
+import re
 import io
 import json
 from datetime import datetime, timedelta, timezone
@@ -595,6 +596,44 @@ def test_an_already_expired_login_pages_in_the_past_tense():
     text = cr.page_text(NOW - timedelta(days=1), NOW)
     assert "expired" in text
     assert "expires" not in text
+
+
+def test_both_pages_ask_him_to_reply():
+    """His capture, 2026-09-10: the reminder asks him to confirm. Neither
+    branch may be the silent one -- the expired branch is the case where a
+    link is most urgently owed."""
+    for expiry in (NOW + timedelta(days=4), NOW - timedelta(days=1)):
+        text = cr.page_text(expiry, NOW)
+        assert "Reply" in text, text
+        assert len(text) <= 280, "his ask: telegram messages stay short"
+
+
+def test_the_page_asks_for_a_reply_the_handshake_accepts():
+    """The seam between the two halves of the handshake, and the bug it
+    exists to stop: `agora-persona-runner#973` taught `login_handshake` to
+    read a plain yes, and the message he reads never asked for one.
+
+    This reads the word back out of the *rendered* message rather than off
+    the constant, so a page that asks for something `is_go_ahead` would
+    refuse -- "reply YES PLEASE SEND", a sentence, a word not in `GO_AHEAD`
+    -- fails here instead of stranding him five days before an expiry.
+    """
+    from tools import login_handshake
+
+    text = cr.page_text(NOW + timedelta(days=4), NOW)
+    quoted = re.findall(r'"([^"]+)"', text)
+    assert quoted, "the page must name the reply it wants, in quotes: %r" % text
+    for word in quoted:
+        assert login_handshake.is_go_ahead(word), (
+            "the page asks him to reply %r and the handshake would ignore it" % word)
+
+
+def test_the_page_does_not_carry_the_login_link():
+    """The other half of that capture: the first message asks, it does not
+    mint. A link lives an hour and its code lives minutes, so it belongs to a
+    cycle that will still be alive to spend it -- not to a daily sweep."""
+    text = cr.page_text(NOW + timedelta(days=4), NOW)
+    assert "http" not in text.lower(), text
 
 
 def test_page_owner_sends_one_message_a_day_not_one_every_cycle():
