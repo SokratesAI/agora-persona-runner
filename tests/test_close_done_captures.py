@@ -7,41 +7,34 @@ still waiting on, and a capture is a bare bullet with no status cell --
 once it reads `DONE`, `top_board_rows` skips it and `roll_done_captures`
 files it away, so there is no second reader left to notice.
 
-Assertions are on `nova_boards.parse_board` wherever the point is that
-his board still renders, and on the raw text wherever the point is that
-his sentence came back byte-identical.
+**The #203 conversion moved where each of those is asserted.** Everything
+here goes through the fake record store, the rule
+`tests/test_tools_board_capture.py` set and for its reason: a test that
+asserts on `parse_board` of a file on disk agrees with a converted and an
+unconverted tool alike, so it cannot tell the two apart. The whole-board
+after-check that used to live in this module is
+`board_write.change_capture_text`'s now and is tested there; what is still
+this module's own is which bullets it picks, that the pick is idempotent,
+and that a refusal arriving mid-walk says how far the run got.
 """
 
 import json
 
-import tools.close_done_captures as close_done_captures
-from agora_runner.nova_boards import parse_board
+import pytest
+
+from agora_runner import board_records, board_write
 from agora_runner.nova_claims import slug_for_capture
-from tools.close_done_captures import (
-    check_from_contents, done_cycles, plan, rewrite,
-)
-
-
-def check(before, after, marked):
-    """The old markdown-shaped signature, kept here and not in the tool.
-
-    `check_from_contents` takes the two parsed boards on purpose (#203) and
-    there is deliberately no door on it, so the parsing every existing test
-    used to get for free lives in the test file that wants it.
-    """
-    return check_from_contents(
-        parse_board(before or ""), parse_board(after or ""), marked)
+from tests.test_board_records import writable
+from tools import close_done_captures
+from tools.close_done_captures import done_cycles, mark_kept_its_slug, plan
 
 SHIPPED = "the search bar closes my keyboard"
 RATED = "make the chat modal full height"
 OPEN = "connect Nova to my home NAS"
 FRESH = "the sidebar scrolls off the bottom"
 
-BOARD = f"""---
-type: board
----
-
-- {SHIPPED}
+BOARD = f"""- {SHIPPED}
+  - Nova, cycle 434: shipped it.
 - 🔵 Medium: {RATED}
 - {OPEN}
 - {FRESH}
@@ -56,6 +49,7 @@ type: board
 # Details
 
 ### #2 — The search bar closes my keyboard
+
 Every letter dismisses it.
 """
 
@@ -73,13 +67,44 @@ LEDGER = json.dumps({"claims": [
 FINISHED = done_cycles(LEDGER)
 
 
+@pytest.fixture
+def store(monkeypatch):
+    """A migrated, writable fake of that board, wired in where `main` looks."""
+    _, fake = writable(board="issue", markdown=BOARD)
+    monkeypatch.setattr(close_done_captures, "board_store", fake)
+    return fake
+
+
+@pytest.fixture
+def ledger(tmp_path):
+    path = tmp_path / "claims.json"
+    path.write_text(LEDGER, encoding="utf-8")
+    return str(path)
+
+
+def _run(ledger, *extra):
+    return close_done_captures.main(
+        ["--board", "issue", "--claims", ledger, *extra])
+
+
+def _captures(store):
+    return board_records.contents("issue", store=store)["captures"]
+
+
+def _docs(store):
+    return board_records.capture_documents("issue", store=store)
+
+
+# --- which bullets the ledger closes ------------------------------------
+
+
 def test_only_capture_slugs_come_out_of_the_ledger():
     """`idea-88` is done too and is a board row, not one of his bullets."""
     assert set(FINISHED) == {slug_for_capture(SHIPPED), slug_for_capture(RATED)}
     assert FINISHED[slug_for_capture(SHIPPED)] == 434
 
 
-def test_a_progressed_claim_does_not_close_his_capture():
+def test_a_progressed_claim_does_not_close_his_capture(store):
     """The failure that would cost most: `progressed` means work is left.
 
     Three of the 21 live captures on 2026-08-26 were `progressed` -- the
@@ -87,20 +112,18 @@ def test_a_progressed_claim_does_not_close_his_capture():
     still waiting on him. Reading `progressed` as finished would file all
     three away where no later cycle looks.
     """
-    marked = [old.strip() for _i, old, _n, _s, _c in plan(BOARD, FINISHED)]
-    assert f"- {OPEN}" not in marked
+    assert OPEN not in [old for _d, old, _n, _s, _c in plan(_docs(store), FINISHED)]
 
 
-def test_an_unclaimed_capture_is_left_alone():
+def test_an_unclaimed_capture_is_left_alone(store, ledger):
     """His newest bullet has no claim at all and must survive untouched."""
-    after, _count = rewrite(BOARD, FINISHED)
-    assert f"- {FRESH}" in after.split("\n")
+    assert _run(ledger) == 0
+    assert FRESH in _captures(store)
 
 
-def test_the_finished_ones_are_marked_with_the_cycle_that_closed_them():
-    after, marks = rewrite(BOARD, FINISHED)
-    assert len(marks) == 2
-    captures = parse_board(after)["captures"]
+def test_the_finished_ones_are_marked_with_the_cycle_that_closed_them(store, ledger):
+    assert _run(ledger) == 0
+    captures = _captures(store)
     assert captures[0] == f"DONE (Cycle 434): {SHIPPED}"
     # The rating stays where he put it: `split_capture_done` runs before
     # `split_capture_priority` in every reader, so the marker goes in
@@ -109,7 +132,7 @@ def test_the_finished_ones_are_marked_with_the_cycle_that_closed_them():
     assert captures[2] == OPEN
 
 
-def test_marking_does_not_move_the_slug():
+def test_marking_does_not_move_the_slug(store, ledger):
     """The invariant the whole tool rests on.
 
     `slug_for_capture` is hashed off his sentence with the marker and the
@@ -117,188 +140,147 @@ def test_marking_does_not_move_the_slug():
     would stop matching it, the next run would mark it again, and the
     prefix would stack.
     """
-    after, _count = rewrite(BOARD, FINISHED)
-    marked = parse_board(after)["captures"][1]
-    from agora_runner.nova_boards import split_capture_done, split_capture_priority
-    _done, rest = split_capture_done(marked)
-    _priority, text = split_capture_priority(rest)
-    assert slug_for_capture(text) == slug_for_capture(RATED)
+    assert _run(ledger) == 0
+    assert mark_kept_its_slug(_captures(store)[1], slug_for_capture(RATED))
 
 
-def test_a_second_run_changes_nothing():
-    once, first = rewrite(BOARD, FINISHED)
-    twice, second = rewrite(once, FINISHED)
-    assert (len(first), len(second)) == (2, 0)
-    assert twice == once
+def test_a_second_run_changes_nothing(store, ledger, capsys):
+    assert _run(ledger) == 0
+    once = _captures(store)
+    capsys.readouterr()
+    assert _run(ledger) == 0
+    assert "nothing to mark" in capsys.readouterr().out
+    assert _captures(store) == once
 
 
-def test_the_board_rows_and_write_ups_survive():
-    before = parse_board(BOARD)
-    after, _marks = rewrite(BOARD, FINISHED)
-    assert parse_board(after)["items"] == before["items"]
-    assert parse_board(after)["details"] == before["details"]
+def test_the_reply_under_his_capture_survives_the_mark(store, ledger):
+    """A reply is a field on the document now, not a bullet in the walk.
 
-
-def test_nothing_to_mark_returns_the_file_unchanged():
-    """So the caller can skip the `put` rather than burn a revision."""
-    after, marks = rewrite(BOARD, {})
-    assert (after, marks) == (BOARD, [])
-
-
-def test_a_reply_written_under_his_capture_is_not_marked():
-    """An indented bullet is my own sentence, not his.
-
-    `roll_done_captures.plan` folds one into the block above for the same
-    reason. Marking one would put a DONE prefix on a cycle's own reply and
-    -- because the fold means the page reads them as one -- change what he
-    sees his own capture say.
+    In markdown it was an indented line the walk had to skip, and marking
+    one would have put a DONE prefix on a cycle's own sentence. The record
+    store carries it as `replies`, and `change_capture_text` copies it
+    across rather than taking it from the caller -- so the thing to assert
+    is that a mark leaves it where it was, on the bullet it belongs to.
     """
-    reply = "Read Cycle 434. Shipped it."
-    with_reply = BOARD.replace(
-        f"- {SHIPPED}\n", f"- {SHIPPED}\n  - {reply}\n")
-    # The ledger is given a done claim on the reply's own text, so the
-    # indent is the *only* thing standing between it and a DONE prefix.
-    # Without this the reply is skipped for having no claim, the guard is
-    # never reached, and the test passes whether or not it exists.
-    ledger = dict(FINISHED)
-    ledger[slug_for_capture(reply)] = 434
-    after, marks = rewrite(with_reply, ledger)
-    assert len(marks) == 2
-    assert f"  - {reply}" in after.split("\n")
+    before = board_records.contents("issue", store=store)["captureReplies"]
+    assert before[0] and before[0][0].endswith("shipped it.")
+    assert _run(ledger) == 0
+    assert board_records.contents("issue", store=store)["captureReplies"] == before
 
 
-def test_check_catches_a_rewrite_that_ate_his_text():
-    """`check` asks the reader, so it has to fail on damage `rewrite` cannot do.
-
-    Hand-built rather than provoked: the guard exists for a future edit to
-    this file, and a guard only ever exercised by code that cannot trip it
-    is one that passes because nothing reaches it.
-    """
-    good, marks = rewrite(BOARD, FINISHED)
-    count = len(marks)
-    assert check(BOARD, good, count) == ""
-    truncated = good.replace(f"DONE (Cycle 434): {SHIPPED}", "DONE (Cycle 434): the search bar")
-    assert "beyond its DONE prefix" in check(BOARD, truncated, count)
-    dropped = good.replace(f"- {FRESH}\n", "")
-    assert "capture count moved" in check(BOARD, dropped, count)
-    assert check(BOARD, good, 1) == "marked 1 bullet(s) but 2 capture(s) changed"
+def test_the_board_rows_and_write_ups_survive(store, ledger):
+    before = board_records.contents("issue", store=store)
+    assert _run(ledger) == 0
+    after = board_records.contents("issue", store=store)
+    assert after["items"] == before["items"]
+    assert after["details"] == before["details"]
 
 
-def test_check_catches_a_broken_board():
-    good, marks = rewrite(BOARD, FINISHED)
-    count = len(marks)
-    broken = good.replace("| #2 | The search bar closes my keyboard", "| #2 | something else")
-    assert check(BOARD, broken, count) == "board rows changed"
+def test_nothing_to_mark_writes_nothing(store, tmp_path, capsys):
+    """So a run on a quiet ledger burns no revision on any document."""
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"claims": []}), encoding="utf-8")
+    before = [dict(doc) for doc in _docs(store)]
+    assert _run(str(empty)) == 0
+    assert "nothing to mark" in capsys.readouterr().out
+    assert [dict(doc) for doc in _docs(store)] == before
 
 
 def test_the_slug_guard_refuses_a_mark_that_ate_a_word():
     """Both directions, because a guard that only ever says yes says nothing."""
-    from tools.close_done_captures import mark_kept_its_slug
     slug = slug_for_capture(SHIPPED)
-    assert mark_kept_its_slug(f"- DONE (Cycle 434): {SHIPPED}", slug)
-    assert mark_kept_its_slug(f"- DONE (Cycle 434): 🔵 Medium: {SHIPPED}", slug)
-    assert not mark_kept_its_slug("- DONE (Cycle 434): the search bar", slug)
-    assert not mark_kept_its_slug(f"- {SHIPPED}", slug)
+    assert mark_kept_its_slug(f"DONE (Cycle 434): {SHIPPED}", slug)
+    assert mark_kept_its_slug(f"DONE (Cycle 434): 🔵 Medium: {SHIPPED}", slug)
+    assert not mark_kept_its_slug("DONE (Cycle 434): the search bar", slug)
+    assert not mark_kept_its_slug(SHIPPED, slug)
 
 
-def _run(tmp_path, monkeypatch, extra=()):
-    """One successful `--dry-run` mark of both finished captures."""
-    board = tmp_path / "issues.md"
-    board.write_text(BOARD, encoding="utf-8")
-    ledger = tmp_path / "claims.json"
-    ledger.write_text(LEDGER, encoding="utf-8")
-    return close_done_captures.main(
-        ["--file", str(board), "--board", "issues",
-         "--claims", str(ledger), "--dry-run", *extra])
+# --- what the walk hands to the writer ----------------------------------
 
 
-def test_main_reads_each_version_once(tmp_path, monkeypatch):
-    """Two versions of one document, one read each -- #203's read-once rule.
+def test_the_walk_hands_over_the_document_it_read(store):
+    """Not a fresh one built from the text.
 
-    `main` used to parse `before` inside `check` and run `plan` over it a
-    second time to print what it had marked, which on a string is free and
-    on the record store is a second round trip whose answer can differ from
-    the one that was written.
+    `change_capture_text` refuses a document with no `_rev`, because that
+    revision is the only thing between this rewrite and clobbering a reply
+    another cycle wrote under his bullet while I was deciding to mark it.
+    A `plan` that returned the text alone would make the caller mint one.
     """
-    counts = {"parse_board": 0, "plan": 0}
-    for name in counts:
-        real = getattr(close_done_captures, name)
-
-        def counting(*a, _real=real, _name=name, **k):
-            counts[_name] += 1
-            return _real(*a, **k)
-
-        monkeypatch.setattr(close_done_captures, name, counting)
-
-    assert _run(tmp_path, monkeypatch) == 0
-    assert counts == {"parse_board": 2, "plan": 1}
+    read = {doc["_id"]: doc for doc in _docs(store)}
+    for doc, _old, _new, _slug, _cycle in plan(list(read.values()), FINISHED):
+        assert doc is read[doc["_id"]]
+        assert doc["_rev"]
 
 
-def test_the_guard_cannot_reach_a_document(tmp_path, monkeypatch):
-    """`check_from_contents` takes what it compares; it fetches nothing.
+def test_a_refusal_mid_walk_says_how_many_landed(store, ledger, capsys):
+    """The one thing a per-bullet write owes that a single write does not.
 
-    The count above is satisfied by a guard that parses once and a `main`
-    that parses once, which is not the property that survives the
-    switchover. So this runs the same mark with the module's parser
-    replaced by something that raises, after `main` has taken its reads.
+    The second mark is refused after the first has landed. A run that
+    printed only the refusal would read as a run that wrote nothing, and
+    the next cycle would go looking for two unmarked bullets when one of
+    them is already marked.
     """
-    guard = close_done_captures.check_from_contents
+    real = board_write.change_capture_text
+    calls = {"n": 0}
 
-    def no_document_here(*a, **k):
-        monkeypatch.setattr(close_done_captures, "parse_board", _refuse)
-        return guard(*a, **k)
+    def refuse_the_second(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise board_write.CaptureRefused("no")
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(close_done_captures, "check_from_contents", no_document_here)
-    assert _run(tmp_path, monkeypatch) == 0
+    close_done_captures.board_write.change_capture_text = refuse_the_second
+    try:
+        assert _run(ledger) == 1
+    finally:
+        close_done_captures.board_write.change_capture_text = real
+    assert "marked 1 capture(s), then stopped" in capsys.readouterr().err
+    # And the half that landed really landed, which is what makes the
+    # count a fact rather than a guess.
+    assert _captures(store)[0] == f"DONE (Cycle 434): {SHIPPED}"
 
 
-def _refuse(*a, **k):
-    raise AssertionError("the guard reached back to the document it was handed")
+def test_a_dry_run_writes_nothing(store, ledger, capsys):
+    before = [dict(doc) for doc in _docs(store)]
+    assert _run(ledger, "--dry-run") == 0
+    assert "would mark 2 capture(s)" in capsys.readouterr().out
+    assert [dict(doc) for doc in _docs(store)] == before
 
 
-def test_main_refuses_a_write_that_ate_one_of_his_captures(tmp_path, monkeypatch):
-    """The guard, driven through `main` rather than called as a function.
+def test_an_unmigrated_board_is_refused_rather_than_read_empty(monkeypatch, ledger, capsys):
+    """`capture_documents` raises `UnmigratedStore`; an empty walk would not.
 
-    Every other test of it builds both sides itself, so nothing proved
-    `main` hands it the *right* two documents -- a `main` that parsed
-    `before` twice, or `after` twice, compares a board to itself and can
-    never report anything while every direct test stays green.
+    A store with no records answers "no captures", which reads exactly like
+    a board whose bullets are all marked already -- and the run would exit 0
+    having looked at nothing.
     """
-    real = close_done_captures.rewrite
+    def unmigrated(*args, **kwargs):
+        raise board_records.UnmigratedStore("no records here")
 
-    def damaged(markdown, finished):
-        after, marks = real(markdown, finished)
-        return after.replace(f"- {FRESH}\n", ""), marks
-
-    monkeypatch.setattr(close_done_captures, "rewrite", damaged)
-    assert _run(tmp_path, monkeypatch) == 1
+    monkeypatch.setattr(board_records, "capture_documents", unmigrated)
+    assert _run(ledger) == 1
+    assert "no records here" in capsys.readouterr().err
 
 
-def test_main_refuses_a_write_that_moved_one_of_his_rows(tmp_path, monkeypatch):
-    """The board-rows half, in the direction the capture guard cannot see."""
-    real = close_done_captures.rewrite
+def test_a_mark_that_moved_a_slug_stops_the_run_before_any_write(store, ledger, monkeypatch, capsys):
+    """The guard `main` cannot trip from the inside, driven from the outside.
 
-    def damaged(markdown, finished):
-        after, marks = real(markdown, finished)
-        return after.replace("| ⚪ Backlog | 08-20 |", "| ✅ Done | 08-20 |"), marks
+    `mark_kept_its_slug` re-hashes the bullet this run is about to write, and
+    no correct mark can fail it -- so nothing in the walk reaches the refusal,
+    and a mutation deleting it survived the first round of this file. It is
+    worth keeping rather than deleting because it is the one failure this tool
+    cannot make quietly: a mark that ate a word stops matching the ledger, the
+    next run marks the shortened bullet again under a new slug, and the prefix
+    stacks.
 
-    monkeypatch.setattr(close_done_captures, "rewrite", damaged)
-    assert _run(tmp_path, monkeypatch) == 1
-
-
-def test_main_refuses_a_write_that_changed_one_of_his_write_ups(tmp_path, monkeypatch):
-    """The `# Details` half, which nothing exercised in either direction.
-
-    Found by mutation: deleting the write-up comparison out of the guard
-    left all sixteen tests in this file green. It is the half most worth
-    having -- a row's body is his own prose, the page draws it, and an
-    edit to it is invisible in the table the other two halves compare.
+    The assertion that matters is the second one. The check runs over every
+    mark before the first write, so a refusal on the last of them still costs
+    nothing -- and a version that checked each bullet as it wrote it would
+    pass the exit code and fail this.
     """
-    real = close_done_captures.rewrite
-
-    def damaged(markdown, finished):
-        after, marks = real(markdown, finished)
-        return after.replace("Every letter dismisses it.", "Something else."), marks
-
-    monkeypatch.setattr(close_done_captures, "rewrite", damaged)
-    assert _run(tmp_path, monkeypatch) == 1
+    before = [dict(doc) for doc in _docs(store)]
+    monkeypatch.setattr(close_done_captures, "mark_kept_its_slug",
+                        lambda text, slug: False)
+    assert _run(ledger) == 1
+    assert "marking moved the slug" in capsys.readouterr().err
+    assert [dict(doc) for doc in _docs(store)] == before

@@ -204,8 +204,10 @@ def check_from_contents(old, new, before, after, moved):
     that silently stopped being part of its own heading.
 
     Takes the two parsed boards rather than parsing them itself, the same
-    split #203 made in `board_capture`, `board_row`, `close_done_captures`
-    and the five single-cell writers: once the source is the record store
+    split #203 made in `board_capture`, `board_row` and the five single-cell
+    writers -- `close_done_captures` was on that list until its own guard
+    was deleted outright, the whole board check having moved down into
+    `board_write.change_capture_text`: once the source is the record store
     a parse the guard takes for itself is a second round trip a concurrent
     write can land between, and this one would then be checking the rows
     of one version of the board against the captures of another.

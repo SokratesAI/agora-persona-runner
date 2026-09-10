@@ -426,13 +426,15 @@ def add_row(board, title, dated, priority, status="backlog", write_up="",
             notes=(), project="", cycle=None, author=None, store=board_store):
     """Board a new row. Returns the row it wrote, in `parse_board`'s shape.
 
-    The records half of `nova_boards.add_row`, and the door the next three
-    writers are blocked on: `board_capture` promotes one of his bare captures
-    into a row, `board_row` boards one on Nova's own two files, and
-    `close_done_captures` needs the same call. Every writer converted before
-    this one *changes* a row that already exists -- `change_row` and
-    `append_note` between them cover all of that -- and none of them can
-    create one.
+    The records half of `nova_boards.add_row`, and the door `board_capture`
+    was blocked on: it promotes one of his bare captures into a row. Every
+    writer converted before this one *changes* a row that already exists --
+    `change_row` and `append_note` between them cover all of that -- and none
+    of them can create one. This docstring named two more callers when it was
+    written and neither was right: `board_row` boards a row on **Nova's own**
+    two files and came off the migration list entirely, and
+    `close_done_captures` marks a bullet in place, so what it needed was
+    `change_capture_text` below.
 
     **The new row goes to the top, because that is where the markdown put
     it.** `nova_boards._board_insert_line` inserts directly under the header
@@ -566,7 +568,7 @@ class CaptureRefused(WriteRefused):
 def change_capture_text(board, doc, text, store=board_store):
     """Rewrite one capture's own words, and check the whole board afterwards.
 
-    The door `tools.close_done_captures` is blocked on, and the last of the
+    The door `tools.close_done_captures` is built on, and the last of the
     three capture primitives #203 needs: `board_records.capture_at` finds a
     bullet, `board_store.delete_capture` removes one, and this changes the
     words in one. `board_store.write_capture`'s docstring already named this

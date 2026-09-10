@@ -25,10 +25,10 @@ compare-and-swap. This reads that record instead of asking for the habit
 again -- Cycle 485's lesson, that a missing button is not a missing
 habit, applied one file over.
 
-    python3 -m tools.close_done_captures --file /tmp/i.md --board issues \\
+    python3 -m tools.close_done_captures --board issue \\
         --claims claims.json --dry-run
 
-Then `roll_done_captures` on the same file does the moving. Two tools
+Then `roll_done_captures` on the same board does the moving. Two tools
 rather than one because they answer to different evidence: this one
 believes the ledger, that one believes the bullet, and a cycle that
 marked a bullet by hand still wants the second without the first.
@@ -50,10 +50,40 @@ from once a row is gone.
 `slug_for_capture` is hashed off the bullet with the DONE marker and the
 rating already stripped (`top_board_rows.unboarded_captures`), so
 marking a bullet cannot change its own identity. That is what makes this
-idempotent, and it is asserted per bullet before the rewrite is returned
+idempotent, and it is asserted per bullet before the write is attempted
 rather than trusted from the docstring.
 
-Exits 0 whether it marked anything or not, 1 on a check failure.
+**#203: the captures come out of the record store, one document each.**
+Two things that were true of the markdown version are gone rather than
+ported. There is no `--file`, because a capture is a document and the
+board it belongs to is a name; and there is no line rewriting, because a
+document's `text` *is* the bullet -- his trailing whitespace, his
+wrapping and my own indentation were properties of a file, and the file
+is now a generated view. The indented-reply skip goes with them: a reply
+is `replies` on the capture document, so there is no longer a bullet in
+the walk that could be mine to mark. `board_write.change_capture_text`
+copies the replies across untouched and refuses a document with no
+`_rev`, which is why the walk hands over the document it read rather than
+a fresh one built from the text.
+
+**Each bullet is its own write, and that is not a batch this could
+usefully make atomic.** `change_capture_text` re-reads the whole board
+before and after each one, so a mark that lands on the wrong capture is
+caught on the write that did it rather than at the end of the run; and a
+run that dies halfway leaves the bullets it already marked marked, which
+the next run skips, because a marked bullet no longer matches the ledger
+walk. That is the same idempotence the markdown version had, arrived at
+from the other side.
+
+This module has no `check_from_contents` of its own any more. The whole
+board check it used to do belongs to `change_capture_text` now -- rows,
+write-ups, capture count, replies and exactly-one-bullet-moved -- and a
+second copy here would be a second copy of an enforced rule, the call
+`board_capture`, `board_milestone` and `board_size` each made on the way
+past.
+
+Exits 0 whether it marked anything or not, 1 on a refusal or a check
+failure.
 """
 
 import argparse
@@ -64,10 +94,14 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_boards import (
-    parse_board, split_capture_done, split_capture_priority,
-)
-from agora_runner.nova_capture import _capture_span
+from agora_runner import board_records, board_store, board_write
+from agora_runner.board_document import BOARDS, capture_text_of
+# By name rather than as `board_store.StoreError`: the module-level
+# `board_store` is the seam a test swaps for a fake, so reading the
+# exception class off it catches nothing and raises `AttributeError`
+# out of the `except` clause itself. Found by the mid-walk refusal test.
+from agora_runner.board_store import StoreError
+from agora_runner.nova_boards import split_capture_done, split_capture_priority
 from agora_runner.nova_claims import (
     finished_claims, load as load_claims, slug_for_capture,
 )
@@ -87,80 +121,35 @@ def done_cycles(ledger_text):
             if str(item).startswith("capture-")}
 
 
-def plan(markdown, finished):
-    """`[(line_index, old_line, new_line, slug, cycle)]` for what to mark.
+def plan(captures, finished):
+    """`[(doc, old_text, new_text, slug, cycle)]` for what to mark.
 
-    Works on raw file lines rather than on `parse_board`'s output because
-    the bullet has to come back byte-identical apart from the prefix --
-    his wrapping, his emoji, his trailing spaces. A capture that already
-    carries a DONE marker is skipped, which is what makes a second run a
-    no-op.
+    Takes the capture documents as read -- `board_records.capture_documents`
+    output, `_rev` and all -- and hands each one straight back out, because
+    `change_capture_text` writes conditional on that revision and a document
+    this function re-minted would be a write aimed at nothing.
+
+    A capture that already carries a DONE marker is skipped, which is what
+    makes a second run a no-op: `split_capture_done` sees the marker, and a
+    bullet with no marker is the only kind whose slug is looked up at all.
     """
-    lines = (markdown or "").split("\n")
-    start, first, end = _capture_span(lines)
-    if first is None:
-        return []
-
     marks = []
-    for index in range(first, end):
-        line = lines[index]
-        stripped = line.strip()
-        if not stripped.startswith("- "):
-            continue
-        if line[:1].isspace():
-            # An indented bullet is a cycle's reply written under his
-            # capture, not a capture. `roll_done_captures.plan` folds it
-            # into the block above for the same reason; marking one DONE
-            # would put a prefix on my own sentence.
-            continue
-        bullet = stripped[2:]
-        already, rest = split_capture_done(bullet)
+    for doc in captures or ():
+        text = capture_text_of(doc)
+        already, rest = split_capture_done(text)
         if already:
             continue
-        _, text = split_capture_priority(rest)
-        slug = slug_for_capture(text)
+        _, bare = split_capture_priority(rest)
+        slug = slug_for_capture(bare)
         cycle = finished.get(slug)
         if cycle is None:
             continue
-        # Rebuilt from the line's own prefix rather than by substituting
-        # the bullet text back into it, so his trailing whitespace and any
-        # indentation survive and nothing can match twice.
-        head = line[:len(line) - len(line.lstrip())] + "- "
-        tail = line[len(head) + len(bullet):]
-        marks.append((index, line,
-                      f"{head}DONE (Cycle {int(cycle)}): {bullet}{tail}",
+        marks.append((doc, text, f"DONE (Cycle {int(cycle)}): {text}",
                       slug, cycle))
     return marks
 
 
-def rewrite(markdown, finished):
-    """The file with every ledger-closed capture marked. `(text, marks)`.
-
-    Returns the input unchanged when there is nothing to mark, so the
-    caller can skip the `put` rather than burn a revision on an identical
-    document.
-
-    It returns the marks themselves rather than how many there were,
-    because `main` used to call `plan` a second time to print what it had
-    marked -- the same shape `board_status` and its four siblings carried
-    until #203 took it out of them. Two runs of `plan` over one document
-    is a report describing a plan other than the one that was written,
-    and once his captures come out of the record store rather than off a
-    string in memory the second run is a second round trip as well.
-    """
-    marks = plan(markdown, finished)
-    if not marks:
-        return markdown, []
-    lines = (markdown or "").split("\n")
-    for index, _old, new, slug, _cycle in marks:
-        if not mark_kept_its_slug(new, slug):
-            raise SystemExit(
-                f"marking moved the slug of {slug}: refusing to write")
-        lines[index] = new
-    return "\n".join(lines), marks
-
-
-def mark_kept_its_slug(line, slug):
+def mark_kept_its_slug(text, slug):
     """Does a marked bullet still hash to the slug the ledger matched?
 
     The one thing this tool cannot get wrong quietly. `slug_for_capture`
@@ -169,100 +158,71 @@ def mark_kept_its_slug(line, slug):
     the next run would then mark the shortened bullet again under a new
     slug and stack a second prefix on it.
 
-    Its own function so a test can hand it a corrupted line. Inside
-    `rewrite` nothing can reach the failing branch today, and a guard
-    only ever called by code that cannot trip it passes for the wrong
-    reason -- which is the exact defect Cycle 485 filed against its own
-    round of guards.
+    Its own function so a test can hand it a corrupted bullet. Inside the
+    walk nothing can reach the failing branch today, and a guard only ever
+    called by code that cannot trip it passes for the wrong reason --
+    which is the exact defect Cycle 485 filed against its own round of
+    guards.
     """
-    done, rest = split_capture_done(line.strip()[2:])
+    done, rest = split_capture_done(text)
     if not done:
         return False
-    _, text = split_capture_priority(rest)
-    return slug_for_capture(text) == slug
-
-
-def check_from_contents(old, new, marked):
-    """Ask the reader, not the writer, whether the rewrite was faithful.
-
-    `roll_done_captures.check_from_contents`'s lesson borrowed rather
-    than re-learned: these files draw his two board pages, and the failure
-    mode of editing one is silent. So the board rows and their write-ups
-    must come back identical, the capture list must keep exactly the same number of
-    bullets in the same order, and the only difference in any of them
-    must be a DONE prefix.
-
-    Takes the two parsed boards rather than the two markdown strings and
-    reaches for no document of its own -- `main` reads each version once
-    and hands the dicts here. Same split as `board_capture`, `board_row`
-    and the five single-cell writers before it (#203): on a string the
-    extra parses were free and could not disagree, but once the source is
-    the record store they are separate `_all_docs` queries a concurrent
-    write can land between, and this guard would then be comparing the
-    rows of one version of the board against the captures of another.
-    No markdown door, for the reason `board-records.md` gives: nothing
-    outside `main` and these tests has ever called it.
-    """
-    if old["items"] != new["items"]:
-        return "board rows changed"
-    if old.get("details") != new.get("details"):
-        return "write-ups changed"
-    if len(old["captures"]) != len(new["captures"]):
-        return (f"capture count moved {len(old['captures'])} -> "
-                f"{len(new['captures'])}")
-    changed = 0
-    for was, now in zip(old["captures"], new["captures"]):
-        if was == now:
-            continue
-        done, rest = split_capture_done(now)
-        if not done or rest != split_capture_done(was)[1]:
-            return f"a capture changed beyond its DONE prefix: {was[:60]!r}"
-        changed += 1
-    if changed != marked:
-        return f"marked {marked} bullet(s) but {changed} capture(s) changed"
-    return ""
+    _, bare = split_capture_priority(rest)
+    return slug_for_capture(bare) == slug
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--file", required=True,
-                        help="board file on disk; the caller owns the "
-                             "vault compare-and-swap")
-    parser.add_argument("--board", required=True, choices=["issues", "ideas"],
-                        help="which of his two boards, for the report only")
+    parser.add_argument("--board", required=True, choices=list(BOARDS),
+                        help="which of his two boards to walk")
     parser.add_argument("--claims", required=True,
                         help="claims.json on disk")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would be marked, write nothing")
     args = parser.parse_args(argv)
 
-    with open(args.file, encoding="utf-8") as handle:
-        before = handle.read()
     with open(args.claims, encoding="utf-8") as handle:
         finished = done_cycles(handle.read())
 
-    after, marks = rewrite(before, finished)
-    marked = len(marks)
-    if not marked:
+    try:
+        captures = board_records.capture_documents(
+            args.board, store=board_store)
+    except board_records.RecordError as problem:
+        print(f"REFUSED: {problem}", file=sys.stderr)
+        return 1
+
+    marks = plan(captures, finished)
+    if not marks:
         print(f"{args.board}: nothing to mark "
               f"({len(finished)} done capture claim(s) in the ledger)")
         return 0
 
-    problem = check_from_contents(
-        parse_board(before or ""), parse_board(after or ""), marked)
-    if problem:
-        print(f"{args.board}: refusing to write — {problem}", file=sys.stderr)
-        return 1
-
-    for _index, old, _new, _slug, cycle in marks:
-        print(f"  DONE (Cycle {cycle}): {old.strip()[2:][:70]}")
+    for _doc, old, new, slug, cycle in marks:
+        if not mark_kept_its_slug(new, slug):
+            print(f"{args.board}: refusing to write — marking moved the slug "
+                  f"of {slug}", file=sys.stderr)
+            return 1
+        print(f"  DONE (Cycle {cycle}): {old[:70]}")
     if args.dry_run:
-        print(f"{args.board}: would mark {marked} capture(s) (dry run)")
+        print(f"{args.board}: would mark {len(marks)} capture(s) (dry run)")
         return 0
 
-    with open(args.file, "w", encoding="utf-8") as handle:
-        handle.write(after)
-    print(f"{args.board}: marked {marked} capture(s)")
+    # Every slug was checked above before the first write, so a refusal
+    # arriving from the walk costs no half-marked board. Below this line a
+    # failure has to say how far it got: the bullets already marked are
+    # marked, and re-running the same call picks up from there.
+    written = 0
+    for doc, _old, new, _slug, _cycle in marks:
+        try:
+            board_write.change_capture_text(
+                args.board, doc, new, store=board_store)
+        except (board_write.WriteRefused, board_write.BoardDamaged,
+                board_records.RecordError, StoreError) as problem:
+            print(f"{args.board}: marked {written} capture(s), then stopped — "
+                  f"{problem}", file=sys.stderr)
+            return 1
+        written += 1
+    print(f"{args.board}: marked {written} capture(s)")
     return 0
 
 
