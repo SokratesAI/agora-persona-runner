@@ -552,9 +552,9 @@ def code_from_messages(rows, states):
     alone -- `finish` would then refuse on the state mismatch and the real
     code, sitting one message further down, would never be tried.
 
-    It takes every unspent session's state rather than only the newest,
-    because he answers the link he is looking at and that is not always the
-    last one this loop minted -- see `sessions_in`. The state comes back with
+    It takes every state the session file carries rather than only the
+    newest, because he answers the link he is looking at and that is not
+    always the last one this loop minted -- see `sessions_in`. The state comes back with
     the code so the caller knows which verifier to spend it against; two
     sessions can be live at once and only one of them can exchange it.
     """
@@ -759,7 +759,8 @@ def _cmd_finish(args) -> int:
         print(f"CANNOT SEE  no usable session at {args.session}: {problem}")
         return 1
     code, state = split_pasted_code(args.code)
-    session = sessions_in(document)[0] if sessions_in(document) else {}
+    carried = sessions_in(document)
+    session = carried[0] if carried else {}
     if state is not None:
         # Any unspent session, not only the newest: he answers the link he is
         # looking at, and `start --force` now keeps the one it replaced.
