@@ -100,7 +100,8 @@ SLUG_RE = re.compile(r"^(idea|issue)-(\d+)$")
 CLOSED_KEYS = frozenset({"done", "outdated"})
 
 #: The claim slug says `idea`/`issue`; the key this module files rows under
-#: says `ideas`/`issues`; the record store says `idea`/`issue` again. One map here
+#: says `ideas`/`issues`; the record store says `idea`/`issue` again. One
+#: map here
 #: rather than a `[:-1]` at the call site, because "drop the trailing s" is a
 #: rule about English that happens to hold for two words.
 RECORD_BOARD = {"ideas": "idea", "issues": "issue"}
@@ -192,7 +193,8 @@ def check(fetch=_fetch, boards=("ideas", "issues"), contents=board_contents):
     newest claim is `done` and whose cell is neither closed nor blocked.
     `blocked` is the same tuple for a `done` claim against a row blocked on
     the owner, and `mirrors` for the opposite disagreement; both print and
-    neither raises. `unreadable` names the claims ledger if it did not come back, and any board\n    the record store would not answer for.
+    neither raises. `unreadable` names the claims ledger if it did not
+    come back, and any board the record store would not answer for.
     `swept` is the number of rows that carried a claim at all, so "no drift"
     can never be confused with "no claims in the window".
     """
