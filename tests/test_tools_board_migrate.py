@@ -527,3 +527,160 @@ def test_a_differing_table_block_is_named_by_its_columns(couch):
     assert "columns" in eight
     assert "Milestone" in eight
     assert "char(s)" not in eight
+
+
+# `--resync`: the second write of an already-seeded board. `migrate` is a
+# one-way door on purpose and stays one; these are about the door beside it,
+# and every one of them is about what SURVIVES the second write rather than
+# what it stores, because storing is the easy half.
+
+
+def test_a_resync_keeps_the_id_of_a_bullet_he_did_not_edit(couch):
+    """The whole reason this is not "empty the board and seed it again".
+
+    `entity_id.mint_capture` is deliberately not idempotent, so a re-seed
+    hands every bullet a fresh id, and `nova_site` addresses his Edit route
+    and the replies underneath by that id. Re-minting an unchanged bullet
+    silently moves both."""
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["a thing he wrote", "another thing"])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    before = {doc["text"]: doc["captureId"] for doc
+              in board_store.stored_capture_documents("issue").values()}
+
+    board_migrate.resync(markdown, "issue", apply=True)
+
+    after = {doc["text"]: doc["captureId"] for doc
+             in board_store.stored_capture_documents("issue").values()}
+    assert after == before, "an unchanged bullet was re-minted"
+
+
+def test_a_resync_mints_only_the_bullet_he_actually_added(couch):
+    """The other half of the same rule: a new bullet has to get an id, and
+    the report has to say which of the two happened -- a run that reports
+    "3 captures" says nothing about whether it just orphaned two of them."""
+    board_migrate.migrate(
+        board_with_captures([(1, "Nova", "")], captures=["first"]),
+        "issue", apply=True)
+
+    report = board_migrate.resync(
+        board_with_captures([(1, "Nova", "")], captures=["first", "second"]),
+        "issue", apply=True)
+
+    assert (report["captures_kept"], report["captures_minted"]) == (1, 1)
+    from agora_runner import board_records
+    assert board_records.contents("issue")["captures"] == ["first", "second"]
+
+
+def test_a_resync_takes_his_edits_and_drops_what_he_deleted(couch):
+    """Markdown in, store out. A row he closed, a write-up he changed and a
+    bullet he deleted all have to land, or the store goes on serving what he
+    replaced."""
+    from agora_runner import board_records
+
+    board_migrate.migrate(
+        board_with_captures([(1, "Nova", ""), (2, "Nova", "")],
+                            captures=["keep me", "delete me"]),
+        "issue", apply=True)
+
+    board_migrate.resync(
+        board_with_captures([(1, "Nova", "")], captures=["keep me"]),
+        "issue", apply=True)
+
+    contents = board_records.contents("issue")
+    assert [item["number"] for item in contents["items"]] == [1]
+    assert contents["captures"] == ["keep me"]
+
+
+def test_a_resync_refuses_a_board_nobody_has_seeded(couch):
+    """A resync of an unmigrated board is a seed, and a seed is `migrate`'s
+    job with `migrate`'s report and `migrate`'s refusals. Two commands that
+    both first-write a board is the split brain #203 exists to remove."""
+    with pytest.raises(board_migrate.MigrationRefused) as refused:
+        board_migrate.resync(board([(1, "Nova", "")]), "issue", apply=True)
+
+    assert "never been migrated" in str(refused.value)
+    assert couch.bulk_calls == []
+
+
+def test_a_resync_refuses_markdown_that_parses_to_no_rows(couch):
+    """A board file is fetched over the vault tool and an oversized read comes
+    back as a ~2KB preview rather than an error, so "no rows" is what a
+    truncated fetch looks like from here. `write_rows` prunes, so accepting it
+    would tombstone his whole board off a read that failed quietly."""
+    board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
+    stored_before = set(board_store.stored_documents("issue"))
+
+    with pytest.raises(board_migrate.MigrationRefused) as refused:
+        board_migrate.resync("# Not a board\n", "issue", apply=True)
+
+    assert "no rows at all" in str(refused.value)
+    assert set(board_store.stored_documents("issue")) == stored_before
+
+
+def test_a_resync_dry_run_writes_nothing(couch):
+    """Same default as `migrate`: this runs against his live boards, and a
+    dry run that wrote would be unrecoverable by the time anyone read it."""
+    board_migrate.migrate(
+        board_with_captures([(1, "Nova", "")], captures=["first"]),
+        "issue", apply=True)
+    calls = len(couch.bulk_calls)
+
+    report = board_migrate.resync(
+        board_with_captures([(1, "Nova", "")], captures=["first", "second"]),
+        "issue")
+
+    assert report["applied"] is False
+    assert (report["captures_kept"], report["captures_minted"]) == (1, 1)
+    assert len(couch.bulk_calls) == calls
+
+
+def test_two_identical_bullets_keep_their_two_ids(couch):
+    """He writes `- ` placeholders and repeats himself, so the same words can
+    sit on his board twice. Matching text to a single id would hand both
+    copies the first one's, and `_bulk_write` refuses a duplicate id -- the
+    right refusal in the wrong place, after a bullet was already lost."""
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["same words", "same words"])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    before = sorted(doc["captureId"] for doc
+                    in board_store.stored_capture_documents("issue").values())
+
+    report = board_migrate.resync(markdown, "issue", apply=True)
+
+    assert report["captures_kept"] == 2
+    assert sorted(doc["captureId"] for doc
+                  in board_store.stored_capture_documents("issue").values()
+                  ) == before
+
+
+def test_the_cli_refuses_status_together_with_resync(capsys, tmp_path):
+    """One reads and one writes; a run carrying both has asked for opposite
+    things and there is no reading of it that is obviously what was meant."""
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
+
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status", "--resync"])
+
+    assert code == 2
+    assert "REFUSED" in capsys.readouterr().out
+
+
+def test_a_resync_re_ranks_every_row_from_the_markdown(couch):
+    """Pinned because it is a boundary, not because it is desirable. Ranks are
+    minted fresh from the file's row order on every run, so a resync moves a
+    row back to where the markdown puts it. Correct while markdown is truth;
+    the day #202 writes a drag-reorder into the store, this is what would
+    undo it, and a test that says so is cheaper than finding out."""
+    board_migrate.migrate(board([(1, "Nova", ""), (2, "Nova", "")]),
+                          "issue", apply=True)
+    moved = board_store.read_row("issue", 2)
+    moved["rank"] = "zzz"
+    board_store.write_row(moved)
+    assert board_store.read_row("issue", 2)["rank"] == "zzz"
+
+    board_migrate.resync(board([(1, "Nova", ""), (2, "Nova", "")]),
+                         "issue", apply=True)
+
+    assert board_store.read_row("issue", 2)["rank"] != "zzz"
