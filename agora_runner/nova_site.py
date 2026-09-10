@@ -253,7 +253,8 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
-from agora_runner.nova_next import next_payload, project_milestones, rank
+from agora_runner.nova_next import (next_payload, next_payload_from_contents,
+                                    project_milestones, rank)
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
 from agora_runner.nova_push import store_subscription, vapid_key
 from agora_runner.nova_plan import plan_payload as shape_plan
@@ -277,6 +278,7 @@ from agora_runner.nova_sources import (
     goal_history_json,
     retro_ledger_json,
 )
+from agora_runner import board_records
 from agora_runner import ticket_docs
 from agora_runner.ticket_docs import read_details, read_head, read_rows
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
@@ -1887,6 +1889,66 @@ def galaxy_up_payload():
     return galaxy_payload(claims_ledger_json(), datetime.now(timezone.utc))
 
 
+#: Which issue #203 record board holds each of the two boards this page
+#: draws. Spelled here rather than imported from `tools.board_put`, which
+#: owns the same mapping keyed by vault path: the site image copies
+#: `agora_runner/` and the two entry points and not `tools/`, so an import
+#: of it is green in the test suite and an ImportError on the running pod.
+_RECORD_BOARDS = {"issues": "issue", "ideas": "idea"}
+
+
+def _next_from_records():
+    """Both of his boards out of the #203 record store, or `None`.
+
+    Issue #203's switchover, for `/api/next`. `next_up_payload` is the
+    slowest payload this server builds -- 7.41s cold, measured against the
+    live pod on 2026-09-07 -- and most of that is fetching and regex-parsing
+    537KB of `issues.md` and 920KB of `ideas.md` to rank them. The records
+    answer the same four keys without either file.
+
+    **Both boards or neither.** Ranking one board out of the store and the
+    other out of the markdown is one list built from two sources, and
+    `rank` interleaves them, so a row could sort above another row that is
+    a revision older with nothing on the page saying so. `None` here means
+    the caller draws both from the file exactly as it always did.
+
+    The gate is `board_records.currency` against the revision the vault
+    holds now, which is the same shape `_board_from_store` uses for the
+    ticket store and for the same reason: the point of the store is not
+    fetching the 700KB file, so a check that fetched it would spend what it
+    is saving. `UNKNOWN` does not pass -- a board that carries no source
+    stamp says nothing about drift, and treating that as "no drift found"
+    would serve stale rows with more confidence than reading the file.
+
+    Every failure returns `None` and is logged. A board CouchDB will not
+    answer for, an unmigrated store, a revision check that will not run:
+    they are all the same decision here, which is to draw the file. That is
+    the opposite of `tools.top_board_rows`, where every failure raises, and
+    the difference is the reader -- a cycle can read a refusal and act on
+    it, while a visitor gets a page that failed to build.
+    """
+    contents = {}
+    for name, board in _RECORD_BOARDS.items():
+        path = BOARD_PATHS[name]["edvard"]
+        try:
+            verdict, why = board_records.currency(board, vault_doc_rev(path))
+        except Exception as problem:  # noqa: BLE001 -- see the docstring
+            log(f"nova-site next: {board} records unreadable, drawing the "
+                f"markdown: the revision check could not run: {problem}")
+            return None
+        if verdict != board_records.CURRENT:
+            log(f"nova-site next: {board} records say {verdict}, drawing the "
+                f"markdown: {why}")
+            return None
+        try:
+            contents[name] = board_records.contents(board)
+        except Exception as problem:  # noqa: BLE001 -- see the docstring
+            log(f"nova-site next: {board} records unreadable, drawing the "
+                f"markdown: {problem}")
+            return None
+    return contents
+
+
 def next_up_payload():
     """What happens next, for the one reader who cannot run the tool.
 
@@ -1895,16 +1957,32 @@ def next_up_payload():
     Both halves are answered by `tools/top_board_rows.py` at the start of
     every cycle and neither has ever left the terminal.
 
-    Four reads rather than the two board payloads the cache already
-    holds -- his two boards, the claims ledger and `projects.md`, which
-    orders the ranking between projects -- and that is deliberate: the ranking needs the board *markdown*
-    (an unanswered comment is read off the write-up under the row, which
-    the list payload does not carry), so reusing the cached payload would
-    mean re-deriving `waiting` from a different shape of the same file --
-    two answers to one question, which is the drift this repo keeps
-    paying for. Cached like the rest at 15 seconds, which is short enough
-    that a claim taken mid-cycle shows up while he is looking at it.
+    **His two boards come out of the #203 record store when it can prove
+    it is current, and neither file is fetched.** `_next_from_records`
+    says what "prove" means and returns `None` on anything less, which
+    drops through to the markdown door this always used. The ranking needs
+    the board *details* as well as the rows -- an unanswered comment is
+    read off the write-up under the row -- and `board_records.contents`
+    answers exactly what `parse_board` answered, all four keys, which is
+    why reusing the cached list payload is still not the same thing and
+    still not done here: that would be re-deriving `waiting` from a
+    different shape of the same board, two answers to one question.
+
+    The claims ledger and `projects.md` are read either way, and both stay
+    markdown after the switchover -- neither is a board. Cached like the
+    rest at 15 seconds, which is short enough that a claim taken mid-cycle
+    shows up while he is looking at it.
     """
+    contents = _next_from_records()
+    if contents is not None:
+        return next_payload_from_contents(
+            contents["issues"],
+            contents["ideas"],
+            claims_ledger_json(),
+            datetime.now(OSLO),
+            projects_markdown=project_meta_markdown(),
+            milestones_markdown=milestone_pins_markdown(),
+        )
     return next_payload(
         edvard_board_markdown("issues"),
         edvard_board_markdown("ideas"),

@@ -6137,3 +6137,170 @@ def test_the_cycles_parameter_drops_junk_rather_than_refusing_the_request():
     # Bounded: this is a list the page computed from its own marks.
     assert len(parse({"cycles": [",".join(str(n) for n in range(500))]})) \
         <= nova_site.MAX_CYCLE_LIST
+
+
+class _ReadTheStore(BaseException):
+    """A landmine `_next_from_records`' own `except Exception` cannot eat.
+
+    The fall-back tests below prove the payload draws the file by making
+    `board_records.contents` explode if it is called. A plain `AssertionError`
+    is an `Exception`, so the code under test caught its own landmine, logged
+    it and fell back -- which is exactly the behaviour the test was asserting,
+    so four mutations of the gate survived. Inheriting from `BaseException`
+    puts it outside every `except Exception` in the path.
+    """
+
+
+def _records_contents(rows=(), captures=(), details=None):
+    """A `board_records.contents` answer -- the same four keys `parse_board`
+    returns, which is that function's own contract."""
+    return {"items": list(rows), "details": dict(details or {}),
+            "captures": list(captures),
+            "captureReplies": [[] for _ in captures]}
+
+
+def test_next_reads_the_record_store_and_never_the_board_markdown():
+    """Issue #203, the last of the four callers the `*_from_contents` seam
+    named. `/api/next` was fetching 537KB of `issues.md` and 920KB of
+    `ideas.md` and parsing both with a regex to rank them; when the records
+    can prove they are current it reads them instead.
+
+    The assertion that carries this is **which door was opened**, not the
+    shape of the answer: the store and the markdown answer the same four
+    keys by definition, so an equality test between them passes on a
+    payload that quietly re-parsed the file. So `edvard_board_markdown` is
+    a landmine that raises, and the arming check is inside the test --
+    `test_the_next_landmine_is_armed` below is worthless on its own,
+    because a landmine nothing calls catches nothing.
+    """
+    nova_site.reset_cache()
+    asked = []
+
+    def boom(name):
+        raise AssertionError(f"fetched the {name} markdown")
+
+    def contents(board, **_kwargs):
+        asked.append(board)
+        return _records_contents()
+
+    with patch.object(nova_site, "edvard_board_markdown", side_effect=boom), \
+            patch.object(nova_site.board_records, "contents", side_effect=contents), \
+            patch.object(nova_site.board_records, "currency",
+                         return_value=(nova_site.board_records.CURRENT, "built from 1-aaa")), \
+            patch.object(nova_site, "vault_doc_rev", return_value="1-aaa"), \
+            patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
+            patch.object(nova_site, "project_meta_markdown", return_value=""), \
+            patch.object(nova_site, "milestone_pins_markdown", return_value=""):
+        payload = nova_site.next_up_payload()
+    assert sorted(asked) == ["idea", "issue"], \
+        f"both boards have to come out of the store, asked for {asked}"
+    assert payload["next"] == []
+
+
+def test_the_next_landmine_is_armed():
+    """The guard on the test above: `next_up_payload` must actually reach
+    `nova_site.edvard_board_markdown`, so that patching it there is a real
+    landmine rather than a patch of a name nothing calls.
+
+    Two survivors in the cycle before this one were exactly that mistake --
+    a landmine pointed at a name the code under test does not use passes
+    forever. This asserts the fall-back path dies on it.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_site, "edvard_board_markdown",
+                      side_effect=AssertionError("fetched the markdown")), \
+            patch.object(nova_site.board_records, "currency",
+                         return_value=(nova_site.board_records.UNKNOWN, "no stamp")), \
+            patch.object(nova_site, "vault_doc_rev", return_value="1-aaa"), \
+            patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
+            patch.object(nova_site, "project_meta_markdown", return_value=""), \
+            patch.object(nova_site, "milestone_pins_markdown", return_value=""):
+        with pytest.raises(AssertionError, match="fetched the markdown"):
+            nova_site.next_up_payload()
+
+
+@pytest.mark.parametrize("verdict", ["stale", "unknown"])
+def test_a_board_that_cannot_prove_it_is_current_draws_the_file(verdict):
+    """`UNKNOWN` must never read as `CURRENT`. A board carrying no source
+    stamp says nothing about drift, and serving its rows would be more
+    confident than reading the file, which is always right.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_site, "edvard_board_markdown", return_value="") as fetched, \
+            patch.object(nova_site.board_records, "currency",
+                         return_value=(verdict, "why")), \
+            patch.object(nova_site.board_records, "contents",
+                         side_effect=_ReadTheStore("read a board it could not vouch for")), \
+            patch.object(nova_site, "vault_doc_rev", return_value="1-aaa"), \
+            patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
+            patch.object(nova_site, "project_meta_markdown", return_value=""), \
+            patch.object(nova_site, "milestone_pins_markdown", return_value=""):
+        # The arming check, inside the test: a landmine pointed at a name
+        # nothing calls catches nothing, and two mutations survived that
+        # mistake the cycle before this one.
+        with pytest.raises(_ReadTheStore):
+            nova_site.board_records.contents("issue")
+        payload = nova_site.next_up_payload()
+    assert fetched.call_count == 2, "both boards have to come off the file"
+    assert payload["next"] == []
+
+
+def test_one_current_board_and_one_stale_one_draws_both_from_the_file():
+    """Both boards or neither. `rank` interleaves the two lists into one
+    ranking, so drawing `issue` from the store and `idea` from the file
+    would sort a row above another row that is a revision older with
+    nothing on the page saying so.
+    """
+    nova_site.reset_cache()
+    verdicts = {"issue": (nova_site.board_records.CURRENT, "built from 1-aaa"),
+                "idea": (nova_site.board_records.STALE, "built from 1-old")}
+    with patch.object(nova_site, "edvard_board_markdown", return_value="") as fetched, \
+            patch.object(nova_site.board_records, "currency",
+                         side_effect=lambda board, rev, **_k: verdicts[board]), \
+            patch.object(nova_site.board_records, "contents",
+                         return_value=_records_contents()), \
+            patch.object(nova_site, "vault_doc_rev", return_value="1-aaa"), \
+            patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
+            patch.object(nova_site, "project_meta_markdown", return_value=""), \
+            patch.object(nova_site, "milestone_pins_markdown", return_value=""):
+        nova_site.next_up_payload()
+    assert fetched.call_count == 2, \
+        "one board out of the store and one off the file is one ranking from two sources"
+
+
+def test_an_unreadable_record_store_draws_the_file_rather_than_failing():
+    """A CouchDB that will not answer must not turn `/api/next` into a
+    failed build. This is the opposite decision from `tools.top_board_rows`,
+    where every failure raises, and the difference is the reader: a cycle
+    can act on a refusal, a visitor gets a blank page.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_site, "edvard_board_markdown", return_value="") as fetched, \
+            patch.object(nova_site.board_records, "currency",
+                         return_value=(nova_site.board_records.CURRENT, "built from 1-aaa")), \
+            patch.object(nova_site.board_records, "contents",
+                         side_effect=RuntimeError("couchdb said no")), \
+            patch.object(nova_site, "vault_doc_rev", return_value="1-aaa"), \
+            patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
+            patch.object(nova_site, "project_meta_markdown", return_value=""), \
+            patch.object(nova_site, "milestone_pins_markdown", return_value=""):
+        payload = nova_site.next_up_payload()
+    assert fetched.call_count == 2
+    assert payload["next"] == []
+
+
+def test_a_revision_check_that_cannot_run_draws_the_file():
+    """`vault_doc_rev` raising is the check being unable to run, which is
+    not the same as the records being current and must not read as it."""
+    nova_site.reset_cache()
+    with patch.object(nova_site, "edvard_board_markdown", return_value="") as fetched, \
+            patch.object(nova_site, "vault_doc_rev",
+                         side_effect=RuntimeError("the vault said no")), \
+            patch.object(nova_site.board_records, "contents",
+                         side_effect=_ReadTheStore("read a board it could not vouch for")), \
+            patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
+            patch.object(nova_site, "project_meta_markdown", return_value=""), \
+            patch.object(nova_site, "milestone_pins_markdown", return_value=""):
+        payload = nova_site.next_up_payload()
+    assert fetched.call_count == 2
+    assert payload["next"] == []
