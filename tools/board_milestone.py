@@ -135,7 +135,14 @@ def main(argv=None):
     milestone = args.milestone.strip()
     # `--milestone ''` is an instruction rather than an omission, so blank is
     # allowed here and on neither of the other two flags.
-    for value, flag, blank_ok in ((args.milestone, "--milestone", True),
+    #
+    # **The milestone is checked after the strip, not before**, which is the
+    # order `board_project` uses and the order the markdown era used. Checking
+    # the raw value refuses `--milestone 'Backup\n'` -- a trailing line break a
+    # shell heredoc adds for free, which the old tool trimmed and accepted, and
+    # which cannot reach a cell because the value written is the stripped one.
+    # An *embedded* delimiter survives the strip and is still refused.
+    for value, flag, blank_ok in ((milestone, "--milestone", True),
                                   (args.dated, "--dated", False),
                                   (args.note, "--note", False)):
         refusal = refuse_cell(value, flag, allow_blank=blank_ok)

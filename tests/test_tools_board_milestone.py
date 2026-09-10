@@ -90,6 +90,8 @@ def test_the_named_row_is_regrouped_and_keeps_everything_else(store):
 def test_an_empty_milestone_clears_the_cell_back_to_ungrouped(store):
     """The one blank this set accepts. A milestone that turns out to be two is
     regrouped by first emptying it, so this has to stay reachable."""
+    assert _rows(store)[100]["milestone"] == "Cost and quota", \
+        "the precondition: a row that starts ungrouped makes this vacuous"
     assert _run("--dated", "09-06", milestone="") == 0
     assert _rows(store)[100]["milestone"] == ""
 
@@ -152,6 +154,7 @@ def test_a_note_and_the_regrouping_land_in_one_write(store):
 def test_a_note_takes_the_updated_cell_from_its_own_date(store):
     """`append_note` refuses a change set that also names `updated`, so this
     asserts the tool leaves it out *and* that the cell still moves."""
+    assert _rows(store)[100]["updated"] == "08-24", "the precondition"
     assert _run("--dated", "09-06", "--note", "why it moved") == 0
     assert _rows(store)[100]["updated"] == "09-06"
 
@@ -176,8 +179,11 @@ def test_a_note_without_a_date_is_refused_by_name(store, capsys):
     ("--dated", "09-06 | extra"),
     ("--dated", " "),
     ("--dated", "09-06\rmore"),
-    # Belt and braces: `_note_line` refuses these too, so these pin the exit
-    # code rather than this module's guard.
+    # `_note_line` refuses a `\r` in a note body as well, so that row pins the
+    # exit code rather than this module's guard. The `|` row does NOT have a
+    # twin down there -- `_note_line` checks `|` against the date only, on the
+    # reasoning that prose is not a cell -- so `refuse_cell` is the only thing
+    # refusing it and deleting this module's call would let it through.
     ("--note", "why | not"),
     ("--note", "why\rnot"),
 ])
@@ -190,6 +196,14 @@ def test_a_cell_delimiter_is_refused_before_anything_is_written(store, flag, val
     assert _run(*argv, **kwargs) == 1
     assert _contents(store) == before
     assert not [call for call in store.calls if call[0] == "write_row"]
+
+
+def test_a_trailing_line_break_is_trimmed_rather_than_refused(store):
+    """The value written is the stripped one, so a check of the raw argument
+    refuses an input that cannot reach a cell. `--milestone 'Backup\\n'` is what
+    a shell heredoc hands you, and the markdown-era tool accepted it."""
+    assert _run("--dated", "09-06", milestone="Picking redesign\n") == 0
+    assert _rows(store)[100]["milestone"] == "Picking redesign"
 
 
 def test_a_blank_dated_is_refused_while_a_blank_milestone_is_not(store):
