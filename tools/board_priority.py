@@ -21,7 +21,7 @@ no cycle can do.
         --priority immediate --dated 09-06 --note 'why it moved' --cycle 1087
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.board_row`, `tools.board_status` and
+contract `tools.board_row`, `tools.board_size` and
 `tools.roll_done_captures` hold, so the caller owns the compare-and-swap:
 `vault_tool.py get --rev-file` before, `board_put --if-rev-file` after.
 

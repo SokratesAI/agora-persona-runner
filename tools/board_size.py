@@ -17,7 +17,7 @@ dependency rather than a preference.
         --dated 09-06 --note 'why it is L' --cycle 1090
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.board_row`, `tools.board_status` and `tools.board_priority`
+contract `tools.board_row`, `tools.board_milestone` and `tools.board_priority`
 hold, so the caller owns the compare-and-swap: `vault_tool.py get
 --rev-file` before, `board_put --if-rev-file` after.
 

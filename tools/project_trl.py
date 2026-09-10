@@ -11,7 +11,7 @@ milestone's three fields that is mine to set. The spec's own assignment:
         --trl hardened
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.board_size`, `tools.board_priority` and `tools.board_status`
+contract `tools.board_size`, `tools.board_priority` and `tools.board_milestone`
 hold, so the caller owns the compare-and-swap: `vault_tool.py get
 --rev-file` before, `vault_tool.py put --if-rev-file` after.
 

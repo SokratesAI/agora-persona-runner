@@ -6,7 +6,7 @@ in `agora_runner.vault.vault_write_path`, which is the one place an
 in-process board write lands. Its own handoff named what that does not
 cover, and this is it.
 
-**`tools.board_capture`, `board_row`, `board_status` and `board_priority`
+**`tools.board_capture`, `board_row`, `board_priority` and `board_size`
 write a local file, and a cycle then puts that file
 into the vault with `/app/bridge/vault_tool.py put`** -- a different
 program, in a different repo, in a different process, that knows nothing
@@ -19,10 +19,11 @@ store nothing keeps current serves the owner a board that is quietly a
 day old.
 
 **That list shrinks as issue #203 converts each writer, and it is down to
-four.** `board_project` (Cycle 1329) and `board_untag_project` (Cycle 1330)
-write the record store directly through `board_write.change_row`, so they
-hold no local file for this tool to put, and naming them here would send a
-cycle looking for a markdown document that no longer exists.
+four.** `board_project` (Cycle 1329), `board_untag_project` (Cycle 1330) and
+`board_status` (Cycle 1332) write the record store directly through
+`board_write.change_row` and `append_note`, so they hold no local file for
+this tool to put, and naming them here would send a cycle looking for a
+markdown document that no longer exists.
 
 So this is the `put` those tools' callers should use. One command, and
 the ordering is the whole design:
@@ -31,8 +32,8 @@ the ordering is the whole design:
         ideas.md --if-rev-file /tmp/board.$$.rev
 
 **The vault write goes first and the store follows it.** Pushing from
-inside `board_status` -- the other obvious place -- would push before the
-vault write has happened, so a `put` that then lost its compare-and-swap
+inside the writer that produced the file -- the other obvious place -- would
+push before the vault write has happened, so a `put` that then lost its compare-and-swap
 (exit 3, which is a normal outcome with three cycles overlapping) would
 leave the store holding a board the vault never accepted. Drift in that
 direction is worse than the drift this closes, because the markdown is
