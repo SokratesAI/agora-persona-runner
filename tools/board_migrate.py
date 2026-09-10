@@ -2,6 +2,7 @@
 
     python3 -m tools.board_migrate --board issue --file issues.md
     python3 -m tools.board_migrate --board issue --file issues.md --apply
+    python3 -m tools.board_migrate --board issue --file issues.md --status
 
 Issue #203 replaces the two markdown tables with one record per row. Eight
 primitives for that are merged and none of them is wired; this is the ninth
@@ -61,7 +62,7 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import (  # noqa: E402
-    board_document, board_store, board_view, entity_id)
+    board_document, board_records, board_store, board_view, entity_id)
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
@@ -197,6 +198,148 @@ def migrate(markdown, board, apply=False, store=board_store):
     return report
 
 
+def _differing_keys(one, two):
+    """The field names two row dicts disagree on, sorted."""
+    return sorted(
+        key for key in set(one) | set(two) if one.get(key) != two.get(key))
+
+
+def differences(want, got):
+    """The first disagreement per key between two parsed board shapes.
+
+    One line per key rather than a full diff: `items` is four hundred rows
+    and a dump of both is unreadable, while *which field of which row* is
+    the whole finding. Every key is checked -- a mismatch on `items` must
+    not hide one on `captures`, because those are the two that broke
+    separately during the seed.
+    """
+    problems = []
+    for key in ("captures", "captureReplies", "items", "details"):
+        left, right = want.get(key), got.get(key)
+        if left == right:
+            continue
+        if isinstance(left, dict) and isinstance(right, dict):
+            missing = sorted(set(left) - set(right))
+            extra = sorted(set(right) - set(left))
+            if missing or extra:
+                problems.append(
+                    f"{key}: the markdown has {missing[:5]} the store does "
+                    f"not, the store has {extra[:5]} the markdown does not")
+                continue
+            for number in sorted(left):
+                if left[number] != right[number]:
+                    problems.append(f"{key}[{number}] differs")
+                    break
+            continue
+        if len(left) != len(right):
+            problems.append(
+                f"{key}: {len(left)} from the markdown, "
+                f"{len(right)} from the store")
+            continue
+        for index, (one, two) in enumerate(zip(left, right)):
+            if one == two:
+                continue
+            if isinstance(one, dict) and isinstance(two, dict):
+                fields = _differing_keys(one, two)
+                problems.append(
+                    f"{key}[{index}] (row #{one.get('number')}) differs on "
+                    f"{fields}: markdown "
+                    f"{ {f: one.get(f) for f in fields} } vs store "
+                    f"{ {f: two.get(f) for f in fields} }")
+            else:
+                problems.append(
+                    f"{key}[{index}] differs: markdown {one!r} "
+                    f"vs store {two!r}")
+            break
+    return problems
+
+
+def _head(block):
+    """A layout block named, not dumped. Its kind, its first line, its size.
+
+    Measured against his live `issues.md`: one differing block printed whole
+    is a single 221KB line, because block 200 is his entire `## Processed
+    captures` archive. The finding is *which* block moved, and nothing here
+    is data he loses by not seeing it twice -- the block is a verbatim slice
+    of the markdown file the run was handed, at the index this line names.
+    """
+    if not isinstance(block, dict):
+        return repr(block)[:120]
+    text = str(block.get("markdown") or "")
+    first = text.splitlines()[0] if text.splitlines() else ""
+    return (f"{block.get('kind')!r} block, {len(text)} char(s), "
+            f"starting {first[:80]!r}")
+
+
+def layout_differences(markdown, board, stored):
+    """Does the stored layout still match the one this markdown produces?
+
+    Asked separately from `differences` because it is a different question
+    about a different document, and folding it in would be a positive
+    result guaranteed in advance: `board_records.contents` and
+    the board parser are both written in the parser's four keys,
+    and **neither side of that comparison can see a layout at all**. The
+    layout is the record home for the blocks the parser does not model --
+    his `## Processed captures` archive is 19,653 words of it -- so a
+    comparison in those four keys agrees about the layout whether it
+    survived or not.
+
+    Compared against the *normalised* blocks rather than the ones
+    `document_layout` hands back: that function keeps a table's own header
+    in a tuple, JSON has no tuple, and a raw comparison would therefore
+    report every board as drifted. `to_layout_document` is the one spelling
+    of a stored layout, so asking the question through it keeps this check
+    off the tuple and on the content.
+    """
+    if stored is None:
+        return [f"layout: the store holds no layout for {board}"]
+    wanted = board_document.layout_blocks_of(
+        board_document.to_layout_document(
+            board_view.document_layout(markdown), board))
+    if wanted == stored:
+        return []
+    if len(wanted) != len(stored):
+        return [f"layout: {len(wanted)} block(s) from the markdown, "
+                f"{len(stored)} from the store"]
+    for index, (one, two) in enumerate(zip(wanted, stored)):
+        if one != two:
+            return [f"layout[{index}] differs: markdown {_head(one)} "
+                    f"vs store {_head(two)}"]
+    return []  # pragma: no cover -- unreachable: unequal lists differ somewhere
+
+
+def status(markdown, board, store=board_store):
+    """Does the live store still answer what this markdown parses to?
+
+    Returns `(verdict, problems)` and writes nothing at all. Three
+    verdicts: `NEVER MIGRATED`, `AGREES`, `DRIFTED`.
+
+    This is the check the switchover needs and `migrate` structurally
+    cannot give: `migrate` refuses a board that already holds records, so
+    the only board it can say anything about is one nobody has seeded. The
+    seeded board is the one that can go wrong. **`board_records.contents`
+    refuses an unmigrated store loudly and answers a stale one silently**,
+    so from the moment a board is seeded the `UnmigratedStore` refusal that
+    protects every unconverted reader is gone and nothing replaces it --
+    his boards are still served from markdown, so every edit he makes
+    drifts the store further from what he sees, with no instrument that can
+    tell. This is that instrument, and it is read-only on purpose: it is
+    safe to run against production on any cycle.
+
+    All four key ranges, not the three `contents` covers. `UnmigratedStore`
+    is caught and reported as a verdict rather than raised, because "never
+    written" is an answer to this question; any other `RecordError` is a
+    store that exists and cannot be read, which is not, and it propagates.
+    """
+    try:
+        got = board_records.contents(board, store=store)
+    except board_records.UnmigratedStore as exc:
+        return "NEVER MIGRATED", [str(exc)]
+    problems = differences(preflight.board_contents(markdown), got)
+    problems += layout_differences(markdown, board, store.read_layout(board))
+    return ("DRIFTED" if problems else "AGREES"), problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--board", required=True,
@@ -206,10 +349,28 @@ def main(argv=None):
                         help="the board markdown file")
     parser.add_argument("--apply", action="store_true",
                         help="actually write; without it nothing is stored")
+    parser.add_argument("--status", action="store_true",
+                        help="read-only: does the live store still agree "
+                             "with this markdown?")
     args = parser.parse_args(argv)
+
+    # Refused rather than silently preferring one, because the two modes
+    # differ on whether the run writes -- and a caller who asked for both
+    # cannot be assumed to have meant the writing one.
+    if args.status and args.apply:
+        print("REFUSED: --status is read-only; do not pass --apply with it")
+        return 2
 
     with open(args.file, encoding="utf-8") as handle:
         markdown = handle.read()
+
+    if args.status:
+        verdict, problems = status(markdown, args.board)
+        print(f"board: {args.board}")
+        print(f"status: {verdict}")
+        for problem in problems:
+            print(f"  {problem}")
+        return 0 if verdict == "AGREES" else 2
 
     try:
         report = migrate(markdown, args.board, apply=args.apply)
