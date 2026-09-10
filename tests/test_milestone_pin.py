@@ -262,7 +262,12 @@ def test_the_check_reads_the_records_and_never_a_board_file(monkeypatch):
     # answers, or the argument is decoration.
     store = records_store("Picking")
     monkeypatch.setattr(nova_boards, "parse_board", refuse)
-    monkeypatch.setattr(nova_next, "parse_board", refuse)
+    # `nova_next` used to hold its own reference to the parser and this
+    # patched that one too. Issue #203 deleted the import along with the
+    # last door that used it, so the assertion is now that the name is
+    # gone rather than that it raises -- the stronger of the two, and the
+    # thing that would have to come back for this module to reach a file.
+    assert not hasattr(nova_next, "parse_board")
     assert milestone_pin.known_milestones(["idea"], store=store) == {
         ("nova", "picking")}
 

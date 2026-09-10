@@ -18,13 +18,24 @@ parsing would have nothing to parse.
 
 import json
 from datetime import datetime
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from agora_runner import nova_next
+from agora_runner import board_records, nova_next
+
+
+def _refuse_the_file(*_a, **_k):
+    """The route must not reach his markdown for either board.
+
+    Patched over `nova_site.edvard_board_markdown` in the two route tests
+    below: it is still imported there for `board_payload`'s own fallback,
+    so its mere presence proves nothing and a call is what has to fail.
+    """
+    raise AssertionError("next_up_payload read a board file")
 from agora_runner.nova_next import (
-    next_payload, next_payload_from_contents,
+    next_payload_from_contents,
     open_rows_from_contents, unboarded_captures_from_contents,
 )
 
@@ -130,6 +141,7 @@ def test_a_capture_already_closed_as_a_row_drops_out():
 @pytest.mark.parametrize("door,reader", [
     ("open_rows", "open_rows_from_contents"),
     ("unboarded_captures", "unboarded_captures_from_contents"),
+    ("next_payload", "next_payload_from_contents"),
 ])
 def test_the_markdown_door_is_gone_and_the_reader_is_not(door, reader):
     """The file-shaped function is deleted, not deprecated.
@@ -174,7 +186,7 @@ def test_the_whole_payload_comes_back_with_no_file_to_parse():
     assert payload["claimsReadable"] is True
 
 
-def test_the_payload_never_reaches_a_parser(monkeypatch):
+def test_the_payload_never_reaches_a_parser():
     """The records door must not be a facade over `parse_board`.
 
     `board-records.md` bans an accessor that can fall back to the parser,
@@ -182,11 +194,15 @@ def test_the_payload_never_reaches_a_parser(monkeypatch):
     Handing in records and then parsing would still return the right answer
     for a caller that had markdown, which is exactly why this cannot be
     left to reading the diff.
-    """
-    def explode(*_a, **_k):
-        raise AssertionError("next_payload_from_contents parsed markdown")
 
-    monkeypatch.setattr("agora_runner.nova_next.parse_board", explode)
+    This used to monkeypatch `nova_next.parse_board` to raise. Issue #203
+    deleted the import along with the last door that used it, so the
+    stronger assertion is available and is made instead: the name the
+    fallback would need is not in the module at all. The payload build
+    below is what keeps that from being a bare absence check -- a module
+    that failed to import would satisfy the first line and not the rest.
+    """
+    assert not hasattr(nova_next, "parse_board")
     payload = next_payload_from_contents(
         contents([row(7)], captures=["a bullet"]), contents([row(64)]),
         json.dumps({"claims": []}), NOW)
@@ -223,15 +239,52 @@ def test_an_unreadable_ledger_is_said_out_loud_and_keeps_the_rows():
     assert [r["number"] for r in payload["next"]] == [7]
 
 
-def test_the_markdown_door_onto_the_payload_is_only_a_door():
-    """`next_payload` is `parse_board` twice and nothing else.
+def test_the_site_route_builds_the_payload_off_the_records():
+    """`next_up_payload` was `next_payload`'s last source caller.
 
-    Same pin as `test_the_markdown_door_is_only_a_door`, and the same
-    reason: the value of the split is that the composition stopped being
-    written twice, so a rule fixed on one shape and not the other is the
-    failure to catch.
+    That is what let the door be deleted, so it is the thing to pin: the
+    route reaches `board_records.contents` for each of his two boards and
+    reaches no board file at all. Asserting only that the answer is right
+    would pass just as well on the markdown it replaced.
     """
-    from agora_runner.nova_boards import parse_board
-    empty = parse_board("")
-    assert next_payload("", "", "", NOW) == next_payload_from_contents(
-        empty, empty, "", NOW)
+    from agora_runner import nova_site
+
+    asked = []
+
+    def fake_contents(board, **_kw):
+        asked.append(board)
+        return contents([row(7 if board == "issue" else 64)])
+
+    with mock.patch.object(nova_site.board_records, "contents", fake_contents), \
+            mock.patch.object(nova_site, "claims_ledger_json",
+                              lambda: json.dumps({"claims": []})), \
+            mock.patch.object(nova_site, "project_meta_markdown", lambda: ""), \
+            mock.patch.object(nova_site, "milestone_pins_markdown", lambda: ""), \
+            mock.patch.object(nova_site, "edvard_board_markdown",
+                              _refuse_the_file):
+        payload = nova_site.next_up_payload()
+
+    assert asked == ["issue", "idea"]
+    assert [(r["board"], r["number"]) for r in payload["next"]] == [
+        ("issue", 7), ("idea", 64)]
+
+
+def test_the_site_route_refuses_an_unmigrated_store_rather_than_emptying_it():
+    """A store that cannot answer must reach the client as an error.
+
+    `board_records.contents` raises instead of returning an empty board
+    precisely because `read_rows` cannot tell "never migrated" from "every
+    row closed". Catching that here would put an empty plan on his phone,
+    which is the wrong answer wearing the right shape -- the failure the
+    refusal exists to stop.
+    """
+    from agora_runner import nova_site
+
+    def unmigrated(_board, **_kw):
+        raise board_records.UnmigratedStore("nothing has ever been migrated")
+
+    with mock.patch.object(nova_site.board_records, "contents", unmigrated), \
+            mock.patch.object(nova_site, "edvard_board_markdown",
+                              _refuse_the_file):
+        with pytest.raises(board_records.RecordError):
+            nova_site.next_up_payload()

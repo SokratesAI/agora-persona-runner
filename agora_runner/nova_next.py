@@ -21,9 +21,11 @@ rather than a new ranking -- the ranking has to exist once, and it has
 to exist on the side of the line the app can see. `top_board_rows`
 imports it back and its output is unchanged.
 
-`next_payload` is the only new logic here and it does no I/O: markdown
-and the claims ledger arrive as text, the payload leaves as a dict, the
-same split `nova_plan` and `nova_retro` follow.
+`next_payload_from_contents` is the only new logic here and it does no
+I/O: the two boards arrive as `board_records.contents` dicts and the
+claims ledger as text, the payload leaves as a dict, the same split
+`nova_plan` and `nova_retro` follow. It had a markdown door in front of
+it until issue #203 deleted it -- see that function's docstring.
 """
 
 import json
@@ -32,10 +34,10 @@ import re
 from agora_runner.nova_boards import (
     BLOCKED_STATUS, PROJECT_SATISFACTION_MAX, _CLOSED_STATUS_KEYS,
     boarded_capture_rows,
-    capture_match_key, is_relayed, parse_board, parse_project_meta,
+    capture_match_key, is_relayed, parse_project_meta,
     near_miss_done_marker, parse_milestone_pins, split_capture_done,
     split_capture_priority, status_key,
-    unanswered_comment_bodies, unanswered_comment_bodies_from_details,
+    unanswered_comment_bodies_from_details,
 )
 from agora_runner.nova_claims import (
     ClaimError, held_by, load as load_claims, slug_for_capture,
@@ -624,57 +626,6 @@ def rank(rows, projects=None, milestones=None):
     ))
 
 
-def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
-                 projects_markdown="", milestones_markdown=""):
-    """What a cycle waking up now would take, in the order it would take it.
-
-    Three lists, and the order between them is `prompt.md` step 2's, not
-    a new opinion: an unprocessed capture of his outranks the board, and
-    the board outranks everything else. So `captures` is first and
-    unranked -- a bullet he typed has no rating cell to sort on -- and
-    `next` is the ranked board underneath it.
-
-    `active` is the third and it is the one that answers the half of his
-    sentence about right now: the claims ledger says which rows cycles
-    are holding this minute, so a page built from it shows work in
-    flight rather than work finished. A stale claim is not live and is
-    left out, which is `held_by`'s own rule and not re-decided here.
-
-    `projects_markdown` is `projects.md`, his own rating of the projects
-    themselves, and it orders the board between the skip-to-top tier and
-    the row rating -- see `rank`. Passing nothing is the flat ranking this
-    function had before, so a caller that has not got the file still gets
-    an answer rather than an exception; the tool that prints this for a
-    cycle says out loud when it could not read it.
-
-    `projects` is the same ranked rows grouped by the `Project` cell,
-    highest-ranked row first, so "which project is active" is answered by
-    the ranking rather than by a cycle asserting it. Every row is in
-    exactly one group: `parse_board` fills an empty cell -- and a board
-    with no `Project` column at all, which is what my own two files still
-    are -- with `nova_boards.DEFAULT_PROJECT`, so there is no unfiled
-    bucket to build here and no second opinion about naming one.
-
-    An unreadable ledger is `claimsReadable: false` with the other two
-    lists intact, for `top_board_rows`' reason: an empty ledger and an
-    unreadable one look identical and mean opposite things, so the page
-    has to be able to say which it got.
-
-    `issues_markdown` and `ideas_markdown` are the two board files. They
-    are the only markdown this function still needs and it hands them
-    straight to `parse_board`: everything below the first two lines is
-    `next_payload_from_contents`, which never sees a file. The two
-    `*_markdown` keyword arguments are `projects.md` and `milestones.md`,
-    which are not boards, are not part of issue #203, and stay markdown on
-    both sides of the door.
-    """
-    return next_payload_from_contents(
-        parse_board(issues_markdown or ""),
-        parse_board(ideas_markdown or ""),
-        claims_text, now, top=top, projects_markdown=projects_markdown,
-        milestones_markdown=milestones_markdown)
-
-
 def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
                                now, top=5, projects_markdown="",
                                milestones_markdown=""):
@@ -683,8 +634,10 @@ def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
     Same split, and the same reason, as `open_rows_from_contents`: issue
     #203 replaces the two markdown tables with one record per row, and
     `board_records.contents` returns exactly these four keys out of
-    CouchDB. The door above is what gets deleted when the last markdown
-    caller goes; this is where the shaping lives.
+    CouchDB. **The `next_payload` door that used to sit above this is
+    deleted** -- its only source caller was `nova_site.next_up_payload`,
+    which now reads the records, and a door nothing calls is the one the
+    next module being converted imports.
 
     **The move fixes a second double read.** The old body called
     `unboarded_captures` and `open_rows` on each file, and each of those

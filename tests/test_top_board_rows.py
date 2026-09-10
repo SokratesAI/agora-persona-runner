@@ -2071,10 +2071,13 @@ def test_unread_notes_never_reaches_the_board_parser(monkeypatch):
         raise AssertionError("unread_notes asked the board parser for a "
                              "file that is not a board")
 
-    # `nova_boards` and `nova_next`, which are the two namespaces left that
-    # bind the name -- `top_board_rows` no longer imports it at all. A
-    # refusal patched onto one is not a refusal: a bound import is not one
-    # name, and that gap survived a mutation until the second patch went on.
+    # `nova_boards` is the only namespace left that binds the name --
+    # `top_board_rows` never imported it, and `nova_next` stopped when
+    # issue #203 deleted `next_payload`, its last markdown door. A refusal
+    # patched onto one of several bindings is not a refusal, which is why
+    # the second binding is asserted gone rather than quietly dropped: a
+    # bound import is not one name, and that gap survived a mutation here
+    # until both were covered.
     monkeypatch.setattr(nova_boards, "parse_board", _refuse)
-    monkeypatch.setattr(nova_next, "parse_board", _refuse)
+    assert not hasattr(nova_next, "parse_board")
     assert [n["text"] for n in top_board_rows.unread_notes("- a note\n")] == ["a note"]

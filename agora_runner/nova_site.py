@@ -253,7 +253,8 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
-from agora_runner.nova_next import next_payload, project_milestones, rank
+from agora_runner.nova_next import (next_payload_from_contents,
+                                    project_milestones, rank)
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
 from agora_runner.nova_push import store_subscription, vapid_key
 from agora_runner.nova_plan import plan_payload as shape_plan
@@ -277,7 +278,7 @@ from agora_runner.nova_sources import (
     goal_history_json,
     retro_ledger_json,
 )
-from agora_runner import ticket_docs
+from agora_runner import board_records, ticket_docs
 from agora_runner.ticket_docs import read_details, read_head, read_rows
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
@@ -1927,17 +1928,33 @@ def next_up_payload():
 
     Four reads rather than the two board payloads the cache already
     holds -- his two boards, the claims ledger and `projects.md`, which
-    orders the ranking between projects -- and that is deliberate: the ranking needs the board *markdown*
-    (an unanswered comment is read off the write-up under the row, which
-    the list payload does not carry), so reusing the cached payload would
-    mean re-deriving `waiting` from a different shape of the same file --
-    two answers to one question, which is the drift this repo keeps
-    paying for. Cached like the rest at 15 seconds, which is short enough
-    that a claim taken mid-cycle shows up while he is looking at it.
+    orders the ranking between projects -- and that is deliberate: the
+    ranking needs the write-up under each row (an unanswered comment is
+    read off it, and the list payload does not carry it), so reusing the
+    cached payload would mean re-deriving `waiting` from a different shape
+    of the same board -- two answers to one question, which is the drift
+    this repo keeps paying for. Cached like the rest at 15 seconds, which
+    is short enough that a claim taken mid-cycle shows up while he is
+    looking at it.
+
+    **His two boards come out of the record store, not out of markdown**
+    (issue #203). This was the last source caller of `nova_next.next_payload`,
+    the markdown door in front of `next_payload_from_contents`, and that
+    door is deleted with it. `projects.md` and `milestones.md` are not
+    boards, are not part of the switchover, and stay markdown on both
+    sides of it.
+
+    **A store that cannot answer raises out of here rather than being
+    caught.** `board_records.contents` refuses an unmigrated store instead
+    of returning an empty board, and swallowing that would put an empty
+    plan on the page -- the wrong answer wearing the right shape, which is
+    exactly what the refusal exists to stop. `tools.top_board_rows` prints
+    `COULD NOT READ` for the same state because it has a terminal to print
+    to; this route has a status code, and a 500 is the honest one.
     """
-    return next_payload(
-        edvard_board_markdown("issues"),
-        edvard_board_markdown("ideas"),
+    return next_payload_from_contents(
+        board_records.contents("issue"),
+        board_records.contents("idea"),
         claims_ledger_json(),
         datetime.now(OSLO),
         projects_markdown=project_meta_markdown(),

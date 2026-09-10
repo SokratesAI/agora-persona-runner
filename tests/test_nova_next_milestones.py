@@ -16,9 +16,9 @@ which rule produced it.
 """
 
 from agora_runner.nova_boards import PRIORITY_LABELS, STATUS_LABELS, parse_board
-from agora_runner.nova_next import milestone_ranks, next_payload, rank
+from agora_runner.nova_next import milestone_ranks, rank
 
-from tests.test_nova_next import NOW, ledger
+from tests.test_nova_next import NOW, _payload, ledger
 
 IMMEDIATE = PRIORITY_LABELS["immediate"]
 HIGH = PRIORITY_LABELS["high"]
@@ -208,7 +208,7 @@ def test_next_payload_reads_the_milestone_cell_off_a_real_board():
     )
     issues = "## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n"
     assert parse_board(ideas)["items"][1]["milestone"] == "small"
-    payload = next_payload(issues, ideas, ledger(), NOW, projects_markdown=PROJECTS)
+    payload = _payload(issues, ideas, ledger(), NOW, projects_markdown=PROJECTS)
     assert [item["number"] for item in payload["next"]] == [2, 1]
 
 
