@@ -87,9 +87,9 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, is_relayed,
-    parse_board, parse_milestone_pins, parse_project_meta, status_key,
-    unanswered_comment_bodies_from_details,
+    BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, capture_entries,
+    is_relayed, parse_board, parse_milestone_pins, parse_project_meta,
+    status_key, unanswered_comment_bodies_from_details,
 )
 # The ranking itself lives in `agora_runner` now, not here. The site had to
 # be able to import it and could not: `tools/` is not in the image. Same
@@ -330,8 +330,21 @@ def unread_notes(markdown):
     The contract is `prompt.md` step 1a's: he writes bare bullets at the
     top, a cycle acts on each and moves it under `## Read` with a line on
     what it did. So "unread" is structural -- everything above the first
-    heading -- and `parse_board`'s capture half already finds exactly that,
-    frontmatter and cursor bullet excluded.
+    heading -- and `capture_entries` finds exactly that, frontmatter and
+    cursor bullet excluded.
+
+    **`capture_entries`, not `parse_board`, and that is a correctness point
+    before it is a cost one.** `notes.md` is a capture list: it has no
+    `## Board` table and no write-ups, so `board_migrate` does not migrate
+    it and it stays markdown after issue #203 lands. Asking the *board*
+    parser for its captures therefore ran the row parse and the detail
+    parse over the whole file and threw both away -- measured against the
+    live 96,771-byte `notes.md` on 2026-09-10: 0 items, 0 details, 0.91 ms
+    against 0.10 ms for the same two captures. `parse_board`'s capture half
+    *is* `capture_entries`, so this cannot change the answer; what it
+    changes is which parser is being asked, and a board parser pointed at a
+    file that is not a board is the kind of thing that reads as intentional
+    for years.
 
     A note is not a board row and gets no rating. It is printed with the
     captures rather than ranked, because `rank` sorts on a `Priority` cell
@@ -345,7 +358,7 @@ def unread_notes(markdown):
              # withheld the address from the page that reads it best.
              "index": index, "original": text,
              "slug": slug_for_capture(text)}
-            for index, text in enumerate(parse_board(markdown or "")["captures"])]
+            for index, (_, _, text, _) in enumerate(capture_entries(markdown or ""))]
 
 
 def _reply_claim(row):

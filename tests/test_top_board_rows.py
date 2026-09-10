@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import patch
 
 from agora_runner.nova_boards import CAPTURE_PRIORITY_SEP, PRIORITY_LABELS, STATUS_LABELS
-from agora_runner import nova_next
+from agora_runner import nova_boards, nova_next
 from tools import top_board_rows
 
 
@@ -1922,7 +1922,56 @@ def test_main_parses_each_board_exactly_once(tmp_path, monkeypatch):
     monkeypatch.setattr(nova_next, "parse_board", _counted)
     top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
                          "--notes", str(notes), "--projects", str(notes)])
-    # Two boards, one parse each. `unread_notes` parses `notes.md` as well
-    # -- that file is a capture list and not a board, so `board_migrate`
-    # does not migrate it and it stays markdown; it is the third call.
-    assert len(calls) == 3
+    # Two boards, one parse each, and `notes.md` is no longer one of them.
+    # It is a capture list, not a board -- no `## Board` table and no
+    # write-ups -- so `unread_notes` asks `capture_entries` for its bullets
+    # instead of asking the board parser and discarding the row half. That
+    # third call was real until 2026-09-10 and this number is what caught
+    # it coming back.
+    assert len(calls) == 2
+
+
+def test_unread_notes_reads_his_bullets_and_not_the_replies_under_them():
+    """The contract `prompt.md` step 1a states: bare bullets above the
+    first heading are unread, an indented bullet is a cycle answering him,
+    and everything under `## Read` has been dealt with.
+
+    Against a literal list, not against another parser call -- a mutation
+    that breaks the parse moves both sides of that equally.
+    """
+    notes = ("---\ntype: log\ncontract: he writes bare bullets at the top\n---\n\n"
+             "- the first thing he wants me to know\n"
+             "  - Nova, cycle 1: I did the thing.\n"
+             "- the second thing\n"
+             "- \n\n"
+             "## Read\n\n"
+             "- something a cycle already moved down here\n")
+    got = top_board_rows.unread_notes(notes)
+    assert [n["text"] for n in got] == ["the first thing he wants me to know",
+                                        "the second thing"]
+    assert [n["board"] for n in got] == ["note", "note"]
+    assert [n["index"] for n in got] == [0, 1]
+    # A note carries no rating, so `rank` can never sort one against a row.
+    assert {n["priority"] for n in got} == {""}
+
+
+def test_unread_notes_never_reaches_the_board_parser(monkeypatch):
+    """`notes.md` is not a board and does not become records under #203.
+
+    `parse_board`'s capture half *is* `capture_entries`, so no assertion on
+    the returned notes can tell the two apart -- both spellings return the
+    same list. Making the board parser raise is what separates them, and
+    without this the conversion could silently revert with every test here
+    still green.
+    """
+    def _refuse(_markdown):  # pragma: no cover - the call is the failure
+        raise AssertionError("unread_notes asked the board parser for a "
+                             "file that is not a board")
+
+    # Both namespaces, for the reason the parse-count test above spells
+    # out: a bound import is not one name, and a refusal patched onto only
+    # `top_board_rows` would pass against a body that had gone back to
+    # `nova_boards.parse_board` under a different spelling.
+    monkeypatch.setattr(top_board_rows, "parse_board", _refuse)
+    monkeypatch.setattr(nova_boards, "parse_board", _refuse)
+    assert [n["text"] for n in top_board_rows.unread_notes("- a note\n")] == ["a note"]
