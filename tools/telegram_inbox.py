@@ -124,23 +124,39 @@ def fetch_media(rows, url=DEFAULT_URL, opener=urllib.request.urlopen, timeout=60
     return (1 if failed else 0), [head] + lines
 
 
-def fetch(url=DEFAULT_URL, opener=urllib.request.urlopen, timeout=15, everything=False):
-    """(exit status, lines). 0 nothing waiting, 2 he is waiting, 1 unreachable."""
+def read_inbox(url=DEFAULT_URL, opener=urllib.request.urlopen, timeout=15, everything=False):
+    """(exit status, body, problem line). The fetch with no formatting on it.
+
+    Split out of `fetch` for `tools.login_handshake`, which has to look at the
+    rows themselves rather than at the block a person reads: it decides whether
+    one particular message of his is a plain yes, and `format_messages` has by
+    then turned every row into indented text. Every failure line below is the
+    one `fetch` printed before the split, so the report is unchanged.
+    """
     path = "/inbox?all=1" if everything else "/inbox"
     try:
         code, body = _get(url, path, opener, timeout)
     except Exception as err:  # URLError, socket timeout, anything below it
-        return 1, ["could not reach the Telegram bridge at %s: %s" % (url, err)]
+        return 1, None, "could not reach the Telegram bridge at %s: %s" % (url, err)
     if code == 404:
         # The endpoint is younger than the deployed ConfigMap. Say which half
         # is behind rather than reporting an empty inbox, which is what a
         # caller would otherwise read this as.
-        return 1, ["the bridge at %s has no /inbox endpoint — its ConfigMap predates it" % url]
+        return 1, None, ("the bridge at %s has no /inbox endpoint — its ConfigMap "
+                         "predates it" % url)
     if code != 200:
-        return 1, ["unexpected HTTP %s from %s/inbox" % (code, url)]
-    rows = body.get("messages")
-    if not isinstance(rows, list):
-        return 1, ["the bridge answered /inbox without a messages list"]
+        return 1, None, "unexpected HTTP %s from %s/inbox" % (code, url)
+    if not isinstance(body.get("messages"), list):
+        return 1, None, "the bridge answered /inbox without a messages list"
+    return 0, body, None
+
+
+def fetch(url=DEFAULT_URL, opener=urllib.request.urlopen, timeout=15, everything=False):
+    """(exit status, lines). 0 nothing waiting, 2 he is waiting, 1 unreachable."""
+    status, body, problem = read_inbox(url, opener, timeout, everything)
+    if status != 0:
+        return status, [problem]
+    rows = body["messages"]
     acked = body.get("acked_through", 0)
     if everything:
         head = "%s message(s) ever, read through #%s" % (body.get("total", len(rows)), acked)
