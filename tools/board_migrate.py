@@ -1,4 +1,4 @@
-"""Write a board's markdown rows into the record store, once (issue #203).
+"""Write a board's markdown document into the record store, once (issue #203).
 
     python3 -m tools.board_migrate --board issue --file issues.md
     python3 -m tools.board_migrate --board issue --file issues.md --apply
@@ -25,7 +25,17 @@ and the case that is not harmless is indistinguishable from it here. A cycle
 that genuinely wants to start over empties the board first, which is one
 line and is the documented undo:
 
-    python3 -c "from agora_runner import board_store; board_store.write_rows('issue', [])"
+    python3 -c "from agora_runner import board_store as s; s.write_rows('issue', []); s.write_captures('issue', []); s.delete_layout('issue')"
+
+**All three, not the first one.** A seed writes his rows, his write-ups,
+his own capture bullets and the layout of his document, and they live in
+three key ranges that no single writer may reach across. Emptying the rows
+alone leaves the captures and the layout behind, which is the exact state
+the next run refuses -- so a half-undo reads as a half-migration and the
+board cannot be re-seeded without finishing it. `delete_layout` is the one
+delete here rather than an empty write on purpose: `[]` is a *valid*
+layout, and storing it renders his board as its frontmatter, his capture
+box and nothing else.
 
 That is also the restore point for the migration itself. The markdown files
 are not touched by this tool -- the 21 modules that still parse them keep
@@ -50,12 +60,42 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner import board_document, board_store  # noqa: E402
+from agora_runner import (  # noqa: E402
+    board_document, board_store, board_view, entity_id, nova_boards)
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
 class MigrationRefused(RuntimeError):
     """The store is not in a state this run can safely write into."""
+
+
+def captures(markdown, board, registry):
+    """His own bullets -> capture documents, minted into `registry`.
+
+    A board file is not only its two tables. The bullets above the first
+    heading are the box he types into, and they live in their own key range
+    (`capture:<board>:`) precisely so that a migration writing the rows
+    alone cannot touch them -- which is exactly what a migration writing the
+    rows alone *did*: it left them out, so a generated view rendered off the
+    store would hand his board back with the bullets deleted.
+
+    Rank is the bullet's position in his file, so the order he wrote them in
+    survives the trip. Ids come from `entity_id.mint_capture`, which is the
+    one id here that is not seeded from a name -- his words are the thing he
+    edits, so a slug of them would orphan the replies underneath.
+    """
+    parsed = nova_boards.parse_board(markdown)
+    if not isinstance(parsed, dict):
+        return []
+    texts = parsed.get("captures") or []
+    replies = parsed.get("captureReplies") or []
+    docs = []
+    for index, text in enumerate(texts):
+        under = replies[index] if index < len(replies) else ()
+        docs.append(board_document.to_capture_document(
+            text, board, entity_id.mint_capture(registry, board),
+            rank=index + 1, replies=under))
+    return docs
 
 
 def plan(markdown, board, registry):
@@ -64,12 +104,21 @@ def plan(markdown, board, registry):
     Separate from `migrate` so the dry run and the real run compose through
     exactly one code path -- a dry run that built its report a second way
     would be reporting on a migration nobody is about to perform.
+
+    Four things, not two. `board_view.render_document` draws a board file
+    from the rows, the write-ups, his capture bullets *and* the layout, and
+    a seed that stores the first two only is not a seed of his document:
+    measured on the live boards, rendering `issues.md` without its layout
+    drops 19,653 words of his `## Processed captures` archive and
+    `ideas.md` drops 6,469 including its whole `## Discarded` table.
     """
     items = preflight.board_items(markdown)
     details = preflight.board_details(markdown)
     docs, _projects, _milestones = preflight.records(
         items, board, registry, details=details)
-    return docs, details
+    capture_docs = captures(markdown, board, registry)
+    layout = board_view.document_layout(markdown)
+    return docs, details, capture_docs, layout
 
 
 def migrate(markdown, board, apply=False, store=board_store):
@@ -87,9 +136,23 @@ def migrate(markdown, board, apply=False, store=board_store):
         raise MigrationRefused(
             f"{board} already holds {len(held)} record(s); empty the board "
             "first if you mean to migrate it again")
+    # Checked separately from the rows because they are separate key ranges
+    # and either can be occupied on its own. A store holding captures and no
+    # rows is what a half-finished migration leaves behind, and reading only
+    # `stored_documents` there would call it empty and mint a second id for
+    # every bullet he has written.
+    held_captures = store.stored_capture_documents(board)
+    if held_captures:
+        raise MigrationRefused(
+            f"{board} already holds {len(held_captures)} capture(s); empty "
+            "the board first if you mean to migrate it again")
+    if store.read_layout(board) is not None:
+        raise MigrationRefused(
+            f"{board} already holds a layout; empty the board first if you "
+            "mean to migrate it again")
 
     registry = store.read_registry()
-    docs, details = plan(markdown, board, registry)
+    docs, details, capture_docs, layout = plan(markdown, board, registry)
 
     # `projects` and `milestones` are the registry's totals *after* this
     # run, not what this run minted. For the switchover that is the useful
@@ -102,9 +165,13 @@ def migrate(markdown, board, apply=False, store=board_store):
         "details": len(details),
         "projects": len(registry.get("projects") or {}),
         "milestones": len(registry.get("milestones") or {}),
+        "captures": len(capture_docs),
+        "layout_blocks": len(layout),
         "applied": bool(apply),
         "written": 0,
         "stored": 0,
+        "captures_stored": 0,
+        "layout_stored": 0,
     }
     if not apply:
         return report
@@ -117,6 +184,22 @@ def migrate(markdown, board, apply=False, store=board_store):
             "now holds a partial migration and must be emptied before a retry")
     report["written"] = written.get("written") or 0
     report["stored"] = len(store.stored_documents(board))
+
+    # After the rows on purpose. `write_rows` prunes its own key range and
+    # cannot reach `capture:<board>:`, so the order is not a correctness
+    # requirement -- but a crash between the two leaves the rows stored and
+    # the captures absent, which is the state this run already knows how to
+    # refuse, where the mirror image is a store that looks migrated to
+    # nothing and holds his bullets.
+    stored_captures = store.write_captures(board, capture_docs)
+    if stored_captures.get("failures"):
+        raise MigrationRefused(
+            f"{len(stored_captures['failures'])} capture(s) failed to write; "
+            "the store now holds a partial migration and must be emptied "
+            "before a retry")
+    report["captures_stored"] = len(store.stored_capture_documents(board))
+    store.write_layout(board, layout)
+    report["layout_stored"] = len(store.read_layout(board) or [])
     return report
 
 
@@ -140,8 +223,9 @@ def main(argv=None):
         print(f"REFUSED: {exc}")
         return 2
 
-    for key in ("board", "rows", "details", "projects", "milestones",
-                "applied", "written", "stored"):
+    for key in ("board", "rows", "details", "captures", "layout_blocks",
+                "projects", "milestones", "applied", "written", "stored",
+                "captures_stored", "layout_stored"):
         print(f"{key}: {report[key]}")
     if not args.apply:
         print("dry run -- nothing was written; pass --apply to store it")
