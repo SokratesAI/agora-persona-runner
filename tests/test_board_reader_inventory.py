@@ -1,7 +1,12 @@
 """The corrected coverage checklist for issue #203's reader migration."""
+import re
 from pathlib import Path
 
 from tools import board_reader_inventory as inv
+
+#: `board_row` on a word boundary, so `insert_board_row` and
+#: `top_board_rows` do not read as calls to `tools/board_row.py`.
+_BOARD_ROW_RE = re.compile(r"(?<!\w)board_row(?!\w)")
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -270,6 +275,60 @@ def test_roll_done_details_is_only_ever_pointed_at_novas_own_files():
         if "roll_done_details" in inv.code_only(path.read_text()):
             callers.add(rel)
     assert callers == {"tools/roll_health.py"}, sorted(callers)
+
+
+def test_the_record_store_has_no_board_for_novas_own_two_files():
+    """The half of board_row's exemption that is checkable in code.
+
+    `BOARD_PATHS` keeps two documents per kind -- the owner's and Nova's --
+    and the record store models one of them. `board_document.BOARDS` names
+    the owner's two and `document_id` mints one key range for them, so a
+    tool pointed at the `nova` path has no board name to be converted to.
+    If Nova's own boards ever get an id space, this fails and the exemption
+    is reconsidered rather than left standing.
+    """
+    from agora_runner import board_document, nova_boards
+
+    for kind in ("issues", "ideas"):
+        paths = nova_boards.BOARD_PATHS[kind]
+        assert paths["nova"] != paths["edvard"], \
+            f"{kind}: Nova's board and the owner's are the same document"
+    assert set(board_document.BOARDS) == {"issue", "idea"}, \
+        "a third board name means the store may now hold Nova's own"
+    assert board_document.document_id("issue", 41) == "board:issue:41", \
+        "one key range per kind, so the owner's board and Nova's collide"
+
+
+def test_board_row_has_no_caller_in_this_tree():
+    """The other half: nothing here can point that button at his board.
+
+    Same shape as `roll_done_details` above and the same limit -- `--file`
+    is a runtime path, so nothing static reads the target off the module.
+    What is checkable is that this tree hands it none: its only caller is
+    `prompt.md` step 6, which passes Nova's own `resources/issues.md`. A
+    second caller appearing in code fails here rather than widening the
+    gate in silence.
+
+    It does NOT prove the tool could not be run against the owner's file by
+    hand. Nothing can; that is why the entry carries a reason in prose.
+
+    The name is matched on a boundary rather than as a substring, because
+    `nova_idea_pool.insert_board_row` and `top_board_rows` both contain it
+    and neither is a call to this module. A bare `in` reported the first of
+    those as a caller on the run that wrote this test.
+    """
+    assert "tools/board_row.py" in inv.NOT_A_BOARD, \
+        "the evidence has to be tied to the entry it excuses"
+    callers = set()
+    for path in ROOT.rglob("*.py"):
+        rel = path.relative_to(ROOT).as_posix()
+        if rel.startswith(("tests/", "tools/board_row.py")):
+            continue
+        if any(part in inv.SKIP_DIRS for part in path.parts):
+            continue
+        if _BOARD_ROW_RE.search(inv.code_only(path.read_text(encoding="utf-8"))):
+            callers.add(rel)
+    assert callers == set(), sorted(callers)
 
 
 def test_the_migration_tools_are_the_records_side_of_the_seam():

@@ -19,11 +19,18 @@ store nothing keeps current serves the owner a board that is quietly a
 day old.
 
 **That list shrinks as issue #203 converts each writer, and it is down to
-four.** `board_project` (Cycle 1329), `board_untag_project` (Cycle 1330) and
-`board_status` (Cycle 1332) write the record store directly through
-`board_write.change_row` and `append_note`, so they hold no local file for
-this tool to put, and naming them here would send a cycle looking for a
-markdown document that no longer exists.
+three.** `board_project` (Cycle 1329), `board_untag_project` (Cycle 1330),
+`board_status` (Cycle 1332), `board_milestone` (Cycle 1333) and `board_size`
+(Cycle 1334) write the record store directly through `board_write.change_row`
+and `append_note`, so they hold no local file for this tool to put, and
+naming them here would send a cycle looking for a markdown document that no
+longer exists.
+
+**`board_row` never leaves this list, and that is not a backlog item.** It
+boards a row on *Nova's own* `resources/issues.md`, and the record store
+holds the owner's two boards only -- `board_document.BOARDS` has no name for
+Nova's, so there is nothing to convert it to. `board_reader_inventory` says
+the same thing from the gate's side (Cycle 1335).
 
 So this is the `put` those tools' callers should use. One command, and
 the ordering is the whole design:

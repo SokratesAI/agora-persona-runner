@@ -34,6 +34,15 @@ blank rating is the state that means nobody has looked (`ideas.md` #69),
 so `--priority` is required here even though `add_row` would accept an
 empty one for the owner's board.
 
+**It stays on markdown after issue #203's switchover, and that is a
+decision rather than a module nobody got to.** The record store holds the
+owner's two boards -- `board_document.BOARDS` is "the two boards the owner
+keeps" and `document_id` mints one key range per kind -- and Nova's own two
+files have no board name in it. Converting this to `--board issue` would not
+move it onto records, it would point my board button at the owner's board. Two
+handoffs in a row named it as the next writer to convert; `board_reader_inventory`
+now carries the exemption and the evidence under it (Cycle 1335).
+
 The first three of those are reviewer findings on this tool's own PR, and
 they share one shape worth naming: `check` re-parses the whole document
 afterwards and compares it to the document before, so it catches damage

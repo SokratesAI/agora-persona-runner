@@ -62,6 +62,27 @@ Converting either one is not a step anybody can take.
 `agora_runner/ticket_store.py` is deliberately NOT excused: it leaves
 the count by being deleted at the switchover, and that is a real step.
 
+**A fourth, found cycle 1335, and it is the one the handoff was sending
+cycles at.** `tools/board_row.py` is the button that boards a row on
+*Nova's own* two files, not the owner's -- `prompt.md` step 6 hands it
+`nova/resources/issues.md` and its own first line says "one of my own
+issues or ideas". Two cycles' handoffs named it as the next writer to
+convert. It cannot be: `board_document.BOARDS` is "the two boards the
+owner keeps", `document_id` mints `board:issue:<n>` in one key range, and
+there is no board name in the store for `BOARD_PATHS['nova']`. Converting
+it to `--board issue` would not move it onto records, it would silently
+point Nova's board button at the owner's board.
+
+**The open question that exemption leaves, written here because this is
+where the gate lives.** Three exempt modules now all say the same thing:
+Nova's own two boards have no record store. `nova_site` renders them
+through the same `parse_board` it runs on the owner's, so "parse_board
+deleted" -- the last step #203 names -- is not reachable while that is
+true. Either those two files get an id space of their own, or the
+switchover ends with `parse_board` alive and owned by Nova's own boards.
+That is a decision, not an oversight, and this file is not the place to
+take it.
+
 Nothing static can tell which document a call parses -- `roll_health` takes
 its text from a local path at runtime -- so the exemption is a named list
 with a reason each, `NOT_A_BOARD`, rather than a pattern pretending to
@@ -103,6 +124,10 @@ NOT_A_BOARD = {
     "tools/roll_done_details.py":
         "is roll_health's roller for the same two files -- roll_health is "
         "its only caller in this tree and hands it the pairs above",
+    "tools/board_row.py":
+        "boards a row on Nova's own nova/resources/issues.md or ideas.md -- "
+        "the BOARD_PATHS['nova'] paths, which board_migrate does not "
+        "migrate and board_document.BOARDS has no name for",
 }
 
 #: Modules that parse the owner's boards and must go on doing so after the
