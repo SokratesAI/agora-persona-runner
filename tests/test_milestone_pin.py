@@ -184,36 +184,48 @@ def board_markdown(milestone):
 """
 
 
-def test_the_cli_refuses_a_milestone_no_board_row_carries(tmp_path):
+def stub_board(monkeypatch, markdown):
+    """`board_records.contents` answering with `markdown`, for every board.
+
+    Issue #203: the CLI reads his boards out of the record store now, so a
+    test hands it records rather than a path. It goes through the real
+    `parse_board`, so the fixture cannot drift from the shape the store
+    returns.
+    """
+    from agora_runner import board_records, nova_boards
+    monkeypatch.setattr(board_records, "contents",
+                        lambda board, store=None: nova_boards.parse_board(
+                            markdown))
+
+
+def test_the_cli_refuses_a_milestone_no_board_row_carries(tmp_path,
+                                                          monkeypatch):
     """A typo in `--milestone` writes a pin that resolves to nothing and is
-    ignored by the ranking forever, with no error anywhere. `--boards` is
-    what turns that into an exit code."""
+    ignored by the ranking forever, with no error anywhere. The existence
+    check is what turns that into an exit code, and since #203 it is on
+    without being asked for -- neither call below passes `--boards`."""
     from tools.milestone_pin import main
-    board = tmp_path / "ideas.md"
-    board.write_text(board_markdown("Picking"), encoding="utf-8")
+    stub_board(monkeypatch, board_markdown("Picking"))
     pins = tmp_path / "milestones.md"
     assert main(["--file", str(pins), "--project", "Nova",
-                 "--milestone", "Pikcing", "--position", "1",
-                 "--boards", str(board)]) == 2
+                 "--milestone", "Pikcing", "--position", "1"]) == 2
     assert not pins.exists()
     assert main(["--file", str(pins), "--project", "Nova",
-                 "--milestone", "Picking", "--position", "1",
-                 "--boards", str(board)]) == 0
+                 "--milestone", "Picking", "--position", "1"]) == 0
     assert parse_milestone_pins(pins.read_text()) == {("nova", "picking"): 1}
 
 
-def test_the_cli_unpins_without_needing_the_milestone_to_still_exist(tmp_path):
+def test_the_cli_unpins_without_needing_the_milestone_to_still_exist(
+        tmp_path, monkeypatch):
     """Removing a pin whose milestone was renamed away is exactly when the
     existence check must not fire."""
     from tools.milestone_pin import main
-    board = tmp_path / "ideas.md"
-    board.write_text(board_markdown("Renamed"), encoding="utf-8")
+    stub_board(monkeypatch, board_markdown("Renamed"))
     pins = tmp_path / "milestones.md"
     pins.write_text(set_milestone_pin("", "Nova", "Picking", 1, "09-07"),
                     encoding="utf-8")
     assert main(["--file", str(pins), "--project", "Nova",
-                 "--milestone", "Picking", "--position", "0",
-                 "--boards", str(board)]) == 0
+                 "--milestone", "Picking", "--position", "0"]) == 0
     assert parse_milestone_pins(pins.read_text()) == {}
 
 
