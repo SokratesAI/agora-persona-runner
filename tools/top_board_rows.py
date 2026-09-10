@@ -72,6 +72,14 @@ and that is the point of the tool: an opening read that takes three
 commands is one a cycle will skip. `--issues`/`--ideas` take local files
 instead, which is how the tests drive it and how the runner pod (which
 has no vault client) can use it at all.
+
+**His two boards are read out of the record store now, not out of
+markdown** (issue #203). `board_contents` below is the one door; the
+`--issues`/`--ideas` flags still take a markdown file and still mean what
+they meant, and they go through `board_migration_preflight`, which is the
+one module the migration reads markdown in. `notes.md` is not a board --
+no `## Board` table, no write-ups, never migrated -- so it stays a vault
+fetch and a `capture_entries` parse, after the switchover as before it.
 """
 
 import argparse
@@ -87,17 +95,20 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, is_relayed,
-    parse_board, parse_milestone_pins, parse_project_meta, status_key,
-    unanswered_comment_bodies,
+    BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, capture_entries,
+    is_relayed, parse_milestone_pins, parse_project_meta, status_key,
+    unanswered_comment_bodies_from_details,
 )
+from agora_runner import board_records
+from tools import board_migration_preflight
 # The ranking itself lives in `agora_runner` now, not here. The site had to
 # be able to import it and could not: `tools/` is not in the image. Same
 # functions, one definition -- see `nova_next`'s docstring.
 from agora_runner.nova_next import (
-    _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims, open_rows,
-    low_satisfaction, load_diagnoses, milestone_ranks,
-    project_ranks, rank, reserve_maintenance, row_slug, unboarded_captures,
+    _BLOCKED, _CLOSED, _RANK, _reply_slug, age_key, apply_claims,
+    low_satisfaction, load_diagnoses, milestone_ranks, open_rows_from_contents,
+    project_ranks, rank, reserve_maintenance, row_slug,
+    unboarded_captures_from_contents,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_boards import PROJECT_SATISFACTION_MAX
@@ -323,14 +334,58 @@ def _low_satisfaction_block(low, readable=True):
     return out
 
 
+def board_contents(board, local=None, store=None):
+    """One of his boards as `parse_board`'s four keys -- store or local file.
+
+    Issue #203's switchover, for this tool. The default read is
+    `board_records.contents`, so the ranking a cycle wakes up to comes out
+    of the record store rather than out of a 700KB markdown table parsed
+    with a regex.
+
+    `local` is the `--issues`/`--ideas` escape hatch and is unchanged in
+    what it takes: a path to a board markdown file. It goes through
+    `board_migration_preflight.board_contents`, which is the one module
+    the migration is allowed to read markdown in, rather than through
+    `parse_board` here -- so this tool no longer names the parser and
+    `board_reader_inventory` stops counting it. That door is a migration
+    seam and comes out with the window, like the two in `nova_next`.
+
+    `store=None` rather than the real store as a default argument: a
+    default binds its value at import, so `board_records.board_store`
+    written there would be the object this module captured and a test
+    replacing it would be replacing something nothing reads. Same reason
+    as `tools.milestone_pin.store_milestones`.
+
+    **Every failure raises.** An unmigrated store, a board CouchDB will
+    not answer for, a local file that is not there -- the caller reports
+    the board as unread and says the ranking is incomplete. Returning an
+    empty shape on any of them would rank one board of two and print a
+    confident top row, which is the exact failure the caller's
+    `COULD NOT READ` line exists to prevent.
+    """
+    if local:
+        with open(local, encoding="utf-8") as fh:
+            return board_migration_preflight.board_contents(fh.read())
+    return board_records.contents(board,
+                                  store=store or board_records.board_store)
+
+
 def unread_notes(markdown):
     """`notes.md` -> the notes the owner has left that no cycle has moved.
 
     The contract is `prompt.md` step 1a's: he writes bare bullets at the
     top, a cycle acts on each and moves it under `## Read` with a line on
     what it did. So "unread" is structural -- everything above the first
-    heading -- and `parse_board`'s capture half already finds exactly that,
+    heading -- and `capture_entries` already finds exactly that,
     frontmatter and cursor bullet excluded.
+
+    It calls `capture_entries` rather than `parse_board`'s capture half,
+    which is the same function one indirection away, because `notes.md`
+    has no `## Board` table and no write-ups: asking the board parser for
+    two bullets ran the row parse and the detail parse over 96KB and threw
+    both away. It is also why this call survives issue #203 -- `notes.md`
+    is not a board, so `board_migrate` never migrates it and it stays
+    markdown after the switchover.
 
     A note is not a board row and gets no rating. It is printed with the
     captures rather than ranked, because `rank` sorts on a `Priority` cell
@@ -344,7 +399,8 @@ def unread_notes(markdown):
              # withheld the address from the page that reads it best.
              "index": index, "original": text,
              "slug": slug_for_capture(text)}
-            for index, text in enumerate(parse_board(markdown or "")["captures"])]
+            for index, (_, _, text, _)
+            in enumerate(capture_entries(markdown or ""))]
 
 
 def _reply_claim(row):
@@ -366,7 +422,7 @@ def _reply_claim(row):
     return f"  [reply-claim: {slug}]" if slug else ""
 
 
-def closed_rows_waiting(markdown, board):
+def closed_rows_waiting(contents, board):
     """Closed rows whose write-up still ends on one of his comments.
 
     `open_rows` computes `waiting` for every row and then throws away
@@ -389,8 +445,18 @@ def closed_rows_waiting(markdown, board):
     thing owed here is a reply, which `render` asks for by name. Folding
     them into `rows` would have put a Done row at the top of the pick
     list, which is the opposite failure and just as wrong.
+
+    Takes `parse_board`'s four keys, from wherever the caller got them --
+    the record store or a local file -- for issue #203, and for the same
+    reason `open_rows_from_contents` does: the rows and the comment
+    threads come out of **one** read. This function used to parse the same
+    string twice, once for the threads and once for the rows. Two reads of
+    one string cannot disagree; two reads of one CouchDB can, and a write
+    landing between them drops a comment on a closed row out of the
+    answer -- which is the nine-cycle `ideas #63` silence this function
+    exists to end, with a new cause.
     """
-    waiting = unanswered_comment_bodies(markdown or "")
+    waiting = unanswered_comment_bodies_from_details(contents["details"])
     return [{
         "board": board,
         "number": item["number"],
@@ -400,7 +466,7 @@ def closed_rows_waiting(markdown, board):
         "waiting": True,
         "relayed": is_relayed(waiting.get(item["number"], "")),
         "replySlug": _reply_slug(board, item["number"], waiting),
-    } for item in parse_board(markdown or "")["items"]
+    } for item in contents["items"]
         if (item["done"] or item["statusKey"] in _CLOSED)
         and item["number"] in waiting]
 
@@ -901,20 +967,17 @@ def main(argv=None):
     missing = []
     for board, local, path in (("issue", args.issues, ISSUES_PATH),
                                ("idea", args.ideas, IDEAS_PATH)):
-        if local:
-            with open(local, encoding="utf-8") as fh:
-                text = fh.read()
-        else:
-            text = _fetch(path)
-        # A board that could not be read is said out loud rather than
-        # silently ranked as empty -- a top row chosen from one of two
-        # boards is exactly the wrong answer wearing the right shape.
-        if text is None:
-            missing.append(path)
+        try:
+            contents = board_contents(board, local)
+        except Exception as exc:  # noqa: BLE001 -- see `board_contents`
+            # A board that could not be read is said out loud rather than
+            # silently ranked as empty -- a top row chosen from one of two
+            # boards is exactly the wrong answer wearing the right shape.
+            missing.append(f"{path} ({exc})")
             continue
-        rows.extend(open_rows(text, board))
-        captures.extend(unboarded_captures(text, board))
-        closed_waiting.extend(closed_rows_waiting(text, board))
+        rows.extend(open_rows_from_contents(contents, board))
+        captures.extend(unboarded_captures_from_contents(contents, board))
+        closed_waiting.extend(closed_rows_waiting(contents, board))
 
     notes_md = open(args.notes, encoding="utf-8").read() if args.notes \
         else _fetch(NOTES_PATH)
