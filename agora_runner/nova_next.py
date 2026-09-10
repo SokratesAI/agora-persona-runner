@@ -629,7 +629,43 @@ def rank(rows, projects=None, milestones=None):
 def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
                                now, top=5, projects_markdown="",
                                milestones_markdown=""):
-    """The same answer, from `parse_board`'s return value instead of the files.
+    """What a cycle waking up now would take, in the order it would take it.
+
+    Three lists, and the order between them is `prompt.md` step 2's, not
+    a new opinion: an unprocessed capture of his outranks the board, and
+    the board outranks everything else. So `captures` is first and
+    unranked -- a bullet he typed has no rating cell to sort on -- and
+    `next` is the ranked board underneath it.
+
+    `active` is the third and it is the one that answers the half of his
+    sentence about right now: the claims ledger says which rows cycles
+    are holding this minute, so a page built from it shows work in
+    flight rather than work finished. A stale claim is not live and is
+    left out, which is `held_by`'s own rule and not re-decided here.
+
+    `projects_markdown` is `projects.md`, his own rating of the projects
+    themselves, and it orders the board between the skip-to-top tier and
+    the row rating -- see `rank`. Passing nothing is the flat ranking this
+    function had before, so a caller that has not got the file still gets
+    an answer rather than an exception; the tool that prints this for a
+    cycle says out loud when it could not read it. It and
+    `milestones_markdown` are the only markdown left in this signature:
+    neither is a board, neither is part of issue #203, and both stay
+    markdown on the far side of the switchover.
+
+    `projects` is the same ranked rows grouped by the `Project` cell,
+    highest-ranked row first, so "which project is active" is answered by
+    the ranking rather than by a cycle asserting it. Every row is in
+    exactly one group: an empty cell is filled with
+    `nova_boards.DEFAULT_PROJECT` before the rows reach here -- by the
+    parser on the markdown side and by `board_records.contents` on the
+    record side -- so there is no unfiled bucket to build and no second
+    opinion about naming one.
+
+    An unreadable ledger is `claimsReadable: false` with the other two
+    lists intact, for `top_board_rows`' reason: an empty ledger and an
+    unreadable one look identical and mean opposite things, so the page
+    has to be able to say which it got.
 
     Same split, and the same reason, as `open_rows_from_contents`: issue
     #203 replaces the two markdown tables with one record per row, and
