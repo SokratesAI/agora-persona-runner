@@ -20,7 +20,8 @@ button, for my own two files.
         --priority high --write-up-file /tmp/w.md
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.roll_done_captures` and `tools.roll_captures` hold, so
+contract `tools.roll_captures` holds (`roll_done_captures` held it until
+#203 converted it onto the record store), so
 the caller owns the compare-and-swap. `prompt.md` step 6 carries the
 `get --rev-file` / `put --if-rev-file` wrapper.
 
@@ -88,7 +89,7 @@ def _priority_choices():
 def check_from_contents(old, new, old_notes, new_notes, number, title):
     """Refuse the write unless the row is really there and nothing else moved.
 
-    Same shape as `roll_done_captures.check_from_contents`, and for the
+    Same shape as `roll_captures._check_render`, and for the
     same reason: this edits a document the site parses, so the test that
     matters is what `parse_board` says afterwards, not what the string
     looks like. Every row that was on the board stays on it **unchanged in

@@ -1,71 +1,69 @@
-"""Move the owner's finished captures off the top of his two board files.
+"""Move the owner's finished captures out of the box he types into.
 
 The owner types into a bare bullet list above `## Board` in
 `projects/sokrates/projects/nova/issues.md` and `.../ideas.md`. When a
-cycle closes one of those captures it rewrites the bullet to start with
-`DONE (Cycle N):` and leaves it exactly where it was. Nothing has ever
-removed one. Measured 2026-08-22, Cycle 313: **31 of the 33 bullets on
-`issues.md` and 12 of the 13 on `ideas.md` were `DONE`** -- the leftover
-on `ideas.md` being the empty cursor bullet he types into, so that list
-was finished work and nothing else. The two lists were **15,592 and
-10,159 characters**, 25,751 together, and the longest single bullet in
-them is **2,979**. (The first version of this docstring said 45,000 and
-2,600. Both were numbers I had not taken; the reviewer on runner#286
-checked them against the files this paragraph claims to have measured.)
+cycle closes one of those captures, `tools.close_done_captures` rewrites
+the bullet to start with `DONE (Cycle N):` and leaves it exactly where it
+was. This is the second half: the finished ones leave the box.
+
+Measured 2026-08-22, Cycle 313: **31 of the 33 bullets on `issues.md` and
+12 of the 13 on `ideas.md` were `DONE`** -- the leftover on `ideas.md`
+being the empty cursor bullet he types into, so that list was finished
+work and nothing else. The two lists were **15,592 and 10,159
+characters**, 25,751 together.
 
 `nova_boards.split_capture_done` (Cycle 251) already stops a closed
-capture being *read* as work: the ranking drops it and the page hides
-it. That fixed the consumers and left the file, and the file is the half
-the owner actually opens -- these two documents live in his own vault
-precisely so his phone can reach them without the Nova app.
+capture being *read* as work: the ranking drops it and the page hides it.
+That fixed the consumers and left the box, and the box is the half he
+actually opens.
 
 So this is `identity.md` rule 8 applied to his boards: *"finished items
-move to a `# Processed` section with what actually happened."* Nothing
-is deleted and nothing is summarised. The bullet moves, verbatim, to a
-`## Processed captures` section at the **end** of the file -- past
-`# Details`, not between the capture list and `## Board`, because a
-block he has to scroll past to reach the board is the complaint this
-fixes, not a place to put it.
+move to a `# Processed` section with what actually happened."* Nothing is
+deleted and nothing is summarised. The bullet moves, verbatim, into the
+`## Processed captures` archive at the end of his file.
 
-    python3 -m tools.roll_done_captures --file issues.md --dry-run
-    python3 -m tools.roll_done_captures --file issues.md
+    python3 -m tools.roll_done_captures --board issue --dry-run
+    python3 -m tools.roll_done_captures --board issue
 
-**It takes a path on disk and knows nothing about the vault, so the
-caller owns the compare-and-swap.** A cycle boarding these same files,
-or the owner's phone syncing through Obsidian, is the concurrent writer
-`nova_capture` defends against with `_rev` and the one most likely to be
-running. Read and write it the way `prompt.md` step 6 does:
+**#203: the box is the record store and the archive is the layout.**
+There is no `--file` any more, because a capture is a document and the
+board it belongs to is a name. The `## Processed captures` section is one
+of the things `parse_board` never modelled -- it is 19,653 words of
+`issues.md` that `board_view.document_layout` holds as a `verbatim`
+block, and the layout document is where it lives now. So a roll is two
+writes rather than one line rewrite: the bullet is appended to that block,
+and then the capture document is deleted.
 
-    V='projects/sokrates/projects/nova/issues.md'
-    python3 /app/bridge/vault_tool.py get "$V" --rev-file /tmp/i.rev > /tmp/i.md \
-      && python3 -m tools.roll_done_captures --file /tmp/i.md \
-      && python3 /app/bridge/vault_tool.py put "$V" /tmp/i.md --if-rev-file /tmp/i.rev
+**The archive is written first, and stopping between the two writes must
+be able to duplicate a bullet and never to lose one.** That is
+`roll_digest`'s rule, and it is sharper here than there: `delete_capture`
+takes his own words and every reply written under them, and there is
+nothing to restore them from. A run that dies after the layout write
+leaves the bullet in both places, and the next run finds no capture
+document for it and moves on -- the duplicate is visible on his page and
+recoverable by hand. A run that deleted first and died would have removed
+a sentence of his with no copy anywhere.
 
-No `--allow-shrink`: this moves text within one document rather than
-splitting it in two, so the file comes back within a hundred bytes of
-its own size and the shrink guard has nothing to complain about. That is
-also why there is no archive-first ordering to get right -- there is one
-write, not two.
+**A board with no stored layout is refused rather than given a fresh
+one.** `board_store.read_layout` answers `None` for a board that has
+never been migrated and that is not the same as an empty archive: minting
+a layout here would be this tool deciding the order of a document it has
+only ever read one section of, and `render_document` draws the whole file
+from that answer. `board_migrate` writes the layout; this only ever
+appends to it.
 
-Exits 0 when it rewrote the file or found nothing to move, 1 on a check
-failure. It is idempotent: a second run finds no `DONE` bullets left in
-the capture list and reports `nothing to move`.
+**The guard is this module's own, and that is not a second copy of
+`change_capture_text`'s.** That one asks whether one bullet's text changed
+and everything else on the board held still. This one deletes documents
+and edits a block the records do not model, so what it has to ask is
+different: did the rows and the write-ups hold still, did exactly the
+`DONE` bullets leave the box, and is every one of their sentences now in
+the archive. It asks all three of the store after both writes, because a
+check that reads only what it sent cannot see a bullet that went nowhere.
 
-**The check that matters is the one that asks the reader.** These files
-are parsed by `nova_boards.parse_board` for the app's board pages, and
-the failure mode of moving text inside one is silent: a row or a
-write-up stops rendering and nobody sees it until the owner does. So the
-rewrite is verified by parsing both versions and asserting that
-`items` and `details` come back **identical**, and that `captures` lost
-exactly the `DONE` bullets and nothing else. That is
-`roll_captures._check_render`'s lesson -- the only guard there that asks
-the reader rather than the writer -- borrowed rather than re-learned.
-
-The `## Processed captures` heading is a level-2 heading on purpose.
-`nova_boards._detail_spans` ends a write-up at the next `#` or `##`, so
-appending it closes the final `### #N` block cleanly instead of being
-swallowed into it; and `_captures` stops at the first heading, so a
-bullet down there can never be read back as something the owner just typed.
+Exits 0 when it moved captures or found none to move, 1 on a refusal or a
+check failure. It is idempotent: a second run finds no `DONE` capture
+documents left and reports `nothing to move`.
 """
 
 import argparse
@@ -76,221 +74,218 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_boards import parse_board, split_capture_done
-from agora_runner.nova_capture import _capture_span
+from agora_runner import board_records, board_store
+from agora_runner.board_document import (
+    BOARDS, capture_replies_of, capture_text_of,
+)
+# By name rather than as `board_store.StoreError`: the module-level
+# `board_store` is the seam a test swaps for a fake, so reading the
+# exception class off it catches nothing and raises `AttributeError` out of
+# the `except` clause itself. `close_done_captures` paid for this one.
+from agora_runner.board_store import StoreError
+from agora_runner.nova_boards import split_capture_done
 
 PROCESSED_HEADING = "## Processed captures"
 
 
+def _is_heading(line):
+    return line.strip().startswith("#")
+
+
 def _has_processed_heading(text):
-    """Is the archive heading already a heading in `text`?
+    """Is the archive heading a *heading line* in `text`?
 
     A substring search would find the phrase inside any write-up that
-    happened to mention it -- and these files are 190KB of the owner's and
-    my own prose, so that is a matter of time. The heading would then be
-    skipped and the next roll would append bare bullets under whatever
-    section ends the file. Reviewer finding on runner#286.
+    happened to mention it -- and these files are 190KB of his prose and
+    mine, so that is a matter of time. Reviewer finding on runner#286,
+    carried across the conversion because the block is still markdown.
     """
     wanted = PROCESSED_HEADING.strip().lower()
     return any(line.strip().lower() == wanted for line in (text or "").split("\n"))
 
 
-def plan(markdown):
-    """`(kept, moved)` -- the capture bullets that stay, and the DONE ones.
+def bullet_lines(doc):
+    """One capture document -> the lines it occupies in the generated view.
 
-    Both are raw file lines, not parsed text, because the whole point is
-    that the bullet moves byte-identical. A wrapped capture (Obsidian on
-    a phone puts a continuation on its own line) travels with the bullet
-    above it, under the same test `nova_boards._captures` folds by --
-    non-blank, and not starting `-`, `*` or `|`. Sharing the rule is not
-    cosmetic: a line the reader folds into the bullet above must move
-    with it, and a line the reader ignores must stay put, or the page and
-    the file disagree about where the owner's sentence ends. Neither real
-    file has such a line today, so this is pinned by test rather than by
-    data.
+    `render_document` draws a capture as `- <text>` with each reply indented
+    four spaces under it. The archive holds the same shape, so a bullet that
+    moves reads on his page exactly as it did in the box.
     """
-    lines = (markdown or "").split("\n")
-    start, first, end = _capture_span(lines)
-    if first is None:
-        return [], []
-
-    blocks = []
-    for index in range(first, end):
-        stripped = lines[index].strip()
-        if stripped == "-" or stripped.startswith("- "):
-            if blocks and lines[index][:1].isspace():
-                # An indented bullet is a reply written under the capture
-                # above it, so it travels with that capture. Starting a new
-                # block here is what orphaned a cycle's own closing note at
-                # the top of `issues.md` on 2026-08-25: the owner's bullet
-                # was `DONE` and moved, the reply under it was not and
-                # stayed, and `top_board_rows` then ranked it first as an
-                # unprocessed capture from him. `nova_boards._captures`
-                # folds the same shape, which is what keeps `check` honest.
-                blocks[-1].append(lines[index])
-            else:
-                blocks.append([lines[index]])
-        elif blocks and stripped and not stripped.startswith(("-", "*", "|")):
-            blocks[-1].append(lines[index])
-        else:
-            # A line inside the span that is neither a bullet nor a fold:
-            # blank, or `*`/`|`-prefixed. The reader ignores it, so it is
-            # not part of any capture -- but it is still in his file, and
-            # a block of its own is the only way it stays there. Dropping
-            # it is invisible to `check`, because `parse_board` never saw
-            # it either. My own test caught that, not the reviewer's.
-            blocks.append([lines[index]])
-
-    kept, moved = [], []
-    for block in blocks:
-        head = block[0].strip()
-        bullet = head == "-" or head.startswith("- ")
-        cycle, _ = split_capture_done(head[2:]) if bullet else ("", head)
-        (moved if cycle else kept).append(block)
-    return kept, moved
+    lines = [f"- {capture_text_of(doc)}"]
+    lines.extend(f"    - {reply}" for reply in capture_replies_of(doc))
+    return lines
 
 
-def rewrite(markdown):
-    """The file with its DONE captures moved to `## Processed captures`.
+def finished(captures):
+    """The capture documents carrying a `DONE (Cycle N):` marker, in order."""
+    return [doc for doc in captures or ()
+            if split_capture_done(capture_text_of(doc))[0]]
 
-    Returns `(new_markdown, moved_count)`. `(markdown, 0)` when there is
-    nothing to move, so the caller can skip the write rather than put an
-    identical document and burn a revision.
+
+class ArchiveRefused(ValueError):
+    """The layout has no place this tool is willing to append to."""
+
+
+def archived(blocks, docs):
+    """`blocks` with every document's bullet appended to the archive block.
+
+    Returns a new list; `blocks` is not mutated, because the caller still
+    holds the version it read and a refusal below has to leave that intact.
+
+    The block to append to is the last `verbatim` block carrying the
+    heading. **A heading *after* it inside the same block is refused**
+    rather than appended past: a `verbatim` block runs to the next heading
+    the layout claims, so a `##` this tool does not recognise sitting below
+    `## Processed captures` would take the bullets into a section nobody
+    chose. Refusing costs a cycle one message; appending wrongly moves his
+    sentence somewhere he will not look for it.
     """
-    kept, moved = plan(markdown)
-    if not moved:
-        return markdown, 0
+    new = [dict(block) for block in blocks]
+    lines = [line for doc in docs for line in bullet_lines(doc)]
+    if not lines:
+        return new
 
-    lines = (markdown or "").split("\n")
-    start, first, end = _capture_span(lines)
+    target = None
+    for index, block in enumerate(new):
+        if block.get("kind") == "verbatim" and _has_processed_heading(
+                block.get("markdown", "")):
+            target = index
+    if target is None:
+        new.append({"kind": "verbatim",
+                    "markdown": PROCESSED_HEADING + "\n\n" + "\n".join(lines)})
+        return new
 
-    # Exactly one empty bullet, last: the cursor he types into. It is the
-    # file's own documented contract and `insert_captures` restores it the
-    # same way, so a capture list that was all DONE does not come back
-    # with nowhere to type.
-    body = [line for block in kept for line in block if line.strip() != "-"]
-    head = lines[:first] + body + ["- "]
-
-    tail = lines[end:]
-    while tail and not tail[0].strip():
-        tail.pop(0)
-
-    # Both real files end in a hundred-odd blank lines. They are nothing
-    # to the parser and they are still his file, so they are put back
-    # under the archive rather than quietly dropped -- the reviewer on
-    # runner#286 caught the first version deleting all 121 of them and
-    # `check` could not see it, because `parse_board` cannot.
-    rest = "\n".join(tail)
-    padding = len(rest) - len(rest.rstrip("\n"))
-    rest = rest.rstrip("\n")
-    archived = [line for block in moved for line in block]
-    if not _has_processed_heading(rest):
-        rest = rest + "\n\n" + PROCESSED_HEADING + "\n"
-    parts = [
-        "\n".join(head),
-        "",
-        rest.rstrip("\n"),
-        "\n".join(archived) + "\n" * (padding or 1),
-    ]
-    return "\n".join(parts), len(moved)
+    markdown = new[target].get("markdown", "")
+    body = markdown.split("\n")
+    at = max(index for index, line in enumerate(body)
+             if line.strip().lower() == PROCESSED_HEADING.strip().lower())
+    below = [line for line in body[at + 1:] if _is_heading(line)]
+    if below:
+        raise ArchiveRefused(
+            f"the layout block holding {PROCESSED_HEADING!r} carries "
+            f"{len(below)} further heading(s) below it, the first being "
+            f"{below[0].strip()!r} -- appending would file his bullet under "
+            "that heading instead of the archive")
+    new[target]["markdown"] = markdown.rstrip("\n") + "\n" + "\n".join(lines)
+    return new
 
 
-def check_from_contents(old, new, before, after, moved):
-    """Every way this rewrite could go wrong, asked of the reader.
+def check_after(before, after, layout_markdown, moved):
+    """Every way this roll could have gone wrong, asked of the store.
 
-    A list of complaints, empty when the two documents differ in exactly
-    the way they were meant to. `parse_board` is the function the app
-    renders from, so asking it is the only check that can see a write-up
-    that silently stopped being part of its own heading.
+    `before` and `after` are `board_records.contents` either side of the
+    two writes, `layout_markdown` the archive block as it came back, and
+    `moved` the documents this run meant to move. A list of complaints,
+    empty when the board differs in exactly the way it was meant to.
 
-    Takes the two parsed boards rather than parsing them itself, the same
-    split #203 made in `board_capture`, `board_row` and the five single-cell
-    writers -- `close_done_captures` was on that list until its own guard
-    was deleted outright, the whole board check having moved down into
-    `board_write.change_capture_text`: once the source is the record store
-    a parse the guard takes for itself is a second round trip a concurrent
-    write can land between, and this one would then be checking the rows
-    of one version of the board against the captures of another.
-
-    It still takes both raw documents, and that is deliberate rather than
-    an unfinished conversion. The last half of this guard compares the
-    capture *lines*, because a bullet dropped between the two sections is
-    a clean removal to `parse_board` and only the text shows it -- there
-    is no records-shaped question that asks it, and the generated markdown
-    view is what it is about. `main` reads each version once and hands
-    both forms of it here.
+    Read back rather than computed: the point is to catch a bullet that
+    left the box and arrived nowhere, and a check built from what was
+    *sent* agrees with the sender by construction.
     """
     problems = []
-    if old["items"] != new["items"]:
+    if before["items"] != after["items"]:
         problems.append("board rows changed")
-    if old["details"] != new["details"]:
+    if before["details"] != after["details"]:
         problems.append("detail write-ups changed")
 
-    gone = [c for c in old["captures"] if c not in new["captures"]]
-    if len(gone) != moved:
-        problems.append(f"{len(gone)} captures left the list, expected {moved}")
-    for capture in gone:
-        cycle, _ = split_capture_done(capture)
-        if not cycle:
-            problems.append(f"an unfinished capture was moved: {capture[:60]}")
-    for capture in new["captures"]:
-        cycle, _ = split_capture_done(capture)
-        if cycle:
-            problems.append(f"a DONE capture stayed: {capture[:60]}")
-
-    # Nothing may be lost, only relocated, and this asks it of the raw
-    # lines rather than of `parse_board`'s output -- which catches a bullet
-    # dropped between the two sections, where `parse_board` sees a clean
-    # removal. It used to substring-test the first 80 characters of the
-    # parsed capture, and that cannot work on a capture with a reply folded
-    # into it: the folded string is two lines in the file and exists
-    # nowhere as one, so a correct rewrite reported a lost capture.
-    def _span_lines(text):
-        lines = (text or "").split("\n")
-        _, first, end = _capture_span(lines)
-        return [] if first is None else lines[first:end]
-
-    still_here = set(_span_lines(after))
-    archived = set()
-    if _has_processed_heading(after):
-        archived = set(after.split(PROCESSED_HEADING)[-1].split("\n"))
-    for line in _span_lines(before):
-        # The bare cursor bullet is re-laid as `- ` by `rewrite`, on purpose,
-        # so it is the one line that legitimately does not come back byte for
-        # byte. It carries none of his text.
-        if line.strip() in ("", "-"):
-            continue
-        if line not in still_here and line not in archived:
-            problems.append(f"a capture line is in neither list: {line.strip()[:60]}")
+    texts = [capture_text_of(doc) for doc in moved]
+    gone = [text for text in before["captures"] if text not in after["captures"]]
+    if sorted(gone) != sorted(texts):
+        problems.append(
+            f"{len(gone)} capture(s) left the box, expected {len(texts)}")
+    for text in after["captures"]:
+        if split_capture_done(text)[0]:
+            problems.append(f"a DONE capture stayed: {text[:60]}")
+    for text in texts:
+        if text not in layout_markdown:
+            problems.append(f"a moved capture is not in the archive: {text[:60]}")
     return problems
 
 
+def _archive_markdown(blocks):
+    """Every verbatim block holding the heading, joined. `""` when there is none."""
+    return "\n".join(block.get("markdown", "") for block in (blocks or ())
+                     if block.get("kind") == "verbatim"
+                     and _has_processed_heading(block.get("markdown", "")))
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--file", required=True, help="board markdown on disk")
-    parser.add_argument("--out", help="where to write (default: in place)")
-    parser.add_argument("--dry-run", action="store_true")
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--board", required=True, choices=list(BOARDS),
+                        help="which of his two boards to roll")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="report what would move, write nothing")
     args = parser.parse_args(argv)
 
-    before = open(args.file, encoding="utf-8").read()
-    after, moved = rewrite(before)
+    try:
+        before = board_records.contents(args.board, store=board_store)
+        captures = board_records.capture_documents(args.board, store=board_store)
+        layout = board_store.read_layout(args.board)
+    except (board_records.RecordError, StoreError) as problem:
+        print(f"REFUSED: {problem}", file=sys.stderr)
+        return 1
+
+    moved = finished(captures)
     if not moved:
-        print("nothing to move")
+        print(f"{args.board}: nothing to move "
+              f"({len(captures)} capture(s) in the box)")
         return 0
 
-    problems = check_from_contents(
-        parse_board(before), parse_board(after), before, after, moved)
+    if layout is None:
+        print(f"REFUSED: {args.board} has no stored layout, so there is no "
+              "archive to append to and minting one here would decide the "
+              "order of his whole document. Run `python3 -m tools.board_migrate"
+              " --board <board> --file <md> --apply` first", file=sys.stderr)
+        return 1
+
+    try:
+        blocks = archived(layout, moved)
+    except ArchiveRefused as problem:
+        print(f"REFUSED: {problem}", file=sys.stderr)
+        return 1
+
+    for doc in moved:
+        print(f"  {capture_text_of(doc)[:70]}")
+    if args.dry_run:
+        print(f"{args.board}: would move {len(moved)} finished capture(s) "
+              f"to '{PROCESSED_HEADING}' (dry run)")
+        return 0
+
+    # The archive first. A failure between these two writes must be able to
+    # duplicate a bullet and never to lose one -- see the module docstring.
+    try:
+        board_store.write_layout(args.board, blocks)
+    except (StoreError, ValueError) as problem:
+        print(f"{args.board}: nothing moved — the archive write failed: "
+              f"{problem}", file=sys.stderr)
+        return 1
+
+    removed = 0
+    for doc in moved:
+        try:
+            board_store.delete_capture(doc)
+        except (StoreError, ValueError) as problem:
+            print(f"{args.board}: archived {len(moved)}, removed {removed} "
+                  f"from the box, then stopped — {problem}", file=sys.stderr)
+            return 1
+        removed += 1
+
+    try:
+        after = board_records.contents(args.board, store=board_store)
+        stored = board_store.read_layout(args.board)
+    except (board_records.RecordError, StoreError) as problem:
+        print(f"{args.board}: moved {removed} capture(s), then could not read "
+              f"the board back to check them — {problem}", file=sys.stderr)
+        return 1
+
+    problems = check_after(before, after, _archive_markdown(stored), moved)
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
         return 1
 
-    print(f"moved {moved} finished capture(s) to '{PROCESSED_HEADING}'")
-    print(f"{len(before)} -> {len(after)} bytes")
-    if args.dry_run:
-        return 0
-    open(args.out or args.file, "w", encoding="utf-8").write(after)
-    print(f"wrote {args.out or args.file}")
+    print(f"{args.board}: moved {removed} finished capture(s) to "
+          f"'{PROCESSED_HEADING}'")
     return 0
 
 

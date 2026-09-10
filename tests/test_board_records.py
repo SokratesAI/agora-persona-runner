@@ -331,6 +331,7 @@ class WritableFakeStore(FakeStore):
     def __init__(self, docs, registry):
         super().__init__(docs, registry)
         self.calls = []
+        self.layouts = {}
 
     def read_row(self, board, number):
         wanted = board_document.document_id(board, number)
@@ -388,6 +389,24 @@ class WritableFakeStore(FakeStore):
         removed = len(kept) != len(self.docs)
         self.docs = kept
         return removed
+
+    def read_layout(self, board):
+        """The stored blocks, or `None` when none was ever written.
+
+        **`None` and `[]` are the real store's opposite answers and the fake
+        keeps them apart.** `board_view.render_document` reads `None` as
+        "draw the default order" and `[]` as "this document has no blocks",
+        which renders his file as frontmatter and a capture box. A fake that
+        flattened absent to empty would let a caller pass a test it fails
+        against CouchDB by deleting his archive.
+        """
+        return self.layouts.get(board)
+
+    def write_layout(self, board, blocks):
+        self.calls.append(("write_layout", board, [dict(b) for b in blocks]))
+        self.layouts[board] = [dict(b) for b in blocks]
+        return {"_id": board_document.layout_document_id(board),
+                "board": board, "blocks": self.layouts[board]}
 
 
 def writable(board="issue", markdown=BOARD):
