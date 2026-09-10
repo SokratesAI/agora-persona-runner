@@ -2081,3 +2081,93 @@ def test_unread_notes_never_reaches_the_board_parser(monkeypatch):
     monkeypatch.setattr(nova_boards, "parse_board", _refuse)
     assert not hasattr(nova_next, "parse_board")
     assert [n["text"] for n in top_board_rows.unread_notes("- a note\n")] == ["a note"]
+
+
+def test_an_unread_board_is_not_rendered_as_no_open_rows():
+    """The verdict a cycle acts on, when nothing was read to base it on.
+
+    `board_records.contents` raises on an unmigrated store rather than
+    answering `[]` exactly so "empty" and "never read" stay distinguishable;
+    `main` catches that raise and `continue`s, so by the time `render` is
+    called the two are the same empty list again. Both sides are asserted
+    because the claim is that the sentence *switches* -- pinning only the
+    unread side passes with the whole feature reverted, since the phrase
+    "could not be read" would then simply be absent from a string nobody
+    compares.
+    """
+    empty = top_board_rows.render([])
+    assert "no open rows on either board" in empty
+    assert "NOTHING TO RANK" not in empty
+    unread = top_board_rows.render([], boards_unread=["issues.md", "ideas.md"])
+    assert "no open rows on either board" not in unread
+    assert "NOTHING TO RANK, and that is not a verdict" in unread
+    assert "issues.md and ideas.md could not be read" in unread
+
+
+def test_a_ranking_off_one_of_two_boards_says_so_above_the_row():
+    """A real top row is still printed -- what is withdrawn is "top"."""
+    text = board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE))
+    rows = _open_rows(text, "idea")
+    whole = top_board_rows.render(rows)
+    assert "UNREADABLE" not in whole
+    partial = top_board_rows.render(rows, boards_unread=["issues.md"])
+    assert "idea #64" in partial
+    assert "issues.md UNREADABLE" in partial
+    assert "need not be the top row" in partial
+
+
+def test_a_partial_capture_count_is_not_presented_as_a_total():
+    """The number that decides whether anything outranks the board."""
+    text = with_captures(board((64, "an immediate row", BACKLOG, "08-12", IMMEDIATE)),
+                         "something I typed")
+    rows = _open_rows(text, "idea")
+    caps = _captures(text, "idea")
+    whole = top_board_rows.render(rows, captures=caps)
+    assert "UNPROCESSED CAPTURES FROM EDVARD (1) —" in whole
+    partial = top_board_rows.render(rows, captures=caps,
+                                    boards_unread=["issues.md"])
+    assert "UNPROCESSED CAPTURES FROM EDVARD (1) —" not in partial
+    assert "(1; PARTIAL — issues.md could not be read)" in partial
+
+
+def test_an_unread_board_with_no_captures_at_all_still_says_it():
+    """Silence is the claim "he has left you nothing", and it is wrong here.
+
+    The captures section is skipped entirely when the list is empty, so this
+    is the one case the two assertions above cannot reach: there is no count
+    to qualify and no header to switch.
+    """
+    quiet = top_board_rows.render([])
+    assert "UNPROCESSED CAPTURES" not in quiet
+    unread = top_board_rows.render([], boards_unread=["issues.md", "ideas.md"])
+    assert "UNPROCESSED CAPTURES FROM EDVARD — NOT KNOWN" in unread
+    assert 'This is not "none"' in unread
+
+
+def test_main_does_not_qualify_the_ranking_with_an_unread_notes_file(
+        tmp_path, capsys, monkeypatch):
+    """`missing` collects `notes.md` too, and it carries no rows.
+
+    A ranking marked incomplete because a note could not be fetched would be
+    the same false-verdict failure pointing the other way -- withdrawing a
+    correct answer. The `COULD NOT READ` line still names it, because the
+    notes really were unread.
+    """
+    issues = tmp_path / "issues.md"
+    ideas = tmp_path / "ideas.md"
+    issues.write_text(board((7, "real work", BACKLOG, "08-01", HIGH)),
+                      encoding="utf-8")
+    ideas.write_text(board(), encoding="utf-8")
+    # Through the vault path, because that is the one that answers `None`
+    # for an unreadable document -- an explicit `--notes` at a missing file
+    # raises, which is a different failure and not the one under test.
+    monkeypatch.setattr(top_board_rows, "_fetch", lambda path: None)
+    rc = top_board_rows.main([], store=_store(issues, ideas))
+    out = capsys.readouterr().out
+    assert "UNREADABLE" not in out
+    assert "NOTHING TO RANK" not in out
+    assert "issue #7" in out
+    # Still reported and still exit 1 -- the notes really were unread. What
+    # the fix withdraws is only the ranking's qualification, not the report.
+    assert "notes.md" in out
+    assert rc == 1

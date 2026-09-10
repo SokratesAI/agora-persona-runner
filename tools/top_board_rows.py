@@ -692,7 +692,8 @@ def _claim_footer(rows, captures, claims_readable):
 def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
            projects_markdown="", projects_readable=True,
            milestone_pins_markdown="",
-           diagnoses_text="", diagnoses_readable=True, cycle=None):
+           diagnoses_text="", diagnoses_readable=True, cycle=None,
+           boards_unread=()):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -701,8 +702,28 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     whole and let the presentation carry the priority. So both are
     printed, and the "take this" sentence moves onto the captures when
     there are any, because that is where the contract actually points.
+
+    `boards_unread` is the boards `main` could not read, and every verdict
+    on this page is qualified by it. Both of the sentences a cycle acts on
+    -- the capture count and "no open rows on either board" -- are claims
+    about a board, and they read exactly the same whether the board is
+    empty or was never fetched. `board_records.contents` raises on an
+    unmigrated store precisely so those two cannot be confused; flattening
+    the raise into an empty list here would put the confusion back one
+    layer up. The `COULD NOT READ` line at the bottom of `main` is true and
+    is not enough: it prints *after* the verdict, and a cycle acts on the
+    verdict.
     """
     out = []
+    unread = tuple(boards_unread)
+    if unread and not captures:
+        # The captures section is skipped entirely when the list is empty,
+        # so silence here is itself the claim "he has left you nothing" --
+        # and his captures live on the boards that could not be read.
+        out.append("UNPROCESSED CAPTURES FROM EDVARD — NOT KNOWN: "
+                   + " and ".join(unread) + " could not be read and his "
+                   "captures live there. This is not \"none\".")
+        out.append("")
     if captures:
         # Held captures sink within the section for the same reason held rows
         # sink within the ranking. The section is otherwise unsorted, so this
@@ -721,6 +742,12 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         # are his and reading them as second-hand would be the same error
         # pointing the other way.
         note = f", {relayed} of them relayed by Sokrates" if relayed else ""
+        if unread:
+            # A partial count presented as a total is the same error as the
+            # empty ranking below: it is the number a cycle reads to decide
+            # whether anything outranks the board.
+            note += ("; PARTIAL — " + " and ".join(unread)
+                     + " could not be read")
         out.append(f"UNPROCESSED CAPTURES FROM EDVARD ({len(captures)}{note}) — "
                    "these outrank every row below. Take one, or say why not:")
         out.extend("  -> " + _capture_line(c) for c in captures)
@@ -769,12 +796,28 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     ranked = rank(rows, project_rank_map,
                   milestone_ranks(rows, parse_milestone_pins(
                       milestone_pins_markdown)))
-    if not ranked:
+    if not ranked and unread:
+        # NOT the sentence below. An unread board and an empty board produce
+        # an identical `ranked`, and they mean opposite things -- "there is
+        # nothing to do" against "I do not know what there is to do". This
+        # is the only place the difference still exists, because `main` has
+        # already turned the raise into a `continue`.
+        out.append("TOP OF EDVARD'S BOARD — NOTHING TO RANK, and that is not "
+                   "a verdict: " + " and ".join(unread)
+                   + " could not be read.")
+    elif not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
     else:
         header = ("TOP OF EDVARD'S BOARD — below the captures above:" if captures else
                   "TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:")
         out.append(header)
+        if unread:
+            # Same treatment as `projects_readable` below and for the same
+            # reason: the rows printed are real, but "take this" is a claim
+            # about the whole board and only part of it was read.
+            out.append("  ⚠ " + " and ".join(unread) + " UNREADABLE — this "
+                       "ranking covers the other board only, so the row named "
+                       "here need not be the top row.")
         if not projects_readable:
             # Not a `COULD NOT READ` and not exit 1: no row is missing from
             # this list. What is missing is the order between projects, and
@@ -917,6 +960,10 @@ def main(argv=None, store=board_store):
     captures = []
     closed_waiting = []
     missing = []
+    # Kept beside `missing` rather than derived from it: `missing` also
+    # collects `notes.md`, which is not a board and carries no rows, so a
+    # ranking qualified by it would be qualified by the wrong thing.
+    boards_unread = []
     for board, path in (("issue", ISSUES_PATH), ("idea", IDEAS_PATH)):
         # A board that could not be read is said out loud rather than
         # silently ranked as empty -- a top row chosen from one of two
@@ -929,6 +976,7 @@ def main(argv=None, store=board_store):
             contents = board_records.contents(board, store=store)
         except (board_records.RecordError, board_store.StoreError) as problem:
             missing.append(f"{path} ({problem})")
+            boards_unread.append(path.rsplit("/", 1)[-1])
             continue
         # One read, three readers. Each of the three used to take the file
         # and parse it itself, so a board was read three times per pass --
@@ -988,7 +1036,8 @@ def main(argv=None, store=board_store):
                  milestone_pins_markdown=milestone_pins_md,
                  diagnoses_text=diagnoses_text,
                  diagnoses_readable=diagnoses_readable,
-                 cycle=args.cycle))
+                 cycle=args.cycle,
+                 boards_unread=boards_unread))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")
