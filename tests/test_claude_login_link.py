@@ -6,6 +6,7 @@ decision rather than an omission.
 """
 
 import base64
+import io
 import hashlib
 import json
 
@@ -553,3 +554,172 @@ def test_a_held_link_is_not_reported_as_delivered(tmp_path, capsys, monkeypatch)
     assert "held: quiet hours" in out
     # The session is still minted, so `finish` works if he gets the URL another way.
     assert json.loads(session.read_text())["state"]
+
+
+def test_a_refusal_body_reaches_the_caller_instead_of_the_exception(monkeypatch):
+    """`urlopen` raises on 4xx, so `exchange`'s `status != 200` branch could
+    never run and the only line that said *why* went out with the exception.
+    Measured live 2026-09-10: the 400 that three cycles read as
+    `HTTP Error 400: Bad Request` carried
+    `{"error": "invalid_grant", "error_description": "Invalid 'code' in request."}`."""
+    import urllib.error
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError(
+            "https://token.example", 400, "Bad Request", {},
+            io.BytesIO(b'{"error": "invalid_grant", '
+                       b'"error_description": "Invalid \'code\' in request."}'),
+        )
+
+    monkeypatch.setattr(login.urllib.request, "urlopen", fake_urlopen)
+    status, payload = login._post_json("https://token.example", {})
+    assert status == 400
+    assert payload["error"] == "invalid_grant"
+    assert payload["error_description"] == "Invalid 'code' in request."
+
+
+def test_an_unparsable_refusal_body_still_travels_as_evidence(monkeypatch):
+    """Cloudflare's 1010 block is HTML. A body we cannot parse is still the
+    finding, so it must not surface as a `ValueError` from the parse line."""
+    import urllib.error
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError(
+            "https://token.example", 403, "Forbidden", {},
+            io.BytesIO(b"<html>error code: 1010</html>"),
+        )
+
+    monkeypatch.setattr(login.urllib.request, "urlopen", fake_urlopen)
+    status, payload = login._post_json("https://token.example", {})
+    assert status == 403
+    assert "1010" in payload["error_description"]
+
+
+def test_exchange_names_the_reason_not_just_the_status():
+    """`token exchange failed (400)` is the same sentence for a spent code, an
+    expired one and a rate limit, and they have different next steps."""
+    def fake_post(url, body, user_agent=None):
+        return 400, {"error": "invalid_grant", "error_description": "Invalid 'code' in request."}
+
+    session = {"code_verifier": "v", "state": "s", "client_id": "c",
+               "token_url": "u", "redirect_uri": "r"}
+    with pytest.raises(login.CannotSee) as refusal:
+        login.exchange(session, "spent", post=fake_post)
+    text = str(refusal.value)
+    assert "400" in text
+    assert "invalid_grant" in text
+    assert "Invalid 'code' in request." in text
+
+
+def test_the_code_is_matched_on_this_sessions_state_not_on_arrival_order():
+    """A stale reply to an invalidated link arrives newest-first too. Picking
+    by arrival would hand `finish` a code whose state does not match, and the
+    real one -- one message further down -- would never be tried."""
+    rows = [
+        {"id": 1, "text": "old-code#previous-state"},
+        {"id": 2, "text": "please send me a new link"},
+        {"id": 3, "text": "right-code#live-state"},
+        {"id": 4, "text": "thanks"},
+    ]
+    assert login.code_from_messages(rows, "live-state") == ("right-code", 3)
+    assert login.code_from_messages(rows, "previous-state") == ("old-code", 1)
+    assert login.code_from_messages(rows, "never-minted") == (None, None)
+    assert login.code_from_messages(rows, None) == (None, None)
+
+
+def test_a_bare_code_with_no_state_is_not_claimed_by_any_session():
+    """`split_pasted_code` returns None for the state half when he pastes only
+    the code, and None must not match a session whose state is missing."""
+    rows = [{"id": 9, "text": "just-the-code"}]
+    assert login.code_from_messages(rows, "live-state") == (None, None)
+    assert login.code_from_messages("not a list", "live-state") == (None, None)
+
+
+def test_await_code_returns_the_code_as_soon_as_it_arrives():
+    reads = []
+    ticks = {"t": 0.0}
+
+    def fetch_rows():
+        reads.append(ticks["t"])
+        if len(reads) < 3:
+            return []
+        return [{"id": 7, "text": "the-code#live-state"}]
+
+    def sleep(seconds):
+        ticks["t"] += seconds
+
+    assert login.await_code(
+        "live-state", timeout=600, poll=15,
+        fetch_rows=fetch_rows, sleep=sleep, now=lambda: ticks["t"],
+    ) == ("the-code", 7)
+    assert len(reads) == 3
+    assert ticks["t"] == 30.0
+
+
+def test_await_code_gives_up_at_the_deadline_and_never_sleeps_past_it():
+    ticks = {"t": 0.0}
+
+    def sleep(seconds):
+        ticks["t"] += seconds
+
+    assert login.await_code(
+        "live-state", timeout=40, poll=15,
+        fetch_rows=lambda: [], sleep=sleep, now=lambda: ticks["t"],
+    ) == (None, None)
+    # 15 + 15 + 10: the last sleep is clamped to what is left, so a caller
+    # that asked for 40 seconds is never held for 45.
+    assert ticks["t"] == 40.0
+
+
+def test_an_unreadable_inbox_is_retried_rather_than_ending_the_wait(capsys):
+    ticks = {"t": 0.0}
+    attempts = {"n": 0}
+
+    def fetch_rows():
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError("bridge down")
+        return [{"id": 4, "text": "the-code#live-state"}]
+
+    def sleep(seconds):
+        ticks["t"] += seconds
+
+    assert login.await_code(
+        "live-state", timeout=600, poll=15,
+        fetch_rows=fetch_rows, sleep=sleep, now=lambda: ticks["t"],
+    ) == ("the-code", 4)
+    assert "bridge down" in capsys.readouterr().out
+
+
+def test_wait_acks_only_a_code_it_actually_spent(tmp_path, monkeypatch, capsys):
+    """An ack on a failed exchange hides the one message a later cycle needs
+    to retry with."""
+    from tools import telegram_inbox
+
+    session = tmp_path / "session.json"
+    session.write_text(json.dumps({
+        "code_verifier": "v", "state": "live-state", "client_id": "c",
+        "token_url": "u", "redirect_uri": "r", "user_agent": "axios/1.15.2",
+        "created_at": 0,
+    }))
+    acked = []
+    monkeypatch.setattr(telegram_inbox, "ack", lambda through, *a, **k: acked.append(through) or (0, "read through #%s" % through))
+    monkeypatch.setattr(login, "await_code",
+                        lambda state, timeout, poll=15.0: ("the-code", 11))
+
+    monkeypatch.setattr(login, "_post_json", lambda *a, **k: (400, {"error": "invalid_grant"}))
+    assert login.main(["--session", str(session), "wait", "--timeout", "1"]) == 2
+    assert acked == []
+
+    monkeypatch.setattr(login, "_post_json", lambda *a, **k: (200, {
+        "access_token": "at", "refresh_token": "rt", "expires_in": 60,
+    }))
+    assert login.main(["--session", str(session), "wait", "--timeout", "1"]) == 0
+    assert acked == [11]
+
+
+def test_wait_refuses_a_session_with_no_state_rather_than_matching_none(tmp_path, capsys):
+    session = tmp_path / "session.json"
+    session.write_text(json.dumps({"code_verifier": "v", "created_at": 0}))
+    assert login.main(["--session", str(session), "wait", "--timeout", "1"]) == 1
+    assert "no state" in capsys.readouterr().out
