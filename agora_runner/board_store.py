@@ -11,10 +11,16 @@ so every reader ends up here or nowhere.
 
 It sits on `ticket_docs` for credentials and HTTP rather than opening a
 second connection, and shares that module's database -- the ticket mirror
-holds `ticket:<path>:<n>` and this holds `board:<board>:<n>`, two id
-namespaces in one database, because CouchDB is one database per vault and
-a second one would need its own credentials, its own backup and its own
-reason.
+holds `ticket:<path>:<n>` and this holds `board:<board>:<n>` **and**
+`capture:<board>:<id>`, three id namespaces in one database, because
+CouchDB is one database per vault and a second one would need its own
+credentials, its own backup and its own reason.
+
+The two of those that are one board's are two *separate* `_all_docs`
+ranges, and that is not a detail: a capture id under `board:` would be
+tombstoned by `write_rows`' prune, so it is outside deliberately, and a
+reader that fetches one range and sorts by `type` finds no captures at
+all. `read_rows` and `read_captures` are both needed to read one board.
 
 **Nothing calls this yet**, for the same reason the four before it call
 nothing: the store, the migration and the 23 markdown readers land in one
@@ -63,6 +69,7 @@ removing it. A status change touches one row and must write one document.
 The `unchanged` count in the summary is what says whether that held.
 """
 
+import collections
 import json
 import urllib.parse
 
@@ -105,8 +112,7 @@ def ensure_database():
     return ticket_docs.ensure_database()
 
 
-def _range_query(board, include_docs=True):
-    prefix = f"board:{board}:"
+def _prefix_query(prefix, include_docs=True):
     query = {
         "startkey": json.dumps(prefix),
         "endkey": json.dumps(prefix + _ID_MAX),
@@ -114,6 +120,31 @@ def _range_query(board, include_docs=True):
     if include_docs:
         query["include_docs"] = "true"
     return urllib.parse.urlencode(query)
+
+
+def _range_query(board, include_docs=True):
+    return _prefix_query(f"board:{board}:", include_docs=include_docs)
+
+
+def _capture_range_query(board, include_docs=True):
+    """The **other** key range of one board -- its captures, not its rows.
+
+    Captures deliberately do not live under `board:<board>:`.
+    `board_document.capture_document_id` puts them under `capture:<board>:`
+    and says why: an id inside the row range would be handed back by
+    `read_rows` as a row with no number, and `write_rows`' default
+    `prune=True` would tombstone every capture the owner has written the
+    first time a migration wrote the rows alone.
+
+    The consequence is that one board is **two** queries, and that is the
+    thing to keep hold of. A reader that fetches the row range and then
+    sorts captures out of it by `type` gets an empty capture list against a
+    real store, forever, while a fake store that answers `read_rows` with a
+    hand-built list of both kinds agrees with it -- which is exactly how
+    `board_records.contents` shipped reading zero captures with a green
+    test.
+    """
+    return _prefix_query(f"capture:{board}:", include_docs=include_docs)
 
 
 def stored_documents(board):
@@ -133,6 +164,34 @@ def stored_documents(board):
 def read_rows(board):
     """Every record document for one board, in `sort_key` order."""
     return in_order(stored_documents(board).values())
+
+
+def stored_capture_documents(board):
+    """`{doc_id: the stored document}` for one board's captures, unsorted.
+
+    Its own `_all_docs` range because captures have their own id prefix --
+    see `_capture_range_query`.
+    """
+    _check_board(board)
+    status, body = ticket_docs._req(
+        "GET", f"{ticket_docs.TICKET_DB}/_all_docs?{_capture_range_query(board)}")
+    if status != 200:
+        raise StoreError(
+            f"listing {board} captures: {status} {json.dumps(body)[:200]}")
+    return {row["id"]: row["doc"] for row in body.get("rows", []) if row.get("doc")}
+
+
+def read_captures(board):
+    """Every capture document for one board, in wire order.
+
+    Deliberately **not** run through `in_order`. A capture carries a rank
+    and no number, so `sort_key`'s number tie-break has nothing to work
+    with, and `board_document.captures_map` already owns the capture order
+    -- ranked first in rank order, then unranked in the order they were
+    handed over. Sorting here as well would decide that second half twice,
+    in two places, on two rules.
+    """
+    return list(stored_capture_documents(board).values())
 
 
 def read_row(board, number):
@@ -157,10 +216,15 @@ def write_rows(board, docs, prune=True):
     as something the read-back would render.
 
     `prune=False` turns the tombstoning off, for a caller writing a subset
-    on purpose -- one moved row rather than a whole board. It is not the
-    default: a migration that silently left deleted rows behind is the
-    failure this store exists to make impossible, so dropping rows is what
-    you get unless you say otherwise.
+    on purpose. It is not the default: a migration that silently left
+    deleted rows behind is the failure this store exists to make
+    impossible, so dropping rows is what you get unless you say otherwise.
+
+    **For one row, use `write_row` rather than this with a one-item list.**
+    Both write the same document, but this one lists the whole board to
+    find that row's revision, and it takes the stored revision rather than
+    the one the caller read -- right for a migration, where the batch is
+    the truth, and a clobber for a cycle changing one cell.
     """
     _check_board(board)
     docs = list(docs)
@@ -169,7 +233,33 @@ def write_rows(board, docs, prune=True):
         if doc["board"] != board:
             raise board_document.DocumentError(
                 f"document {doc['_id']!r} is not on board {board!r}")
-    stored = stored_documents(board)
+    return _bulk_write(docs, stored_documents(board), prune,
+                       what=f"{board} records")
+
+
+def _bulk_write(docs, stored, prune, what):
+    """One `_bulk_docs` request for an already-validated batch of documents.
+
+    Shared by `write_rows` and `write_captures` because the two differ only
+    in which documents are legal and which key range holds them -- the
+    revision handling, the unchanged skip and the pruning are one rule, and
+    two copies of it would let the capture range drift away from the row
+    range one fix at a time.
+
+    `stored` is the range's current contents, `{doc_id: document}`; the
+    caller fetches it, because that is the half that differs.
+    """
+    produced = {doc["_id"] for doc in docs}
+    if len(produced) != len(docs):
+        # `_bulk_docs` given one id twice stores one of the two and says
+        # nothing useful about the other, so the loss is silent and which
+        # one survives is CouchDB's choice. For captures that is one of
+        # his bullets disappearing during the migration that was meant to
+        # preserve it.
+        counts = collections.Counter(doc["_id"] for doc in docs)
+        repeated = sorted(doc_id for doc_id, n in counts.items() if n > 1)
+        raise StoreError(f"writing {what}: {len(docs) - len(produced)} "
+                         f"duplicate id(s) in one batch: {repeated}")
     written = []
     unchanged = 0
     for doc in docs:
@@ -178,7 +268,6 @@ def write_rows(board, docs, prune=True):
             unchanged += 1
             continue
         written.append(dict(doc, **({"_rev": held["_rev"]} if held else {})))
-    produced = {doc["_id"] for doc in docs}
     tombstones = []
     if prune:
         tombstones = [{"_id": doc_id, "_rev": held["_rev"], "_deleted": True}
@@ -189,7 +278,7 @@ def write_rows(board, docs, prune=True):
         "POST", f"{ticket_docs.TICKET_DB}/_bulk_docs",
         {"docs": written + tombstones})
     if status not in (200, 201):
-        raise StoreError(f"writing {board} records: {status} {json.dumps(body)[:200]}")
+        raise StoreError(f"writing {what}: {status} {json.dumps(body)[:200]}")
     failures = [row for row in body if row.get("error")]
     return {
         "written": len(written),
@@ -197,6 +286,222 @@ def write_rows(board, docs, prune=True):
         "unchanged": unchanged,
         "failures": failures,
     }
+
+
+def write_captures(board, docs, prune=True):
+    """Write one board's captures -- the owner's own bullets. Summary dict.
+
+    `docs` are documents from `board_document.to_capture_document`. The
+    twin of `write_rows` over the **other** key range, and the reason there
+    are two functions rather than one with a flag is that neither may reach
+    the other's range: `write_rows`' prune tombstones everything under
+    `board:<board>:` that the caller did not send, and captures live under
+    `capture:<board>:` precisely so that a migration writing the rows alone
+    cannot delete them. A single writer over both ranges would put that
+    back the first time a caller passed one list.
+
+    `prune=True` is the default for `write_rows`' reason -- a capture the
+    owner deleted from his board must not survive here as something the
+    read-back would render. **Pruning does not free the id**: the counter
+    lives in the registry as a high-water mark (`entity_id.mint_capture`),
+    so a deleted `cap_7` is never issued again and an old reply can never
+    land under new words.
+    """
+    _check_board(board)
+    docs = list(docs)
+    for doc in docs:
+        board_document._check_capture_identity(doc)
+        if doc["board"] != board:
+            raise board_document.DocumentError(
+                f"capture {doc['_id']!r} is not on board {board!r}")
+    return _bulk_write(docs, stored_capture_documents(board), prune,
+                       what=f"{board} captures")
+
+
+class RowConflict(StoreError):
+    """The stored row moved between the read and the write."""
+
+
+def write_row(doc):
+    """Write one row's record, conditional on the revision it was read at.
+
+    `write_rows(board, [doc], prune=False)` already writes a subset, and it
+    is the wrong shape for the ten `tools/board_*.py` writers that change
+    one cell: it lists the whole board with `include_docs=true` to find one
+    `_rev`, so setting a status pulls back every stored row and every
+    write-up body with it -- on the live issues board that is the 123KB of
+    `# Details` `roll_health` measures, fetched to write one document. This
+    reads the one document instead, which is what the spec's definition of
+    done means by *"moving one row writes one document"*.
+
+    Returns the document as it now stands, `_rev` included, so a caller
+    writing twice does not have to read again.
+
+    Three rules, and the middle one is why this is not a thin wrapper:
+
+    - A row that is not stored is created.
+    - **An update must carry the `_rev` it was read at.** A document fresh
+      out of `board_document.to_document` has none, so a caller that read a
+      row, changed a cell and re-minted it would otherwise be written on top
+      of whatever is stored *now* -- last-writer-wins between two cycles
+      editing two different cells of the same row, which is exactly the
+      clobber `write_registry` refuses. Falling back to the stored revision
+      would make every such write succeed, so it is refused instead.
+    - A document whose content already matches what is stored is not
+      written and needs no revision, so a re-run costs nothing.
+
+    **A 409 raises `RowConflict` and is not retried**, for `write_registry`'s
+    reason: the change was computed against text that lost, so the answer is
+    to read the row that won and apply the change to that -- never to resend
+    this body with the winner's revision.
+    """
+    board_document._check_identity(doc)
+    # No `_check_board` beside it: `_check_identity` derives the expected id
+    # through `document_id`, which refuses an unknown board itself, so a
+    # second guard here would be a line no input can reach.
+    board = doc["board"]
+    doc_id = board_document.document_id(board, doc["number"])
+    return _write_one(doc, doc_id, read_row(board, doc["number"]), RowConflict)
+
+
+def _write_one(doc, doc_id, held, conflict):
+    """The three rules above, once, for a row and for a capture.
+
+    Extracted when `write_capture` needed the same three -- a second copy of
+    *"an update must carry the `_rev` it was read at"* is a second place for
+    it to stop being true, and the rule that matters is the one nobody
+    notices going missing.
+
+    `conflict` is the exception class to raise on a 409 rather than a flag,
+    because a caller catching "the row I read moved" and a caller catching
+    "the capture I read moved" are two different recoveries, and one class
+    named for a row would make the second one read as the first.
+    """
+    body = dict(doc, _id=doc_id)
+    rev = body.pop("_rev", None)
+    if held is not None and ticket_docs._payload(held) == body:
+        return held
+    if held is not None and rev is None:
+        raise board_document.DocumentError(
+            f"{doc_id} is already stored: an update must carry the `_rev` it "
+            "was read at, or it overwrites whatever is there now")
+    if rev is not None:
+        body["_rev"] = rev
+    status, answer = ticket_docs._req(
+        "PUT", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}",
+        body)
+    if status == 409:
+        raise conflict(
+            f"{doc_id} moved since it was read: re-read it, apply the change "
+            "to the record that won, and write that -- do not resend this one")
+    if status not in (200, 201):
+        raise StoreError(f"writing {doc_id}: {status} {json.dumps(answer)[:200]}")
+    return dict(body, _rev=answer["rev"])
+
+
+class CaptureConflict(StoreError):
+    """The stored capture moved between the read and the write."""
+
+
+def read_capture(board, capture_id):
+    """One capture document, or `None` if it is not stored."""
+    doc_id = board_document.capture_document_id(_check_board(board), capture_id)
+    status, body = ticket_docs._req(
+        "GET", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}")
+    if status == 200:
+        return body
+    if status == 404:
+        return None
+    raise StoreError(f"reading {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
+def write_capture(doc):
+    """Write one capture's record, conditional on the revision it was read at.
+
+    `write_row`'s twin over the **other** key range, and it is a separate
+    function for `write_captures`' reason: neither may reach the other's
+    range. It shares the three rules through `_write_one` and shares nothing
+    else.
+
+    Why the single-document form is needed here and not only for rows: a
+    capture carries the owner's own words *and every reply a cycle has
+    written under them*, and the two tools that move captures between his
+    `## Captures` list and his `## Processed captures` archive
+    (`close_done_captures`, `roll_done_captures`) change a **subset** of
+    them -- however many came back answered that run, which their guards
+    count rather than assume. `write_captures` is the wrong shape for a
+    subset twice over: it lists the whole range with `include_docs=true`,
+    so every bullet and every reply is fetched to write a few, and its
+    default `prune=True` tombstones every capture the caller did not pass.
+    Passing `prune=False` fixes the second and not the first, and leaves the
+    caller holding a flag whose wrong value deletes his captures.
+    """
+    board_document._check_capture_identity(doc)
+    board = doc["board"]
+    doc_id = board_document.capture_document_id(board, doc["captureId"])
+    return _write_one(doc, doc_id, read_capture(board, doc["captureId"]),
+                      CaptureConflict)
+
+
+def delete_capture(doc):
+    """Remove one capture's record, conditional on the revision it was read at.
+
+    The half of "board a capture" that `write_capture` cannot do. Boarding an
+    item is one row added and one bullet taken out of the box he types into,
+    and until this existed only the first of those had a records spelling --
+    so `tools.board_capture` was the one writer left with no door, which is
+    what the last handoff means by *"`board_capture` itself is NOT converted
+    and needs one more primitive"*.
+
+    **`write_captures(board, [...], prune=True)` already deletes a capture and
+    is the wrong shape for this**, twice over and for `write_capture`'s own
+    reasons: it lists the whole range with `include_docs=true`, so dropping
+    one bullet fetches every bullet and every reply he has ever been answered
+    with, and the deletion is expressed as an *absence* from the list the
+    caller passes. An absence is not a statement. A caller that built its list
+    from a read that lost a race deletes whatever the winner added, silently,
+    and the request looks exactly like a correct one.
+
+    So this takes the document itself, as read, and the `_rev` is not
+    optional. That is `_write_one`'s middle rule pointed at a delete, and it
+    matters more here than there: a capture carries the owner's own words and
+    every reply written under them, and a blind delete of a bullet somebody
+    answered while I was deciding to board it destroys both with nothing left
+    to compare against. A document with no revision has not been read from
+    this store, so there is nothing to be conditional on and it is refused
+    rather than fetched -- fetching the revision here would make every
+    unconditional delete succeed, which is the failure the rule exists for.
+
+    Absent is not an error and the return says which happened, `delete_layout`'s
+    contract: `True` if there was a document to remove, `False` if it had
+    already gone. That makes a re-run free, and a re-run is reachable -- the
+    caller writes a row and then deletes a bullet, so a cycle that died
+    between the two comes back to a board holding both.
+
+    A 409 raises `CaptureConflict`, and it is the same recovery as the
+    writer's: the capture moved, so re-read it and decide against what won.
+    Never re-send this delete with the winner's revision, which would be the
+    blind delete this signature exists to refuse.
+    """
+    board_document._check_capture_identity(doc)
+    rev = doc.get("_rev")
+    if not rev:
+        raise board_document.DocumentError(
+            "deleting a capture must carry the `_rev` it was read at, or it "
+            "removes whatever is stored now -- read it first")
+    doc_id = board_document.capture_document_id(doc["board"], doc["captureId"])
+    path = f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}"
+    status, body = ticket_docs._req(
+        "DELETE", f"{path}?rev={urllib.parse.quote(rev, safe='')}")
+    if status in (200, 202):
+        return True
+    if status == 404:
+        return False
+    if status == 409:
+        raise CaptureConflict(
+            f"{doc_id} moved since it was read: re-read it and decide against "
+            "the record that won -- do not re-send this delete")
+    raise StoreError(f"deleting {doc_id}: {status} {json.dumps(body)[:200]}")
 
 
 #: The project/milestone registry, one document beside the row records.
@@ -235,6 +540,16 @@ def _check_registry(registry):
         if not isinstance(registry.get(field), dict):
             raise board_document.DocumentError(
                 f"registry {field!r} must be a dict, not {registry.get(field)!r}")
+    # `captures` is checked only when it is there, and that asymmetry is
+    # deliberate. Every registry written before `entity_id.mint_capture`
+    # existed has the other two maps and not this one; requiring it would
+    # make the stored registry unwritable, and the recovery from that is a
+    # hand-edit of the one document every `projectId` on every row points
+    # at. `entity_id.capture_high_water` reads an absent map as zero, so
+    # absent and empty already mean the same thing to every caller.
+    if "captures" in registry and not isinstance(registry["captures"], dict):
+        raise board_document.DocumentError(
+            f"registry 'captures' must be a dict, not {registry['captures']!r}")
     return registry
 
 
@@ -303,3 +618,103 @@ def write_registry(registry):
     if status not in (200, 201):
         raise StoreError(f"writing {REGISTRY_ID}: {status} {json.dumps(body)[:200]}")
     return dict(doc, _rev=body["rev"])
+
+
+def read_layout(board):
+    """The stored block order for one board, or `None` if there is none.
+
+    **Absent is `None` and never `[]`, and the two mean opposite things.**
+    `board_view.render_document` treats `layout=None` as "no layout stored,
+    draw the fixed default order" and an empty list as "this document has no
+    blocks", which renders a board file containing its frontmatter, his
+    capture box and nothing else. So a reader that flattened the absent case
+    to `[]` would delete every row, every write-up and 19,653 words of
+    archive on the first render of a board that had never been migrated --
+    silently, because an empty layout is a valid layout.
+    """
+    _check_board(board)
+    doc_id = board_document.layout_document_id(board)
+    status, body = ticket_docs._req(
+        "GET", f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}")
+    if status == 200:
+        return board_document.layout_blocks_of(body)
+    if status == 404:
+        return None
+    raise StoreError(f"reading {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
+def write_layout(board, blocks):
+    """Store the block order for one board. Returns the document written.
+
+    A document whose blocks have not changed is not written, for the same
+    reason `write_rows` and `write_registry` skip one: a migration re-run
+    that computed the same layout must cost no revision.
+
+    **A 409 here is retried against the winner's revision, where
+    `write_registry` refuses to.** That difference is deliberate and it is
+    the reason these are two functions rather than one. A registry holds
+    minted ids, so a caller that lost a race and resent its body would
+    overwrite ids that rows already point at -- permanently, since there is
+    no delete. A layout holds no identity at all: it is a pure function of
+    the source markdown, and two cycles migrating the same board compute the
+    same blocks. Losing this race costs nothing that cannot be recomputed
+    from the document it was read from.
+    """
+    _check_board(board)
+    doc = board_document.to_layout_document(blocks, board)
+    doc_id = doc["_id"]
+    path = f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}"
+    for attempt in (0, 1):
+        status, held = ticket_docs._req("GET", path)
+        if status == 200:
+            # `_payload` on both sides, not just the stored one: on the
+            # retry after a 409 this document already carries the revision
+            # from the losing attempt, and comparing that against a
+            # revisionless payload makes the skip miss forever.
+            if ticket_docs._payload(held) == ticket_docs._payload(doc):
+                return held
+            doc["_rev"] = held["_rev"]
+        elif status == 404:
+            doc.pop("_rev", None)
+        else:
+            raise StoreError(f"reading {doc_id}: {status} {json.dumps(held)[:200]}")
+        status, body = ticket_docs._req("PUT", path, doc)
+        if status in (200, 201):
+            return dict(doc, _rev=body["rev"])
+        if status == 409 and attempt == 0:
+            continue
+        raise StoreError(f"writing {doc_id}: {status} {json.dumps(body)[:200]}")
+
+
+def delete_layout(board):
+    """Remove one board's stored layout. `True` if there was one to remove.
+
+    The only delete in this module that is not a prune, and it exists for
+    one caller: `board_migrate.verify` writes a layout against the live
+    board and has to put the store back exactly as it found it. Rows and
+    captures are restored by re-running their writer with an empty list --
+    `write_rows(board, [])` tombstones the range -- and **that spelling is
+    unavailable here and would be a disaster if it were used.** An empty
+    layout is a *valid* layout: `read_layout` hands `[]` straight to
+    `board_view.render_document`, which draws a board file holding its
+    frontmatter, his capture box and nothing else. So "no layout" is the
+    absence of the document and never an empty one, and taking a layout
+    away means deleting it.
+
+    Absent is not an error. A caller restoring a store it may or may not
+    have written to should not have to look first, and the return value is
+    there for the caller that wants to say which happened.
+    """
+    _check_board(board)
+    doc_id = board_document.layout_document_id(board)
+    path = f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}"
+    status, held = ticket_docs._req("GET", path)
+    if status == 404:
+        return False
+    if status != 200:
+        raise StoreError(f"reading {doc_id}: {status} {json.dumps(held)[:200]}")
+    status, body = ticket_docs._req(
+        "DELETE", f"{path}?rev={urllib.parse.quote(held['_rev'], safe='')}")
+    if status in (200, 202):
+        return True
+    raise StoreError(f"deleting {doc_id}: {status} {json.dumps(body)[:200]}")
