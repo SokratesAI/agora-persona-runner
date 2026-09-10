@@ -253,7 +253,7 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
-from agora_runner.nova_next import (next_payload, next_payload_from_contents,
+from agora_runner.nova_next import (next_payload_from_contents,
                                     project_milestones, rank)
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
 from agora_runner.nova_push import store_subscription, vapid_key
@@ -1026,6 +1026,18 @@ def his_board_from_contents(name, contents):
     return board
 
 
+def his_board_file_contents(name):
+    """His board file, parsed -- the one markdown door onto his boards here.
+
+    `board_payload` and `next_up_payload` both fall back to it when the
+    record store cannot prove it is current. It is one function so that
+    this module keeps a single `parse_board` call on his board, which is
+    what `test_nova_site_parses_only_his_board_now` counts, and the flip
+    deletes it along with both fallbacks (issue #203).
+    """
+    return parse_board(edvard_board_markdown(name))
+
+
 def board_payload(name):
     """Everything on one board page, before it is cut to a window.
 
@@ -1056,10 +1068,9 @@ def board_payload(name):
         # **The parse is the door and the composition is behind it.**
         # Everything this branch used to do inline now lives in
         # `his_board_from_contents`, which takes the four keys
-        # `board_records.contents` also returns; this line is the only
-        # markdown left on his half of the page (issue #203).
-        board = his_board_from_contents(
-            name, parse_board(edvard_board_markdown(name)))
+        # `board_records.contents` also returns; `his_board_file_contents`
+        # is the only markdown left on his half of the page (issue #203).
+        board = his_board_from_contents(name, his_board_file_contents(name))
     nova_markdown, nova_archive_markdown = nova_board_markdown(name)
     # Which rows he asked a question on and nobody answered. Stamped onto
     # the row here rather than worked out again by whoever needs it,
@@ -1941,7 +1952,8 @@ def next_up_payload():
     **His two boards come out of the #203 record store when it can prove
     it is current, and neither file is fetched.** `_next_from_records`
     says what "prove" means and returns `None` on anything less, which
-    drops through to the markdown door this always used. The ranking needs
+    drops through to parsing his two board files here, the one module
+    that still owns that fallback until the flip deletes it. The ranking needs
     the board *details* as well as the rows -- an unanswered comment is
     read off the write-up under the row -- and `board_records.contents`
     answers exactly what `parse_board` answered, all four keys, which is
@@ -1964,9 +1976,9 @@ def next_up_payload():
             projects_markdown=project_meta_markdown(),
             milestones_markdown=milestone_pins_markdown(),
         )
-    return next_payload(
-        edvard_board_markdown("issues"),
-        edvard_board_markdown("ideas"),
+    return next_payload_from_contents(
+        his_board_file_contents("issues"),
+        his_board_file_contents("ideas"),
         claims_ledger_json(),
         datetime.now(OSLO),
         projects_markdown=project_meta_markdown(),

@@ -3595,7 +3595,7 @@ def test_the_first_press_on_next_does_not_pay_for_its_own_build():
         builds.append(1)
         return {"projects": [], "waiting": []}
 
-    with patch.object(nova_site, "next_payload", side_effect=counted), \
+    with patch.object(nova_site, "next_payload_from_contents", side_effect=counted), \
             patch.object(nova_site, "edvard_board_markdown", return_value=""), \
             patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
             patch.object(nova_site, "project_meta_markdown", return_value=""), \

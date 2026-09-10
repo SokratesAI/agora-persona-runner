@@ -55,25 +55,29 @@ def test_known_milestones_reads_records_and_never_markdown(monkeypatch):
     landmine is what makes this a test of the seam rather than of the
     answer.
     """
-    monkeypatch.setattr(nova_next, "parse_board", _explode)
-    found = milestone_pin.known_milestones([
+    boards = [
         contents(row(1, "Nova", "Picking and planning")),
         contents(row(2, "Marcus", "Notifications and nudges")),
-    ])
+    ]
+    monkeypatch.setattr(nova_boards, "parse_board", _explode)
+    found = milestone_pin.known_milestones(boards)
     assert found == {("nova", "picking and planning"),
                      ("marcus", "notifications and nudges")}
 
 
 def test_the_landmine_is_armed(monkeypatch):
-    """`parse_board` patched in `nova_next`'s namespace is the one that fires.
+    """`nova_next` has no name of its own for the parser any more.
 
-    Guards the test above: if the reader resolved `parse_board` somewhere
-    else, patching it here would be patching nothing and the landmine would
-    be decorative.
+    Issue #203 deleted its markdown doors and the import with them, so the
+    only way a converted reader could still parse is through `nova_boards`
+    itself -- which is the name the test above patches. Were `nova_next`
+    to import `parse_board` again, patching `nova_boards` would miss it and
+    the landmine would be decorative; this is what fails first.
     """
-    monkeypatch.setattr(nova_next, "parse_board", _explode)
+    assert not hasattr(nova_next, "parse_board")
+    monkeypatch.setattr(nova_boards, "parse_board", _explode)
     with pytest.raises(AssertionError):
-        nova_next.open_rows("| # | Item |\n", "idea")
+        nova_boards.parse_board("| # | Item |\n")
 
 
 def _explode(*_args, **_kwargs):

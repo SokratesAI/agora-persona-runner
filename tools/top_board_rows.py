@@ -348,7 +348,7 @@ def board_contents(board, local=None, store=None):
     the migration is allowed to read markdown in, rather than through
     `parse_board` here -- so this tool no longer names the parser and
     `board_reader_inventory` stops counting it. That door is a migration
-    seam and comes out with the window, like the two in `nova_next`.
+    seam and comes out with the window; the three `nova_next` had are gone.
 
     `store=None` rather than the real store as a default argument: a
     default binds its value at import, so `board_records.board_store`

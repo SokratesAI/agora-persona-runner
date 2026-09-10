@@ -15,9 +15,8 @@ from zoneinfo import ZoneInfo
 
 from agora_runner.nova_boards import PRIORITY_LABELS, STATUS_LABELS
 from agora_runner.nova_claims import slug_for_row
-from agora_runner import nova_next
+from agora_runner import nova_boards, nova_next
 from agora_runner.nova_boards import parse_board
-from agora_runner.nova_next import next_payload
 
 OSLO = ZoneInfo("Europe/Oslo")
 NOW = datetime(2026, 8, 30, 17, 0, tzinfo=OSLO)
@@ -27,6 +26,18 @@ HIGH = PRIORITY_LABELS["high"]
 LOW = PRIORITY_LABELS["low"]
 BACKLOG = STATUS_LABELS["backlog"]
 DONE_STATUS = STATUS_LABELS["done"]
+
+
+def next_payload(issues_markdown, ideas_markdown, *args, **kwargs):
+    """Two board strings through the parser, then the payload the site builds.
+
+    `nova_next.next_payload` was a markdown door over this and issue #203
+    deleted it; the tests below were written against strings, so the parse
+    lives here now, on the test side of the line.
+    """
+    return nova_next.next_payload_from_contents(
+        parse_board(issues_markdown), parse_board(ideas_markdown),
+        *args, **kwargs)
 
 
 def board(*rows, captures=(), project=False):
@@ -306,48 +317,24 @@ def test_an_empty_project_cell_ranks_as_nova_not_as_unrated():
 # function, and the old name is a door that parses and delegates.
 
 
-def test_the_capture_door_and_the_contents_function_give_the_same_answer():
-    markdown = board((10, "a row", BACKLOG, "08-01", HIGH),
-                     captures=["a bullet he typed"])
-    assert (nova_next.unboarded_captures(markdown, "issues")
-            == nova_next.unboarded_captures_from_contents(
-                parse_board(markdown), "issues"))
-
-
-def test_the_row_door_and_the_contents_function_give_the_same_answer():
-    markdown = board((10, "a row", BACKLOG, "08-01", HIGH),
-                     (11, "a closed row", DONE_STATUS, "08-02", LOW))
-    assert (nova_next.open_rows(markdown, "issue")
-            == nova_next.open_rows_from_contents(parse_board(markdown), "issue"))
-
-
-def test_the_payload_door_and_the_contents_function_give_the_same_answer():
-    issues = board((10, "a high issue", BACKLOG, "08-01", HIGH),
-                   captures=["a bullet he typed"])
-    ideas = board((64, "the immediate idea", BACKLOG, "08-12", IMMEDIATE))
-    assert (next_payload(issues, ideas, ledger(), NOW)
-            == nova_next.next_payload_from_contents(
-                parse_board(issues), parse_board(ideas), ledger(), NOW))
-
-
 def _parse_board_is_a_landmine(monkeypatch):
-    """Make any markdown parse inside `nova_next` raise, loudly."""
+    """Make any markdown parse through `nova_boards` raise, loudly."""
     def refuse(*args, **kwargs):
         raise AssertionError(
             "a *_from_contents function parsed markdown: it is supposed to "
             "have no way to reach a board file at all")
-    monkeypatch.setattr(nova_next, "parse_board", refuse)
+    monkeypatch.setattr(nova_boards, "parse_board", refuse)
 
 
 def test_the_contents_readers_never_reach_markdown(monkeypatch):
-    """The equality tests above would pass on a function that re-parsed.
+    """An assertion about the answer would pass on a function that re-parsed.
 
     Handing `parse_board(markdown)` to something that then calls
     `parse_board` again on a string it kept would return the same rows, so
     an assertion about the answer is a positive result guaranteed in
     advance. This is the check that can fail: with the parser replaced by
     something that raises, a `*_from_contents` that still touches markdown
-    dies here, and the doors above it are the only callers left that may.
+    dies here.
     """
     markdown = board((10, "a row", BACKLOG, "08-01", HIGH),
                      captures=["a bullet he typed"])
@@ -362,24 +349,22 @@ def test_the_contents_readers_never_reach_markdown(monkeypatch):
 def test_the_landmine_is_armed(monkeypatch):
     """The test above proves nothing if the patch misses the name it uses.
 
-    `nova_next` imports `parse_board` into its own namespace, so patching
-    it anywhere else leaves the real parser in place and the check passes
-    by construction. The doors are the one thing that still parses, so
-    they are what proves the patch landed.
+    `nova_next` used to import `parse_board` into its own namespace, where
+    patching `nova_boards` would miss it. Issue #203 deleted that import
+    with the last markdown door, so the one name left is `nova_boards`'s,
+    and this fails first if the import ever comes back.
     """
+    assert not hasattr(nova_next, "parse_board")
     _parse_board_is_a_landmine(monkeypatch)
-    for call in (lambda: nova_next.unboarded_captures(board(), "issues"),
-                 lambda: nova_next.open_rows(board(), "issue"),
-                 lambda: nova_next.next_payload(board(), board(), ledger(), NOW)):
-        try:
-            call()
-        except AssertionError:
-            continue
-        raise AssertionError("the parser was not patched in nova_next")
+    try:
+        nova_boards.parse_board(board())
+    except AssertionError:
+        return
+    raise AssertionError("the parser was not patched in nova_boards")
 
 
 def test_a_row_and_its_comment_thread_come_out_of_one_contents():
-    """The door reads the file twice; the function under it reads once.
+    """The old markdown door read the file twice; this reads once.
 
     Safe on a string and not on a store -- a write landing between the row
     read and the thread read drops a comment on a waiting row out of the

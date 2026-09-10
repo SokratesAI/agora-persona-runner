@@ -16,9 +16,9 @@ which rule produced it.
 """
 
 from agora_runner.nova_boards import PRIORITY_LABELS, STATUS_LABELS, parse_board
-from agora_runner.nova_next import milestone_ranks, next_payload, rank
+from agora_runner.nova_next import milestone_ranks, rank
 
-from tests.test_nova_next import NOW, ledger
+from tests.test_nova_next import NOW, ledger, next_payload
 
 IMMEDIATE = PRIORITY_LABELS["immediate"]
 HIGH = PRIORITY_LABELS["high"]

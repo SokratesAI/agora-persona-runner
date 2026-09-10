@@ -26,15 +26,13 @@ I/O: the two boards arrive as `parse_board`'s four keys, the claims
 ledger as text, the payload leaves as a dict, the same split `nova_plan`
 and `nova_retro` follow.
 
-**Three functions here take a board twice over, and the pair is issue
-#203's migration seam.** `unboarded_captures`, `open_rows` and
-`next_payload` take a markdown string; the `*_from_contents` function
-under each takes the dict `parse_board` returns -- which is byte-for-byte
-what `board_records.contents` returns out of CouchDB. So a caller moves
-off the markdown one at a time, by passing `contents` instead of a file,
-and the door it stops using is deleted when the last caller leaves.
-Nothing here reads the store itself: this module still does no I/O, and
-that has not changed.
+**Every reader here takes `parse_board`'s four keys, never a file**, which
+is byte-for-byte what `board_records.contents` returns out of CouchDB --
+issue #203. `unboarded_captures`, `open_rows` and `next_payload` used to
+be markdown doors over the `*_from_contents` functions, a migration seam
+so callers could move one at a time; the last caller has moved and the
+doors are gone, so this module no longer imports the board parser at
+all. Nothing here reads the store itself either: it still does no I/O.
 """
 
 import json
@@ -43,7 +41,7 @@ import re
 from agora_runner.nova_boards import (
     BLOCKED_STATUS, PROJECT_SATISFACTION_MAX, _CLOSED_STATUS_KEYS,
     boarded_capture_rows,
-    capture_match_key, is_relayed, parse_board, parse_project_meta,
+    capture_match_key, is_relayed, parse_project_meta,
     near_miss_done_marker, parse_milestone_pins, split_capture_done,
     split_capture_priority, status_key,
     unanswered_comment_bodies_from_details,
@@ -185,21 +183,6 @@ def unboarded_captures_from_contents(contents, board):
     return captures
 
 
-def unboarded_captures(markdown, board):
-    """The markdown-shaped door onto `unboarded_captures_from_contents`.
-
-    Issue #203 replaces his two board tables with one CouchDB document per
-    row, and `board_records.contents` hands back exactly the four keys
-    `parse_board` does. So the rule moved down into the function above and
-    this is the door that still takes a file, for the callers that have not
-    been converted yet. It is a migration seam and it is meant to be
-    deleted, not kept: the day the last caller passes `contents`, this goes
-    with it, because a permanent markdown facade over a record store is the
-    second source of truth `board-records.md` bans.
-    """
-    return unboarded_captures_from_contents(parse_board(markdown or ""), board)
-
-
 def open_rows_from_contents(contents, board):
     """Open rows of one board, each tagged with which board it is on.
 
@@ -265,21 +248,6 @@ def open_rows_from_contents(contents, board):
             "replySlug": _reply_slug(board, item["number"], waiting),
         })
     return rows
-
-
-def open_rows(markdown, board):
-    """The markdown-shaped door onto `open_rows_from_contents`.
-
-    Same seam, same reason, same expiry as `unboarded_captures` above.
-    One thing is deliberately *not* preserved across it: the function
-    above takes the rows and the comment threads out of one `contents`,
-    where this door parses the string twice. That is safe here and only
-    here -- two reads of one string cannot disagree -- and it is exactly
-    what stops being safe when the source is a store, which is why the
-    conversion goes this way round rather than teaching the store to
-    render markdown.
-    """
-    return open_rows_from_contents(parse_board(markdown or ""), board)
 
 
 def _reply_slug(board, number, bodies):
@@ -761,33 +729,6 @@ def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
         "projects": projects,
         "claimsReadable": claims_readable,
     }
-
-
-def next_payload(issues_markdown, ideas_markdown, claims_text, now, top=5,
-                 projects_markdown="", milestones_markdown=""):
-    """The markdown-shaped door onto `next_payload_from_contents`.
-
-    Same seam and same expiry as the two doors above. **The double read it
-    hides is worse than theirs**, and naming it is the point of this
-    docstring: this body parses each file twice more, once for the
-    captures and once for the rows, so a converted caller that reached the
-    store through here would take four reads where one is needed -- and
-    `unboarded_captures_from_contents` decides a bullet is unboarded by
-    looking at the rows, so a capture list read before a row list can
-    report a bullet as unprocessed while the row that boards it already
-    exists. Two reads of one string cannot disagree, which is why this is
-    safe until the source is a store and not one moment after.
-
-    `projects_markdown` and `milestones_markdown` are not part of that:
-    neither is a board, neither is part of issue #203, and both stay
-    markdown on the far side of the switchover.
-    """
-    return next_payload_from_contents(
-        parse_board(issues_markdown or ""),
-        parse_board(ideas_markdown or ""),
-        claims_text, now, top=top,
-        projects_markdown=projects_markdown,
-        milestones_markdown=milestones_markdown)
 
 
 #: The satisfaction score at or below which the spec forces a diagnosis.
