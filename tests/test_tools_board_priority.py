@@ -213,7 +213,7 @@ def test_it_takes_a_board_not_a_file():
         main(["--file", "ideas.md", "--number", "260", "--priority", "high"])
 
 
-@pytest.mark.parametrize("spelling", ["immediate", "🔴 Immediately", "Immediately"])
+@pytest.mark.parametrize("spelling", ["immediate", "🔴 Immediately", "Immediately", "urgent", "now"])
 def test_every_spelling_the_rest_of_the_system_treats_as_equal(spelling):
     assert resolve_priority(spelling) == "🔴 Immediately"
 
