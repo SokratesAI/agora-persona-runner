@@ -67,7 +67,7 @@ what it wants to see.
 
 **`append_note` is the second door here and it exists because `change_row`
 alone cannot serve four of the six writers left.** `--note` is on
-`board_status`, `board_priority`, `board_size` and `board_milestone`, and it
+`board_status`, `board_size`, `board_milestone` and `board_priority`, and it
 appends one dated line to a row's write-up -- which `change_row` can only do by
 *replacing* the write-up, so a caller that gets the read-modify-write wrong
 deletes his prose and reports success. It is the records half of
@@ -108,9 +108,12 @@ def refuse_cell(value, flag, allow_blank=False):
 
     It lives here rather than in each CLI because the rule is the same
     sentence in every one of them: `board_status` had the only copy and
-    `board_milestone` would have been the second, with `board_priority` and
-    `board_size` still to convert. Four copies of a cell rule is how two of
-    them come to disagree.
+    `board_milestone` would have been the second, with `board_size` and
+    `board_priority` still to convert. Four copies of a cell rule is how two
+    of them come to disagree. Three of the four are here now; `board_priority`
+    is the one still on markdown, and `board_size` deliberately does **not**
+    route its own `--size` through this -- that value is bounded to four
+    constants, so the vocabulary check is already the cell check.
 
     `allow_blank` is for `--milestone ''`, the one flag whose empty value is a
     real instruction: clearing a row back to ungrouped has to stay reachable,
@@ -316,8 +319,8 @@ def append_note(board, number, note, dated, cycle=None, author=None,
     """Add one dated line to the end of row `number`'s write-up, in one write.
 
     The records half of `nova_boards.append_detail_note`, and the thing four of
-    the six remaining `tools/board_*.py` writers are waiting on: `--note` is on
-    `board_status`, `board_priority`, `board_size` and `board_milestone`, and
+    the six writers left when it was written were waiting on: `--note` is on
+    `board_status`, `board_size`, `board_milestone` and `board_priority`, and
     `change_row` can only *replace* a write-up. Replacing it from a caller that
     wanted to append is how his prose gets deleted by a tool that reported
     success.

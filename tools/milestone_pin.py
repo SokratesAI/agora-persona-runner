@@ -19,8 +19,8 @@ saying otherwise about one milestone.
 of the spec and the only way back to the computed order.
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.board_size` and `tools.board_row` hold (`board_milestone`
-held it until #203 converted it onto the record store), so the caller owns the compare-and-swap: `vault_tool.py get
+contract `tools.board_row` and `tools.board_priority` hold (`board_milestone`
+and `board_size` held it until #203 converted them onto the record store), so the caller owns the compare-and-swap: `vault_tool.py get
 --rev-file` before, `vault_tool.py put --if-rev-file` after. `board_put`
 refuses a file that is not one of the two boards, so this one goes back
 with the plain vault client.

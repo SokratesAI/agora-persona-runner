@@ -1,7 +1,7 @@
 """The single-cell board writers still on markdown read each document once.
 
-Issue #203, the owner's decision that the boards get a real schema. Each of
-`board_priority` and `board_size`
+Issue #203, the owner's decision that the boards get a real schema.
+`board_priority` -- and every writer converted off markdown before it --
 used to parse the file it is editing **twice** inside one
 read-modify-write: once inside `check`, which took the two markdown strings
 and parsed them itself, and once more in `main` to print what the cell
@@ -72,14 +72,15 @@ Body text nothing here may touch.
 # One successful, cell-moving invocation per tool. Every one is a `--dry-run`
 # so the count is of the read path only and no test writes a board.
 #
-# **`board_project` and `board_status` were rows here and have left the
-# table**, because neither reads a document any more: they are converted onto
+# **`board_project`, `board_status`, `board_untag_project`, `board_milestone`
+# and `board_size` were rows here and have left the table**, because none of
+# them reads a document any more: they are converted onto
 # `board_write.change_row` and take `--board`, not `--file`. A double read is
 # not a thing they can do. Every writer converted after them leaves this table
-# the same way; when the last one does, this file goes with it.
+# the same way; when the last one does -- `board_priority` is the only row
+# left -- this file goes with it.
 WRITERS = [
     ("tools.board_priority", ["--number", "100", "--priority", "medium"]),
-    ("tools.board_size", ["--number", "100", "--size", "large"]),
 ]
 
 
@@ -138,7 +139,6 @@ def _refuse(*a, **k):
 # a test makes the write go wrong without touching `nova_boards`.
 MUTATORS = {
     "tools.board_priority": "set_row_priority",
-    "tools.board_size": "set_row_size",
 }
 
 
