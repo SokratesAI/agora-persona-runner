@@ -782,7 +782,7 @@ def test_a_state_no_session_ever_minted_is_still_refused(tmp_path, monkeypatch, 
     assert login.main([
         "--session", str(session), "finish", "--code", "the-code#never-minted",
     ]) == 2
-    assert "matches no unspent session" in capsys.readouterr().out
+    assert "matches no session" in capsys.readouterr().out
 
 
 def test_supersede_drops_what_the_ttl_can_never_retire():

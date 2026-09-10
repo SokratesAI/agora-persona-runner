@@ -766,7 +766,7 @@ def _cmd_finish(args) -> int:
         # looking at, and `start --force` now keeps the one it replaced.
         matched = session_for_state(document, state)
         if matched is None:
-            print("REFUSED  the state in that code matches no unspent session "
+            print("REFUSED  the state in that code matches no session "
                   f"in {args.session}")
             return 2
         session = matched
@@ -829,7 +829,7 @@ def _cmd_wait(args) -> int:
     code, message_id, matched = await_code(states, args.timeout, poll=args.poll)
     if code is None:
         print(
-            f"REFUSED  no reply carrying an unspent state in {int(args.timeout)}s -- "
+            f"REFUSED  no reply carrying a state this file knows in {int(args.timeout)}s -- "
             "the link is still live, so `finish --code` works whenever it arrives"
         )
         return 2
