@@ -86,15 +86,18 @@ and its roll archive -- Nova's own live board and the older half of it --
 and there is nothing in the store to convert them to.
 
 This gate greps a module for the name, so a module holding both kinds of
-call cannot leave the count however much of it is converted, and
-`nova_site` is that module today. Exempting it would excuse the owner-side
-read as well, which is a real conversion nobody would then be waiting for.
-The step that unblocks it is a split: Nova's own board read moves into its
-own module, that module takes an entry in `NOT_A_BOARD` beside
-`roll_health`, and `nova_site` becomes an ordinary reader. That is a
-decision about where the seam goes, not an oversight, and this file is not
-the place to take it -- but it is the place it becomes visible, so it is
-written here rather than found again at the end.
+call could not leave the count however much of it was converted, and
+`nova_site` was that module. Exempting it would have excused the
+owner-side read as well, which is a real conversion nobody would then have
+been waiting for. **The split it asked for is taken (cycle 1356):**
+`agora_runner/nova_own_board.py` holds the two calls on my own files and
+has its `NOT_A_BOARD` entry below beside `roll_health`, and `nova_site`
+is an ordinary reader with one `parse_board` left -- the owner's, on
+`edvard_board_markdown`, which is the door the switchover deletes.
+Rendering deliberately did not move with it: `board_payload` still calls
+`render_blocks` and `_split_details`, because what the page draws is not
+a property of my board files and importing `nova_site` from the new module
+would be a cycle.
 
 Either way the last step #203 names, "`parse_board` deleted", is not
 reachable while Nova's own two boards have no id space: something has to
@@ -145,6 +148,11 @@ NOT_A_BOARD = {
         "boards a row on Nova's own nova/resources/issues.md or ideas.md -- "
         "the BOARD_PATHS['nova'] paths, which board_migrate does not "
         "migrate and board_document.BOARDS has no name for",
+    "agora_runner/nova_own_board.py":
+        "is the split this file asked for -- it holds the two parse_board "
+        "calls board_payload made on BOARD_PATHS['nova'] and its roll "
+        "archive, which board_migrate does not migrate, so nova_site is "
+        "left with one door on the owner's board and can leave the count",
 }
 
 #: Modules that parse the owner's boards and must go on doing so after the

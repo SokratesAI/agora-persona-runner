@@ -87,10 +87,22 @@ def own_board(nova_markdown, nova_archive_markdown):
             mine["details"][number] = body
         else:
             mine["details"][number] = body.rstrip() + "\n\n" + live_body.lstrip()
-    # Live first, then the rolled-off older half -- both files are
-    # newest-first and the archive holds only what is older than the live
-    # file's oldest, so appending preserves the order rather than
-    # requiring a sort. `parse_notes` is deliberately run twice instead
-    # of over a concatenation; `nova_sources.nova_board_markdown` says why.
+    # Live first, then the rolled-off older half. **This is file order and
+    # not a sort, and the comment this line inherited from `nova_site`
+    # claimed more than that.** It said both files are newest-first, so
+    # appending preserves the order -- and `parse_notes`'s own docstring
+    # says otherwise, measured: 324 notes on the live `issues.md`, the
+    # first 118 descending and the remaining 206 ascending, because
+    # `vault_tool.py append` inserts under `## Entries` when handed the
+    # marker and at the end of the file when not. So the genuinely newest
+    # material is at both ends at once, and nothing here sorts it --
+    # `parse_notes` deliberately does not, since only 89 of those 324
+    # carry a cycle marker to sort on. What is true is the weaker claim
+    # that made the concatenation safe: the archive holds only what is
+    # older than the live file's oldest, so the live file comes first.
+    # `tools/normalise_captures.py` is the real fix and has not been run.
+    #
+    # `parse_notes` is deliberately run twice rather than over a
+    # concatenation; `nova_sources.nova_board_markdown` says why.
     notes = parse_notes(nova_markdown) + parse_notes(nova_archive_markdown)
     return mine, notes

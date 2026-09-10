@@ -197,7 +197,6 @@ from agora_runner.nova_boards import (
     is_relayed,
     parse_board,
     unanswered_comment_bodies_from_details,
-    parse_notes,
     priority_key,
     split_capture_done,
     split_capture_priority,
@@ -206,6 +205,7 @@ from agora_runner.nova_boards import (
     PROJECT_SATISFACTION_MAX,
     canonical_satisfaction,
 )
+from agora_runner.nova_own_board import own_board
 from agora_runner.nova_conversation_reads import mark_seen as mark_conversation_seen
 from agora_runner.nova_conversations import (
     autotitle as conversation_autotitle,
@@ -1089,67 +1089,18 @@ def board_payload(name):
             # it would raise the relays this loop was told not to raise.
             item["relayed"] = is_relayed(waiting_bodies[item["number"]])
     details, detail_comments = _split_details(board["details"])
-    # My own two files get parsed as a board as well as a note stream --
-    # issue #97, the half of it the owner kept: *"making your board like
-    # mine and giving yourself more tidiness is an improvement"*. Until
-    # now `parse_board` was only ever pointed at his file, so my side of
-    # the page could only ever be a flat bullet list and there was no way
-    # to say a thing I filed was open, rated, or finished.
-    #
-    # The notes stream is untouched and stays underneath. That is the
-    # design rather than a step on the way to migrating it: 654 issue
-    # bullets and 221 idea bullets are a log, and a board built out of all
-    # of them would be a worse board than none. A cycle boards the few
-    # that are real work; the rest stay history.
-    mine = parse_board(nova_markdown)
-    # Rendered inline rather than fetched per row, which is the opposite
-    # of what `details` above does and is deliberate. His `# Details` is
-    # ~60KB and is stripped from the list for that reason; mine is 0 bytes
-    # today and every row on it will have been put there by a cycle that
-    # judged it worth tracking. When it grows past a page it takes the
-    # same treatment -- `board_page` is where that would go.
-    # A write-up that has been rolled into the archive is still that
-    # row's write-up. Nothing moves a `# Details` body out of the live
-    # file yet -- `tools/roll_captures.py` moves the older *captures* and
-    # stops there -- and that is precisely the order this has to happen
-    # in: `mine` is the live file only, so the day the roller learns to
-    # move a body, every row it moved would draw an empty write-up on the
-    # page with nothing failing anywhere. The page has to be able to read
-    # a rolled body before the roller may write one.
-    #
-    # A number in both files is one write-up in two halves, not two
-    # versions of one, so both are drawn -- archived half first. A
-    # `# Details` body is append-only: the row's original statement sits
-    # at the top and every later cycle adds a `**Nova, <date> (Cycle
-    # N):**` paragraph under it. So the older half is not superseded by
-    # the newer one, and the archive is by construction the older.
-    #
-    # This used to be `setdefault` -- live wins, archived half dropped --
-    # and that is what stops an *open* row's write-up from ever being
-    # rolled: the roller moves the older paragraphs off, the row is
-    # written again within the hour, and the moved half silently
-    # disappears from the page. Only a done row could be rolled, and
-    # those are 1 of 29 (`tools.roll_health`, 2026-09-06), which is why
-    # 48,118 bytes of open-row bodies sit unbounded on my own issues.md.
-    #
-    # `parse_board` over an archive that has no `## Board` table returns
-    # no items, so this adds bodies and never rows -- an archived row is
-    # still a row on the live board.
-    for number, body in parse_board(nova_archive_markdown)["details"].items():
-        live_body = mine["details"].get(number)
-        if live_body is None:
-            mine["details"][number] = body
-        else:
-            mine["details"][number] = body.rstrip() + "\n\n" + live_body.lstrip()
+    # My own board is read by `nova_own_board`, which holds the only two
+    # `parse_board` calls left in this loop that point at *my* files rather
+    # than his. Issue #203: the switchover has nothing to convert those two
+    # to, and while they sat in this module `board_reader_inventory` could
+    # never let `nova_site` leave the count however much of it was
+    # converted. Rendering stays here -- what the page draws is not a
+    # property of my board files.
+    mine, nova_notes = own_board(nova_markdown, nova_archive_markdown)
     nova_details, nova_detail_comments = _split_details(mine["details"])
-    # Live first, then the rolled-off older half -- both files are
-    # newest-first and the archive holds only what is older than the live
-    # file's oldest, so appending preserves the order rather than
-    # requiring a sort. `parse_notes` is deliberately run twice instead
-    # of over a concatenation; `board_markdown` says why.
     notes = [
         dict(note, blocks=render_blocks(note.pop("text")))
-        for note in parse_notes(nova_markdown) + parse_notes(nova_archive_markdown)
+        for note in nova_notes
     ]
     return {
         "name": name,
