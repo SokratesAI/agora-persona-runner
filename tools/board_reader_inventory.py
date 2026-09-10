@@ -74,14 +74,31 @@ it to `--board issue` would not move it onto records, it would silently
 point Nova's board button at the owner's board.
 
 **The open question that exemption leaves, written here because this is
-where the gate lives.** Three exempt modules now all say the same thing:
-Nova's own two boards have no record store. `nova_site` renders them
-through the same `parse_board` it runs on the owner's, so "parse_board
-deleted" -- the last step #203 names -- is not reachable while that is
-true. Either those two files get an id space of their own, or the
-switchover ends with `parse_board` alive and owned by Nova's own boards.
-That is a decision, not an oversight, and this file is not the place to
-take it.
+where the gate lives, and one of the ten remaining modules is already in
+it.** Three exempt modules now all say the same thing: Nova's own two
+boards have no record store. Measured cycle 1335, in
+`agora_runner/nova_site.py`: `board_payload` makes **three** `parse_board`
+calls, and only one of them is the owner's. That one takes
+`nova_sources.edvard_board_markdown` and converts to
+`board_records.contents` like any other reader. The other two take
+`nova_sources.nova_board_markdown`, which reads `BOARD_PATHS[name]['nova']`
+and its roll archive -- Nova's own live board and the older half of it --
+and there is nothing in the store to convert them to.
+
+This gate greps a module for the name, so a module holding both kinds of
+call cannot leave the count however much of it is converted, and
+`nova_site` is that module today. Exempting it would excuse the owner-side
+read as well, which is a real conversion nobody would then be waiting for.
+The step that unblocks it is a split: Nova's own board read moves into its
+own module, that module takes an entry in `NOT_A_BOARD` beside
+`roll_health`, and `nova_site` becomes an ordinary reader. That is a
+decision about where the seam goes, not an oversight, and this file is not
+the place to take it -- but it is the place it becomes visible, so it is
+written here rather than found again at the end.
+
+Either way the last step #203 names, "`parse_board` deleted", is not
+reachable while Nova's own two boards have no id space: something has to
+go on parsing them.
 
 Nothing static can tell which document a call parses -- `roll_health` takes
 its text from a local path at runtime -- so the exemption is a named list
