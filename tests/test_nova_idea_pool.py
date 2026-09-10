@@ -11,7 +11,10 @@ no fields at all, which is how the bug got as far as a browser.
 
 from unittest.mock import patch
 
-from agora_runner import board_records, board_write
+import pytest
+
+from agora_runner import (
+    board_document, board_records, board_store, board_write)
 from tests.test_board_records import writable
 
 from agora_runner import nova_idea_pool
@@ -346,6 +349,41 @@ def test_a_second_approve_of_the_same_idea_does_not_board_it_twice():
     # And it still cleared the pool, so the candidate does not linger.
     assert candidate["title"] not in [
         c["title"] for c in parse_pool(loser.docs[nova_idea_pool.POOL_PATH])["candidates"]]
+
+
+@pytest.mark.parametrize("raised", [
+    board_store.RowConflict("409 conflict on the row document"),
+    board_document.DocumentError("idea-0115 is already stored"),
+])
+def test_a_lost_mint_race_is_a_message_not_an_unhandled_exception(raised):
+    """The two exceptions the concurrent-approve race actually raises.
+
+    Reviewer finding on this commit, and it is the one the docstring made
+    hardest to see: `_board_the_candidate` says the collision "surfaces as a
+    refusal here instead of as a lost row", and the `except` named
+    `WriteRefused` and `BoardDamaged` -- neither of which is what
+    `board_store` throws. `RowConflict` is a `StoreError(RuntimeError)` and
+    `DocumentError` is a bare `ValueError`, so both went straight through
+    `decide` and out of the route as a 500, with the candidate still in the
+    pool and nothing telling him why.
+
+    Both are asserted, not one: they come from two different modules and
+    neither inherits from the other, so a clause that caught one would pass
+    a test written against the other.
+    """
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+
+    def _raise(_doc):
+        raise raised
+
+    vault.store.write_row = _raise
+    ok, message = _run(vault, lambda: decide(0, title, "approve", "", "08-25"))
+    assert not ok
+    assert str(raised) in message
+    # And nothing was decided, so the candidate is still his to decide again.
+    assert nova_idea_pool.POOL_PATH not in vault.writes
+    assert len(parse_pool(vault.docs[nova_idea_pool.POOL_PATH])["candidates"]) == 2
 
 
 def test_an_explicitly_passed_store_is_the_one_written_to():

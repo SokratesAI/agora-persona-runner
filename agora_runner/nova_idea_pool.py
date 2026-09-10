@@ -41,6 +41,8 @@ can decide again, which is recoverable in one tap.
 import re
 
 from agora_runner import board_records, board_store, board_write
+from agora_runner.board_document import DocumentError
+from agora_runner.board_store import StoreError
 from agora_runner.log import log
 from agora_runner.nova_boards import canonical_priority, priority_key
 from agora_runner.vault import vault_read_path_rev, vault_write_path
@@ -435,7 +437,22 @@ def _board_the_candidate(candidate, said_text, dated, store=None):
             "idea", candidate["title"], dated,
             candidate["priority"] or "🔵 Medium", write_up=write_up,
             store=store)
-    except (board_write.WriteRefused, board_write.BoardDamaged) as exc:
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            StoreError, DocumentError) as exc:
+        # **The last two are the race this function's docstring is about, and
+        # naming only the first two was a reviewer finding on this commit.**
+        # They are imported by name rather than reached through
+        # `board_store.` because the module global is also this function's
+        # default store, and a test that swaps it -- which is the seam three
+        # paragraphs up -- would turn the class lookup into an attribute on a
+        # fake object, and the handler into an `AttributeError`.
+        # `write_row` refusing an id it already holds raises
+        # `board_document.DocumentError`, and CouchDB answering 409 raises
+        # `board_store.RowConflict`; neither is a `WriteRefused`, so the
+        # collision the docstring above promises "surfaces as a refusal here"
+        # went straight through `decide` as an unhandled exception -- a 500
+        # on his phone instead of a message, with the candidate left in the
+        # pool and nothing saying why.
         return False, str(exc)
     return True, "written"
 
