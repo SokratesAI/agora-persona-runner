@@ -513,3 +513,17 @@ def test_a_store_with_no_layout_at_all_is_drift_not_agreement(couch):
 
     assert verdict == "DRIFTED"
     assert any("holds no layout" in problem for problem in problems)
+
+
+def test_a_differing_table_block_is_named_by_its_columns(couch):
+    """A table block holds no markdown -- its rows are the row documents --
+    so the generic "N char(s), starting ..." line describes both sides of a
+    real disagreement as empty and says nothing. Measured 2026-09-10 on his
+    live `ideas.md`, whose board table has eight columns while `board_view`
+    draws nine."""
+    eight = board_migrate._head(
+        {"kind": "board", "columns": ["#", "Idea", "Status", "Milestone"]})
+
+    assert "columns" in eight
+    assert "Milestone" in eight
+    assert "char(s)" not in eight
