@@ -521,8 +521,12 @@ def test_the_dedupe_key_carries_the_link_so_a_new_one_is_never_held(tmp_path, ca
     assert seen[1]["dedupe_hours"] == login.SESSION_TTL_SECONDS / 3600
 
 
-def test_notify_key_for_still_holds_a_re_announcement_of_one_link():
-    """The dedupe is not disabled -- the same link keeps the same key."""
+def test_the_key_is_a_function_of_the_link_and_nothing_else():
+    """Two links never share a key, one link always maps to the same one.
+
+    Named for what it checks. It was named for a re-announcement case that
+    `_cmd_start` cannot reach -- reviewer finding, see `notify_key_for`.
+    """
     assert login.notify_key_for("k", "abc") == login.notify_key_for("k", "abc")
     assert login.notify_key_for("k", "abc") != login.notify_key_for("k", "abd")
     assert login.notify_key_for("k", "abc").startswith("k")

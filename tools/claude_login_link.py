@@ -457,8 +457,14 @@ def notify_key_for(base: str, state: str) -> str:
     housekeeping.
 
     Keying on the state makes each minted link its own message, so a new link
-    is always sent and re-announcing the *same* link inside the hour is still
-    held -- which is the case the dedupe was for.
+    is always sent. It does **not** keep a "same link twice is held" case
+    alive, and an earlier version of this docstring claimed it did: `_cmd_start`
+    mints a fresh `state` unconditionally before it ever gets here, and the one
+    path that could re-announce a live session refuses at `live_session` and
+    returns before this is called. So the dedupe is now a guard against a
+    caller that does not exist yet, and that is the honest description of it --
+    reviewer finding on this PR, and it is the shape this loop keeps paying
+    for: a guard that reads as protecting something it cannot reach.
     """
     return f"{base}:{state}"
 
