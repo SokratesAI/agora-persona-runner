@@ -56,6 +56,13 @@ and #139 are both in that state today and both correctly Done). Both
 print, so a bucket that stops being harmless is visible rather than
 suppressed.
 
+**The rows come out of the record store, not out of his markdown**
+(issue #203, since 2026-09-10). `board_contents` below is the one door.
+The claims ledger is the only document this check still fetches, and a
+ledger is not a board -- so the two 700KB board files are not read here at
+all any more, and a store that will not answer is reported as unreadable
+rather than ranked as a board with nothing on it.
+
 **The window is the ledger's, and it is about a day.** `tools.claim prune`
 drops claims marked done, so the ledger holds roughly the last 24 hours --
 30 board claims when this was written. That is deliberately enough: the
@@ -76,7 +83,7 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_boards import BOARD_PATHS, parse_board  # noqa: E402
+from agora_runner import board_records  # noqa: E402
 from agora_runner.nova_claims import CLAIMS_PATH  # noqa: E402
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -91,6 +98,14 @@ SLUG_RE = re.compile(r"^(idea|issue)-(\d+)$")
 #: literal rather than imported from `_CLOSED_STATUS_KEYS`, which is private
 #: to that module.
 CLOSED_KEYS = frozenset({"done", "outdated"})
+
+#: The claim slug says `idea`/`issue`; the key this module files rows under
+#: says `ideas`/`issues`; the record store says `idea`/`issue` again. One
+#: map here
+#: rather than a `[:-1]` at the call site, because "drop the trailing s" is a
+#: rule about English that happens to hold for two words.
+RECORD_BOARD = {"ideas": "idea", "issues": "issue"}
+
 
 #: Not closed, but not offered as work either -- `tools.top_board_rows` ranks
 #: these out of the ranking, so a `done` claim against one is not the failure
@@ -143,14 +158,43 @@ def newest_board_claims(ledger):
     return newest
 
 
-def check(fetch=_fetch, boards=("ideas", "issues")):
+def board_contents(board, store=None):
+    """One of his boards as the four keys the board parser used to return.
+
+    Issue #203's switchover, for this tool. The rows come out of the record
+    store rather than out of a 700KB markdown table read through
+    `vault_tool.py get`, so this check no longer fetches either board file
+    at all -- the claims ledger is the only document it still reads, and
+    that is not a board.
+
+    `board` is the plural name this module keys claims by; `RECORD_BOARD`
+    maps it to the singular the store uses.
+
+    `store=None` rather than the real store as a default argument: a
+    default binds its value at import, so `board_records.board_store`
+    written there would be the object this module captured and a test
+    replacing it would be replacing something nothing reads. Same reason as
+    `tools.top_board_rows.board_contents` and `tools.milestone_pin`.
+
+    **Every failure raises**, and `check` files the board under
+    `unreadable`, which exits 1. An unmigrated store, a board CouchDB will
+    not answer for: reading either as a board with no rows would report "no
+    drift" over a board this tool never saw, which is the one answer worse
+    than no answer here.
+    """
+    return board_records.contents(RECORD_BOARD[board],
+                                  store=store or board_records.board_store)
+
+
+def check(fetch=_fetch, boards=("ideas", "issues"), contents=board_contents):
     """`(findings, blocked, mirrors, unreadable, swept)`.
 
     A `findings` entry is `(board, number, status, claim)` -- a row whose
     newest claim is `done` and whose cell is neither closed nor blocked.
     `blocked` is the same tuple for a `done` claim against a row blocked on
     the owner, and `mirrors` for the opposite disagreement; both print and
-    neither raises. `unreadable` names documents that did not come back.
+    neither raises. `unreadable` names the claims ledger if it did not
+    come back, and any board the record store would not answer for.
     `swept` is the number of rows that carried a claim at all, so "no drift"
     can never be confused with "no claims in the window".
     """
@@ -165,12 +209,15 @@ def check(fetch=_fetch, boards=("ideas", "issues")):
     claims = newest_board_claims(ledger)
     swept = 0
     for board in boards:
-        path = BOARD_PATHS[board]["edvard"]
-        text = fetch(path)
-        if text is None:
-            unreadable.append(path)
+        try:
+            items = contents(board)["items"]
+        except Exception as exc:  # noqa: BLE001 -- see `board_contents`
+            # Named with the reason: an unmigrated store and a CouchDB that
+            # will not answer are the same exit code and different fixes.
+            unreadable.append(f"{board} board records "
+                              f"({exc.__class__.__name__}: {exc})")
             continue
-        for item in parse_board(text)["items"]:
+        for item in items:
             claim = claims.get((board, item["number"]))
             if claim is None:
                 continue
