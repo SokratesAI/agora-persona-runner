@@ -492,6 +492,69 @@ def board_view_kinds():
     return board_view.LAYOUT_KINDS
 
 
+SOURCE_DOCUMENT_TYPE = "board-source"
+
+
+def source_document_id(board):
+    """`"issue"` -> `"board:source:issue"`.
+
+    Outside the row range and the capture range for the reason
+    `layout_document_id` spells out: `board:<board>:` is an `_all_docs`
+    prefix that `write_rows` prunes, so anything filed under it that is not
+    a row is tombstoned by the first migration that writes the rows alone.
+    """
+    if board not in BOARDS:
+        raise DocumentError(f"board must be one of {BOARDS}, not {board!r}")
+    return f"board:source:{board}"
+
+
+def to_source_document(source_rev, board):
+    """`("5-abc", "issue")` -> the document that records where the records came from.
+
+    `source_rev` is the vault `_rev` the board markdown carried when these
+    records were written. It is stored as a string and never as anything
+    else, because the only thing anybody does with it is compare it for
+    equality against a live revision, and a value that arrived as an int
+    would compare unequal to the same revision read back as text.
+    """
+    if not isinstance(source_rev, str) or not source_rev.strip():
+        raise DocumentError(
+            f"source revision must be a non-empty string, not {source_rev!r}")
+    if board not in BOARDS:
+        raise DocumentError(f"board must be one of {BOARDS}, not {board!r}")
+    return {
+        "_id": source_document_id(board),
+        "type": SOURCE_DOCUMENT_TYPE,
+        "board": board,
+        "sourceRev": source_rev,
+    }
+
+
+def source_rev_of(doc):
+    """The revision back out of a stored source document.
+
+    Refuses a document whose `_id` disagrees with its own `board` field, the
+    same check `layout_blocks_of` makes and for the same reason: a source
+    stamp served under the wrong board would certify one board's records as
+    current from the other board's write.
+    """
+    if not isinstance(doc, dict):
+        raise DocumentError(f"source document must be a dict, not {doc!r}")
+    board = doc.get("board")
+    if board not in BOARDS:
+        raise DocumentError(
+            f"source document board must be one of {BOARDS}, not {board!r}")
+    if doc.get("_id") != source_document_id(board):
+        raise DocumentError(
+            f"source document _id {doc.get('_id')!r} disagrees with its "
+            f"board {board!r}")
+    rev = doc.get("sourceRev")
+    if not isinstance(rev, str) or not rev.strip():
+        raise DocumentError(
+            f"source document revision must be a non-empty string, not {rev!r}")
+    return rev
+
+
 def to_layout_document(blocks, board):
     """`(blocks, "issue")` -> the document that stores them.
 

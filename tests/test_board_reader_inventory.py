@@ -1,12 +1,7 @@
 """The corrected coverage checklist for issue #203's reader migration."""
-import re
 from pathlib import Path
 
 from tools import board_reader_inventory as inv
-
-#: `board_row` on a word boundary, so `insert_board_row` and
-#: `top_board_rows` do not read as calls to `tools/board_row.py`.
-_BOARD_ROW_RE = re.compile(r"(?<!\w)board_row(?!\w)")
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -98,7 +93,7 @@ def test_a_file_that_will_not_tokenize_falls_back_and_says_so(tmp_path,
     may be a comment."""
     (tmp_path / "broken.py").write_text("def f(:\n  # parse_board\n")
     assert not inv.tokenizes((tmp_path / "broken.py").read_text())
-    found, refs, unreadable, untokenized = inv.scan(tmp_path)
+    found, refs, unreadable, untokenized, mine = inv.scan(tmp_path)
     assert found == {"broken.py": ("parse_board",)}
     assert untokenized == ["broken.py"]
     assert inv.main(["--root", str(tmp_path)]) == 0
@@ -151,335 +146,97 @@ def test_an_f_string_is_prose_but_its_holes_are_code():
     assert inv.surfaces('msg = f"rows: {parse_board(t)}"') == ("parse_board",)
 
 
-# --- A `parse_board` call is not always one of the owner's boards. ---------
-#
-# `--assert-migrated` is the gate that decides when the switchover branch
-# leaves draft, and it was unreachable: `tools/roll_health.py` parses the
-# board *shape* out of Nova's own capture files, which `board_migrate` never
-# migrates, so it must keep calling `parse_board` after the migration is
-# finished. Found cycle 1303.
+HIS_ISSUES = "projects/sokrates/projects/nova/issues.md"
+MY_ISSUES = "projects/sokrates/projects/agora/nova/resources/issues.md"
 
 
-def test_the_exemption_names_a_file_that_really_still_parses():
-    """A stale exemption is a gate widened by accident.
-
-    If a listed module is converted or deleted, its entry has to go with it
-    — otherwise the list keeps excusing a name that no longer means
-    anything, and the next module to take that path is excused silently.
-    """
-    assert inv.NOT_A_BOARD, "an empty list needs no code path"
-    for rel, reason in inv.NOT_A_BOARD.items():
-        path = ROOT / rel
-        assert path.exists(), f"{rel} is exempt and does not exist"
-        assert inv.PARSES in inv.surfaces(path.read_text()), \
-            f"{rel} is exempt from a parse gate and does not parse"
-        assert reason.strip(), f"{rel} is exempt for no stated reason"
+def test_the_two_path_sets_are_read_out_of_board_paths_and_do_not_overlap():
+    """Spelling either set again here is how a fifth board file gets into
+    one place and not the other."""
+    assert HIS_ISSUES in inv.HIS_BOARD_PATHS
+    assert MY_ISSUES in inv.MY_BOARD_PATHS
+    assert not (inv.HIS_BOARD_PATHS & inv.MY_BOARD_PATHS)
+    assert len(inv.HIS_BOARD_PATHS) == 2 and len(inv.MY_BOARD_PATHS) == 4
 
 
-def test_roll_health_reads_only_novas_own_capture_files():
-    """The evidence under the exemption, not a restatement of it.
-
-    Its `PAIRS` is hardcoded, so this is checkable rather than assumed: if
-    anything ever points that tool at one of the owner's two boards, the
-    exemption stops being true and this fails before the gate goes quiet.
-    """
-    from agora_runner.nova_boards import BOARD_PATHS
-    from tools import roll_health
-
-    owners = {paths["edvard"] for paths in BOARD_PATHS.values()}
-    novas = {p for paths in BOARD_PATHS.values()
-             for key, p in paths.items() if key != "edvard"}
-    read = {path for pair in roll_health.PAIRS for path in pair}
-    assert read, "no paths is not proof of the right paths"
-    assert read <= novas
-    assert not (read & owners)
+def test_a_concatenated_path_resolves_because_that_is_how_roll_health_spells_it():
+    text = f'BASE = "projects/sokrates/projects/agora/nova/resources/"\n' \
+           f'PAIRS = (BASE + "issues.md",)\n'
+    assert inv.board_paths_named(text) == {MY_ISSUES}
+    assert inv.reads_only_my_boards(text)
 
 
-def test_an_exempt_module_does_not_block_assert_migrated(tmp_path):
-    (tmp_path / "tools").mkdir()
-    (tmp_path / "tools" / "roll_health.py").write_text("parse_board(text)")
-    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
-    (tmp_path / "tools" / "other.py").write_text("parse_board(text)")
-    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+def test_naming_one_of_his_boards_is_a_blocker_even_beside_one_of_mine():
+    text = f'A = "{MY_ISSUES}"\nB = "{HIS_ISSUES}"\n'
+    assert inv.board_paths_named(text) == {MY_ISSUES, HIS_ISSUES}
+    assert not inv.reads_only_my_boards(text)
 
 
-def test_the_exempt_module_is_still_reported_as_a_parser(tmp_path, capsys):
-    """Excused from the gate, never hidden from the report."""
-    (tmp_path / "tools").mkdir()
-    (tmp_path / "tools" / "roll_health.py").write_text("parse_board(text)")
+def test_naming_no_board_path_at_all_is_a_blocker():
+    """"I could not tell" and "it reads his board" must give the same
+    answer, or the gate becomes a way of not being counted."""
+    assert inv.board_paths_named("rows = parse_board(text)") == set()
+    assert not inv.reads_only_my_boards("rows = parse_board(text)")
+    assert not inv.reads_only_my_boards('p = BOARD_PATHS["issues"]["nova"]')
+
+
+def test_an_unparseable_file_resolves_no_paths():
+    assert inv.board_paths_named("def f(:\n") == set()
+    assert not inv.reads_only_my_boards(f'def f(:\n  x = "{MY_ISSUES}"\n')
+
+
+def test_roll_health_reads_only_my_boards_and_is_not_a_blocker(capsys):
+    """Pinned against the live file: it parses markdown, and every board
+    document it names is one of mine, so #203 does not move it."""
+    text = (ROOT / "tools/roll_health.py").read_text(encoding="utf-8")
+    assert inv.surfaces(text) == ("parse_board",)
+    assert inv.reads_only_my_boards(text)
+    assert "tools/roll_health.py" in inv.scan()[4]
+    inv.main([])
+    out = capsys.readouterr().out
+    assert "read only MY OWN board files" in out
+    assert "tools/roll_health.py" in out.split("read only MY OWN")[1]
+
+
+def test_a_module_that_only_reads_my_boards_does_not_hold_the_gate(tmp_path,
+                                                                   capsys):
+    (tmp_path / "mine.py").write_text(f'p = "{MY_ISSUES}"\nparse_board(p)\n')
+    assert inv.main(["--root", str(tmp_path), "--assert-migrated"]) == 0
+    assert "MIGRATED — no module parses one of his boards" in capsys.readouterr().out
+    (tmp_path / "his.py").write_text(f'p = "{HIS_ISSUES}"\nparse_board(p)\n')
+    assert inv.main(["--root", str(tmp_path), "--assert-migrated"]) == 2
+    assert "his.py" in capsys.readouterr().out
+
+
+def test_board_put_does_not_exclude_my_boards_for_having_no_rows():
+    """The stated reason was false -- my boards do have `## Board` tables --
+    and a cycle acting on it would have seeded them into his record store.
+    The exclusion is ownership, so it must hold for a board file of mine
+    that parses to rows."""
+    from agora_runner.nova_boards import parse_board
+    from tools import board_put
+    assert board_put.record_board(MY_ISSUES) is None
+    assert board_put.record_board(HIS_ISSUES) == "issue"
+    source = (ROOT / "tools/board_put.py").read_text(encoding="utf-8")
+    assert "used to be false" in source, \
+        "keep the correction, and keep the false reason quoted under it"
+    assert "table, no rows" in source
+    assert "35 rows" in source and "26 write-ups" in source
+    rows = parse_board(
+        "## Board\n\n"
+        "| # | Item | Status | Updated | Priority |\n"
+        "|---|------|--------|---------|---|\n"
+        "| [[#1 \u2014 x|1]] | x | \u26aa Backlog | 09-10 | \u26aa Low |\n"
+    )["items"]
+    assert [r["number"] for r in rows] == [1]
+
+
+def test_only_a_parser_can_be_excused_as_reading_my_boards(tmp_path, capsys):
+    """`mine` is printed as a count out of the parsers, so a path-only
+    module in it makes that sentence say more than it counted."""
+    (tmp_path / "paths_only.py").write_text(f'p = "{MY_ISSUES}"\nBOARD_PATHS\n')
+    found, refs, unreadable, untokenized, mine = inv.scan(tmp_path)
+    assert found == {"paths_only.py": ("BOARD_PATHS",)}
+    assert mine == []
     inv.main(["--root", str(tmp_path)])
-    out = capsys.readouterr().out
-    assert "parses" in out
-    assert "tools/roll_health.py" in out
-    assert "1 module(s) touch a board, 1 of them by parsing markdown." in out
-    assert inv.NOT_A_BOARD["tools/roll_health.py"] in out
-
-
-def test_the_gate_does_not_name_an_exempt_module(capsys):
-    """On the live tree, so this is about the real exemption."""
-    assert inv.main(["--assert-migrated"]) == 2
-    line = next(l for l in capsys.readouterr().out.split("\n")
-                if l.startswith("NOT MIGRATED"))
-    assert "tools/roll_health.py" not in line
-    assert "agora_runner/nova_boards.py" in line
-
-
-# Cycle 1322: the gate was unreachable in three more places, and the three
-# are two different reasons. `roll_done_details` is `roll_health`'s own
-# roller for `roll_health.PAIRS`, so it is the same exemption. `board_migrate`
-# and `board_migration_preflight` parse the owner's real boards and must,
-# because the migration is a `parse_board` call by definition -- a second
-# list, because the reason is what the next cycle reads.
-
-
-def test_the_by_design_exemption_names_a_file_that_really_still_parses():
-    """Same integrity check as `NOT_A_BOARD`, on the second list."""
-    assert inv.READS_MARKDOWN_BY_DESIGN, "an empty list needs no code path"
-    for rel, reason in inv.READS_MARKDOWN_BY_DESIGN.items():
-        path = ROOT / rel
-        assert path.exists(), f"{rel} is exempt and does not exist"
-        assert inv.PARSES in inv.surfaces(path.read_text()), \
-            f"{rel} is exempt from a parse gate and does not parse"
-        assert reason.strip(), f"{rel} is exempt for no stated reason"
-
-
-def test_the_two_exemption_lists_do_not_overlap():
-    """One module, one reason -- a name in both is a reason nobody chose."""
-    assert not (set(inv.NOT_A_BOARD) & set(inv.READS_MARKDOWN_BY_DESIGN))
-
-
-def test_roll_done_details_is_only_ever_pointed_at_novas_own_files():
-    """The evidence under its exemption, not a restatement of it.
-
-    Its paths come from `--live`/`--archive` at runtime, so nothing static
-    can read them off the module. What is checkable is who calls it: if
-    `roll_health` is the only caller in this tree, then the only paths it is
-    handed are `roll_health.PAIRS`, which the test above pins to Nova's own
-    files. A second caller appearing fails here rather than widening the
-    gate in silence.
-
-    Through `code_only`, because the inventory names this module inside the
-    exemption dict: a name in a string is documentation, not a call, and the
-    same distinction is what stops the scanner reading a docstring as a
-    reader.
-    """
-    assert "tools/roll_done_details.py" in inv.NOT_A_BOARD, \
-        "the evidence has to be tied to the entry it excuses"
-    callers = set()
-    for path in ROOT.rglob("*.py"):
-        rel = path.relative_to(ROOT).as_posix()
-        if rel.startswith(("tests/", "tools/roll_done_details.py")):
-            continue
-        if any(part in inv.SKIP_DIRS for part in path.parts):
-            continue
-        if "roll_done_details" in inv.code_only(path.read_text()):
-            callers.add(rel)
-    assert callers == {"tools/roll_health.py"}, sorted(callers)
-
-
-def test_the_record_store_has_no_board_for_novas_own_two_files():
-    """The half of board_row's exemption that is checkable in code.
-
-    `BOARD_PATHS` keeps two documents per kind -- the owner's and Nova's --
-    and the record store models one of them. `board_document.BOARDS` names
-    the owner's two and `document_id` mints one key range for them, so a
-    tool pointed at the `nova` path has no board name to be converted to.
-    If Nova's own boards ever get an id space, this fails and the exemption
-    is reconsidered rather than left standing.
-    """
-    from agora_runner import board_document, nova_boards
-
-    for kind in ("issues", "ideas"):
-        paths = nova_boards.BOARD_PATHS[kind]
-        assert paths["nova"] != paths["edvard"], \
-            f"{kind}: Nova's board and the owner's are the same document"
-    assert set(board_document.BOARDS) == {"issue", "idea"}, \
-        "a third board name means the store may now hold Nova's own"
-    assert board_document.document_id("issue", 41) == "board:issue:41", \
-        "one key range per kind, so the owner's board and Nova's collide"
-
-
-def test_board_row_has_no_caller_in_this_tree():
-    """The other half: nothing here can point that button at his board.
-
-    Same shape as `roll_done_details` above and the same limit -- `--file`
-    is a runtime path, so nothing static reads the target off the module.
-    What is checkable is that this tree hands it none: its only caller is
-    `prompt.md` step 6, which passes Nova's own `resources/issues.md`. A
-    second caller appearing in code fails here rather than widening the
-    gate in silence.
-
-    It does NOT prove the tool could not be run against the owner's file by
-    hand. Nothing can; that is why the entry carries a reason in prose.
-
-    The name is matched on a boundary rather than as a substring, because
-    `nova_idea_pool.insert_board_row` and `top_board_rows` both contain it
-    and neither is a call to this module. A bare `in` reported the first of
-    those as a caller on the run that wrote this test.
-    """
-    assert "tools/board_row.py" in inv.NOT_A_BOARD, \
-        "the evidence has to be tied to the entry it excuses"
-    callers = set()
-    for path in ROOT.rglob("*.py"):
-        rel = path.relative_to(ROOT).as_posix()
-        if rel.startswith(("tests/", "tools/board_row.py")):
-            continue
-        if any(part in inv.SKIP_DIRS for part in path.parts):
-            continue
-        if _BOARD_ROW_RE.search(inv.code_only(path.read_text(encoding="utf-8"))):
-            callers.add(rel)
-    assert callers == set(), sorted(callers)
-
-
-def test_the_migration_tools_are_the_records_side_of_the_seam():
-    """The evidence under the second list: they write or check records.
-
-    A module that only reads a board cannot be excused this way -- the
-    excuse is that it produces the record set the readers move to, so it
-    has to hold both shapes at once.
-    """
-    assert set(inv.READS_MARKDOWN_BY_DESIGN) == {
-        "tools/board_migrate.py", "tools/board_migration_preflight.py"}, \
-        "the evidence has to be tied to the entries it excuses"
-    for rel in inv.READS_MARKDOWN_BY_DESIGN:
-        text = (ROOT / rel).read_text()
-        assert "board_store" in text, f"{rel} touches no record store"
-
-
-def test_the_gate_names_none_of_the_four_excused_modules(capsys):
-    """On the live tree, so this is about the real exemptions."""
-    assert inv.main(["--assert-migrated"]) == 2
-    line = next(l for l in capsys.readouterr().out.split("\n")
-                if l.startswith("NOT MIGRATED"))
-    for rel in (*inv.NOT_A_BOARD, *inv.READS_MARKDOWN_BY_DESIGN):
-        assert rel not in line, f"{rel} is excused and still blocks the gate"
-    assert "agora_runner/ticket_store.py" in line, \
-        "ticket_store leaves the count by being deleted, not excused"
-
-
-def test_a_by_design_module_does_not_block_assert_migrated(tmp_path):
-    (tmp_path / "tools").mkdir()
-    (tmp_path / "tools" / "board_migrate.py").write_text("parse_board(text)")
-    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
-    (tmp_path / "tools" / "other.py").write_text("parse_board(text)")
-    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
-
-
-def test_a_by_design_module_is_still_reported_as_a_parser(tmp_path, capsys):
-    """Excused from the gate, never hidden from the report."""
-    (tmp_path / "tools").mkdir()
-    (tmp_path / "tools" / "board_migrate.py").write_text("parse_board(text)")
-    inv.main(["--root", str(tmp_path)])
-    out = capsys.readouterr().out
-    assert "parses" in out
-    assert "tools/board_migrate.py" in out
-    assert inv.READS_MARKDOWN_BY_DESIGN["tools/board_migrate.py"] in out
-
-
-# --- the second store the parse_board grep cannot see (issue #203) ---
-
-
-def test_a_qualified_mirror_read_is_a_mirror_surface():
-    assert inv.surfaces("rows = ticket_docs.read_rows(path)") == ("mirror",)
-    assert inv.surfaces(
-        "from agora_runner.ticket_docs import read_head") == ("mirror",)
-
-
-def test_the_record_stores_own_read_rows_is_not_the_mirror():
-    """The collision this surface has to survive: `board_store.read_rows`
-    reads the *records*, so a converted module calling it must not be read
-    as still on the mirror. Written as the qualified call a reader actually
-    makes -- asserting it against `board_store.py` itself proves nothing,
-    because that file only ever spells the name as a `def`."""
-    assert inv.surfaces("rows = board_store.read_rows('issue')") == ()
-    assert inv.surfaces(
-        "from agora_runner.board_store import read_rows") == ()
-    text = (ROOT / "agora_runner" / "board_store.py").read_text(encoding="utf-8")
-    assert "def read_rows(" in text, "board_store no longer has the collision"
-    assert "ticket_docs" in text, "board_store no longer imports the mirror"
-    assert inv.MIRROR not in inv.surfaces(text, "agora_runner/board_store.py")
-
-
-def test_the_mirror_is_reached_by_more_than_the_four_obvious_reads():
-    """`currency` reads nova_tickets too, through `stored_source_rev`, and
-    it is the call a conversion leaves behind: `nova_site._store_currency`
-    reads as a health banner rather than a store read."""
-    assert inv.surfaces("v, why = ticket_docs.currency(path, rev)") == ("mirror",)
-    assert inv.surfaces("r = ticket_docs.stored_source_rev(path)") == ("mirror",)
-
-
-def test_every_spelling_of_the_import_reaches_the_same_module():
-    """A miss here is the dangerous direction -- the gate reads zero while a
-    reader remains -- so all four spellings are pinned, not just the two the
-    live tree happens to use today."""
-    for source in (
-            "import agora_runner.ticket_docs\n"
-            "rows = agora_runner.ticket_docs.read_rows(p)",
-            "import agora_runner.ticket_docs as td\nrows = td.read_rows(p)",
-            "from agora_runner import ticket_docs as td\nrows = td.read_rows(p)",
-            "from agora_runner import ticket_docs\n"
-            "rows = ticket_docs.read_rows(p)"):
-        assert inv.surfaces(source) == ("mirror",), source
-
-
-def test_a_file_that_will_not_parse_still_reports_its_mirror_read():
-    """Over-reporting a reader is recoverable during a migration; missing
-    one is not. `x = = 1` lexes and does not parse, so this is the branch
-    `tokenizes` cannot warn about."""
-    assert inv.surfaces("x = = 1\nrows = ticket_docs.read_rows(p)") == ("mirror",)
-
-
-def test_a_module_on_both_surfaces_is_counted_once(tmp_path, capsys):
-    """`nova_site` parses his board AND reads the mirror; naming it twice in
-    the gate's own headline is how a count stops being a count."""
-    (tmp_path / "agora_runner").mkdir()
-    (tmp_path / "agora_runner" / "nova_site.py").write_text(
-        "rows = ticket_docs.read_rows(p)\nboard = parse_board(text)")
-    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
-    out = capsys.readouterr().out
-    assert out.count("agora_runner/nova_site.py") == 3, out
-    assert "1 module(s) still read a board" in out
-
-
-def test_the_site_still_reads_his_board_out_of_the_mirror():
-    """The finding, pinned against the live file rather than a fixture: this
-    is a board read the parse_board grep does not see at all."""
-    rel = "agora_runner/nova_site.py"
-    text = (ROOT / rel).read_text(encoding="utf-8")
-    assert inv.mirror_reads(text, rel), f"{rel} no longer reads nova_tickets"
-
-
-def test_the_mirror_module_counts_by_defining_the_api_not_by_its_name():
-    text = (ROOT / inv.MIRROR_DEFINES).read_text(encoding="utf-8")
-    assert inv.mirror_reads(text, inv.MIRROR_DEFINES)
-    stripped = text.replace("def read_board(", "def _gone_board(")
-    for name in inv.MIRROR_READS:
-        stripped = stripped.replace(f"def {name}(", f"def _gone_{name}(")
-    assert not inv.mirror_reads(stripped, inv.MIRROR_DEFINES), (
-        "ticket_docs must leave the count when its read half goes, or "
-        "board_store's use of it for credentials blocks the gate forever")
-
-
-def test_naming_the_mirror_in_prose_is_not_reading_it():
-    assert inv.surfaces('"""ticket_docs.read_rows is what this replaces."""') == ()
-    assert inv.surfaces("# ticket_docs.read_details used to answer here") == ()
-
-
-def test_a_mirror_reader_blocks_assert_migrated(tmp_path):
-    (tmp_path / "agora_runner").mkdir()
-    reader = tmp_path / "agora_runner" / "nova_site.py"
-    reader.write_text("rows = ticket_docs.read_rows(path)")
-    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
-    reader.write_text("rows = board_records.contents('issue')")
-    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
-
-
-def test_the_report_names_the_mirror_readers(tmp_path, capsys):
-    (tmp_path / "agora_runner").mkdir()
-    (tmp_path / "agora_runner" / "nova_site.py").write_text(
-        "rows = ticket_docs.read_rows(path)")
-    inv.main(["--root", str(tmp_path)])
-    out = capsys.readouterr().out
-    assert "mirror" in out
-    assert "nova_tickets" in out
-    assert "agora_runner/nova_site.py" in out
+    assert "read only MY OWN" not in capsys.readouterr().out

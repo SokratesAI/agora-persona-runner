@@ -36,6 +36,17 @@ So the flow this gives him is three messages long:
 2. He opens it, approves, and the callback page shows `<code>#<state>`.
 3. `finish` exchanges that for a credential and prints what it got.
 
+**Step 3 is the one that kept failing, and not for a reason in this module.**
+The link lives an hour; the authorization code behind it is good for minutes.
+The loop that mints the link wakes every 30 minutes, so the run that sends the
+link and the run that spends the code are almost never the same run -- on
+2026-09-10 he answered at 09:43 Oslo and the next cycle reached `finish` at
+10:09, against a live session with a matching state, and got `invalid_grant`.
+That is why `wait` exists: it polls Telegram from inside the run that minted
+the link and exchanges the code as soon as it arrives, so `start --notify`
+followed by `wait` is one uninterrupted flow rather than two runs half an hour
+apart.
+
 **Nothing here is a table of constants.** Every URL and the client id are read
 back out of the binary this loop is actually running, because a second copy of
 them is a copy that goes stale exactly the way a pin does (`tools.pin_drift`'s
@@ -67,6 +78,25 @@ the endpoint is there and the query survives the redirect; whether the consent
 page renders is measurable only from a real browser on a real phone. Whether Anthropic's
 authorize page accepts this client id in manual mode from a browser the owner owns
 is the one step only he can run, and it costs him one tap to find out.
+
+**The token endpoint is now measured too, and it changed one line of this
+module.** The first live attempt at this flow (Sokrates and the owner, together,
+2026-09-09) never reached Anthropic: `_post_json` sent urllib's default
+`Python-urllib/3.x` and Cloudflare answered `403 error code: 1010` in front of
+the token endpoint. Three POSTs of a deliberately invalid code from this pod
+separate the causes, because an invalid code is answered by the backend and a
+blocked request never gets there:
+
+    Python-urllib/3.x   403  error code: 1010                (Cloudflare)
+    axios/1.15.2        400  invalid_grant "Invalid 'code'"  (Anthropic)
+    Chrome 140 UA       429  rate_limit_error                (Anthropic)
+
+Reversed and re-run, and the three verdicts held, so the 429 is a property of
+that User-Agent rather than of being third in a row. **The CLI's own axios
+User-Agent is the only one measured to reach the backend un-rate-limited**, and
+it is what `read_token_user_agent` pulls out of the binary. What is still
+unmeasured is the same thing as before: an exchange with a *valid* code, which
+only the owner can produce.
 """
 
 from __future__ import annotations
@@ -132,6 +162,23 @@ _CONFIG_KEYS = {
 }
 
 
+# The CLI's own token exchange is axios, and axios sets `User-Agent: axios/<v>`
+# on every request it makes. urllib sets `Python-urllib/3.x`, which Cloudflare
+# blocks outright in front of the token endpoint -- measured from this pod on
+# 2026-09-09, three POSTs of a deliberately invalid code to the live endpoint:
+# `Python-urllib` answered `403 error code: 1010` (Cloudflare's browser-integrity
+# check), `axios/1.15.2` answered `400 invalid_grant "Invalid 'code' in request"`
+# from Anthropic's own backend, and a Chrome UA answered `429 rate_limit_error`.
+# The order was reversed and re-run and the three verdicts held, so the 429 is a
+# property of the browser UA rather than of being the third request in a row.
+# So the header is not cosmetic and the browser UA is not the one to send: the
+# CLI's own is the only one measured to reach the backend un-rate-limited.
+#
+# Read out of the binary for the same reason every other constant here is -- a
+# remembered `axios/1.15.2` goes stale exactly the way a pin does.
+TOKEN_UA_ANCHOR = r'"User-Agent","axios/"\+(\w+)'
+
+
 class CannotSee(Exception):
     """A constant the URL needs is not in the binary. Never a guess instead."""
 
@@ -192,6 +239,30 @@ def live_scopes(path: str = DEFAULT_CREDENTIALS):
     if not isinstance(scopes, list) or not scopes:
         return list(FALLBACK_SCOPES), "the documented fallback list (credential carries no scopes)"
     return [str(s) for s in scopes], f"the running credential at {path}"
+
+
+def read_token_user_agent(text: str) -> str:
+    """The User-Agent the CLI's own token exchange sends, read out of the bundle.
+
+    Two lookups, and both must resolve to exactly one thing. The anchor names
+    the minified variable holding axios's version; that variable is then read
+    back as a version literal. A second match on either means the bundle moved
+    and the name no longer identifies what it used to, which is a `CannotSee`
+    rather than a guess -- sending the wrong User-Agent is how this request gets
+    blocked, so a wrong value is worse than a refusal that says why.
+    """
+    names = set(re.findall(TOKEN_UA_ANCHOR, text))
+    if len(names) != 1:
+        raise CannotSee(
+            f"cannot see the token exchange's User-Agent: {len(names)} matches for the axios anchor"
+        )
+    name = names.pop()
+    versions = set(re.findall(r"\b" + re.escape(name) + r'=\"([0-9]+\.[0-9]+\.[0-9]+)\"', text))
+    if len(versions) != 1:
+        raise CannotSee(
+            f"cannot see the token exchange's User-Agent: {len(versions)} version literals for `{name}`"
+        )
+    return "axios/" + versions.pop()
 
 
 def pkce_pair(verifier: str | None = None):
@@ -260,15 +331,136 @@ def load_session(path: str) -> dict:
         return json.load(handle)
 
 
-def _post_json(url: str, body: dict, timeout: int = 30):
+def sessions_in(document: dict):
+    """Every session the file carries, newest first.
+
+    One file, more than one session, because `--force` used to throw the old
+    one away. On 2026-09-10 13:41 a `start --force` replaced the 10:17 session
+    fifty seconds before he pasted the code for that 10:17 link -- the code was
+    seconds old and perfectly good, and the verifier that could have spent it
+    had been overwritten by the newer mint. Anthropic does not invalidate an
+    authorize URL when we mint another one; only this file did.
+
+    The newest session stays at the top level, exactly where every reader has
+    always looked for it, and the ones it replaced sit under `superseded`. So a
+    file written before this existed reads as a one-session document rather
+    than as an error.
+    """
+    if not isinstance(document, dict):
+        return []
+    newest = {k: v for k, v in document.items() if k != "superseded"}
+    older = document.get("superseded")
+    older = [s for s in older if isinstance(s, dict)] if isinstance(older, list) else []
+    return [newest] + older
+
+
+def unspent_sessions(document: dict, ttl=SESSION_TTL_SECONDS, now=None):
+    """`sessions_in`, minus the ones whose link has run out its hour.
+
+    Same clock and same TTL as `live_session`, so "the link is still live" is
+    one answer here rather than two that drift apart.
+    """
+    now = time.time() if now is None else now
+    live = []
+    for session in sessions_in(document):
+        created = session.get("created_at")
+        if isinstance(created, (int, float)) and now - created >= ttl:
+            continue
+        # A session with no usable `created_at` is kept. Every session written
+        # before that field existed is in that state, and "I cannot tell how
+        # old this is" must not become "refused" -- that would take a working
+        # exchange away from a box holding a perfectly good verifier, which is
+        # the same call `finish` already makes about a missing User-Agent.
+        live.append(session)
+    return live
+
+
+def session_for_state(document: dict, state: str):
+    """The session that minted `state`, or None.
+
+    The state is what ties his pasted code to a verifier, so this is the only
+    lookup that can be right when more than one link has gone out.
+
+    **It does not apply the TTL, and that is deliberate.** The hour in
+    `SESSION_TTL_SECONDS` is this loop's own bookkeeping about how long a link
+    is worth advertising; Anthropic decides whether a code is still good, and
+    the answer to that is one HTTP request away. Refusing here would turn a
+    code that would have worked into a local `REFUSED`, which is the exact
+    class of failure this whole module keeps paying for. The TTL's job is
+    `supersede`: bounding what the file carries forward.
+    """
+    if not state:
+        return None
+    for session in sessions_in(document):
+        if session.get("state") == state:
+            return session
+    return None
+
+
+def supersede(document: dict, ttl=SESSION_TTL_SECONDS, now=None):
+    """What the next `start` should carry forward under `superseded`.
+
+    The document being replaced, plus whatever it was already carrying, with
+    the expired ones dropped. There is no cap on the length: the TTL is the
+    cap, and a count would be a number I invented on top of one I measured.
+
+    **A session with no usable `created_at` is dropped here even though
+    `unspent_sessions` keeps it**, and the two answers differ on purpose. The
+    question there is "can this still be spent", where an unknown age must not
+    read as expired; the question here is "should this be carried forward
+    forever", and a session the TTL can never retire is exactly what makes the
+    file grow without bound. So an undated session gets one last chance to be
+    spent against the mint that replaces it, and no more.
+    """
+    return [session for session in unspent_sessions(document, ttl=ttl, now=now)
+            if isinstance(session.get("created_at"), (int, float))]
+
+
+def _post_json(url: str, body: dict, timeout: int = 30, user_agent: str | None = None):
+    headers = {"Content-Type": "application/json"}
+    if user_agent:
+        headers["User-Agent"] = user_agent
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.status, json.loads(response.read().decode())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode()
+            status = response.status
+    except urllib.error.HTTPError as refusal:
+        # `urlopen` raises on every 4xx and 5xx, so `exchange`'s own
+        # `status != 200` branch could never run and the response body -- the
+        # only thing that says *why* -- went out with the exception. That is
+        # what made 2026-09-10 a guessing game: three cycles saw
+        # `HTTP Error 400: Bad Request` and could not tell a spent code from an
+        # expired one from a rate limit, and one of them wrote the wrong cause
+        # into the handoff. The body is readable off the exception; read it.
+        raw, status = refusal.read().decode(errors="replace"), refusal.code
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        # Cloudflare's 1010 block is HTML, not JSON, and it is a refusal this
+        # module has already been bitten by. A body we cannot parse is still
+        # the evidence, so it travels as text rather than becoming a
+        # `ValueError` from a line that looks like a parse bug.
+        return status, {"error": "unparsed_body", "error_description": raw[:400]}
+
+
+def describe_refusal(payload) -> str:
+    """What the token endpoint said, in one line. `invalid_grant` alone is not
+    a diagnosis -- Anthropic answers it for a code that was already spent and
+    for one that expired, and those have different next steps -- so the
+    description travels beside it rather than being reduced to the code."""
+    if not isinstance(payload, dict):
+        return str(payload)[:400]
+    error = payload.get("error")
+    detail = payload.get("error_description") or payload.get("message")
+    if error and detail:
+        return f"{error}: {detail}"
+    return str(error or detail or payload)[:400]
 
 
 def exchange(session: dict, code: str, post=None):
@@ -276,7 +468,12 @@ def exchange(session: dict, code: str, post=None):
     test can never reach Anthropic -- and it defaults to None rather than to
     `_post_json`, because a default argument binds once at import and a test
     that replaced the module attribute afterwards would be replacing something
-    this function never looks at again."""
+    this function never looks at again.
+
+    `user_agent` travels on the session because `start` is the step that reads
+    the binary; a session minted before that field existed carries None, and
+    `_cmd_finish` fills it in rather than letting the request go out with
+    urllib's default and get a 1010."""
     post = _post_json if post is None else post
     body = {
         "grant_type": "authorization_code",
@@ -286,9 +483,9 @@ def exchange(session: dict, code: str, post=None):
         "code_verifier": session["code_verifier"],
         "state": session["state"],
     }
-    status, payload = post(session["token_url"], body)
+    status, payload = post(session["token_url"], body, user_agent=session.get("user_agent"))
     if status != 200:
-        raise CannotSee(f"token exchange failed ({status})")
+        raise CannotSee(f"token exchange failed ({status}): {describe_refusal(payload)}")
     return payload
 
 
@@ -345,6 +542,78 @@ def describe(credential: dict) -> list:
     return lines
 
 
+def code_from_messages(rows, states):
+    """(code, message id, state) for the newest unacked Telegram message that
+    carries a code for one of `states`, or (None, None, None).
+
+    Matching on the state rather than on "the newest message" is the whole
+    filter. He pastes `<code>#<state>`, and a stale reply to a link this loop
+    already invalidated is indistinguishable from a fresh one by arrival time
+    alone -- `finish` would then refuse on the state mismatch and the real
+    code, sitting one message further down, would never be tried.
+
+    It takes every state the session file carries rather than only the
+    newest, because he answers the link he is looking at and that is not
+    always the last one this loop minted -- see `sessions_in`. The state comes back with
+    the code so the caller knows which verifier to spend it against; two
+    sessions can be live at once and only one of them can exchange it.
+    """
+    if isinstance(states, str):
+        states = [states]
+    wanted = {s for s in (states or []) if s}
+    if not isinstance(rows, list) or not wanted:
+        # Without a state there is nothing to match on, and `split_pasted_code`
+        # answers None for the state half of any message with no `#` in it --
+        # so an empty set here would claim "thanks" as a code.
+        return None, None, None
+    for row in reversed(rows):
+        if not isinstance(row, dict):
+            continue
+        code, pasted = split_pasted_code(str(row.get("text") or ""))
+        if code and pasted in wanted:
+            return code, row.get("id"), pasted
+    return None, None, None
+
+
+def await_code(states, timeout: float, poll: float = 15.0,
+               fetch_rows=None, sleep=time.sleep, now=time.monotonic):
+    """Block until he replies with a code for one of these sessions, or
+    `timeout` seconds pass. Returns (code, message id, state) or three Nones.
+
+    This exists because the code, not the link, is what expires. A link lives
+    an hour; the authorization code behind it is good for minutes. On
+    2026-09-10 a link went out at 09:42 Oslo, he answered at 09:43, and the
+    next cycle did not run `finish` until 10:09 -- 26 minutes later, against a
+    live session with a matching state, and the exchange came back
+    `invalid_grant`. Nothing was broken and no cycle was slow; the loop simply
+    wakes every 30 minutes and the window is shorter than that. So the run
+    that mints the link is the only thing here that can reliably spend it, and
+    waiting is what makes that possible.
+
+    `sleep` and `now` are injected together and read from the same clock, so a
+    test cannot leave one of them real and pass on a timeout it never took."""
+    if fetch_rows is None:
+        def fetch_rows():
+            from tools.telegram import DEFAULT_URL, _get
+
+            status, body = _get(DEFAULT_URL, "/inbox", urllib.request.urlopen, 15)
+            return body.get("messages") if status == 200 else []
+    deadline = now() + timeout
+    while True:
+        try:
+            rows = fetch_rows()
+        except Exception as unreachable:  # the bridge is not worth dying over
+            print(f"  inbox unreadable ({unreachable}) -- retrying")
+            rows = []
+        code, message_id, matched = code_from_messages(rows, states)
+        if code is not None:
+            return code, message_id, matched
+        remaining = deadline - now()
+        if remaining <= 0:
+            return None, None, None
+        sleep(min(poll, remaining))
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--binary", default=DEFAULT_BINARY)
@@ -361,6 +630,15 @@ def build_parser():
         help="mint a new link even though an unspent one exists, invalidating it",
     )
 
+    wait = sub.add_parser(
+        "wait", help="poll Telegram for his reply to the live session and exchange it"
+    )
+    wait.add_argument("--timeout", type=float, default=600.0,
+                      help="seconds to wait for his reply (default 600)")
+    wait.add_argument("--poll", type=float, default=15.0, help="seconds between inbox reads")
+    wait.add_argument("--install", metavar="PATH",
+                      help="write the credential here; without it nothing is written")
+
     finish = sub.add_parser("finish", help="exchange the code he pasted back")
     finish.add_argument("--code", required=True, help="the `<code>#<state>` from the callback page")
     finish.add_argument(
@@ -371,9 +649,41 @@ def build_parser():
     return parser
 
 
+def notify_key_for(base: str, state: str) -> str:
+    """The dedupe key for one link, not for the idea of a link.
+
+    `tools.notify` holds a message whose key it has already sent inside the
+    window, and `start` passed a constant key with a 24-hour window while the
+    link itself lives `SESSION_TTL_SECONDS` -- one hour. So the second link of
+    any day was minted, invalidated the first, and was never sent, while
+    `start` printed the held line and exited 0.
+
+    That is not a near miss. The owner pasted a code at 09:17 Oslo on
+    2026-09-10, it came back `invalid_grant`, and the replacement this loop
+    minted for him went nowhere: `notify: held: 'claude-login-link' was
+    already sent 2.0h ago, inside the 24h window`. `--force` had already
+    invalidated the link he was holding, so the run left him strictly worse
+    off than doing nothing, and said so only in a line that reads like
+    housekeeping.
+
+    Keying on the state makes each minted link its own message, so a new link
+    is always sent. It does **not** keep a "same link twice is held" case
+    alive, and an earlier version of this docstring claimed it did: `_cmd_start`
+    mints a fresh `state` unconditionally before it ever gets here, and the one
+    path that could re-announce a live session refuses at `live_session` and
+    returns before this is called. So the dedupe is now a guard against a
+    caller that does not exist yet, and that is the honest description of it --
+    reviewer finding on this PR, and it is the shape this loop keeps paying
+    for: a guard that reads as protecting something it cannot reach.
+    """
+    return f"{base}:{state}"
+
+
 def _cmd_start(args) -> int:
     try:
-        config = extract_oauth_config(read_binary_text(args.binary))
+        bundle = read_binary_text(args.binary)
+        config = extract_oauth_config(bundle)
+        user_agent = read_token_user_agent(bundle)
     except (OSError, CannotSee) as problem:
         print(f"CANNOT SEE  {problem}")
         return 1
@@ -389,6 +699,17 @@ def _cmd_start(args) -> int:
     verifier, challenge = pkce_pair()
     state = secrets.token_urlsafe(24)
     url = authorize_url(config, challenge, state, scopes)
+    # **The link this one replaces is kept, not thrown away.** `--force` used
+    # to overwrite the file, and the verifier it overwrote was the only thing
+    # that could spend a code for the link already on his phone. That cost a
+    # real code on 2026-09-10 at 13:41, fifty seconds after the mint -- see
+    # `sessions_in`. Anthropic did not invalidate that link; this file did.
+    try:
+        carried = supersede(load_session(args.session))
+    except (OSError, ValueError):
+        # No file, or an unreadable one. Nothing to carry, and refusing here
+        # would take the first login on a fresh box away over a missing file.
+        carried = []
     save_session(
         args.session,
         {
@@ -397,10 +718,16 @@ def _cmd_start(args) -> int:
             "client_id": config["client_id"],
             "token_url": config["token_url"],
             "redirect_uri": config["manual_redirect_url"],
+            "user_agent": user_agent,
             "created_at": time.time(),
+            "superseded": carried,
         },
     )
+    if carried:
+        print(f"carrying {len(carried)} unspent session(s) forward; a code for "
+              "any of them can still be spent")
     print(f"scopes from {source}: {' '.join(scopes)}")
+    print(f"token exchange will send User-Agent: {user_agent}")
     print(f"session saved to {args.session} (0600)")
     print(url)
     if args.notify:
@@ -408,24 +735,57 @@ def _cmd_start(args) -> int:
 
         status, line = notify_tool.notify(
             "Claude login link (opens on your phone, then paste the code back): " + url,
-            key=args.notify_key,
-            dedupe_hours=24,
+            key=notify_key_for(args.notify_key, state),
+            dedupe_hours=SESSION_TTL_SECONDS / 3600,
         )
         print(f"notify: {line}")
-        return 0 if status in (0, 3) else status
+        if status != 0:
+            # A link he never received is not a link, and this used to answer 0
+            # on a held one -- see `notify_key_for`. The session is minted
+            # either way, so `finish` still works if he has the URL by some
+            # other route; the caller just has to know it did not reach him.
+            print(
+                "REFUSED  the link was minted but not delivered -- give him "
+                "this URL by another route, or fix the reason above"
+            )
+            return status
     return 0
 
 
 def _cmd_finish(args) -> int:
     try:
-        session = load_session(args.session)
+        document = load_session(args.session)
     except (OSError, ValueError) as problem:
         print(f"CANNOT SEE  no usable session at {args.session}: {problem}")
         return 1
     code, state = split_pasted_code(args.code)
-    if state is not None and state != session.get("state"):
-        print("REFUSED  the state in that code is not the one this session minted")
-        return 2
+    carried = sessions_in(document)
+    session = carried[0] if carried else {}
+    if state is not None:
+        # Any unspent session, not only the newest: he answers the link he is
+        # looking at, and `start --force` now keeps the one it replaced.
+        matched = session_for_state(document, state)
+        if matched is None:
+            print("REFUSED  the state in that code matches no session "
+                  f"in {args.session}")
+            return 2
+        session = matched
+    if not session.get("user_agent"):
+        # Every session on disk today was minted before `start` wrote this
+        # field. Reading it back out of the binary is the whole point, but an
+        # unreadable binary must not turn `finish` into a refusal -- that would
+        # take a working exchange away from a box that has the session and not
+        # the CLI. It warns and goes out with urllib's default instead, naming
+        # the failure that produces so it is not diagnosed twice.
+        try:
+            session["user_agent"] = read_token_user_agent(read_binary_text(args.binary))
+            print(f"session predates the User-Agent field; using {session['user_agent']}")
+        except (OSError, CannotSee) as problem:
+            print(
+                f"WARNING  cannot read the CLI's User-Agent ({problem}) -- this "
+                "exchange goes out with urllib's default, which Cloudflare "
+                "answers with `403 error code: 1010` in front of the token endpoint"
+            )
     try:
         payload = exchange(session, code)
     except (urllib.error.URLError, OSError, CannotSee, KeyError, ValueError) as problem:
@@ -451,10 +811,53 @@ def _cmd_finish(args) -> int:
     return 0
 
 
+def _cmd_wait(args) -> int:
+    try:
+        session = load_session(args.session)
+    except (OSError, ValueError) as problem:
+        print(f"CANNOT SEE  no usable session at {args.session}: {problem}")
+        return 1
+    # Every state the file carries, for `session_for_state`'s reason: a reply
+    # to the link he is looking at is worth spending whether or not this loop
+    # has stopped advertising it.
+    states = [s.get("state") for s in sessions_in(session) if s.get("state")]
+    if not states:
+        print(f"CANNOT SEE  the session at {args.session} carries no state to match on")
+        return 1
+    print(f"waiting up to {int(args.timeout)}s for a code ending in "
+          + " or ".join("#" + s for s in states))
+    code, message_id, matched = await_code(states, args.timeout, poll=args.poll)
+    if code is None:
+        print(
+            f"REFUSED  no reply carrying a state this file knows in {int(args.timeout)}s -- "
+            "the link is still live, so `finish --code` works whenever it arrives"
+        )
+        return 2
+    print(f"got a code from Telegram message #{message_id} for #{matched}")
+    status = _cmd_finish(
+        argparse.Namespace(
+            session=args.session,
+            binary=args.binary,
+            code=f"{code}#{matched}",
+            install=args.install,
+        )
+    )
+    if status == 0 and message_id is not None:
+        # Only on a spent code. Acking a message whose exchange failed would
+        # hide the one thing a later cycle needs to retry with.
+        from tools import telegram_inbox
+
+        _, line = telegram_inbox.ack(message_id)
+        print(f"telegram ack: {line}")
+    return status
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "start":
         return _cmd_start(args)
+    if args.command == "wait":
+        return _cmd_wait(args)
     return _cmd_finish(args)
 
 

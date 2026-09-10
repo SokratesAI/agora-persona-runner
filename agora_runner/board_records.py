@@ -378,3 +378,56 @@ def project_names(store=board_store):
         if name and name not in names:
             names.append(name)
     return names
+
+
+#: `currency`'s three verdicts. Deliberately the same three words
+#: `ticket_docs` answers with, because `nova_site` reads one today and will
+#: read the other after #203's switchover, and a renamed verdict at that
+#: seam is a silent behaviour change in a comparison nobody re-reads.
+CURRENT = "current"
+STALE = "stale"
+UNKNOWN = "unknown"
+
+
+def stamp_source_rev(board, source_rev, store=board_store):
+    """Record that `board`'s records were built from vault revision `source_rev`.
+
+    Called after the records have been written, never before: the stamp is a
+    claim about what is already stored, and one written first would certify
+    a write that then failed.
+    """
+    return store.write_source(board, source_rev)
+
+
+def stored_source_rev(board, store=board_store):
+    """The revision `board`'s records were built from, or `None`."""
+    return store.read_source(board)
+
+
+def currency(board, live_rev, store=board_store):
+    """Are `board`'s records still built from the markdown as it stands now?
+
+    Returns `(verdict, why)`. This is the question `nova_site` has to answer
+    on every board request after the switchover, and the reason it cannot
+    just fetch the markdown and compare: his `issues.md` is 700KB, and
+    re-reading it per request is the cost issue #203 exists to remove. So
+    the store carries the revision it was built from and the caller brings
+    the one the vault holds now, and the comparison is two short strings.
+
+    **`UNKNOWN` is a verdict and not a failure, and it must never be able to
+    read as `CURRENT`.** A board that has never been stamped and a board
+    whose stamp is behind are different findings -- the first says nothing
+    about whether the records are right, the second says they are not -- and
+    a caller that treated a missing stamp as "no drift detected" would serve
+    stale rows with more confidence than a caller that knew nothing. That is
+    the same failure `board_put` refuses when it declines to stamp a
+    revision it could not prove belongs to the text the store now holds.
+    """
+    stored = store.read_source(board)
+    if not stored:
+        return UNKNOWN, "the records carry no source revision"
+    if not live_rev:
+        return UNKNOWN, "no live revision to compare against"
+    if stored == live_rev:
+        return CURRENT, f"built from {stored}"
+    return STALE, f"built from {stored}, the file is at {live_rev}"

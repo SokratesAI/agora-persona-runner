@@ -666,6 +666,67 @@ def test_add_row_raises_board_damaged_when_the_store_drops_the_rank():
         board_write.add_row("issue", "New", "09-10", "high", store=damaged)
 
 
+class _StoresTheRowAsSomethingElse(WritableFakeStore):
+    """A store that keeps the row but not the title it was handed."""
+
+    def write_row(self, doc):
+        return super().write_row(dict(doc, title=doc.get("title", "") + " (rewritten)"))
+
+
+def test_add_row_catches_a_new_row_that_landed_as_something_else():
+    """`landed != wanted` is `add_row`'s own copy of the after-check and it was
+    the one branch here nothing exercised. Every other `add_row` test damages
+    a *sibling*, the rank or the count, so the store could rewrite the new
+    row's own cells and the whole file stayed green -- I found it by mutating
+    this line to `elif False:` and watching 62 tests pass.
+    """
+    _, source = writable()
+    store = _StoresTheRowAsSomethingElse(source.docs, source.registry)
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.add_row("issue", "New", "09-10", "high", store=store)
+    assert "title" in str(damaged.value)
+    assert "not as written" in str(damaged.value)
+
+
+class _EatsASiblingWriteUp(WritableFakeStore):
+    """A store whose row write also drops the prose under every other row.
+
+    Not `_EatsTheWriteUp`, which strips `detail` off the document being
+    written: `add_row`'s new row carries no write-up of its own in this test,
+    so that store would damage nothing and the check would be right to stay
+    quiet.
+    """
+
+    def write_row(self, doc):
+        stored = super().write_row(doc)
+        self.docs = [
+            {key: value for key, value in held.items() if key != "detail"}
+            if held.get("_id", "").startswith("board:issue:")
+            and held.get("number") != doc.get("number")
+            else held
+            for held in self.docs]
+        return stored
+
+
+def test_add_row_catches_a_write_that_ate_a_write_up_it_was_not_given():
+    """The write-up comparison in `add_row`, mutated to `if False:` and green.
+
+    Adding a row says nothing about his prose under the rows already there,
+    and this is the damage that says so: the rows themselves come back
+    intact, so `_differences` sees nothing, and the new row is exactly what
+    was asked for, so `landed != wanted` sees nothing either. Only this
+    branch is left.
+    """
+    parsed, source = writable()
+    assert parsed["details"], "the fixture must hold a write-up"
+    store = _EatsASiblingWriteUp(source.docs, source.registry)
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.add_row("issue", "New", "09-10", "high", store=store)
+    numbered = sorted(parsed["details"])[0]
+    assert f"#{numbered}" in str(damaged.value)
+    assert "write-up" in str(damaged.value)
+
+
 def test_add_row_catches_a_write_that_also_nudged_a_row_nobody_named():
     """The per-row comparison has to skip past the new row, not zip through it.
 

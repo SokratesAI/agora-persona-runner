@@ -28,7 +28,7 @@ Above the ranking sit the owner's **unprocessed captures** -- the bare
 bullets he types above `## Board`, which `prompt.md` step 2 places above
 the board, above the handoff and above everything else. They are printed
 first and unranked, because a capture has no rating cell to sort on and
-because there are never many; see `unboarded_captures_from_contents`.
+because there are never many; see `unboarded_captures`.
 
 Ranking is rating first (Immediately > High > Medium > Low > unrated),
 then oldest `Updated` first, then issues before ideas, then row number.
@@ -69,12 +69,17 @@ collision surface of the three; the other two are closed.
 
 Vault I/O is inside rather than outside, unlike every other tool here,
 and that is the point of the tool: an opening read that takes three
-commands is one a cycle will skip. The two boards come out of the record
-store rather than the vault (issue #203); `--notes` is still a local file,
-because `notes.md` is a capture list with no `## Board` table and
-`board_migrate` never migrates it. There is no `--issues`/`--ideas` any
-more -- a local markdown copy of a board is a second source of truth, not
-a cheaper read of the first, and the tests hand over a fake `store=`.
+commands is one a cycle will skip. `--issues`/`--ideas` take local files
+instead, which is how the tests drive it and how the runner pod (which
+has no vault client) can use it at all.
+
+**His two boards are read out of the record store now, not out of
+markdown** (issue #203). `board_contents` below is the one door; the
+`--issues`/`--ideas` flags still take a markdown file and still mean what
+they meant, and they go through `board_migration_preflight`, which is the
+one module the migration reads markdown in. `notes.md` is not a board --
+no `## Board` table, no write-ups, never migrated -- so it stays a vault
+fetch and a `capture_entries` parse, after the switchover as before it.
 """
 
 import argparse
@@ -91,10 +96,11 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
     BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, capture_entries,
-    is_relayed, parse_milestone_pins, parse_project_meta,
-    status_key, unanswered_comment_bodies_from_details,
+    is_relayed, parse_milestone_pins, parse_project_meta, status_key,
+    unanswered_comment_bodies_from_details,
 )
-from agora_runner import board_records, board_store
+from agora_runner import board_records
+from tools import board_migration_preflight
 # The ranking itself lives in `agora_runner` now, not here. The site had to
 # be able to import it and could not: `tools/` is not in the image. Same
 # functions, one definition -- see `nova_next`'s docstring.
@@ -328,27 +334,58 @@ def _low_satisfaction_block(low, readable=True):
     return out
 
 
+def board_contents(board, local=None, store=None):
+    """One of his boards as `parse_board`'s four keys -- store or local file.
+
+    Issue #203's switchover, for this tool. The default read is
+    `board_records.contents`, so the ranking a cycle wakes up to comes out
+    of the record store rather than out of a 700KB markdown table parsed
+    with a regex.
+
+    `local` is the `--issues`/`--ideas` escape hatch and is unchanged in
+    what it takes: a path to a board markdown file. It goes through
+    `board_migration_preflight.board_contents`, which is the one module
+    the migration is allowed to read markdown in, rather than through
+    `parse_board` here -- so this tool no longer names the parser and
+    `board_reader_inventory` stops counting it. That door is a migration
+    seam and comes out with the window, like the two in `nova_next`.
+
+    `store=None` rather than the real store as a default argument: a
+    default binds its value at import, so `board_records.board_store`
+    written there would be the object this module captured and a test
+    replacing it would be replacing something nothing reads. Same reason
+    as `tools.milestone_pin.store_milestones`.
+
+    **Every failure raises.** An unmigrated store, a board CouchDB will
+    not answer for, a local file that is not there -- the caller reports
+    the board as unread and says the ranking is incomplete. Returning an
+    empty shape on any of them would rank one board of two and print a
+    confident top row, which is the exact failure the caller's
+    `COULD NOT READ` line exists to prevent.
+    """
+    if local:
+        with open(local, encoding="utf-8") as fh:
+            return board_migration_preflight.board_contents(fh.read())
+    return board_records.contents(board,
+                                  store=store or board_records.board_store)
+
+
 def unread_notes(markdown):
     """`notes.md` -> the notes the owner has left that no cycle has moved.
 
     The contract is `prompt.md` step 1a's: he writes bare bullets at the
     top, a cycle acts on each and moves it under `## Read` with a line on
     what it did. So "unread" is structural -- everything above the first
-    heading -- and `capture_entries` finds exactly that, frontmatter and
-    cursor bullet excluded.
+    heading -- and `capture_entries` already finds exactly that,
+    frontmatter and cursor bullet excluded.
 
-    **`capture_entries`, not `parse_board`, and that is a correctness point
-    before it is a cost one.** `notes.md` is a capture list: it has no
-    `## Board` table and no write-ups, so `board_migrate` does not migrate
-    it and it stays markdown after issue #203 lands. Asking the *board*
-    parser for its captures therefore ran the row parse and the detail
-    parse over the whole file and threw both away -- measured against the
-    live 96,771-byte `notes.md` on 2026-09-10: 0 items, 0 details, 0.91 ms
-    against 0.10 ms for the same two captures. `parse_board`'s capture half
-    *is* `capture_entries`, so this cannot change the answer; what it
-    changes is which parser is being asked, and a board parser pointed at a
-    file that is not a board is the kind of thing that reads as intentional
-    for years.
+    It calls `capture_entries` rather than `parse_board`'s capture half,
+    which is the same function one indirection away, because `notes.md`
+    has no `## Board` table and no write-ups: asking the board parser for
+    two bullets ran the row parse and the detail parse over 96KB and threw
+    both away. It is also why this call survives issue #203 -- `notes.md`
+    is not a board, so `board_migrate` never migrates it and it stays
+    markdown after the switchover.
 
     A note is not a board row and gets no rating. It is printed with the
     captures rather than ranked, because `rank` sorts on a `Priority` cell
@@ -362,7 +399,8 @@ def unread_notes(markdown):
              # withheld the address from the page that reads it best.
              "index": index, "original": text,
              "slug": slug_for_capture(text)}
-            for index, (_, _, text, _) in enumerate(capture_entries(markdown or ""))]
+            for index, (_, _, text, _)
+            in enumerate(capture_entries(markdown or ""))]
 
 
 def _reply_claim(row):
@@ -376,8 +414,7 @@ def _reply_claim(row):
     failure the hash is there to prevent.
 
     Printing nothing is therefore the honest answer, and the guarantee is
-    kept where it can be: `open_rows_from_contents` and
-    `closed_rows_waiting_from_contents` stamp
+    kept where it can be: `open_rows` and `closed_rows_waiting` stamp
     `replySlug` on every waiting row they build, which is pinned by a
     test. Only a row built by hand reaches this fallback.
     """
@@ -385,28 +422,39 @@ def _reply_claim(row):
     return f"  [reply-claim: {slug}]" if slug else ""
 
 
-def closed_rows_waiting_from_contents(contents, board):
-    """The same answer, from `parse_board`'s return value instead of the file.
+def closed_rows_waiting(contents, board):
+    """Closed rows whose write-up still ends on one of his comments.
 
-    Same split, and the same reason, as `nova_next.open_rows_from_contents`:
-    issue #203 replaces the markdown with records, and `board_records.contents`
-    already hands back exactly the four keys `parse_board` does, so the reader
-    above this line is a door onto a function that never sees a file.
+    `open_rows` computes `waiting` for every row and then throws away
+    every closed one, so a question asked on a row already marked ✅ Done
+    was read out of the file and discarded in the same function. Sokrates
+    reported the consequence rather than the cause, `issues.md`
+    2026-08-23: a comment left on `ideas #63` on 08-22 flagging that the
+    row's Done status looked premature sat through **nine cycles**
+    (328-336) with no reply and no change, because *"step 1's read
+    genuinely skips comment threads on Done items"*.
 
-    The double read this closes is the same one the deleted `open_rows`
-    door had, and it is
-    worse here. The old body called `unanswered_comment_bodies` on the file
-    and then `parse_board` on it again -- two reads of one string, which
-    cannot disagree, but two `_all_docs` queries against a live CouchDB,
-    which can. This function decides a row is owed a reply by intersecting
-    the two halves, so a write landing between them drops a comment on a
-    Done row out of the answer entirely: exactly the nine-cycle silence on
-    `ideas #63` that this function exists to prevent, back again
-    with a different cause. One `contents` makes them the same read.
+    A comment is not a status. Closing a row says the work is finished;
+    it says nothing about whether he has been answered, and the case
+    where the two disagree is the one that matters most -- a comment on a
+    Done row is very often *"this is not actually done"*, which is
+    exactly what #63's said.
 
-    The markdown twin that used to stand in front of this one is gone:
-    nothing outside this module ever called it, and after the switchover
-    there is no board markdown for it to take.
+    These are returned separately and never ranked. `rank` names the row
+    a cycle should take, and a closed row is not work at any rating; the
+    thing owed here is a reply, which `render` asks for by name. Folding
+    them into `rows` would have put a Done row at the top of the pick
+    list, which is the opposite failure and just as wrong.
+
+    Takes `parse_board`'s four keys, from wherever the caller got them --
+    the record store or a local file -- for issue #203, and for the same
+    reason `open_rows_from_contents` does: the rows and the comment
+    threads come out of **one** read. This function used to parse the same
+    string twice, once for the threads and once for the rows. Two reads of
+    one string cannot disagree; two reads of one CouchDB can, and a write
+    landing between them drops a comment on a closed row out of the
+    answer -- which is the nine-cycle `ideas #63` silence this function
+    exists to end, with a new cause.
     """
     waiting = unanswered_comment_bodies_from_details(contents["details"])
     return [{
@@ -562,8 +610,8 @@ def _capture_line(capture):
     # reason to read the line differently rather than a property of the item:
     # somebody already worked this and their DONE marker did not parse, so
     # the bullet is sitting in a section that says "take one" by accident.
-    # Not filtered out here -- see `unboarded_captures_from_contents` for
-    # why the reader gets told instead.
+    # Not filtered out here -- see `unboarded_captures` for why the reader
+    # gets told instead.
     held += ("⚠ MARKER DID NOT PARSE — a cycle closed this and wrote "
              "`DONE (Cycle N)` with prose before the colon; check the bullet "
              "still holds his words, then fix the marker  "
@@ -634,17 +682,17 @@ def _capture_board_help(captures):
     """
     if not captures:
         return []
-    out = ["  Board one — python3 -m tools.board_capture --board issue|idea "
+    out = ["  Board one — python3 -m tools.board_capture --file <his file on disk> "
            "--index N --priority low|medium|high|immediate "
-           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD",
+           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD "
+           "--projects-from <the OTHER board on disk>",
            "  It adds the row AND cuts the bullet, so the item is in one place. "
            "Board highest --index first: the indices renumber after each cut.",
-           "  It writes the record store itself, so there is no file to hand it "
-           "and no compare-and-swap of your own to do — that is issue #203's "
-           "conversion (it took --file and --projects-from until 2026-09-10). "
-           "The project he picked in the app reaches the cell without a second "
-           "board being passed: both boards mint into one registry, which is "
-           "the same union the picker offers."]
+           "  --projects-from is what makes the project he picked in the app "
+           "reach the cell: the picker offers the projects on BOTH boards and "
+           "board_capture can only see the one file you hand it, so without it "
+           "a project with no row on this board resolves to nothing and the "
+           "#slug stays in the title."]
     for capture in sorted(captures, key=lambda c: -c["index"]):
         board = "notes" if capture["board"] == "note" else capture["board"] + "s"
         out.append(f"     --index {capture['index']}  ({board})  ->  {capture['text'][:70]}")
@@ -692,8 +740,7 @@ def _claim_footer(rows, captures, claims_readable):
 def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
            projects_markdown="", projects_readable=True,
            milestone_pins_markdown="",
-           diagnoses_text="", diagnoses_readable=True, cycle=None,
-           boards_unread=()):
+           diagnoses_text="", diagnoses_readable=True, cycle=None):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -702,28 +749,8 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     whole and let the presentation carry the priority. So both are
     printed, and the "take this" sentence moves onto the captures when
     there are any, because that is where the contract actually points.
-
-    `boards_unread` is the boards `main` could not read, and every verdict
-    on this page is qualified by it. Both of the sentences a cycle acts on
-    -- the capture count and "no open rows on either board" -- are claims
-    about a board, and they read exactly the same whether the board is
-    empty or was never fetched. `board_records.contents` raises on an
-    unmigrated store precisely so those two cannot be confused; flattening
-    the raise into an empty list here would put the confusion back one
-    layer up. The `COULD NOT READ` line at the bottom of `main` is true and
-    is not enough: it prints *after* the verdict, and a cycle acts on the
-    verdict.
     """
     out = []
-    unread = tuple(boards_unread)
-    if unread and not captures:
-        # The captures section is skipped entirely when the list is empty,
-        # so silence here is itself the claim "he has left you nothing" --
-        # and his captures live on the boards that could not be read.
-        out.append("UNPROCESSED CAPTURES FROM EDVARD — NOT KNOWN: "
-                   + " and ".join(unread) + " could not be read and his "
-                   "captures live there. This is not \"none\".")
-        out.append("")
     if captures:
         # Held captures sink within the section for the same reason held rows
         # sink within the ranking. The section is otherwise unsorted, so this
@@ -742,12 +769,6 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         # are his and reading them as second-hand would be the same error
         # pointing the other way.
         note = f", {relayed} of them relayed by Sokrates" if relayed else ""
-        if unread:
-            # A partial count presented as a total is the same error as the
-            # empty ranking below: it is the number a cycle reads to decide
-            # whether anything outranks the board.
-            note += ("; PARTIAL — " + " and ".join(unread)
-                     + " could not be read")
         out.append(f"UNPROCESSED CAPTURES FROM EDVARD ({len(captures)}{note}) — "
                    "these outrank every row below. Take one, or say why not:")
         out.extend("  -> " + _capture_line(c) for c in captures)
@@ -796,28 +817,12 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     ranked = rank(rows, project_rank_map,
                   milestone_ranks(rows, parse_milestone_pins(
                       milestone_pins_markdown)))
-    if not ranked and unread:
-        # NOT the sentence below. An unread board and an empty board produce
-        # an identical `ranked`, and they mean opposite things -- "there is
-        # nothing to do" against "I do not know what there is to do". This
-        # is the only place the difference still exists, because `main` has
-        # already turned the raise into a `continue`.
-        out.append("TOP OF EDVARD'S BOARD — NOTHING TO RANK, and that is not "
-                   "a verdict: " + " and ".join(unread)
-                   + " could not be read.")
-    elif not ranked:
+    if not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
     else:
         header = ("TOP OF EDVARD'S BOARD — below the captures above:" if captures else
                   "TOP OF EDVARD'S BOARD — take this, or say in your journal why you did not:")
         out.append(header)
-        if unread:
-            # Same treatment as `projects_readable` below and for the same
-            # reason: the rows printed are real, but "take this" is a claim
-            # about the whole board and only part of it was read.
-            out.append("  ⚠ " + " and ".join(unread) + " UNREADABLE — this "
-                       "ranking covers the other board only, so the row named "
-                       "here need not be the top row.")
         if not projects_readable:
             # Not a `COULD NOT READ` and not exit 1: no row is missing from
             # this list. What is missing is the order between projects, and
@@ -912,14 +917,14 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     return "\n".join(out)
 
 
-def main(argv=None, store=board_store):
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    # `--issues`/`--ideas` are gone: the two boards are records now, and a
-    # local markdown copy of one is a second source of truth rather than a
-    # cheaper read of the same one (issue #203). A test hands over a fake
-    # `store=` instead, which is the same seam every other converted writer
-    # uses. `--notes` stays, because `notes.md` is a capture list with no
-    # `## Board` table and `board_migrate` never migrates it.
+    ap.add_argument("--issues", help="local issues.md instead of a vault fetch")
+    ap.add_argument("--ideas", help="local ideas.md instead of a vault fetch")
+    # A local run has to name all three. Naming two and letting the third
+    # fall through to the vault is what CI caught: it is green on this box,
+    # where `vault_tool.py` exists, and exits 1 anywhere else -- a test that
+    # passes for a reason that has nothing to do with what it asserts.
     ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
     ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
     ap.add_argument("--projects",
@@ -960,35 +965,19 @@ def main(argv=None, store=board_store):
     captures = []
     closed_waiting = []
     missing = []
-    # Kept beside `missing` rather than derived from it: `missing` also
-    # collects `notes.md`, which is not a board and carries no rows, so a
-    # ranking qualified by it would be qualified by the wrong thing.
-    boards_unread = []
-    for board, path in (("issue", ISSUES_PATH), ("idea", IDEAS_PATH)):
-        # A board that could not be read is said out loud rather than
-        # silently ranked as empty -- a top row chosen from one of two
-        # boards is exactly the wrong answer wearing the right shape. The
-        # store raises where the old vault read answered `None`, and an
-        # unmigrated store raises too, which is the state that most needs
-        # saying: `read_rows` cannot tell "never migrated" from "no open
-        # rows", and reading the second as the first is a silent empty board.
+    for board, local, path in (("issue", args.issues, ISSUES_PATH),
+                               ("idea", args.ideas, IDEAS_PATH)):
         try:
-            contents = board_records.contents(board, store=store)
-        except (board_records.RecordError, board_store.StoreError) as problem:
-            missing.append(f"{path} ({problem})")
-            boards_unread.append(path.rsplit("/", 1)[-1])
+            contents = board_contents(board, local)
+        except Exception as exc:  # noqa: BLE001 -- see `board_contents`
+            # A board that could not be read is said out loud rather than
+            # silently ranked as empty -- a top row chosen from one of two
+            # boards is exactly the wrong answer wearing the right shape.
+            missing.append(f"{path} ({exc})")
             continue
-        # One read, three readers. Each of the three used to take the file
-        # and parse it itself, so a board was read three times per pass --
-        # free on a string and three `board_records.contents` calls now that
-        # issue #203 has landed, with a write able to land between any two of
-        # them. The pick, the capture list and the owed replies have to come
-        # off one read of one board or they can contradict each other: a
-        # capture whose row was written between reads is handed to a waking
-        # cycle as unprocessed, above every row on the board.
         rows.extend(open_rows_from_contents(contents, board))
         captures.extend(unboarded_captures_from_contents(contents, board))
-        closed_waiting.extend(closed_rows_waiting_from_contents(contents, board))
+        closed_waiting.extend(closed_rows_waiting(contents, board))
 
     notes_md = open(args.notes, encoding="utf-8").read() if args.notes \
         else _fetch(NOTES_PATH)
@@ -1036,8 +1025,7 @@ def main(argv=None, store=board_store):
                  milestone_pins_markdown=milestone_pins_md,
                  diagnoses_text=diagnoses_text,
                  diagnoses_readable=diagnoses_readable,
-                 cycle=args.cycle,
-                 boards_unread=boards_unread))
+                 cycle=args.cycle))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")

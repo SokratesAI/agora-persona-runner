@@ -14,6 +14,7 @@ import pytest
 
 from agora_runner.board_view import (
     BOARD_COLUMNS,
+    board_width,
     DONE_COLUMNS,
     render_detail,
     render_document,
@@ -340,3 +341,112 @@ def test_an_empty_board_still_renders_a_parseable_document():
 def test_a_pipe_in_a_title_raises_rather_than_splitting_the_row():
     with pytest.raises(ValueError):
         render_document(contents([row(1, title="a | b")]))
+
+
+# --- the width of the board table ------------------------------------------
+#
+# `Order` is the one `## Board` column a live board file may legitimately not
+# have: it was appended to `issues.md` and never to `ideas.md`, so his ideas
+# header stops at `Milestone`. Drawing it anyway made `board_publish` refuse
+# `ideas.md` outright (cycle 1362) — the rendered document carried a column
+# his does not. The rule is that the stored layout decides the width and the
+# renderer only ever widens it, the day a row actually carries a position.
+
+IDEAS_COLUMNS = BOARD_COLUMNS[:-1]
+
+
+def laid_out(columns, extra=()):
+    """A layout whose `## Board` block has exactly `columns`."""
+    return [{"kind": "board", "columns": list(columns)}, *extra]
+
+
+def cells(line):
+    """A rendered table line's cells.
+
+    The first cell of a row is a wikilink carrying an escaped `\\|`, the
+    same one `_table_rows` masks before it splits, so counting bare pipes
+    over-reports every row by one and a test that did would pass on an
+    eight-cell row under a nine-cell header.
+    """
+    masked = line.replace("\\|", "\x00")
+    return [cell.strip() for cell in masked.strip().strip("|").split("|")]
+
+
+def board_header(document):
+    """The `## Board` table's header cells."""
+    return cells(document.split("## Board\n\n", 1)[1].splitlines()[0])
+
+
+def board_body(document):
+    """The `## Board` table's row lines, header and rule dropped."""
+    table = document.split("## Board\n\n", 1)[1]
+    return [line for line in table.splitlines()[2:] if line.startswith("|")]
+
+
+def test_board_width_is_eight_until_a_row_carries_a_position():
+    assert board_width([row(1), row(2)]) == len(BOARD_COLUMNS) - 1
+    assert board_width([row(1), row(2, order=3)]) == len(BOARD_COLUMNS)
+
+
+def test_a_done_rows_position_does_not_widen_the_board_table():
+    """The `## Done` table is four columns and cannot carry a position, so a
+    stray `order` on a done record must not add a column to the other one."""
+    assert board_width([row(1), row(2, done=True, order=3)]) == (
+        len(BOARD_COLUMNS) - 1)
+
+
+def test_render_tables_draws_no_order_column_until_a_row_needs_one():
+    """The fixed order, for a caller with no stored layout to be faithful to."""
+    assert "Order" not in render_tables([row(1), row(2)])["board"]
+    assert "Order" in render_tables([row(1), row(2, order=1)])["board"]
+
+
+def test_an_eight_column_layout_renders_no_order_column():
+    document = render_document(
+        contents([row(1), row(2)]), FRONTMATTER,
+        layout=laid_out(IDEAS_COLUMNS))
+    assert board_header(document) == list(IDEAS_COLUMNS)
+    assert "Order" not in board_header(document)
+    assert all(len(cells(line)) == len(IDEAS_COLUMNS)
+               for line in board_body(document))
+
+
+def test_a_nine_column_layout_still_renders_the_order_column():
+    document = render_document(
+        contents([row(1), row(2)]), FRONTMATTER,
+        layout=laid_out(BOARD_COLUMNS))
+    assert board_header(document) == list(BOARD_COLUMNS)
+    assert all(len(cells(line)) == len(BOARD_COLUMNS)
+               for line in board_body(document))
+
+
+def test_an_eight_column_layout_widens_when_a_row_gains_a_position():
+    """The column appears the day it carries something, not before."""
+    document = render_document(
+        contents([row(1), row(2, order=1)]), FRONTMATTER,
+        layout=laid_out(IDEAS_COLUMNS))
+    assert board_header(document) == list(BOARD_COLUMNS)
+    assert parse_board(document)["items"][1]["order"] == 1
+
+
+def test_a_narrowed_board_still_round_trips_its_rows():
+    want = contents([row(1, priority="🟠 High", milestone="M4"), row(2)])
+    back = parse_board(render_document(
+        want, FRONTMATTER, layout=laid_out(IDEAS_COLUMNS)))
+    assert back["items"] == want["items"]
+
+
+def test_render_row_refuses_to_narrow_away_a_position():
+    """Truncation must never be silent: the markdown is the only copy."""
+    with pytest.raises(ValueError, match="would lose the value"):
+        render_row(row(1, order=7), width=len(BOARD_COLUMNS) - 1)
+
+
+def test_render_row_narrows_an_empty_trailing_cell():
+    line = render_row(row(1), width=len(BOARD_COLUMNS) - 1)
+    assert len(cells(line)) == len(BOARD_COLUMNS) - 1
+
+
+def test_render_row_pads_a_table_wider_than_the_record():
+    line = render_row(row(1), width=len(BOARD_COLUMNS) + 1)
+    assert len(cells(line)) == len(BOARD_COLUMNS) + 1

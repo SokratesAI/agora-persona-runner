@@ -103,55 +103,109 @@ def _rule(width):
     return "|" + "|".join(["---"] * width) + "|"
 
 
-def render_row(item):
+def render_row(item, width=None):
     """One record -> its `| ... |` line, in whichever table it belongs to.
 
     An `order` of `None` and an `order` of `0` are both written as an
     empty cell, because `parse_project_order_cell` reads both back as
     unplaced -- a row nobody has dragged has no position at all, which is
     a different answer from position zero and the one this can express.
+
+    `width` narrows or widens the line to exactly that many cells.
+    Narrowing **raises** rather than truncates the moment a dropped cell
+    carries anything: the whole point of drawing a table narrower than
+    `BOARD_COLUMNS` is that the missing column holds nothing, and a
+    renderer that quietly dropped a value would lose it from the only
+    copy his markdown has.
     """
     number = int(item["number"])
     title = _cell(item.get("title"))
     if item.get("done"):
-        return _line([
+        cells = [
             _link(number, title),
             title,
             _cell(item.get("updated")),
             _cell(item.get("where")),
-        ])
-    order = item.get("order")
-    return _line([
-        _link(number, title),
-        title,
-        _cell(item.get("status")),
-        _cell(item.get("updated")),
-        _cell(item.get("priority")),
-        _cell(item.get("project") or DEFAULT_PROJECT),
-        _cell(item.get("size")),
-        _cell(item.get("milestone")),
-        _cell(order) if isinstance(order, int) and order > 0 else "",
-    ])
+        ]
+    else:
+        order = item.get("order")
+        cells = [
+            _link(number, title),
+            title,
+            _cell(item.get("status")),
+            _cell(item.get("updated")),
+            _cell(item.get("priority")),
+            _cell(item.get("project") or DEFAULT_PROJECT),
+            _cell(item.get("size")),
+            _cell(item.get("milestone")),
+            _cell(order) if isinstance(order, int) and order > 0 else "",
+        ]
+    if width is not None:
+        while len(cells) > width:
+            dropped = cells.pop()
+            if dropped:
+                raise ValueError(
+                    f"row #{number} carries {dropped!r} in cell "
+                    f"{len(cells) + 1} and the table is only {width} "
+                    "cells wide; narrowing it would lose the value")
+        while len(cells) < width:
+            cells.append("")
+    return _line(cells)
+
+
+def board_width(items):
+    """The narrowest `## Board` table that holds these rows without loss.
+
+    `Order` is the one column a board file may legitimately not have. It
+    was appended to `issues.md` and never to `ideas.md`, so his ideas
+    header stops at `Milestone` -- and drawing the column anyway is a
+    visible change to a board he did not ask for, which is what stopped
+    `board_publish` from rendering `ideas.md` at all (cycle 1362).
+
+    This is a floor and never a ceiling, which is the whole reason it is
+    safe to hand to `render_table`: that function widens `columns` to
+    `width` and never narrows them, so a stored layout that already
+    carries `Order` keeps it whatever this returns. The column therefore
+    appears on a board that lacks it the day a row actually carries a
+    position, and not before.
+
+    A done record's `order` does not count. The `## Done` table is four
+    columns and structurally cannot carry a position, so widening the
+    other table for it would add a column nothing could ever fill.
+    """
+    for item in items:
+        if item.get("done"):
+            continue
+        order = item.get("order")
+        if isinstance(order, int) and order > 0:
+            return len(BOARD_COLUMNS)
+    return len(BOARD_COLUMNS) - 1
 
 
 def render_table(items, columns, width=None):
     """A header, its rule and one line per record -- always all columns.
 
-    `width` is how many cells `render_row` will write, and a `columns`
-    shorter than it is padded from the default names. That is not a
-    nicety: `ideas.md`'s header stops at `Milestone` because `Order` was
-    appended to the table without the header being rewritten, so keeping
-    the owner's header verbatim would draw an eight-column header over
-    nine-cell rows. `parse_board` reads by position and never looks at the
-    header, so it would still parse -- and it would still be a broken
-    table on his page.
+    `width` is a floor, never a ceiling: a `columns` shorter than it is
+    padded from the default names, and one longer is left alone. Every
+    row is then written at the header's own width, so the two can never
+    disagree. That is not a nicety: `ideas.md`'s header stops at
+    `Milestone`, so writing rows at `BOARD_COLUMNS` regardless would draw
+    nine-cell rows under an eight-column header. `parse_board` reads by
+    position and never looks at the header, so it would still parse --
+    and it would still be a broken table on his page.
+
+    The other half of that is `board_width`, which is what the callers
+    pass here: his ideas board keeps its eight columns until a row
+    actually carries a position, and his issues board keeps the ninth it
+    already has because this only ever widens.
     """
     columns = tuple(columns)
     if width and len(columns) < width:
-        default = BOARD_COLUMNS if width == len(BOARD_COLUMNS) else DONE_COLUMNS
+        default = (BOARD_COLUMNS if width > len(DONE_COLUMNS)
+                   else DONE_COLUMNS)
         columns = columns + tuple(default[len(columns):width])
     lines = [_line([_cell(name) for name in columns]), _rule(len(columns))]
-    lines.extend(render_row(item) for item in items)
+    lines.extend(render_row(item, width=len(columns)) for item in items)
     return "\n".join(lines)
 
 
@@ -162,9 +216,10 @@ def render_tables(items):
     introduces is the caller's business and a renderer that imposed its
     own would silently outrank it.
     """
+    board = [row for row in items if not row.get("done")]
     return {
         "board": render_table(
-            [row for row in items if not row.get("done")], BOARD_COLUMNS),
+            board, BOARD_COLUMNS[:board_width(board)]),
         "done": render_table(
             [row for row in items if row.get("done")], DONE_COLUMNS),
     }
@@ -352,10 +407,11 @@ def _laid_out(items, details, titles, layout):
     for index, block in enumerate(layout):
         kind = block.get("kind")
         if kind == "board":
+            rows = [row for row in items if not row.get("done")]
+            columns = block.get("columns") or BOARD_COLUMNS
             parts.append("## Board\n\n" + render_table(
-                [row for row in items if not row.get("done")],
-                block.get("columns") or BOARD_COLUMNS,
-                width=len(BOARD_COLUMNS)))
+                rows, columns,
+                width=board_width(rows)))
         elif kind == "done":
             if any(item.get("done") for item in items):
                 parts.append("## Done\n\n" + render_table(

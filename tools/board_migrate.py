@@ -1,21 +1,9 @@
-"""Write a board's markdown rows into the record store, once (issue #203).
+"""Write a board's markdown document into the record store, once (issue #203).
 
     python3 -m tools.board_migrate --board issue --file issues.md
     python3 -m tools.board_migrate --board issue --file issues.md --apply
-    python3 -m tools.board_migrate --board issue --file issues.md --verify
-
-`--verify` is the switchover's own precondition and keeps nothing: it writes
-the board -- rows, captures and layout -- reads it back through
-`board_records.contents` and `board_store.read_layout` -- the seam all
-eighteen remaining readers are about to be handed in place of a parse -- and
-asserts that what comes back is exactly what `nova_boards.parse_board`
-returned and that the generated view still carries his prose, then restores
-the store. `board_migration_preflight
---round-trip` already sends the rows through CouchDB and compares the
-*rendered markdown*, which is the two tables and nothing else, so it cannot
-see a wrong `statusKey`, a lost `order`, a dropped detail body or a capture
-that never arrived. Exit 2 means the seam disagreed, and the mismatch is
-printed as which field of which row moved.
+    python3 -m tools.board_migrate --board issue --file issues.md --status
+    python3 -m tools.board_migrate --board issue --file issues.md --resync --apply
 
 Issue #203 replaces the two markdown tables with one record per row. Eight
 primitives for that are merged and none of them is wired; this is the ninth
@@ -36,14 +24,22 @@ second run against a store somebody has since edited would silently delete
 their edits and put back what the markdown said. Refusing is not caution
 about re-running: re-running *this* command with *this* markdown is harmless,
 and the case that is not harmless is indistinguishable from it here. A cycle
-that genuinely wants to start over empties the board first, which is one
-line and is the documented undo:
+that wants the store brought back into line with his markdown runs
+`--resync` (see `resync`), which keeps the id of every bullet he has not
+edited. A cycle that genuinely wants to start over from nothing empties the
+board first, which is one line and is the documented undo:
 
-    python3 -c "from agora_runner import board_store; board_store.write_rows('issue', []); board_store.write_captures('issue', [])"
+    python3 -c "from agora_runner import board_store as s; s.write_rows('issue', []); s.write_captures('issue', []); s.delete_layout('issue')"
 
-Both lines, not one: rows and captures are two key ranges and emptying one
-leaves the other standing, which is the half-migrated state the refusal
-above exists to catch.
+**All three, not the first one.** A seed writes his rows, his write-ups,
+his own capture bullets and the layout of his document, and they live in
+three key ranges that no single writer may reach across. Emptying the rows
+alone leaves the captures and the layout behind, which is the exact state
+the next run refuses -- so a half-undo reads as a half-migration and the
+board cannot be re-seeded without finishing it. `delete_layout` is the one
+delete here rather than an empty write on purpose: `[]` is a *valid*
+layout, and storing it renders his board as its frontmatter, his capture
+box and nothing else.
 
 That is also the restore point for the migration itself. The markdown files
 are not touched by this tool -- the 21 modules that still parse them keep
@@ -68,8 +64,8 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner import (board_document, board_records, board_store,  # noqa: E402
-                          board_view, entity_id, nova_boards, rank_key)
+from agora_runner import (  # noqa: E402
+    board_document, board_records, board_store, board_view, entity_id)
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
@@ -77,48 +73,71 @@ class MigrationRefused(RuntimeError):
     """The store is not in a state this run can safely write into."""
 
 
-def plan(markdown, board, registry):
+def captures(markdown, board, registry, reuse=None):
+    """His own bullets -> capture documents, minted into `registry`.
+
+    A board file is not only its two tables. The bullets above the first
+    heading are the box he types into, and they live in their own key range
+    (`capture:<board>:`) precisely so that a migration writing the rows
+    alone cannot touch them -- which is exactly what a migration writing the
+    rows alone *did*: it left them out, so a generated view rendered off the
+    store would hand his board back with the bullets deleted.
+
+    Rank is the bullet's position in his file, so the order he wrote them in
+    survives the trip. Ids come from `entity_id.mint_capture`, which is the
+    one id here that is not seeded from a name -- his words are the thing he
+    edits, so a slug of them would orphan the replies underneath.
+
+    **`reuse` is `{his words: [capture id, ...]}` and it is what makes a
+    re-seed safe.** `mint_capture` is deliberately not idempotent -- its own
+    docstring says a caller re-running a migration mints a second set of ids
+    and that this is not something it can defend against -- so the defence
+    has to live here, in the caller. A bullet whose text is byte-identical to
+    one already stored keeps that bullet's id, so the replies underneath stay
+    attached and `nova_site`'s Edit route goes on addressing the same
+    document. Anything with no match mints, which is the honest answer: he
+    edited the words, and an edited bullet is a new one as far as any id
+    seeded from a name is concerned.
+
+    Matching is on the exact text and ids are consumed in the order they were
+    stored, so two identical bullets keep their two ids rather than both
+    taking the first. `None` means seed -- mint everything -- which is what
+    the first migration of a board wants.
+    """
+    pool = {}
+    for text, held in (reuse or {}).items():
+        pool[text] = list(held)
+    docs = []
+    for index, (text, under) in enumerate(preflight.board_captures(markdown)):
+        held = pool.get(text)
+        capture_id = (held.pop(0) if held
+                      else entity_id.mint_capture(registry, board))
+        docs.append(board_document.to_capture_document(
+            text, board, capture_id, rank=index + 1, replies=under))
+    return docs
+
+
+def plan(markdown, board, registry, reuse=None):
     """The documents a run would write, minted into `registry` in place.
 
     Separate from `migrate` so the dry run and the real run compose through
     exactly one code path -- a dry run that built its report a second way
     would be reporting on a migration nobody is about to perform.
+
+    Four things, not two. `board_view.render_document` draws a board file
+    from the rows, the write-ups, his capture bullets *and* the layout, and
+    a seed that stores the first two only is not a seed of his document:
+    measured on the live boards, rendering `issues.md` without its layout
+    drops 19,653 words of his `## Processed captures` archive and
+    `ideas.md` drops 6,469 including its whole `## Discarded` table.
     """
     items = preflight.board_items(markdown)
     details = preflight.board_details(markdown)
     docs, _projects, _milestones = preflight.records(
         items, board, registry, details=details)
-    return docs, details, capture_plan(markdown, board, registry)
-
-
-def capture_plan(markdown, board, registry):
-    """His own bullets -> capture documents, minted into `registry` in place.
-
-    The rows go through `preflight.records`; captures have no preflight,
-    because they were the piece none of the eight primitives had anywhere to
-    put. Composed here, in file order, from the one parser that knows what a
-    capture is (`nova_boards.capture_entries` -- his words split from the
-    replies cycles wrote under them, which is the split the Edit route needs).
-
-    **Every capture gets a rank, and that is the part with teeth.**
-    `board_store.read_captures` is deliberately unsorted and `_all_docs`
-    answers in lexical id order, so `cap_10` comes back before `cap_2`;
-    `board_document.captures_map` puts ranked captures first in rank order
-    and unranked ones in the order they arrived. A migration that minted no
-    rank would therefore store his list correctly and hand it back reordered
-    the moment a board passed ten captures -- silently, with every capture
-    still present, which is the shape of bug nobody reports as data loss.
-    The file states the order; `rank_key.sequence` is how a stated order
-    becomes one a later drag can insert into.
-    """
-    entries = nova_boards.capture_entries(markdown)
-    keys = rank_key.sequence(len(entries))
-    return [
-        board_document.to_capture_document(
-            text, board, entity_id.mint_capture(registry, board),
-            rank=key, replies=replies)
-        for (_start, _end, text, replies), key in zip(entries, keys)
-    ]
+    capture_docs = captures(markdown, board, registry, reuse=reuse)
+    layout = board_view.document_layout(markdown)
+    return docs, details, capture_docs, layout
 
 
 def migrate(markdown, board, apply=False, store=board_store):
@@ -140,16 +159,23 @@ def migrate(markdown, board, apply=False, store=board_store):
         raise MigrationRefused(
             f"{board} already holds {len(held)} record(s); empty the board "
             "first if you mean to migrate it again")
+    # Checked separately from the rows because they are separate key ranges
+    # and either can be occupied on its own. A store holding captures and no
+    # rows is what a half-finished migration leaves behind, and reading only
+    # `stored_documents` there would call it empty and mint a second id for
+    # every bullet he has written.
+    held_captures = store.stored_capture_documents(board)
+    if held_captures:
+        raise MigrationRefused(
+            f"{board} already holds {len(held_captures)} capture(s); empty "
+            "the board first if you mean to migrate it again")
+    if store.read_layout(board) is not None:
+        raise MigrationRefused(
+            f"{board} already holds a layout; empty the board first if you "
+            "mean to migrate it again")
 
     registry = store.read_registry()
-    docs, details, captures = plan(markdown, board, registry)
-
-    # The block order of the source document, stored beside the records.
-    # Without it the only thing that can render this board back without
-    # deleting his `## Processed captures` archive is a caller holding the
-    # markdown -- which is the markdown the records exist to replace, so a
-    # migration that stored rows and no layout has not finished.
-    layout = board_view.document_layout(markdown)
+    docs, details, capture_docs, layout = plan(markdown, board, registry)
 
     # `projects` and `milestones` are the registry's totals *after* this
     # run, not what this run minted. For the switchover that is the useful
@@ -164,9 +190,13 @@ def migrate(markdown, board, apply=False, store=board_store):
         "layout_blocks": len(layout),
         "projects": len(registry.get("projects") or {}),
         "milestones": len(registry.get("milestones") or {}),
+        "captures": len(capture_docs),
+        "layout_blocks": len(layout),
         "applied": bool(apply),
         "written": 0,
         "stored": 0,
+        "captures_stored": 0,
+        "layout_stored": 0,
     }
     if not apply:
         return report
@@ -198,42 +228,154 @@ def migrate(markdown, board, apply=False, store=board_store):
     report["written"] = written.get("written") or 0
     report["captures_written"] = wrote_captures.get("written") or 0
     report["stored"] = len(store.stored_documents(board))
+
+    # After the rows on purpose. `write_rows` prunes its own key range and
+    # cannot reach `capture:<board>:`, so the order is not a correctness
+    # requirement -- but a crash between the two leaves the rows stored and
+    # the captures absent, which is the state this run already knows how to
+    # refuse, where the mirror image is a store that looks migrated to
+    # nothing and holds his bullets.
+    stored_captures = store.write_captures(board, capture_docs)
+    if stored_captures.get("failures"):
+        raise MigrationRefused(
+            f"{len(stored_captures['failures'])} capture(s) failed to write; "
+            "the store now holds a partial migration and must be emptied "
+            "before a retry")
     report["captures_stored"] = len(store.stored_capture_documents(board))
+    store.write_layout(board, layout)
+    report["layout_stored"] = len(store.read_layout(board) or [])
     return report
 
 
-class _RegistryFromMemory:
-    """The real store for both key ranges, an in-memory registry.
+def stored_capture_ids(board, store=board_store):
+    """His stored bullets -> `{text: [capture id, ...]}`, in stored order.
 
-    `board_records.contents` reads three things: the two `_all_docs` key
-    ranges and the registry document. `verify` below wants the first two to
-    be the real CouchDB -- that is the half no test can reach, and the half
-    whose absence let a missing `read_captures` call stay green through a
-    whole module -- and it deliberately does not write the third. A registry
-    document is the one thing in this migration with no restore path: ids are
-    permanent by design, `write_registry` has no delete, and a verify run
-    that minted `prj_*` ids into the live registry and then failed would
-    leave them there forever. So the registry stays the dict this run minted.
-
-    The cost of that is stated rather than hidden: `contents` refuses a
-    registry with no `_rev` as an unmigrated store, so this hands it one, and
-    **`verify` therefore does not exercise that guard.** It is exercising the
-    join. `--apply` is what writes a registry, and `test_board_records.py`
-    is what holds the guard.
+    Read as a *list* per text rather than one id, because two bullets can
+    hold the same words -- he writes `-` placeholders, and a repeated
+    sentence is his to repeat. Collapsing them would hand both copies the
+    same id and `board_store._bulk_write` refuses a batch with a duplicate
+    in it, which is the right refusal in the wrong place: the caller would
+    have lost a bullet before the store ever saw it.
     """
+    held = store.stored_capture_documents(board)
+    by_text = {}
+    for doc in sorted(held.values(),
+                      key=lambda doc: (doc.get("rank") or 0, doc.get("_id"))):
+        by_text.setdefault(doc.get("text"), []).append(doc.get("captureId"))
+    return by_text
 
-    def __init__(self, store, registry):
-        self._store = store
-        self._registry = {**registry, "_rev": registry.get("_rev") or "0-verify"}
 
-    def read_rows(self, board):
-        return self._store.read_rows(board)
+def resync(markdown, board, apply=False, store=board_store):
+    """Rewrite a board that already holds records, from `markdown`.
 
-    def read_captures(self, board):
-        return self._store.read_captures(board)
+    `migrate` above is the one-way door: it refuses a board that already
+    holds records because `write_rows` prunes, so a second run against a
+    store somebody edited would delete their edits. That refusal is right
+    and stays. What it leaves missing is the other half -- **until the
+    switchover lands, his markdown is still the source of truth and it
+    changes every hour**, so the seed goes stale and the only documented
+    repair is emptying all three key ranges by hand and re-seeding, which
+    re-mints every capture id and orphans the replies under his bullets.
+    `tools.board_migrate --status` can already say a board has DRIFTED; this
+    is what answers it.
 
-    def read_registry(self):
-        return self._registry
+    The direction is the whole contract: **markdown in, store out.** That is
+    correct today and becomes wrong the moment `nova_site` reads the store,
+    because from then on the store is truth and this would overwrite it with
+    a generated view. It is a migration-window tool and it should be deleted
+    with the window, not kept as a sync.
+
+    Two refusals, both narrower than `migrate`'s:
+
+    - **An unmigrated store**, because a resync of a board nobody seeded is
+      a seed, and a seed is `migrate`'s job with `migrate`'s report. Sending
+      it here would mean two commands that both first-write a board.
+    - **Markdown with no rows.** A board file is fetched over the vault
+      tool, and an oversized read comes back as a ~2KB preview rather than
+      an error -- so "his board has no rows" is what a truncated fetch looks
+      like, and pruning on it would empty his board in the store. Neither of
+      his boards has ever been empty. A genuinely empty board is emptied
+      with the three-call undo in this module's docstring.
+
+    Capture ids survive an unchanged bullet; see `captures`. **Row ranks do
+    not survive anything**, and that is the one thing here worth knowing
+    before issue #202 starts: `preflight.records` mints a fresh
+    `rank_key.sequence` from the markdown's own row order on every run, so a
+    resync re-ranks the whole board off the file. That is right today --
+    markdown is truth and no row on either of his boards carries a position
+    -- and it is exactly wrong the day something writes a drag-reorder into
+    the store, because this would put every row back where the file says. It
+    is the same boundary as the direction rule above and it arrives sooner:
+    the read flip is what makes the store truth, but #202 is what first puts
+    something in it that the markdown cannot say.
+    """
+    if board not in board_document.BOARDS:
+        raise MigrationRefused(
+            f"board must be one of {board_document.BOARDS}, not {board!r}")
+
+    registry = store.read_registry()
+    if registry.get("_rev") is None:
+        raise MigrationRefused(
+            f"{board} has never been migrated, so there is nothing to "
+            "resync; seed it with --apply first")
+
+    reuse = stored_capture_ids(board, store=store)
+    docs, details, capture_docs, layout = plan(
+        markdown, board, registry, reuse=reuse)
+    if not docs:
+        raise MigrationRefused(
+            f"the markdown for {board} parses to no rows at all; refusing to "
+            "prune a board down to nothing. A truncated vault read looks "
+            "exactly like this -- check the file's size before retrying")
+
+    held_ids = {ident for ids in reuse.values() for ident in ids}
+    kept = sum(1 for doc in capture_docs if doc["captureId"] in held_ids)
+    report = {
+        "board": board,
+        "rows": len(docs),
+        "details": len(details),
+        "projects": len(registry.get("projects") or {}),
+        "milestones": len(registry.get("milestones") or {}),
+        "captures": len(capture_docs),
+        "captures_kept": kept,
+        "captures_minted": len(capture_docs) - kept,
+        "layout_blocks": len(layout),
+        "applied": bool(apply),
+        "written": 0,
+        "deleted": 0,
+        "stored": 0,
+        "captures_written": 0,
+        "captures_deleted": 0,
+        "captures_stored": 0,
+        "layout_stored": 0,
+    }
+    if not apply:
+        return report
+
+    # Same order as `migrate` and for the same reason: the registry first,
+    # so no stored row can point at a project id the store has never held.
+    store.write_registry(registry)
+    written = store.write_rows(board, docs)
+    if written.get("failures"):
+        raise MigrationRefused(
+            f"{len(written['failures'])} row(s) failed to write; the store "
+            f"now holds a partial resync of {board} and --status will say so")
+    report["written"] = written.get("written") or 0
+    report["deleted"] = written.get("deleted") or 0
+    report["stored"] = len(store.stored_documents(board))
+
+    stored_captures = store.write_captures(board, capture_docs)
+    if stored_captures.get("failures"):
+        raise MigrationRefused(
+            f"{len(stored_captures['failures'])} capture(s) failed to write; "
+            f"the store now holds a partial resync of {board} and --status "
+            "will say so")
+    report["captures_written"] = stored_captures.get("written") or 0
+    report["captures_deleted"] = stored_captures.get("deleted") or 0
+    report["captures_stored"] = len(store.stored_capture_documents(board))
+    store.write_layout(board, layout)
+    report["layout_stored"] = len(store.read_layout(board) or [])
+    return report
 
 
 def _differing_keys(one, two):
@@ -243,13 +385,13 @@ def _differing_keys(one, two):
 
 
 def differences(want, got):
-    """The first disagreement per key between two `parse_board` shapes.
+    """The first disagreement per key between two parsed board shapes.
 
     One line per key rather than a full diff: `items` is four hundred rows
     and a dump of both is unreadable, while *which field of which row* is
     the whole finding. Every key is checked -- a mismatch on `items` must
     not hide one on `captures`, because those are the two that broke
-    separately.
+    separately during the seed.
     """
     problems = []
     for key in ("captures", "captureReplies", "items", "details"):
@@ -292,179 +434,102 @@ def differences(want, got):
     return problems
 
 
-def layout_differences(markdown, board, layout, layout_back):
-    """What the store did to a layout on the way through. One line per fault.
+def _head(block):
+    """A layout block named, not dumped. Its kind, its first line, its size.
 
-    Separate from `differences` because it is a different question asked of
-    a different document. `differences` compares `board_records.contents`
-    with `parse_board`, and **neither side of that comparison can see a
-    layout at all** -- the layout is the record home for the blocks
-    `parse_board` does not model, so a comparison written in the parser's
-    four keys is guaranteed to agree about it whether it survived or not.
-    That is the positive result guaranteed in advance, and it is why this
-    is here rather than folded into the loop above.
+    Measured against his live `issues.md`: one differing block printed whole
+    is a single 221KB line, because block 200 is his entire `## Processed
+    captures` archive. The finding is *which* block moved, and nothing here
+    is data he loses by not seeing it twice -- the block is a verbatim slice
+    of the markdown file the run was handed, at the index this line names.
 
-    Compared against the *normalised* blocks rather than the ones handed
-    in: `document_layout` keeps the owner's own table header in a tuple and
-    JSON has no tuple, so a raw comparison would report every board as
-    broken. `to_layout_document` is the one spelling of a stored layout and
-    `board_document` normalises through it; asking the same question here
-    keeps this check off the tuple and on the content.
+    **A table block carries no markdown at all and this used to describe it
+    as empty.** The two tables are stored as their kind and their column
+    names -- the rows live in the row documents -- so the generic line below
+    reads `'board' block, 0 char(s), starting ''` on both sides of a real
+    disagreement, which is a finding with the finding taken out. Measured
+    2026-09-10 against his live `ideas.md`, whose board table has eight
+    columns while `board_view` draws nine: `tools.board_publish` refused,
+    correctly, and could say nothing about why. So a block that has columns
+    is named by its columns.
     """
-    if layout_back is None:
-        return [f"layout: nothing came back out of the store for {board}"]
+    if not isinstance(block, dict):
+        return repr(block)[:120]
+    columns = block.get("columns")
+    if columns is not None:
+        return f"{block.get('kind')!r} block, columns {list(columns)}"
+    text = str(block.get("markdown") or "")
+    first = text.splitlines()[0] if text.splitlines() else ""
+    return (f"{block.get('kind')!r} block, {len(text)} char(s), "
+            f"starting {first[:80]!r}")
+
+
+def layout_differences(markdown, board, stored):
+    """Does the stored layout still match the one this markdown produces?
+
+    Asked separately from `differences` because it is a different question
+    about a different document, and folding it in would be a positive
+    result guaranteed in advance: `board_records.contents` and
+    the board parser are both written in the parser's four keys,
+    and **neither side of that comparison can see a layout at all**. The
+    layout is the record home for the blocks the parser does not model --
+    his `## Processed captures` archive is 19,653 words of it -- so a
+    comparison in those four keys agrees about the layout whether it
+    survived or not.
+
+    Compared against the *normalised* blocks rather than the ones
+    `document_layout` hands back: that function keeps a table's own header
+    in a tuple, JSON has no tuple, and a raw comparison would therefore
+    report every board as drifted. `to_layout_document` is the one spelling
+    of a stored layout, so asking the question through it keeps this check
+    off the tuple and on the content.
+    """
+    if stored is None:
+        return [f"layout: the store holds no layout for {board}"]
     wanted = board_document.layout_blocks_of(
-        board_document.to_layout_document(layout, board))
-    if wanted == layout_back:
+        board_document.to_layout_document(
+            board_view.document_layout(markdown), board))
+    if wanted == stored:
         return []
-    if len(wanted) != len(layout_back):
-        return [f"layout: {len(wanted)} block(s) written, "
-                f"{len(layout_back)} back"]
-    for index, (one, two) in enumerate(zip(wanted, layout_back)):
+    if len(wanted) != len(stored):
+        return [f"layout: {len(wanted)} block(s) from the markdown, "
+                f"{len(stored)} from the store"]
+    for index, (one, two) in enumerate(zip(wanted, stored)):
         if one != two:
-            return [f"layout[{index}] differs: written {one!r} "
-                    f"vs store {two!r}"]
+            return [f"layout[{index}] differs: markdown {_head(one)} "
+                    f"vs store {_head(two)}"]
     return []  # pragma: no cover -- unreachable: unequal lists differ somewhere
-
-
-def verify(markdown, board, store=board_store):
-    """Write the board, read it back through `board_records.contents`, restore.
-
-    Returns `(report, problems)`. `problems` empty means the seam the whole
-    switchover hangs on answers, on this board, with exactly what
-    `parse_board` answered.
-
-    This is the control nothing else takes. `board_migration_preflight
-    --round-trip` sends the rows through CouchDB and compares the *rendered
-    markdown*, which is the two tables and nothing else -- so it cannot see a
-    wrong `statusKey`, a lost `order`, a dropped detail body or a capture
-    that never arrived, and those are the four things eighteen readers are
-    about to be handed instead of a parse. `contents` is what they will call;
-    this is that call, against the real store, on his real board.
-
-    **The layout goes through too, and it is the half that had no control.**
-    A board file is more than the four keys: his `## Processed captures`
-    archive, `# Done — detail` and `ideas.md`'s `## Discarded` table are
-    19,653 and 6,469 words that `parse_board` does not model, and the
-    layout document is where they live. `board_migration_preflight` already
-    counts what a render drops, but from a layout it computed in memory one
-    line earlier -- so nothing measured the layout against a real store on
-    a real board. This writes it, reads it back, compares it as stored, and
-    renders the document from the records and *that* copy, which is the
-    pair the app will hold. `document_words_lost` in the report is that
-    number.
-
-    Reversible first, then act: it refuses a board that already holds
-    records, and it empties both key ranges again in a `finally`, so a
-    failure in the middle does not leave a half-migration behind. The
-    layout is restored rather than emptied -- a board with no records can
-    still hold one, since a layout sits outside both guarded ranges, and
-    `write_layout(board, [])` is not the undo: an empty layout is a valid
-    layout that renders his board as frontmatter and nothing else.
-    """
-    if board not in board_document.BOARDS:
-        raise MigrationRefused(
-            f"board must be one of {board_document.BOARDS}, not {board!r}")
-
-    held = dict(store.stored_documents(board))
-    held.update(store.stored_capture_documents(board))
-    if held:
-        raise MigrationRefused(
-            f"{board} already holds {len(held)} record(s); this run would "
-            "have to delete them and cannot put them back")
-
-    registry = store.read_registry()
-    docs, details, captures = plan(markdown, board, registry)
-    layout = board_view.document_layout(markdown)
-    # Read before anything is written, so the restore below can put back
-    # whatever was there rather than assuming there was nothing. A layout
-    # is outside both key ranges the refusal above guards, so a board with
-    # no records can still hold one -- and deleting somebody else's layout
-    # is exactly the kind of loss this run exists to prove does not happen.
-    held_layout = store.read_layout(board)
-    try:
-        written = store.write_rows(board, docs)
-        if written.get("failures"):
-            raise MigrationRefused(
-                f"{len(written['failures'])} row(s) failed to write")
-        wrote_captures = store.write_captures(board, captures)
-        if wrote_captures.get("failures"):
-            raise MigrationRefused(
-                f"{len(wrote_captures['failures'])} capture(s) failed to write")
-        store.write_layout(board, layout)
-        got = board_records.contents(
-            board, store=_RegistryFromMemory(store, registry))
-        layout_back = store.read_layout(board)
-    finally:
-        store.write_rows(board, [])
-        store.write_captures(board, [])
-        # Absence is the restore, never `write_layout(board, [])`: an empty
-        # layout is a valid layout and renders his board as frontmatter,
-        # the capture box and nothing else.
-        if held_layout is None:
-            store.delete_layout(board)
-        else:
-            store.write_layout(board, held_layout)
-
-    want = nova_boards.parse_board(markdown)
-    problems = differences(want, got)
-    problems.extend(layout_differences(markdown, board, layout, layout_back))
-    document = board_view.render_document(
-        got, preflight.frontmatter_of(markdown), layout=layout_back)
-    lost = preflight.words_lost(markdown, document)
-    left_behind = len(store.stored_documents(board)) + \
-        len(store.stored_capture_documents(board))
-    report = {
-        "board": board,
-        "rows": len(docs),
-        "rows_back": len(got["items"]),
-        "details": len(details),
-        "details_back": len(got["details"]),
-        "captures": len(captures),
-        "captures_back": len(got["captures"]),
-        "layout_blocks": len(layout),
-        "layout_blocks_back": None if layout_back is None else len(layout_back),
-        "document_words_lost": len(lost),
-        "contents_matches_parse": not problems,
-        "restored_to": left_behind,
-    }
-    if left_behind:
-        problems.append(
-            f"{left_behind} record(s) left behind after the restore")
-        report["contents_matches_parse"] = False
-    return report, problems
 
 
 def status(markdown, board, store=board_store):
     """Does the live store still answer what this markdown parses to?
 
-    Returns `(verdict, problems)`, and writes nothing at all. Three
-    verdicts: `NEVER MIGRATED` (the store has never been written for this
-    board), `AGREES`, `DRIFTED`.
+    Returns `(verdict, problems)` and writes nothing at all. Three
+    verdicts: `NEVER MIGRATED`, `AGREES`, `DRIFTED`.
 
-    `verify` above already compares the two, and it is not this: it
-    *writes* the board first and restores afterwards, so what it proves is
-    that the seam round-trips -- it cannot answer the question about a
-    store somebody else wrote. That question only has an answer once the
-    switchover flips, and it is the one that decides whether the flip may
-    happen: **`board_records.contents` refuses an unmigrated store loudly
-    and answers a stale one silently**, so the moment a board is seeded the
-    protection `UnmigratedStore` gives every unconverted reader is gone and
-    nothing replaces it. Measured 2026-09-10: nothing on `main` reads the
-    record store, so seeding it before the readers merge would leave
-    exactly that -- documents that go stale on his next board edit, with no
-    check that could tell.
+    This is the check the switchover needs and `migrate` structurally
+    cannot give: `migrate` refuses a board that already holds records, so
+    the only board it can say anything about is one nobody has seeded. The
+    seeded board is the one that can go wrong. **`board_records.contents`
+    refuses an unmigrated store loudly and answers a stale one silently**,
+    so from the moment a board is seeded the `UnmigratedStore` refusal that
+    protects every unconverted reader is gone and nothing replaces it --
+    his boards are still served from markdown, so every edit he makes
+    drifts the store further from what he sees, with no instrument that can
+    tell. This is that instrument, and it is read-only on purpose: it is
+    safe to run against production on any cycle.
 
-    `UnmigratedStore` is caught and reported as a verdict rather than
-    raised, because "never written" is an answer to this question. Any
-    other `RecordError` is a store that exists and cannot be read, which is
-    not, and it propagates.
+    All four key ranges, not the three `contents` covers. `UnmigratedStore`
+    is caught and reported as a verdict rather than raised, because "never
+    written" is an answer to this question; any other `RecordError` is a
+    store that exists and cannot be read, which is not, and it propagates.
     """
     try:
         got = board_records.contents(board, store=store)
     except board_records.UnmigratedStore as exc:
         return "NEVER MIGRATED", [str(exc)]
-    problems = differences(nova_boards.parse_board(markdown), got)
+    problems = differences(preflight.board_contents(markdown), got)
+    problems += layout_differences(markdown, board, store.read_layout(board))
     return ("DRIFTED" if problems else "AGREES"), problems
 
 
@@ -478,14 +543,12 @@ def main(argv=None):
     parser.add_argument("--apply", action="store_true",
                         help="actually write; without it nothing is stored")
     parser.add_argument("--status", action="store_true",
-                        help="read-only: compare the live store against "
-                             "this markdown and say whether it agrees, "
-                             "has drifted, or was never migrated")
-    parser.add_argument("--verify", action="store_true",
-                        help="write the board and its layout, read both "
-                             "back through board_records.contents and "
-                             "read_layout, compare with parse_board and "
-                             "restore the store; nothing is kept")
+                        help="read-only: does the live store still agree "
+                             "with this markdown?")
+    parser.add_argument("--resync", action="store_true",
+                        help="rewrite an already-seeded board from this "
+                             "markdown, keeping the ids of unchanged "
+                             "captures; needs --apply to write")
     args = parser.parse_args(argv)
     if args.status and (args.apply or args.verify):
         parser.error(
@@ -496,45 +559,42 @@ def main(argv=None):
             "--verify and --apply are opposites: --verify empties the store "
             "again when it is done")
 
+    # Refused rather than silently preferring one, because the two modes
+    # differ on whether the run writes -- and a caller who asked for both
+    # cannot be assumed to have meant the writing one.
+    if args.status and args.apply:
+        print("REFUSED: --status is read-only; do not pass --apply with it")
+        return 2
+    # Same rule one door along. `--status` reads and `--resync` writes, so a
+    # run carrying both has asked for opposite things about the same board
+    # and there is no reading of it that is obviously what the caller meant.
+    if args.status and args.resync:
+        print("REFUSED: --status is read-only; do not pass --resync with it")
+        return 2
+
     with open(args.file, encoding="utf-8") as handle:
         markdown = handle.read()
 
     if args.status:
-        try:
-            verdict, problems = status(markdown, args.board)
-        except (board_records.RecordError, board_store.StoreError) as exc:
-            print(f"UNREADABLE: {exc}")
-            return 2
-        print(f"status.board: {args.board}")
-        print(f"status.verdict: {verdict}")
+        verdict, problems = status(markdown, args.board)
+        print(f"board: {args.board}")
+        print(f"status: {verdict}")
         for problem in problems:
-            print(f"status.why: {problem}")
+            print(f"  {problem}")
         return 0 if verdict == "AGREES" else 2
 
-    if args.verify:
-        try:
-            report, problems = verify(markdown, args.board)
-        except (MigrationRefused, board_records.RecordError,
-                board_store.StoreError) as exc:
-            print(f"REFUSED: {exc}")
-            return 2
-        for name, value in report.items():
-            print(f"verify.{name}: {value}")
-        for problem in problems:
-            print(f"PROBLEM: {problem}")
-        return 2 if problems else 0
-
+    run = resync if args.resync else migrate
     try:
-        report = migrate(markdown, args.board, apply=args.apply)
+        report = run(markdown, args.board, apply=args.apply)
     except MigrationRefused as exc:
         print(f"REFUSED: {exc}")
         return 2
 
-    for key in ("board", "rows", "details", "captures", "projects",
-                "milestones", "applied", "written", "captures_written",
-                "stored", "captures_stored"):
-        if key in report:
-            print(f"{key}: {report[key]}")
+    # Printed off the report's own keys rather than a per-mode list, so a
+    # field added to one report cannot go unprinted. The order is fixed by
+    # the report dicts, which are written in the order a reader wants them.
+    for key, value in report.items():
+        print(f"{key}: {value}")
     if not args.apply:
         print("dry run -- nothing was written; pass --apply to store it")
     return 0

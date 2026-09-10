@@ -21,6 +21,7 @@ from agora_runner import (
     entity_id,
     nova_boards,
     rank_key,
+    ticket_docs,
 )
 from tools import board_migration_preflight as preflight
 
@@ -679,3 +680,78 @@ def test_capture_at_reads_the_captures_once_through_capture_documents():
     store.read_captures = lambda board: reads.append(board) or real(board)
     board_records.capture_at("issue", 0, store=store)
     assert reads == ["issue"]
+
+
+class SourceStore:
+    """Just the two calls `currency` and `stamp_source_rev` go through."""
+
+    def __init__(self, stamps=None):
+        self.stamps = dict(stamps or {})
+        self.written = []
+
+    def read_source(self, board):
+        return self.stamps.get(board)
+
+    def write_source(self, board, source_rev):
+        self.written.append((board, source_rev))
+        self.stamps[board] = source_rev
+        return {"_id": f"board:source:{board}", "sourceRev": source_rev}
+
+
+def test_matching_revisions_read_current_and_differing_ones_read_stale():
+    store = SourceStore({"issue": "42-abc"})
+
+    assert board_records.currency("issue", "42-abc", store=store)[0] == (
+        board_records.CURRENT)
+    assert board_records.currency("issue", "43-xyz", store=store)[0] == (
+        board_records.STALE)
+
+
+def test_an_unstamped_board_is_unknown_and_never_current():
+    """The failure this three-way verdict exists to make impossible.
+
+    A caller that read a missing stamp as "no drift detected" would serve
+    stale rows with *more* confidence than a caller that knew nothing. So
+    the absent case has to be its own verdict, and it has to be a verdict
+    that is not `CURRENT` whatever revision the caller brings.
+    """
+    store = SourceStore()
+
+    for live in ("42-abc", "", None):
+        verdict, why = board_records.currency("issue", live, store=store)
+        assert verdict == board_records.UNKNOWN
+        assert verdict != board_records.CURRENT
+        assert "no source revision" in why
+
+
+def test_a_stamped_board_with_no_live_revision_is_unknown_not_current():
+    """The caller could not read the vault's revision, so it cannot say
+    whether the stamp matches -- which is not the same as it matching."""
+    store = SourceStore({"issue": "42-abc"})
+
+    verdict, why = board_records.currency("issue", None, store=store)
+
+    assert verdict == board_records.UNKNOWN
+    assert "no live revision" in why
+
+
+def test_the_verdict_words_are_the_ones_nova_site_already_reads():
+    """`nova_site` compares `ticket_docs.currency`'s verdict against
+    `ticket_docs.CURRENT` today and will compare this one after the #203
+    switchover. A renamed verdict at that seam is a silent behaviour
+    change in a comparison nobody re-reads."""
+    assert board_records.CURRENT == ticket_docs.CURRENT
+    assert board_records.STALE == ticket_docs.STALE
+    assert board_records.UNKNOWN == ticket_docs.UNKNOWN
+
+
+def test_a_stamp_lands_on_the_board_it_names():
+    store = SourceStore()
+
+    board_records.stamp_source_rev("idea", "7-def", store=store)
+
+    assert store.written == [("idea", "7-def")]
+    assert board_records.currency("idea", "7-def", store=store)[0] == (
+        board_records.CURRENT)
+    assert board_records.currency("issue", "7-def", store=store)[0] == (
+        board_records.UNKNOWN)

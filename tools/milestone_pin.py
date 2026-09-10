@@ -10,7 +10,7 @@ saying otherwise about one milestone.
 
     python3 -m tools.milestone_pin --file milestones.md \
         --project Nova --milestone 'Picking and planning' \
-        --position 1 --dated 09-07 --board idea
+        --position 1 --dated 09-07
 
     python3 -m tools.milestone_pin --file milestones.md \
         --project Nova --milestone 'Picking and planning' --position 0
@@ -18,27 +18,30 @@ saying otherwise about one milestone.
 **`--position 0` removes the row**, which is the "until he removes it" half
 of the spec and the only way back to the computed order.
 
-**`--file` is the pins document and it is still a path on disk**, the
-same contract `tools.board_row` and `tools.board_priority` hold, so the
-caller owns the compare-and-swap: `vault_tool.py get --rev-file` before,
-`vault_tool.py put --if-rev-file` after. `board_put` refuses a file that
-is not one of the two boards, so this one goes back with the plain vault
-client.
+**It takes a path on disk and knows nothing about the vault**, the same
+contract `tools.board_milestone`, `tools.board_size` and `tools.board_row`
+hold, so the caller owns the compare-and-swap: `vault_tool.py get
+--rev-file` before, `vault_tool.py put --if-rev-file` after. `board_put`
+refuses a file that is not one of the two boards, so this one goes back
+with the plain vault client.
 
-**`--board` is what stops a pin naming nothing.** A milestone exists only
-as a cell on the board rows carrying its name, so a typo in `--milestone`
-writes a row that resolves to no milestone and is silently ignored by the
-ranking forever. Name the boards to check against -- `issue`, `idea`, or
-both -- and the name is checked against their open rows before anything is
-written. `--position 0` skips the check, since removing a pin whose
-milestone has already been renamed away is exactly when you most need to.
+**The milestone-name check is what stops a pin naming nothing, and it is
+on by default now.** A milestone exists only as a cell on the board rows
+carrying its name, so a typo in `--milestone` writes a row that resolves
+to no milestone and is silently ignored by the ranking forever. The check
+used to be opt-in, and the reason it was opt-in was that this module did
+not know where the boards lived -- you had to hand it their paths with
+`--boards`. Issue #203's record store removes that: `--boards` now names
+boards in the store (`issue`, `idea`) rather than files on disk, so the
+check needs nothing from the caller and defaults to both. `--position 0`
+still skips it, since removing a pin whose milestone has already been
+renamed away is exactly when you most need to.
 
-**The check reads the records, never a board file.** It took `--boards`
-with paths on disk until #203 converted it, and that flag is the reason
-`agora_runner/nova_next.py` could not come off `parse_board`: it was the
-one caller left handing `open_rows` a string it had read itself, and the
-migration gate does not count it, because this module never says
-`parse_board` in its own text.
+**A store this cannot read refuses the pin rather than skipping the
+check.** "I looked and the milestone is not there" and "I could not look"
+are opposite findings and the old opt-in spelled them the same way -- no
+`--boards`, no complaint. `--no-check` is the deliberate way past it, and
+it says so in the refusal.
 
 The pair is matched case-insensitively, the same way `milestone_ranks`
 keys it -- `nova` and `Nova` are one project.
@@ -52,29 +55,53 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner import board_records, board_store
-from agora_runner.board_document import BOARDS
+from agora_runner import board_records
 from agora_runner.nova_boards import set_milestone_pin
 from agora_runner.nova_next import open_rows_from_contents
 
+# Both of his boards. A milestone is a project/name pair and a project
+# spans the two, so checking only one of them would refuse a real name.
+CHECKED_BOARDS = ("issue", "idea")
 
-def known_milestones(boards, store=board_store):
+
+def known_milestones(boards):
     """`{(project, milestone) lowercased}` over the open rows of `boards`.
 
-    `boards` are names -- `issue`, `idea` -- not paths, and each one is
-    read once out of the record store. `store` is injected so a test can
-    hand over a fake without a CouchDB, the same seam every other
-    converted writer holds.
+    `boards` is an iterable of the four-key mapping `board_records.contents`
+    returns, not a list of paths -- this reader is converted onto the record
+    store (issue #203), so it never sees markdown and never opens a file.
+    The board label handed to `open_rows_from_contents` only decides the row
+    slugs, which this discards, so one label for both boards is correct here
+    rather than merely convenient.
+
+    A milestone carried only by *closed* rows is deliberately not known: a
+    pin orders a list of things left to do, and pinning a finished milestone
+    would put an empty heading at the top of his project drawer.
     """
     found = set()
-    for board in boards or []:
-        contents = board_records.contents(board, store=store)
-        for row in open_rows_from_contents(contents, board):
+    for contents in boards or ():
+        for row in open_rows_from_contents(contents, "idea"):
             milestone = (row.get("milestone") or "").strip()
             if milestone:
                 found.add(((row.get("project") or "").strip().lower(),
                            milestone.lower()))
     return found
+
+
+def store_milestones(names, store=None):
+    """`known_milestones` over the named boards in the record store.
+
+    Split out from `main` so a test can reach the read without a CouchDB,
+    and so the refusal below has exactly one thing to catch.
+
+    `store=None` rather than the real store as a default argument: a default
+    binds its value at import, so `board_records.board_store` written there
+    would be the object this module captured and a test replacing it would
+    be replacing something nothing reads.
+    """
+    store = store or board_records.board_store
+    return known_milestones(
+        [board_records.contents(name, store=store) for name in names])
 
 
 def main(argv=None):
@@ -85,8 +112,11 @@ def main(argv=None):
     ap.add_argument("--position", required=True, type=int,
                     help="1-based position within the project, or 0 to unpin")
     ap.add_argument("--dated", default="", help="MM-DD for the Updated cell")
-    ap.add_argument("--board", nargs="*", default=[], choices=list(BOARDS),
-                    help="boards to check the milestone name against")
+    ap.add_argument("--boards", nargs="*", default=list(CHECKED_BOARDS),
+                    help="boards in the record store to check the milestone "
+                         "name against (names, not paths)")
+    ap.add_argument("--no-check", action="store_true",
+                    help="pin without checking the milestone name exists")
     args = ap.parse_args(argv)
 
     try:
@@ -97,19 +127,20 @@ def main(argv=None):
         # before he has pinned anything there is nothing to read.
         markdown = ""
 
-    if args.position and args.board:
+    if args.position and args.boards and not args.no_check:
         wanted = (args.project.strip().lower(), args.milestone.strip().lower())
         try:
-            known = known_milestones(args.board, store=board_store)
-        except board_records.RecordError as problem:
-            # A board that has never been migrated answers `[]` for its
-            # rows, which is the same value a board whose rows were all
-            # closed answers with. `contents` is the only thing that can
-            # tell them apart, and taken quietly this would refuse every
-            # pin forever with "no open row carries it".
-            print(f"REFUSED: {problem}", file=sys.stderr)
-            return 1
-        if wanted not in known:
+            found = store_milestones(args.boards)
+        except Exception as exc:  # noqa: BLE001 -- see the module docstring
+            # Every way this can fail -- an unmigrated store, a capture
+            # misfiled into the row range, CouchDB not answering -- ends in
+            # the same place: the check did not run, so it must not read as
+            # one that came back clean.
+            print(f"cannot check the milestone name against the record "
+                  f"store: {exc} -- pass --no-check to pin anyway",
+                  file=sys.stderr)
+            return 2
+        if wanted not in found:
             print("no open row carries milestone "
                   f"{args.milestone!r} in project {args.project!r} -- "
                   "nothing would be pinned", file=sys.stderr)

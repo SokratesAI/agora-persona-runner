@@ -440,24 +440,49 @@ def oslo(when):
         return when
 
 
+#: The word the page asks him to send back. `tools.login_handshake` is the
+#: reader, and it accepts a whole short message from its own `GO_AHEAD` set
+#: rather than this one string -- so he is free to answer "yes" or "send it".
+#: What this constant fixes is the half that was missing: the page has to ask
+#: for *something*, and the something it names has to be one the reader takes.
+#: `test_the_page_asks_for_a_reply_the_handshake_accepts` is the seam that
+#: holds the two modules together; it pulls this word out of the rendered
+#: message and puts it through `login_handshake.is_go_ahead`.
+GO_AHEAD_REPLY = "ok"
+
+
 def page_text(expiry, now):
     """The message he actually reads. Short on purpose -- his ask, 2026-09-04:
     *"In the future, messages to telegram must be shorter."*
 
-    It says the date, the days left, and the one fact that decides what he
-    does with it: nothing on this side can renew it.
+    It says the date, the days left, the one fact that decides what he does
+    with it -- nothing on this side can renew it -- and **what to reply**.
+
+    That last clause is his capture of 2026-09-10: *"Five days before the live
+    credential's refreshTokenExpiresAt, send a Telegram message asking him to
+    confirm ('reply ok or similar') -- do NOT send the actual login link in
+    that first message."* `agora-persona-runner#973` built the reader for that
+    reply the same day and this message was left as it was, so the loop was
+    waiting on a word it had never asked him for. He answered the four logins
+    before this only because a live chat was already open.
+
+    The link deliberately does **not** go in here, which is the other half of
+    that capture and is also a mechanical constraint: a login link lives an
+    hour and the code behind it lives minutes, so it is minted by a cycle that
+    will still be alive to spend it, never by the sweep that sends this.
     """
     days = (expiry - now).total_seconds() / 86400.0
     local = oslo(expiry)
+    ask = 'Reply "%s" here and I will send you the login link.' % GO_AHEAD_REPLY
     if days <= 0:
         return (
             "Nova's Claude login expired %s Oslo. I am running on borrowed time and "
-            "only your interactive login brings it back." % local.strftime("%d %b %H:%M")
+            "only your interactive login brings it back. %s"
+            % (local.strftime("%d %b %H:%M"), ask)
         )
     return (
         "Nova's Claude login expires %s Oslo, in %.1f days. Only your interactive "
-        "login moves that date -- my own refresh and the sealed backup both die with "
-        "it." % (local.strftime("%d %b %H:%M"), days)
+        "login moves that date. %s" % (local.strftime("%d %b %H:%M"), days, ask)
     )
 
 

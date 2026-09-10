@@ -182,572 +182,516 @@ def test_the_cli_exits_two_when_the_board_is_already_migrated(couch, tmp_path, c
     assert "REFUSED" in capsys.readouterr().out
 
 
-def stored_captures(name):
-    """His two parallel lists, read back the way `nova_site` reads them."""
-    return board_document.captures_map(board_store.read_captures(name))
+ARCHIVE = "## Processed captures\n\nAn archive the four keys do not model.\n"
 
 
-def test_a_capture_makes_the_trip_with_the_reply_under_it(couch):
-    """The bug this whole commit is about: every earlier version of the
-    migration composed the rows and silently left his own bullets in the
-    markdown, and the registry it wrote was what `board_records.contents`
-    reads to call the board migrated."""
-    markdown = board(
-        [(1, "Nova", "")],
-        captures=[("move marcus to the other node", ["done, cycle 1200"])])
+def board_with_captures(rows, captures=(), tail=""):
+    """`board()` plus his own bullets above the first heading, and a tail.
+
+    His bullets and anything after the tables are the half of the document
+    `parse_board`'s four keys do not carry, which is the half a seed of the
+    rows alone silently drops.
+    """
+    bullets = "".join(f"- {text}\n" for text in captures) + "- \n\n"
+    return bullets + board(rows) + tail
+
+
+def test_his_capture_bullets_are_stored_and_read_back(couch):
+    """The bullets live in their own key range so that a writer touching the
+    rows cannot reach them -- which also means a migration writing the rows
+    alone leaves them out, and a view rendered off that store hands his board
+    back with the box he types into emptied."""
+    from agora_runner import board_records
+
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["first thing he wrote", "second thing"])
 
     report = board_migrate.migrate(markdown, "issue", apply=True)
 
-    assert report["captures"] == 1
-    assert report["captures_written"] == 1
-    assert stored_captures("issue") == {
-        "captures": ["move marcus to the other node"],
-        "captureReplies": [["done, cycle 1200"]],
-    }
+    assert report["captures"] == 2
+    assert report["captures_stored"] == 2
+    assert board_records.contents("issue")["captures"] == [
+        "first thing he wrote", "second thing"]
 
 
-def test_his_order_survives_past_ten_captures(couch):
-    """The rank is not decoration. `read_captures` is unsorted and `_all_docs`
-    answers lexically, so `cap_10` comes back before `cap_2`; a migration that
-    minted no rank stores every capture and hands the list back shuffled, with
-    nothing missing and nothing to notice. Eleven, because ten sort right."""
-    texts = [f"capture number {i}" for i in range(1, 12)]
-    markdown = board([(1, "Nova", "")], captures=[(t, []) for t in texts])
+def test_the_capture_order_is_the_order_he_wrote_them_in(couch):
+    """Rank is his position in the file. Without it `captures_in_order` puts
+    every unranked bullet in wire order, which CouchDB decides by id."""
+    from agora_runner import board_records
 
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["alpha", "beta", "gamma"])
     board_migrate.migrate(markdown, "issue", apply=True)
 
-    assert stored_captures("issue")["captures"] == texts
+    assert board_records.contents("issue")["captures"] == [
+        "alpha", "beta", "gamma"]
+    ranks = [doc.get("rank") for doc
+             in board_store.stored_capture_documents("issue").values()]
+    assert None not in ranks, "an unranked capture is ordered by its id"
 
 
-def test_a_dry_run_counts_his_captures_and_writes_none(couch):
-    markdown = board([(1, "Nova", "")], captures=[("a bullet", [])])
+def test_the_layout_is_stored_and_it_is_what_keeps_his_archive(couch):
+    """The strong version of this test is a comparison, not an assertion that
+    a document exists: rendering the same stored board with and without the
+    layout has to differ, and differ by his prose. Asserting only that
+    `read_layout` is not `None` would pass for a layout that had lost every
+    verbatim block on the way in."""
+    from agora_runner import board_records, board_view
+
+    markdown = board_with_captures([(1, "Nova", "")], tail="\n" + ARCHIVE)
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    layout = board_store.read_layout("issue")
+    assert layout is not None
+    contents = board_records.contents("issue")
+    assert "An archive the four keys do not model." in board_view.render_document(
+        contents, layout=layout)
+    assert "An archive the four keys do not model." not in \
+        board_view.render_document(contents)
+
+
+def test_a_dry_run_stores_no_captures_and_no_layout(couch):
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["something"], tail="\n" + ARCHIVE)
 
     report = board_migrate.migrate(markdown, "issue")
 
     assert report["captures"] == 1
-    assert report["applied"] is False
-    assert not board_store.stored_capture_documents("issue")
-    assert couch.bulk_calls == []
+    assert report["layout_blocks"] > 0
+    assert report["captures_stored"] == 0
+    assert board_store.stored_capture_documents("issue") == {}
+    assert board_store.read_layout("issue") is None
 
 
 def test_a_board_holding_captures_but_no_rows_is_refused(couch):
-    """A rows-only check calls this board clean, and the next run's
-    `write_captures` prunes every capture it did not send -- so the state a
-    half-finished earlier run leaves behind is the one that loses his words."""
+    """The state a half-finished migration leaves behind. Reading only
+    `stored_documents` there calls the board empty and mints a second id for
+    every bullet he has written, which is how an old reply lands under new
+    words."""
+    from agora_runner import board_document
+
     registry = board_store.read_registry()
-    doc = board_document.to_capture_document(
-        "his bullet", "issue", entity_id.mint_capture(registry, "issue"))
-    board_store.write_captures("issue", [doc])
+    board_store.write_captures("issue", [board_document.to_capture_document(
+        "his bullet", "issue", entity_id.mint_capture(registry, "issue"))])
+    board_store.write_registry(registry)
+    before = len(couch.bulk_calls)
+
+    with pytest.raises(board_migrate.MigrationRefused):
+        board_migrate.migrate(board_with_captures(
+            [(1, "Nova", "")], captures=["his bullet"]), "issue", apply=True)
+
+    assert couch.bulk_calls[before:] == [], "the refused run still wrote"
+    assert len(board_store.stored_capture_documents("issue")) == 1
+
+
+def test_a_board_holding_a_layout_but_no_rows_is_refused(couch):
+    from agora_runner import board_view
+
+    board_store.write_layout("issue", board_view.document_layout(
+        board([(1, "Nova", "")])))
     before = len(couch.bulk_calls)
 
     with pytest.raises(board_migrate.MigrationRefused):
         board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
 
     assert couch.bulk_calls[before:] == [], "the refused run still wrote"
-    assert stored_captures("issue")["captures"] == ["his bullet"]
 
 
-def test_the_capture_high_water_is_stored_with_the_captures(couch):
-    """Same pass as the captures, deliberately: the counter is what stops a
-    later capture reusing `cap_1`, and a stored capture whose number the
-    registry never recorded is that reuse waiting to happen."""
-    markdown = board([(1, "Nova", "")], captures=[("one", []), ("two", [])])
-
-    board_migrate.migrate(markdown, "issue", apply=True)
-
-    stored = board_store.read_registry()
-    assert entity_id.capture_high_water(stored, "issue") == 2
-
-
-# --verify: the switchover's own precondition
-#
-# `board_migration_preflight --round-trip` already sends the rows through
-# CouchDB, and it compares the *rendered markdown* -- the two tables. That
-# cannot see a wrong `statusKey`, a lost `order`, a dropped detail body or a
-# capture that never arrived, and those four are exactly what eighteen
-# readers are about to be handed in place of a parse. So these tests are
-# about `board_records.contents` agreeing with `nova_boards.parse_board`,
-# and about the run leaving nothing behind.
-
-
-def test_verify_agrees_with_the_parser_and_keeps_nothing(couch):
-    markdown = board(
-        [(1, "Nova", "Cycle reliability"), (2, "Marcus", "")],
-        details=[(1, "why one matters")],
-        captures=[("his bullet", ["a cycle answered"])],
-    )
-    report, problems = board_migrate.verify(markdown, "issue")
-    assert problems == []
-    assert report["contents_matches_parse"] is True
-    assert (report["rows"], report["rows_back"]) == (2, 2)
-    assert (report["captures"], report["captures_back"]) == (1, 1)
-    assert (report["details"], report["details_back"]) == (1, 1)
-    # Both key ranges, because emptying one is the half-migration state.
-    assert board_store.stored_documents("issue") == {}
-    assert board_store.stored_capture_documents("issue") == {}
-
-
-def test_verify_leaves_the_registry_alone(couch):
-    """The stated boundary of the run: it mints ids and stores none of them.
-
-    A registry document is the one thing here with no restore path -- ids are
-    permanent and there is no delete -- so a verify that wrote one and then
-    failed would leave `prj_*` ids behind forever.
-    """
-    board_migrate.verify(board([(1, "Nova", "")]), "issue")
-    assert board_store.read_registry().get("_rev") is None
-
-
-def test_verify_sees_a_capture_the_store_never_took(couch, monkeypatch):
-    """The control. `--round-trip` cannot fail this: captures are not in the
-    rendered tables at all, so a store that took none of them renders
-    identically."""
-    monkeypatch.setattr(board_store, "write_captures",
-                        lambda name, docs, prune=True: {"written": 0})
-    report, problems = board_migrate.verify(
-        board([(1, "Nova", "")], captures=[("his bullet", [])]), "issue")
-    assert report["contents_matches_parse"] is False
-    assert any("captures" in problem for problem in problems)
-
-
-def test_verify_sees_a_detail_body_the_store_never_took(couch, monkeypatch):
-    """Same control on the other thing the tables cannot carry."""
-    real = board_document.to_document
-
-    def without_the_body(item, name, **kwargs):
-        kwargs["detail"] = None
-        return real(item, name, **kwargs)
-
-    monkeypatch.setattr(board_document, "to_document", without_the_body)
-    report, problems = board_migrate.verify(
-        board([(1, "Nova", "")], details=[(1, "why one matters")]), "issue")
-    assert report["contents_matches_parse"] is False
-    assert any("details" in problem for problem in problems)
-
-
-def test_verify_refuses_a_board_that_already_holds_records(couch):
-    markdown = board([(1, "Nova", "")])
-    board_migrate.migrate(markdown, "issue", apply=True)
-    before = dict(board_store.stored_documents("issue"))
-    with pytest.raises(board_migrate.MigrationRefused):
-        board_migrate.verify(markdown, "issue")
-    assert board_store.stored_documents("issue") == before
-
-
-def test_verify_empties_the_store_when_the_read_back_raises(couch, monkeypatch):
-    """A failure in the middle must not leave a half-migration behind."""
-    def boom(name, store=None):
-        raise board_records.RecordError("no")
-
-    monkeypatch.setattr(board_records, "contents", boom)
-    with pytest.raises(board_records.RecordError):
-        board_migrate.verify(
-            board([(1, "Nova", "")], captures=[("his bullet", [])]), "issue")
-    assert board_store.stored_documents("issue") == {}
-    assert board_store.stored_capture_documents("issue") == {}
-
-
-def test_differences_names_the_field_of_the_row_that_moved():
-    want = {"captures": [], "captureReplies": [], "details": {},
-            "items": [{"number": 7, "title": "a", "order": 3}]}
-    got = {"captures": [], "captureReplies": [], "details": {},
-           "items": [{"number": 7, "title": "a", "order": None}]}
-    problems = board_migrate.differences(want, got)
-    assert len(problems) == 1
-    assert "row #7" in problems[0] and "order" in problems[0]
-
-
-def test_differences_reports_every_key_that_moved_not_just_the_first():
-    want = {"captures": ["a"], "captureReplies": [[]], "items": [],
-            "details": {1: "body"}}
-    got = {"captures": [], "captureReplies": [], "items": [],
-           "details": {}}
-    problems = board_migrate.differences(want, got)
-    assert len(problems) == 3
-
-
-def test_verify_and_apply_are_refused_together(couch, tmp_path, capsys):
+def test_the_cli_prints_the_capture_and_layout_counts(couch, tmp_path, capsys):
     path = tmp_path / "issues.md"
-    path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
-    with pytest.raises(SystemExit):
-        board_migrate.main(
-            ["--board", "issue", "--file", str(path), "--verify", "--apply"])
+    path.write_text(board_with_captures(
+        [(1, "Nova", "")], captures=["something"], tail="\n" + ARCHIVE),
+        encoding="utf-8")
 
+    code = board_migrate.main(["--board", "issue", "--file", str(path), "--apply"])
 
-def test_the_cli_verify_exits_two_and_prints_the_problem(couch, tmp_path,
-                                                        capsys, monkeypatch):
-    monkeypatch.setattr(board_store, "write_captures",
-                        lambda name, docs, prune=True: {"written": 0})
-    path = tmp_path / "issues.md"
-    path.write_text(board([(1, "Nova", "")], captures=[("his bullet", [])]),
-                    encoding="utf-8")
-    code = board_migrate.main(
-        ["--board", "issue", "--file", str(path), "--verify"])
-    out = capsys.readouterr().out
-    assert code == 2
-    assert "verify.contents_matches_parse: False" in out
-    assert "PROBLEM:" in out
-
-
-def test_the_cli_verify_exits_zero_when_the_seam_agrees(couch, tmp_path,
-                                                       capsys):
-    path = tmp_path / "issues.md"
-    path.write_text(board([(1, "Nova", "")], captures=[("his bullet", [])]),
-                    encoding="utf-8")
-    code = board_migrate.main(
-        ["--board", "issue", "--file", str(path), "--verify"])
     out = capsys.readouterr().out
     assert code == 0
-    assert "verify.contents_matches_parse: True" in out
+    assert "captures: 1" in out
+    assert "captures_stored: 1" in out
+    assert "layout_stored: " in out
 
 
-# ---------------------------------------------------------------------------
-# The layout, stored beside the records
-# ---------------------------------------------------------------------------
+def test_the_replies_under_a_bullet_make_the_trip(couch):
+    """A reply is a cycle's answer to him, indented under his own words, and
+    it is a separate field on the capture document -- so a migration that
+    carried the bullets and dropped the replies would store his board with
+    every answer he has been given deleted, and count the captures right."""
+    from agora_runner import board_records
 
+    markdown = ("- his bullet\n"
+                "    - Nova, cycle 1: the answer\n"
+                "    - Nova, cycle 2: and again\n"
+                "- \n\n") + board([(1, "Nova", "")])
 
-def _with_archive(markdown):
-    """His `## Processed captures` archive, spliced where he actually keeps
-    it: between the table and `# Details`. Appending it to the end would
-    make the position assertions below pass on a renderer that simply
-    tacked the residue on, and position is the requirement --
-    `board_migration_preflight.words_lost` is a sequence diff."""
-    return markdown.replace(
-        "\n# Details\n",
-        "\n## Processed captures\n\n- an old bullet he keeps\n\n# Details\n")
-
-
-def test_a_dry_run_stores_no_layout(couch):
-    """Same contract as the rows: the switchover runs this against his live
-    boards first, and a dry run that wrote is unrecoverable by the time
-    anyone reads the report."""
-    report = board_migrate.migrate(board([(1, "Nova", "")]), "issue")
-
-    assert report["layout_blocks"] >= 1
-    assert "layout_written" not in report
-    assert board_store.read_layout("issue") is None
-
-
-def test_apply_stores_the_layout_of_the_document_it_migrated(couch):
-    markdown = board([(1, "Nova", "")], details=[(1, "why")])
-    report = board_migrate.migrate(markdown, "issue", apply=True)
-
-    assert report["layout_written"] is True
-    assert (board_store.read_layout("issue")
-            == board_document.to_layout_document(
-                board_view.document_layout(markdown), "issue")["blocks"])
-
-
-def test_the_stored_layout_renders_the_residue_back(couch):
-    """The point of storing it at all, asserted end to end.
-
-    His boards carry sections `parse_board` does not model -- the
-    `## Processed captures` archive, the `# Done — detail` heading,
-    `ideas.md`'s `## Discarded` table -- 19,653 words of `issues.md` and
-    6,469 of `ideas.md` measured on 2026-09-09. A render driven by the four
-    parsed keys alone deletes every one of them. This migrates a board with
-    such a section, reads the layout back out of the store, and renders from
-    the records: the section has to come back, **in its own position**,
-    because `words_lost` is a sequence diff and a residue appended at the
-    end still reads as lost.
-    """
-    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
     board_migrate.migrate(markdown, "issue", apply=True)
 
-    layout = board_store.read_layout("issue")
-    rendered = board_view.render_document(
-        nova_boards.parse_board(markdown), layout=layout)
-
-    assert "an old bullet he keeps" in rendered
-    assert rendered.index("Processed captures") > rendered.index("| # |")
-    assert rendered.index("Processed captures") < rendered.index("# Details")
+    contents = board_records.contents("issue")
+    assert contents["captures"] == ["his bullet"]
+    assert contents["captureReplies"] == [
+        ["Nova, cycle 1: the answer", "Nova, cycle 2: and again"]]
 
 
-def test_without_the_stored_layout_that_residue_is_gone(couch):
-    """The other half of the test above, and the reason it is not vacuous.
+def test_the_migration_does_not_add_itself_to_the_gate():
+    """`board_reader_inventory` is the gauge #203 drives to zero and it counts
+    a module that names `parse_board` in its own text. The migration has to
+    read markdown -- that is its whole job -- so it reads it through
+    `board_migration_preflight`, which is already on the list. Parsing in
+    `board_migrate` instead put a 22nd module on a count of 21, for a module
+    that is not a board reader at all.
 
-    A check that only asserts the section is present passes just as well
-    against a renderer that emits the whole source document, or against one
-    that happens to keep everything. This renders the same records with no
-    layout and asserts the archive is **not** there -- so the assertion
-    above is measuring the layout rather than the fixture.
-    """
-    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
+    The assertion is against the tool's own scan rather than a grep of the
+    file, because a grep here would be a second spelling of the rule under
+    test and would agree with itself."""
+    from tools import board_reader_inventory
 
-    without = board_view.render_document(nova_boards.parse_board(markdown))
+    found, _refs, _unreadable, _untokenized, _mine = board_reader_inventory.scan()
 
-    assert "an old bullet he keeps" not in without
-
-
-def test_a_second_migration_of_the_same_board_is_refused_before_the_layout(couch):
-    """`migrate` refuses a board that already holds records, and the layout
-    must not be written by the run that was refused -- it is computed before
-    the refusal has a chance to fire in a later version of this function."""
-    markdown = board([(1, "Nova", "")])
-    board_migrate.migrate(markdown, "issue", apply=True)
-    first = board_store.read_layout("issue")
-
-    with pytest.raises(board_migrate.MigrationRefused):
-        board_migrate.migrate(board([(2, "Marcus", "")]), "issue", apply=True)
-
-    assert board_store.read_layout("issue") == first
+    names = {str(path) for path in found}
+    assert not any(name.endswith("tools/board_migrate.py") for name in names), (
+        "board_migrate parses board markdown itself again")
+    assert any(name.endswith("tools/board_migration_preflight.py")
+               for name in names), (
+        "the module the migration reads markdown through left the gate; "
+        "this test can no longer tell a move from a deletion")
 
 
-# ---------------------------------------------------------------------------
-# `--verify` takes the layout through the real store too
-# ---------------------------------------------------------------------------
+# --- `--status`: does the seeded store still agree with his markdown? -------
+#
+# `migrate` refuses a board that already holds records, so the only board it
+# can say anything about is one nobody has seeded -- and the seeded board is
+# the one that can go wrong. These tests are about the board after the seed.
 
 
-def test_verify_carries_the_layout_through_the_store_and_keeps_none(couch):
-    """The control the switchover actually needs.
-
-    `verify` writes the board, reads it back through the seam the eighteen
-    remaining readers are about to be handed, and restores. Until now it
-    took the rows and the captures through and left the layout out -- so
-    the one document that holds his `## Processed captures` archive was the
-    only part of a migration nothing measured against a live board.
-    """
-    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
-
-    report, problems = board_migrate.verify(markdown, "issue")
-
-    assert problems == []
-    assert report["layout_blocks_back"] == report["layout_blocks"] >= 1
-    assert board_store.read_layout("issue") is None
-
-
-def test_verify_reports_the_words_the_generated_view_would_drop(couch):
-    """The number the switchover is waiting on, measured through the store.
-
-    `board_migration_preflight` already counts this, but from a layout it
-    computed in memory a line earlier. This one renders from the records
-    and from the layout CouchDB handed back, which is the pair the app will
-    actually hold.
-    """
-    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
-
-    report, _problems = board_migrate.verify(markdown, "issue")
-    without_layout = board_view.render_document(
-        nova_boards.parse_board(markdown),
-        board_migration_preflight.frontmatter_of(markdown))
-
-    assert "an old bullet he keeps" not in without_layout
-    assert report["document_words_lost"] < len(
-        board_migration_preflight.words_lost(markdown, without_layout))
-
-
-def test_verify_catches_a_layout_the_store_did_not_take(couch, monkeypatch):
-    """The guard, defused: a store that drops a block must fail the run.
-
-    Without this the test above passes against a `verify` that reads the
-    layout back and never compares it -- `differences` is written in
-    `parse_board`'s four keys and none of them can see a layout, so that
-    comparison agrees whether the layout survived or not.
-    """
-    real = board_store.read_layout
-
-    def one_block_short(name):
-        blocks = real(name)
-        return None if blocks is None else blocks[1:]
-
-    monkeypatch.setattr(board_store, "read_layout", one_block_short)
-    markdown = _with_archive(board([(1, "Nova", "")], details=[(1, "why")]))
-
-    report, problems = board_migrate.verify(markdown, "issue")
-
-    assert report["contents_matches_parse"] is False
-    assert any("block(s) written" in problem for problem in problems)
-    # And the word count is taken from the copy the store handed back, not
-    # from the one this run computed. `> 0` would not say that: the full
-    # layout loses two words to `render_detail`'s heading reflow, so both
-    # sides are non-zero and the assertion could never fail. The number has
-    # to be the one the *short* layout produces.
-    contents = nova_boards.parse_board(markdown)
-    front = board_migration_preflight.frontmatter_of(markdown)
-    whole = board_view.document_layout(markdown)
-    from_stored = board_migration_preflight.words_lost(
-        markdown, board_view.render_document(contents, front,
-                                             layout=whole[1:]))
-    from_memory = board_migration_preflight.words_lost(
-        markdown, board_view.render_document(contents, front, layout=whole))
-    assert len(from_stored) > len(from_memory)
-    assert report["document_words_lost"] == len(from_stored)
-
-
-def test_verify_catches_a_layout_that_came_back_changed(couch, monkeypatch):
-    """The same length and different content -- the shape a count misses."""
-    real = board_store.read_layout
-
-    def relabelled(name):
-        blocks = real(name)
-        if not blocks:
-            return blocks
-        return [{**blocks[0], "kind": "verbatim", "markdown": "not his"}] \
-            + blocks[1:]
-
-    monkeypatch.setattr(board_store, "read_layout", relabelled)
-
-    report, problems = board_migrate.verify(board([(1, "Nova", "")]), "issue")
-
-    assert report["contents_matches_parse"] is False
-    assert any(problem.startswith("layout[0] differs") for problem in problems)
-
-
-def test_verify_puts_back_a_layout_that_was_already_stored(couch):
-    """A layout sits outside both key ranges the refusal guards, so a board
-    with no records can still hold one. Deleting it would be the loss this
-    run exists to prove does not happen.
-
-    The stored layout and the one this run computes are deliberately
-    **different documents** -- the first has an archive section, the second
-    does not. A verify that simply left its own layout behind would restore
-    the right answer by accident if the two agreed, and the assertion could
-    never fail.
-    """
-    board_migrate.migrate(
-        _with_archive(board([(1, "Nova", "")], details=[(1, "why")])),
-        "issue", apply=True)
-    before = board_store.read_layout("issue")
-    board_store.write_rows("issue", [])
-    board_store.write_captures("issue", [])
-
-    board_migrate.verify(board([(2, "Marcus", "")]), "issue")
-
-    assert board_store.read_layout("issue") == before
-
-
-def test_verify_empties_the_layout_when_the_read_back_raises(couch, monkeypatch):
-    """The `finally` covers the layout too, not just the two key ranges."""
-    def boom(name, store=None):
-        raise board_records.RecordError("nope")
-
-    monkeypatch.setattr(board_records, "contents", boom)
-    with pytest.raises(board_records.RecordError):
-        board_migrate.verify(board([(1, "Nova", "")]), "issue")
-
-    assert board_store.read_layout("issue") is None
-
-
-def test_verify_catches_a_layout_that_never_came_back(couch, monkeypatch):
-    """`read_layout` answers `None` for a document that is not there, and a
-    verify that wrote one and read `None` has found the store dropping it.
-
-    Absent is not the same fault as changed and it takes its own branch:
-    `layout_differences` cannot compare `None` block by block, so without
-    this the one case where the layout vanished entirely would be the one
-    case that passed.
-    """
-    monkeypatch.setattr(board_store, "read_layout", lambda name: None)
-
-    report, problems = board_migrate.verify(board([(1, "Nova", "")]), "issue")
-
-    assert report["layout_blocks_back"] is None
-    assert report["contents_matches_parse"] is False
-    assert any("nothing came back out of the store" in problem
-               for problem in problems)
-
-
-def test_status_says_never_migrated_before_anything_is_written(couch, capsys):
-    """The verdict that decides whether the switchover may flip.
-
-    `board_records.contents` raises `UnmigratedStore` here, and that raise is
-    the only thing protecting an unconverted reader from a store nobody has
-    written. `status` reports it as an answer instead of propagating it,
-    because "never written" IS the answer to the question this asks.
-    """
+def test_a_store_nobody_has_written_is_never_migrated(couch):
     verdict, problems = board_migrate.status(board([(1, "Nova", "")]), "issue")
+
     assert verdict == "NEVER MIGRATED"
     assert problems and "never been written" in problems[0]
 
 
-def test_status_agrees_with_a_store_it_did_not_write(couch):
-    """The question `verify` structurally cannot ask.
-
-    `verify` writes the board itself and restores afterwards, so it proves the
-    seam round-trips and says nothing about a store somebody else left behind.
-    Here the migration runs first and `status` is handed the result cold.
-    """
-    markdown = board(
-        [(1, "Nova", "Cycle reliability"), (2, "Marcus", "")],
-        details=[(1, "why one matters")],
-        captures=[("his bullet", ["a cycle answered"])],
-    )
+def test_the_markdown_that_was_seeded_agrees_with_the_store(couch):
+    markdown = board([(1, "Nova", ""), (2, "Marcus", "v1")],
+                     details=[(1, "Some body.")])
     board_migrate.migrate(markdown, "issue", apply=True)
-    verdict, problems = board_migrate.status(markdown, "issue")
-    assert (verdict, problems) == ("AGREES", [])
+
+    assert board_migrate.status(markdown, "issue") == ("AGREES", [])
 
 
-def test_status_catches_a_board_the_owner_edited_after_the_migration(couch):
-    """Drift, which is the whole reason this is not `verify`.
+def test_an_edit_he_makes_after_the_seed_reads_as_drift(couch):
+    """The whole reason this exists: his boards are still served from
+    markdown, so every edit he makes moves the file and leaves the store
+    where it was, and `board_records.contents` answers a stale store
+    silently."""
+    board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
 
-    Nothing on `main` writes the record store, so a board seeded today goes
-    stale the moment he adds a row -- and a stale store answers silently where
-    an unmigrated one raises. A verdict that could not tell those apart would
-    be worse than no check.
-    """
-    seeded = board([(1, "Nova", "")])
-    board_migrate.migrate(seeded, "issue", apply=True)
     verdict, problems = board_migrate.status(
-        board([(1, "Nova", ""), (2, "Nova", "")]), "issue")
+        board([(1, "Nova", ""), (2, "Marcus", "")]), "issue")
+
     assert verdict == "DRIFTED"
-    assert any("items" in problem for problem in problems)
+    assert any("items:" in problem for problem in problems)
 
 
-def test_status_asks_the_store_it_was_handed(couch):
-    """`store=` has to be honoured, not decorated.
-
-    Every other test here reaches the store through the fake CouchDB, so the
-    default argument answers them all and an implementation that dropped the
-    parameter would pass every one of them -- measured, that mutation
-    SURVIVED until this test existed. The stub says "never migrated" while
-    the real store is migrated, so the two answers cannot be confused.
-    """
+def test_a_field_that_moved_is_named_with_the_row_it_moved_on(couch):
+    """One line per key, and the line says which field of which row -- a dump
+    of four hundred rows on both sides is not a finding."""
     markdown = board([(1, "Nova", "")])
     board_migrate.migrate(markdown, "issue", apply=True)
-    assert board_migrate.status(markdown, "issue")[0] == "AGREES"
 
-    class NeverMigrated:
-        """Enough of `board_store` for `contents` to reach its first check."""
-        @staticmethod
-        def read_registry():
-            return {}
+    verdict, problems = board_migrate.status(
+        markdown.replace("⚪ Backlog", "🔵 Done"), "issue")
 
-    verdict, _ = board_migrate.status(markdown, "issue", store=NeverMigrated)
-    assert verdict == "NEVER MIGRATED"
+    assert verdict == "DRIFTED"
+    assert any("row #1" in problem and "status" in problem
+               for problem in problems)
 
 
-def test_status_writes_nothing(couch):
-    """It is offered as the read-only one; a write here would be a trap.
+def test_a_layout_edit_is_drift_that_the_four_keys_cannot_see(couch):
+    """`parse_board` and `board_records.contents` are both written in the
+    parser's four keys and neither models a layout, so a comparison in those
+    keys agrees about his `## Processed captures` archive whether it survived
+    or not. This is why `layout_differences` is a separate question."""
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    edited = markdown + "\n## Processed captures\n\nSomething he archived.\n"
 
-    Compared against both key ranges and the registry, because minting a
-    project id is the one write in this module with no restore path.
-    """
-    board_migrate.status(board([(1, "Nova", "Cycle reliability")]), "issue")
-    assert board_store.stored_documents("issue") == {}
-    assert board_store.stored_capture_documents("issue") == {}
-    assert board_store.read_registry().get("_rev") is None
+    from agora_runner import board_records
+    from tools import board_migration_preflight
+    assert not board_migrate.differences(
+        board_migration_preflight.board_contents(edited),
+        board_records.contents("issue"))
+
+    verdict, problems = board_migrate.status(edited, "issue")
+
+    assert verdict == "DRIFTED"
+    assert any(problem.startswith("layout") for problem in problems)
 
 
-def test_status_exits_2_on_drift_and_0_on_agreement(couch, tmp_path, capsys):
-    """`main`'s contract, which is what preflight would read."""
+def test_the_store_is_the_one_it_was_handed(couch):
+    """`store=` is a decoration until a test passes one: every other test here
+    reaches the store through the fake CouchDB, so dropping the parameter
+    passes all of them."""
+    class Refuses:
+        def read_registry(self):
+            raise AssertionError("status read the module-level store")
+
+    with pytest.raises(AssertionError, match="status read"):
+        board_migrate.status(board([(1, "Nova", "")]), "issue", store=Refuses())
+
+
+def test_the_cli_exits_zero_and_writes_nothing_when_the_board_agrees(
+        couch, tmp_path, capsys):
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    path = tmp_path / "issues.md"
+    path.write_text(markdown, encoding="utf-8")
+    couch.bulk_calls.clear()
+
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status"])
+
+    assert code == 0
+    assert "status: AGREES" in capsys.readouterr().out
+    assert couch.bulk_calls == []
+
+
+def test_the_cli_exits_two_on_drift(couch, tmp_path, capsys):
+    board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", ""), (2, "Nova", "")]),
+                    encoding="utf-8")
+
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status"])
+
+    assert code == 2
+    assert "status: DRIFTED" in capsys.readouterr().out
+
+
+def test_the_cli_refuses_status_together_with_apply(couch, tmp_path, capsys):
+    """The two modes disagree about whether the run writes, so a caller who
+    asked for both cannot be assumed to have meant the writing one."""
     path = tmp_path / "issues.md"
     path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
-    assert board_migrate.main(
-        ["--board", "issue", "--file", str(path), "--status"]) == 2
-    assert "status.verdict: NEVER MIGRATED" in capsys.readouterr().out
 
-    board_migrate.migrate(path.read_text(encoding="utf-8"), "issue", apply=True)
-    assert board_migrate.main(
-        ["--board", "issue", "--file", str(path), "--status"]) == 0
-    assert "status.verdict: AGREES" in capsys.readouterr().out
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status", "--apply"])
+
+    assert code == 2
+    assert "REFUSED" in capsys.readouterr().out
+    assert couch.bulk_calls == []
 
 
-def test_status_refuses_to_be_combined_with_a_write(tmp_path):
-    """`--status` beside `--apply` is two questions, and the write would win."""
+def test_a_differing_layout_block_is_named_not_dumped(couch):
+    """His live `issues.md` block 200 is his whole `## Processed captures`
+    archive: 112,225 characters. Printed whole on both sides that is one
+    221KB line, and the finding is only ever *which* block moved -- the block
+    itself is a verbatim slice of the file the run was just handed."""
+    markdown = (board([(1, "Nova", "")])
+                + "\n## Archive\n\n" + ("padding line\n" * 400))
+    board_migrate.migrate(markdown, "issue", apply=True)
+    edited = markdown.replace("padding line", "padded line")
+
+    verdict, problems = board_migrate.status(edited, "issue")
+
+    assert verdict == "DRIFTED"
+    line = next(p for p in problems if p.startswith("layout"))
+    assert "char(s)" in line and "padding line" not in line
+    assert len(line) < 400
+
+
+def test_a_store_with_no_layout_at_all_is_drift_not_agreement(couch):
+    """A rows-only seed is what the first #203 migration actually wrote, and
+    it compared byte-identical on every key the parser models."""
+    class NoLayout:
+        def read_rows(self, board):
+            return board_store.read_rows(board)
+
+        def read_captures(self, board):
+            return board_store.read_captures(board)
+
+        def read_registry(self):
+            return board_store.read_registry()
+
+        def read_layout(self, board):
+            return None
+
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    verdict, problems = board_migrate.status(
+        markdown, "issue", store=NoLayout())
+
+    assert verdict == "DRIFTED"
+    assert any("holds no layout" in problem for problem in problems)
+
+
+def test_a_differing_table_block_is_named_by_its_columns(couch):
+    """A table block holds no markdown -- its rows are the row documents --
+    so the generic "N char(s), starting ..." line describes both sides of a
+    real disagreement as empty and says nothing. Measured 2026-09-10 on his
+    live `ideas.md`, whose board table has eight columns while `board_view`
+    draws nine."""
+    eight = board_migrate._head(
+        {"kind": "board", "columns": ["#", "Idea", "Status", "Milestone"]})
+
+    assert "columns" in eight
+    assert "Milestone" in eight
+    assert "char(s)" not in eight
+
+
+# `--resync`: the second write of an already-seeded board. `migrate` is a
+# one-way door on purpose and stays one; these are about the door beside it,
+# and every one of them is about what SURVIVES the second write rather than
+# what it stores, because storing is the easy half.
+
+
+def test_a_resync_keeps_the_id_of_a_bullet_he_did_not_edit(couch):
+    """The whole reason this is not "empty the board and seed it again".
+
+    `entity_id.mint_capture` is deliberately not idempotent, so a re-seed
+    hands every bullet a fresh id, and `nova_site` addresses his Edit route
+    and the replies underneath by that id. Re-minting an unchanged bullet
+    silently moves both."""
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["a thing he wrote", "another thing"])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    before = {doc["text"]: doc["captureId"] for doc
+              in board_store.stored_capture_documents("issue").values()}
+
+    board_migrate.resync(markdown, "issue", apply=True)
+
+    after = {doc["text"]: doc["captureId"] for doc
+             in board_store.stored_capture_documents("issue").values()}
+    assert after == before, "an unchanged bullet was re-minted"
+
+
+def test_a_resync_mints_only_the_bullet_he_actually_added(couch):
+    """The other half of the same rule: a new bullet has to get an id, and
+    the report has to say which of the two happened -- a run that reports
+    "3 captures" says nothing about whether it just orphaned two of them."""
+    board_migrate.migrate(
+        board_with_captures([(1, "Nova", "")], captures=["first"]),
+        "issue", apply=True)
+
+    report = board_migrate.resync(
+        board_with_captures([(1, "Nova", "")], captures=["first", "second"]),
+        "issue", apply=True)
+
+    assert (report["captures_kept"], report["captures_minted"]) == (1, 1)
+    from agora_runner import board_records
+    assert board_records.contents("issue")["captures"] == ["first", "second"]
+
+
+def test_a_resync_takes_his_edits_and_drops_what_he_deleted(couch):
+    """Markdown in, store out. A row he closed, a write-up he changed and a
+    bullet he deleted all have to land, or the store goes on serving what he
+    replaced."""
+    from agora_runner import board_records
+
+    board_migrate.migrate(
+        board_with_captures([(1, "Nova", ""), (2, "Nova", "")],
+                            captures=["keep me", "delete me"]),
+        "issue", apply=True)
+
+    board_migrate.resync(
+        board_with_captures([(1, "Nova", "")], captures=["keep me"]),
+        "issue", apply=True)
+
+    contents = board_records.contents("issue")
+    assert [item["number"] for item in contents["items"]] == [1]
+    assert contents["captures"] == ["keep me"]
+
+
+def test_a_resync_refuses_a_board_nobody_has_seeded(couch):
+    """A resync of an unmigrated board is a seed, and a seed is `migrate`'s
+    job with `migrate`'s report and `migrate`'s refusals. Two commands that
+    both first-write a board is the split brain #203 exists to remove."""
+    with pytest.raises(board_migrate.MigrationRefused) as refused:
+        board_migrate.resync(board([(1, "Nova", "")]), "issue", apply=True)
+
+    assert "never been migrated" in str(refused.value)
+    assert couch.bulk_calls == []
+
+
+def test_a_resync_refuses_markdown_that_parses_to_no_rows(couch):
+    """A board file is fetched over the vault tool and an oversized read comes
+    back as a ~2KB preview rather than an error, so "no rows" is what a
+    truncated fetch looks like from here. `write_rows` prunes, so accepting it
+    would tombstone his whole board off a read that failed quietly."""
+    board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
+    stored_before = set(board_store.stored_documents("issue"))
+
+    with pytest.raises(board_migrate.MigrationRefused) as refused:
+        board_migrate.resync("# Not a board\n", "issue", apply=True)
+
+    assert "no rows at all" in str(refused.value)
+    assert set(board_store.stored_documents("issue")) == stored_before
+
+
+def test_a_resync_dry_run_writes_nothing(couch):
+    """Same default as `migrate`: this runs against his live boards, and a
+    dry run that wrote would be unrecoverable by the time anyone read it."""
+    board_migrate.migrate(
+        board_with_captures([(1, "Nova", "")], captures=["first"]),
+        "issue", apply=True)
+    calls = len(couch.bulk_calls)
+
+    report = board_migrate.resync(
+        board_with_captures([(1, "Nova", "")], captures=["first", "second"]),
+        "issue")
+
+    assert report["applied"] is False
+    assert (report["captures_kept"], report["captures_minted"]) == (1, 1)
+    assert len(couch.bulk_calls) == calls
+
+
+def test_two_identical_bullets_keep_their_two_ids(couch):
+    """He writes `- ` placeholders and repeats himself, so the same words can
+    sit on his board twice. Matching text to a single id would hand both
+    copies the first one's, and `_bulk_write` refuses a duplicate id -- the
+    right refusal in the wrong place, after a bullet was already lost."""
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["same words", "same words"])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    before = sorted(doc["captureId"] for doc
+                    in board_store.stored_capture_documents("issue").values())
+
+    report = board_migrate.resync(markdown, "issue", apply=True)
+
+    assert report["captures_kept"] == 2
+    assert sorted(doc["captureId"] for doc
+                  in board_store.stored_capture_documents("issue").values()
+                  ) == before
+
+
+def test_the_cli_refuses_status_together_with_resync(capsys, tmp_path):
+    """One reads and one writes; a run carrying both has asked for opposite
+    things and there is no reading of it that is obviously what was meant."""
     path = tmp_path / "issues.md"
     path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
-    for other in ("--apply", "--verify"):
-        with pytest.raises(SystemExit) as raised:
-            board_migrate.main(
-                ["--board", "issue", "--file", str(path), "--status", other])
-        assert raised.value.code == 2
+
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status", "--resync"])
+
+    assert code == 2
+    assert "REFUSED" in capsys.readouterr().out
+
+
+def test_a_resync_re_ranks_every_row_from_the_markdown(couch):
+    """Pinned because it is a boundary, not because it is desirable. Ranks are
+    minted fresh from the file's row order on every run, so a resync moves a
+    row back to where the markdown puts it. Correct while markdown is truth;
+    the day #202 writes a drag-reorder into the store, this is what would
+    undo it, and a test that says so is cheaper than finding out."""
+    board_migrate.migrate(board([(1, "Nova", ""), (2, "Nova", "")]),
+                          "issue", apply=True)
+    moved = board_store.read_row("issue", 2)
+    moved["rank"] = "zzz"
+    board_store.write_row(moved)
+    assert board_store.read_row("issue", 2)["rank"] == "zzz"
+
+    board_migrate.resync(board([(1, "Nova", ""), (2, "Nova", "")]),
+                         "issue", apply=True)
+
+    assert board_store.read_row("issue", 2)["rank"] != "zzz"

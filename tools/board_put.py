@@ -71,6 +71,33 @@ document back out of the vault, so `strip_the_print_newline` has nothing
 to do there: there is no `print` in that path. That subtlety cost
 runner#673 and is worth not re-introducing.
 
+**And the board records follow the same write, third.** Slice 4 closed the
+drift into `nova_tickets`; #203's record store is a *different* store, in
+its own key ranges, and nothing pushed it -- so every board edit a cycle
+made left it a revision behind until somebody ran
+`tools.board_migrate --resync` by hand. That is the same "a reader
+switched onto a store nothing keeps current serves a board that is
+quietly a day old" this file's opening paragraph names, one store over,
+and it is the reason no reader may be moved onto the records yet. The
+resync runs here, on the same markdown, in the same order and with the
+same non-fatal contract: the vault leads, the stores follow, and a store
+that did not follow is exit 4 rather than a failed board edit.
+
+**The records only cover his two boards**, so `nova/resources/issues.md`
+and `.../ideas.md` skip that stage rather than failing it -- they are
+flat capture lists with no table, and `board_migrate` has no board name
+for them. A board the record store has never been seeded with skips too:
+a resync of an unseeded board is a seed, and seeding is `--apply`'s job
+with `--apply`'s report.
+
+**Know the day this hook becomes wrong.** `resync` is markdown in, store
+out, and issue #202 is what first writes something into the records that
+the markdown cannot say -- a hand-dragged row order. From that moment
+this would put every row back where the file says, and from the
+`nova_site` flip it would overwrite truth with a generated view. It is a
+migration-window hook and it comes out with the window, together with
+`resync` itself.
+
 **`--append` is the other half of the bypass, and it is not optional.**
 `prompt.md` step 6 tells every cycle to append its capture notes to
 `nova/resources/issues.md` and `.../ideas.md` -- two of the four boards --
@@ -94,7 +121,8 @@ import sys
 import pathlib as _pathlib  # noqa: E402
 sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner import ticket_docs  # noqa: E402
+from agora_runner import board_records, board_store, ticket_docs  # noqa: E402
+from tools import board_migrate  # noqa: E402
 from tools.ticket_migrate import VAULT_TOOL, strip_the_print_newline  # noqa: E402
 
 
@@ -180,6 +208,152 @@ def push(path, source, source_rev=None):
         f"{summary['written']} written, {summary['deleted']} deleted, "
         f"{summary['unchanged']} unchanged"
     )
+
+
+#: His two board files, and the record-store board each one holds. The two
+#: under `nova/resources/` are deliberately absent, and the reason written
+#: here used to be false: it said they are "my own flat capture lists -- no
+#: `## Board` table, no rows". They are not. Measured on the live
+#: `nova/resources/issues.md`, 2026-09-10: a real `## Board` table, 35 rows
+#: and 26 write-ups. The true reason is ownership, not shape -- issue #203's
+#: spec and his standing instruction of 2026-09-09 are about the two boards
+#: *he* writes, so `board_document` has no board name for mine and a resync
+#: there would be a resync of something that was never seeded. Keep the
+#: distinction on that footing: a cycle reading the old reason would "fix"
+#: the exclusion the moment it noticed the rows.
+RECORD_BOARDS = {
+    "projects/sokrates/projects/nova/issues.md": "issue",
+    "projects/sokrates/projects/nova/ideas.md": "idea",
+}
+
+
+def record_board(path):
+    """The record-store board `path` holds, or `None` if it holds none.
+
+    Lowercased on both sides for the same reason `ticket_docs.is_board`
+    is: vault paths are normalised to lowercase when they are stored, so
+    a caller writing mixed case reaches the same document and has to
+    reach the same records.
+    """
+    return RECORD_BOARDS.get((path or "").lower())
+
+
+def seeded(store=board_store):
+    """Has the record store ever been seeded? `None` if it cannot say.
+
+    It takes no board, because `resync`'s own refusal does not: the
+    project and milestone registry is one document shared by both boards,
+    and a `_rev` on it is what tells a resync from a seed. Asking a
+    different question here than the thing being called asks is how a
+    guard comes to pass while the call behind it refuses.
+
+    Three answers rather than two, because "the store has never been
+    migrated" and "CouchDB would not answer" mean opposite things here:
+    the first is a board with nothing to keep current and is a skip, the
+    second is a board whose records may now be behind and is a failure.
+    Folding them together is how an unreachable store would come to read
+    as a clean one.
+    """
+    try:
+        registry = store.read_registry()
+    except Exception:  # noqa: BLE001 -- the caller reports, this decides
+        return None
+    return bool((registry or {}).get("_rev"))
+
+
+def follow_records(board, source):
+    """Resync one board's records from its new markdown.
+
+    Returns `(ok, message)` with the same contract `push` above has: the
+    markdown has already landed and is the source of truth, so `ok` is
+    False only to say the records are now behind it, never to say the
+    board edit failed.
+    """
+    try:
+        report = board_migrate.resync(source, board, apply=True)
+    except Exception as exc:  # noqa: BLE001 -- the message is the report
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, (
+        f"{report['written']} row(s) written, {report['deleted']} deleted, "
+        f"{report['captures_kept']} capture(s) kept, "
+        f"{report['captures_minted']} minted, "
+        f"{report['layout_stored']} layout block(s)"
+    )
+
+
+def stamp(board, source_rev, out=None):
+    """Stamp the revision the records were just built from. `True` if stamped.
+
+    Runs only after the resync reported success, because the stamp is a
+    claim about records that are already stored: one written first would
+    certify a write that then failed.
+
+    A missing `source_rev` is a skip and not a failure. `main` clears it
+    when the vault moved between the write and the read-back, and the
+    records themselves are still correct for the text they were built from
+    -- what is unavailable is the *proof*, so `currency` answers `unknown`,
+    which is the honest verdict and the one thing it must never be able to
+    confuse with `current`.
+
+    **A hand-run `board_migrate --resync` does not stamp**, so a board
+    repaired that way reads `stale` until the next write through here. That
+    is the safe direction and it is deliberate: the wrong answer is a
+    `current` verdict on records nothing can vouch for, and a `stale` one
+    on records that are fine costs a re-read.
+    """
+    out = out or sys.stderr
+    if not source_rev:
+        print("records: not stamped -- no source revision to stamp, so "
+              "`board_records.currency` will answer unknown", file=out)
+        return False
+    try:
+        board_records.stamp_source_rev(board, source_rev)
+    except Exception as exc:  # noqa: BLE001 -- the message is the report
+        print(f"records: not stamped -- {type(exc).__name__}: {exc}. The "
+              "records themselves followed; only the currency stamp is "
+              "missing, so `board_records.currency` will answer unknown.",
+              file=out)
+        return False
+    print(f"records: stamped at {source_rev}")
+    return True
+
+
+def follow(path, source, source_rev=None, out=None):
+    """Bring the board records behind `path` back into line. `True` if the
+    records are current afterwards -- which includes a board that has no
+    records to keep current."""
+    out = out or sys.stderr
+    board = record_board(path)
+    if board is None:
+        return True
+    ever = seeded()
+    if ever is None:
+        print("RECORDS NOT UPDATED -- the record store could not be read, so "
+              "it may now be behind the markdown. The markdown is the source "
+              "of truth and is safe. Repair with: python3 -m "
+              f"tools.board_migrate --board {board} --resync --apply",
+              file=out)
+        return False
+    if not ever:
+        print(f"records: {board} has never been seeded, so there is nothing "
+              "to resync")
+        return True
+    ok, message = follow_records(board, source)
+    if not ok:
+        print(f"RECORDS NOT UPDATED -- the board landed in the vault, but its "
+              f"records did not follow: {message}\n"
+              "The markdown is the source of truth and is safe. Repair with: "
+              f"python3 -m tools.board_migrate --board {board} --resync "
+              "--apply", file=out)
+        return False
+    print(f"records: {message}")
+    # The stamp is reported and deliberately does NOT decide the return.
+    # The records are in line with the markdown either way; an unstamped
+    # board is one `currency` cannot speak for, which is a weaker
+    # instrument and not a store that is behind. Failing here would make
+    # `board_put` exit 4 on a write that fully succeeded.
+    stamp(board, source_rev, out=out)
+    return True
 
 
 def main(argv=None):
@@ -272,7 +446,9 @@ def main(argv=None):
         source_rev = None
 
     ok, message = push(args.path, source, source_rev=source_rev)
-    if not ok:
+    if ok:
+        print(f"tickets: {message}")
+    else:
         print(
             f"STORE NOT UPDATED -- the board landed in the vault, but the "
             f"ticket documents did not follow: {message}\n"
@@ -280,9 +456,14 @@ def main(argv=None):
             "store with: python3 -m tools.ticket_drift --sync",
             file=sys.stderr,
         )
-        return 4
-    print(f"tickets: {message}")
-    return 0
+
+    # The records are a different store in different key ranges, so a
+    # ticket push that failed says nothing about whether they can follow
+    # -- and leaving them behind as well would make one broken store into
+    # two. Both are attempted, both are reported, and either one falling
+    # behind is the same exit 4: the markdown landed and a store did not.
+    records_ok = follow(args.path, source, source_rev=source_rev)
+    return 0 if (ok and records_ok) else 4
 
 
 if __name__ == "__main__":
