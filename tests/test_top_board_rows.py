@@ -9,7 +9,7 @@ import pytest
 from unittest.mock import patch
 
 from agora_runner.nova_boards import CAPTURE_PRIORITY_SEP, PRIORITY_LABELS, STATUS_LABELS
-from agora_runner import nova_boards, nova_next
+from agora_runner import board_store, nova_boards, nova_next
 from tools import top_board_rows
 
 
@@ -49,6 +49,50 @@ def _no_live_diagnoses_read(monkeypatch):
     against.
     """
     monkeypatch.setattr(top_board_rows, "fetch_diagnoses", lambda: ("", True))
+
+
+def _store(issues=None, ideas=None):
+    """A record store holding one or both boards, built from board markdown.
+
+    `main` reads the two boards out of the records now (issue #203), so a
+    fixture that used to be a file on disk has to arrive as documents. The
+    markdown is composed into records here, by the same two calls
+    `tools.board_migrate` uses, so a fixture and a real migration cannot
+    drift apart -- a fake that hand-built the documents would be agreeing
+    with a shape no migration produces.
+
+    A board left as `None` is a board with no rows and no captures, which is
+    a legitimate state and reads as empty. A board that cannot be read is a
+    different thing entirely and is not reachable from here on purpose --
+    see `_RaisingStore`.
+
+    Accepts markdown or a `pathlib.Path` to it, because the tests below
+    write their fixtures both ways.
+    """
+    from tests.test_board_records import FakeStore
+    from agora_runner import board_document, entity_id, rank_key
+    from tools import board_migration_preflight as migration_preflight
+
+    # `_rev` because `board_records.contents` reads exactly that to tell an
+    # unmigrated store from a clean board; a registry without one raises.
+    registry = dict(entity_id.new_registry(), _rev="1-abc")
+    docs = []
+    for name, source in (("issue", issues), ("idea", ideas)):
+        if source is None:
+            continue
+        markdown = source.read_text(encoding="utf-8") \
+            if hasattr(source, "read_text") else source
+        parsed = nova_boards.parse_board(markdown)
+        rows, _projects, _milestones = migration_preflight.records(
+            parsed["items"], name, registry, details=parsed["details"])
+        docs.extend(rows)
+        keys = rank_key.sequence(len(parsed["captures"]))
+        for index, (text, replies) in enumerate(
+                zip(parsed["captures"], parsed["captureReplies"])):
+            docs.append(board_document.to_capture_document(
+                text, name, f"cap_{name}_{index + 1}",
+                rank=keys[index], replies=replies))
+    return FakeStore(docs, registry)
 
 
 def board(*rows, done=()):
@@ -146,8 +190,7 @@ def test_main_reads_both_local_boards(tmp_path, capsys):
     ideas.write_text(board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE)))
     notes = tmp_path / "notes.md"
     notes.write_text(NOTES.format(" "))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                                "--notes", str(notes)])
+    code = top_board_rows.main(["--notes", str(notes)], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0
     assert "-> idea #64" in out
@@ -188,15 +231,65 @@ def test_a_real_board_body_still_reads_as_success(monkeypatch):
     assert [r["number"] for r in top_board_rows.open_rows(text, "issue")] == [1]
 
 
+class _RaisingStore:
+    """A store that answers for one board and fails on the other.
+
+    The unreadable board used to be a `vault_tool.py get` that returned
+    `None`; against records it is an exception out of `board_store`, and
+    the two have to be treated the same or a ranking built from one of two
+    boards prints as if it were built from both.
+    """
+
+    def __init__(self, good, board):
+        self._good, self._board = good, board
+
+    def read_registry(self):
+        return self._good.read_registry()
+
+    def read_rows(self, board):
+        if board == self._board:
+            raise board_store.StoreError(f"listing {board} records: 500 {{}}")
+        return self._good.read_rows(board)
+
+    def read_captures(self, board):
+        if board == self._board:
+            raise board_store.StoreError(f"listing {board} captures: 500 {{}}")
+        return self._good.read_captures(board)
+
+
 def test_an_unreadable_board_is_said_out_loud_and_exits_nonzero(tmp_path, capsys, monkeypatch):
     """A ranking built from one of two boards is the wrong answer in the right shape."""
     issues = tmp_path / "issues.md"
+    notes = tmp_path / "notes.md"
     issues.write_text(board((10, "a high issue", BACKLOG, "2026-08-01", HIGH)))
-    monkeypatch.setattr(top_board_rows, "_fetch", lambda path: None)
-    code = top_board_rows.main(["--issues", str(issues)])
+    notes.write_text(NOTES.format(" "))
+    store = _RaisingStore(_store(issues, board()), "idea")
+    code = top_board_rows.main(["--notes", str(notes)], store=store)
     out = capsys.readouterr().out
     assert code == 1
     assert "COULD NOT READ" in out
+    assert top_board_rows.IDEAS_PATH in out
+    # The row on the board that *did* answer is still ranked -- the warning
+    # is what makes the incompleteness visible, not a refusal to print.
+    assert "issue #10" in out
+
+
+def test_a_store_that_was_never_migrated_is_unreadable_not_empty(tmp_path, capsys):
+    """`read_rows` answers `[]` for both, and only the registry tells them apart.
+
+    Read as an empty board this exits 0 and names no row, which is the
+    silent version of the failure the test above is about.
+    """
+    from tests.test_board_records import FakeStore
+
+    notes = tmp_path / "notes.md"
+    notes.write_text(NOTES.format(" "))
+    code = top_board_rows.main(["--notes", str(notes)],
+                               store=FakeStore([], {}))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "COULD NOT READ" in out
+    assert top_board_rows.ISSUES_PATH in out
     assert top_board_rows.IDEAS_PATH in out
 
 
@@ -426,8 +519,7 @@ def test_main_surfaces_captures_from_both_files(tmp_path, capsys):
                                    "an idea I typed"))
     notes = tmp_path / "notes.md"
     notes.write_text(NOTES.format(" "))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                                "--notes", str(notes)])
+    code = top_board_rows.main(["--notes", str(notes)], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0
     assert "an issue I typed" in out
@@ -462,7 +554,7 @@ def test_main_surfaces_an_unread_note(tmp_path, capsys):
     ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
     notes.write_text(NOTES.format("Stop using the metered API for anything scheduled."))
     code = top_board_rows.main(
-        ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)])
+        ["--notes", str(notes)], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0
     assert "Stop using the metered API" in out
@@ -486,7 +578,7 @@ def test_a_note_already_moved_under_read_is_not_unread(tmp_path, capsys):
     ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
     notes.write_text(NOTES.format(" "))  # his empty cursor bullet
     assert top_board_rows.main(
-        ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)]) == 0
+        ["--notes", str(notes)], store=_store(issues, ideas)) == 0
     out = capsys.readouterr().out
     assert "an old note" not in out
     assert "UNPROCESSED CAPTURES" not in out
@@ -500,7 +592,7 @@ def test_a_notes_file_that_cannot_be_read_is_said_out_loud(tmp_path, capsys):
     issues.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
     ideas.write_text(board((64, "an idea", BACKLOG, "08-12", HIGH)))
     with patch.object(top_board_rows, "_fetch", return_value=None):
-        code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas)])
+        code = top_board_rows.main([], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 1
     assert "COULD NOT READ" in out and "notes.md" in out
@@ -660,7 +752,8 @@ def test_a_comment_on_a_done_row_is_not_lost_with_the_row():
     # Against a literal, not against another call to `open_rows` -- a
     # mutation moves both sides of that equally (rubric item 13).
     assert [r["number"] for r in top_board_rows.open_rows(text, "idea")] == [10]
-    got = top_board_rows.closed_rows_waiting(text, "idea")
+    got = top_board_rows.closed_rows_waiting_from_contents(
+        nova_boards.parse_board(text), "idea")
     assert [(r["board"], r["number"]) for r in got] == [("idea", 63)]
 
 
@@ -670,7 +763,8 @@ def test_a_done_row_i_already_answered_is_not_waiting():
     text = board((63, "a finished row", DONE_STATUS, "08-22", HIGH)) + details(
         (63, "a finished row", "Problem.\n\n**Edvard, 08-22:** premature?\n\n"
                                "**Nova, 08-23 (Cycle 338):** answered."))
-    assert top_board_rows.closed_rows_waiting(text, "idea") == []
+    assert top_board_rows.closed_rows_waiting_from_contents(
+        nova_boards.parse_board(text), "idea") == []
 
 
 def test_a_closed_waiting_row_is_named_but_never_ranked_as_a_pick():
@@ -720,8 +814,7 @@ def test_main_surfaces_a_comment_on_a_closed_row(tmp_path, capsys):
                                 "Problem.\n\n**Edvard, 08-22:** premature?")),
                      encoding="utf-8")
     notes.write_text("## Read\n", encoding="utf-8")
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                                "--notes", str(notes)])
+    code = top_board_rows.main(["--notes", str(notes)], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0
     assert f"idea #63 ({DONE_STATUS})" in out
@@ -762,7 +855,8 @@ def test_a_row_in_the_done_table_is_waiting_too():
     rendered line must still name one rather than print an empty bracket."""
     text = board(done=[(63, "a finished row", "08-22", "runner#1")]) + details(
         (63, "a finished row", "Problem.\n\n**Edvard, 08-22:** premature?"))
-    got = top_board_rows.closed_rows_waiting(text, "idea")
+    got = top_board_rows.closed_rows_waiting_from_contents(
+        nova_boards.parse_board(text), "idea")
     assert [(r["number"], r["status"]) for r in got] == [(63, DONE_STATUS)]
     assert f"idea #63 ({DONE_STATUS})" in top_board_rows.render([], closed_waiting=got)
 
@@ -794,14 +888,15 @@ def _rendered(issues_md, ideas_md, ledger, cycle=None, tmp_path=None):
                        ("notes.md", "- \n\n## Read\n"), ("claims.json", ledger)):
         paths[name] = tmp_path / name
         paths[name].write_text(text, encoding="utf-8")
-    argv = ["--issues", str(paths["issues.md"]), "--ideas", str(paths["ideas.md"]),
-            "--notes", str(paths["notes.md"]), "--claims", str(paths["claims.json"])]
+    argv = ["--notes", str(paths["notes.md"]),
+            "--claims", str(paths["claims.json"])]
     if cycle is not None:
         argv += ["--cycle", str(cycle)]
     import io, contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        assert top_board_rows.main(argv) == 0
+        assert top_board_rows.main(
+            argv, store=_store(issues_md, ideas_md)) == 0
     return buf.getvalue()
 
 
@@ -1016,7 +1111,8 @@ def test_a_closed_row_owed_a_reply_is_claimable_too():
     and a comment on a Done row is where idea #63 sat for nine cycles."""
     text = board(done=((63, "premature", "2026-08-22", "runner#1"),)) + details(
         (63, "premature", "**Edvard, 08-22:** this is not actually done"))
-    closed = top_board_rows.closed_rows_waiting(text, "idea")
+    closed = top_board_rows.closed_rows_waiting_from_contents(
+        nova_boards.parse_board(text), "idea")
     assert closed[0]["replySlug"].startswith("reply-idea-63-")
     top_board_rows.apply_claims(closed, {closed[0]["replySlug"]: 99}, my_cycle=344)
     out = top_board_rows.render([], closed_waiting=closed)
@@ -1042,13 +1138,13 @@ def test_main_applies_claims_to_the_closed_rows_too(tmp_path, capsys):
                                 "**Edvard, 08-22:** this is not actually done")))
     notes = tmp_path / "notes.md"
     notes.write_text(NOTES.format(" "))
-    slug = top_board_rows.closed_rows_waiting(ideas.read_text(), "idea")[0]["replySlug"]
+    slug = top_board_rows.closed_rows_waiting_from_contents(
+        nova_boards.parse_board(ideas.read_text()), "idea")[0]["replySlug"]
     claims = tmp_path / "claims.json"
     claims.write_text('{"claims": [{"item": "%s", "cycle": 99, "state": "open",'
                       ' "at": "%s"}]}' % (slug, datetime.now(top_board_rows.OSLO).isoformat()))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                                "--notes", str(notes), "--claims", str(claims),
-                                "--cycle", "344"])
+    code = top_board_rows.main(["--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "344"], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0
     assert "idea #63 (cycle 99)" in out
@@ -1121,9 +1217,8 @@ def test_main_marks_a_spent_capture_from_the_ledger_it_reads(tmp_path, capsys):
     claims = tmp_path / "claims.json"
     claims.write_text(json.dumps(_spent(slug, 343, "journal seq race closed")))
 
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                                "--notes", str(notes), "--claims", str(claims),
-                                "--cycle", "353"])
+    code = top_board_rows.main(["--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "353"], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0
     # Still printed as a capture, still top of the page -- only the
@@ -1154,8 +1249,7 @@ def test_an_unparseable_ledger_leaves_every_claim_command_printed(tmp_path, caps
     claims = tmp_path / "claims.json"
     claims.write_text("{ not json")
 
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                                "--notes", str(notes), "--claims", str(claims)])
+    code = top_board_rows.main(["--notes", str(notes), "--claims", str(claims)], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0
     assert "[claim: issue-10]" in out
@@ -1222,9 +1316,8 @@ def test_main_marks_a_progressed_capture_from_the_ledger_it_reads(tmp_path, caps
     claims = tmp_path / "claims.json"
     claims.write_text(json.dumps(_progressed(slug, 343, "two collision surfaces remain")))
 
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                                "--notes", str(notes), "--claims", str(claims),
-                                "--cycle", "353"])
+    code = top_board_rows.main(["--notes", str(notes), "--claims", str(claims),
+                                "--cycle", "353"], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0
     assert f"[claim: {slug}]" in out
@@ -1259,8 +1352,7 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
     issues = tmp_path / "issues.md"
     issues.write_text("- the first thing he typed\n- the second thing he typed\n- \n\n"
                       + board((10, "a high issue", BACKLOG, "08-01", HIGH)))
-    code = top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                                "--notes", str(notes)])
+    code = top_board_rows.main(["--notes", str(notes)], store=_store(issues, ideas))
     out = capsys.readouterr().out
     assert code == 0, out
     assert "/api/capture/comment" in out
@@ -1279,8 +1371,7 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
     long_one = "🔴 Immediately: " + ("a capture he typed out in full on his phone " * 3).strip()
     rated.write_text("- " + long_one + "\n- \n\n"
                      + board((11, "another issue", BACKLOG, "08-02", HIGH)))
-    top_board_rows.main(["--issues", str(rated), "--ideas", str(ideas),
-                         "--notes", str(notes)])
+    top_board_rows.main(["--notes", str(notes)], store=_store(rated, ideas))
     rated_out = capsys.readouterr().out
     assert len(long_one) > 60, "the fixture has to be past the old truncation"
     assert f"target issues, index 0  ->  {long_one}" in rated_out
@@ -1290,8 +1381,7 @@ def test_the_capture_section_prints_the_address_to_answer_each_one(tmp_path, cap
     notes2.write_text(NOTES.format(""))
     issues2 = tmp_path / "issues2.md"
     issues2.write_text(board((10, "a high issue", BACKLOG, "08-01", HIGH)))
-    top_board_rows.main(["--issues", str(issues2), "--ideas", str(ideas),
-                         "--notes", str(notes2)])
+    top_board_rows.main(["--notes", str(notes2)], store=_store(issues2, ideas))
     assert "/api/capture/comment" not in capsys.readouterr().out
 
 
@@ -1438,7 +1528,8 @@ def test_a_relayed_comment_on_a_closed_row_is_marked_in_the_reply_list():
     text = text.replace("## Done\n\n| # | Item | Updated | Where |\n|---|---|---|---|",
                         "## Done\n\n| # | Item | Updated | Where |\n|---|---|---|---|\n"
                         "| [[#7 — closed\\|7]] | closed | 2026-08-29 | runner#1 |")
-    closed = top_board_rows.closed_rows_waiting(text, "issue")
+    closed = top_board_rows.closed_rows_waiting_from_contents(
+        nova_boards.parse_board(text), "issue")
     assert [c["number"] for c in closed] == [7]
     assert closed[0]["relayed"] is True
     out = top_board_rows.render(top_board_rows.open_rows(text, "issue"),
@@ -1593,9 +1684,8 @@ def test_main_ranks_by_his_project_order_when_given_the_file(tmp_path, capsys):
     notes.write_text(NOTES.format(" "))
     projects.write_text(PROJECTS_MD)
 
-    argv = ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes),
-            "--projects", str(projects)]
-    assert top_board_rows.main(argv) == 0
+    argv = ["--notes", str(notes), "--projects", str(projects)]
+    assert top_board_rows.main(argv, store=_store(issues, ideas)) == 0
     out = capsys.readouterr().out
     assert "-> idea #64" in out
     assert "PROJECTS.MD UNREADABLE" not in out
@@ -1620,8 +1710,8 @@ def test_an_unreadable_projects_file_is_said_out_loud_but_does_not_fail(
     notes.write_text(NOTES.format(" "))
     monkeypatch.setattr(top_board_rows, "fetch_projects", lambda: ("", False))
 
-    argv = ["--issues", str(issues), "--ideas", str(ideas), "--notes", str(notes)]
-    assert top_board_rows.main(argv) == 0
+    argv = ["--notes", str(notes)]
+    assert top_board_rows.main(argv, store=_store(issues, ideas)) == 0
     out = capsys.readouterr().out
     assert "PROJECTS.MD UNREADABLE" in out
     assert "COULD NOT READ" not in out
@@ -1859,7 +1949,10 @@ def test_closed_rows_waiting_from_contents_never_reaches_the_parser(monkeypatch)
     """
     def _no(*_a, **_k):
         raise AssertionError("parse_board reached from the records door")
-    monkeypatch.setattr(top_board_rows, "parse_board", _no)
+    # One namespace now: `top_board_rows` stopped importing `parse_board`
+    # when `main` moved onto the records (issue #203), so `nova_boards` is
+    # where a body that went back to it would have to reach.
+    monkeypatch.setattr(nova_boards, "parse_board", _no)
     contents = _closed_contents(
         {63: "**Edvard, 09-08:** this is not actually done."},
         [_row(63, done=True)])
@@ -1867,32 +1960,16 @@ def test_closed_rows_waiting_from_contents_never_reaches_the_parser(monkeypatch)
         contents, "idea")[0]["number"] == 63
 
 
-def test_closed_rows_waiting_door_delegates_to_the_twin(monkeypatch):
-    """The markdown-shaped function is the parse and the call, nothing else."""
-    seen = {}
-
-    def _twin(contents, board):
-        seen["board"] = board
-        seen["keys"] = sorted(contents)
-        return ["sentinel"]
-
-    monkeypatch.setattr(top_board_rows, "parse_board",
-                        lambda _md: {"captures": [], "captureReplies": {},
-                                     "items": [], "details": {}})
-    monkeypatch.setattr(top_board_rows, "closed_rows_waiting_from_contents", _twin)
-    assert top_board_rows.closed_rows_waiting("| whatever |", "issue") == ["sentinel"]
-    assert seen == {"board": "issue",
-                    "keys": ["captureReplies", "captures", "details", "items"]}
-
-
-def test_main_parses_each_board_exactly_once(tmp_path, monkeypatch):
+def test_main_reads_each_board_exactly_once(tmp_path):
     """Three readers, one read per board.
 
     Each of the three used to parse the file itself. On a string that is
     three identical answers; on `board_records.contents` it is three
     `_all_docs` pairs a write can land between, and the pick, the capture
     list and the owed replies would then be answering about three
-    different boards.
+    different boards. Counted at the store rather than at `parse_board`,
+    which is the point of the conversion: there is no parse left to count,
+    and the read that can now disagree with itself is the query.
     """
     issues = tmp_path / "issues.md"
     ideas = tmp_path / "ideas.md"
@@ -1904,31 +1981,29 @@ def test_main_parses_each_board_exactly_once(tmp_path, monkeypatch):
                         encoding="utf-8")
     notes.write_text("- \n", encoding="utf-8")
 
-    real = top_board_rows.parse_board
-    assert nova_next.parse_board is real
-    calls = []
+    inner = _store(issues, ideas)
+    reads = []
 
-    def _counted(markdown):
-        calls.append(len(markdown or ""))
-        return real(markdown)
+    class _Counting:
+        def read_registry(self):
+            return inner.read_registry()
 
-    # Counted in BOTH namespaces, because a bound import is not one name.
-    # `open_rows` and `unboarded_captures` live in `nova_next` and call
-    # *its* `parse_board`, so a counter patched only onto `top_board_rows`
-    # sees nothing when the loop hands them the file again -- which is
-    # exactly the double read this test exists to forbid, and it survived
-    # a mutation until the second patch went on.
-    monkeypatch.setattr(top_board_rows, "parse_board", _counted)
-    monkeypatch.setattr(nova_next, "parse_board", _counted)
-    top_board_rows.main(["--issues", str(issues), "--ideas", str(ideas),
-                         "--notes", str(notes), "--projects", str(notes)])
-    # Two boards, one parse each, and `notes.md` is no longer one of them.
-    # It is a capture list, not a board -- no `## Board` table and no
-    # write-ups -- so `unread_notes` asks `capture_entries` for its bullets
-    # instead of asking the board parser and discarding the row half. That
-    # third call was real until 2026-09-10 and this number is what caught
-    # it coming back.
-    assert len(calls) == 2
+        def read_rows(self, board):
+            reads.append(("rows", board))
+            return inner.read_rows(board)
+
+        def read_captures(self, board):
+            reads.append(("captures", board))
+            return inner.read_captures(board)
+
+    top_board_rows.main(["--notes", str(notes), "--projects", str(notes)],
+                        store=_Counting())
+    # One `contents` per board, and `contents` queries each key range once.
+    # `notes.md` is not among them: it is a capture list, not a board, so
+    # `unread_notes` asks `capture_entries` for its bullets rather than
+    # asking a board reader for a table that is not there.
+    assert reads == [("rows", "issue"), ("captures", "issue"),
+                     ("rows", "idea"), ("captures", "idea")]
 
 
 def test_unread_notes_reads_his_bullets_and_not_the_replies_under_them():
@@ -1968,10 +2043,10 @@ def test_unread_notes_never_reaches_the_board_parser(monkeypatch):
         raise AssertionError("unread_notes asked the board parser for a "
                              "file that is not a board")
 
-    # Both namespaces, for the reason the parse-count test above spells
-    # out: a bound import is not one name, and a refusal patched onto only
-    # `top_board_rows` would pass against a body that had gone back to
-    # `nova_boards.parse_board` under a different spelling.
-    monkeypatch.setattr(top_board_rows, "parse_board", _refuse)
+    # `nova_boards` and `nova_next`, which are the two namespaces left that
+    # bind the name -- `top_board_rows` no longer imports it at all. A
+    # refusal patched onto one is not a refusal: a bound import is not one
+    # name, and that gap survived a mutation until the second patch went on.
     monkeypatch.setattr(nova_boards, "parse_board", _refuse)
+    monkeypatch.setattr(nova_next, "parse_board", _refuse)
     assert [n["text"] for n in top_board_rows.unread_notes("- a note\n")] == ["a note"]

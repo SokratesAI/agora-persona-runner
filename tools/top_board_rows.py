@@ -69,9 +69,12 @@ collision surface of the three; the other two are closed.
 
 Vault I/O is inside rather than outside, unlike every other tool here,
 and that is the point of the tool: an opening read that takes three
-commands is one a cycle will skip. `--issues`/`--ideas` take local files
-instead, which is how the tests drive it and how the runner pod (which
-has no vault client) can use it at all.
+commands is one a cycle will skip. The two boards come out of the record
+store rather than the vault (issue #203); `--notes` is still a local file,
+because `notes.md` is a capture list with no `## Board` table and
+`board_migrate` never migrates it. There is no `--issues`/`--ideas` any
+more -- a local markdown copy of a board is a second source of truth, not
+a cheaper read of the first, and the tests hand over a fake `store=`.
 """
 
 import argparse
@@ -88,9 +91,10 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
     BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, capture_entries,
-    is_relayed, parse_board, parse_milestone_pins, parse_project_meta,
+    is_relayed, parse_milestone_pins, parse_project_meta,
     status_key, unanswered_comment_bodies_from_details,
 )
+from agora_runner import board_records, board_store
 # The ranking itself lives in `agora_runner` now, not here. The site had to
 # be able to import it and could not: `tools/` is not in the image. Same
 # functions, one definition -- see `nova_next`'s docstring.
@@ -380,33 +384,6 @@ def _reply_claim(row):
     return f"  [reply-claim: {slug}]" if slug else ""
 
 
-def closed_rows_waiting(markdown, board):
-    """Closed rows whose write-up still ends on one of his comments.
-
-    `open_rows` computes `waiting` for every row and then throws away
-    every closed one, so a question asked on a row already marked ✅ Done
-    was read out of the file and discarded in the same function. Sokrates
-    reported the consequence rather than the cause, `issues.md`
-    2026-08-23: a comment left on `ideas #63` on 08-22 flagging that the
-    row's Done status looked premature sat through **nine cycles**
-    (328-336) with no reply and no change, because *"step 1's read
-    genuinely skips comment threads on Done items"*.
-
-    A comment is not a status. Closing a row says the work is finished;
-    it says nothing about whether he has been answered, and the case
-    where the two disagree is the one that matters most -- a comment on a
-    Done row is very often *"this is not actually done"*, which is
-    exactly what #63's said.
-
-    These are returned separately and never ranked. `rank` names the row
-    a cycle should take, and a closed row is not work at any rating; the
-    thing owed here is a reply, which `render` asks for by name. Folding
-    them into `rows` would have put a Done row at the top of the pick
-    list, which is the opposite failure and just as wrong.
-    """
-    return closed_rows_waiting_from_contents(parse_board(markdown or ""), board)
-
-
 def closed_rows_waiting_from_contents(contents, board):
     """The same answer, from `parse_board`'s return value instead of the file.
 
@@ -422,8 +399,12 @@ def closed_rows_waiting_from_contents(contents, board):
     which can. This function decides a row is owed a reply by intersecting
     the two halves, so a write landing between them drops a comment on a
     Done row out of the answer entirely: exactly the nine-cycle silence on
-    `ideas #63` that `closed_rows_waiting` exists to prevent, back again
+    `ideas #63` that this function exists to prevent, back again
     with a different cause. One `contents` makes them the same read.
+
+    The markdown twin that used to stand in front of this one is gone:
+    nothing outside this module ever called it, and after the switchover
+    there is no board markdown for it to take.
     """
     waiting = unanswered_comment_bodies_from_details(contents["details"])
     return [{
@@ -886,14 +867,14 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     return "\n".join(out)
 
 
-def main(argv=None):
+def main(argv=None, store=board_store):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--issues", help="local issues.md instead of a vault fetch")
-    ap.add_argument("--ideas", help="local ideas.md instead of a vault fetch")
-    # A local run has to name all three. Naming two and letting the third
-    # fall through to the vault is what CI caught: it is green on this box,
-    # where `vault_tool.py` exists, and exits 1 anywhere else -- a test that
-    # passes for a reason that has nothing to do with what it asserts.
+    # `--issues`/`--ideas` are gone: the two boards are records now, and a
+    # local markdown copy of one is a second source of truth rather than a
+    # cheaper read of the same one (issue #203). A test hands over a fake
+    # `store=` instead, which is the same seam every other converted writer
+    # uses. `--notes` stays, because `notes.md` is a capture list with no
+    # `## Board` table and `board_migrate` never migrates it.
     ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
     ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
     ap.add_argument("--projects",
@@ -934,28 +915,27 @@ def main(argv=None):
     captures = []
     closed_waiting = []
     missing = []
-    for board, local, path in (("issue", args.issues, ISSUES_PATH),
-                               ("idea", args.ideas, IDEAS_PATH)):
-        if local:
-            with open(local, encoding="utf-8") as fh:
-                text = fh.read()
-        else:
-            text = _fetch(path)
+    for board, path in (("issue", ISSUES_PATH), ("idea", IDEAS_PATH)):
         # A board that could not be read is said out loud rather than
         # silently ranked as empty -- a top row chosen from one of two
-        # boards is exactly the wrong answer wearing the right shape.
-        if text is None:
-            missing.append(path)
+        # boards is exactly the wrong answer wearing the right shape. The
+        # store raises where the old vault read answered `None`, and an
+        # unmigrated store raises too, which is the state that most needs
+        # saying: `read_rows` cannot tell "never migrated" from "no open
+        # rows", and reading the second as the first is a silent empty board.
+        try:
+            contents = board_records.contents(board, store=store)
+        except (board_records.RecordError, board_store.StoreError) as problem:
+            missing.append(f"{path} ({problem})")
             continue
-        # One parse, three readers. Each of the three used to take the file
+        # One read, three readers. Each of the three used to take the file
         # and parse it itself, so a board was read three times per pass --
-        # free on a string and three `board_records.contents` calls once
-        # issue #203 lands, with a write able to land between any two of
+        # free on a string and three `board_records.contents` calls now that
+        # issue #203 has landed, with a write able to land between any two of
         # them. The pick, the capture list and the owed replies have to come
         # off one read of one board or they can contradict each other: a
         # capture whose row was written between reads is handed to a waking
         # cycle as unprocessed, above every row on the board.
-        contents = parse_board(text or "")
         rows.extend(open_rows_from_contents(contents, board))
         captures.extend(unboarded_captures_from_contents(contents, board))
         closed_waiting.extend(closed_rows_waiting_from_contents(contents, board))

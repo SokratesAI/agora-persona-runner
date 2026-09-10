@@ -129,9 +129,14 @@ def test_the_page_prints_it_above_the_board(tmp_path, monkeypatch, capsys):
     empty = tmp_path / "empty.md"
     empty.write_text("", encoding="utf-8")
     monkeypatch.setattr(top_board_rows, "fetch_diagnoses", lambda: ("", True))
-    top_board_rows.main([
-        "--issues", str(empty), "--ideas", str(empty), "--notes", str(empty),
-        "--claims", str(empty), "--projects", str(projects_file)])
+    # Two migrated boards with nothing on them: the boards are records now
+    # (issue #203), and an empty markdown file is no longer a way to say
+    # "this board has no rows".
+    from tests.test_top_board_rows import _store
+    top_board_rows.main(
+        ["--notes", str(empty), "--claims", str(empty),
+         "--projects", str(projects_file)],
+        store=_store("", ""))
     printed = capsys.readouterr().out
     assert printed.index("FORCED — LOW SATISFACTION") < \
         printed.index("TOP OF EDVARD'S BOARD")
