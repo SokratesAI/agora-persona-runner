@@ -184,37 +184,119 @@ def board_markdown(milestone):
 """
 
 
-def test_the_cli_refuses_a_milestone_no_board_row_carries(tmp_path):
+def records_store(milestone):
+    """A record store holding one open Nova row in `milestone`.
+
+    Not patched onto the module: a test that both patches the global and
+    passes `store=` cannot tell an honoured argument from an ignored one,
+    which is how a `store=` parameter becomes a decoration a real caller's
+    read lands past (cycle 1345 caught exactly that in `nova_idea_pool`).
+    """
+    from tests.test_board_records import migrated
+
+    _parsed, fake = migrated(board="idea", markdown=board_markdown(milestone))
+    return fake
+
+
+def pin_store(monkeypatch, milestone):
+    """`tools.milestone_pin` reading a record store holding one such row."""
+    from tools import milestone_pin
+
+    fake = records_store(milestone)
+    monkeypatch.setattr(milestone_pin, "board_store", fake)
+    return fake
+
+
+def test_the_cli_refuses_a_milestone_no_board_row_carries(tmp_path,
+                                                          monkeypatch):
     """A typo in `--milestone` writes a pin that resolves to nothing and is
-    ignored by the ranking forever, with no error anywhere. `--boards` is
+    ignored by the ranking forever, with no error anywhere. `--board` is
     what turns that into an exit code."""
     from tools.milestone_pin import main
-    board = tmp_path / "ideas.md"
-    board.write_text(board_markdown("Picking"), encoding="utf-8")
+    pin_store(monkeypatch, "Picking")
     pins = tmp_path / "milestones.md"
     assert main(["--file", str(pins), "--project", "Nova",
                  "--milestone", "Pikcing", "--position", "1",
-                 "--boards", str(board)]) == 2
+                 "--board", "idea"]) == 2
     assert not pins.exists()
     assert main(["--file", str(pins), "--project", "Nova",
                  "--milestone", "Picking", "--position", "1",
-                 "--boards", str(board)]) == 0
+                 "--board", "idea"]) == 0
     assert parse_milestone_pins(pins.read_text()) == {("nova", "picking"): 1}
 
 
-def test_the_cli_unpins_without_needing_the_milestone_to_still_exist(tmp_path):
+def test_the_cli_unpins_without_needing_the_milestone_to_still_exist(
+        tmp_path, monkeypatch):
     """Removing a pin whose milestone was renamed away is exactly when the
     existence check must not fire."""
     from tools.milestone_pin import main
-    board = tmp_path / "ideas.md"
-    board.write_text(board_markdown("Renamed"), encoding="utf-8")
+    pin_store(monkeypatch, "Renamed")
     pins = tmp_path / "milestones.md"
     pins.write_text(set_milestone_pin("", "Nova", "Picking", 1, "09-07"),
                     encoding="utf-8")
     assert main(["--file", str(pins), "--project", "Nova",
                  "--milestone", "Picking", "--position", "0",
-                 "--boards", str(board)]) == 0
+                 "--board", "idea"]) == 0
     assert parse_milestone_pins(pins.read_text()) == {}
+
+
+def test_the_check_reads_the_records_and_never_a_board_file(monkeypatch):
+    """The point of the conversion, and the only assertion that can see it.
+
+    `known_milestones` returns the same set either way, so nothing about
+    its answer can tell a records read from a `parse_board` read. What
+    separates them is which function runs: make `parse_board` raise in
+    both namespaces and the check must still answer. This is also what
+    keeps `agora_runner/nova_next.py`'s markdown entry points free to be
+    deleted -- this module was their last caller outside the tests.
+    """
+    from agora_runner import nova_boards, nova_next
+    from tools import milestone_pin
+
+    def refuse(_markdown):
+        raise AssertionError("a board file was parsed")
+
+    # Built first: the fixture itself parses a board to fill the store,
+    # which is the migration, not the read under test. And deliberately
+    # not patched onto the module -- `store=` has to be the thing that
+    # answers, or the argument is decoration.
+    store = records_store("Picking")
+    monkeypatch.setattr(nova_boards, "parse_board", refuse)
+    monkeypatch.setattr(nova_next, "parse_board", refuse)
+    assert milestone_pin.known_milestones(["idea"], store=store) == {
+        ("nova", "picking")}
+
+
+def test_a_row_in_no_milestone_contributes_nothing_to_the_check():
+    """The empty `Milestone` cell is the common case on his boards, and it
+    must not become a `(project, "")` pair the check would then accept.
+    `--milestone ""` reaching `known_milestones` is a typo, not a milestone,
+    and the set is the only place that can tell.
+    """
+    from tools import milestone_pin
+
+    assert milestone_pin.known_milestones(
+        ["idea"], store=records_store("")) == set()
+
+
+def test_an_unmigrated_store_refuses_rather_than_pinning_nothing(tmp_path,
+                                                                 monkeypatch):
+    """A board that has never been migrated answers `[]` for its rows, which
+    is the same value a board whose rows were all closed answers with. Taken
+    quietly that refuses every pin forever with "no open row carries it",
+    which is a sentence about his board and not about the store. So the
+    refusal from `board_records.contents` is printed as itself, and exit 1
+    separates it from the exit 2 a genuine typo gets.
+    """
+    from tools import milestone_pin
+    from tests.test_board_records import FakeStore
+
+    monkeypatch.setattr(milestone_pin, "board_store", FakeStore([], {}))
+    pins = tmp_path / "milestones.md"
+    assert milestone_pin.main(["--file", str(pins), "--project", "Nova",
+                               "--milestone", "Picking", "--position", "1",
+                               "--board", "idea"]) == 1
+    assert not pins.exists()
 
 
 def test_top_board_rows_reads_the_pins(monkeypatch):
