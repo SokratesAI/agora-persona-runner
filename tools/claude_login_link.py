@@ -331,6 +331,91 @@ def load_session(path: str) -> dict:
         return json.load(handle)
 
 
+def sessions_in(document: dict):
+    """Every session the file carries, newest first.
+
+    One file, more than one session, because `--force` used to throw the old
+    one away. On 2026-09-10 13:41 a `start --force` replaced the 10:17 session
+    fifty seconds before he pasted the code for that 10:17 link -- the code was
+    seconds old and perfectly good, and the verifier that could have spent it
+    had been overwritten by the newer mint. Anthropic does not invalidate an
+    authorize URL when we mint another one; only this file did.
+
+    The newest session stays at the top level, exactly where every reader has
+    always looked for it, and the ones it replaced sit under `superseded`. So a
+    file written before this existed reads as a one-session document rather
+    than as an error.
+    """
+    if not isinstance(document, dict):
+        return []
+    newest = {k: v for k, v in document.items() if k != "superseded"}
+    older = document.get("superseded")
+    older = [s for s in older if isinstance(s, dict)] if isinstance(older, list) else []
+    return [newest] + older
+
+
+def unspent_sessions(document: dict, ttl=SESSION_TTL_SECONDS, now=None):
+    """`sessions_in`, minus the ones whose link has run out its hour.
+
+    Same clock and same TTL as `live_session`, so "the link is still live" is
+    one answer here rather than two that drift apart.
+    """
+    now = time.time() if now is None else now
+    live = []
+    for session in sessions_in(document):
+        created = session.get("created_at")
+        if isinstance(created, (int, float)) and now - created >= ttl:
+            continue
+        # A session with no usable `created_at` is kept. Every session written
+        # before that field existed is in that state, and "I cannot tell how
+        # old this is" must not become "refused" -- that would take a working
+        # exchange away from a box holding a perfectly good verifier, which is
+        # the same call `finish` already makes about a missing User-Agent.
+        live.append(session)
+    return live
+
+
+def session_for_state(document: dict, state: str):
+    """The session that minted `state`, or None.
+
+    The state is what ties his pasted code to a verifier, so this is the only
+    lookup that can be right when more than one link has gone out.
+
+    **It does not apply the TTL, and that is deliberate.** The hour in
+    `SESSION_TTL_SECONDS` is this loop's own bookkeeping about how long a link
+    is worth advertising; Anthropic decides whether a code is still good, and
+    the answer to that is one HTTP request away. Refusing here would turn a
+    code that would have worked into a local `REFUSED`, which is the exact
+    class of failure this whole module keeps paying for. The TTL's job is
+    `supersede`: bounding what the file carries forward.
+    """
+    if not state:
+        return None
+    for session in sessions_in(document):
+        if session.get("state") == state:
+            return session
+    return None
+
+
+def supersede(document: dict, ttl=SESSION_TTL_SECONDS, now=None):
+    """What the next `start` should carry forward under `superseded`.
+
+    The document being replaced, plus whatever it was already carrying, with
+    the expired ones dropped. There is no cap on the length: the TTL is the
+    cap, and a count would be a number I invented on top of one I measured.
+
+    **A session with no usable `created_at` is dropped here even though
+    `unspent_sessions` keeps it**, and the two answers differ on purpose. The
+    question there is "can this still be spent", where an unknown age must not
+    read as expired; the question here is "should this be carried forward
+    forever", and a session the TTL can never retire is exactly what makes the
+    file grow without bound. So an undated session gets one last chance to be
+    spent against the mint that replaces it, and no more.
+    """
+    return [session for session in unspent_sessions(document, ttl=ttl, now=now)
+            if isinstance(session.get("created_at"), (int, float))]
+
+
 def _post_json(url: str, body: dict, timeout: int = 30, user_agent: str | None = None):
     headers = {"Content-Type": "application/json"}
     if user_agent:
@@ -457,33 +542,43 @@ def describe(credential: dict) -> list:
     return lines
 
 
-def code_from_messages(rows, state: str):
-    """(code, message id) for the newest unacked Telegram message that carries
-    a code for *this* session, or (None, None).
+def code_from_messages(rows, states):
+    """(code, message id, state) for the newest unacked Telegram message that
+    carries a code for one of `states`, or (None, None, None).
 
     Matching on the state rather than on "the newest message" is the whole
     filter. He pastes `<code>#<state>`, and a stale reply to a link this loop
     already invalidated is indistinguishable from a fresh one by arrival time
     alone -- `finish` would then refuse on the state mismatch and the real
-    code, sitting one message further down, would never be tried."""
-    if not isinstance(rows, list) or not state:
+    code, sitting one message further down, would never be tried.
+
+    It takes every state the session file carries rather than only the
+    newest, because he answers the link he is looking at and that is not
+    always the last one this loop minted -- see `sessions_in`. The state comes back with
+    the code so the caller knows which verifier to spend it against; two
+    sessions can be live at once and only one of them can exchange it.
+    """
+    if isinstance(states, str):
+        states = [states]
+    wanted = {s for s in (states or []) if s}
+    if not isinstance(rows, list) or not wanted:
         # Without a state there is nothing to match on, and `split_pasted_code`
         # answers None for the state half of any message with no `#` in it --
-        # so a falsy state here would claim "thanks" as a code.
-        return None, None
+        # so an empty set here would claim "thanks" as a code.
+        return None, None, None
     for row in reversed(rows):
         if not isinstance(row, dict):
             continue
         code, pasted = split_pasted_code(str(row.get("text") or ""))
-        if code and pasted == state:
-            return code, row.get("id")
-    return None, None
+        if code and pasted in wanted:
+            return code, row.get("id"), pasted
+    return None, None, None
 
 
-def await_code(state: str, timeout: float, poll: float = 15.0,
+def await_code(states, timeout: float, poll: float = 15.0,
                fetch_rows=None, sleep=time.sleep, now=time.monotonic):
-    """Block until he replies with a code for this session, or `timeout`
-    seconds pass. Returns (code, message id) or (None, None).
+    """Block until he replies with a code for one of these sessions, or
+    `timeout` seconds pass. Returns (code, message id, state) or three Nones.
 
     This exists because the code, not the link, is what expires. A link lives
     an hour; the authorization code behind it is good for minutes. On
@@ -510,12 +605,12 @@ def await_code(state: str, timeout: float, poll: float = 15.0,
         except Exception as unreachable:  # the bridge is not worth dying over
             print(f"  inbox unreadable ({unreachable}) -- retrying")
             rows = []
-        code, message_id = code_from_messages(rows, state)
+        code, message_id, matched = code_from_messages(rows, states)
         if code is not None:
-            return code, message_id
+            return code, message_id, matched
         remaining = deadline - now()
         if remaining <= 0:
-            return None, None
+            return None, None, None
         sleep(min(poll, remaining))
 
 
@@ -604,6 +699,17 @@ def _cmd_start(args) -> int:
     verifier, challenge = pkce_pair()
     state = secrets.token_urlsafe(24)
     url = authorize_url(config, challenge, state, scopes)
+    # **The link this one replaces is kept, not thrown away.** `--force` used
+    # to overwrite the file, and the verifier it overwrote was the only thing
+    # that could spend a code for the link already on his phone. That cost a
+    # real code on 2026-09-10 at 13:41, fifty seconds after the mint -- see
+    # `sessions_in`. Anthropic did not invalidate that link; this file did.
+    try:
+        carried = supersede(load_session(args.session))
+    except (OSError, ValueError):
+        # No file, or an unreadable one. Nothing to carry, and refusing here
+        # would take the first login on a fresh box away over a missing file.
+        carried = []
     save_session(
         args.session,
         {
@@ -614,8 +720,12 @@ def _cmd_start(args) -> int:
             "redirect_uri": config["manual_redirect_url"],
             "user_agent": user_agent,
             "created_at": time.time(),
+            "superseded": carried,
         },
     )
+    if carried:
+        print(f"carrying {len(carried)} unspent session(s) forward; a code for "
+              "any of them can still be spent")
     print(f"scopes from {source}: {' '.join(scopes)}")
     print(f"token exchange will send User-Agent: {user_agent}")
     print(f"session saved to {args.session} (0600)")
@@ -644,14 +754,22 @@ def _cmd_start(args) -> int:
 
 def _cmd_finish(args) -> int:
     try:
-        session = load_session(args.session)
+        document = load_session(args.session)
     except (OSError, ValueError) as problem:
         print(f"CANNOT SEE  no usable session at {args.session}: {problem}")
         return 1
     code, state = split_pasted_code(args.code)
-    if state is not None and state != session.get("state"):
-        print("REFUSED  the state in that code is not the one this session minted")
-        return 2
+    carried = sessions_in(document)
+    session = carried[0] if carried else {}
+    if state is not None:
+        # Any unspent session, not only the newest: he answers the link he is
+        # looking at, and `start --force` now keeps the one it replaced.
+        matched = session_for_state(document, state)
+        if matched is None:
+            print("REFUSED  the state in that code matches no session "
+                  f"in {args.session}")
+            return 2
+        session = matched
     if not session.get("user_agent"):
         # Every session on disk today was minted before `start` wrote this
         # field. Reading it back out of the binary is the whole point, but an
@@ -699,24 +817,28 @@ def _cmd_wait(args) -> int:
     except (OSError, ValueError) as problem:
         print(f"CANNOT SEE  no usable session at {args.session}: {problem}")
         return 1
-    state = session.get("state")
-    if not state:
+    # Every state the file carries, for `session_for_state`'s reason: a reply
+    # to the link he is looking at is worth spending whether or not this loop
+    # has stopped advertising it.
+    states = [s.get("state") for s in sessions_in(session) if s.get("state")]
+    if not states:
         print(f"CANNOT SEE  the session at {args.session} carries no state to match on")
         return 1
-    print(f"waiting up to {int(args.timeout)}s for a code ending in #{state}")
-    code, message_id = await_code(state, args.timeout, poll=args.poll)
+    print(f"waiting up to {int(args.timeout)}s for a code ending in "
+          + " or ".join("#" + s for s in states))
+    code, message_id, matched = await_code(states, args.timeout, poll=args.poll)
     if code is None:
         print(
-            f"REFUSED  no reply carrying this session's state in {int(args.timeout)}s -- "
+            f"REFUSED  no reply carrying a state this file knows in {int(args.timeout)}s -- "
             "the link is still live, so `finish --code` works whenever it arrives"
         )
         return 2
-    print(f"got a code from Telegram message #{message_id}")
+    print(f"got a code from Telegram message #{message_id} for #{matched}")
     status = _cmd_finish(
         argparse.Namespace(
             session=args.session,
             binary=args.binary,
-            code=f"{code}#{state}",
+            code=f"{code}#{matched}",
             install=args.install,
         )
     )

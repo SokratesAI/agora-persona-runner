@@ -621,18 +621,22 @@ def test_the_code_is_matched_on_this_sessions_state_not_on_arrival_order():
         {"id": 3, "text": "right-code#live-state"},
         {"id": 4, "text": "thanks"},
     ]
-    assert login.code_from_messages(rows, "live-state") == ("right-code", 3)
-    assert login.code_from_messages(rows, "previous-state") == ("old-code", 1)
-    assert login.code_from_messages(rows, "never-minted") == (None, None)
-    assert login.code_from_messages(rows, None) == (None, None)
+    assert login.code_from_messages(rows, "live-state") == ("right-code", 3, "live-state")
+    assert login.code_from_messages(rows, "previous-state") == ("old-code", 1, "previous-state")
+    assert login.code_from_messages(rows, "never-minted") == (None, None, None)
+    assert login.code_from_messages(rows, None) == (None, None, None)
+    # Two links live at once: the newest reply wins, and it names which of the
+    # two states it answered so the caller spends the matching verifier.
+    assert login.code_from_messages(
+        rows, ["previous-state", "live-state"]) == ("right-code", 3, "live-state")
 
 
 def test_a_bare_code_with_no_state_is_not_claimed_by_any_session():
     """`split_pasted_code` returns None for the state half when he pastes only
     the code, and None must not match a session whose state is missing."""
     rows = [{"id": 9, "text": "just-the-code"}]
-    assert login.code_from_messages(rows, "live-state") == (None, None)
-    assert login.code_from_messages("not a list", "live-state") == (None, None)
+    assert login.code_from_messages(rows, "live-state") == (None, None, None)
+    assert login.code_from_messages("not a list", "live-state") == (None, None, None)
 
 
 def test_await_code_returns_the_code_as_soon_as_it_arrives():
@@ -651,7 +655,7 @@ def test_await_code_returns_the_code_as_soon_as_it_arrives():
     assert login.await_code(
         "live-state", timeout=600, poll=15,
         fetch_rows=fetch_rows, sleep=sleep, now=lambda: ticks["t"],
-    ) == ("the-code", 7)
+    ) == ("the-code", 7, "live-state")
     assert len(reads) == 3
     assert ticks["t"] == 30.0
 
@@ -665,7 +669,7 @@ def test_await_code_gives_up_at_the_deadline_and_never_sleeps_past_it():
     assert login.await_code(
         "live-state", timeout=40, poll=15,
         fetch_rows=lambda: [], sleep=sleep, now=lambda: ticks["t"],
-    ) == (None, None)
+    ) == (None, None, None)
     # 15 + 15 + 10: the last sleep is clamped to what is left, so a caller
     # that asked for 40 seconds is never held for 45.
     assert ticks["t"] == 40.0
@@ -687,7 +691,7 @@ def test_an_unreadable_inbox_is_retried_rather_than_ending_the_wait(capsys):
     assert login.await_code(
         "live-state", timeout=600, poll=15,
         fetch_rows=fetch_rows, sleep=sleep, now=lambda: ticks["t"],
-    ) == ("the-code", 4)
+    ) == ("the-code", 4, "live-state")
     assert "bridge down" in capsys.readouterr().out
 
 
@@ -705,7 +709,7 @@ def test_wait_acks_only_a_code_it_actually_spent(tmp_path, monkeypatch, capsys):
     acked = []
     monkeypatch.setattr(telegram_inbox, "ack", lambda through, *a, **k: acked.append(through) or (0, "read through #%s" % through))
     monkeypatch.setattr(login, "await_code",
-                        lambda state, timeout, poll=15.0: ("the-code", 11))
+                        lambda states, timeout, poll=15.0: ("the-code", 11, "live-state"))
 
     monkeypatch.setattr(login, "_post_json", lambda *a, **k: (400, {"error": "invalid_grant"}))
     assert login.main(["--session", str(session), "wait", "--timeout", "1"]) == 2
@@ -723,3 +727,116 @@ def test_wait_refuses_a_session_with_no_state_rather_than_matching_none(tmp_path
     session.write_text(json.dumps({"code_verifier": "v", "created_at": 0}))
     assert login.main(["--session", str(session), "wait", "--timeout", "1"]) == 1
     assert "no state" in capsys.readouterr().out
+
+
+def test_a_forced_mint_keeps_the_link_it_replaced_spendable(tmp_path, monkeypatch, capsys):
+    """The bug this cost, in one test. On 2026-09-10 at 13:41 a `start --force`
+    replaced the 10:17 session fifty seconds before he pasted the code for the
+    10:17 link. The code was seconds old and good; the verifier that could
+    have spent it had just been overwritten, so the reply was unusable and he
+    had to be asked to tap a second link."""
+    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE_WITH_UA)
+    session = tmp_path / "session.json"
+    creds = str(tmp_path / "absent.json")
+    assert login.main(["--session", str(session), "start", "--credentials", creds]) == 0
+    first = json.loads(session.read_text())
+    assert login.main([
+        "--session", str(session), "start", "--credentials", creds, "--force",
+    ]) == 0
+    second = json.loads(session.read_text())
+    assert second["state"] != first["state"]
+
+    # Both verifiers are still on disk, and each state finds its own -- not
+    # merely "a session", which would exchange the wrong verifier and fail.
+    assert login.session_for_state(second, first["state"])["code_verifier"] \
+        == first["code_verifier"]
+    assert login.session_for_state(second, second["state"])["code_verifier"] \
+        == second["code_verifier"]
+
+    # And `finish` spends the replaced one, which is the whole point: before
+    # this it answered REFUSED on the state.
+    sent = {}
+
+    def post(url, body, timeout=30, user_agent=None):
+        sent.update(body)
+        return 200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}
+
+    monkeypatch.setattr(login, "_post_json", post)
+    assert login.main([
+        "--session", str(session), "finish", "--code", "the-code#" + first["state"],
+    ]) == 0
+    assert sent["code_verifier"] == first["code_verifier"]
+
+
+def test_a_state_no_session_ever_minted_is_still_refused(tmp_path, monkeypatch, capsys):
+    """Widening `finish` to every session on disk must not widen it to any
+    state at all -- a code carrying a state nothing here minted has no
+    verifier behind it and cannot be exchanged."""
+    monkeypatch.setattr(login, "read_binary_text", lambda path=None: BUNDLE_WITH_UA)
+    session = tmp_path / "session.json"
+    creds = str(tmp_path / "absent.json")
+    assert login.main(["--session", str(session), "start", "--credentials", creds]) == 0
+    monkeypatch.setattr(login, "_post_json",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("no exchange should be attempted")))
+    assert login.main([
+        "--session", str(session), "finish", "--code", "the-code#never-minted",
+    ]) == 2
+    assert "matches no session" in capsys.readouterr().out
+
+
+def test_supersede_drops_what_the_ttl_can_never_retire():
+    """`unspent_sessions` keeps an undated session so a code for it can still
+    be spent; `supersede` drops it, because a session with no clock never
+    expires and carrying it forward would grow the file without bound."""
+    document = {
+        "state": "newest", "created_at": 1000.0,
+        "superseded": [
+            {"state": "recent", "created_at": 990.0},
+            {"state": "ancient", "created_at": 10.0},
+            {"state": "undated"},
+        ],
+    }
+    live = [s["state"] for s in login.unspent_sessions(document, ttl=60, now=1010.0)]
+    assert live == ["newest", "recent", "undated"], live
+    carried = [s["state"] for s in login.supersede(document, ttl=60, now=1010.0)]
+    assert carried == ["newest", "recent"], carried
+
+
+def test_a_file_written_before_superseded_existed_reads_as_one_session():
+    """Every session file on disk today has no `superseded` key. It must read
+    as a one-session document rather than as an error or an empty list."""
+    legacy = {"state": "s", "code_verifier": "v", "created_at": 0}
+    assert login.sessions_in(legacy) == [legacy]
+    assert login.session_for_state(legacy, "s") == legacy
+    assert login.sessions_in({}) == [{}]
+    assert login.sessions_in(None) == []
+
+
+def test_wait_watches_every_state_the_file_carries(tmp_path, monkeypatch, capsys):
+    """He answers the link he is looking at, which is not always the newest."""
+    session = tmp_path / "session.json"
+    login.save_session(str(session), {
+        "code_verifier": "new-v", "state": "newest", "client_id": "c",
+        "token_url": "u", "redirect_uri": "r", "user_agent": "axios/1.15.2",
+        "created_at": 0,
+        "superseded": [{
+            "code_verifier": "old-v", "state": "older", "client_id": "c",
+            "token_url": "u", "redirect_uri": "r", "user_agent": "axios/1.15.2",
+            "created_at": 0,
+        }],
+    })
+    watched = {}
+
+    def fake_await(states, timeout, poll=15.0):
+        watched["states"] = list(states)
+        return "the-code", 12, "older"
+
+    monkeypatch.setattr(login, "await_code", fake_await)
+    monkeypatch.setattr(login, "_post_json", lambda url, body, **k: (
+        200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60})
+        if body["code_verifier"] == "old-v" else (400, {"error": "invalid_grant"}))
+    from tools import telegram_inbox
+    monkeypatch.setattr(telegram_inbox, "ack", lambda through, *a, **k: (0, "ok"))
+    assert login.main(["--session", str(session), "wait", "--timeout", "1"]) == 0
+    assert watched["states"] == ["newest", "older"], watched
