@@ -351,6 +351,24 @@ class WritableFakeStore(FakeStore):
         self.registry = dict(registry, _rev="2-registry")
         return self.registry
 
+    def write_capture(self, doc):
+        """Store one capture by its own id, and remember what was sent.
+
+        Dumb about `board_store.write_capture`'s rules for the class
+        docstring's reason: it does not refuse a revisionless document and it
+        does not short-circuit an unchanged one. Its whole job is to let
+        `board_write.change_capture_text`'s after-check see what actually
+        landed, and a fake that re-spelled the refusals would make a test of
+        them agree with itself.
+        """
+        self.calls.append(("write_capture", dict(doc)))
+        doc_id = board_document.capture_document_id(
+            doc["board"], doc["captureId"])
+        stored = dict(doc, _id=doc_id, _rev="2-written")
+        self.docs = [held for held in self.docs
+                     if held.get("_id") != doc_id] + [stored]
+        return stored
+
     def delete_capture(self, doc):
         """Remove one capture by its own id, and remember the document sent.
 
@@ -581,3 +599,54 @@ def test_capture_at_reaches_for_no_row():
     store.read_rows = lambda board: asked.append(board) or []
     board_records.capture_at("issue", 0, store=store)
     assert asked == []
+
+
+def test_capture_documents_answers_the_whole_list_his_board_shows():
+    """The walk `tools.close_done_captures` needs: every bullet, in his
+    order, in one read rather than one `_all_docs` query per position."""
+    _parsed, store = migrated()
+    shown = board_records.contents("issue", store=store)["captures"]
+    walked = board_records.capture_documents("issue", store=store)
+    assert [doc["text"] for doc in walked] == shown
+
+
+def test_capture_documents_follows_the_rank_and_not_the_lexical_id_order():
+    """Same bug as `capture_at`'s, one level up: a walk in `_all_docs` order
+    would report a bullet's position as the store's rather than his, and the
+    caller marks a bullet by position."""
+    store = _capture_store(("cap_1", "typed first", "c"),
+                           ("cap_10", "typed later", "a"),
+                           ("cap_2", "typed second", "b"))
+    assert [doc["text"] for doc in
+            board_records.capture_documents("issue", store=store)] == [
+        "typed later", "typed second", "typed first"]
+
+
+def test_capture_documents_hands_back_the_revisions_they_were_read_at():
+    """`change_capture_text` and `delete_capture` both refuse a document
+    without one, and this is every caller's only read."""
+    store = _capture_store(("cap_1", "first", "a"), ("cap_2", "second", "b"))
+    assert [doc["_rev"] for doc in
+            board_records.capture_documents("issue", store=store)] == [
+        "1-a", "1-a"], "the fixture stamps every document 1-a; what is being \
+asserted is that a revision comes back at all, not which one"
+
+
+def test_capture_documents_reaches_for_no_row():
+    """The rows are a separate key range and a separate `_all_docs` call."""
+    _parsed, store = migrated()
+    asked = []
+    store.read_rows = lambda board: asked.append(board) or []
+    board_records.capture_documents("issue", store=store)
+    assert asked == []
+
+
+def test_capture_at_reads_the_captures_once_through_capture_documents():
+    """One rule for the order, in one place. A `capture_at` that re-derived
+    it could drift from the walk above and point at a different bullet."""
+    _parsed, store = migrated()
+    reads = []
+    real = store.read_captures
+    store.read_captures = lambda board: reads.append(board) or real(board)
+    board_records.capture_at("issue", 0, store=store)
+    assert reads == ["issue"]

@@ -680,3 +680,202 @@ def test_add_row_catches_a_write_that_also_nudged_a_row_nobody_named():
     with pytest.raises(board_write.BoardDamaged) as damaged:
         board_write.add_row("issue", "New", "09-10", "high", store=store)
     assert "title" in str(damaged.value)
+
+
+# ---------------------------------------------------------------------------
+# change_capture_text -- the door `tools.close_done_captures` is blocked on
+# ---------------------------------------------------------------------------
+#
+# Same shape as the `change_row` tests above and for the same reason: every
+# damage case breaks the board *inside the store*, never by handing the
+# function a bad argument, because this guard exists to catch a store that
+# answered wrong rather than a caller that typed wrong.
+
+
+def _first_capture(store, board="issue"):
+    return board_records.capture_documents(board, store=store)[0]
+
+
+def test_one_capture_is_rewritten_and_the_rest_of_the_board_is_identical():
+    """The anchor. His bullet gains a DONE prefix; nothing else moves."""
+    parsed, store = writable()
+    doc = _first_capture(store)
+    was = parsed["captures"][0]
+    old, new = board_write.change_capture_text(
+        "issue", doc, f"DONE (Cycle 1340): {was}", store=store)
+
+    assert old == was
+    assert new == f"DONE (Cycle 1340): {was}"
+    now = board_records.contents("issue", store=store)
+    assert now["captures"] == [new] + parsed["captures"][1:]
+    assert now["captureReplies"] == parsed["captureReplies"]
+    assert now["items"] == parsed["items"]
+    assert now["details"] == parsed["details"]
+
+
+def test_the_replies_under_his_bullet_are_carried_across_untouched():
+    """A caller cannot drop an answer by omission -- the signature has no
+    place to pass one, and this proves the write does not lose them."""
+    parsed, store = writable()
+    doc = _first_capture(store)
+    assert board_records.contents("issue", store=store)["captureReplies"], \
+        "the fixture must hold at least one reply, or this passes vacuously"
+    board_write.change_capture_text("issue", doc, "rewritten", store=store)
+    assert board_records.contents("issue", store=store)["captureReplies"] == \
+        parsed["captureReplies"]
+
+
+def test_a_document_with_no_revision_is_refused_with_nothing_written():
+    """`_rev` is the only thing between a rewrite and clobbering a reply that
+    landed while the caller was deciding to mark the bullet."""
+    _parsed, store = writable()
+    doc = dict(_first_capture(store))
+    doc.pop("_rev")
+    with pytest.raises(board_write.CaptureRefused) as refused:
+        board_write.change_capture_text("issue", doc, "rewritten", store=store)
+    assert "revision" in str(refused.value)
+    assert store.calls == []
+
+
+def test_a_capture_from_another_board_is_refused_with_nothing_written():
+    """The board argument decides which board the after-check reads, so a
+    mismatch would check the wrong board and find it undamaged."""
+    _parsed, store = writable()
+    doc = _first_capture(store)
+    with pytest.raises(board_write.CaptureRefused) as refused:
+        board_write.change_capture_text("idea", doc, "rewritten", store=store)
+    assert "issue" in str(refused.value)
+    assert store.calls == []
+
+
+def test_blank_words_are_refused_with_nothing_written():
+    """A capture with no words is a capture deleted, and deleting one has its
+    own door with its own rules."""
+    _parsed, store = writable()
+    doc = _first_capture(store)
+    with pytest.raises(board_write.CaptureRefused):
+        board_write.change_capture_text("issue", doc, "   ", store=store)
+    assert store.calls == []
+
+
+def test_rewriting_a_capture_to_what_it_already_says_is_refused():
+    """Zero positions move, so the after-check could not tell that from a
+    write that landed nowhere at all."""
+    parsed, store = writable()
+    doc = _first_capture(store)
+    with pytest.raises(board_write.CaptureRefused):
+        board_write.change_capture_text(
+            "issue", doc, parsed["captures"][0], store=store)
+    assert store.calls == []
+
+
+class _RewritesTheWrongBullet(WritableFakeStore):
+    """A store whose capture write lands on the *next* bullet instead.
+
+    The failure the position check exists for: the count is right, one
+    position moved, and it is the wrong one.
+    """
+
+    def write_capture(self, doc):
+        ordered = board_records.capture_documents(doc["board"], store=self)
+        victim = ordered[1]
+        return super().write_capture(
+            dict(victim, text=doc.get("text", "")))
+
+
+def test_a_write_that_landed_on_another_bullet_is_caught():
+    _parsed, store_ok = writable()
+    store = _RewritesTheWrongBullet(store_ok.docs, store_ok.registry)
+    doc = _first_capture(store)
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.change_capture_text("issue", doc, "rewritten", store=store)
+    assert "not the one that was written" in str(damaged.value)
+
+
+class _AlsoDropsAReply(WritableFakeStore):
+    """A store whose capture write also drops the replies under it."""
+
+    def write_capture(self, doc):
+        return super().write_capture(dict(doc, replies=[]))
+
+
+def test_a_write_that_ate_the_replies_is_caught():
+    _parsed, store_ok = writable()
+    store = _AlsoDropsAReply(store_ok.docs, store_ok.registry)
+    doc = next(held for held in board_records.capture_documents(
+        "issue", store=store) if held.get("replies"))
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.change_capture_text("issue", doc, "rewritten", store=store)
+    assert "replies" in str(damaged.value)
+
+
+class _AlsoTombstonesASibling(WritableFakeStore):
+    """A store whose capture write prunes a bullet nobody named -- the shape
+    `board_store.delete_capture`'s docstring warns `write_captures(prune=True)`
+    expresses as an absence."""
+
+    def write_capture(self, doc):
+        stored = super().write_capture(doc)
+        # The **last** bullet in his order, deliberately. Tombstoning one
+        # from the middle shifts every bullet under it, so the "exactly one
+        # position moved" check catches it and the count check never has to
+        # fire -- which is how a mutation that deleted the count check
+        # survived this test in its first form.
+        ordered = board_records.capture_documents(stored["board"], store=self)
+        victim = ordered[-1]
+        if victim.get("_id") != stored.get("_id"):
+            self.docs = [held for held in self.docs
+                         if held.get("_id") != victim.get("_id")]
+        return stored
+
+
+def test_a_write_that_tombstoned_a_sibling_bullet_is_caught():
+    _parsed, store_ok = writable()
+    store = _AlsoTombstonesASibling(store_ok.docs, store_ok.registry)
+    doc = _first_capture(store)
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.change_capture_text("issue", doc, "rewritten", store=store)
+    # The count and not the substring: "the replies under his capture
+    # bullets changed" contains "capture bullets changed" too, and asserting
+    # on that shared phrase let a mutation deleting the count check pass.
+    assert "the capture bullets changed: 2 -> 1" in str(damaged.value)
+
+
+class _AlsoNudgesARow(WritableFakeStore):
+    """A store whose capture write also moves a row of his board."""
+
+    def write_capture(self, doc):
+        stored = super().write_capture(doc)
+        self.docs = [
+            dict(held, status="✅ Done", statusKey="done")
+            if str(held.get("_id", "")).startswith("board:") else held
+            for held in self.docs]
+        return stored
+
+
+def test_a_write_that_moved_a_row_is_caught():
+    _parsed, store_ok = writable()
+    store = _AlsoNudgesARow(store_ok.docs, store_ok.registry)
+    doc = _first_capture(store)
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.change_capture_text("issue", doc, "rewritten", store=store)
+    assert "rows changed" in str(damaged.value)
+
+
+class _WritesDifferentWords(WritableFakeStore):
+    """A store whose capture write stores something other than what it was
+    handed -- the half of the check that `was[index] != old_text` cannot
+    see, because the right bullet did move."""
+
+    def write_capture(self, doc):
+        return super().write_capture(dict(doc, text=doc.get("text", "")[:4]))
+
+
+def test_a_write_that_landed_as_something_else_is_caught():
+    _parsed, store_ok = writable()
+    store = _WritesDifferentWords(store_ok.docs, store_ok.registry)
+    doc = _first_capture(store)
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.change_capture_text(
+            "issue", doc, "rewritten at length", store=store)
+    assert "not as written" in str(damaged.value)

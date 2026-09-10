@@ -176,6 +176,32 @@ def contents(board, store=board_store):
     }
 
 
+def capture_documents(board, store=board_store):
+    """Every capture document of one board, in the order his board shows them.
+
+    The documents as they were read, `_rev` included, for `capture_at`'s
+    reason: `board_store.delete_capture` and `board_write.change_capture_text`
+    both refuse a document without one, and a caller that re-minted the
+    document to get a shape it liked would hand over a write conditional on
+    nothing.
+
+    Its own function because `capture_at` is no longer the only caller that
+    needs the ordered list. `tools.close_done_captures` walks every bullet
+    looking for the ones the claims ledger has closed, and resolving that by
+    calling `capture_at(board, 0..n)` would be one `_all_docs` query per
+    bullet -- and worse, a *different* query each time, so a concurrent write
+    landing halfway through would have the walk read two versions of his
+    board and never say so.
+
+    A capture stored in the row key range is `contents`' error and not this
+    function's, so this reaches for the capture range only: raising here as
+    well would be a second copy of a rule that is already enforced on every
+    read of the board.
+    """
+    _, captures = split_documents(store.read_captures(board))
+    return board_document.captures_in_order(captures)
+
+
 def capture_at(board, index, store=board_store):
     """The capture document at one position in `contents(board)["captures"]`.
 
@@ -201,8 +227,7 @@ def capture_at(board, index, store=board_store):
     """
     if not isinstance(index, int) or isinstance(index, bool) or index < 0:
         return None
-    _, captures = split_documents(store.read_captures(board))
-    ordered = board_document.captures_in_order(captures)
+    ordered = capture_documents(board, store=store)
     if index >= len(ordered):
         return None
     return ordered[index]

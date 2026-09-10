@@ -557,3 +557,118 @@ def add_row(board, title, dated, priority, status="backlog", write_up="",
             + " -- if another cycle wrote to this board in between, re-read it "
             "and try again; this check cannot tell that apart from damage")
     return landed
+
+
+class CaptureRefused(WriteRefused):
+    """A capture rewrite that was not attempted. Nothing was written."""
+
+
+def change_capture_text(board, doc, text, store=board_store):
+    """Rewrite one capture's own words, and check the whole board afterwards.
+
+    The door `tools.close_done_captures` is blocked on, and the last of the
+    three capture primitives #203 needs: `board_records.capture_at` finds a
+    bullet, `board_store.delete_capture` removes one, and this changes the
+    words in one. `board_store.write_capture`'s docstring already named this
+    caller -- *"the two tools that move captures between his `## Captures`
+    list and his `## Processed captures` archive change a **subset** of
+    them"* -- and until now that door had no after-check above it.
+
+    **It takes the document as read, not an index or an id**, the same call
+    `delete_capture` makes and for the same reason: a capture carries the
+    owner's own words and every reply a cycle has written under them, and the
+    `_rev` is the only thing standing between a rewrite and clobbering a reply
+    that landed while I was deciding to mark the bullet. A document with no
+    revision has not been read from the store this write is aimed at.
+
+    **The replies are copied across untouched and are not the caller's to
+    pass.** A signature that took them would let a caller marking his bullet
+    `DONE (Cycle N):` drop an answer by omission, which is exactly the shape
+    `delete_capture` refuses `write_captures(prune=True)` for.
+
+    Returns `(old_text, text)`. Raises `CaptureRefused` before writing
+    anything, or `BoardDamaged` after a write that did not land cleanly.
+    """
+    if not isinstance(doc, dict):
+        raise CaptureRefused(
+            "change_capture_text takes the capture document as read, not "
+            f"{type(doc).__name__}; see board_records.capture_at")
+    if not doc.get("_rev"):
+        raise CaptureRefused(
+            f"the capture {doc.get('_id')!r} carries no revision, so this "
+            "write would be conditional on nothing; read it through "
+            "board_records.capture_at or board_records.capture_documents")
+    if doc.get("board") != board:
+        raise CaptureRefused(
+            f"the capture {doc.get('_id')!r} is on board "
+            f"{doc.get('board')!r}, not {board!r}")
+    if not isinstance(text, str) or not text.strip():
+        raise CaptureRefused(
+            "a capture with no words is a capture deleted; use "
+            "board_store.delete_capture if that is what you meant")
+    old_text = board_document.capture_text_of(doc)
+    if text == old_text:
+        raise CaptureRefused(
+            f"the capture {doc.get('_id')!r} already reads exactly that, so "
+            "this write would burn a revision and the after-check below "
+            "could not tell it from a write that landed nowhere")
+
+    before = board_records.contents(board, store=store)
+    store.write_capture(dict(doc, text=text))
+    after = board_records.contents(board, store=store)
+
+    problems = _capture_differences(before, after, old_text, text)
+    if problems:
+        raise BoardDamaged(
+            f"the rewrite of capture {doc.get('_id')!r} on board {board!r} "
+            "landed and the board came back wrong: " + "; ".join(problems)
+            + " -- if another cycle wrote this board in between, re-read it "
+            "and try again; this check cannot tell that apart from damage")
+    return old_text, text
+
+
+def _capture_differences(before, after, old_text, text):
+    """Every way the board moved other than this one bullet's words.
+
+    Deliberately does **not** take the position the bullet was at. The
+    caller holds a document, not an index, and asking it for one would mean
+    deciding the order a second time -- so instead this asserts that exactly
+    one position changed and that the position which changed held `old_text`
+    and now holds `text`. That is the stronger check of the two: a write that
+    landed on the *wrong* capture moves a position whose old words are not
+    `old_text`, and it is caught here rather than passing because the count
+    was right.
+    """
+    problems = []
+    if before["items"] != after["items"]:
+        problems.append("the board rows changed")
+    if before["details"] != after["details"]:
+        problems.append("the write-ups under his rows changed")
+    was, now = before["captures"], after["captures"]
+    # Before the replies check below, and that order is load-bearing rather
+    # than tidy: the two lists are always the same length, so a lost bullet
+    # moves the replies too and a replies-first version reports the wrong
+    # cause -- and made the count check unreachable, which is how a mutation
+    # deleting it survived this file's first round.
+    if len(was) != len(now):
+        problems.append(
+            f"the capture bullets changed: {len(was)} -> {len(now)}")
+        return problems
+    if before["captureReplies"] != after["captureReplies"]:
+        problems.append("the replies under his capture bullets changed")
+    moved = [index for index, pair in enumerate(zip(was, now))
+             if pair[0] != pair[1]]
+    if len(moved) != 1:
+        problems.append(
+            f"{len(moved)} capture bullet(s) changed, expected exactly 1")
+        return problems
+    index = moved[0]
+    if was[index] != old_text:
+        problems.append(
+            f"the bullet that changed was at position {index} and held "
+            f"{was[index][:60]!r}, not the one that was written")
+    elif now[index] != text:
+        problems.append(
+            f"the bullet at position {index} came back as "
+            f"{now[index][:60]!r}, not as written")
+    return problems
