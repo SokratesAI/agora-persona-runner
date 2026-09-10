@@ -283,7 +283,17 @@ def test_the_site_route_refuses_an_unmigrated_store_rather_than_emptying_it():
     def unmigrated(_board, **_kw):
         raise board_records.UnmigratedStore("nothing has ever been migrated")
 
+    # Everything the route reads *after* the two boards is patched too,
+    # even though the refusal means none of it is reached. Without that,
+    # a body that swallowed the refusal would fail this test by hitting
+    # the network on the next line instead of by returning a payload --
+    # green for a reason that has nothing to do with what is being
+    # pinned, which is a catch I would not be able to defend.
     with mock.patch.object(nova_site.board_records, "contents", unmigrated), \
+            mock.patch.object(nova_site, "claims_ledger_json",
+                              lambda: json.dumps({"claims": []})), \
+            mock.patch.object(nova_site, "project_meta_markdown", lambda: ""), \
+            mock.patch.object(nova_site, "milestone_pins_markdown", lambda: ""), \
             mock.patch.object(nova_site, "edvard_board_markdown",
                               _refuse_the_file):
         with pytest.raises(board_records.RecordError):
