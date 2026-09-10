@@ -374,3 +374,66 @@ def test_a_by_design_module_is_still_reported_as_a_parser(tmp_path, capsys):
     assert "parses" in out
     assert "tools/board_migrate.py" in out
     assert inv.READS_MARKDOWN_BY_DESIGN["tools/board_migrate.py"] in out
+
+
+# --- the second store the parse_board grep cannot see (issue #203) ---
+
+
+def test_a_qualified_mirror_read_is_a_mirror_surface():
+    assert inv.surfaces("rows = ticket_docs.read_rows(path)") == ("mirror",)
+    assert inv.surfaces(
+        "from agora_runner.ticket_docs import read_head") == ("mirror",)
+
+
+def test_the_record_stores_own_read_rows_is_not_the_mirror():
+    """The collision this surface has to survive, pinned against the real
+    file: `board_store.read_rows` reads the *records*, and a bare-name match
+    would count the replacement as the thing being retired."""
+    text = (ROOT / "agora_runner" / "board_store.py").read_text(encoding="utf-8")
+    assert "def read_rows(" in text, "board_store no longer has the collision"
+    assert "ticket_docs" in text, "board_store no longer imports the mirror"
+    assert inv.MIRROR not in inv.surfaces(text, "agora_runner/board_store.py")
+
+
+def test_the_site_still_reads_his_board_out_of_the_mirror():
+    """The finding, pinned against the live file rather than a fixture: this
+    is a board read the parse_board grep does not see at all."""
+    rel = "agora_runner/nova_site.py"
+    text = (ROOT / rel).read_text(encoding="utf-8")
+    assert inv.mirror_reads(text, rel), f"{rel} no longer reads nova_tickets"
+
+
+def test_the_mirror_module_counts_by_defining_the_api_not_by_its_name():
+    text = (ROOT / inv.MIRROR_DEFINES).read_text(encoding="utf-8")
+    assert inv.mirror_reads(text, inv.MIRROR_DEFINES)
+    stripped = text.replace("def read_board(", "def _gone_board(")
+    for name in inv.MIRROR_READS:
+        stripped = stripped.replace(f"def {name}(", f"def _gone_{name}(")
+    assert not inv.mirror_reads(stripped, inv.MIRROR_DEFINES), (
+        "ticket_docs must leave the count when its read half goes, or "
+        "board_store's use of it for credentials blocks the gate forever")
+
+
+def test_naming_the_mirror_in_prose_is_not_reading_it():
+    assert inv.surfaces('"""ticket_docs.read_rows is what this replaces."""') == ()
+    assert inv.surfaces("# ticket_docs.read_details used to answer here") == ()
+
+
+def test_a_mirror_reader_blocks_assert_migrated(tmp_path):
+    (tmp_path / "agora_runner").mkdir()
+    reader = tmp_path / "agora_runner" / "nova_site.py"
+    reader.write_text("rows = ticket_docs.read_rows(path)")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 2
+    reader.write_text("rows = board_records.contents('issue')")
+    assert inv.main(["--assert-migrated", "--root", str(tmp_path)]) == 0
+
+
+def test_the_report_names_the_mirror_readers(tmp_path, capsys):
+    (tmp_path / "agora_runner").mkdir()
+    (tmp_path / "agora_runner" / "nova_site.py").write_text(
+        "rows = ticket_docs.read_rows(path)")
+    inv.main(["--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "mirror" in out
+    assert "nova_tickets" in out
+    assert "agora_runner/nova_site.py" in out

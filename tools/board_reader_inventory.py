@@ -1,4 +1,4 @@
-"""Which modules still read a board by parsing markdown? (issue #203)
+"""Which modules still read a board from outside the records? (issue #203)
 
     python3 -m tools.board_reader_inventory
     python3 -m tools.board_reader_inventory --assert-migrated
@@ -24,6 +24,19 @@ line is "no module reads or writes a board by parsing markdown". Reading
 has to, because the spec keeps a *generated* `issues.md` in the daily
 backup from day one. So `--assert-migrated` raises on a parse and never on
 a path, and the inventory prints them in separate columns.
+
+**And parsing markdown was never the whole question.** The grep this
+module corrects looks for `parse_board`, so it can only ever see one of
+the two stores the switchover has to retire. The other is `nova_tickets`,
+slice 1 of the 2026-09-02 migration: `agora_runner/nova_site.py` serves
+his rows, write-ups and captures out of three CouchDB views over it, and
+not one character of that is a `parse_board` call. Left uncounted, the
+gate could read zero and the branch could merge with the page still
+reading a store nothing in #203 retired. `MIRROR_READS` is that surface,
+and it is matched on the AST rather than on text, because
+`agora_runner/board_store.py` has a `read_rows` of its own over the
+*records* and a name match would count the replacement as the thing being
+replaced.
 
 **It reads code, not prose.** A `parse_board` inside a docstring or a
 comment is a module *explaining* the thing being deleted, not calling it,
@@ -117,6 +130,7 @@ instead of calling `parse_board`. That is the same split brain and it has
 no name to grep for. This is a coverage floor, not a proof.
 """
 import argparse
+import ast
 import io
 import re
 import sys
@@ -131,6 +145,44 @@ PATHS = "BOARD_PATHS"
 _SURFACES = ((PARSES, re.compile(r"\bparse_board\b")),
              (PATHS, re.compile(r"\bBOARD_PATHS\b")))
 _REFS = re.compile(r"\bparse_board_refs\b")
+
+#: The superseded store, and the surface `parse_board` cannot see.
+#:
+#: Slice 1 of the 2026-09-02 migration (`agora_runner/ticket_store.py`,
+#: `agora_runner/ticket_docs.py`) put the owner's two boards into a second
+#: CouchDB database, `nova_tickets`, one document per ticket with three
+#: views over them. `agora_runner/nova_site.py` reads his board rows,
+#: write-ups and captures out of those views today -- not by parsing
+#: markdown, so **the `parse_board` grep does not see it at all**.
+#:
+#: That is a hole in the gate rather than a second opinion about it. The
+#: spec's argument for #203 is that one source of truth beats two, and a
+#: branch that reached `--assert-migrated` zero while the site still read
+#: `nova_tickets` would merge records in beside a store the switchover
+#: never retired: records -> generated markdown -> mirror -> page, three
+#: copies and two conversions. Nova's own `resources/issues.md` filed
+#: exactly that on 2026-09-10 ("the switchover has no step that retires
+#: the first"); this is the step, expressed as something that measures.
+#:
+#: Matched on the *qualified* use only -- `ticket_docs.read_rows`, or a
+#: `from ... import read_rows` off that module. A bare name match cannot
+#: work here: `agora_runner/board_store.py` has its own `read_rows` and
+#: `read_captures` over the record store, and they are the replacement,
+#: not the thing being retired.
+MIRROR = "mirror"
+MIRROR_MODULE = "ticket_docs"
+MIRROR_READS = frozenset({
+    "read_board", "read_rows", "read_details", "read_head", "row_order",
+    "render_from_couch",
+})
+
+#: The mirror's own module, which leaves the count by having that half
+#: deleted -- the same treatment `ticket_store.py` gets and for the same
+#: reason. Counted on whether it still *defines* the read API rather than
+#: on its name, because `board_store` keeps importing this module for
+#: credentials and HTTP long after the views are gone, so a name-based
+#: entry here could never clear.
+MIRROR_DEFINES = "agora_runner/ticket_docs.py"
 
 #: Modules whose `parse_board` call is on a document that is not one of the
 #: owner's two boards, mapped to why. Keys are paths relative to the scanned
@@ -211,10 +263,51 @@ def tokenizes(text):
     return True
 
 
-def surfaces(text):
-    """The board-markdown surfaces this file's *code* uses, in a stable order."""
+def mirror_reads(text, rel=None):
+    """True when this file reads a board out of the superseded `nova_tickets`.
+
+    Qualified uses only -- `ticket_docs.read_rows(...)` or a
+    `from agora_runner.ticket_docs import read_rows`. `board_store` has its
+    own `read_rows` over the *record* store and must not be caught by this;
+    a bare name match would catch it and every reader that follows it.
+
+    `rel` is the file's path relative to the scanned root. The one path that
+    counts by defining the API rather than calling it is `MIRROR_DEFINES` --
+    see its comment for why that is a definition test and not a name test.
+
+    A file that will not parse falls back to matching raw text, the same
+    direction `code_only` fails in: over-reporting a reader is recoverable
+    during a migration and missing one is not.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return any(f"{MIRROR_MODULE}.{name}" in text for name in MIRROR_READS)
+    if rel == MIRROR_DEFINES:
+        return any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and node.name in MIRROR_READS
+                   for node in tree.body)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = (node.module or "").split(".")[-1]
+            if module == MIRROR_MODULE and any(
+                    alias.name in MIRROR_READS for alias in node.names):
+                return True
+        elif isinstance(node, ast.Attribute):
+            if (node.attr in MIRROR_READS
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == MIRROR_MODULE):
+                return True
+    return False
+
+
+def surfaces(text, rel=None):
+    """The board surfaces this file's *code* uses, in a stable order."""
     code = code_only(text)
-    return tuple(name for name, pattern in _SURFACES if pattern.search(code))
+    used = [name for name, pattern in _SURFACES if pattern.search(code)]
+    if mirror_reads(text, rel):
+        used.append(MIRROR)
+    return tuple(used)
 
 
 def refs_only(text):
@@ -244,7 +337,7 @@ def scan(root=ROOT, include_tests=False):
         except (OSError, UnicodeDecodeError):
             unreadable.append(rel)
             continue
-        used = surfaces(text)
+        used = surfaces(text, rel)
         if used or refs_only(text):
             if not tokenizes(text):
                 untokenized.append(rel)
@@ -265,13 +358,21 @@ def report(found, refs, unreadable, untokenized=(), assert_migrated=False,
     exempt = [rel for rel in parsers if rel in NOT_A_BOARD]
     by_design = [rel for rel in parsers if rel in READS_MARKDOWN_BY_DESIGN]
     excused = set(NOT_A_BOARD) | set(READS_MARKDOWN_BY_DESIGN)
+    mirrors = sorted(rel for rel, used in found.items() if MIRROR in used)
     blocking = [rel for rel in parsers if rel not in excused]
+    blocking += [rel for rel in mirrors if rel not in blocking]
     for rel in sorted(found):
         used = found[rel]
         print(f"{'parses' if PARSES in used else '      '}  "
-              f"{'paths' if PATHS in used else '     '}  {rel}", file=out)
+              f"{'paths' if PATHS in used else '     '}  "
+              f"{'mirror' if MIRROR in used else '      '}  {rel}", file=out)
     print(f"{len(found)} module(s) touch a board, {len(parsers)} of them by "
           f"parsing markdown.", file=out)
+    if mirrors:
+        print(f"{len(mirrors)} of them read the owner's board out of the "
+              "superseded nova_tickets store instead, which the parse_board "
+              "grep cannot see and --assert-migrated does wait for: "
+              + ", ".join(mirrors), file=out)
     if exempt:
         print(f"{len(exempt)} of those parse a document that is not one of "
               "the owner's boards, so the switchover has nothing to convert "
@@ -301,19 +402,22 @@ def report(found, refs, unreadable, untokenized=(), assert_migrated=False,
     if not assert_migrated:
         return 0
     if blocking:
-        print(f"NOT MIGRATED — {len(blocking)} module(s) still call "
-              f"parse_board: {', '.join(blocking)}", file=out)
+        print(f"NOT MIGRATED — {len(blocking)} module(s) still read a board "
+              "from somewhere other than the records: "
+              f"{', '.join(sorted(blocking))}", file=out)
         return 2
-    print("MIGRATED — no module parses board markdown. A module still "
-          "reading BOARD_PATHS is expected: the generated markdown view has "
-          "to know where to write.", file=out)
+    print("MIGRATED — no module parses board markdown and none reads the "
+          "nova_tickets mirror. A module still reading BOARD_PATHS is "
+          "expected: the generated markdown view has to know where to "
+          "write.", file=out)
     return 0
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--assert-migrated", action="store_true",
-                        help="exit 2 while any module still calls parse_board")
+                        help="exit 2 while any module still reads a board "
+                             "from outside the records")
     parser.add_argument("--include-tests", action="store_true",
                         help="also list test modules")
     parser.add_argument("--root", default=None, help="scan this tree instead")
