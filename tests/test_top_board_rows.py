@@ -16,6 +16,8 @@ from tools import top_board_rows
 #: Bound before the autouse fixture below ever replaces the name, so the
 #: two tests that are *about* `fetch_projects` still exercise the real one.
 _REAL_FETCH_PROJECTS = top_board_rows.fetch_projects
+#: Same for `fetch_claims`, whose own four tests stub `subprocess.run`.
+_REAL_FETCH_CLAIMS = top_board_rows.fetch_claims
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +51,21 @@ def _no_live_diagnoses_read(monkeypatch):
     against.
     """
     monkeypatch.setattr(top_board_rows, "fetch_diagnoses", lambda: ("", True))
+
+
+@pytest.fixture(autouse=True)
+def _no_live_claims_read(monkeypatch):
+    """Nor for the claims ledger -- the one `main` read these two missed.
+
+    On the bridge pod that was a real read of the live `claims.json` inside
+    a unit test, so the suite was green; in CI the vault client does not
+    exist, the ledger read as unreadable, `CLAIMS LEDGER UNREADABLE` went
+    into the output, and `test_main_does_not_qualify_the_ranking_with_an_
+    unread_notes_file` failed on the one word it asserts is absent. Green
+    here and red there for a reason unrelated to the assertion.
+    `("", True)` is an absent ledger: nobody holds anything, no warning.
+    """
+    monkeypatch.setattr(top_board_rows, "fetch_claims", lambda: ("", True))
 
 
 def _open_rows(markdown, board):
@@ -1018,16 +1035,16 @@ def test_an_absent_ledger_is_an_empty_one_and_a_failed_read_is_not(monkeypatch):
         stdout = "[not found: projects/.../claims.json]\n"
 
     monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
-    assert top_board_rows.fetch_claims() == ("", True)
+    assert _REAL_FETCH_CLAIMS() == ("", True)
 
     Done.returncode = 1
-    assert top_board_rows.fetch_claims() == ("", False)
+    assert _REAL_FETCH_CLAIMS() == ("", False)
 
     def boom(*a, **k):
         raise OSError("no vault client on this pod")
 
     monkeypatch.setattr(top_board_rows.subprocess, "run", boom)
-    assert top_board_rows.fetch_claims() == ("", False)
+    assert _REAL_FETCH_CLAIMS() == ("", False)
 
 
 def test_a_real_ledger_body_reads_as_success(monkeypatch):
@@ -1039,7 +1056,7 @@ def test_a_real_ledger_body_reads_as_success(monkeypatch):
         stdout = body
 
     monkeypatch.setattr(top_board_rows.subprocess, "run", lambda *a, **k: Done)
-    assert top_board_rows.fetch_claims() == (body, True)
+    assert _REAL_FETCH_CLAIMS() == (body, True)
 
 
 # --- Replying to a comment is its own claim -------------------------------
