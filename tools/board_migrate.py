@@ -61,7 +61,7 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import (  # noqa: E402
-    board_document, board_store, board_view, entity_id, nova_boards)
+    board_document, board_store, board_view, entity_id)
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
@@ -84,14 +84,8 @@ def captures(markdown, board, registry):
     one id here that is not seeded from a name -- his words are the thing he
     edits, so a slug of them would orphan the replies underneath.
     """
-    parsed = nova_boards.parse_board(markdown)
-    if not isinstance(parsed, dict):
-        return []
-    texts = parsed.get("captures") or []
-    replies = parsed.get("captureReplies") or []
     docs = []
-    for index, text in enumerate(texts):
-        under = replies[index] if index < len(replies) else ()
+    for index, (text, under) in enumerate(preflight.board_captures(markdown)):
         docs.append(board_document.to_capture_document(
             text, board, entity_id.mint_capture(registry, board),
             rank=index + 1, replies=under))

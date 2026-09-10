@@ -98,6 +98,26 @@ def board_details(markdown):
     return details if isinstance(details, dict) else {}
 
 
+def board_captures(markdown):
+    """A board's `[(his bullet, the replies under it)]`, `[]` on an older parse.
+
+    Beside `board_items` and `board_details` rather than in `board_migrate`
+    for the reason the other two are here: this module is the one place the
+    migration reads markdown, and `tools.board_reader_inventory` -- the gauge
+    #203 is driving to zero -- counts a module that names `parse_board` in
+    its own text. A second parse in the caller adds a module to that count
+    for a reader that is not a board reader at all, which is a number the
+    next cycle has to explain away rather than act on.
+    """
+    parsed = nova_boards.parse_board(markdown)
+    if not isinstance(parsed, dict):
+        return []
+    texts = parsed.get("captures") or []
+    replies = parsed.get("captureReplies") or []
+    return [(text, list(replies[index] if index < len(replies) else ()))
+            for index, text in enumerate(texts)]
+
+
 def compose(items):
     """Mint an id and a rank for every row; report what would not compose.
 
