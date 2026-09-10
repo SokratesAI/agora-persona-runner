@@ -1,7 +1,7 @@
 """The single-cell board writers still on markdown read each document once.
 
 Issue #203, the owner's decision that the boards get a real schema. Each of
-`board_status`, `board_priority`, `board_size` and `board_milestone`
+`board_priority`, `board_size` and `board_milestone`
 used to parse the file it is editing **twice** inside one
 read-modify-write: once inside `check`, which took the two markdown strings
 and parsed them itself, and once more in `main` to print what the cell
@@ -72,14 +72,12 @@ Body text nothing here may touch.
 # One successful, cell-moving invocation per tool. Every one is a `--dry-run`
 # so the count is of the read path only and no test writes a board.
 #
-# **`board_project` was a sixth row here and has left the table**, because
-# it no longer reads a document: it is the first writer converted onto
-# `board_write.change_row` and takes `--board`, not `--file`. A double read
-# is not a thing it can do any more, and its own file is where it is tested.
-# Every writer converted after it leaves this table the same way; when the
-# last one does, this file goes with it.
+# **`board_project` and `board_status` were rows here and have left the
+# table**, because neither reads a document any more: they are converted onto
+# `board_write.change_row` and take `--board`, not `--file`. A double read is
+# not a thing they can do. Every writer converted after them leaves this table
+# the same way; when the last one does, this file goes with it.
 WRITERS = [
-    ("tools.board_status", ["--number", "100", "--status", "in-progress"]),
     ("tools.board_priority", ["--number", "100", "--priority", "medium"]),
     ("tools.board_size", ["--number", "100", "--size", "large"]),
     ("tools.board_milestone", ["--number", "100", "--milestone", "Quota"]),
@@ -140,7 +138,6 @@ def _refuse(*a, **k):
 # The name each tool calls to produce the `after` document. Patching it is how
 # a test makes the write go wrong without touching `nova_boards`.
 MUTATORS = {
-    "tools.board_status": "set_row_status",
     "tools.board_priority": "set_row_priority",
     "tools.board_size": "set_row_size",
     "tools.board_milestone": "set_row_milestone",
@@ -231,8 +228,8 @@ def _move_another_row(written):
 
 # A row that appeared out of nowhere, which is the damage NONE of these
 # guards had a test for. Every one of them owns a row-count check, and
-# deleting `board_status`' left the whole board suite green (mutation run,
-# Cycle 1317): a row that fell OFF is reported by the per-row loop as well,
+# deleting the one in `board_status` -- since converted onto `change_row` --
+# left the whole board suite green (mutation run, Cycle 1317): a row that fell OFF is reported by the per-row loop as well,
 # so the count check is load-bearing for exactly one direction and that
 # direction was untested. The five single-cell writers expect no change and
 # `board_row` expects +1, so one extra row fails both.

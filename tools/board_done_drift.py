@@ -234,13 +234,13 @@ def report(findings, blocked, mirrors, unreadable, swept, out=sys.stdout):
               file=out)
         for finding in findings:
             print(_line(*finding), file=out)
-        print("    Fix each with `python3 -m tools.board_status --file <board> "
-              "--number <n> --status done --dated <MM-DD> --note '<what closed "
-              "it>' --cycle <N>`, inside the usual get --rev-file / put "
-              "--if-rev-file pair -- that writer is still on the markdown and "
-              "moves to the records with the rest of issue #203. If the row is "
-              "genuinely not finished, the claim was the wrong half: say so on "
-              "the row.", file=out)
+        print("    Fix each with `python3 -m tools.board_status --board "
+              "<issue|idea> --number <n> --status done --dated <MM-DD> "
+              "--note '<what closed it>' --cycle <N>` -- that writer is on the "
+              "record store now, so it owns its own read and write and there "
+              "is no get --rev-file / put --if-rev-file pair to wrap it in. "
+              "If the row is genuinely not finished, the claim was the wrong "
+              "half: say so on the row.", file=out)
     if blocked:
         print(f"CLAIMED DONE, BLOCKED ON EDVARD — {len(blocked)} row(s) carry "
               "a done claim and sit blocked on the owner. This prints and "

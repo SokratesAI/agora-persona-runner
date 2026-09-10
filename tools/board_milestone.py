@@ -72,7 +72,7 @@ def check_from_contents(old, new, old_notes, new_notes, number, milestone, noted
     """Refuse the write unless that one milestone moved and nothing else did.
 
     Same shape and same reasoning as
-    `tools.board_status.check_from_contents`. It has one
+    `tools.board_status.check_from_contents` used to be, before that tool moved onto `board_write.change_row`. It has one
     forgiveness of its own and it is not optional: `append_detail_note`
     stamps `Updated` with `dated`, so when `noted` is true the target row's
     `updated` may move, and only to `dated`. Asserting the new value rather
