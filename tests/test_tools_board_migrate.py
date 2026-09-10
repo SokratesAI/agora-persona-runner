@@ -343,3 +343,173 @@ def test_the_migration_does_not_add_itself_to_the_gate():
                for name in names), (
         "the module the migration reads markdown through left the gate; "
         "this test can no longer tell a move from a deletion")
+
+
+# --- `--status`: does the seeded store still agree with his markdown? -------
+#
+# `migrate` refuses a board that already holds records, so the only board it
+# can say anything about is one nobody has seeded -- and the seeded board is
+# the one that can go wrong. These tests are about the board after the seed.
+
+
+def test_a_store_nobody_has_written_is_never_migrated(couch):
+    verdict, problems = board_migrate.status(board([(1, "Nova", "")]), "issue")
+
+    assert verdict == "NEVER MIGRATED"
+    assert problems and "never been written" in problems[0]
+
+
+def test_the_markdown_that_was_seeded_agrees_with_the_store(couch):
+    markdown = board([(1, "Nova", ""), (2, "Marcus", "v1")],
+                     details=[(1, "Some body.")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    assert board_migrate.status(markdown, "issue") == ("AGREES", [])
+
+
+def test_an_edit_he_makes_after_the_seed_reads_as_drift(couch):
+    """The whole reason this exists: his boards are still served from
+    markdown, so every edit he makes moves the file and leaves the store
+    where it was, and `board_records.contents` answers a stale store
+    silently."""
+    board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
+
+    verdict, problems = board_migrate.status(
+        board([(1, "Nova", ""), (2, "Marcus", "")]), "issue")
+
+    assert verdict == "DRIFTED"
+    assert any("items:" in problem for problem in problems)
+
+
+def test_a_field_that_moved_is_named_with_the_row_it_moved_on(couch):
+    """One line per key, and the line says which field of which row -- a dump
+    of four hundred rows on both sides is not a finding."""
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    verdict, problems = board_migrate.status(
+        markdown.replace("⚪ Backlog", "🔵 Done"), "issue")
+
+    assert verdict == "DRIFTED"
+    assert any("row #1" in problem and "status" in problem
+               for problem in problems)
+
+
+def test_a_layout_edit_is_drift_that_the_four_keys_cannot_see(couch):
+    """`parse_board` and `board_records.contents` are both written in the
+    parser's four keys and neither models a layout, so a comparison in those
+    keys agrees about his `## Processed captures` archive whether it survived
+    or not. This is why `layout_differences` is a separate question."""
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    edited = markdown + "\n## Processed captures\n\nSomething he archived.\n"
+
+    from agora_runner import board_records
+    from tools import board_migration_preflight
+    assert not board_migrate.differences(
+        board_migration_preflight.board_contents(edited),
+        board_records.contents("issue"))
+
+    verdict, problems = board_migrate.status(edited, "issue")
+
+    assert verdict == "DRIFTED"
+    assert any(problem.startswith("layout") for problem in problems)
+
+
+def test_the_store_is_the_one_it_was_handed(couch):
+    """`store=` is a decoration until a test passes one: every other test here
+    reaches the store through the fake CouchDB, so dropping the parameter
+    passes all of them."""
+    class Refuses:
+        def read_registry(self):
+            raise AssertionError("status read the module-level store")
+
+    with pytest.raises(AssertionError, match="status read"):
+        board_migrate.status(board([(1, "Nova", "")]), "issue", store=Refuses())
+
+
+def test_the_cli_exits_zero_and_writes_nothing_when_the_board_agrees(
+        couch, tmp_path, capsys):
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+    path = tmp_path / "issues.md"
+    path.write_text(markdown, encoding="utf-8")
+    couch.bulk_calls.clear()
+
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status"])
+
+    assert code == 0
+    assert "status: AGREES" in capsys.readouterr().out
+    assert couch.bulk_calls == []
+
+
+def test_the_cli_exits_two_on_drift(couch, tmp_path, capsys):
+    board_migrate.migrate(board([(1, "Nova", "")]), "issue", apply=True)
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", ""), (2, "Nova", "")]),
+                    encoding="utf-8")
+
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status"])
+
+    assert code == 2
+    assert "status: DRIFTED" in capsys.readouterr().out
+
+
+def test_the_cli_refuses_status_together_with_apply(couch, tmp_path, capsys):
+    """The two modes disagree about whether the run writes, so a caller who
+    asked for both cannot be assumed to have meant the writing one."""
+    path = tmp_path / "issues.md"
+    path.write_text(board([(1, "Nova", "")]), encoding="utf-8")
+
+    code = board_migrate.main(
+        ["--board", "issue", "--file", str(path), "--status", "--apply"])
+
+    assert code == 2
+    assert "REFUSED" in capsys.readouterr().out
+    assert couch.bulk_calls == []
+
+
+def test_a_differing_layout_block_is_named_not_dumped(couch):
+    """His live `issues.md` block 200 is his whole `## Processed captures`
+    archive: 112,225 characters. Printed whole on both sides that is one
+    221KB line, and the finding is only ever *which* block moved -- the block
+    itself is a verbatim slice of the file the run was just handed."""
+    markdown = (board([(1, "Nova", "")])
+                + "\n## Archive\n\n" + ("padding line\n" * 400))
+    board_migrate.migrate(markdown, "issue", apply=True)
+    edited = markdown.replace("padding line", "padded line")
+
+    verdict, problems = board_migrate.status(edited, "issue")
+
+    assert verdict == "DRIFTED"
+    line = next(p for p in problems if p.startswith("layout"))
+    assert "char(s)" in line and "padding line" not in line
+    assert len(line) < 400
+
+
+def test_a_store_with_no_layout_at_all_is_drift_not_agreement(couch):
+    """A rows-only seed is what the first #203 migration actually wrote, and
+    it compared byte-identical on every key the parser models."""
+    class NoLayout:
+        def read_rows(self, board):
+            return board_store.read_rows(board)
+
+        def read_captures(self, board):
+            return board_store.read_captures(board)
+
+        def read_registry(self):
+            return board_store.read_registry()
+
+        def read_layout(self, board):
+            return None
+
+    markdown = board([(1, "Nova", "")])
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    verdict, problems = board_migrate.status(
+        markdown, "issue", store=NoLayout())
+
+    assert verdict == "DRIFTED"
+    assert any("holds no layout" in problem for problem in problems)

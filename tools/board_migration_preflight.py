@@ -118,6 +118,22 @@ def board_captures(markdown):
             for index, text in enumerate(texts)]
 
 
+def board_contents(markdown):
+    """A board's whole `parse_board` shape, for comparing against the store.
+
+    Beside `board_items`, `board_details` and `board_captures` for the reason
+    written on `board_captures`: this module is the one place the migration
+    reads markdown, and `tools.board_reader_inventory` counts a module that
+    names `parse_board` in its own text. `board_migrate --status` needs all
+    four keys at once -- it compares them with what `board_records.contents`
+    answers, which is defined as "exactly what `parse_board` returned" -- so
+    slicing them back out of the three helpers above would be the same parse
+    run three times and reassembled.
+    """
+    parsed = nova_boards.parse_board(markdown)
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def compose(items):
     """Mint an id and a rank for every row; report what would not compose.
 
