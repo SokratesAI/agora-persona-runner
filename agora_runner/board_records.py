@@ -301,3 +301,39 @@ def store_item(board, item, detail=None, rank=None, store=board_store):
     if held is not None:
         doc["_rev"] = held["_rev"]
     return store.write_row(doc)
+
+
+def project_names(store=board_store):
+    """Every project name the registry holds, in the order it was minted.
+
+    The records spelling of `tools.board_capture --projects-from`, which took
+    a *path to the sibling board's markdown* because the tool could see one
+    file at a time. The flag existed because the picker in the app builds its
+    list from both boards while the tool resolved his `#slug` tag against the
+    one board it was writing, so picking `Maintenance` on an issue left the
+    tag sitting in the title (PR #888's defect, measured 2026-09-08).
+
+    Against records that flag has no spelling and needs none: both boards
+    mint into **one** registry, so the union the picker offers is a document
+    rather than a second file to remember to pass. That is the point of the
+    registry -- `store_item`'s comment says the names/ids join lives here and
+    nowhere else -- and it means a caller can no longer narrow the list by
+    forgetting an argument.
+
+    An unmigrated store raises, `contents`' rule: `read_registry` answers a
+    revisionless document for a store nobody has migrated, and an empty name
+    list read off one is indistinguishable from a board with no projects --
+    which would resolve every tag to nothing, silently.
+    """
+    registry = store.read_registry()
+    if registry.get("_rev") is None:
+        raise UnmigratedStore(
+            "the record store has never been written, so it holds no project "
+            "names: the registry document has no revision. Run `python3 -m "
+            "tools.board_migrate --board <board> --file <md> --apply` first")
+    names = []
+    for entry in (registry.get("projects") or {}).values():
+        name = (entry.get("name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names

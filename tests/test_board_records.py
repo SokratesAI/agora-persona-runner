@@ -280,6 +280,43 @@ def test_the_registry_is_checked_before_the_documents_are_read():
         board_records.contents("issue", store=store)
 
 
+def test_the_registry_names_are_every_project_both_boards_hold():
+    """`project_names` is what replaced `tools.board_capture --projects-from`.
+
+    That flag took a path to the *sibling board's markdown*, so forgetting it
+    silently narrowed the list a `#slug` tag resolved against. One registry
+    serves both boards, so the union is a document rather than an argument.
+    """
+    _parsed, store = migrated()
+    store.registry["projects"]["prj_demos"] = {
+        "name": "Demos", "key": "demos", "aliases": []}
+    assert board_records.project_names(store=store) == ["Nova", "Marcus", "Demos"]
+
+
+def test_a_blank_or_repeated_registry_name_does_not_reach_the_list():
+    """Both halves of one line, and neither is decoration.
+
+    A blank `name` is a project nothing can be filed under, and it reaches
+    `split_capture_project_tag`'s slug loop as an empty string. A repeat is a
+    rename half-applied -- two entries, one name -- and it would offer the
+    same project twice to anything that prints this list for a human.
+    """
+    _parsed, store = migrated()
+    store.registry["projects"]["prj_blank"] = {"name": "  ", "key": "", "aliases": []}
+    store.registry["projects"]["prj_again"] = {
+        "name": "Nova", "key": "nova", "aliases": []}
+    assert board_records.project_names(store=store) == ["Nova", "Marcus"]
+
+
+def test_project_names_will_not_answer_for_an_unmigrated_store():
+    """An empty name list read off one is indistinguishable from a board with
+    no projects, and would resolve every tag to nothing in silence."""
+    _parsed, store = migrated()
+    store.registry = entity_id.new_registry()
+    with pytest.raises(board_records.UnmigratedStore):
+        board_records.project_names(store=store)
+
+
 class WritableFakeStore(FakeStore):
     """`FakeStore` plus the three calls `store_item` writes through.
 
@@ -313,6 +350,26 @@ class WritableFakeStore(FakeStore):
         self.calls.append(("write_registry", dict(registry)))
         self.registry = dict(registry, _rev="2-registry")
         return self.registry
+
+    def delete_capture(self, doc):
+        """Remove one capture by its own id, and remember the document sent.
+
+        Dumb about `board_store.delete_capture`'s rules for the reason the
+        class docstring gives -- it does not refuse a revisionless document,
+        because re-spelling that refusal here would make a test of it agree
+        with itself. What it does keep is the document as handed over, so a
+        caller that re-minted one to get a shape it liked is visible in
+        `calls` rather than only in a real CouchDB's 409.
+
+        Absent is `False`, not an error: that is the real one's contract and
+        the thing that makes re-running a half-finished promotion free.
+        """
+        self.calls.append(("delete_capture", dict(doc)))
+        doc_id = board_document.capture_document_id(doc["board"], doc["captureId"])
+        kept = [held for held in self.docs if held.get("_id") != doc_id]
+        removed = len(kept) != len(self.docs)
+        self.docs = kept
+        return removed
 
 
 def writable(board="issue", markdown=BOARD):

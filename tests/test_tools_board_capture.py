@@ -1,540 +1,398 @@
-"""`tools.board_capture` -- a capture becomes a row and leaves the box.
+"""`tools.board_capture` -- one bullet leaves the box and arrives as a row.
 
-The failure this guards is the one that made the tool necessary: boarding
-a capture by hand is an add and a delete on one document, and a cycle
-that does the add and not the delete leaves the item in his "not boarded
-yet" box *and* on the board at the same time. So every test below asserts
-on both halves -- `parse_board`'s rows and `capture_entries`'s bullets --
-because either one alone passes on a half-done edit.
+The #203 conversion of the last writer that had no records door. What is
+tested here is the two halves that door made separable:
 
-The other half is the span. A capture's replies are indented bullets that
-`capture_entries` folds into the capture above them, so an off-by-one in
-the lines being cut silently takes a neighbour's answer with it and both
-documents still render.
+**`promote` is pure now** -- his bullet in, `add_row`'s arguments out, no
+store touched -- so every question about what a capture *becomes* (its
+rating, its `DONE` marker, its project tag, its title) is answered without a
+board at all. Those tests carry no markdown and no fake.
+
+**Everything else goes through the fake store**, the rule
+`tests/test_tools_board_size.py` set and for its reason: a test that asserts
+on `parse_board` of a file on disk agrees with a converted and an unconverted
+tool alike, so it cannot tell the two apart.
+
+The row half of the after-check is `board_write.add_row`'s and is tested
+there. What is still this module's own is the capture half -- that removing
+one bullet removed exactly one bullet, with every other capture's replies
+intact -- and the order of the two writes, which is the difference between a
+failure that costs nothing and a failure that eats his words.
 """
 
 import pytest
 
-from agora_runner.nova_boards import DEFAULT_PROJECT, capture_entries, parse_board
+from agora_runner import board_records
+from agora_runner.nova_boards import DEFAULT_PROJECT, canonical_priority
+from tests.test_board_records import writable
+from tools import board_capture
 from tools.board_capture import (
-    check_from_contents,
+    capture_pairs,
+    check_captures,
     first_sentence,
+    known_names,
     main,
     promote,
 )
 
-
-def _promote(markdown, index, priority, status, dated, **kw):
-    """`promote` with the two reads it now requires, taken here once."""
-    return promote(
-        markdown, parse_board(markdown), capture_entries(markdown), index,
-        priority, status, dated, **kw
-    )
-
-
-def _check(before, after, number, title, capture_text, project=""):
-    """`check_from_contents` over two documents the caller still holds."""
-    return check_from_contents(
-        parse_board(before), parse_board(after), capture_entries(before),
-        capture_entries(after), number, title, capture_text, project,
-    )
-
-BOARD = """---
-type: board
----
-
-- The first thing he typed. It goes on for a second sentence.
-  - Cycle 500 answered this one.
-- 🟠 High: A rated capture.
-- DONE (Cycle 501): A capture a cycle already closed.
+BOARD = """- Give me a landing page for the app. It should say what Nova is.
+  - Nova, cycle 900: noted.
+- 🟠 High: The journal page is slow on my phone.
 - 
 
 ## Board
 
-| # | Item | Status | Updated | Priority |
-|---|------|--------|---------|---|
-| [[#2 — The second thing\\|2]] | The second thing | 🟡 In progress | 08-25 | 🟠 High |
-| [[#1 — The first thing\\|1]] | The first thing | ✅ Done | 08-25 |  |
+| # | Item | Status | Updated | Priority | Project | Size | Milestone | Order |
+|---|---|---|---|---|---|---|---|---|
+| [[#100 — Weekly work\\|100]] | Weekly work | 🟡 In progress | 08-24 | 🟠 High | Nova | M | Cost and quota | |
+| [[#104 — Metered API\\|104]] | Metered API | ⚪ Backlog | 08-24 | 🟠 High | Marcus | | | |
+
+## Done
+
+| # | Item | Landed | Where |
+|---|---|---|---|
+| [[#51 — One way\\|51]] | One way | 08-10 | inbox.md |
 
 # Details
 
-### #2 — The second thing
+## #100 — Weekly work
 
-Why the second thing matters.
-
-### #1 — The first thing
-
-Why the first thing mattered.
+Three heartbeats, one prompt file each.
 """
 
 
-def _run(tmp_path, board=BOARD, **overrides):
-    path = tmp_path / "issues.md"
-    path.write_text(board, encoding="utf-8")
-    argv = ["--file", str(path), "--index", "0", "--dated", "08-27"]
-    for flag, value in overrides.items():
-        argv += ["--" + flag.replace("_", "-")] + ([value] if value is not None else [])
-    return main(argv), path
+@pytest.fixture
+def store(monkeypatch):
+    """A migrated, writable fake of that board, wired in where `main` looks."""
+    _, fake = writable(board="idea", markdown=BOARD)
+    monkeypatch.setattr(board_capture, "board_store", fake)
+    return fake
 
 
-def test_the_capture_leaves_the_box_and_arrives_as_a_row(tmp_path):
-    code, path = _run(tmp_path, priority="medium")
-    assert code == 0
-    after = path.read_text(encoding="utf-8")
-    board = parse_board(after)
-    assert [item["number"] for item in board["items"]] == [3, 2, 1]
-    new = board["items"][0]
-    # The title is his first sentence; the write-up is everything he wrote.
-    assert new["title"] == "The first thing he typed."
-    assert new["status"] == "⚪ Backlog"
-    assert new["priority"] == "🔵 Medium"
-    assert board["details"][3].startswith(
-        "The first thing he typed. It goes on for a second sentence."
-    )
-    # And it is gone from the box, without taking its neighbours.
-    texts = [text for _, _, text, _ in capture_entries(after)]
-    assert texts == ["🟠 High: A rated capture.",
-                     "DONE (Cycle 501): A capture a cycle already closed."]
+def _contents(store):
+    return board_records.contents("idea", store=store)
 
 
-def test_the_reply_written_under_it_rides_across(tmp_path):
-    code, path = _run(tmp_path, priority="medium")
-    assert code == 0
-    assert "Cycle 500 answered this one." in parse_board(
-        path.read_text(encoding="utf-8")
-    )["details"][3]
+def _rows(store):
+    return {item["number"]: item for item in _contents(store)["items"]}
 
 
-def test_the_empty_cursor_bullet_stays(tmp_path):
-    """He types into it. `capture_entries` ignores it and so must the cut."""
-    code, path = _run(tmp_path, priority="medium")
-    assert code == 0
-    head = path.read_text(encoding="utf-8").split("## Board")[0]
-    assert "\n- \n" in head
+def _run(*args):
+    return main(["--board", "idea", "--dated", "09-10", *args])
 
 
-def test_a_rated_capture_keeps_its_own_rating(tmp_path):
-    code, path = _run(tmp_path, index="1")
-    assert code == 0
-    board = parse_board(path.read_text(encoding="utf-8"))
-    assert board["items"][0]["priority"] == "🟠 High"
-    # The prefix is a cell now, so it is off the title and off the write-up.
-    assert board["items"][0]["title"] == "A rated capture."
-    assert not board["details"][3].startswith("🟠")
+# --- the pure half: what a bullet becomes -------------------------------
 
 
-def test_an_explicit_priority_beats_the_bullets_own(tmp_path):
-    code, path = _run(tmp_path, index="1", priority="low")
-    assert code == 0
-    assert parse_board(path.read_text(encoding="utf-8"))["items"][0]["priority"] == "⚪ Low"
+def test_the_title_is_the_first_sentence_and_the_write_up_is_all_of_it():
+    fields, refusal = promote(
+        "Give me a landing page. It should say what Nova is.",
+        None, "backlog", "09-10")
+    assert refusal is None
+    assert fields["title"] == "Give me a landing page."
+    assert fields["write_up"] == "Give me a landing page. It should say what Nova is."
 
 
-def test_a_done_marker_lands_done_not_backlog(tmp_path):
-    """His complaint in as many words: finished items in the unstaged box."""
-    code, path = _run(tmp_path, index="2")
-    assert code == 0
-    board = parse_board(path.read_text(encoding="utf-8"))
-    assert board["items"][0]["status"] == "✅ Done"
-    assert board["items"][0]["title"] == "A capture a cycle already closed."
-    # A closed row takes no rating -- `set_row_status` clears it.
-    assert board["items"][0]["priority"] == ""
+def test_first_sentence_keeps_a_long_one_whole():
+    """No character count is involved, on purpose -- a truncated title reads
+    as a different item from the write-up under it."""
+    long_one = "I want " + "a very long thing " * 12 + "on the board. And more."
+    assert first_sentence(long_one).endswith("on the board.")
+    assert len(first_sentence(long_one)) > 120
 
 
-@pytest.mark.parametrize(
-    "status,cell",
-    [("in-progress", "🟡 In progress"),
-     ("blocked-on-edvard", "⏸ Blocked on Edvard"),
-     ("done", "✅ Done")],
-)
-def test_every_status_reaches_the_cell(tmp_path, status, cell):
-    code, path = _run(tmp_path, priority="medium", status=status)
-    assert code == 0
-    assert parse_board(path.read_text(encoding="utf-8"))["items"][0]["status"] == cell
+def test_a_rated_capture_keeps_its_own_rating():
+    fields, _ = promote("🟠 High: The journal page is slow.", None, "backlog", "09-10")
+    assert canonical_priority(fields["priority"]) == "🟠 High"
+    assert fields["write_up"] == "The journal page is slow."
 
 
-def test_outdated_is_not_a_status_a_cycle_may_set(tmp_path):
-    """He deletes those himself; nothing he typed this week arrives written off."""
-    with pytest.raises(SystemExit):
-        _run(tmp_path, priority="medium", status="outdated")
+def test_an_explicit_priority_beats_the_bullets_own():
+    fields, _ = promote("🟠 High: The journal page is slow.", "immediate",
+                        "backlog", "09-10")
+    assert canonical_priority(fields["priority"]) == "🔴 Immediately"
 
 
-def test_it_refuses_an_index_that_is_not_there(tmp_path, capsys):
-    code, path = _run(tmp_path, index="9", priority="medium")
-    assert code == 1
+def test_a_done_marker_lands_done_not_backlog():
+    """His own case: *"Even some issues are fixed and done but still not moved
+    out."* Boarding one as backlog puts a shipped item back in the queue."""
+    fields, _ = promote("DONE (Cycle 900): The slow journal page.", "high",
+                        "backlog", "09-10")
+    assert fields["status"] == "done"
+    assert fields["write_up"] == "The slow journal page."
+
+
+def test_a_done_marker_does_not_override_a_status_the_caller_named():
+    fields, _ = promote("DONE (Cycle 900): The slow journal page.", "high",
+                        "in-progress", "09-10")
+    assert fields["status"] == "in-progress"
+
+
+def test_a_capture_that_is_only_prefixes_is_refused():
+    fields, refusal = promote("DONE (Cycle 900): ", "high", "backlog", "09-10")
+    assert fields is None
+    assert "empty" in refusal
+
+
+def test_a_rating_that_is_not_one_is_refused_before_anything_is_written():
+    fields, refusal = promote("Something", "nonsense", "backlog", "09-10")
+    assert fields is None
+    assert "nonsense" in refusal
+
+
+def test_a_project_tag_is_lifted_out_of_the_title_into_the_cell():
+    fields, _ = promote("Fix the icon grid #marcus", None, "backlog", "09-10",
+                        known=["Nova", "Marcus"])
+    assert fields["project"] == "Marcus"
+    assert "#marcus" not in fields["write_up"]
+    assert fields["title"] == "Fix the icon grid"
+
+
+def test_an_unknown_slug_is_left_alone_rather_than_invented():
+    fields, _ = promote("Fix the icon grid #atlantis", None, "backlog", "09-10",
+                        known=["Nova", "Marcus"])
+    assert fields["project"] == ""
+    assert "#atlantis" in fields["write_up"]
+
+
+def test_an_explicit_project_flag_beats_the_bullets_own_tag():
+    fields, _ = promote("Fix the icon grid #marcus", None, "backlog", "09-10",
+                        project="Nova", known=["Nova", "Marcus"])
+    assert fields["project"] == "Nova"
+
+
+# --- the known names: the registry replaces `--projects-from` -----------
+
+
+def test_the_known_names_are_the_boards_own_cells_plus_the_registry(store):
+    """The flag that used to widen this took a path to the sibling board's
+    markdown, so forgetting it silently narrowed the list -- PR #888's defect
+    surviving in the three projects with no issue open. Both boards mint into
+    one registry, so the union is a document now rather than an argument."""
+    contents = _contents(store)
+    assert board_projects_of(contents) == ["Nova", "Marcus"], "fixture's own cells"
+    store.registry["projects"]["prj_demos"] = {
+        "name": "Demos", "key": "demos", "aliases": []}
+    names = known_names(contents, board_records.project_names(store=store))
+    assert names[:2] == ["Nova", "Marcus"], "the board's own spelling first"
+    assert "Demos" in names
+
+
+def board_projects_of(contents):
+    from agora_runner.nova_boards import board_projects
+    return board_projects(contents["items"])
+
+
+def test_a_project_only_in_the_registry_reaches_the_cell(store):
+    store.registry["projects"]["prj_demos"] = {
+        "name": "Demos", "key": "demos", "aliases": []}
+    store.docs = [
+        dict(doc, text="A landing page for the demos #demos")
+        if doc.get("captureId") == "cap_1" else doc
+        for doc in store.docs]
+    assert _run("--index", "0", "--priority", "high") == 0
+    assert _rows(store)[105]["project"] == "Demos"
+
+
+# --- the store half: the two writes and the check between them ----------
+
+
+def test_the_capture_leaves_the_box_and_arrives_as_a_row(store):
+    before = _contents(store)
+    assert _run("--index", "0", "--priority", "high") == 0
+
+    after = _contents(store)
+    assert after["captures"] == ["🟠 High: The journal page is slow on my phone."]
+    row = _rows(store)[105]
+    assert row["title"] == "Give me a landing page for the app."
+    assert row["priority"] == "🟠 High"
+    assert row["status"] == "⚪ Backlog"
+    assert row["project"] == DEFAULT_PROJECT
+    assert len(after["items"]) == len(before["items"]) + 1
+
+
+def test_the_new_row_goes_to_the_top_of_his_board(store):
+    """`add_row`'s rank, asserted from here because it is what he sees."""
+    assert _run("--index", "0", "--priority", "high") == 0
+    assert [item["number"] for item in _contents(store)["items"]][0] == 105
+
+
+def test_the_reply_written_under_it_rides_across(store):
+    assert _run("--index", "0", "--priority", "high") == 0
+    assert "noted." in _contents(store)["details"][105]
+
+
+def test_the_other_captures_keep_their_replies(store):
+    """The failure this module has: against markdown an off-by-one in the span
+    being cut took a neighbour's answer with it and left both documents
+    looking fine."""
+    before = capture_pairs(_contents(store))
+    assert before[0][1] == ("Nova, cycle 900: noted.",), "the fixture must carry a reply"
+    assert _run("--index", "1", "--priority", "high") == 0
+    assert capture_pairs(_contents(store)) == [before[0]]
+
+
+def test_the_index_is_his_order_and_not_the_stores(store):
+    """`read_captures` answers in lexical id order, where `cap_10` sits
+    between `cap_1` and `cap_2` -- so past ten captures a lookup that skipped
+    `captures_in_order` boards the bullet he pointed at and deletes another.
+
+    The fixture is grown past ten here rather than asserted on three, because
+    the two orders agree for any board under ten and the bug is invisible.
+    """
+    from agora_runner import board_document, rank_key
+    keys = rank_key.sequence(20)
+    for index in range(3, 13):
+        store.docs.append(dict(board_document.to_capture_document(
+            f"Capture number {index}", "idea", f"cap_{index + 1}",
+            rank=keys[index]), _rev="1-stored"))
+    wanted = _contents(store)["captures"][10]
+    # The precondition, asserted rather than assumed: the two orders have to
+    # actually disagree at this position, or a tool that skipped the sort
+    # would pass this test.
+    raw = board_document.capture_text_of(store.read_captures("idea")[10])
+    assert raw != wanted, "the fixture must reach past ten captures"
+
+    assert _run("--index", "10", "--priority", "high") == 0
+    assert wanted not in _contents(store)["captures"]
+    assert raw in _contents(store)["captures"], "the store's tenth is untouched"
+    assert _rows(store)[105]["title"].startswith(wanted[:20])
+
+
+def test_the_delete_carries_the_revision_the_capture_was_read_at(store):
+    """`board_store.delete_capture` refuses a document with no `_rev`, so a
+    caller that re-minted one to get a shape it liked would be handing over a
+    delete conditional on nothing -- and against the real store that is the
+    blind delete of a bullet somebody answered in between."""
+    assert _run("--index", "0", "--priority", "high") == 0
+    sent = [doc for name, doc in store.calls if name == "delete_capture"]
+    assert len(sent) == 1
+    assert sent[0]["_rev"] == "1-stored"
+    assert sent[0]["captureId"] == "cap_1"
+
+
+def test_the_row_is_written_before_the_bullet_is_removed(store):
+    """Not arbitrary. `add_row` refuses on its own after-check, so a failure
+    there leaves his bullet where he left it; the other order takes his words
+    out of the box and then discovers the row could not be written."""
+    assert _run("--index", "0", "--priority", "high") == 0
+    names = [name for name, _ in store.calls]
+    assert names.index("write_row") < names.index("delete_capture")
+
+
+def test_a_row_that_cannot_be_written_leaves_the_bullet_alone(store):
+    """The reason for that order, asserted rather than described."""
+    class NudgesASibling(type(store)):
+        """A store whose row write also alters a row nobody named, so
+        `add_row`'s own after-check raises *after* it has written."""
+
+        def write_row(self, doc):
+            stored = super().write_row(doc)
+            self.docs = [
+                dict(held, title=held["title"] + " (nudged)")
+                if str(held.get("_id", "")).startswith("board:idea:")
+                and held.get("number") != doc.get("number")
+                else held
+                for held in self.docs]
+            return stored
+
+    fake = NudgesASibling(store.docs, store.registry)
+    board_capture.board_store = fake
+    assert _run("--index", "0", "--priority", "high") == 1
+    assert _contents(fake)["captures"][0].startswith("Give me a landing page")
+    assert "delete_capture" not in [name for name, _ in fake.calls]
+
+
+def test_it_refuses_an_index_that_is_not_there(store, capsys):
+    assert _run("--index", "9", "--priority", "high") == 1
     assert "no capture at index 9" in capsys.readouterr().err
-    assert path.read_text(encoding="utf-8") == BOARD
+    assert store.calls == []
 
 
-def test_it_refuses_a_pipe_in_the_date(tmp_path, capsys):
-    """A stray `|` shifts every column right of it -- `parse_board` then
-    reads the tail of the date as the rating."""
-    code, path = _run(tmp_path, priority="medium", dated="08|27")
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
+def test_it_refuses_a_negative_index(store):
+    """`capture_at` answers `None` rather than counting back from the end, or
+    `--index -1` boards the last bullet and the range check never fires."""
+    assert _run("--index", "-1", "--priority", "high") == 1
+    assert store.calls == []
 
 
-def test_it_refuses_a_rating_that_is_not_one(tmp_path, capsys):
-    code, path = _run(tmp_path, priority="urgentish")
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
+def test_it_refuses_a_pipe_in_the_date(store, capsys):
+    """A stray `|` shifts every column right of it, and the row still reads as
+    a well-formed table."""
+    assert main(["--board", "idea", "--index", "0", "--dated", "09|10",
+                 "--priority", "high"]) == 1
+    assert "--dated" in capsys.readouterr().err
+    assert store.calls == []
 
 
-def test_dry_run_writes_nothing(tmp_path):
-    code, path = _run(tmp_path, priority="medium", dry_run=None)
-    assert code == 0
-    assert path.read_text(encoding="utf-8") == BOARD
+def test_it_refuses_a_rating_that_is_not_one(store, capsys):
+    assert _run("--index", "0", "--priority", "nonsense") == 1
+    assert "nonsense" in capsys.readouterr().err
+    assert store.calls == []
 
 
-def test_first_sentence_keeps_a_long_one_whole(tmp_path):
-    """No character count: a truncated title reads as a different item."""
-    long = "A" * 300 + ". And then a second sentence."
-    assert first_sentence(long) == "A" * 300 + "."
-    assert first_sentence("No full stop here") == "No full stop here"
-    assert first_sentence("Is it? Yes.") == "Is it?"
+def test_dry_run_writes_nothing(store):
+    assert _run("--index", "0", "--priority", "high", "--dry-run") == 0
+    assert store.calls == []
+    assert len(_contents(store)["captures"]) == 2
+
+
+def test_an_unmigrated_store_is_a_refusal_and_not_an_empty_board(store):
+    """Otherwise the first run against one mints a row into a store whose
+    every other row is missing, and `contents` reads that one row as his
+    board."""
+    store.registry.pop("_rev")
+    assert _run("--index", "0", "--priority", "high") == 1
+    assert store.calls == []
+
+
+@pytest.mark.parametrize("status,cell", [
+    ("backlog", "⚪ Backlog"),
+    ("in-progress", "🟡 In progress"),
+    ("done", "✅ Done"),
+    ("blocked-on-edvard", "⏸ Blocked on Edvard"),
+])
+def test_every_status_reaches_the_cell(store, status, cell):
+    assert _run("--index", "0", "--priority", "high", "--status", status) == 0
+    assert _rows(store)[105]["status"] == cell
+
+
+def test_outdated_is_not_a_status_a_cycle_may_set(store):
+    """The split of labour is his: a cycle proposes it on an existing row and
+    he deletes. Nothing he typed this week arrives already written off."""
+    with pytest.raises(SystemExit):
+        _run("--index", "0", "--priority", "high", "--status", "outdated")
+
+
+# --- the capture half of the after-check --------------------------------
+
+
+def _pairs(*items):
+    return {"captures": [text for text, _ in items],
+            "captureReplies": [list(replies) for _, replies in items]}
 
 
 def test_check_catches_a_capture_lost_beside_the_one_boarded():
-    """The off-by-one this guard exists for, forced by hand."""
-    after, number, title, _ = _promote(BOARD, 0, "medium", "backlog", "08-27")
-    assert not _check(BOARD, after, number, title,
-                     "The first thing he typed. It goes on for a second sentence.")
-    damaged = after.replace("- 🟠 High: A rated capture.\n", "")
-    problems = _check(BOARD, damaged, number, title,
-                     "The first thing he typed. It goes on for a second sentence.")
-    assert any("capture count went" in p for p in problems)
+    before = _pairs(("one", []), ("two", []), ("three", []))
+    after = _pairs(("two", []))
+    assert check_captures(before, after, "one")
 
 
 def test_check_catches_a_reply_taken_with_the_cut():
-    after, number, title, _ = _promote(BOARD, 1, "medium", "backlog", "08-27")
-    damaged = after.replace("  - Cycle 500 answered this one.\n", "")
-    problems = _check(BOARD, damaged, number, title, "🟠 High: A rated capture.")
-    assert any("a capture changed underneath" in p for p in problems)
+    before = _pairs(("one", []), ("two", ["an answer"]))
+    after = _pairs(("two", []))
+    problems = check_captures(before, after, "one")
+    assert problems and "changed underneath" in problems[0]
 
 
-def test_check_catches_a_row_that_changed_underneath():
-    after, number, title, _ = _promote(BOARD, 0, "medium", "backlog", "08-27")
-    damaged = after.replace("| The second thing | 🟡 In progress |",
-                            "| The second thing | ✅ Done |")
-    problems = _check(BOARD, damaged, number, title,
-                     "The first thing he typed. It goes on for a second sentence.")
-    assert any("#2 changed underneath" in p for p in problems)
+def test_check_catches_the_wrong_capture_removed():
+    before = _pairs(("one", []), ("two", []))
+    after = _pairs(("one", []))
+    problems = check_captures(before, after, "one")
+    assert problems and "wrong capture" in problems[0]
 
 
-def test_a_project_tag_is_lifted_out_of_the_title_into_the_cell(tmp_path):
-    """His third capture prefix, and the one that went in as prose for 38 rows.
-
-    A rating prefix and a `DONE (Cycle N)` prefix were already stripped
-    before a bullet became a title; `(Project: X)` was not, so it was
-    written into the `Item` cell and the `Project` cell stayed at the
-    `Nova` default -- which is what he filed on 2026-09-01.
-    """
-    board = BOARD.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- (Project: Marcus) The first thing he typed. It goes on for a second sentence.",
-    )
-    code, path = _run(tmp_path, board=board, priority="medium")
-    assert code == 0
-    new = parse_board(path.read_text(encoding="utf-8"))["items"][0]
-    assert new["title"] == "The first thing he typed."
-    assert new["project"] == "Marcus"
-    # The write-up is still everything he wrote from the tag onwards --
-    # the prefix is a cell now, so it is not repeated in the prose either.
-    assert "(Project: Marcus)" not in path.read_text(encoding="utf-8")
-
-
-def test_a_project_tag_rides_beside_a_rating_and_a_done_marker(tmp_path):
-    board = BOARD.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- DONE (Cycle 501): 🟠 High: (Project: Marcus) Shipped already.",
-    )
-    code, path = _run(tmp_path, board=board)
-    assert code == 0
-    new = parse_board(path.read_text(encoding="utf-8"))["items"][0]
-    assert new["title"] == "Shipped already."
-    assert new["project"] == "Marcus"
-    assert new["status"] == "✅ Done"
-    # The rating is gone on purpose -- `set_row_status`'s own rule, a
-    # closed row loses its rating -- so all three prefixes were read and
-    # only the two that survive a closure are written.
-    assert new["priority"] == ""
-
-
-#: The same board with a `Project` column that already names Marcus. A slug
-#: only resolves against a project that exists, so a fixture with no
-#: `Project` cell anywhere cannot exercise the tag at all -- and a test
-#: written on `BOARD` would pass for the wrong reason, by finding nothing.
-BOARD_WITH_PROJECTS = BOARD.replace(
-    "| # | Item | Status | Updated | Priority |\n|---|------|--------|---------|---|\n"
-    "| [[#2 — The second thing\\|2]] | The second thing | 🟡 In progress | 08-25 | 🟠 High |\n"
-    "| [[#1 — The first thing\\|1]] | The first thing | ✅ Done | 08-25 |  |",
-    "| # | Item | Status | Updated | Priority | Project |\n|---|------|--------|---------|---|---|\n"
-    "| [[#2 — The second thing\\|2]] | The second thing | 🟡 In progress | 08-25 | 🟠 High | Marcus |\n"
-    "| [[#1 — The first thing\\|1]] | The first thing | ✅ Done | 08-25 |  | Sokrates Post |",
-)
-
-
-def test_the_projects_fixture_really_carries_the_column():
-    """The precondition, asserted rather than assumed.
-
-    Every test below is a negative-shaped claim about a slug resolving, and
-    a fixture whose replacement silently missed would make all of them pass
-    by finding no projects to resolve against.
-    """
-    assert BOARD_WITH_PROJECTS != BOARD
-    items = parse_board(BOARD_WITH_PROJECTS)["items"]
-    assert [item["project"] for item in items] == ["Marcus", "Sokrates Post"]
-
-
-def test_the_apps_project_tag_reaches_the_cell_too(tmp_path):
-    """The picker's shape, not the one he types by hand.
-
-    PR #887 gave the capture box a project picker that writes the choice as
-    a trailing `#slug` (`nova_capture.project_slug`). Nothing read it:
-    measured before this was written, `split_capture_project` returned
-    `("", "the reminder never fires #marcus")` for a bullet the picker had
-    produced, so the row landed at the `Nova` default with the tag stuck
-    inside its title -- the same defect he filed on 2026-09-01, in a new
-    syntax.
-    """
-    board = BOARD_WITH_PROJECTS.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- The first thing he typed. It goes on for a second sentence. #marcus",
-    )
-    code, path = _run(tmp_path, board=board, priority="medium")
-    assert code == 0
-    after = path.read_text(encoding="utf-8")
-    new = parse_board(after)["items"][0]
-    assert new["project"] == "Marcus"
-    assert new["title"] == "The first thing he typed."
-    # And the slug is gone from the file, not merely absent from the title:
-    # the write-up carries the rest of his sentence and must not keep it.
-    assert "#marcus" not in after
-
-
-def test_a_slug_with_a_hyphen_resolves_to_the_name_that_made_it(tmp_path):
-    """`Sokrates Post` -> `sokrates-post` and back. The multi-word case is
-    the one a de-hyphenating guess would get wrong."""
-    board = BOARD_WITH_PROJECTS.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- The first thing he typed. It goes on. #sokrates-post",
-    )
-    code, path = _run(tmp_path, board=board, priority="medium")
-    assert code == 0
-    new = parse_board(path.read_text(encoding="utf-8"))["items"][0]
-    assert new["project"] == "Sokrates Post"
-
-
-def test_an_unknown_slug_is_left_alone_rather_than_invented(tmp_path):
-    """The one judgement in this change, pinned.
-
-    `board_projects` derives the project list from the cells, so writing a
-    de-slugged `Recipe App` into one would create a project he never named
-    -- and a lowercase `recipe-app` would sit beside a `Recipe App` he
-    later types as a second project on the same page. So an unresolved slug
-    stays in the title, project unset: no worse than before this change,
-    and never a name I made up.
-    """
-    board = BOARD_WITH_PROJECTS.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- The first thing he typed. It goes on. #recipe-app",
-    )
-    code, path = _run(tmp_path, board=board, priority="medium")
-    assert code == 0
-    after = path.read_text(encoding="utf-8")
-    assert parse_board(after)["items"][0]["project"] == DEFAULT_PROJECT
-    assert "#recipe-app" in after
-
-
-def test_a_project_name_mid_sentence_is_prose_not_a_tag(tmp_path):
-    """The anchor, and it needs a *resolvable* slug to test anything.
-
-    I wrote this first with `#4` mid-sentence and it was worthless: drop
-    the `$` from the pattern and it still passed, because `4` resolves to
-    no project and the function returns the bullet untouched either way.
-    A negative result that was guaranteed in advance. `#marcus` resolves,
-    so an unanchored pattern eats it out of the middle of his sentence and
-    truncates the title to the two words in front of it -- which is what
-    this actually pins.
-    """
-    board = BOARD_WITH_PROJECTS.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- The #marcus reminder never fires in the evening.",
-    )
-    code, path = _run(tmp_path, board=board, priority="medium")
-    assert code == 0
-    after = path.read_text(encoding="utf-8")
-    new = parse_board(after)["items"][0]
-    assert new["project"] == DEFAULT_PROJECT
-    assert new["title"] == "The #marcus reminder never fires in the evening."
-
-
-def test_a_hash_in_his_prose_is_not_a_project_tag(tmp_path):
-    """He writes `#4` and `#267` in sentences constantly. This one cannot
-    catch a dropped anchor on its own -- see the test above for why -- but
-    it does pin that a trailing number is not read as a project."""
-    board = BOARD_WITH_PROJECTS.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- The first thing he typed. It is the same bug as #4",
-    )
-    code, path = _run(tmp_path, board=board, priority="medium")
-    assert code == 0
-    after = path.read_text(encoding="utf-8")
-    assert parse_board(after)["items"][0]["project"] == DEFAULT_PROJECT
-    assert "#4" in after
-
-
-def test_the_hand_typed_prefix_still_wins_over_a_trailing_tag(tmp_path):
-    """Both shapes on one bullet. The prefix is what he typed deliberately;
-    the tag can be left over from a picker that was on last-used."""
-    board = BOARD_WITH_PROJECTS.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- (Project: Sokrates Post) The first thing he typed. It goes on. #marcus",
-    )
-    code, path = _run(tmp_path, board=board, priority="medium")
-    assert code == 0
-    assert parse_board(path.read_text(encoding="utf-8"))["items"][0]["project"] == "Sokrates Post"
-
-
-def test_an_explicit_project_flag_beats_the_bullets_own_tag(tmp_path):
-    board = BOARD.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        "- (Project: Marcus) The first thing he typed. It goes on.",
-    )
-    code, path = _run(tmp_path, board=board, priority="medium", project="Agora")
-    assert code == 0
-    assert parse_board(path.read_text(encoding="utf-8"))["items"][0]["project"] == "Agora"
-
-
-def test_an_untagged_capture_gets_no_project_cell(tmp_path):
-    """The control: nothing here may start stamping a project on every row."""
-    code, path = _run(tmp_path, priority="medium")
-    assert code == 0
-    after = path.read_text(encoding="utf-8")
-    assert parse_board(after)["items"][0]["project"] == DEFAULT_PROJECT
-    # And the table is still five columns wide -- no `Project` header was
-    # appended for a row that never asked for one.
-    header = [line for line in after.split("\n") if line.startswith("| # |")][0]
-    assert header.count("|") == 6
-
-
-#: A second board that carries a project the first one does not. This is the
-#: whole point of the case below: `/api/project` builds the picker's list from
-#: BOTH boards, so a project with rows on only one of them is offerable in the
-#: app and unresolvable here.
-SIBLING_BOARD = BOARD_WITH_PROJECTS.replace("| Marcus |", "| Maintenance |")
-
-
-def test_the_sibling_fixture_really_carries_a_project_the_first_one_lacks():
-    """The precondition, asserted rather than assumed.
-
-    Every test below claims a slug resolves *because* of the sibling. If the
-    replacement above silently missed, `Maintenance` would be on neither
-    board and the negative test would pass for the wrong reason.
-    """
-    first = [item["project"] for item in parse_board(BOARD_WITH_PROJECTS)["items"]]
-    second = [item["project"] for item in parse_board(SIBLING_BOARD)["items"]]
-    assert "Maintenance" in second
-    assert "Maintenance" not in first
-
-
-def _tagged(slug):
-    return BOARD_WITH_PROJECTS.replace(
-        "- The first thing he typed. It goes on for a second sentence.",
-        f"- The first thing he typed. It goes on. #{slug}",
-    )
-
-
-def test_a_project_only_on_the_other_board_resolves_when_it_is_handed_over(tmp_path):
-    """`--projects-from` closes the gap between the picker and the resolver.
-
-    Measured against the live site on 2026-09-08: `/api/project` returned
-    eleven projects and `issues.md` carried eight, so Maintenance, Research
-    and Demos were pickable in the app and unresolvable when the capture was
-    boarded onto issues -- the row landed with no project and the slug still
-    in its title, which is the defect PR #888 was written to end.
-    """
-    sibling = tmp_path / "ideas.md"
-    sibling.write_text(SIBLING_BOARD, encoding="utf-8")
-    code, path = _run(
-        tmp_path,
-        board=_tagged("maintenance"),
-        priority="medium",
-        projects_from=str(sibling),
-    )
-    assert code == 0
-    after = path.read_text(encoding="utf-8")
-    assert parse_board(after)["items"][0]["project"] == "Maintenance"
-    assert parse_board(after)["items"][0]["title"] == "The first thing he typed."
-    assert "#maintenance" not in after
-
-
-def test_that_same_tag_does_not_resolve_without_the_other_board(tmp_path, capsys):
-    """The complement, and the reason the flag exists at all.
-
-    Without this the test above passes whether or not `--projects-from` does
-    anything -- `Maintenance` could be resolving through some other path and
-    the assertion could not tell.
-    """
-    code, path = _run(tmp_path, board=_tagged("maintenance"), priority="medium")
-    assert code == 0
-    after = path.read_text(encoding="utf-8")
-    row = parse_board(after)["items"][0]
-    assert row["project"] != "Maintenance"
-    # Still in the document -- the write-up here, the title when his first
-    # sentence is the whole capture. Either way it never reached a cell.
-    assert "#maintenance" in after
-    assert "WARNING: '#maintenance'" in capsys.readouterr().err
-
-
-def test_a_resolved_tag_prints_no_warning(tmp_path, capsys):
-    """The other half of the warning, so it cannot fire on every run."""
-    code, _path = _run(tmp_path, board=_tagged("marcus"), priority="medium")
-    assert code == 0
-    assert "WARNING" not in capsys.readouterr().err
-
-
-def test_a_capture_with_no_tag_at_all_prints_no_warning(tmp_path, capsys):
-    """A bullet he typed by hand is not a picker miss."""
-    code, _path = _run(tmp_path, board=BOARD_WITH_PROJECTS, priority="medium")
-    assert code == 0
-    assert "WARNING" not in capsys.readouterr().err
-
-
-def test_an_unreadable_projects_from_is_a_refusal_not_a_shrug(tmp_path, capsys):
-    """Carrying on with a narrower list would reproduce the exact bug.
-
-    The row would land with no project, and the only sign would be a
-    warning that reads identically to the case where the sibling really
-    does not carry the name.
-    """
-    code, path = _run(
-        tmp_path,
-        board=_tagged("maintenance"),
-        priority="medium",
-        projects_from=str(tmp_path / "no-such-board.md"),
-    )
-    assert code == 1
-    assert "REFUSED" in capsys.readouterr().err
-    # And nothing was written: the capture is still in the box.
-    assert len(capture_entries(path.read_text(encoding="utf-8"))) == 3
-
-
-def test_the_boards_own_spelling_of_a_project_wins_over_the_siblings(tmp_path):
-    """One project, two spellings, and the row keeps its own page's.
-
-    Both slugify to `marcus`, so whichever list is consulted first decides
-    the cell. The row being written belongs on this board's project page,
-    so this board's spelling is the right answer.
-    """
-    sibling = tmp_path / "ideas.md"
-    sibling.write_text(
-        BOARD_WITH_PROJECTS.replace("| Marcus |", "| MARCUS |"), encoding="utf-8"
-    )
-    code, path = _run(
-        tmp_path,
-        board=_tagged("marcus"),
-        priority="medium",
-        projects_from=str(sibling),
-    )
-    assert code == 0
-    assert parse_board(path.read_text(encoding="utf-8"))["items"][0]["project"] == "Marcus"
+def test_check_passes_the_honest_case():
+    before = _pairs(("one", ["answered"]), ("two", []))
+    after = _pairs(("two", []))
+    assert check_captures(before, after, "one") == []

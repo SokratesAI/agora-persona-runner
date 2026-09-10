@@ -1314,6 +1314,53 @@ def test_the_capture_block_prints_how_to_board_one():
     assert _capture_board_help([]) == []
 
 
+def test_the_printed_board_capture_command_names_flags_that_tool_has():
+    """The signpost is checked against the tool, not against a copy of it.
+
+    This line is the only place a cycle is told how to board a bullet, and it
+    went stale the moment `tools.board_capture` moved onto the record store
+    (issue #203): it printed `--file <his file on disk>` and `--projects-from`
+    for as long as it took someone to notice, and both had stopped existing.
+    A cycle reading it would have run a command argparse refuses.
+
+    So the assertion is a join: every `--flag` in the printed line has to be a
+    flag the tool's own parser accepts. It cannot be satisfied by editing the
+    expected string, which is what a substring check would have been.
+    """
+    import re
+
+    from tools import board_capture
+    from tools.top_board_rows import _capture_board_help
+
+    body = "\n".join(_capture_board_help(
+        [{"board": "issue", "index": 0, "text": "x", "original": "x"}]))
+    printed = set(re.findall(r"--[a-z][a-z-]+", body.split("\n")[0]))
+    assert printed, "the first line is the command; it must carry flags"
+
+    known = _flags_of(board_capture)
+    assert "--file" not in known, "the precondition: --file is what went stale"
+    assert printed <= known, f"printed but not a flag: {sorted(printed - known)}"
+
+
+def _flags_of(module):
+    """Every `--flag` `module.main`'s parser accepts.
+
+    Read off the `usage:` block only. The rest of `--help` is the module
+    docstring, and these docstrings talk about the flags they used to have --
+    `board_capture`'s says it took `--file` until the #203 conversion -- so a
+    match over the whole text calls a flag that no longer exists accepted.
+    """
+    import contextlib
+    import io
+    import re
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.suppress(SystemExit):
+        module.main(["--help"])
+    usage = out.getvalue().split("\n\n")[0]
+    return set(re.findall(r"--[a-z][a-z-]+", usage))
+
+
 # A Sokrates relay ranks below a comment the owner typed himself.
 # His ask, relayed on `issues.md` 2026-08-29: *"a Sokrates comment relaying
 # something [the owner] actually said should not automatically inherit the
