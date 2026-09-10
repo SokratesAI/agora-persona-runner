@@ -115,6 +115,17 @@ def go_ahead_since(rows, since):
     return best
 
 
+def due(expiry, now):
+    """Is the login close enough that he has been, or is about to be, paged?
+
+    The same threshold `judge` branches on, named once so the caller can
+    decide whether reaching for the Telegram bridge is worth it at all.
+    """
+    if expiry is None:
+        return False
+    return (expiry - now).total_seconds() / 3600.0 <= credential_recovery.LOGIN_LEAD_HOURS
+
+
 def judge(expiry, now, paged_at, rows):
     """(exit status, lines). The whole decision, with no I/O in it."""
     if expiry is None:
@@ -177,10 +188,13 @@ def main(argv=None):
     paged_at = last_paged(notify.load_state(args.state))
 
     rows = []
-    if paged_at is not None and expiry is not None:
-        # Only fetched once the answer can turn on it. The bridge is one more
-        # thing that can be down, and a reader that reached for it on every
-        # run would fail on days when no reply could possibly be owed.
+    if due(expiry, now) and paged_at is not None:
+        # Only fetched once the answer can turn on it, and `due` is what makes
+        # that true for 25 days out of 30. The stamp alone is not enough: it is
+        # never cleared, so the day after any renewal it still says he was
+        # paged, and a reader gated on it would call the bridge on every sweep
+        # forever -- turning a bridge outage into a daily exit 1 on a question
+        # whose answer could not have changed.
         inbox_status, body, problem = telegram_inbox.read_inbox()
         if inbox_status != 0:
             sys.stdout.write(

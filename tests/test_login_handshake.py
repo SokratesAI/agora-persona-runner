@@ -112,3 +112,15 @@ def test_last_paged_reads_the_key_the_pager_actually_writes():
 def test_a_naive_stamp_is_read_as_utc_rather_than_raising():
     state = {credential_recovery.LOGIN_NOTIFY_KEY: {"last_sent": "2026-09-12T08:00:00"}}
     assert login_handshake.last_paged(state) == PAGED
+
+
+def test_due_is_false_while_the_deadline_is_far_off():
+    # The gate on reaching for the Telegram bridge at all. The page stamp is
+    # never cleared, so without this the day after a renewal still looks like a
+    # day he might have answered, and a bridge outage becomes a daily exit 1.
+    far = NOW + timedelta(hours=credential_recovery.LOGIN_LEAD_HOURS + 1)
+    assert not login_handshake.due(far, NOW)
+    assert not login_handshake.due(None, NOW)
+    assert login_handshake.due(_inside(), NOW)
+    # Past the deadline is still due -- the login is dead, not irrelevant.
+    assert login_handshake.due(NOW - timedelta(days=2), NOW)
