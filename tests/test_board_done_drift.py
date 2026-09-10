@@ -114,7 +114,9 @@ def test_the_newest_claim_for_a_row_is_the_one_that_counts():
     # A row finished, then re-taken and handed on by a later cycle. Reading
     # the `done` would report drift on work that is genuinely open again.
     findings, _, _, _, swept = check(
-        fetch=fetcher(ledger(("idea-121", 1050, "done", "2026-09-06T09:00"), ("idea-121", 1073, "progressed", "2026-09-06T18:07"))),
+        fetch=fetcher(ledger(("idea-121", 1050, "done", "2026-09-06T09:00"),
+                             ("idea-121", 1073, "progressed",
+                              "2026-09-06T18:07"))),
         contents=reader(board((121, "in-progress")), EMPTY))
     assert swept == 1
     assert findings == []
@@ -125,7 +127,9 @@ def test_the_newest_claim_wins_regardless_of_position_in_the_file():
     # not the newest claim. Same two claims as above, written the other way
     # round -- the answer may not change.
     findings, _, _, _, _ = check(
-        fetch=fetcher(ledger(("idea-121", 1073, "progressed", "2026-09-06T18:07"), ("idea-121", 1050, "done", "2026-09-06T09:00"))),
+        fetch=fetcher(ledger(("idea-121", 1073, "progressed",
+                              "2026-09-06T18:07"),
+                             ("idea-121", 1050, "done", "2026-09-06T09:00"))),
         contents=reader(board((121, "in-progress")), EMPTY))
     assert findings == []
 
