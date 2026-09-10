@@ -19,6 +19,15 @@ cycle that every vault write goes through here.
 6's capture note is three lines; the store holds boards. That read comes
 back through `print`, so it is also the one path here that has to subtract
 runner#673's newline.
+
+**And the #203 records follow the same write.** Three properties there,
+each one a way this could make the drift it closes worse. A board with no
+records skips rather than fails, and so does one nobody has seeded -- but
+a store that could not be *read* fails, because "never seeded" and
+"CouchDB would not answer" mean opposite things and folding them together
+is how an unreachable store reads as a current one. And the two stores are
+independent: a ticket push that failed must not stop the records
+following, or one broken store becomes two.
 """
 
 import subprocess
@@ -88,6 +97,43 @@ def _pushed(monkeypatch, result):
 
 
 SUMMARY = {"written": 2, "deleted": 0, "unchanged": 239, "failures": []}
+
+RESYNC = {"written": 202, "deleted": 0, "captures_kept": 2,
+          "captures_minted": 0, "layout_stored": 201}
+
+# Bound at import, before the autouse fixture below replaces either name.
+# Reading them off the module inside a test would hand back the stand-in,
+# which is a test that stubs the thing it is testing and passes anyway.
+REAL_FOLLOW_RECORDS = board_put.follow_records
+REAL_SEEDED = board_put.seeded
+
+
+@pytest.fixture(autouse=True)
+def no_record_store(monkeypatch):
+    """Keep every test in this file off CouchDB.
+
+    `main` now resyncs the #203 records after the ticket push, and the
+    board these tests use is one of the two that has them -- so without
+    this each of them would open a real store. The default is the ordinary
+    case: a seeded board whose resync lands.
+    """
+    monkeypatch.setattr(board_put, "seeded", lambda **kw: True)
+    monkeypatch.setattr(board_put, "follow_records",
+                        lambda board, source, **kw: (True, "resynced"))
+
+
+def _resynced(monkeypatch, result):
+    """Record every `resync` call; `result` is returned or raised."""
+    seen = []
+
+    def resync(markdown, board, apply=False, store=None):
+        seen.append((markdown, board, apply))
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(board_put.board_migrate, "resync", resync)
+    return seen
 
 
 def test_a_landed_write_pushes_the_file_that_was_sent(monkeypatch, board_file):
@@ -238,3 +284,103 @@ def test_a_bridge_that_reports_no_revision_stamps_nothing(monkeypatch, board_fil
     seen = _pushed(monkeypatch, SUMMARY)
     assert board_put.main([BOARD, board_file]) == 0
     assert seen[0][2] is None
+
+
+def test_a_landed_write_resyncs_the_records_from_the_same_markdown(
+        monkeypatch, board_file):
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    seen = _resynced(monkeypatch, RESYNC)
+    sent = open(board_file, encoding="utf-8").read()
+    assert board_put.main([BOARD, board_file]) == 0
+    assert seen == [(sent, "idea", True)]
+
+
+def test_a_lost_compare_and_swap_leaves_the_records_alone(
+        monkeypatch, board_file):
+    monkeypatch.setattr(board_put.subprocess, "run",
+                        _run(3, stdout="", stderr="conflict\n"))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    seen = _resynced(monkeypatch, RESYNC)
+    assert board_put.main([BOARD, board_file]) == 3
+    assert seen == []
+
+
+def test_a_failed_resync_is_exit_4_not_success(monkeypatch, board_file):
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    _resynced(monkeypatch, RuntimeError("writing board:idea:41: 503"))
+    assert board_put.main([BOARD, board_file]) == 4
+
+
+def test_a_board_with_no_records_skips_the_resync_and_still_succeeds(
+        monkeypatch, tmp_path):
+    mine = "projects/sokrates/projects/agora/nova/resources/ideas.md"
+    local = tmp_path / "mine.md"
+    local.write_text("## Entries\n\n- one\n", encoding="utf-8")
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    seen = _resynced(monkeypatch, RESYNC)
+    assert board_put.record_board(mine) is None
+    assert board_put.main([mine, str(local)]) == 0
+    assert seen == []
+
+
+def test_a_board_nobody_has_seeded_skips_the_resync(monkeypatch, board_file):
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "seeded", lambda **kw: False)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    seen = _resynced(monkeypatch, RESYNC)
+    assert board_put.main([BOARD, board_file]) == 0
+    assert seen == []
+
+
+def test_a_store_that_cannot_be_read_is_exit_4_not_a_skip(
+        monkeypatch, board_file):
+    """An unreachable store and an unseeded one mean opposite things."""
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, SUMMARY)
+    monkeypatch.setattr(board_put, "seeded", lambda **kw: None)
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    seen = _resynced(monkeypatch, RESYNC)
+    assert board_put.main([BOARD, board_file]) == 4
+    assert seen == []
+
+
+def test_a_failed_ticket_push_does_not_stop_the_records_following(
+        monkeypatch, board_file):
+    """Two independent stores. One behind must not make it two."""
+    monkeypatch.setattr(board_put.subprocess, "run", _run(0))
+    _pushed(monkeypatch, RuntimeError("writing ideas.md: 503"))
+    monkeypatch.setattr(board_put, "follow_records", REAL_FOLLOW_RECORDS)
+    seen = _resynced(monkeypatch, RESYNC)
+    assert board_put.main([BOARD, board_file]) == 4
+    assert [call[1] for call in seen] == ["idea"]
+
+
+def test_a_store_error_reading_the_registry_is_not_a_seeded_board():
+    class Boom:
+        @staticmethod
+        def read_registry():
+            raise RuntimeError("503")
+
+    assert REAL_SEEDED(store=Boom) is None
+
+
+def test_an_unmigrated_registry_reads_as_never_seeded():
+    class Empty:
+        @staticmethod
+        def read_registry():
+            return {"projects": {}, "milestones": {}}
+
+    assert REAL_SEEDED(store=Empty) is False
+
+
+def test_the_path_is_matched_case_insensitively():
+    assert board_put.record_board(BOARD.upper()) == "idea"
+    assert board_put.record_board(None) is None
