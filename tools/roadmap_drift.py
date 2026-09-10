@@ -24,12 +24,20 @@ on them would be a number I chose standing in for the owner's.
 
 **Exit contract.** 2 when an item has drifted -- every named row is
 closed while the item is still open, or a named row is not on its board
-at all. 1 when a file could not be read, because a sweep that read one
-board of two must not report a clean roadmap. 0 otherwise.
+at all. 1 when the roadmap could not be read or a board would not answer,
+because a sweep that read one board of two must not report a clean
+roadmap. 0 otherwise.
 
-The vault reads are the tool's own by default; `--roadmap`, `--issues`
-and `--ideas` take local paths instead, which is how the tests drive it
-and how a cycle can check an edit before putting it.
+**The rows come out of the record store, not out of his markdown**
+(issue #203, since 2026-09-10). `board_contents` below is the one door,
+and the roadmap is the only document this still fetches from the vault --
+a roadmap is his prose, not a board, and stays markdown after the
+switchover.
+
+The vault read is the tool's own by default; `--roadmap` takes a local
+path instead, and `--issues`/`--ideas` still take a local board markdown
+file, which is how the tests drive it and how a cycle can check an edit
+before putting it.
 """
 
 import argparse
@@ -42,17 +50,17 @@ import sys
 # See tests/test_tools_run_as_scripts.py.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_boards import parse_board, status_key  # noqa: E402
-from agora_runner.nova_capture import CAPTURE_TARGETS  # noqa: E402
+from agora_runner import board_records  # noqa: E402
 from agora_runner.nova_plan import ROADMAP_PATH, next_items  # noqa: E402
+from tools import board_migration_preflight  # noqa: E402
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 
 #: The two boards a `board:` field can name, in the singular form the field
-#: uses. `issue #131` -> `issues.md`. The board file paths come from
-#: `CAPTURE_TARGETS` rather than being spelled again here: they have moved
-#: once already (2026-08-12, out of the agora folder into his own), and a
-#: second copy of a path is a second thing to forget on the next move.
+#: uses -- which is also the name the record store keys a board by, so
+#: `issue #131` reaches `board_records.contents("issue")` with no second
+#: spelling in between. The plural is only the key this tool's own index
+#: dict and its `--issues`/`--ideas` flags use.
 BOARDS = {"issue": "issues", "idea": "ideas"}
 
 #: `issue #131` / `idea #179`, the exact shape the roadmap writes. The
@@ -61,11 +69,11 @@ BOARDS = {"issue": "issues", "idea": "ideas"}
 _REF_RE = re.compile(r"\b(issue|idea)\s*#(\d+)", re.I)
 
 #: A row in one of these is finished; the roadmap should no longer be
-#: standing on it. This is `nova_boards`' own vocabulary, read through
-#: `status_key`, so a row spelled `✅ Done` and one spelled `done` are the
-#: same row. `nova_boards.BLOCKED_STATUS` is deliberately NOT here: a
-#: blocked row is open work waiting on the owner, which is exactly the
-#: thing a roadmap item should keep pointing at.
+#: standing on it. These are `nova_boards`' own `statusKey` values, which
+#: the record store carries verbatim, so a row spelled `✅ Done` and one
+#: spelled `done` are the same row. `nova_boards.BLOCKED_STATUS` is
+#: deliberately NOT here: a blocked row is open work waiting on the owner,
+#: which is exactly the thing a roadmap item should keep pointing at.
 CLOSED_KEYS = frozenset({"done", "outdated"})
 
 
@@ -90,24 +98,57 @@ def read_vault(path):
     return done.stdout
 
 
-def board_index(markdown):
-    """One board's markdown -> `{number: statusKey}`.
+def board_contents(board, local=None, store=None):
+    """One board as the four keys the board parser used to return.
 
-    Both tables are read, not just `## Board`: `parse_board` already
-    merges `## Done` in and marks those rows, and a roadmap standing on a
-    row that has moved to the done table is the main case this tool
-    exists for.
+    Issue #203's switchover, for this tool. The default read is
+    `board_records.contents`, so a roadmap is judged against the record
+    store rather than against a 700KB markdown table parsed with a regex.
+    `board` is the singular name in `BOARDS`, which is also the name the
+    store keys a board by.
+
+    `local` is the `--issues`/`--ideas` escape hatch and is unchanged in
+    what it takes: a path to a board markdown file. It goes through
+    `board_migration_preflight.board_contents`, the one module the
+    migration is allowed to read markdown in, rather than through
+    `parse_board` here -- so this tool no longer names the parser and
+    `board_reader_inventory` stops counting it. That door is a migration
+    seam and comes out with the window.
+
+    `store=None` rather than the real store as a default argument: a
+    default binds its value at import, so `board_records.board_store`
+    written there would be the object this module captured and a test
+    replacing it would be replacing something nothing reads. Same reason
+    as `tools.top_board_rows.board_contents`.
+
+    **Every failure raises** and `main` files the board under
+    `COULD NOT READ`, which exits 1. An unmigrated store read as a board
+    with no rows would put a MISSING finding on every roadmap item that
+    names it -- a confident wrong verdict on a board this tool never saw,
+    which is the one answer worse than no answer here.
     """
-    board = parse_board(markdown)
-    index = {}
-    for item in board["items"]:
-        # `parse_board` already writes `✅ Done` over whatever a `## Done`
-        # row's cells say -- that table's third column is `Updated`, not a
-        # status -- so a row moved there reads as closed here with nothing
-        # extra. A second normalisation on this side was dead code and a
-        # mutation of it survived, which is how I found that out.
-        index[item["number"]] = item.get("statusKey") or status_key(item.get("status", ""))
-    return index
+    if local:
+        with open(local, encoding="utf-8") as fh:
+            return board_migration_preflight.board_contents(fh.read())
+    return board_records.contents(board,
+                                  store=store or board_records.board_store)
+
+
+def board_index(contents):
+    """One board's `board_contents` shape -> `{number: statusKey}`.
+
+    Both tables are read, not just `## Board`: the records carry `## Done`
+    rows marked closed exactly as `parse_board` merged them, and a roadmap
+    standing on a row that has moved to the done table is the main case
+    this tool exists for.
+
+    `statusKey` is read straight rather than re-derived from `status`.
+    That fallback was here and was dead -- a mutation of it survived,
+    which is how I found that out -- and the store's contract is that it
+    answers exactly what the parser returned, so a row with no `statusKey`
+    is a broken record and should raise here rather than be guessed at.
+    """
+    return {item["number"]: item["statusKey"] for item in contents["items"]}
 
 
 def references(field):
@@ -190,32 +231,39 @@ def main(argv=None):
     parser.add_argument("--ideas", help="local ideas.md instead of the vault")
     args = parser.parse_args(argv)
 
-    sources = {"roadmap": (args.roadmap, ROADMAP_PATH)}
-    for kind, board in BOARDS.items():
-        sources[board] = (getattr(args, board), CAPTURE_TARGETS[board])
-
-    texts = {}
     unreadable = []
-    for name, (local, path) in sources.items():
-        if local:
-            try:
-                texts[name] = open(local, encoding="utf-8").read()
-            except OSError:
-                unreadable.append(local)
-        else:
-            text = read_vault(path)
-            if text is None:
-                unreadable.append(path)
-            else:
-                texts[name] = text
+
+    # The roadmap is his prose and stays markdown after the switchover --
+    # it is not a board and `board_migrate` never migrates it.
+    if args.roadmap:
+        try:
+            roadmap = open(args.roadmap, encoding="utf-8").read()
+        except OSError as exc:
+            roadmap = None
+            unreadable.append(f"{args.roadmap} ({exc.__class__.__name__})")
+    else:
+        roadmap = read_vault(ROADMAP_PATH)
+        if roadmap is None:
+            unreadable.append(ROADMAP_PATH)
+
+    indexes = {}
+    for kind, board in BOARDS.items():
+        try:
+            indexes[board] = board_index(board_contents(kind, getattr(args, board)))
+        except Exception as exc:  # noqa: BLE001 -- see `board_contents`
+            # Named with the reason: an unmigrated store, a CouchDB that
+            # will not answer and a missing local file are one exit code
+            # and three different fixes.
+            unreadable.append(f"{board} board records "
+                              f"({exc.__class__.__name__}: {exc})")
+
     if unreadable:
         print("COULD NOT READ — %s. A roadmap judged against one board of two "
               "would report rows as missing that are simply unread, so nothing "
               "is judged." % ", ".join(sorted(unreadable)))
         return 1
 
-    items = next_items(texts["roadmap"])
-    indexes = {board: board_index(texts[board]) for board in BOARDS.values()}
+    items = next_items(roadmap)
     findings = judge(items, indexes)
     print(render(items, findings))
     return 2 if findings else 0
