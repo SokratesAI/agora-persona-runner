@@ -1,8 +1,8 @@
-"""The five single-cell board writers read each document once, not twice.
+"""The single-cell board writers still on markdown read each document once.
 
 Issue #203, the owner's decision that the boards get a real schema. Each of
-`board_status`, `board_priority`, `board_size`, `board_milestone` and
-`board_project` used to parse the file it is editing **twice** inside one
+`board_status`, `board_priority`, `board_size` and `board_milestone`
+used to parse the file it is editing **twice** inside one
 read-modify-write: once inside `check`, which took the two markdown strings
 and parsed them itself, and once more in `main` to print what the cell
 moved from. On a string that is free and the two reads can never disagree.
@@ -71,12 +71,18 @@ Body text nothing here may touch.
 
 # One successful, cell-moving invocation per tool. Every one is a `--dry-run`
 # so the count is of the read path only and no test writes a board.
+#
+# **`board_project` was a sixth row here and has left the table**, because
+# it no longer reads a document: it is the first writer converted onto
+# `board_write.change_row` and takes `--board`, not `--file`. A double read
+# is not a thing it can do any more, and its own file is where it is tested.
+# Every writer converted after it leaves this table the same way; when the
+# last one does, this file goes with it.
 WRITERS = [
     ("tools.board_status", ["--number", "100", "--status", "in-progress"]),
     ("tools.board_priority", ["--number", "100", "--priority", "medium"]),
     ("tools.board_size", ["--number", "100", "--size", "large"]),
     ("tools.board_milestone", ["--number", "100", "--milestone", "Quota"]),
-    ("tools.board_project", ["--number", "100", "--project", "Agora"]),
 ]
 
 
@@ -138,7 +144,6 @@ MUTATORS = {
     "tools.board_priority": "set_row_priority",
     "tools.board_size": "set_row_size",
     "tools.board_milestone": "set_row_milestone",
-    "tools.board_project": "set_row_project",
 }
 
 
