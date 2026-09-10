@@ -163,6 +163,7 @@ CHECKS = (
     "alerts",
     "trace_health",
     "telegram_inbox",
+    "login_handshake",
     "host_memory_trend",
     "memory_headroom",
     "node_memory",
@@ -284,6 +285,7 @@ SUBJECT = {
     "alerts":            ("on-box",  "Prometheus in this cluster"),
     "trace_health":      ("on-box",  "the live prometheus and tempo in this cluster"),
     "telegram_inbox":    ("on-box",  "the Telegram bridge in this cluster"),
+    "login_handshake":   ("on-box",  "this pod's credential and the Telegram bridge"),
     #: These two read this pod's own /proc, so their subject is whichever node
     #: the bridge pod is scheduled on -- server1 today. server2 joined on
     #: 2026-09-03 and neither of them can see it. `oom_history` below was the
@@ -378,6 +380,11 @@ CADENCE_HOURS = {
     # NEVER_COLLAPSE: "unchanged since last sweep" is the worst possible reason
     # to stop looking at an unanswered message.
     "telegram_inbox": 0.0,
+    # Every sweep -- it is the second half of telegram_inbox's reason. He
+    # answers the 5-day reminder once and expects a link back; a daily cadence
+    # would leave that yes sitting for up to a day, which is most of the margin
+    # the reminder exists to buy. Outside the window it is one file read.
+    "login_handshake": 0.0,
     # Every sweep -- the card it watches goes stale after 3h, so a 24h cadence
     # let it read clean on the sweep where the staleness actually began. Same
     # reason it is in NEVER_COLLAPSE.
@@ -736,7 +743,7 @@ REPRINT_HOURS = 24.0
 #: blinds**. Everything else -- an alert, a full disk, a stale pin -- is a
 #: standing fact about the cluster that I cannot close from this loop, and a
 #: fact can be read once a day.
-NEVER_COLLAPSE = frozenset({"telegram_inbox", "recap_health"})
+NEVER_COLLAPSE = frozenset({"telegram_inbox", "login_handshake", "recap_health"})
 
 #: Where the "have I already printed this" record lives. Not in the checkout:
 #: concurrent cycles each get their own `git worktree`, so a per-tree file

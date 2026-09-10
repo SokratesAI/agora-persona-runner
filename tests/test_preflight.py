@@ -569,8 +569,13 @@ def test_an_exempt_check_records_that_it_printed_now():
 def test_the_exempt_checks_are_named_here():
     # Named here rather than left implicit: the set holds checks whose finding
     # is someone waiting on me AND whose wait is the number the fingerprint
-    # blinds. Today that is two.
-    assert preflight.NEVER_COLLAPSE == frozenset({"telegram_inbox", "recap_health"})
+    # blinds. Today that is three. `login_handshake` joined on 2026-09-10: its
+    # finding is his one-word yes to the login reminder, and how long that yes
+    # has been sitting there is a timestamp, which `finding_shape` blinds --
+    # so every sweep after the first would read as unchanged while the
+    # credential it unblocks kept counting down.
+    assert preflight.NEVER_COLLAPSE == frozenset(
+        {"telegram_inbox", "login_handshake", "recap_health"})
 
 
 # `tools.recap_health` on a stale card, in the shape it prints: the verdict
