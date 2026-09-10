@@ -334,7 +334,7 @@ def test_the_migration_does_not_add_itself_to_the_gate():
     test and would agree with itself."""
     from tools import board_reader_inventory
 
-    found, _refs, _unreadable, _untokenized = board_reader_inventory.scan()
+    found, _refs, _unreadable, _untokenized, _mine = board_reader_inventory.scan()
 
     names = {str(path) for path in found}
     assert not any(name.endswith("tools/board_migrate.py") for name in names), (
