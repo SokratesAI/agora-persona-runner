@@ -64,11 +64,22 @@ already short-circuits a document it would not alter, and refusing here would
 turn "you asked for something already true" into an error the nine tools would
 each have to translate. The after-check is unaffected: nothing moved is exactly
 what it wants to see.
+
+**`append_note` is the second door here and it exists because `change_row`
+alone cannot serve four of the six writers left.** `--note` is on
+`board_status`, `board_priority`, `board_size` and `board_milestone`, and it
+appends one dated line to a row's write-up -- which `change_row` can only do by
+*replacing* the write-up, so a caller that gets the read-modify-write wrong
+deletes his prose and reports success. It is the records half of
+`nova_boards.append_detail_note`, it carries the caller's change set through in
+the same single write, and it sets the row's `updated` cell itself, which is
+what `_touch_row_updated` was doing as a second pass over the markdown.
 """
 
 import copy
 
 from agora_runner import board_records, board_store
+from agora_runner.nova_boards import NOTE_AUTHORS
 
 
 class WriteRefused(ValueError):
@@ -204,3 +215,133 @@ def change_row(board, number, changes, detail=None, store=board_store):
             "between, re-read the board and try again; this check cannot tell "
             "that apart from damage")
     return held, landed
+
+
+class NoteRefused(WriteRefused):
+    """The note itself was not writable -- an empty line, a line break, an
+    author who is not one of the two. Nothing was written.
+
+    A subclass of `WriteRefused` because it is the same promise (nothing has
+    happened, fix the call) and the four converting tools each want to print
+    their own sentence about a bad `--note` without also having to catch a
+    second exception for a bad `--status`.
+    """
+
+
+def _note_line(note, dated, cycle, author):
+    """The one dated line, or `None` if this is not a note that can be written.
+
+    Split out from `append_note` so the refusals and the rendering are read
+    together: every one of them exists because of what the line has to survive
+    once it is back in his markdown, and reading them next to the string they
+    guard is the only way that stays true.
+
+    **A line break is refused even though the write-up is a whole field now.**
+    In `nova_boards.append_detail_note` this was structural -- `_detail_spans`
+    ends a write-up at the next heading, so a note carrying a newline truncated
+    the block and every later line of his own text stopped rendering. Against
+    records the body is one value and a newline cannot reach another row. It is
+    still refused, because the *reader* is unchanged: `_COMMENT_NOTE_RE` is
+    `re.MULTILINE` and anchors a note at the start of a line, so a two-line note
+    reads back as one note plus an orphaned sentence with nobody's name on it.
+    One line in, one line out, on both sides of the store.
+
+    **`\r` counts and is the one that gets past a `"\n" in note` check.**
+    `re.MULTILINE` anchors on `\n` alone, so a bare `\r` splits nothing here
+    and every test agrees the note is harmless. CommonMark defines it as a line
+    ending, so Obsidian on his phone renders the break anyway.
+
+    **A `|` in `dated` is refused because `dated` is also the row's `updated`
+    cell.** `board_view.render_row` raises on a pipe rather than escaping it,
+    so this refusal now fires before a write that would otherwise fail halfway
+    through rendering his board back. The note body is unaffected and keeps
+    taking any `|` it likes -- prose is not a cell.
+
+    **The author is checked against `NOTE_AUTHORS` rather than written
+    through**, and an unknown one is a refusal rather than a fallback to mine:
+    the name lands inside `**...**` in his own file, and attributing his
+    sentence to me is exactly the corruption worth stopping.
+    """
+    note = (note or "").strip()
+    dated = (dated or "").strip()
+    if not note or not dated:
+        return None
+    if any(c in note or c in dated for c in "\r\n"):
+        return None
+    if "|" in dated:
+        return None
+    name = NOTE_AUTHORS.get(("Nova" if author is None else author).strip().lower())
+    if name is None:
+        return None
+    who = f"{name}, {dated}" if cycle is None else f"{name}, {dated} (Cycle {cycle})"
+    return f"**{who}:** {note}"
+
+
+def append_note(board, number, note, dated, cycle=None, author=None,
+                changes=None, store=board_store):
+    """Add one dated line to the end of row `number`'s write-up, in one write.
+
+    The records half of `nova_boards.append_detail_note`, and the thing four of
+    the six remaining `tools/board_*.py` writers are waiting on: `--note` is on
+    `board_status`, `board_priority`, `board_size` and `board_milestone`, and
+    `change_row` can only *replace* a write-up. Replacing it from a caller that
+    wanted to append is how his prose gets deleted by a tool that reported
+    success.
+
+    **It is one call and one write on purpose.** A status move and its reason
+    are one thing he asked for -- `--status done --note 'what closed it'` --
+    and doing it as two `change_row` calls would be two writes, two after-checks
+    and a window in between where his board says a row closed and nothing says
+    why. So `changes` is passed straight through and the note rides with it.
+
+    **`updated` is set here and a caller may not also name it.** In markdown
+    this was `_touch_row_updated`, a second pass over the document that could
+    not fail and silently did nothing when the row was missing -- because a
+    caller whose note landed did not want an exception about a table cell.
+    Against records it is an ordinary key in the same change set, under the same
+    compare-and-swap as everything else, so the hedge is gone: the cell moves or
+    the write refuses. A caller passing its own `updated` is refused rather than
+    quietly overruled, because the two values disagreeing is a bug in the caller
+    and picking one of them hides it.
+
+    **A row with no write-up is refused, and that is parity rather than a
+    judgement.** `append_detail_note` returned `None` there because there was no
+    span to append to -- structural, not a decision. Against records a note is a
+    perfectly good first line of a write-up and `store_item` would create one.
+    Lifting the refusal is a real improvement and it is not this commit's: the
+    switchover converts, it does not redesign, and four tools currently print
+    `REFUSED: could not append the note` in that case. Whoever lifts it should
+    do it in one place for all four at once.
+
+    Returns `(before_item, after_item)` from `change_row`. Raises `NoteRefused`
+    or `WriteRefused` before writing anything, `BoardDamaged` after a write that
+    did not land cleanly.
+    """
+    line = _note_line(note, dated, cycle, author)
+    if line is None:
+        raise NoteRefused(
+            f"the note for row #{number} of board {board!r} is not one writable "
+            "line: it must be non-empty, carry no line break, name an author "
+            f"among {', '.join(sorted(NOTE_AUTHORS.values()))}, and come with a "
+            "date carrying no '|'")
+    changes = dict(changes or {})
+    if "updated" in changes:
+        raise NoteRefused(
+            f"append_note sets row #{number}'s updated cell from the note's own "
+            f"date ({dated!r}), so the change set may not name it too")
+    changes["updated"] = dated.strip()
+
+    body = board_records.contents(board, store=store)["details"].get(number)
+    if body is None:
+        raise NoteRefused(
+            f"row #{number} of board {board!r} has no write-up to append to")
+    # Trailing blank lines are the separator before whatever came next in the
+    # document, not part of the body -- walk back over them so note two lands
+    # directly under note one instead of drifting a line further each time.
+    lines = body.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    # An empty write-up has nothing to separate the note from, and a leading
+    # blank line there renders as one.
+    detail = "\n".join(lines + ["", line]) if lines else line
+    return change_row(board, number, changes, detail=detail, store=store)

@@ -14,7 +14,7 @@ one exists to catch a store that answered wrong.
 
 import pytest
 
-from agora_runner import board_records, board_store, board_write
+from agora_runner import board_records, board_store, board_write, nova_boards
 from tests.test_board_records import WritableFakeStore, item_numbered, writable
 
 
@@ -351,3 +351,186 @@ def test_a_rewritten_capture_bullet_is_reported_as_text_not_as_a_count():
     message = str(damaged.value)
     assert "the text of at least one is different" in message
     assert f"still {len(parsed['captures'])} of them" in message
+
+
+# --- append_note -------------------------------------------------------------
+#
+# The records half of `nova_boards.append_detail_note`. Every test below asserts
+# against `board_records.contents`, never against a rendered board, and the two
+# that matter most are the round-trip through `nova_boards`' own note reader
+# (a line only I can read is not a note) and the single-write one (a status and
+# its reason are one thing he asked for, so they are one write).
+
+_NOTE_ROW = 41  # the fixture's only row with a write-up to append to
+_NO_WRITE_UP = 42
+
+
+def _details(store, board="issue"):
+    return board_records.contents(board, store=store)["details"]
+
+
+def _writes(store):
+    """The store calls that actually wrote a document."""
+    return [call for call in store.calls if "write" in call[0] or "store" in call[0]]
+
+
+def test_a_note_lands_at_the_end_of_the_write_up_and_stamps_updated():
+    """The anchor: his prose is kept, the line is added under it, and the cell
+    that ranks the row moves to the note's own date."""
+    parsed, store = writable()
+    body_before = parsed["details"][_NOTE_ROW]
+    before, after = board_write.append_note(
+        "issue", _NOTE_ROW, "closed by the switchover", "09-10", cycle=1330,
+        store=store)
+
+    assert before == item_numbered(parsed, _NOTE_ROW)
+    assert after["updated"] == "09-10"
+    body = _details(store)[_NOTE_ROW]
+    assert body.startswith(body_before), "his own write-up is untouched"
+    assert body == body_before + "\n\n**Nova, 09-10 (Cycle 1330):** closed by the switchover"
+
+
+def test_a_note_with_no_cycle_leaves_the_cycle_marker_off():
+    parsed, store = writable()
+    board_write.append_note("issue", _NOTE_ROW, "no cycle", "09-10", store=store)
+    assert _details(store)[_NOTE_ROW].endswith("**Nova, 09-10:** no cycle")
+
+
+def test_the_second_note_lands_directly_under_the_first():
+    """The walk-back. Without it every note drifts one blank line further from
+    the write-up than the one before it."""
+    _parsed, store = writable()
+    board_write.append_note("issue", _NOTE_ROW, "one", "09-10", store=store)
+    board_write.append_note("issue", _NOTE_ROW, "two", "09-11", store=store)
+
+    tail = _details(store)[_NOTE_ROW].split("\n")[-3:]
+    assert tail == ["**Nova, 09-10:** one", "", "**Nova, 09-11:** two"]
+
+
+def test_the_line_written_is_the_line_his_board_page_reads_back():
+    """The round-trip that matters. `unanswered_comment_bodies_from_details` is
+    what puts `UNANSWERED` on a row of his board, and it is regex over the note
+    line -- so a note this module writes in a shape that reader does not match
+    is invisible on his phone while every test here still passes."""
+    _parsed, store = writable()
+    board_write.append_note(
+        "issue", _NOTE_ROW, "why is this still open?", "09-10", author="edvard",
+        store=store)
+    waiting = nova_boards.unanswered_comment_bodies_from_details(_details(store))
+    assert _NOTE_ROW in waiting
+    assert waiting[_NOTE_ROW].endswith("why is this still open?")
+
+    # And the negative half, or this passes against a reader that flags every
+    # row: my answer under his question clears it.
+    board_write.append_note("issue", _NOTE_ROW, "answered", "09-10", store=store)
+    assert nova_boards.unanswered_comment_bodies_from_details(_details(store)) == {}
+
+
+def test_a_note_rides_with_the_change_set_as_one_write():
+    """`--status done --note 'what closed it'` is one thing he asked for. Two
+    writes would leave a window where his board says a row closed and nothing
+    on it says why."""
+    _parsed, store = writable()
+    _before, after = board_write.append_note(
+        "issue", _NOTE_ROW, "shipped", "09-10",
+        changes={"status": "✅ Done", "statusKey": "done"}, store=store)
+
+    assert after["status"] == "✅ Done"
+    assert after["statusKey"] == "done"
+    assert after["updated"] == "09-10"
+    assert _details(store)[_NOTE_ROW].endswith("**Nova, 09-10:** shipped")
+    assert len(_writes(store)) == 1, _writes(store)
+
+
+def test_a_change_set_naming_updated_is_refused_with_nothing_written():
+    """Two dates for one write is a bug in the caller, and picking one hides
+    it."""
+    _parsed, store = writable()
+    with pytest.raises(board_write.NoteRefused) as refused:
+        board_write.append_note(
+            "issue", _NOTE_ROW, "shipped", "09-10",
+            changes={"updated": "01-01"}, store=store)
+    assert "updated" in str(refused.value)
+    assert _writes(store) == []
+
+
+@pytest.mark.parametrize("note", ["two\nlines", "carriage\rreturn", "", "   "])
+def test_a_note_that_is_not_one_line_is_refused_with_nothing_written(note):
+    """A newline can no longer truncate his file the way it could in markdown --
+    but `_COMMENT_NOTE_RE` is still `re.MULTILINE`, so a two-line note reads
+    back as one note plus an orphaned sentence with nobody's name on it."""
+    _parsed, store = writable()
+    with pytest.raises(board_write.NoteRefused):
+        board_write.append_note("issue", _NOTE_ROW, note, "09-10", store=store)
+    assert _writes(store) == []
+
+
+@pytest.mark.parametrize("dated", ["09|10", "", "09\n10"])
+def test_a_date_that_cannot_be_a_cell_is_refused_with_nothing_written(dated):
+    """`dated` is also the row's `updated` cell now, and `board_view.render_row`
+    raises on a pipe rather than escaping it."""
+    _parsed, store = writable()
+    with pytest.raises(board_write.NoteRefused):
+        board_write.append_note("issue", _NOTE_ROW, "fine", dated, store=store)
+    assert _writes(store) == []
+
+
+def test_an_unknown_author_is_refused_rather_than_signed_with_my_name():
+    """The name lands inside `**...**` in his own file. Attributing his sentence
+    to me is the one outcome this argument exists to prevent, so an unset
+    payload field must not fall back to `Nova`."""
+    _parsed, store = writable()
+    for author in ["", "  ", "sokrates"]:
+        with pytest.raises(board_write.NoteRefused):
+            board_write.append_note(
+                "issue", _NOTE_ROW, "hello", "09-10", author=author, store=store)
+    assert _writes(store) == []
+
+
+def test_a_row_with_no_write_up_is_refused_with_nothing_written():
+    """Parity with `append_detail_note`, which returned `None` here. Against
+    records a note would be a perfectly good first write-up -- lifting this is a
+    real improvement and deliberately not part of the conversion."""
+    parsed, store = writable()
+    assert _NO_WRITE_UP not in parsed["details"], "the fixture's row without one"
+    with pytest.raises(board_write.NoteRefused) as refused:
+        board_write.append_note("issue", _NO_WRITE_UP, "hello", "09-10", store=store)
+    assert "write-up" in str(refused.value)
+    assert _writes(store) == []
+
+
+def test_a_row_that_is_not_on_the_board_is_refused_by_the_change_it_makes():
+    """`append_note` reads the details before `change_row` reads the rows, so a
+    bad number has to survive that far to be refused for the right reason."""
+    _parsed, store = writable()
+    with pytest.raises(board_write.WriteRefused) as refused:
+        board_write.append_note("issue", 9999, "hello", "09-10", store=store)
+    assert "9999" in str(refused.value)
+    assert _writes(store) == []
+
+
+def test_a_note_refusal_is_catchable_as_a_write_refusal():
+    """The four converting tools each print their own sentence about a bad
+    `--note`, and none of them should need a second `except` to promise that
+    nothing was written."""
+    assert issubclass(board_write.NoteRefused, board_write.WriteRefused)
+
+
+def test_a_write_up_ending_in_blank_lines_still_gets_the_note_directly_under_it():
+    """The walk-back, tested where it can actually fire.
+
+    `test_the_second_note_lands_directly_under_the_first` does not reach it:
+    the first `append_note` leaves no trailing blank line, so the second one
+    walks back over nothing and the loop could be deleted with that test still
+    green. `contents` hands a stored body back verbatim -- it does not strip --
+    so any caller that wrote one ending in blank lines is the case, and without
+    the walk-back the note drifts one line further from his prose each time.
+    """
+    parsed, store = writable()
+    board_records.store_item(
+        "issue", item_numbered(parsed, _NOTE_ROW), detail="prose.\n\n\n",
+        store=store)
+    assert _details(store)[_NOTE_ROW] == "prose.\n\n\n", "the store keeps it"
+
+    board_write.append_note("issue", _NOTE_ROW, "under it", "09-10", store=store)
+    assert _details(store)[_NOTE_ROW] == "prose.\n\n**Nova, 09-10:** under it"
