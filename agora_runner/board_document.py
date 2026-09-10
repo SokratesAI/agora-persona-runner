@@ -344,15 +344,11 @@ def capture_replies_of(doc):
     return list(doc.get("replies") or ())
 
 
-def captures_map(docs):
-    """Capture documents -> `parse_board`'s two parallel lists.
+def captures_in_order(docs):
+    """Capture documents in the order his board shows them.
 
-    Returns `{"captures": [text], "captureReplies": [[reply]]}`, the two
-    the same length, because six modules read them as a pair and index
-    one by the other's position.
-
-    Ranked captures come first in rank order, then unranked ones in the
-    order they were handed over. That pair is deliberate and it is
+    Ranked captures first in rank order, then unranked ones in the order
+    they were handed over. That pair is deliberate and it is
     `board_store.sort_key`'s rule, which this deliberately restates rather
     than imports -- `board_store` imports this module, so the arrow only
     goes one way. `_all_docs` answers in lexical id order, so
@@ -360,6 +356,13 @@ def captures_map(docs):
     re-sort in Python. Sorting on `rank or ""` instead would put every
     unranked capture *first*, at the top of his board, which is where a
     capture he never placed is most visible and least earned.
+
+    It is its own function because `captures_map` is not the only caller
+    that needs the order any more. `tools.board_capture` takes an
+    `--index` into the list `captures_map` produced and has to delete
+    *that* capture's document -- so the position and the document behind
+    it are decided by one rule in one place, or the tool boards the bullet
+    he pointed at and removes a different one.
     """
     # Materialised before the check, because a caller handing over a
     # generator (a `_all_docs` page, `reversed(...)`) would otherwise have
@@ -367,8 +370,20 @@ def captures_map(docs):
     docs = list(docs)
     for doc in docs:
         _check_capture_identity(doc)
-    ordered = sorted(
+    return sorted(
         docs, key=lambda doc: (doc.get("rank") is None, doc.get("rank") or ""))
+
+
+def captures_map(docs):
+    """Capture documents -> `parse_board`'s two parallel lists.
+
+    Returns `{"captures": [text], "captureReplies": [[reply]]}`, the two
+    the same length, because six modules read them as a pair and index
+    one by the other's position.
+
+    The order is `captures_in_order`'s and the reasoning is there.
+    """
+    ordered = captures_in_order(docs)
     return {
         "captures": [doc.get("text", "") for doc in ordered],
         "captureReplies": [list(doc.get("replies") or ()) for doc in ordered],

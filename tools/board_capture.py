@@ -40,6 +40,13 @@ than being re-guessed.
 **It takes a path on disk and knows nothing about the vault**, the same
 contract `tools.board_row`, `tools.roll_captures` and
 `tools.roll_done_captures` hold, so the caller owns the compare-and-swap.
+**That is what issue #203 moves next, and both doors it was missing now
+exist**: `board_write.add_row` boards the row, `board_records.capture_at`
+resolves this `--index` against the order his board actually shows, and
+`board_store.delete_capture` takes the bullet out conditional on the
+revision it was read at. Nothing below this line has been converted yet --
+`promote` still slices `before` by line number and `check_from_contents`
+still re-parses markdown.
 
 `check` re-parses the whole document afterwards and refuses unless the
 capture count went down by exactly one, the row count up by exactly one,

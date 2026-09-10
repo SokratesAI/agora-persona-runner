@@ -460,3 +460,67 @@ def test_an_unmigrated_store_is_not_seeded_with_one_row():
         board_records.store_item("issue", item_numbered(parsed, 41),
                                  store=store)
     assert store.calls == []
+
+
+def _capture_store(*specs):
+    """A store holding just captures: `(capture_id, text, rank)` each."""
+    docs = [dict(board_document.to_capture_document(text, "issue", cid, rank=rank),
+                 _rev="1-a")
+            for cid, text, rank in specs]
+    return FakeStore(docs, dict(entity_id.new_registry(), _rev="1-abc"))
+
+
+def test_capture_at_answers_the_position_his_board_shows():
+    """`--index` is a position in `contents`' list, not in the store's."""
+    parsed, store = migrated()
+    shown = board_records.contents("issue", store=store)["captures"]
+
+    for index, text in enumerate(shown):
+        assert board_records.capture_at("issue", index, store=store)["text"] == text
+
+
+def test_capture_at_follows_the_rank_and_not_the_lexical_id_order():
+    """The bug this function exists to make unreachable.
+
+    `read_captures` answers in `_all_docs` order, where `cap_10` sits
+    between `cap_1` and `cap_2`. A lookup that skipped the sort would board
+    the bullet he pointed at and delete a different one.
+    """
+    store = _capture_store(("cap_1", "typed first", "c"),
+                           ("cap_10", "typed later", "a"),
+                           ("cap_2", "typed second", "b"))
+    assert [doc["_id"] for doc in store.read_captures("issue")] != [
+        "capture:issue:cap_10", "capture:issue:cap_2", "capture:issue:cap_1"]
+
+    shown = board_records.contents("issue", store=store)["captures"]
+    assert shown == ["typed later", "typed second", "typed first"]
+    assert board_records.capture_at("issue", 0, store=store)["text"] == "typed later"
+    assert board_records.capture_at("issue", 2, store=store)["text"] == "typed first"
+
+
+def test_capture_at_hands_back_the_revision_it_was_read_at():
+    """`delete_capture` refuses a document without one, so a lookup that
+    dropped it would leave the caller with nothing to be conditional on."""
+    store = _capture_store(("cap_1", "his words", "a"))
+    assert board_records.capture_at("issue", 0, store=store)["_rev"] == "1-a"
+
+
+def test_capture_at_past_the_end_is_none_rather_than_an_error():
+    store = _capture_store(("cap_1", "his words", "a"))
+    assert board_records.capture_at("issue", 1, store=store) is None
+
+
+def test_capture_at_refuses_a_negative_index_rather_than_counting_back():
+    """Python would read `-1` as the last bullet, so the tool's own
+    out-of-range refusal would never fire and it would board the wrong one."""
+    store = _capture_store(("cap_1", "first", "a"), ("cap_2", "second", "b"))
+    assert board_records.capture_at("issue", -1, store=store) is None
+
+
+def test_capture_at_reaches_for_no_row():
+    """The rows are a separate key range and a separate `_all_docs` call."""
+    _parsed, store = migrated()
+    asked = []
+    store.read_rows = lambda board: asked.append(board) or []
+    board_records.capture_at("issue", 0, store=store)
+    assert asked == []

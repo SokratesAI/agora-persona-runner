@@ -176,6 +176,38 @@ def contents(board, store=board_store):
     }
 
 
+def capture_at(board, index, store=board_store):
+    """The capture document at one position in `contents(board)["captures"]`.
+
+    `None` when the position does not exist. The document comes back as it
+    was read, `_rev` included, which is the whole reason this returns a
+    document rather than the text: `board_store.delete_capture` refuses one
+    without it, and a caller that re-minted the document to get a shape it
+    liked would hand over a delete conditional on nothing.
+
+    **The index is his, not the store's.** `tools.board_capture --index` is
+    the position `tools.top_board_rows` prints beside each bullet, which is
+    a position in the list `captures_map` builds -- and `read_captures`
+    answers in lexical id order, where `cap_10` sits between `cap_1` and
+    `cap_2`. So the two orders disagree for any board past ten captures,
+    and a lookup that skipped the sort would board the bullet he pointed at
+    and delete a different one. `captures_in_order` is the single rule both
+    go through.
+
+    A capture stored in the row key range is `contents`' error and not this
+    function's, so this reaches for the capture range only: raising here as
+    well would be a second copy of a rule that is already enforced on every
+    read of the board.
+    """
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        return None
+    _, captures = split_documents(store.read_captures(board))
+    ordered = board_document.captures_in_order(captures)
+    if index >= len(ordered):
+        return None
+    return ordered[index]
+
+
 def store_item(board, item, detail=None, rank=None, store=board_store):
     """One row in `parse_board`'s shape -> one written record document.
 
