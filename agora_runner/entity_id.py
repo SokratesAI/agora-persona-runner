@@ -78,6 +78,7 @@ import re
 #: up alone in a log line or a document id.
 PROJECT_PREFIX = "prj"
 MILESTONE_PREFIX = "ms"
+CAPTURE_PREFIX = "cap"
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _WHITESPACE = re.compile(r"\s+")
@@ -109,8 +110,13 @@ def normalise(name: str) -> str:
 
 
 def new_registry() -> dict:
-    """An empty registry. Plain JSON, so it round-trips through CouchDB."""
-    return {"projects": {}, "milestones": {}}
+    """An empty registry. Plain JSON, so it round-trips through CouchDB.
+
+    `captures` is a third map and it is not shaped like the other two: it
+    holds one integer per board, the high-water mark of the capture numbers
+    issued for it, and no entry per capture. See `mint_capture`.
+    """
+    return {"projects": {}, "milestones": {}, "captures": {}}
 
 
 def _slug(name: str) -> str:
@@ -246,3 +252,72 @@ def rename_milestone(registry: dict, milestone_id: str, new_name: str) -> None:
         None if other in (None, milestone_id) else other,
         "milestone",
     )
+
+
+def capture_high_water(registry: dict, board: str) -> int:
+    """The highest capture number ever issued for `board`; 0 if none.
+
+    Read separately from `mint_capture` because a migration wants to know
+    whether a board has ever minted a capture without minting one, and
+    because a registry stored before captures existed has no `captures`
+    key at all -- reading through this is what makes that a 0 rather than
+    a `KeyError` at whichever call site happens to be first.
+    """
+    _check_capture_board(board)
+    held = registry.get("captures", {})
+    if not isinstance(held, dict):
+        # Not `or {}`: a `captures` of `None` or of a list is corrupt, and
+        # reading it as empty restarts the counter at 1, which is exactly
+        # the reissue this whole function exists to make impossible.
+        raise EntityError(f"registry 'captures' must be a dict, not {held!r}")
+    n = held.get(board, 0)
+    if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+        raise EntityError(
+            f"capture high-water for {board!r} must be a non-negative int, not {n!r}")
+    return n
+
+
+def mint_capture(registry: dict, board: str) -> str:
+    """A fresh capture id for `board`. Mutates `registry` in place.
+
+    **This is the one id in the schema that is not seeded from a name, and
+    the reason is written in `board_document.to_capture_document`: a capture
+    is addressed by its own words today, and the owner edits those words.**
+    A slug of the text would change under an edit, which is the orphaning
+    `_mint` exists to prevent, so a capture gets a number instead.
+
+    **The counter is a high-water mark, never a count of live captures.**
+    Deleting a capture must not free its id. `nova_site` reads
+    `captureReplies` as a list parallel to the captures and the owner's own
+    Edit route addresses one bullet; hand `cap_7` to a second capture after
+    the first is closed and an old reply lands under new words, silently,
+    with nothing in the store that could tell them apart. So the number only
+    ever goes up, and a board with three captures whose high-water reads 40
+    is correct rather than drifted.
+
+    Unlike `ensure_project` this is not idempotent and cannot be: there is
+    no name to resolve against, so every call is a new capture. A caller
+    re-running a migration mints a second set of ids -- which is why
+    `board_migrate` refuses a board that already holds records without
+    `--force`, and not something this function can defend against.
+    """
+    n = capture_high_water(registry, board) + 1
+    registry.setdefault("captures", {})[board] = n
+    return f"{CAPTURE_PREFIX}_{n}"
+
+
+def _check_capture_board(board: str) -> None:
+    """A capture counter is per board, so a typo would be a third board.
+
+    Validated against `board_document.BOARDS` rather than against "is a
+    non-empty string": a mistyped `issues` would mint from its own counter
+    starting at 1 and hand out ids the real board has already issued, and
+    the collision would only show up as a reply under the wrong bullet.
+    The import is one-way -- `board_document` does not import this module
+    -- and it is the same constant `capture_document_id` refuses on.
+    """
+    from . import board_document
+
+    if board not in board_document.BOARDS:
+        raise EntityError(
+            f"board must be one of {board_document.BOARDS}, not {board!r}")

@@ -11,10 +11,13 @@ import json
 
 import pytest
 
+from agora_runner import board_document
 from agora_runner.entity_id import (
     EntityError,
+    capture_high_water,
     ensure_milestone,
     ensure_project,
+    mint_capture,
     new_registry,
     normalise,
     rename_milestone,
@@ -207,3 +210,110 @@ def test_the_registry_round_trips_through_json():
     ensure_milestone(registry, nova, "Backup")
     rename_project(registry, nova, "Aurora")
     assert json.loads(json.dumps(registry)) == registry
+
+
+# A capture id is the one id in this module that is *not* seeded from a name,
+# so none of the rename tests above reach it. What replaces "survives a
+# rename" as the failure worth guarding is "is never handed out twice": the
+# owner's replies address a capture by id, so a reused id puts an old reply
+# under new words and nothing in the store can tell that happened.
+
+
+def test_a_capture_id_is_never_reissued_after_the_capture_is_gone():
+    # The failure this exists for. A counter derived from how many captures
+    # a board currently holds passes every test that only ever mints, and
+    # then reissues `cap_1` the first time the owner closes his only
+    # capture and writes another.
+    registry = new_registry()
+    first = mint_capture(registry, "issue")
+    # He closes it: the record is gone, and nothing in the registry knows.
+    second = mint_capture(registry, "issue")
+    assert first == "cap_1"
+    assert second == "cap_2"
+
+
+def test_two_boards_number_captures_independently():
+    # Both files number from the top, and `capture_document_id` already puts
+    # the board in the id, so `cap_1` on issues and `cap_1` on ideas are two
+    # different captures rather than a collision.
+    registry = new_registry()
+    assert mint_capture(registry, "issue") == "cap_1"
+    assert mint_capture(registry, "idea") == "cap_1"
+    assert mint_capture(registry, "issue") == "cap_2"
+    assert registry["captures"] == {"issue": 2, "idea": 1}
+
+
+def test_a_minted_capture_id_is_accepted_by_the_document_id():
+    # The two halves were written a cycle apart and this is the only place
+    # they meet: `capture_document_id` refuses an id containing ':', and a
+    # mint that ever produced one would fail at the store rather than here.
+    registry = new_registry()
+    capture_id = mint_capture(registry, "issue")
+    assert (board_document.capture_document_id("issue", capture_id)
+            == "capture:issue:cap_1")
+
+
+def test_a_registry_written_before_captures_existed_still_mints():
+    # Every registry stored before this function existed has `projects` and
+    # `milestones` and no `captures`. Reading it must be a 0, not a KeyError
+    # in whichever caller happens to touch the boards first.
+    old = {"projects": {}, "milestones": {}}
+    assert capture_high_water(old, "issue") == 0
+    assert mint_capture(old, "issue") == "cap_1"
+    assert old["captures"] == {"issue": 1}
+
+
+def test_the_high_water_mark_does_not_mint():
+    # A migration asks "has this board ever minted a capture" to decide
+    # whether it is safe to write; asking must not consume a number.
+    registry = new_registry()
+    mint_capture(registry, "issue")
+    assert capture_high_water(registry, "issue") == 1
+    assert capture_high_water(registry, "issue") == 1
+    assert mint_capture(registry, "issue") == "cap_2"
+
+
+def test_a_board_name_that_is_not_a_board_is_refused():
+    # `issues` is the *filename*; the store's board is `issue`. A typo would
+    # otherwise open a third counter starting at 1 and hand out ids the real
+    # board has already issued.
+    registry = new_registry()
+    with pytest.raises(EntityError):
+        mint_capture(registry, "issues")
+    with pytest.raises(EntityError):
+        capture_high_water(registry, "captures")
+    assert registry["captures"] == {}
+
+
+def test_the_boards_this_module_mints_for_are_the_documents_boards():
+    # Held against the constant rather than re-spelled, the way
+    # `roadmap_drift`'s test holds `_REF_RE` against `board_document.BOARDS`.
+    registry = new_registry()
+    for board in board_document.BOARDS:
+        assert mint_capture(registry, board) == "cap_1"
+
+
+def test_a_corrupt_capture_counter_raises_rather_than_restarting():
+    # The dangerous version reads a bad counter as "nothing minted yet" and
+    # reissues from 1. Every one of these is a value CouchDB will happily
+    # store and hand back.
+    for bad in ("3", 2.0, -1, True, None, [3]):
+        registry = {"projects": {}, "milestones": {}, "captures": {"issue": bad}}
+        with pytest.raises(EntityError):
+            capture_high_water(registry, "issue")
+
+
+def test_the_capture_registry_round_trips_through_json():
+    registry = new_registry()
+    mint_capture(registry, "issue")
+    mint_capture(registry, "idea")
+    assert json.loads(json.dumps(registry)) == registry
+
+
+def test_a_captures_map_that_is_not_a_map_raises_rather_than_reading_empty():
+    # `registry.get("captures") or {}` passes every other test in this file
+    # and turns a corrupt map into a fresh counter -- an absent key and a
+    # `None` are the same value to `or`, and only one of them is safe.
+    for bad in (None, [], "", 0):
+        with pytest.raises(EntityError):
+            capture_high_water({"captures": bad}, "issue")

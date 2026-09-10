@@ -65,6 +65,8 @@ has `order: None` -- and `None` is a different answer from `0`, which is
 `board_view`'s finding and `parse_project_order_cell`'s rule.
 """
 
+import json
+
 from . import nova_boards
 
 #: Every board document carries this. CouchDB is one database per vault,
@@ -342,15 +344,11 @@ def capture_replies_of(doc):
     return list(doc.get("replies") or ())
 
 
-def captures_map(docs):
-    """Capture documents -> `parse_board`'s two parallel lists.
+def captures_in_order(docs):
+    """Capture documents in the order his board shows them.
 
-    Returns `{"captures": [text], "captureReplies": [[reply]]}`, the two
-    the same length, because six modules read them as a pair and index
-    one by the other's position.
-
-    Ranked captures come first in rank order, then unranked ones in the
-    order they were handed over. That pair is deliberate and it is
+    Ranked captures first in rank order, then unranked ones in the order
+    they were handed over. That pair is deliberate and it is
     `board_store.sort_key`'s rule, which this deliberately restates rather
     than imports -- `board_store` imports this module, so the arrow only
     goes one way. `_all_docs` answers in lexical id order, so
@@ -358,6 +356,13 @@ def captures_map(docs):
     re-sort in Python. Sorting on `rank or ""` instead would put every
     unranked capture *first*, at the top of his board, which is where a
     capture he never placed is most visible and least earned.
+
+    It is its own function because `captures_map` is not the only caller
+    that needs the order any more. `tools.board_capture` takes an
+    `--index` into the list `captures_map` produced and has to delete
+    *that* capture's document -- so the position and the document behind
+    it are decided by one rule in one place, or the tool boards the bullet
+    he pointed at and removes a different one.
     """
     # Materialised before the check, because a caller handing over a
     # generator (a `_all_docs` page, `reversed(...)`) would otherwise have
@@ -365,8 +370,20 @@ def captures_map(docs):
     docs = list(docs)
     for doc in docs:
         _check_capture_identity(doc)
-    ordered = sorted(
+    return sorted(
         docs, key=lambda doc: (doc.get("rank") is None, doc.get("rank") or ""))
+
+
+def captures_map(docs):
+    """Capture documents -> `parse_board`'s two parallel lists.
+
+    Returns `{"captures": [text], "captureReplies": [[reply]]}`, the two
+    the same length, because six modules read them as a pair and index
+    one by the other's position.
+
+    The order is `captures_in_order`'s and the reasoning is there.
+    """
+    ordered = captures_in_order(docs)
     return {
         "captures": [doc.get("text", "") for doc in ordered],
         "captureReplies": [list(doc.get("replies") or ()) for doc in ordered],
@@ -384,3 +401,134 @@ def _check_capture_identity(doc):
         raise DocumentError(
             f"capture _id {actual!r} disagrees with board/captureId ({expected!r})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Layouts
+# ---------------------------------------------------------------------------
+#
+# `board_view.document_layout` reads a board file and hands back the order of
+# its blocks -- the table, the done table, each write-up by number, and every
+# other paragraph verbatim. That is the record home for the residue
+# `parse_board` does not model: the owner's `## Processed captures` archive,
+# the `# Done — detail` heading, and `ideas.md`'s `## Discarded` table, which
+# together are 19,653 words of `issues.md` and 6,469 of `ideas.md`.
+#
+# Cycle 1324 computed that layout and stored it nowhere, so the only thing
+# that could render his board without deleting those words was a caller
+# holding the *source markdown* -- which is the markdown the records exist to
+# replace. This is where it lives instead.
+
+#: One layout document per board, and its own `type` for the same reason the
+#: registry has one: the CouchDB views key on `doc.type` and a layout is not
+#: a row.
+LAYOUT_DOCUMENT_TYPE = "board-layout"
+
+
+def layout_document_id(board):
+    """`"issue"` -> `"board:layout:issue"`.
+
+    **The board is the last segment, not the second, and that is the whole
+    of the id decision.** `board_store` selects a board's rows with an
+    `_all_docs` range over the literal prefix `board:<board>:`, so
+    `board:issue:layout` would sit *inside* the row range: `read_rows` would
+    hand the layout back as a row with no number and `write_rows`' default
+    `prune=True` would tombstone it the first time anything wrote the rows.
+    `board:layout:issue` is outside both that range and the
+    `capture:<board>:` one, the same way `board:registry` is -- three id
+    spaces that cannot overlap, rather than a `type` filter at each call
+    site that somebody forgets once.
+    """
+    if board not in BOARDS:
+        raise DocumentError(f"board must be one of {BOARDS}, not {board!r}")
+    return f"board:layout:{board}"
+
+
+def _check_layout_blocks(blocks):
+    """Refuse anything that is not a layout, before it is stored.
+
+    This is stricter than it looks worth being, and the reason is what a
+    bad layout does downstream. `board_view.render_document` draws the
+    document *from* the layout: a block it does not recognise is silently
+    dropped, so a layout that lost its `verbatim` blocks -- a JSON load of
+    the wrong file, a caller passing `[]` because a parse came back empty --
+    renders a board with his archive deleted and no error anywhere. The
+    words are gone in the same shape as the bug this whole piece fixes.
+    """
+    if not isinstance(blocks, list):
+        raise DocumentError(
+            f"layout must be a list of blocks, not {type(blocks).__name__}")
+    for index, block in enumerate(blocks):
+        if not isinstance(block, dict):
+            raise DocumentError(
+                f"layout block {index} must be a dict, not {block!r}")
+        kind = block.get("kind")
+        if kind not in board_view_kinds():
+            raise DocumentError(
+                f"layout block {index} has kind {kind!r}, "
+                f"not one of {board_view_kinds()}")
+        if kind == "detail" and not isinstance(block.get("number"), int):
+            raise DocumentError(
+                f"layout block {index} is a detail with number "
+                f"{block.get('number')!r}, which is not an int")
+        if kind == "verbatim" and not isinstance(block.get("markdown"), str):
+            raise DocumentError(
+                f"layout block {index} is verbatim with markdown "
+                f"{block.get('markdown')!r}, which is not a str")
+    return blocks
+
+
+def board_view_kinds():
+    """`board_view.LAYOUT_KINDS`, imported late to keep the import one way.
+
+    `board_view` already imports `nova_boards` and this module imports
+    `nova_boards` too; a module-level `from . import board_view` here would
+    make the pair circular the first time `board_view` wanted a document.
+    The kinds live in `board_view` because that is what mints and renders
+    them -- restating the tuple here would be the second copy of a fact,
+    and the copy nobody updates is the one that refuses a new kind.
+    """
+    from . import board_view
+    return board_view.LAYOUT_KINDS
+
+
+def to_layout_document(blocks, board):
+    """`(blocks, "issue")` -> the document that stores them.
+
+    The blocks go through JSON on the way in, and that is not tidiness.
+    `board_view.document_layout` puts the owner's own table header in a
+    block as a **tuple** -- `_header_cells` returns one -- and JSON has no
+    tuple, so the same layout read back out of CouchDB carries a list. Every
+    conditional write in `board_store` decides whether to write by comparing
+    a fresh document against the stored one, so without this the two never
+    compare equal and a migration re-run that computed an identical layout
+    would burn a revision every time. Normalising here rather than at the
+    comparison keeps one spelling of a stored layout.
+    """
+    return {
+        "_id": layout_document_id(board),
+        "type": LAYOUT_DOCUMENT_TYPE,
+        "board": board,
+        "blocks": json.loads(json.dumps(_check_layout_blocks(blocks))),
+    }
+
+
+def layout_blocks_of(doc):
+    """The blocks back out of a stored layout document.
+
+    Refuses a document whose `_id` disagrees with its own `board` field,
+    the same way `_check_identity` does for a row: the id and the field are
+    written by one function and read by two, and a layout served under the
+    wrong board renders one board's archive into the other.
+    """
+    if not isinstance(doc, dict):
+        raise DocumentError(f"layout document must be a dict, not {doc!r}")
+    board = doc.get("board")
+    if board not in BOARDS:
+        raise DocumentError(
+            f"layout document board must be one of {BOARDS}, not {board!r}")
+    if doc.get("_id") != layout_document_id(board):
+        raise DocumentError(
+            f"layout document _id {doc.get('_id')!r} disagrees with its "
+            f"board {board!r}")
+    return _check_layout_blocks(doc.get("blocks"))
