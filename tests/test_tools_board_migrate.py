@@ -319,3 +319,27 @@ def test_the_replies_under_a_bullet_make_the_trip(couch):
     assert contents["captures"] == ["his bullet"]
     assert contents["captureReplies"] == [
         ["Nova, cycle 1: the answer", "Nova, cycle 2: and again"]]
+
+
+def test_the_migration_does_not_add_itself_to_the_gate():
+    """`board_reader_inventory` is the gauge #203 drives to zero and it counts
+    a module that names `parse_board` in its own text. The migration has to
+    read markdown -- that is its whole job -- so it reads it through
+    `board_migration_preflight`, which is already on the list. Parsing in
+    `board_migrate` instead put a 22nd module on a count of 21, for a module
+    that is not a board reader at all.
+
+    The assertion is against the tool's own scan rather than a grep of the
+    file, because a grep here would be a second spelling of the rule under
+    test and would agree with itself."""
+    from tools import board_reader_inventory
+
+    found, _refs, _unreadable, _untokenized = board_reader_inventory.scan()
+
+    names = {str(path) for path in found}
+    assert not any(name.endswith("tools/board_migrate.py") for name in names), (
+        "board_migrate parses board markdown itself again")
+    assert any(name.endswith("tools/board_migration_preflight.py")
+               for name in names), (
+        "the module the migration reads markdown through left the gate; "
+        "this test can no longer tell a move from a deletion")
