@@ -14,7 +14,7 @@ one exists to catch a store that answered wrong.
 
 import pytest
 
-from agora_runner import board_records, board_write
+from agora_runner import board_records, board_store, board_write
 from tests.test_board_records import WritableFakeStore, item_numbered, writable
 
 
@@ -186,7 +186,7 @@ def test_a_write_that_eats_his_write_up_is_caught():
     assert f"#{numbered}" in str(damaged.value)
 
 
-def test_a_passed_write_up_replaces_it_and_nothing_else_moves():
+def test_a_passed_write_up_replaces_that_write_up_and_no_other():
     parsed, store = writable()
     numbered = sorted(parsed["details"])[0]
     board_write.change_row(
@@ -200,10 +200,16 @@ def test_a_passed_write_up_replaces_it_and_nothing_else_moves():
 
 
 def test_an_empty_write_up_removes_it_and_is_not_the_same_as_none():
+    """The contrast is inside one test on purpose: `detail=""` and
+    `detail=None` are one keyword apart and mean opposite things, so a test
+    that only exercises one of them leaves the collapse of the two green."""
     parsed, store = writable()
     numbered = sorted(parsed["details"])[0]
+    board_write.change_row("issue", numbered, _OPEN, detail=None, store=store)
+    assert board_records.contents("issue", store=store)["details"][numbered] == (
+        parsed["details"][numbered])
     board_write.change_row(
-        "issue", numbered, _OPEN, detail="", store=store)
+        "issue", numbered, _OPEN_FROM_BACKLOG, detail="", store=store)
     assert numbered not in board_records.contents("issue", store=store)["details"]
 
 
@@ -246,3 +252,102 @@ def test_a_derived_key_left_out_of_the_change_set_is_caught():
         board_write.change_row("issue", 41, {"status": "\u26aa Backlog"},
                                store=store)
     assert "statusKey" in str(damaged.value)
+
+
+def test_the_default_store_answers_every_call_this_module_reaches_through():
+    """`store=board_store` is the production path and no test above touches it.
+
+    Every test in this file injects a fake, which is what makes them fast and
+    what makes them blind to a rename on the other side: `change_row` reaches
+    `read_registry`, `read_rows`, `read_captures`, `read_row`, `write_row` and
+    `write_registry` -- three of those through `board_records` -- and a fake
+    that grew the same six names by hand would agree with a module that no
+    longer has them.
+
+    It asserts attributes rather than calling them, because calling them needs
+    a CouchDB. That is a narrower claim than "the production path works" and it
+    is the one this can honestly make: the names still line up.
+    """
+    for name in ("read_registry", "read_rows", "read_captures",
+                 "read_row", "write_row", "write_registry"):
+        assert callable(getattr(board_store, name, None)), (
+            f"agora_runner.board_store has no callable {name}, which "
+            "board_write.change_row reaches through its default store")
+
+
+class _MovesTheRowUnderneath(WritableFakeStore):
+    """A store where the row changes between the board read and the write.
+
+    This is not a fake being awkward: it is the second cycle. The nine writers
+    it stands in for run from a twenty-minute heartbeat with three of me alive,
+    and two of them changing different cells of one row is an ordinary evening.
+    """
+
+    def __init__(self, docs, registry, number):
+        super().__init__(docs, registry)
+        self.number = number
+        self.reads = 0
+
+    def read_row(self, board, number):
+        held = super().read_row(board, number)
+        self.reads += 1
+        # The first read is `change_row`'s snapshot; before the second one --
+        # which is the compare-and-swap -- somebody else lands a write.
+        if self.reads == 1 and held is not None and number == self.number:
+            self.docs = [dict(doc, title="Changed by another cycle",
+                              _rev="9-elsewhere")
+                         if doc.get("_id") == held.get("_id") else doc
+                         for doc in self.docs]
+        return held
+
+
+def test_a_row_that_moved_since_the_board_was_read_is_refused_not_clobbered():
+    """The failure this cannot be allowed to report as success.
+
+    `wanted` is built from the board read at the top of `change_row`, and the
+    after-check compares what landed against `wanted` -- so a write that puts
+    another cycle's change back would be compared against the stale copy it
+    just wrote and agree with itself. The revision check is the only thing
+    between that and a silent lost update.
+    """
+    _parsed, source = writable()
+    store = _MovesTheRowUnderneath(source.docs, source.registry, 42)
+    with pytest.raises(board_write.WriteRefused) as refused:
+        board_write.change_row("issue", 42, _OPEN_FROM_BACKLOG, store=store)
+    assert "changed between reading the board and writing it" in str(refused.value)
+    assert [call for call in store.calls if call[0] == "write_row"] == []
+    # And the other cycle's change is still there, which is the whole point.
+    assert next(item for item in
+                board_records.contents("issue", store=store)["items"]
+                if item["number"] == 42)["title"] == "Changed by another cycle"
+
+
+def test_a_row_that_did_not_move_is_not_refused_by_the_revision_check():
+    """The negative half. Without this the test above passes on a `change_row`
+    that refuses every write, which is a guard that guards by doing nothing."""
+    _parsed, store = writable()
+    board_write.change_row("issue", 42, _OPEN_FROM_BACKLOG, store=store)
+    assert [call for call in store.calls if call[0] == "write_row"]
+
+
+class _RewritesACaptureBullet(WritableFakeStore):
+    """The bullet count is unchanged and its text is not -- the one capture
+    failure the count in the error message cannot describe."""
+
+    def write_row(self, doc):
+        stored = super().write_row(doc)
+        self.docs = [
+            dict(held, text="Rewritten behind his back")
+            if held.get("_id", "").startswith("capture:") else held
+            for held in self.docs]
+        return stored
+
+
+def test_a_rewritten_capture_bullet_is_reported_as_text_not_as_a_count():
+    parsed, source = writable()
+    store = _RewritesACaptureBullet(source.docs, source.registry)
+    with pytest.raises(board_write.BoardDamaged) as damaged:
+        board_write.change_row("issue", 42, _OPEN_FROM_BACKLOG, store=store)
+    message = str(damaged.value)
+    assert "the text of at least one is different" in message
+    assert f"still {len(parsed['captures'])} of them" in message

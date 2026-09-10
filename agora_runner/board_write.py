@@ -35,17 +35,27 @@ each tool's own job and it already does it, with its own error text and its own
 `--help`. Moving that judgement in here would make one module the authority on
 nine unrelated vocabularies.
 
-**A second cycle writing the same board between the two reads reads as damage,
-and that is the safe direction rather than the right one.** Cycles overlap at
-twenty-minute heartbeats, and the pair of reads here carries no revision across
-it -- `store_item` sends `read_row`'s `_rev`, so CouchDB refuses a conflicting
-write to *this* row, and nothing refuses another cycle's write to a *different*
-row of the same board. That write shows up in the after-read as "row #N was not
-the row being changed and its status moved", which is a true sentence about a
-board that is fine. So `BoardDamaged` names the possibility in its own message:
-a caller that retries from the top gets the right answer, and the alternative --
-narrowing the check to the one row -- would delete the guard this module exists
-to be. This is a real limit, not a solved problem, and it belongs to whoever
+**The row is compare-and-swapped between the read and the write, and without
+that this guard could not see its own worst failure.** `wanted` is built from
+the board as it was read, and `store_item` re-reads the row only for its `rank`,
+its `_rev` and its stored write-up -- every *field value* comes from that older
+snapshot. So a second cycle changing a different cell of the **same** row in
+between would be silently overwritten with the stale value, and the after-check
+could not catch it, because `landed` is compared against `wanted` and `wanted`
+*is* the clobbering value. The check would agree with the clobber. So the row
+document's revision is read at the same moment as the board and asserted again
+immediately before the write, and a change refuses rather than landing: this is
+the one race where being late has to mean stopping rather than reporting.
+
+**A second cycle writing a *different* row of the same board still reads as
+damage, and that is the safe direction rather than the right one.** The pair of
+whole-board reads carries no revision across it and cannot -- a board is not one
+document. That write shows up in the after-read as "row #N was not the row being
+changed and its status moved", which is a true sentence about a board that is
+fine. `BoardDamaged` names the possibility in its own message: a caller that
+retries from the top gets the right answer, and the alternative -- narrowing the
+check to the one row -- would delete the guard this module exists to be. That
+one is a real limit rather than a solved problem, and it belongs to whoever
 converts the nine call sites.
 
 **A no-op change set is allowed, on purpose.** Re-rating a row to the rating it
@@ -97,9 +107,18 @@ def _differences(before, after, number):
                 f"row #{was.get('number')} was not the row being changed and "
                 f"its {', '.join(moved)} moved")
     if before["captures"] != after["captures"]:
-        problems.append(
-            f"the capture bullets changed: {len(before['captures'])} -> "
-            f"{len(after['captures'])}")
+        # The count when it moved, the word when it did not: "2 -> 2" is true and
+        # tells whoever reads this nothing, and a bullet whose *text* was
+        # rewritten is the case where the count cannot move.
+        if len(before["captures"]) != len(after["captures"]):
+            problems.append(
+                f"the capture bullets changed: {len(before['captures'])} -> "
+                f"{len(after['captures'])}")
+        else:
+            problems.append(
+                "the capture bullets changed: still "
+                f"{len(after['captures'])} of them, and the text of at least "
+                "one is different")
     if before["captureReplies"] != after["captureReplies"]:
         problems.append("the replies under his capture bullets changed")
     return problems
@@ -121,6 +140,10 @@ def change_row(board, number, changes, detail=None, store=board_store):
     anything, or `BoardDamaged` after a write that did not land cleanly.
     """
     before = board_records.contents(board, store=store)
+    # Read straight after the board and kept for the compare-and-swap below.
+    # `contents` hands back `parse_board`'s four keys and no revisions, on
+    # purpose, so the revision has to be asked for separately.
+    held_rev = (store.read_row(board, number) or {}).get("_rev")
     held = None
     for item in before["items"]:
         if item.get("number") == number:
@@ -137,6 +160,15 @@ def change_row(board, number, changes, detail=None, store=board_store):
             f"a row carries {', '.join(sorted(held))}")
 
     wanted = dict(copy.deepcopy(held), **changes)
+    # The compare-and-swap. `wanted` was built from the board read at the top of
+    # this function, so if the row has moved since then the write would put the
+    # older values back -- and the after-check could not see it, because it
+    # compares what landed against `wanted`, which *is* the stale copy.
+    if (store.read_row(board, number) or {}).get("_rev") != held_rev:
+        raise WriteRefused(
+            f"row #{number} of board {board!r} changed between reading the "
+            "board and writing it, so this write would put the older values "
+            "back; re-read the board and try again")
     board_records.store_item(board, wanted, detail=detail, store=store)
 
     after = board_records.contents(board, store=store)
