@@ -254,20 +254,16 @@ def _add_a_row(written):
     return damaged
 
 
-# --- The two multi-cell writers -------------------------------------------
+# --- The multi-cell writer ------------------------------------------------
 #
-# `board_row` adds a row and `board_untag_project` rewrites a title and a
-# project cell together, so neither fits the parametrised shape above: one
-# mutator returns a `(markdown, number)` pair and the other returns a
-# triple, and the row count is *expected* to move for one of them. The
-# property under test is identical -- each version of the document is
-# parsed once, by `main`, and the guard reaches for nothing -- so the tests
-# live here rather than beside their tools.
-
-UNTAG_BOARD = BOARD.replace(
-    "| Metered API |", "| (Project: NAS) Metered API |"
-).replace("#104 — Metered API\\|104", "#104 — (Project: NAS) Metered API\\|104")
-
+# `board_row` adds a row, so it does not fit the parametrised shape above:
+# its mutator returns a `(markdown, number)` pair and the row count is
+# *expected* to move. The property under test is identical -- each version
+# of the document is parsed once, by `main`, and the guard reaches for
+# nothing -- so the test lives here rather than beside its tool.
+#
+# `board_untag_project` was the second writer here and left with #203: it
+# holds no markdown now, so there is no document for it to read twice.
 
 def _count_parses(module, monkeypatch):
     """Count `parse_board`/`parse_notes` in this module's OWN namespace."""
@@ -364,69 +360,6 @@ def test_board_row_main_refuses_a_write_that_moved_a_row_it_was_not_asked_about(
     """
     assert _damage_board_row(tmp_path, monkeypatch, _move_another_row) == 1
 
-
-def test_untag_reads_the_document_once_per_version(tmp_path, monkeypatch):
-    import tools.board_untag_project as module
-
-    path = tmp_path / "issues.md"
-    path.write_text(UNTAG_BOARD, encoding="utf-8")
-    counts = _count_parses(module, monkeypatch)
-
-    assert module.main(["--file", str(path), "--dry-run"]) == 0
-    # Three before the split: the rule that picks the tagged rows parsed
-    # `before` for itself, and then the guard parsed it again.
-    assert counts == {"parse_board": 2, "parse_notes": 2}
-
-
-def test_untag_guard_cannot_reach_a_document(tmp_path, monkeypatch):
-    import tools.board_untag_project as module
-
-    path = tmp_path / "issues.md"
-    path.write_text(UNTAG_BOARD, encoding="utf-8")
-    guard = module.check_from_contents
-
-    def no_document_here(*a, **k):
-        for name in ("parse_board", "parse_notes"):
-            monkeypatch.setattr(module, name, _refuse)
-        return guard(*a, **k)
-
-    monkeypatch.setattr(module, "check_from_contents", no_document_here)
-    assert module.main(["--file", str(path), "--dry-run"]) == 0
-
-
-def _damage_untag(tmp_path, monkeypatch, damage):
-    import tools.board_untag_project as module
-
-    path = tmp_path / "issues.md"
-    path.write_text(UNTAG_BOARD, encoding="utf-8")
-    real = module.untag
-
-    def damaged(markdown, board, numbers=None):
-        written, moves, skipped = real(markdown, board, numbers)
-        return (None if written is None else damage(written)), moves, skipped
-
-    monkeypatch.setattr(module, "untag", damaged)
-    return module.main(["--file", str(path), "--dry-run"])
-
-
-def test_untag_main_refuses_a_write_that_ate_a_bullet(tmp_path, monkeypatch):
-    assert _damage_untag(tmp_path, monkeypatch, _eat_a_bullet) == 1
-
-
-def test_untag_main_refuses_a_write_that_moved_a_row_it_was_not_asked_about(
-    tmp_path, monkeypatch
-):
-    """#100 is the row nothing asked about; #104 is the one carrying the tag."""
-
-    def move_the_untouched_row(written):
-        damaged = written.replace(
-            "| Weekly work | 🟡 In progress | 08-24 |",
-            "| Weekly work | ⚪ Backlog | 08-24 |",
-        )
-        assert damaged != written, "the fixture's first row is not in the written board"
-        return damaged
-
-    assert _damage_untag(tmp_path, monkeypatch, move_the_untouched_row) == 1
 
 
 def _count_capture_reads(module, monkeypatch):

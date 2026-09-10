@@ -6,8 +6,8 @@ in `agora_runner.vault.vault_write_path`, which is the one place an
 in-process board write lands. Its own handoff named what that does not
 cover, and this is it.
 
-**`tools.board_capture`, `board_row`, `board_status`, `board_priority`,
-`board_project` and `board_untag_project` write a local file, and a cycle then puts that file
+**`tools.board_capture`, `board_row`, `board_status` and `board_priority`
+write a local file, and a cycle then puts that file
 into the vault with `/app/bridge/vault_tool.py put`** -- a different
 program, in a different repo, in a different process, that knows nothing
 about the ticket store. Every one of those writes leaves the store a
@@ -17,6 +17,12 @@ docstring predicted on the day it was written, and it is the reason
 nothing may read a board out of CouchDB yet: a reader switched onto a
 store nothing keeps current serves the owner a board that is quietly a
 day old.
+
+**That list shrinks as issue #203 converts each writer, and it is down to
+four.** `board_project` (Cycle 1329) and `board_untag_project` (Cycle 1330)
+write the record store directly through `board_write.change_row`, so they
+hold no local file for this tool to put, and naming them here would send a
+cycle looking for a markdown document that no longer exists.
 
 So this is the `put` those tools' callers should use. One command, and
 the ordering is the whole design:
