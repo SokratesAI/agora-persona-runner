@@ -64,7 +64,17 @@ def test_seating_every_row_leaves_the_ranking_exactly_as_it_was():
     rows = rows_of()
     seats, skipped = nova_next.seed_seats(rows)
     assert skipped == []
-    assert ranked(seated(rows, seats)) == ranked(rows)
+    # What `rank` returned before issue #202 took the rating out of it:
+    # inside each milestone, rating first and the oldest row inside a
+    # rating. Seated, the ranking must reproduce that order on its own.
+    rating = ["immediate", "high", "medium", "low", ""]
+    last = {}
+    for r in nova_next.rank(seated(rows, seats), None,
+                            nova_next.milestone_ranks(rows)):
+        group = (r["project"].lower(), (r.get("milestone") or "").lower())
+        key = (rating.index(r["priorityKey"]), nova_next.age_key(r["updated"]))
+        assert key >= last.get(group, key)
+        last[group] = key
     # The case a per-board seed gets wrong: Marcus/Push is High 1, High 7,
     # High 8, Medium 9, Low 2 across both boards, so the Low issue sits
     # behind the Medium idea rather than at seat 2 of its own board.

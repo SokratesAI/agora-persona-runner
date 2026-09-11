@@ -455,12 +455,13 @@ def _rank_row(number, project, priority, priority_key, updated,
     }
 
 
-def test_backlog_orders_by_rating_then_by_age(monkeypatch):
-    """Worst rating first, and the oldest row first inside a rating.
+def test_backlog_orders_immediately_first_then_by_age(monkeypatch):
+    """Immediately first (skip-to-top), then the oldest row first.
 
-    The rows are given in an order that is wrong on both counts, so a
-    function that returned them untouched, sorted by number, or sorted by
-    rating alone fails a different assertion each time.
+    Issue #202 took the rest of the rating out of `rank`, so Low #50 --
+    the oldest -- now sits ahead of both Highs. The rows are given in an
+    order that is wrong on both counts, so a function that returned them
+    untouched, sorted by number, or sorted by rating fails.
     """
     rows = [
         _rank_row(50, "Ghost", "⚪ Low", "low", "08-01"),
@@ -473,7 +474,7 @@ def test_backlog_orders_by_rating_then_by_age(monkeypatch):
         lambda name: {"items": rows if name == "issues" else []},
     )
     backlog = nova_site.project_payload("Ghost")["backlog"]
-    assert [row["number"] for row in backlog] == [51, 53, 52, 50]
+    assert [row["number"] for row in backlog] == [51, 50, 53, 52]
 
 
 def test_a_row_blocked_on_him_sinks_below_an_actionable_one(monkeypatch):
