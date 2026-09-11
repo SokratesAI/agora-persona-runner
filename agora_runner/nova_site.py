@@ -5078,7 +5078,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         free text by design -- `board_projects` derives the project list
         from the cells, so typing a name no row carries is how a project
         is created, and a fixed set here would be the constant that
-        design ruled out. What bounds it is `set_row_project`, which
+        design ruled out. What bounds it is `nova_capture.set_project`, which
         refuses a `|`, a line break, a `*` and anything past 40
         characters -- the four things that would break out of the cell
         rather than merely be unexpected in it.

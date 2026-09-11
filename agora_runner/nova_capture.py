@@ -75,7 +75,6 @@ from agora_runner.nova_boards import (
     set_row_order as _set_row_order_md,
     priority_key,
     status_key,
-    set_row_project,
     split_capture_done,
     split_capture_priority,
 )
@@ -1171,7 +1170,7 @@ def project_priorities():
     return parse_project_meta(current or "")
 
 
-def set_project(target, number, project):
+def set_project(target, number, project, store=None):
     """Move one boarded row to a project. Returns (ok, message).
 
     His capture, 2026-09-01: *"I/you should easily be able to assign
@@ -1183,14 +1182,60 @@ def set_project(target, number, project):
     which is exactly what `edit_row` was written to end for the title.
 
     **Creating a project is this call with a name no row carries yet**,
-    and that is why nothing here checks the name against a list.
-    `board_projects` reads the set of projects back off the rows, so a
-    new name in one cell is a new project and there is no second
-    document to keep in step. The only bound is `set_row_project`'s own,
-    which refuses the characters that would break out of the table cell.
+    and that is why nothing here checks the name against a list. The row
+    stores a name and `board_records.store_item` mints the project id the
+    first time it sees one, so there is still no second document to keep in
+    step. The bounds are `set_row_project`'s, kept: `refuse_cell`'s three
+    characters, plus a `*` (unbalanced emphasis does not stop at the cell in
+    his file) and 40 characters.
+
+    **Written to the #203 record store, not to his markdown** -- the fifth
+    of the app's board writers off the file, after `set_priority`,
+    `comment_on_row`, `edit_row` and `archive_row`. One `change_row` over the
+    `project` key; the milestone name stays, as the markdown cell did, and
+    now resolves under the new project.
+
+    A row in the finished table is refused, as `set_row_project` refused
+    it: the `## Done` view has no Project column (`board_view.DONE_COLUMNS`),
+    so the change would land in the record and show nowhere. A missing row
+    answers with `edit_row`'s 409 phrase, decided off the read for
+    `edit_row`'s reason.
+
+    **No retry**, for `set_priority`'s reason. `store` is for tests, looked
+    up at call time.
     """
-    return _amend_board(
-        target, number, lambda md: set_row_project(md, number, project), "moved")
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
+    name = (project or "").strip()
+    refused = board_write.refuse_cell(name, "the project")
+    if refused is None and "*" in name:
+        refused = "the project carries a '*', which is emphasis in his file"
+    if refused is None and len(name) > 40:
+        refused = "the project is longer than 40 characters"
+    if refused:
+        return False, f"could not move #{number} on {target}: {refused}"
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    row = next(
+        (item for item in before["items"] if item.get("number") == number), None)
+    if row is None:
+        return False, f"#{number} is not a row on {target}"
+    if row.get("done"):
+        return False, (f"#{number} is in the finished table on {target}, "
+                       "which has no Project column")
+    try:
+        board_write.change_row(board, number, {"project": name}, store=store)
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed moving #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture moved #{number} on {target}")
+    return True, f"#{number} moved on {target}"
 
 
 def remove_row(target, number):
