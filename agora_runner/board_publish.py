@@ -94,11 +94,16 @@ def differences(want, got):
     problems = []
     for key in ("captures", "captureReplies", "items", "details"):
         left, right = want.get(key), got.get(key)
-        if key == "items" and isinstance(right, list):
+        if key == "items":
             # His markdown has no cell for these, so the view can never carry
-            # them: a row he placed is not drift.
-            right = [{k: v for k, v in item.items() if k not in OPTIONAL_FIELDS}
-                     if isinstance(item, dict) else item for item in right]
+            # them: a row he placed is not drift. Both sides, because the two
+            # callers disagree on which one is the store -- `status` passes
+            # it second and `render` first.
+            left, right = (
+                [{k: v for k, v in item.items() if k not in OPTIONAL_FIELDS}
+                 if isinstance(item, dict) else item for item in side]
+                if isinstance(side, list) else side
+                for side in (left, right))
         if left == right:
             continue
         if isinstance(left, dict) and isinstance(right, dict):

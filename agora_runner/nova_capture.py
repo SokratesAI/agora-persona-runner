@@ -1658,9 +1658,19 @@ def set_row_order(target, number, position, author, store=None):
             changes["placedBy"] = "Edvard"
         if changes:
             moves.append((each, row, changes))
+    # The moved row first: its guard is the one that can refuse, and a
+    # refusal before any seat lands writes nothing at all.
+    moves.sort(key=lambda move: (move[0], move[1]) != (board, number))
     for written, (each, row, changes) in enumerate(moves):
+        # A cycle's move re-checks his stamp on `change_row`'s own read, which
+        # its compare-and-swap ties to the write -- so a drag of his landing
+        # after the boards were read above still wins.
+        expect = ({"placedBy": None}
+                  if author != "Edvard" and (each, row) == (board, number)
+                  else None)
         try:
-            board_write.change_row(each, row, changes, store=store)
+            board_write.change_row(each, row, changes, store=store,
+                                   expect=expect)
         except (board_write.WriteRefused, board_write.BoardDamaged,
                 board_records.RecordError) as problem:
             log(f"nova-capture failed placing #{number} on {target}: {problem}")

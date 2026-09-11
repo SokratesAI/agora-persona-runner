@@ -505,3 +505,45 @@ def test_the_stamp_round_trips_and_an_unstamped_row_gains_no_key():
     bare = board_document.to_document({"number": 8, "title": "t"}, "idea")
     assert "placedBy" not in bare
     assert "placedBy" not in board_document.from_document(bare)
+
+
+def test_a_row_he_placed_is_not_drift_with_the_store_on_either_side():
+    # `render` passes the records FIRST (`differences(contents, reread(text))`)
+    # and `status` passes them second; a stamp on only one side is not drift
+    # in either order, or his board stops redrawing after his first drag.
+    from agora_runner.board_publish import differences
+    row = {"number": 7, "order": 1}
+    stamped = dict(row, placedBy="Edvard")
+    assert differences({"items": [stamped]}, {"items": [row]}) == []
+    assert differences({"items": [row]}, {"items": [stamped]}) == []
+
+
+def test_his_board_still_renders_clean_after_he_places_a_row(monkeypatch):
+    from agora_runner import board_publish
+    store = _records(monkeypatch)
+    assert nova_capture.set_row_order("ideas", 7, 1, "Edvard")[0]
+    _text, problems = board_publish.render("idea", BOARD, store=store)
+    # The fake store keeps no layout document, which `render` reports on
+    # every board with or without a stamp; the rows are what this is about.
+    rows = [p for p in problems if not p.startswith("layout:")]
+    assert rows == [], rows
+
+
+def test_his_drag_landing_mid_move_is_not_overwritten_by_a_cycle(monkeypatch):
+    # The cycle read the boards before his drag landed; the stamp check has
+    # to run on `change_row`'s own read, not on that stale one.
+    from agora_runner import board_write
+    store = _records(monkeypatch)
+    real = nova_capture._board_row_order_seats
+
+    def his_drag_lands_now(*a, **k):
+        board_write.change_row(
+            "idea", 7, {"order": 1, "placedBy": "Edvard"}, store=store)
+        return real(*a, **k)
+
+    monkeypatch.setattr(nova_capture, "_board_row_order_seats", his_drag_lands_now)
+    ok, message = nova_capture.set_row_order("ideas", 7, 2, "Nova")
+    assert not ok and "placedBy" in message, message
+    assert "0 of 2 seat(s) were written" in message, message
+    assert _stored_orders(store) == {7: 1, 8: None}
+    assert _stored(store, "placedBy")[7] == "Edvard"
