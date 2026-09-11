@@ -268,9 +268,10 @@ def test_publish_writes_the_view_and_stamps_the_revision_it_landed_at(vault):
     """After the flip the markdown is a view: publishing it must leave the
     records stamped with the revision the view now sits at, or the site
     logs every request as the view and the records disagreeing."""
+    drawn, problems = board_publish.render("issue", vault.text)
+
     code, lines = board_publish.publish("issue")
 
-    drawn, problems = board_publish.render("issue", vault.text)
     assert code == 0, lines
     assert problems == [] and vault.text == drawn
     assert "a line the records never held" not in vault.text
