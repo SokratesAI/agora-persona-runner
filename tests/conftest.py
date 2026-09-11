@@ -152,23 +152,29 @@ def _clear_nova_site_cache():
     reset_cache()
 
 
-@pytest.fixture
-def lifecycle_events(monkeypatch):
-    """Every `runner_lifecycle` call `main()` makes, with nothing written.
+@pytest.fixture(autouse=True)
+def _no_lifecycle_writes(monkeypatch):
+    """No test's `main()` may start the lifecycle ledger's vault write.
 
-    Ask for this in any test that runs `agora_runner.main.main()`. That
-    function's first act is `runner_lifecycle.record("started")`, which
-    starts a daemon thread to write the row to the vault -- so a test that
-    calls `main()` and does not patch the ledger leaks that thread past its
-    own patches, and the teardown hook above correctly fails it. Two tests
-    did exactly that (`test_otel_tracing`, `test_catalog_refresh`) and both
-    only showed it when their file ran alone.
+    `agora_runner.main.main()` opens with `runner_lifecycle.record("started")`
+    and records again on a signal; each call starts a daemon thread that
+    writes a row to the vault. A test that runs `main()` without patching
+    that leaks the thread past its own patches, and the teardown hook above
+    correctly fails it -- but only when the thread is still alive at
+    teardown, which it usually is not. So it was patched one test file at a
+    time as each one lost the race: `test_otel_tracing` and
+    `test_catalog_refresh` when their files ran alone, then the drain tests
+    in `test_agora_persona_runner.py`, which turned `main` red on a loaded CI
+    runner at e194186 (cycle 1431) with 8847 passed and 1 error. Three files
+    of the same leak is the shape, so every test gets the stub.
 
-    It yields the calls rather than swallowing them so the test can assert
-    the patch actually intercepted something. A stub nothing called would
-    make the leak disappear for the wrong reason -- if `main()` stopped
-    recording, or if this patched a reference it does not use, an empty
-    list is the only thing that says so.
+    `tests/test_runner_lifecycle.py` still exercises the real module: it
+    calls `runner_lifecycle.record` directly, and its `main()` tests put
+    their own `patch.object` over this one.
+
+    The stub keeps the calls on `.events` rather than swallowing them, so a
+    test can assert it actually intercepted something -- a stub nothing
+    called would make the leak disappear for the wrong reason.
     """
     # `agora_runner/__init__.py` re-exports every public name flat, so
     # `from agora_runner import main` hands back the *function*. Reach for
@@ -176,15 +182,23 @@ def lifecycle_events(monkeypatch):
     import agora_runner.main  # noqa: F401  -- import for the side effect
     runner_main = sys.modules["agora_runner.main"]
 
-    events = []
-
     class Ledger:
+        def __init__(self):
+            self.events = []
+
         def record(self, event, **kwargs):
-            events.append((event, kwargs))
+            self.events.append((event, kwargs))
             return None
 
-    monkeypatch.setattr(runner_main, "runner_lifecycle", Ledger())
-    return events
+    ledger = Ledger()
+    monkeypatch.setattr(runner_main, "runner_lifecycle", ledger)
+    return ledger
+
+
+@pytest.fixture
+def lifecycle_events(_no_lifecycle_writes):
+    """Every `runner_lifecycle` call `main()` makes, with nothing written."""
+    return _no_lifecycle_writes.events
 
 
 @pytest.fixture(autouse=True)

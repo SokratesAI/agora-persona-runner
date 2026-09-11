@@ -6413,6 +6413,27 @@ def test_main_keeps_polling_when_no_signal_arrives(drainable_main):
     assert len(ticks) == 3
 
 
+def test_a_drain_test_writes_no_lifecycle_row(drainable_main):
+    """Every `record` a drain makes lands on conftest's stub, not the vault.
+
+    Deliberately asks for nothing but `drainable_main`: the leak that turned
+    `main` red at e194186 was a drain test that never asked for the stub, so
+    this only means something if the stub arrives uninvited. Each real
+    `record` starts a vault-write thread, and one that outlives its test is
+    failed by conftest's teardown hook only when it loses a race."""
+    def fake_sleep(_seconds):
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    with patch.object(drainable_main, "poll_once", lambda: None), \
+         patch.object(drainable_main, "_sleep_between_ticks", side_effect=fake_sleep), \
+         patch.object(drainable_main, "start_invoke_server", lambda: None), \
+         patch.object(drainable_main, "log", lambda *a, **k: None):
+        drainable_main.main()
+
+    assert [event for event, _ in drainable_main.runner_lifecycle.events] == [
+        "started", "signal", "drained"]
+
+
 def test_sleep_between_ticks_returns_early_once_shutdown_is_requested(drainable_main):
     """PEP 475 makes a plain time.sleep RESUME after a signal instead of
     returning, so an idle pod would otherwise sit out the full interval
