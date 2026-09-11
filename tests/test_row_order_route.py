@@ -18,6 +18,7 @@ import re
 
 import agora_runner.nova_capture as nova_capture
 import agora_runner.nova_site as nova_site
+from agora_runner.nova_boards import ROW_ORDER_STRIDE as S
 from agora_runner.nova_site import NovaSiteHandler
 
 BOARD = """---
@@ -91,16 +92,16 @@ def test_the_position_counts_the_milestone_across_both_boards(monkeypatch):
     store = _records(monkeypatch, issues=SHARED)
     ok, message = nova_capture.set_row_order("ideas", 7, 1, "Nova")
     assert ok, message
-    assert _stored_orders(store) == {7: 1, 8: 2}
-    assert _stored_orders(store, "issue") == {5: None, 7: 3}
+    assert _stored_orders(store) == {7: 1 * S, 8: 2 * S}
+    assert _stored_orders(store, "issue") == {5: None, 7: 3 * S}
 
 
 def test_an_issue_and_an_idea_with_one_number_are_different_rows(monkeypatch):
     store = _records(monkeypatch, issues=SHARED)
     ok, message = nova_capture.set_row_order("issues", 7, 1, "Nova")
     assert ok, message
-    assert _stored_orders(store, "issue") == {5: None, 7: 1}
-    assert _stored_orders(store) == {8: 2, 7: 3}
+    assert _stored_orders(store, "issue") == {5: None, 7: 1 * S}
+    assert _stored_orders(store) == {8: 2 * S, 7: 3 * S}
 
 
 def test_a_repeated_placement_rewrites_nothing_on_either_board(monkeypatch):
@@ -138,8 +139,8 @@ def test_the_last_seat_is_the_size_of_the_merged_group(monkeypatch):
     # Three open rows across two boards: seat 3 exists, seat 4 does not.
     store = _records(monkeypatch, issues=SHARED)
     assert nova_capture.set_row_order("ideas", 8, 3, "Nova")[0]
-    assert _stored_orders(store) == {7: 2, 8: 3}
-    assert _stored_orders(store, "issue")[7] == 1
+    assert _stored_orders(store) == {7: 2 * S, 8: 3 * S}
+    assert _stored_orders(store, "issue")[7] == 1 * S
     ok, message = nova_capture.set_row_order("ideas", 8, 4, "Nova")
     assert not ok and "cannot place #8" in message, message
 
@@ -168,7 +169,7 @@ def test_a_placement_writes_the_records_and_numbers_the_whole_group(monkeypatch)
     ok, message = nova_capture.set_row_order("ideas", 7, 1, "Nova")
     assert ok, message
     # The first placement numbers the whole group, not just the row moved.
-    assert _stored_orders(store) == {7: 1, 8: 2}
+    assert _stored_orders(store) == {7: 1 * S, 8: 2 * S}
 
 
 def test_the_seed_is_the_rating_when_nobody_has_placed_anything(monkeypatch):
@@ -177,7 +178,7 @@ def test_the_seed_is_the_rating_when_nobody_has_placed_anything(monkeypatch):
     store = _records(monkeypatch)
     ok, message = nova_capture.set_row_order("ideas", 8, 2, "Nova")
     assert ok, message
-    assert _stored_orders(store) == {7: 1, 8: 2}
+    assert _stored_orders(store) == {7: 1 * S, 8: 2 * S}
 
 
 def test_a_row_already_in_its_seat_is_not_rewritten(monkeypatch):
@@ -187,7 +188,7 @@ def test_a_row_already_in_its_seat_is_not_rewritten(monkeypatch):
     ok, message = nova_capture.set_row_order("ideas", 7, 1, "Nova")
     assert ok, message
     assert rows == []
-    assert _stored_orders(store) == {7: 1, 8: 2}
+    assert _stored_orders(store) == {7: 1 * S, 8: 2 * S}
 
 
 def test_a_missing_row_says_the_phrase_the_site_answers_409_on(monkeypatch):
@@ -268,7 +269,7 @@ def test_set_row_order_writes_to_the_store_it_is_handed(monkeypatch):
     mine = _dest_records(BOARD, source=ISSUES)
     ok, message = nova_capture.set_row_order("ideas", 7, 1, "Nova", store=mine)
     assert ok, message
-    assert _stored_orders(mine) == {7: 1, 8: 2}
+    assert _stored_orders(mine) == {7: 1 * S, 8: 2 * S}
     assert set(_stored_orders(nova_capture.board_store).values()) == {None}
 
 
@@ -416,7 +417,7 @@ def test_a_cycle_may_not_move_a_row_he_placed(monkeypatch):
     # A refusal, not a missing row: the site must answer 502, not 409.
     assert "is not a row" not in message
     assert rows == []
-    assert _stored_orders(store) == {7: 1, 8: 2}
+    assert _stored_orders(store) == {7: 1 * S, 8: 2 * S}
 
 
 def test_a_cycle_may_still_move_a_row_he_did_not_place(monkeypatch):
@@ -424,7 +425,7 @@ def test_a_cycle_may_still_move_a_row_he_did_not_place(monkeypatch):
     assert nova_capture.set_row_order("ideas", 7, 1, "Edvard")[0]
     ok, message = nova_capture.set_row_order("ideas", 8, 1, "Nova")
     assert ok, message
-    assert _stored_orders(store) == {8: 1, 7: 2}
+    assert _queue(store) == [8, 7]
     assert _stored(store, "placedBy") == {7: "Edvard", 8: None}
 
 
@@ -433,7 +434,7 @@ def test_he_may_move_a_row_he_already_placed(monkeypatch):
     assert nova_capture.set_row_order("ideas", 7, 1, "Edvard")[0]
     ok, message = nova_capture.set_row_order("ideas", 7, 2, "Edvard")
     assert ok, message
-    assert _stored_orders(store) == {8: 1, 7: 2}
+    assert _queue(store) == [8, 7]
 
 
 def test_his_placement_on_the_seat_a_cycle_gave_it_is_still_recorded(monkeypatch):
@@ -534,16 +535,97 @@ def test_his_drag_landing_mid_move_is_not_overwritten_by_a_cycle(monkeypatch):
     # to run on `change_row`'s own read, not on that stale one.
     from agora_runner import board_write
     store = _records(monkeypatch)
-    real = nova_capture._board_row_order_seats
+    real = nova_capture._row_order_seats
 
     def his_drag_lands_now(*a, **k):
         board_write.change_row(
             "idea", 7, {"order": 1, "placedBy": "Edvard"}, store=store)
         return real(*a, **k)
 
-    monkeypatch.setattr(nova_capture, "_board_row_order_seats", his_drag_lands_now)
+    monkeypatch.setattr(nova_capture, "_row_order_seats", his_drag_lands_now)
     ok, message = nova_capture.set_row_order("ideas", 7, 2, "Nova")
     assert not ok and "placedBy" in message, message
     assert "0 of 2 seat(s) were written" in message, message
     assert _stored_orders(store) == {7: 1, 8: None}
     assert _stored(store, "placedBy")[7] == "Edvard"
+
+
+# --- issue #202, definition of done item 4: moving one task writes one document ---
+
+
+#: Four placed ideas in one (Marcus, Push) group, on dense seats 1..4 --
+#: the shape every open row on the live boards was seeded into.
+DENSE = """---
+type: board
+---
+
+# Nova — Ideas
+
+## Board
+
+| # | Idea | Status | Updated | Priority | Project | Size | Milestone | Order |
+|---|---|---|---|---|---|---|---|---|
+| [[#1 — One\\|1]] | One | ⚪ Backlog | 09-05 | 🟠 High | Marcus | S | Push | 1 |
+| [[#2 — Two\\|2]] | Two | ⚪ Backlog | 09-05 | 🟠 High | Marcus | S | Push | 2 |
+| [[#3 — Three\\|3]] | Three | ⚪ Backlog | 09-05 | 🟠 High | Marcus | S | Push | 3 |
+| [[#4 — Four\\|4]] | Four | ⚪ Backlog | 09-05 | 🟠 High | Marcus | S | Push | 4 |
+"""
+
+
+def _queue(store):
+    seats = _stored_orders(store)
+    return sorted(seats, key=seats.get)
+
+
+def test_a_dense_group_is_spaced_out_once_and_then_one_move_is_one_write(monkeypatch):
+    store = _records(monkeypatch, markdown=DENSE)
+    rows = _count_writes(monkeypatch)
+    # Seats 1..4 leave no room above seat 1, so the first move numbers them.
+    assert nova_capture.set_row_order("ideas", 4, 1, "Nova")[0]
+    assert len(rows) == 4
+    assert _stored_orders(store) == {4: 1 * S, 1: 2 * S, 2: 3 * S, 3: 4 * S}
+    del rows[:]
+    # The bottom task of the group to the top: one document.
+    ok, message = nova_capture.set_row_order("ideas", 3, 1, "Nova")
+    assert ok, message
+    assert [number for number, _ in rows] == [3]
+    assert _queue(store) == [3, 4, 1, 2]
+    del rows[:]
+    # And into the middle, between two neighbours.
+    assert nova_capture.set_row_order("ideas", 2, 3, "Nova")[0]
+    assert [number for number, _ in rows] == [2]
+    assert _queue(store) == [3, 4, 2, 1]
+
+
+def test_a_used_up_gap_numbers_the_group_again(monkeypatch):
+    store = _records(monkeypatch, markdown=DENSE)
+    rows = _count_writes(monkeypatch)
+    # Seats 1 and 2 have no whole number between them.
+    assert nova_capture.set_row_order("ideas", 4, 2, "Nova")[0]
+    assert len(rows) == 4
+    assert _queue(store) == [1, 4, 2, 3]
+    assert all(seat % S == 0 for seat in _stored_orders(store).values())
+
+
+TIED = DENSE.replace("| Push | 2 |", "| Push | 1 |")
+
+
+def test_two_rows_on_one_seat_are_numbered_rather_than_squeezed(monkeypatch):
+    # #1 and #2 share seat 1, which a half-finished write can leave behind;
+    # a seat "between" them does not exist, so the group is numbered again.
+    store = _records(monkeypatch, markdown=TIED.replace("| Push | 4 |", "| Push | 40 |"))
+    rows = _count_writes(monkeypatch)
+    assert nova_capture.set_row_order("ideas", 4, 4, "Nova")[0]
+    assert len(rows) == 4
+    seats = _stored_orders(store)
+    assert len(set(seats.values())) == 4
+
+
+def test_a_move_to_the_bottom_takes_a_seat_below_the_last_one(monkeypatch):
+    store = _records(monkeypatch, markdown=DENSE)
+    assert nova_capture.set_row_order("ideas", 4, 1, "Nova")[0]  # spaced out
+    rows = _count_writes(monkeypatch)
+    ok, message = nova_capture.set_row_order("ideas", 4, 4, "Nova")
+    assert ok, message
+    assert rows == [(4, {"order": 5 * S})]
+    assert _queue(store) == [1, 2, 3, 4]

@@ -2212,6 +2212,55 @@ def row_order_seats(items, number, position):
     return None if seats is None else [(row, seat) for _, row, seat in seats]
 
 
+#: The gap between neighbouring seats when a group is numbered. Ten halvings
+#: of one gap before a group has to be numbered again.
+ROW_ORDER_STRIDE = 1024
+
+
+def sparse_row_order_seats(boards, board, number, position):
+    """`board_row_order_seats` with gaps between the seats, so that moving one
+    task writes one document -- issue #202's definition of done, item 4.
+
+    Same group, same order, same refusals. What differs is the numbers:
+    when every other row in the group already holds a seat, in order, the
+    moved row takes a seat between its new neighbours and every other row
+    keeps the one it has. Dense seats had no room between neighbours, so
+    moving the bottom task of ten to the top rewrote all ten.
+
+    The whole group is numbered `ROW_ORDER_STRIDE` apart instead when that
+    is not possible: a row in the group has never been placed (the first
+    placement seats everyone, `board_row_order_seats`'s rule), two rows
+    share or invert a seat, or the gap between the new neighbours is used
+    up. A row already between its new neighbours keeps its seat, so a
+    repeated placement writes nothing.
+    """
+    ordered = board_row_order_seats(boards, board, number, position)
+    if ordered is None:
+        return None
+    held = {(name, item["number"]): item.get("order")
+            for name, items in boards.items() for item in items}
+    seats = [held.get((each, row)) for each, row, _ in ordered]
+    at = next(i for i, (each, row, _) in enumerate(ordered)
+              if each == board and row == number)
+    others = seats[:at] + seats[at + 1:]
+    if (all(isinstance(s, int) and s > 0 for s in others)
+            and all(a < b for a, b in zip(others, others[1:]))):
+        low = seats[at - 1] if at else 0
+        high = seats[at + 1] if at + 1 < len(seats) else None
+        mine = seats[at]
+        seat = None
+        if isinstance(mine, int) and low < mine and (high is None or mine < high):
+            seat = mine
+        elif high is None:
+            seat = low + ROW_ORDER_STRIDE
+        elif high - low >= 2:
+            seat = (low + high) // 2
+        if seat is not None:
+            return [(each, row, seat if i == at else seats[i])
+                    for i, (each, row, _) in enumerate(ordered)]
+    return [(each, row, dense * ROW_ORDER_STRIDE) for each, row, dense in ordered]
+
+
 def board_row_order_seats(boards, board, number, position):
     """`[(board, row number, seat)]` for the group of `board`'s row `number`
     after placing it at `position`, counted across EVERY board in `boards`,
