@@ -36,6 +36,7 @@ BOARD = """- A capture nothing here may touch.
 
 | # | Item | Status | Updated | Priority | Project | Size | Milestone | Order |
 |---|---|---|---|---|---|---|---|---|
+| [[#261 — Nobody has looked\\|261]] | Nobody has looked | ⚪ Backlog | 09-06 | | | | | |
 | [[#260 — Redesign the picker\\|260]] | Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High | | | | |
 | [[#259 — Demos live two weeks\\|259]] | Demos live two weeks | 🟡 In progress | 09-06 | 🔵 Medium | | | | |
 | [[#258 — Spread the load\\|258]] | Spread the load | ✅ Done | 09-05 | | | | | |
@@ -47,6 +48,10 @@ BOARD = """- A capture nothing here may touch.
 | [[#51 — One way\\|51]] | One way | 08-10 | inbox.md |
 
 # Details
+
+## #261 — Nobody has looked
+
+A row the owner left unrated.
 
 ## #260 — Redesign the picker
 
@@ -78,18 +83,20 @@ def _writes(store):
     return [call for call in store.calls if call[0] == "write_row"]
 
 
-def _run(*argv, number="260", priority="immediate"):
+# #261 is the row every write test rates: the only open row with no rating, so
+# the only one a cycle may still rate at all (issue #202).
+def _run(*argv, number="261", priority="high"):
     return main(["--board", "idea", "--number", str(number),
                  "--priority", priority, *argv])
 
 
 def test_the_named_row_is_re_rated_and_keeps_everything_else(store):
-    before = _rows(store)[260]
+    before = _rows(store)[261]
     assert _run() == 0
 
-    row = _rows(store)[260]
-    assert row["priority"] == "🔴 Immediately"
-    assert row["priorityKey"] == "immediate"
+    row = _rows(store)[261]
+    assert row["priority"] == "🟠 High"
+    assert row["priorityKey"] == "high"
     assert {k: v for k, v in row.items() if k not in ("priority", "priorityKey")} == \
         {k: v for k, v in before.items() if k not in ("priority", "priorityKey")}
 
@@ -99,8 +106,8 @@ def test_every_other_row_the_captures_and_the_write_ups_survive(store):
     assert _run() == 0
     after = _contents(store)
 
-    assert [row for row in after["items"] if row["number"] != 260] == \
-        [row for row in before["items"] if row["number"] != 260]
+    assert [row for row in after["items"] if row["number"] != 261] == \
+        [row for row in before["items"] if row["number"] != 261]
     assert after["captures"] == before["captures"]
     assert after["details"] == before["details"]
 
@@ -109,7 +116,7 @@ def test_dated_without_a_note_leaves_the_updated_cell_alone(store):
     """A re-rating is not a touch of the row; `updated` moves only with the
     note that explains why."""
     assert _run("--dated", "09-11") == 0
-    assert _rows(store)[260]["updated"] == "09-06"
+    assert _rows(store)[261]["updated"] == "09-06"
 
 
 def test_a_note_is_appended_and_moves_updated_in_the_same_write(store):
@@ -117,11 +124,11 @@ def test_a_note_is_appended_and_moves_updated_in_the_same_write(store):
                 "--cycle", "1377") == 0
 
     assert len(_writes(store)) == 1
-    row = _rows(store)[260]
-    assert row["priority"] == "🔴 Immediately"
+    row = _rows(store)[261]
+    assert row["priority"] == "🟠 High"
     assert row["updated"] == "09-11"
-    body = _contents(store)["details"][260]
-    assert body.startswith("The full spec lives in its own note.")
+    body = _contents(store)["details"][261]
+    assert body.startswith("A row the owner left unrated.")
     assert "it gates every other project" in body
     assert "(Cycle 1377)" in body
 
@@ -190,7 +197,7 @@ def test_a_row_that_does_not_exist_is_refused(store, capsys):
 def test_dry_run_prints_the_move_and_writes_nothing(store, capsys):
     before = _contents(store)
     assert _run("--dry-run") == 0
-    assert "🟠 High -> 🔴 Immediately" in capsys.readouterr().out
+    assert "(unrated) -> 🟠 High" in capsys.readouterr().out
     assert _contents(store) == before
     assert not _writes(store)
 
@@ -205,7 +212,7 @@ def test_it_never_opens_the_markdown(store, monkeypatch):
     monkeypatch.setattr(nova_boards, "parse_board", no_markdown)
     monkeypatch.setattr(nova_boards, "set_row_priority", no_markdown)
     assert _run("--dated", "09-11", "--note", "why") == 0
-    assert _rows(store)[260]["priority"] == "🔴 Immediately"
+    assert _rows(store)[261]["priority"] == "🟠 High"
 
 
 def test_it_takes_a_board_not_a_file():
@@ -238,3 +245,53 @@ def test_refuse_row_passes_an_open_row_and_stops_both_kinds_of_finished():
     assert refuse_row(contents, 2) is not None
     assert refuse_row(contents, 3) is not None
     assert refuse_row(contents, 4) is not None
+
+
+# Issue #202: "A position or rating he set is recorded as his, and a cycle may
+# not overwrite it. `tools/board_priority.py` and every write path refuse it,
+# loudly, rather than winning quietly."
+
+@pytest.mark.parametrize("number,priority", [
+    (260, "low"),        # 🟠 High down
+    (260, "high"),       # the same rating again is still a write over his
+    (259, "high"),       # 🔵 Medium up
+])
+def test_a_rating_already_on_a_row_is_his_and_is_refused(store, capsys, number, priority):
+    before = _contents(store)
+    assert _rows(store)[number]["priority"], "the fixture row must carry a rating"
+
+    assert _run(number=number, priority=priority) == 1
+    assert "may not overwrite" in capsys.readouterr().err
+    assert _contents(store) == before
+    assert not _writes(store)
+
+
+def test_a_rated_row_is_refused_before_the_dry_run_prints_a_move(store, capsys):
+    assert _run("--dry-run", number=260, priority="low") == 1
+    captured = capsys.readouterr()
+    assert "->" not in captured.out
+    assert "may not overwrite" in captured.err
+
+
+@pytest.mark.parametrize("spelling", ["immediate", "🔴 Immediately", "urgent"])
+def test_immediately_is_refused_even_on_an_unrated_row(store, capsys, spelling):
+    """The skip-to-top tier is the one rating that still moves work, and the
+    jump idea #267 got. A blank row may be rated, only never there."""
+    before = _contents(store)
+    assert _rows(store)[261]["priority"] == "", "the fixture row must be unrated"
+
+    assert _run(priority=spelling) == 1
+    assert "skip-to-top" in capsys.readouterr().err
+    assert _contents(store) == before
+    assert not _writes(store)
+
+
+def test_refuse_row_stops_a_rated_row_and_immediately_and_passes_the_rest():
+    contents = {"items": [
+        {"number": 1, "done": False, "status": "⚪ Backlog", "priority": ""},
+        {"number": 2, "done": False, "status": "⚪ Backlog", "priority": "⚪ Low"},
+    ]}
+    assert refuse_row(contents, 1, "🔵 Medium") is None
+    assert refuse_row(contents, 1, "🔴 Immediately") is not None
+    assert refuse_row(contents, 2, "🟠 High") is not None
+    assert board_priority.IMMEDIATE == resolve_priority("immediate")
