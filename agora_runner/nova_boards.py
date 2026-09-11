@@ -2968,6 +2968,45 @@ contract: Nova writes this only when the owner pins a milestone. One row per pin
 """
 
 
+#: Where the milestone order *I* set lives -- issue #202. Its own document
+#: rather than rows in `milestones.md`, because everything that reads that
+#: file reads a row as his pin and draws "pinned" plus an Unpin button on
+#: it. Same table shape, so `parse_milestone_pins` reads both.
+MILESTONE_SEATS_PATH = "projects/sokrates/projects/nova/milestone-seats.md"
+
+_MILESTONE_SEATS_HEADER = """---
+type: board
+tags: [agora, milestones, board]
+status: built
+contract: Nova writes this. The order Nova keeps each project's milestones in, one row per milestone, position 1-based inside its project. Read by nova_next.milestone_ranks after the computed order and before the owner's pins in milestones.md, which always win. A milestone with no row here goes after every seated one in its project.
+---
+
+# Milestone seats
+
+| Project | Milestone | Position | Updated |
+|---|---|---|---|
+"""
+
+
+def render_milestone_seats(order, updated=""):
+    """`[(project, milestone), ...]` in rank order -> `milestone-seats.md`.
+
+    Positions are counted per project in the order given, so the list
+    `milestone_ranks` returns can be written straight back as seats and
+    read back as the same order. Refuses (returns `None`) a name carrying
+    a `|`, for `set_milestone_pin`'s reason.
+    """
+    lines, seen = [_MILESTONE_SEATS_HEADER.rstrip("\n")], {}
+    for project, milestone in order:
+        name, group = (project or "").strip(), (milestone or "").strip()
+        if not name or not group or "|" in name or "|" in group:
+            return None
+        seen[name.lower()] = seen.get(name.lower(), 0) + 1
+        lines.append(f"| {name} | {group} | {seen[name.lower()]} | "
+                     f"{(updated or '').strip()} |")
+    return "\n".join(lines) + "\n"
+
+
 def parse_milestone_pins(markdown):
     """`milestones.md` -> `{(project, milestone) lowercased: 1-based position}`.
 

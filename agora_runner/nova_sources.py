@@ -13,7 +13,7 @@ So: one definition, imported by both. Parsing stays in `nova_journal` and
 """
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH,
+    BOARD_PATHS, MILESTONE_PINS_PATH, MILESTONE_SEATS_PATH, PROJECT_META_PATH,
 )
 from agora_runner.nova_capture import CAPTURE_TARGETS
 from agora_runner.nova_catalog import CATALOG_PATH
@@ -266,6 +266,15 @@ def milestone_pins_markdown():
     unreadable and does not pretend to.
     """
     return vault_read_path(MILESTONE_PINS_PATH) or ""
+
+
+def milestone_seats_markdown():
+    """`milestone-seats.md`, raw -- the milestone order I set (issue #202).
+
+    `""` when absent, which means the computed order stands, for the same
+    reason as `milestone_pins_markdown` above.
+    """
+    return vault_read_path(MILESTONE_SEATS_PATH) or ""
 
 
 def edvard_board_markdown(name):
