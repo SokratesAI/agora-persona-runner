@@ -90,9 +90,15 @@ def differences(want, got):
     not hide one on `captures`, because those are the two that broke
     separately during the seed.
     """
+    from .board_document import OPTIONAL_FIELDS
     problems = []
     for key in ("captures", "captureReplies", "items", "details"):
         left, right = want.get(key), got.get(key)
+        if key == "items" and isinstance(right, list):
+            # His markdown has no cell for these, so the view can never carry
+            # them: a row he placed is not drift.
+            right = [{k: v for k, v in item.items() if k not in OPTIONAL_FIELDS}
+                     if isinstance(item, dict) else item for item in right]
         if left == right:
             continue
         if isinstance(left, dict) and isinstance(right, dict):

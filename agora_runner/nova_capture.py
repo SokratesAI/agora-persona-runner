@@ -1572,8 +1572,22 @@ def comment_on_row(target, number, comment, dated, author="Edvard", store=None):
 RECORD_BOARDS = {"issues": "issue", "ideas": "idea"}
 
 
-def set_row_order(target, number, position, store=None):
+#: Who may place a row. `Edvard` is the app -- his drag and his arrows;
+#: `Nova` is a cycle, which is the reprioritise run calling the same route.
+ROW_ORDER_AUTHORS = ("Edvard", "Nova")
+
+
+def set_row_order(target, number, position, author, store=None):
     """Place one boarded row at `position` inside its milestone. Returns (ok, message).
+
+    **A row he placed is his** (issue #202: *"A position or rating he set is
+    recorded as his, and a cycle may not overwrite it"*). A placement by
+    `Edvard` stamps `placedBy` on the row it moves, and a placement by
+    `Nova` of a row carrying that stamp is refused before anything is
+    written. Rows a placement merely reseats keep whatever stamp they had.
+    A cycle may still move *other* rows past his: that changes his row's
+    seat number, never its order relative to the rows he placed, and
+    forbidding it would freeze every milestone he has touched.
 
     Part 3 of `row-order-and-priority-migration.md`: *"make another cycle
     remove the old priority system and order the tasks in the correct new
@@ -1610,6 +1624,8 @@ def set_row_order(target, number, position, store=None):
     board = RECORD_BOARDS.get(target)
     if board is None:
         return False, f"unknown target: {target!r}"
+    if author not in ROW_ORDER_AUTHORS:
+        return False, f"author must be one of {ROW_ORDER_AUTHORS}, not {author!r}"
     store = store or board_store
     boards = {}
     for name, each in RECORD_BOARDS.items():  # issues first: a tie's order
@@ -1618,18 +1634,32 @@ def set_row_order(target, number, position, store=None):
         except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
             log(f"nova-capture could not read the {name} records: {problem}")
             return False, f"could not read {name}: {problem}"
-    if not any(item.get("number") == number for item in boards[board]):
+    moved = next(
+        (item for item in boards[board] if item.get("number") == number), None)
+    if moved is None:
         return False, f"#{number} is not a row on {target}"
+    if author != "Edvard" and moved.get("placedBy") == "Edvard":
+        return False, (f"#{number} on {target} was placed by Edvard, and a "
+                       "cycle may not move it")
     seats = _board_row_order_seats(boards, board, number, position)
     if seats is None:
         return False, f"cannot place #{number} on {target} at {position!r}"
-    held = {(each, item["number"]): item.get("order")
+    held = {(each, item["number"]): item
             for each, items in boards.items() for item in items}
-    moves = [(each, row, seat) for each, row, seat in seats
-             if held.get((each, row)) != seat]
-    for written, (each, row, seat) in enumerate(moves):
+    moves = []
+    for each, row, seat in seats:
+        was = held.get((each, row)) or {}
+        changes = {}
+        if was.get("order") != seat:
+            changes["order"] = seat
+        if (author == "Edvard" and (each, row) == (board, number)
+                and was.get("placedBy") != "Edvard"):
+            changes["placedBy"] = "Edvard"
+        if changes:
+            moves.append((each, row, changes))
+    for written, (each, row, changes) in enumerate(moves):
         try:
-            board_write.change_row(each, row, {"order": seat}, store=store)
+            board_write.change_row(each, row, changes, store=store)
         except (board_write.WriteRefused, board_write.BoardDamaged,
                 board_records.RecordError) as problem:
             log(f"nova-capture failed placing #{number} on {target}: {problem}")

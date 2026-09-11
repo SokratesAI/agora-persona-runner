@@ -214,7 +214,10 @@ def change_row(board, number, changes, detail=None, store=board_store):
         raise WriteRefused(
             f"#{number} is not a row on board {board!r} -- it holds "
             f"{len(before['items'])} row(s)")
-    unknown = sorted(key for key in changes if key not in held)
+    # An optional field is absent from a row until it is first written, so
+    # "not a key on this row" is not the test for one.
+    unknown = sorted(key for key in changes if key not in held
+                     and key not in board_document.OPTIONAL_FIELDS)
     if unknown:
         raise WriteRefused(
             f"{', '.join(unknown)} is not a key on a row of board {board!r}; "
