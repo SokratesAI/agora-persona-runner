@@ -9,9 +9,10 @@ import pytest
 from unittest.mock import patch
 
 from agora_runner import nova_next
-from agora_runner.nova_boards import CAPTURE_PRIORITY_SEP, PRIORITY_LABELS, STATUS_LABELS
+from agora_runner.nova_boards import (
+    CAPTURE_PRIORITY_SEP, PRIORITY_LABELS, STATUS_LABELS, parse_board,
+)
 from tools import board_migration_preflight, top_board_rows
-from agora_runner.nova_boards import parse_board
 
 
 def open_rows(markdown, board):

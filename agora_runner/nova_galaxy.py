@@ -8,8 +8,8 @@ Galaxy theme."*
 The data behind the picture is the claims ledger, and it is the only
 document this loop keeps that says what is happening *this minute*
 rather than what happened -- `tools/claim.py` takes a row before the
-work starts and releases it after. `nova_next.next_payload` already
-reads it, and deliberately answers a different question: it ranks the
+work starts and releases it after. `nova_next.next_payload_from_contents`
+already reads it, and deliberately answers a different question: it ranks the
 board and lists `active` as slug plus cycle, because its job is to say
 what a waking cycle should take next. A picture of a session needs the
 two fields that shaping drops -- the note the cycle wrote when it
