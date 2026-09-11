@@ -468,3 +468,11 @@ def test_a_tag_no_project_cell_could_hold_is_not_lifted():
         "(Project: " + "M" * 41 + ") a thing",
     ):
         assert split_capture_project(bullet) == ("", bullet)
+
+
+def test_the_buttons_board_names_are_the_sites():
+    """`nova_capture.RECORD_BOARDS` is a hand copy of `nova_site._RECORD_BOARDS`
+    (neither can import `tools/`); a board added on one side only must fail
+    here, not on his phone. The reviewer's finding on df42e5c."""
+    from agora_runner import nova_site
+    assert nova_capture.RECORD_BOARDS == nova_site._RECORD_BOARDS
