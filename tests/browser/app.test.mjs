@@ -14679,6 +14679,91 @@ describe("the project page", () => {
       "moving a task did not write through the row order route");
   });
 
+  test("a task in the drawer can be dragged by its grip, counted among the open rows only", async () => {
+    /* Issue #202's last piece: *"give me drag-and-arrows on the task rows in
+     * the project drawer"*. The done #45 is rated Immediately so it sorts
+     * BETWEEN open rows (41, 44, 42, 45, 46, 43) -- a done row that sat at
+     * the end would be invisible to a drag that wrongly counted it. */
+    const posted = [];
+    const window = await loadSite("/projects", {
+      project: (url) => {
+        if (!String(url).includes("name=Marcus")) return STANDING;
+        return {
+          name: "Marcus", asked: "Marcus",
+          milestones: [{ name: "M1", open: 5, pin: 0 }],
+          boards: {
+            issues: { total: 1, columns: [{ key: "backlog", label: "Backlog", items: [
+              { number: 41, title: "a", milestone: "M1", order: 1 },
+            ] }] },
+            ideas: { total: 5, columns: [
+              { key: "backlog", label: "Backlog", items: [
+                { number: 42, title: "b", milestone: "M1", order: 2 },
+                { number: 44, title: "c", milestone: "M1", order: 1 },
+                { number: 43, title: "d", milestone: "M1", order: null, priorityKey: "low" },
+                { number: 46, title: "e", milestone: "M1", order: null, priorityKey: "immediate" },
+              ] },
+              { key: "done", label: "Done", items: [
+                { number: 45, title: "f", milestone: "M1", done: true, priorityKey: "immediate" },
+              ] },
+            ] },
+          },
+        };
+      },
+    });
+    window.fetch = ((real) => (url, options) => {
+      if (String(url) === "/api/row/order") {
+        posted.push(JSON.parse(options.body));
+        return Promise.resolve({ ok: true, status: 200,
+          json: () => Promise.resolve({ ok: true }) });
+      }
+      return real(url, options);
+    })(window.fetch);
+    const press = (node, type, clientY) => node.dispatchEvent(
+      new window.MouseEvent(type, { bubbles: true, cancelable: true, clientY }));
+
+    const row = standings(window)[0];
+    const head = row.querySelector(".project-standing-link");
+    click(window, head);
+    for (let i = 0; i < 40 && !row.querySelector(".project-drawer-milestone"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const tasks = [...row.querySelectorAll(".project-drawer-task")];
+    assert.deepEqual(
+      tasks.map((t) => t.querySelector(".project-drawer-task-link").textContent.split(" ")[0]),
+      ["#41", "#44", "#42", "#45", "#46", "#43"]);
+    // Real geometry in DOM order, done row included: centres 20..220.
+    tasks.forEach((t, i) => {
+      t.getBoundingClientRect = () => ({
+        top: i * 40, bottom: (i * 40) + 40, height: 40, left: 0, right: 100, width: 100,
+      });
+    });
+    const grip = (t) => t.querySelector(".project-task-grip");
+    assert.equal(grip(tasks[3]), null, "a done row carries a grip");
+    assert.equal(grip(tasks[0]).getAttribute("data-task"), "issues:41");
+    assert.equal(grip(tasks[0]).getAttribute("aria-hidden"), "true");
+    const wrap = tasks[0].querySelector(".project-task-move");
+    assert.equal(wrap.lastElementChild, grip(tasks[0]), "the grip is not the rightmost control");
+
+    // A tap on a grip inside the drawer must not fold the project card shut.
+    click(window, grip(tasks[0]));
+    assert.equal(head.getAttribute("aria-expanded"), "true",
+      "tapping a task's grip folded the project drawer");
+
+    // #41 from 20 to 105: past #44 (60) and #42 (100) -> seat 3.
+    press(grip(tasks[0]), "pointerdown", 20);
+    press(grip(tasks[0]), "pointermove", 105);
+    press(grip(tasks[0]), "pointerup", 105);
+    // #43 from 220 to 150: past #46 (180) but not the done #45 (140),
+    // which is not a seat -> fourth of the five open rows.
+    press(grip(tasks[5]), "pointerdown", 220);
+    press(grip(tasks[5]), "pointermove", 150);
+    press(grip(tasks[5]), "pointerup", 150);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(posted, [{ target: "issues", number: 41, position: 3 },
+      { target: "ideas", number: 43, position: 4 }],
+      "a task drag did not write the seat it landed on through the row order route");
+  });
+
   test("the milestone controls sit on the right too, grip last", () => {
     // Same mechanism as the project card's, and the same mistake avoided:
     // the note's auto margin is what pushes them right, so the note has to
