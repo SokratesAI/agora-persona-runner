@@ -19,7 +19,6 @@ from unittest.mock import patch
 
 import pytest
 
-from agora_runner.nova_boards import parse_board as _parse_his_board
 from agora_runner import nova_site, nova_sources
 from agora_runner.nova_boards import (
     BOARD_PATHS,
@@ -174,18 +173,20 @@ def test_an_item_with_no_write_up_is_a_row_rather_than_an_error(board_md, notes_
 
 def test_ideas_and_issues_are_different_boards(board_md, notes_md):
     """Two names, two cache entries. A page asking for ideas must not be
-    handed the issues payload the previous request warmed."""
-    seen = []
+    handed the issues payload the previous request warmed -- so each page
+    asks the record store for its own board, and reads my own file for it."""
+    asked = []
 
-    def read(path):
-        seen.append(path)
-        return notes_md if "/nova/resources/" in path else board_md
+    def his(name):
+        asked.append(name)
+        return parse_board(board_md)
 
-    with patch.object(nova_sources, "vault_read_path", side_effect=read):
+    serve, seen = _reads(board_md, notes_md)
+    with serve, patch.object(nova_site, "_his_board", side_effect=his):
         _get("/api/board?name=issues&limit=1")
         _get("/api/board?name=ideas&limit=1")
-    assert BOARD_PATHS["issues"]["edvard"] in seen
-    assert BOARD_PATHS["ideas"]["edvard"] in seen
+    assert asked == ["issues", "ideas"]
+    assert BOARD_PATHS["issues"]["nova"] in seen
     assert BOARD_PATHS["ideas"]["nova"] in seen
 
 
@@ -317,7 +318,9 @@ def test_a_board_reads_the_archive_beside_the_live_file(board_md, notes_md):
         seen.append(path)
         return "" if path.endswith("-archive.md") else board_md
 
-    with patch.object(nova_sources, "vault_read_path", side_effect=read):
+    with patch.object(nova_sources, "vault_read_path", side_effect=read), \
+            patch.object(nova_site, "_his_board",
+                         side_effect=lambda name: parse_board(board_md)):
         _get("/api/board?name=ideas&limit=1")
     assert BOARD_PATHS["ideas"]["nova_archive"] in seen
     assert BOARD_PATHS["ideas"]["nova_archive"].endswith(
@@ -662,15 +665,17 @@ def test_the_first_press_on_a_board_after_a_deploy_reads_no_vault(board_md, note
     def read(path):
         return notes_md if "/nova/resources/" in path else board_md
 
-    with patch.object(nova_sources, "vault_read_path", side_effect=read) as reader:
+    with patch.object(nova_sources, "vault_read_path", side_effect=read) as reader, \
+            patch.object(nova_site, "_his_board",
+                         side_effect=lambda name: parse_board(board_md)) as store:
         nova_site.warm_cache()
-        warmed = reader.call_count
-        assert warmed, "the warm built nothing at all"
+        warmed, stored = reader.call_count, store.call_count
+        assert warmed and stored, "the warm built nothing at all"
         for board in ("issues", "ideas"):
             status, _, body = _get(f"/api/board?name={board}&limit=1")
             assert status == 200, board
             assert json.loads(body)["items"], f"{board} warmed to an empty board"
-            assert reader.call_count == warmed, (
+            assert (reader.call_count, store.call_count) == (warmed, stored), (
                 f"the first visitor to {board} paid the cold build anyway"
             )
 
@@ -694,6 +699,8 @@ def test_the_projects_page_shares_one_cache_key_with_the_board_route(board_md, n
         return notes_md if "/nova/resources/" in path else board_md
 
     with patch.object(nova_sources, "vault_read_path", side_effect=read), \
+            patch.object(nova_site, "_his_board",
+                         side_effect=lambda name: parse_board(board_md)), \
             patch.object(nova_site, "project_priorities", dict):
         # The ratings are a separate uncached read and are stubbed rather
         # than left to fall back, so this test still measures cache keys
@@ -807,7 +814,7 @@ def test_the_waiting_flag_follows_the_store_not_the_markdown(board_md, notes_md)
         **parsed["details"], 57: "the write-up\n\n**Edvard, 09-03:** and this?"}}
 
     with _serve(board_md, notes_md), \
-            patch.object(nova_site, "_board_from_records", lambda name: contents):
+            patch.object(nova_site, "_his_board", lambda name: contents):
         payload = nova_site.board_payload("issues")
 
     # The precondition: the file itself flags nothing, so a pass here
@@ -819,19 +826,14 @@ def test_the_waiting_flag_follows_the_store_not_the_markdown(board_md, notes_md)
     assert flagged == {57}
 
 
-# --- His file is not fetched when the record store is current -----------
+# --- His file is never fetched: the records are his board ----------------
 #
-# Issue #203. `_board_from_records` gates on `board_records.currency`, the
-# records' own source stamp against the revision the vault holds now, so
-# the current path never touches his 537KB file. These pin its four
-# answers and -- the one that matters -- that the fast path really does
-# skip the fetch. Every other test in this file takes the fallback by
-# accident: there is no CouchDB under them, so the revision check cannot
-# run.
-#
-# It used to read the `nova_tickets` mirror instead. That mirror is
-# superseded, and it had drifted ten rows off his ideas board live, so the
-# page was drawing the file anyway.
+# Issue #203's flip. `_his_board` reads `board_records.contents` and
+# nothing else; `board_records.currency` is still asked, but only so a
+# generated markdown view that has drifted from the records gets logged.
+# These pin that the page draws the records whatever the verdict says,
+# that a store which will not answer fails the request rather than
+# drawing his 537KB file, and which board is asked for.
 
 
 def _records(contents=None, verdict=None, error=None):
@@ -902,112 +904,50 @@ def test_the_fast_path_asks_the_store_for_the_board_it_was_asked_for(
     assert board_records.CURRENT == "current"
 
 
-def test_a_revision_that_cannot_confirm_the_store_fetches_his_file(
-        board_md, notes_md):
-    """`stale` and `unknown` are verdicts, not errors, and both fetch.
+def test_a_verdict_short_of_current_still_draws_the_records(board_md, notes_md):
+    """After the flip the records ARE his board, so `stale`, `unknown` and a
+    revision check that will not run are logged and change nothing drawn.
 
-    A board whose records were never stamped answers `unknown`, which is
-    the live state of both of his boards until the first `board_put` after
-    #983 -- the page has to stay correct through it.
+    The store is handed rows the markdown does not carry, so a page that
+    quietly drew the file would come back with the file's numbers instead.
     """
     from agora_runner import board_records
 
-    parsed = parse_board(board_md)
-    for verdict in (board_records.STALE, board_records.UNKNOWN):
+    only_in_the_store = {"items": [{"number": 999, "title": "records only"}],
+                         "details": {}, "captures": [], "captureReplies": []}
+    cases = [(board_records.STALE, None), (board_records.UNKNOWN, None),
+             (board_records.UNKNOWN, RuntimeError("401"))]
+    for verdict, rev_error in cases:
         nova_site.reset_cache()
-        # The store is handed a full, agreeing answer on purpose: a store
-        # that could not answer would fetch the file for its own reason
-        # and this test would pass with the verdict ignored entirely.
-        rev, currency, contents = _records(parsed, verdict=verdict)
+        rev, currency, contents = _records(only_in_the_store, verdict=verdict)
+        if rev_error:
+            rev = patch.object(nova_site, "vault_doc_rev", side_effect=rev_error)
         serve, seen = _reads(board_md, notes_md)
         said = []
         with serve, rev, currency, contents, \
                 patch.object(nova_site, "log", said.append):
             payload = nova_site.board_payload("issues")
 
-        assert BOARD_PATHS["issues"]["edvard"] in seen, verdict
-        assert payload["items"], "the file still has to reach the page"
-        assert any("fetching the markdown" in line and verdict in line
-                   for line in said), verdict
+        assert [i["number"] for i in payload["items"]] == [999], verdict
+        assert BOARD_PATHS["issues"]["edvard"] not in seen, verdict
+        assert any(verdict in line and "drawing the records" in line
+                   for line in said), (verdict, said)
 
 
-def test_an_unreadable_store_falls_back_even_when_current(board_md, notes_md):
-    """The revision says current and CouchDB then refuses the read.
-
-    The verdict is not a promise that the store will answer -- it is only a
-    promise about which text it was built from. An unmigrated store lands
-    here too: `board_records.contents` raises `UnmigratedStore`.
-    """
+def test_a_store_that_will_not_answer_fails_the_page_and_never_fetches_his_file(
+        board_md, notes_md):
+    """No fallback. Serving the old file when CouchDB refuses would draw a
+    board that can be missing the edit he just made, with nothing on the
+    page saying so -- a failed request is the honest answer."""
     rev, currency, contents = _records(error=RuntimeError("boom"))
     serve, seen = _reads(board_md, notes_md)
-    said = []
-    with serve, rev, currency, contents, \
-            patch.object(nova_site, "log", said.append):
-        payload = nova_site.board_payload("issues")
-
-    assert BOARD_PATHS["issues"]["edvard"] in seen
-    assert payload["items"]
-    assert any("unreadable" in line for line in said)
-
-
-def test_a_revision_check_that_will_not_run_draws_the_file(board_md, notes_md):
-    rev, currency, contents = _records(parse_board(board_md))
-    serve, seen = _reads(board_md, notes_md)
-    said = []
-    with serve, currency, contents, \
-            patch.object(nova_site, "vault_doc_rev",
-                         side_effect=RuntimeError("401")), \
-            patch.object(nova_site, "log", said.append):
-        payload = nova_site.board_payload("issues")
-
-    assert BOARD_PATHS["issues"]["edvard"] in seen
-    assert payload["items"]
-    assert any("could not run" in line for line in said)
-
-
-def test_a_current_but_empty_store_draws_the_file(board_md, notes_md):
-    """The failure the revision cannot see, and the reason for the guard.
-
-    The stamp is its own document, so rows lost after a stamp leave the
-    revision current and the board empty. Neither of his boards has ever
-    had nought rows, so one fetch is the right price for finding out.
-    """
-    rev, currency, contents = _records()
-    serve, seen = _reads(board_md, notes_md)
-    said = []
-    with serve, rev, currency, contents, \
-            patch.object(nova_site, "log", said.append):
-        payload = nova_site.board_payload("issues")
-
-    assert BOARD_PATHS["issues"]["edvard"] in seen
-    assert payload["items"], "his board must not come back empty"
-    assert any("no rows" in line for line in said)
-
-
-def test_board_payload_asks_the_store_before_it_fetches(board_md, notes_md):
-    """The wiring, not the helper.
-
-    Deleting the `_board_from_records` call leaves every fallback test
-    green: they all describe what the fallback does, and the fallback is
-    what a deleted call produces. This one fails on it.
-    """
-    parsed = parse_board(board_md)
-    asked = []
-
-    def from_records(name):
-        asked.append(name)
-        return parsed
-
-    serve, seen = _reads(board_md, notes_md)
-    with serve, patch.object(nova_site, "_board_from_records", from_records):
-        payload = nova_site.board_payload("issues")
-
-    assert asked == ["issues"]
+    with serve, rev, currency, contents:
+        with pytest.raises(RuntimeError, match="boom"):
+            nova_site.board_payload("issues")
     assert BOARD_PATHS["issues"]["edvard"] not in seen
-    assert payload["items"]
 
 
-# --- The fallback: his file, parsed once ---------------------------------
+# --- The records, composed -----------------------------------------------
 
 
 def _contents(**over):
@@ -1025,23 +965,21 @@ def _contents(**over):
     return contents
 
 
-def _no_markdown(monkeypatch):
-    """Make every route from this module to his board file raise."""
-    def refuse(*args, **kwargs):
-        raise AssertionError("reached markdown")
-
-    monkeypatch.setattr(nova_site, "parse_board", refuse)
-    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(refuse): _parse_his_board(_f(name)))
-
-
 def test_a_current_store_composes_his_board_without_reaching_markdown(
         monkeypatch):
-    # A records path that quietly fell back to the parser would return the
-    # right answer whenever the file agreed, so only a raising parser can
-    # catch it -- and the landmine is armed first, or it proves nothing.
-    _no_markdown(monkeypatch)
+    # His file is a landmine: any vault read of his path raises. The arming
+    # check is the raise itself, inside the test, because a landmine the
+    # code under test never steps on catches nothing.
+    his_paths = {paths["edvard"] for paths in BOARD_PATHS.values()}
+
+    def read(path):
+        if path in his_paths:
+            raise AssertionError("reached markdown")
+        return ""
+
+    monkeypatch.setattr(nova_sources, "vault_read_path", read)
     with pytest.raises(AssertionError, match="reached markdown"):
-        nova_site.his_board_file_contents("issues")
+        nova_sources.vault_read_path(BOARD_PATHS["issues"]["edvard"])
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
     rev, currency, contents = _records(_contents())
     with rev, currency, contents:
@@ -1049,54 +987,3 @@ def test_a_current_store_composes_his_board_without_reaching_markdown(
 
     assert [item["number"] for item in payload["items"]] == [9, 4]
     assert [c["text"] for c in payload["captures"]] == ["first", "second"]
-
-
-def test_the_fallback_path_parses_his_board_exactly_once(monkeypatch):
-    # Two parses of one document is the defect every reader converted for
-    # #203 turned out to be carrying: free and always-agreeing on a
-    # string, two `_all_docs` pairs a write can land between once the
-    # source is the record store.
-    parses = []
-    real_parse = nova_site.parse_board
-
-    def counting_parse(markdown):
-        parses.append(markdown)
-        # Only his board is faked. My own two files go through the real
-        # parser, because the rest of `board_payload` composes them and a
-        # stub there would fail for a reason that has nothing to do with
-        # how many times his file was read.
-        return _contents() if markdown == "HIS" else real_parse(markdown)
-
-    monkeypatch.setattr(nova_site, "parse_board", counting_parse)
-    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(lambda name: "HIS"): _parse_his_board(_f(name)))
-    monkeypatch.setattr(nova_site, "_board_from_records", lambda name: None)
-    monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
-
-    payload = nova_site.board_payload("issues")
-
-    assert [m for m in parses if m == "HIS"] == ["HIS"], parses
-    assert [item["number"] for item in payload["items"]] == [9, 4]
-
-
-def test_the_fallback_path_reads_the_board_it_was_asked_for(monkeypatch):
-    # The fallback's one door is `his_board_file_contents(name)` now (#203),
-    # and the test above counts parses without ever asking WHICH file was
-    # read -- handing it the literal "issues" left the suite green, so
-    # every ideas page would have drawn his issues whenever the store
-    # could not prove it was current.
-    asked = []
-    real_parse = nova_site.parse_board
-
-    def markdown(name):
-        asked.append(name)
-        return "HIS"
-
-    monkeypatch.setattr(nova_site, "parse_board",
-                        lambda m: _contents() if m == "HIS" else real_parse(m))
-    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(markdown): _parse_his_board(_f(name)))
-    monkeypatch.setattr(nova_site, "_board_from_records", lambda name: None)
-    monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
-
-    nova_site.board_payload("ideas")
-
-    assert "ideas" in asked and "issues" not in asked, asked
