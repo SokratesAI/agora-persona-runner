@@ -380,10 +380,10 @@ def project_names(store=board_store):
     return names
 
 
-#: `currency`'s three verdicts. Deliberately the same three words
-#: `ticket_docs` answers with, because `nova_site` reads one today and will
-#: read the other after #203's switchover, and a renamed verdict at that
-#: seam is a silent behaviour change in a comparison nobody re-reads.
+#: `currency`'s three verdicts. Deliberately the same three words the
+#: deleted `ticket_docs.currency` answered with, so `nova_site` moved from
+#: one to the other without a renamed verdict at the seam -- a silent
+#: behaviour change in a comparison nobody re-reads.
 CURRENT = "current"
 STALE = "stale"
 UNKNOWN = "unknown"

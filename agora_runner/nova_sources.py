@@ -274,9 +274,9 @@ def edvard_board_markdown(name):
     Split out of the three-file read this used to be, because it is now
     the expensive half and the only one that can be skipped:
     `nova_site.board_payload` reads his rows, write-ups and captures out
-    of `nova_tickets` whenever the store can prove it is current, and
+    of the #203 record store whenever it can prove it is current, and
     `issues.md` is 537KB. The two files below are mine, are small, and
-    have no ticket documents behind them, so they are fetched on every
+    have no records behind them, so they are fetched on every
     build and this one is fetched only on the fallback path.
 
     Keeping them as two calls rather than one call with a flag is what

@@ -978,63 +978,8 @@ def vault_write_path(path, content, if_rev=_ANY_REV, allow_shrink=False):
     # answer, and no second copy to drift.
     result = _vault_put_raw(path, content, if_rev=if_rev,
                             allow_shrink=allow_shrink)
-    if result == "written":
-        _push_ticket_documents(path, content)
     return result
 
-
-def _push_ticket_documents(path, content):
-    """Keep the CouchDB ticket store in step with a board file that changed.
-
-    One of the owner's four board files is also 100-odd tickets in
-    `nova_tickets`, one document each. Every writer in this loop writes
-    markdown, so the store went stale from the first write after the
-    migration -- 896 bytes of drift inside a day, which is what
-    `tools.ticket_drift` was built to catch.
-
-    **The hook is here rather than at the eight routes in `nova_capture`
-    that write a board**, because "the store agrees with the markdown" is
-    an invariant, and an invariant enforced at eight call sites breaks at
-    the ninth. `vault_write_path` is the one place an in-process board
-    write actually lands.
-
-    Two boundaries this deliberately keeps.
-
-    **It never fails the caller's write.** The markdown is the source of
-    truth and it has already been written successfully by the time this
-    runs; turning a CouchDB hiccup into a failed board edit would make the
-    store's availability the board's availability, which is exactly
-    backwards while nothing reads from the store yet. A push that fails
-    leaves the store stale, and `tools.ticket_drift` in the morning sweep
-    is the thing that says so -- so this slice does not retire that check,
-    it makes it quiet.
-
-    **It does not cover `tools.board_*`.** Those run on the bridge pod,
-    write a local file, and are put into the vault by a separate
-    `vault_tool.py put` in a different process against a client that has
-    no route to this one. Drift from that path is still real and still
-    only caught by the sweep.
-    """
-    from . import ticket_docs  # local: the vault client does not own the store
-    if not ticket_docs.is_board(path):
-        return None
-    try:
-        # The rev the markdown *now* has, read after the PUT landed, so the
-        # store can be asked whether it is current without fetching the
-        # file again -- `ticket_docs.currency`. It is read here rather than
-        # in `push_markdown` because revisions are the vault client's
-        # business and the store deliberately knows nothing about the
-        # vault's databases; the store just carries the string.
-        # A rev lookup that fails must not cost the push: an unstamped
-        # store is one `currency` verdict of UNKNOWN, a store that never
-        # got the write is real drift.
-        try:
-            source_rev = vault_doc_rev(path)
-        except Exception:  # noqa: BLE001 -- see the comment above
-            source_rev = None
-        return ticket_docs.push_markdown(path, content, source_rev=source_rev)
-    except Exception as error:  # noqa: BLE001 -- see the docstring
-        return f"FAILED({error})"
 
 
 def vault_append_path(path, content, after_marker=""):

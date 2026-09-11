@@ -72,7 +72,7 @@ def test_every_copy_source_exists_in_the_repo():
         ["requirements.txt"],
         ["Dockerfile"],
         [".github/workflows/build.yaml"],
-        ["tools/ticket_drift.py", "agora_runner/vault.py"],
+        ["tools/board_put.py", "agora_runner/vault.py"],
     ],
 )
 def test_a_change_the_image_ships_builds(changed):
@@ -82,14 +82,14 @@ def test_a_change_the_image_ships_builds(changed):
 @pytest.mark.parametrize(
     "changed",
     [
-        ["tools/ticket_drift.py", "tests/test_ticket_drift.py"],
+        ["tools/board_put.py", "tests/test_tools_board_put.py"],
         ["tests/browser/app.test.mjs"],
         ["README.md"],
         [".github/update-image-digest.py"],
         # The whole of PR #685, which the layer cache was supposed to make a
         # no-op deploy and did not: it rolled both Deployments at 17:02 on
         # 2026-09-03 with all nine layers reported CACHED.
-        ["tests/test_ticket_drift.py", "tools/ticket_drift.py"],
+        ["tests/test_tools_board_put.py", "tools/board_put.py"],
     ],
 )
 def test_a_change_the_image_does_not_ship_skips(changed):

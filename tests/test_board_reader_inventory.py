@@ -59,7 +59,7 @@ def test_a_docstring_mention_is_not_a_call():
     reported as readers still to convert, which is a migration that can
     never finish."""
     for rel in ("agora_runner/board_view.py", "agora_runner/board_document.py",
-                "agora_runner/ticket_docs.py", "tools/project_trl.py"):
+                "tools/project_trl.py"):
         text = (ROOT / rel).read_text(encoding="utf-8")
         assert "parse_board" in text, f"{rel} no longer mentions it"
         assert inv.surfaces(text) == (), f"{rel} read as a board reader"
@@ -381,12 +381,16 @@ def test_the_site_no_longer_reads_his_board_out_of_the_mirror():
 
 
 def test_the_mirror_module_counts_by_defining_the_api_not_by_its_name():
+    """`ticket_docs` stays imported by `board_store` for credentials and
+    HTTP, so it can only leave the count by no longer defining the read
+    API -- which is what Cycle 1380 did. The precondition is that putting
+    one definition back would count again, so the pass below is the
+    deletion and not a detector that stopped looking."""
     text = (ROOT / inv.MIRROR_DEFINES).read_text(encoding="utf-8")
-    assert inv.mirror_reads(text, inv.MIRROR_DEFINES)
-    stripped = text
+    assert not inv.mirror_reads(text, inv.MIRROR_DEFINES)
     for name in inv.MIRROR_READS:
-        stripped = stripped.replace(f"def {name}(", f"def _gone_{name}(")
-    assert not inv.mirror_reads(stripped, inv.MIRROR_DEFINES)
+        revived = text + f"\n\ndef {name}(path):\n    return None\n"
+        assert inv.mirror_reads(revived, inv.MIRROR_DEFINES), name
 
 
 def test_naming_the_mirror_in_prose_is_not_reading_it():

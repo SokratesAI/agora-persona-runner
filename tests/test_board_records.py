@@ -21,7 +21,6 @@ from agora_runner import (
     entity_id,
     nova_boards,
     rank_key,
-    ticket_docs,
 )
 from tools import board_migration_preflight as preflight
 
@@ -733,16 +732,6 @@ def test_a_stamped_board_with_no_live_revision_is_unknown_not_current():
 
     assert verdict == board_records.UNKNOWN
     assert "no live revision" in why
-
-
-def test_the_verdict_words_are_the_ones_nova_site_already_reads():
-    """`nova_site` compares `ticket_docs.currency`'s verdict against
-    `ticket_docs.CURRENT` today and will compare this one after the #203
-    switchover. A renamed verdict at that seam is a silent behaviour
-    change in a comparison nobody re-reads."""
-    assert board_records.CURRENT == ticket_docs.CURRENT
-    assert board_records.STALE == ticket_docs.STALE
-    assert board_records.UNKNOWN == ticket_docs.UNKNOWN
 
 
 def test_a_stamp_lands_on_the_board_it_names():

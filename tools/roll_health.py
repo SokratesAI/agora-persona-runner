@@ -459,10 +459,7 @@ def remedy(path, archive, refusal):
               f"       && python3 /app/bridge/vault_tool.py put '{archive}' "
               "/tmp/rh.$$.arch.md --if-rev-file /tmp/rh.$$.arch.rev \\",
               f"       && python3 /app/bridge/vault_tool.py put '{path}' "
-              "/tmp/rh.$$.live.md --allow-shrink --if-rev-file /tmp/rh.$$.live.rev",
-              "    Then, because the roll rewrites a board the ticket store "
-              "mirrors:",
-              "      python3 -m tools.ticket_drift --sync"]
+              "/tmp/rh.$$.live.md --allow-shrink --if-rev-file /tmp/rh.$$.live.rev"]
     return lines
 
 
