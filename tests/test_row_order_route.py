@@ -18,7 +18,6 @@ import re
 
 import agora_runner.nova_capture as nova_capture
 import agora_runner.nova_site as nova_site
-from agora_runner.nova_boards import parse_board  # noqa: F401 -- _orders
 from agora_runner.nova_site import NovaSiteHandler
 
 BOARD = """---
@@ -34,10 +33,6 @@ type: board
 | [[#7 — Low one\\|7]] | Low one | ⚪ Backlog | 09-05 | ⚪ Low | Marcus | M | Push |
 | [[#8 — High one\\|8]] | High one | ⚪ Backlog | 09-04 | 🟠 High | Marcus | S | Push |
 """
-
-
-def _orders(markdown):
-    return {item["number"]: item["order"] for item in parse_board(markdown)["items"]}
 
 
 # --- the capture layer: the #203 record store, and never his file ---
@@ -158,6 +153,29 @@ def test_a_write_that_fails_part_way_says_how_many_landed(monkeypatch):
     assert not ok
     assert "1 of 2 seat(s) were written" in message, message
     assert "is not a row" not in message
+
+
+def test_a_row_vanishing_after_a_seat_landed_is_not_the_409_phrase(monkeypatch):
+    # `change_row`'s own words for a row deleted mid-group carry the site's
+    # 409 phrase; after a seat has landed that would tell the page nothing
+    # was written. The raised text is `change_row`'s real one, not a stand-in.
+    from agora_runner import board_write
+    store = _records(monkeypatch)
+    real = board_write.change_row
+    calls = []
+
+    def second_vanishes(board, number, changes, *a, **k):
+        calls.append(number)
+        if len(calls) == 2:
+            store.docs = [doc for doc in store.docs
+                          if doc.get("_id") != f"board:idea:{number}"]
+        return real(board, number, changes, *a, **k)
+
+    monkeypatch.setattr(board_write, "change_row", second_vanishes)
+    ok, message = nova_capture.set_row_order("ideas", 7, 1)
+    assert not ok
+    assert "1 of 2 seat(s) were written" in message, message
+    assert "is not a row" not in message, message
 
 
 def test_set_row_order_writes_to_the_store_it_is_handed(monkeypatch):

@@ -1478,7 +1478,13 @@ def set_row_order(target, number, position, store=None):
         except (board_write.WriteRefused, board_write.BoardDamaged,
                 board_records.RecordError) as problem:
             log(f"nova-capture failed placing #{number} on {target}: {problem}")
-            return False, (f"could not write to {target}: {problem} -- "
+            said = str(problem)
+            if written:
+                # `change_row` words a row that vanished mid-group with the
+                # site's 409 phrase, and a 409 tells the page nothing was
+                # written -- false once a seat has landed, so reword it.
+                said = said.replace("is not a row", "was no longer a row")
+            return False, (f"could not write to {target}: {said} -- "
                            f"{written} of {len(moves)} seat(s) were written")
     log(f"nova-capture placed #{number} on {target} at {position}")
     return True, f"#{number} is now #{position} in its milestone"
