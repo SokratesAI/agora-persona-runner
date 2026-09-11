@@ -14810,8 +14810,8 @@ describe("the project page", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     click(window, buttons(tasks[0]).find((b) => b.textContent === "↓"));
     await new Promise((resolve) => setTimeout(resolve, 40));
-    assert.deepEqual(posted, [{ target: "ideas", number: 46, position: 3 },
-      { target: "issues", number: 41, position: 2 }],
+    assert.deepEqual(posted, [{ target: "ideas", number: 46, position: 3, author: "Edvard" },
+      { target: "issues", number: 41, position: 2, author: "Edvard" }],
       "moving a task did not write through the row order route");
   });
 
@@ -14895,8 +14895,8 @@ describe("the project page", () => {
     press(grip(tasks[5]), "pointermove", 150);
     press(grip(tasks[5]), "pointerup", 150);
     await new Promise((resolve) => setTimeout(resolve, 40));
-    assert.deepEqual(posted, [{ target: "issues", number: 41, position: 3 },
-      { target: "ideas", number: 43, position: 4 }],
+    assert.deepEqual(posted, [{ target: "issues", number: 41, position: 3, author: "Edvard" },
+      { target: "ideas", number: 43, position: 4, author: "Edvard" }],
       "a task drag did not write the seat it landed on through the row order route");
   });
 
@@ -14980,7 +14980,7 @@ describe("the project page", () => {
     press(grip(milestones[0]), "pointermove", 105);
     press(grip(milestones[0]), "pointerup", 105);
     await new Promise((resolve) => setTimeout(resolve, 40));
-    assert.deepEqual(orders, [{ target: "issues", number: 41, position: 2 }],
+    assert.deepEqual(orders, [{ target: "issues", number: 41, position: 2, author: "Edvard" }],
       "the task drag did not write through the row order route");
     assert.deepEqual(pins, [{ project: "Marcus", milestone: "M1", position: 3 }],
       "a milestone drag in the drawer did not write the position it landed on through the pin route");
