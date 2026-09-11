@@ -9093,6 +9093,7 @@
             item: item,
             board: board === "issues" ? "issue" : "idea",
             status: column.label || "",
+            statusKey: column.key || "",
           });
         });
       });
@@ -9139,6 +9140,15 @@
       tasks.appendChild(el("li", "project-drawer-empty",
         "Nothing is filed under this milestone yet."));
     }
+    /* In the order a cycle takes them: the row's own Order seat, then issues
+     * before ideas, then number -- `nova_next.rank`'s keys inside one
+     * milestone. Every open row on both boards carries a seat since #918's
+     * seeding, so this is his order and not a rating. */
+    mine.sort(function (a, b) {
+      return (taskSeat(a) - taskSeat(b))
+        || ((a.board === "issue" ? 0 : 1) - (b.board === "issue" ? 0 : 1))
+        || (a.item.number - b.item.number);
+    });
     mine.forEach(function (row) {
       var task = el("li", "project-drawer-task");
       var link = el("a", "project-drawer-task-link",
@@ -9147,6 +9157,7 @@
         "/" + (row.board === "issue" ? "issues" : "ideas") + "#" + row.item.number);
       task.appendChild(link);
       if (row.status) task.appendChild(el("span", "project-drawer-task-status", row.status));
+      if (taskIsOpen(row)) task.appendChild(taskMoveControls(row, mine));
       tasks.appendChild(task);
     });
     li.appendChild(tasks);
@@ -9165,6 +9176,85 @@
       head.setAttribute("aria-expanded", opening ? "true" : "false");
     });
     return li;
+  }
+
+  /* The seat a task holds inside its milestone -- its Order cell. A row with
+   * none sorts after every seated one, the way `nova_next.rank` sinks an
+   * unplaced row. */
+  function taskSeat(row) {
+    var seat = Number(row.item.order);
+    return seat > 0 ? seat : Infinity;
+  }
+
+  /* Open is the server's rule, not the column's look: `row_order_seats`
+   * refuses a row that is done or outdated, so an arrow on one could only
+   * ever answer an error. */
+  var TASK_CLOSED = { done: true, outdated: true };
+
+  function taskIsOpen(row) {
+    return !row.item.done && !TASK_CLOSED[row.statusKey];
+  }
+
+  /* Move one task up or down inside its milestone -- part 3 of issue #202
+   * (`row-order-and-priority-migration.md`): *"make another cycle remove the
+   * old priority system and order the tasks in the correct new order and
+   * also adding functionality for me to change it."*
+   *
+   * The position is counted among the open rows of the SAME board only,
+   * because that is the group `set_row_order` numbers: one milestone can
+   * hold rows from both boards and each board keeps its own seats. So an
+   * arrow moves a task past its nearest same-board neighbour, and an idea
+   * never trades a seat with an issue.
+   *
+   * Arrows, no grip yet: `attachRowDrag` measures one flat list, and a drag
+   * across a mixed-board list would land on a position in the wrong group.
+   * On the right, note first, for the reason `projectMoveControls` gives. */
+  function taskMoveControls(row, mine) {
+    var peers = mine.filter(function (other) {
+      return other.board === row.board && taskIsOpen(other);
+    });
+    var index = peers.indexOf(row);
+    var wrap = el("div", "project-task-move");
+    var note = el("span", "project-task-move-note", "");
+    wrap.appendChild(note);
+    function mover(label, position, enabled) {
+      var button = el("button", "project-task-move-btn", label);
+      button.type = "button";
+      button.setAttribute("aria-label",
+        "Move #" + row.item.number + (label === "↑" ? " up" : " down"));
+      if (!enabled) {
+        button.disabled = true;
+        return button;
+      }
+      button.addEventListener("click", function () {
+        sendRowOrder(row.board === "issue" ? "issues" : "ideas",
+          row.item.number, position, note);
+      });
+      return button;
+    }
+    wrap.appendChild(mover("↑", index, index > 0));
+    wrap.appendChild(mover("↓", index + 2, index < peers.length - 1));
+    return wrap;
+  }
+
+  function sendRowOrder(target, number, position, note) {
+    note.textContent = "Saving…";
+    return fetch("/api/row/order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: target, number: number, position: position })
+    })
+      .then(json)
+      .then(function (result) {
+        if (!result || !result.ok) {
+          throw new Error((result && (result.message || result.error)) || "failed");
+        }
+        note.textContent = "";
+        // Reload, as the milestone arrows do: the seats are the server's,
+        // and the list has to show what the records say.
+        load();
+      })
+      .catch(function (err) { note.textContent = "Could not move: " + err; });
   }
 
   function projectMoveControls(name, index, total) {
