@@ -77,7 +77,6 @@ from agora_runner.nova_boards import (
     status_key,
     set_row_project,
     set_row_status,
-    set_row_title,
     split_capture_done,
     split_capture_priority,
 )
@@ -824,7 +823,7 @@ def _amend_board(target, number, mutate, what):
     return False, f"could not write to {target}: {result}"
 
 
-def edit_row(target, number, title):
+def edit_row(target, number, title, store=None):
     """Retitle one boarded row. Returns (ok, message).
 
     The owner, issue #84: *"I need to be able to edit and especially delete
@@ -840,9 +839,48 @@ def edit_row(target, number, title):
     might want to correct and currently cannot is the sentence he typed.
     If he wants the write-up editable too, that is one more field and he
     can say so in a sentence.
+
+    **Written to the #203 record store, not to his markdown** -- the third of
+    the app's board writers off the file, after `set_priority` and
+    `comment_on_row`. The title is one key on the row's record. The markdown
+    version moved three copies of it by hand (the cell, the wiki-link, the
+    write-up heading); the generated view draws all three from that one key,
+    so there is nothing left to keep in step.
+
+    A missing row comes back as `"#N is not a row on <target>"`, the phrase
+    `_post_board_edit` answers 409 on. Checked here, off a read, rather than
+    read off `change_row`'s `WriteRefused`: that exception also means "the
+    row moved between your read and your write", and a second tap lands on
+    that one, so it must stay a 502. The title goes through
+    `board_write.refuse_cell`, which also refuses a bare `\\r` --
+    `set_row_title` never did, and CommonMark breaks the row on it.
+
+    **No retry**, for `set_priority`'s reason. `store` is for tests, looked
+    up at call time.
     """
-    return _amend_board(
-        target, number, lambda md: set_row_title(md, number, title), "edited")
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
+    title = (title or "").strip()
+    refused = board_write.refuse_cell(title, "the title")
+    if refused:
+        return False, f"could not retitle #{number} on {target}: {refused}"
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    if not any(item.get("number") == number for item in before["items"]):
+        return False, f"#{number} is not a row on {target}"
+    try:
+        board_write.change_row(board, number, {"title": title}, store=store)
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed retitling #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture edited #{number} on {target}")
+    return True, f"#{number} edited on {target}"
 
 
 def archive_row(target, number, dated=None):

@@ -4660,25 +4660,45 @@ def test_a_stale_row_is_a_409_through_the_real_module_not_a_hand_typed_string():
     assert json.loads(body)["ok"] is False
 
 
-def test_a_board_edit_writes_to_his_file_and_not_to_novas_own_copy():
-    """One real path end to end: a request arrives, his file is written.
+def test_a_board_edit_writes_his_record_store_and_not_his_file():
+    """One real path end to end: a request arrives, his issue record is
+    retitled, and neither his markdown nor mine is touched (#203).
 
-    Note what this does *not* prove. It cannot tell `BOARD_PATHS` from
-    `CAPTURE_TARGETS`, because the two hold the same string for `issues`
-    -- swapping the lookup leaves this green. The branch where they differ
-    is `notes`, and it is pinned in `test_board_row_edit.py`."""
+    `target: "issues"` has to land on the `issue` board and not the `idea`
+    one; the fake store holds only `issue`, so a swapped lookup finds no
+    row #57 and answers 409 here."""
+    from agora_runner import board_records
+    from tests.test_board_records import writable
+
     board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
             "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
-    seen = {}
-    with patch.object(nova_capture, "vault_read_path_rev",
-                      side_effect=lambda p: seen.update(read=p) or (board, "3-abc")), \
-            patch.object(nova_capture, "vault_write_path",
-                         side_effect=lambda p, b, if_rev=None: seen.update(write=p) or "written"):
+    _, store = writable(board="issue", markdown=board)
+
+    def landmine(*a, **k):
+        raise AssertionError("the edit route touched a markdown board")
+
+    with patch.object(nova_capture, "board_store", store), \
+            patch.object(nova_capture, "vault_read_path_rev", side_effect=landmine), \
+            patch.object(nova_capture, "vault_write_path", side_effect=landmine):
         status, _, _ = _post(
             "/api/board/edit", {"target": "issues", "number": 57, "title": "Renamed"})
     assert status == 200
-    assert seen["read"] == "projects/sokrates/projects/nova/issues.md"
-    assert seen["write"] == "projects/sokrates/projects/nova/issues.md"
+    rows = board_records.contents("issue", store=store)["items"]
+    assert [row["title"] for row in rows if row["number"] == 57] == ["Renamed"]
+
+
+def test_a_board_edit_of_a_missing_row_is_a_409_through_the_real_module():
+    """The records half of the 409 pin above, which only covers delete."""
+    from tests.test_board_records import writable
+
+    board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
+            "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
+    _, store = writable(board="issue", markdown=board)
+    with patch.object(nova_capture, "board_store", store):
+        status, _, body = _post(
+            "/api/board/edit", {"target": "issues", "number": 999, "title": "Renamed"})
+    assert status == 409, "a row that is not there was reported as a store failure"
+    assert json.loads(body)["ok"] is False
 
 
 def test_the_journal_endpoint_reports_a_payload_it_could_not_refresh():
