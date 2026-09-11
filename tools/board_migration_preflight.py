@@ -138,11 +138,14 @@ def document_round_trip(markdown):
     `parse_board` does not model -- the owner's `## Processed captures`
     archive, `# Done — detail`, `ideas.md`'s `## Discarded` table -- are
     absent from the render, and the four-key comparison above cannot see
-    that because it is written in the parser's own four words. What is left
-    is the detail-heading reflow `board_view.render_detail` chose on
+    that because it is written in the parser's own four words. What was
+    left is the detail-heading reflow `board_view.render_detail` chose on
     purpose: 60 and 108 write-ups on those boards are still written in the
     older `## N —` shape and are emitted in the newer `### #N —` one, which
-    is two tokens each and no prose.
+    is two tokens each and no prose -- and it made `--assert-clean` exit 2
+    on both live boards forever, so the flip's first step could never pass
+    (measured 2026-09-11, Cycle 1392: exactly 120 and 216). `words_lost`
+    now reads the source in the renderer's heading spelling; it is 0 and 0.
     """
     was = nova_boards.parse_board(markdown)
     document = board_view.render_document(
@@ -173,9 +176,22 @@ def document_round_trip(markdown):
 _RULE_RE = re.compile(r"^\|(?:-+\|)+$")
 
 
+#: A detail heading in any of the spellings `nova_boards._DETAIL_RE` parses
+#: -- `## 69 —`, `### 69 —`, `### #69 -` -- up to and including its dash.
+#: `board_view.render_detail` re-emits every one of them as `### #69 —`,
+#: on purpose, so the source is rewritten to that spelling before it is
+#: split. The number and the title after the dash are still compared.
+_DETAIL_HEADING_RE = re.compile(r"^#{2,3}[ \t]+#?(\d+)[ \t]*[—–-]", re.MULTILINE)
+
+
 def _normalise(word):
     """One word of a document, with a table rule's padding taken out."""
     return "|---|" if _RULE_RE.match(word) else word
+
+
+def _normalise_headings(markdown):
+    """The source with every detail heading in the one spelling the renderer writes."""
+    return _DETAIL_HEADING_RE.sub(r"### #\1 —", markdown or "")
 
 
 def words_lost(markdown, document):
@@ -203,12 +219,17 @@ def words_lost(markdown, document):
     padded to the column widths above it, so a reflowed board would report
     one lost word per table that it did not lose. `_RULE_RE` collapses that
     one shape and nothing else -- a token made only of pipes and dashes is
-    a rule by definition, and a test pins that prose is still caught. The
-    line to hold is that no *content* rule may be added here: a filter
-    written in the renderer's own vocabulary is precisely how the four-key
-    comparison above went blind.
+    a rule by definition, and a test pins that prose is still caught.
+
+    The other deliberate reflow is a detail heading's spelling, and
+    `_normalise_headings` rewrites it rather than dropping it: the heading
+    still has to come back, with the same number and the same title words,
+    so a lost or renumbered write-up is still caught. The line to hold is
+    that no *content* rule may be added here: a filter written in the
+    renderer's own vocabulary is precisely how the four-key comparison
+    above went blind.
     """
-    was = [_normalise(word) for word in (markdown or "").split()]
+    was = [_normalise(word) for word in _normalise_headings(markdown).split()]
     now = [_normalise(word) for word in (document or "").split()]
     matcher = difflib.SequenceMatcher(None, was, now, autojunk=False)
     lost = []

@@ -379,3 +379,28 @@ def test_a_reflowed_table_rule_is_not_counted_as_a_lost_word():
 def test_a_dashed_token_that_is_not_a_rule_is_still_caught():
     """The one filter above must stay a filter on rules, not on prose."""
     assert preflight.words_lost("|--- important ---|", "") != []
+
+
+def test_an_older_detail_heading_is_not_counted_as_lost():
+    """`## 69 —` is re-emitted as `### #69 —` on purpose. Cycle 1392 measured
+    that reflow as 120 and 216 lost words on the two live boards, which made
+    `--assert-clean` exit 2 on both forever."""
+    rendered = "### #69 — Move it\n\nbody"
+    for old in ("## 69 — Move it\n\nbody", "### 69 — Move it\n\nbody",
+                "## 69 - Move it\n\nbody", "## #69 – Move it\n\nbody"):
+        assert preflight.words_lost(old, rendered) == [], old
+
+
+def test_a_board_written_in_the_older_heading_shape_round_trips_clean():
+    older = BOARD_DOC.replace("### #1 — One", "## 1 — One")
+    assert "\n## 1 — One\n" in older  # the fixture really carries the old shape
+    report, problems = preflight.document_round_trip(older)
+    assert problems == []
+    assert report["document_words_lost"] == 0
+
+
+def test_an_older_heading_renumbered_or_dropped_is_still_caught():
+    """The rewrite keeps the heading in the comparison; it does not filter it."""
+    assert preflight.words_lost("## 69 — Move it\n\nbody", "### #70 — Move it\n\nbody")
+    assert preflight.words_lost("## 69 — Move it\n\nbody", "body")
+    assert preflight.words_lost("## 69 — Move it", "### #69 — Moved it")
