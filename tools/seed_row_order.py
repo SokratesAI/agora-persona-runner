@@ -13,7 +13,9 @@ write.
 Only unseated rows are written, so the restore point is exact: every row it
 touched had no seat before. The list of what it wrote is saved to
 `--restore-file` before the first write, and `--unseed FILE` puts each of
-those rows back to no seat.
+those rows back to no seat -- unless its seat has changed since, because
+then he placed it and it is his. Seeding re-reads each row before writing
+it for the same reason.
 
 Run from the bridge pod it does not go through the site, so nothing asks
 nova-site to redraw his markdown; `--write` runs `tools.board_publish
@@ -48,14 +50,31 @@ def plan(store=board_store):
     return sorted((b, n, s) for (b, n), s in seats.items()), skipped
 
 
+def _order_now(board, number, store):
+    for item in board_records.contents(board, store=store)["items"]:
+        if item["number"] == number:
+            return item.get("order")
+    return None
+
+
 def write(moves, store=board_store):
-    """Write each seat; `(written, problem or None)`. Stops at the first refusal."""
-    for done, (board, number, seat) in enumerate(moves):
+    """`moves` is `[(board, number, expected, new)]`; `(written, left, problem)`.
+
+    A row whose seat is no longer `expected` is left alone and counted, not
+    written: the plan was read once, and he may press an arrow in the same
+    group while this is working through 200 rows. Stops at the first refusal.
+    """
+    written, left = 0, []
+    for board, number, expected, new in moves:
+        if _order_now(board, number, store) != expected:
+            left.append((board, number))
+            continue
         try:
-            board_write.change_row(board, number, {"order": seat}, store=store)
+            board_write.change_row(board, number, {"order": new}, store=store)
         except _FAILURES as problem:
-            return done, f"#{number} on {board}: {problem}"
-    return len(moves), None
+            return written, left, f"#{number} on {board}: {problem}"
+        written += 1
+    return written, left, None
 
 
 def publish(boards):
@@ -86,8 +105,10 @@ def main(argv=None, store=board_store, redraw=publish):
     if args.unseed:
         with open(args.unseed) as handle:
             listed = json.load(handle)
-        done, problem = write([(b, n, None) for b, n, _ in listed], store=store)
-        print(f"unseated {done} of {len(listed)} row(s)")
+        done, left, problem = write([(b, n, s, None) for b, n, s in listed],
+                                    store=store)
+        print(f"unseated {done} of {len(listed)} row(s); {len(left)} left "
+              "alone because their seat is no longer the one seeded")
         if problem:
             print(f"stopped: {problem}", file=sys.stderr)
             return 1
@@ -111,9 +132,11 @@ def main(argv=None, store=board_store, redraw=publish):
         json.dump([list(m) for m in moves], handle)
     print(f"restore point: {args.restore_file} "
           f"(python3 -m tools.seed_row_order --unseed {args.restore_file})")
-    done, problem = write(moves, store=store)
-    print(f"seated {done} of {len(moves)} row(s)")
-    failed = redraw(sorted({b for b, _, _ in moves[:done]}))
+    done, left, problem = write([(b, n, None, s) for b, n, s in moves],
+                                store=store)
+    print(f"seated {done} of {len(moves)} row(s); {len(left)} left alone "
+          "because a seat was set on them after the plan was read")
+    failed = redraw(sorted({b for b, _, _ in moves})) if done else []
     if problem:
         print(f"stopped: {problem} -- run it again to finish; it only "
               "writes rows that still have no seat", file=sys.stderr)

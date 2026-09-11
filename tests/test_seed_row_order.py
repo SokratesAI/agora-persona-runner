@@ -144,3 +144,21 @@ def test_write_seats_the_rows_saves_a_restore_point_and_unseed_undoes_it(tmp_pat
     assert seed_row_order.main(["--unseed", str(restore)], store=store,
                                redraw=lambda b: []) == 0
     assert set(_orders(store).values()) == {None}
+
+
+def test_a_seat_he_sets_after_the_plan_is_read_is_never_overwritten(tmp_path):
+    from agora_runner import board_write
+    store = _store()
+    moves, _ = seed_row_order.plan(store=store)
+    # He presses an arrow on #1 while the tool is working through the plan.
+    board_write.change_row("issue", 1, {"order": 9}, store=store)
+    written, left, problem = seed_row_order.write(
+        [(b, n, None, s) for b, n, s in moves], store=store)
+    assert (written, left, problem) == (2, [("issue", 1)], None)
+    assert _orders(store)[1] == 9
+    # And --unseed leaves his seat alone for the same reason.
+    restore = tmp_path / "restore.json"
+    restore.write_text(json.dumps([list(m) for m in moves]))
+    assert seed_row_order.main(["--unseed", str(restore)], store=store,
+                               redraw=lambda b: []) == 0
+    assert _orders(store) == {1: 9, 2: None, 3: None, 4: None}
