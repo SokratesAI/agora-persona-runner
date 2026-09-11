@@ -309,12 +309,11 @@ def test_a_good_comment_is_written_with_the_name_as_typed(monkeypatch):
 # --- The summary strip (idea #228, the burndown half) -------------------
 #
 # `_project_summary` is the answer to "how is this project going", and the
-# two things worth pinning are both judgement calls rather than arithmetic.
+# thing worth pinning is a judgement call rather than arithmetic.
 # **A dropped row is not progress**: `outdated` means "will never be built",
 # so counting it as done would let a project reach 100% by abandoning
-# everything. And **open rows are counted by rating**, worst first, because
-# the question a project page is asked is "is there anything red under
-# this" and four status columns cannot answer it.
+# everything. Open rows are no longer counted by rating (issue #202): no
+# rating is drawn from a boarded row, so nothing reads that count.
 
 
 def test_summary_counts_across_both_boards():

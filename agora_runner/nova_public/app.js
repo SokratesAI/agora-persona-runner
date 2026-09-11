@@ -8763,13 +8763,10 @@
    * this is the reading; putting the counts inside the pills would have
    * made an eleven-item scannable strip into eleven sentences.
    *
-   * Two calls worth knowing, both reversible in a sentence. The worst
-   * *open* rating under a project is shown whatever it is, rather than
-   * only when it is red -- "the worst thing here is Low" is a real answer
-   * and a threshold I picked would be one nobody agreed to. And the order
-   * is the server's, which is by the rating he set on the project, not by
-   * how far along each is: a sort by progress would put the projects he
-   * cares least about at the top on the day they finish.
+   * No rating is drawn on a card: the worst-open-row chip that sat here
+   * went with issue #202. The order is the server's, not a sort by how far
+   * along each is: that would put the projects he cares least about at the
+   * top on the day they finish.
    */
   function renderProjectStandings(payload) {
     var projects = (payload && payload.projects) || [];
