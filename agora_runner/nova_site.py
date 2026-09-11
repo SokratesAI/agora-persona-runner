@@ -4892,8 +4892,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         number = payload.get("number")
         position = payload.get("position")
         # Required, with no default, for `/api/board/comment`'s reason: a
-        # default of "Edvard" would stamp a cycle's move as his, and one of
-        # "Nova" would leave his drag unrecorded (issue #202).
+        # default naming the owner would stamp a cycle's move as his, and one
+        # of "Nova" would leave his drag unrecorded (issue #202).
         author = payload.get("author")
         if target not in BOARD_PATHS:
             self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})

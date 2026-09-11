@@ -1572,8 +1572,9 @@ def comment_on_row(target, number, comment, dated, author="Edvard", store=None):
 RECORD_BOARDS = {"issues": "issue", "ideas": "idea"}
 
 
-#: Who may place a row. `Edvard` is the app -- his drag and his arrows;
-#: `Nova` is a cycle, which is the reprioritise run calling the same route.
+#: Who may place a row. The first is the owner, through the app -- his drag
+#: and his arrows; `Nova` is a cycle, which is the reprioritise run calling
+#: the same route.
 ROW_ORDER_AUTHORS = ("Edvard", "Nova")
 
 
@@ -1581,10 +1582,10 @@ def set_row_order(target, number, position, author, store=None):
     """Place one boarded row at `position` inside its milestone. Returns (ok, message).
 
     **A row he placed is his** (issue #202: *"A position or rating he set is
-    recorded as his, and a cycle may not overwrite it"*). A placement by
-    `Edvard` stamps `placedBy` on the row it moves, and a placement by
-    `Nova` of a row carrying that stamp is refused before anything is
-    written. Rows a placement merely reseats keep whatever stamp they had.
+    recorded as his, and a cycle may not overwrite it"*). A placement by the
+    owner stamps `placedBy` with his author value on the row it moves, and a
+    placement by `Nova` of a row carrying that stamp is refused before
+    anything is written. Rows a placement merely reseats keep whatever stamp they had.
     A cycle may still move *other* rows past his: that changes his row's
     seat number, never its order relative to the rows he placed, and
     forbidding it would freeze every milestone he has touched.
