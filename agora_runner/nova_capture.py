@@ -70,7 +70,7 @@ from agora_runner.nova_boards import (
     _frontmatter_end,
     OUTDATED_STATUS,
     STATUS_LABELS,
-    board_row_order_seats as _board_row_order_seats,
+    sparse_row_order_seats as _row_order_seats,
     priority_key,
     status_key,
     split_capture_done,
@@ -1589,13 +1589,17 @@ def set_row_order(target, number, position, store=None):
     (project, milestone) group, seeded by rating.
 
     **One `change_row` per row whose seat moves, and every refusal is decided
-    before the first of them.** A group is several documents, so there is no
+    before the first of them.** Seats are `nova_boards.sparse_row_order_seats`,
+    spaced apart, so an ordinary move in a placed group writes the moved row
+    and nothing else (#202, "moving one task writes one document"); only a
+    group's first placement, or one whose gap is used up, writes every row.
+    A group is several documents, so there is no
     revision spanning the writes; what survives of the old single-put promise
     is that a placement naming a missing row, a closed row or a position
     outside the group writes nothing at all. A row already in its seat is not
     rewritten. If a write fails part-way the message says how many landed --
-    each seat written is a dense number, so the worst a half-finished group
-    can show is two rows on one seat until the next placement renumbers it.
+    the worst a half-finished group can show is two rows on one seat, or out
+    of order, and the next placement renumbers a group in that state.
 
     **`position` counts the whole milestone, both boards** (issue #202): the
     seed seated each group across issues and ideas, so both boards are read
@@ -1620,7 +1624,7 @@ def set_row_order(target, number, position, store=None):
             return False, f"could not read {name}: {problem}"
     if not any(item.get("number") == number for item in boards[board]):
         return False, f"#{number} is not a row on {target}"
-    seats = _board_row_order_seats(boards, board, number, position)
+    seats = _row_order_seats(boards, board, number, position)
     if seats is None:
         return False, f"cannot place #{number} on {target} at {position!r}"
     held = {(each, item["number"]): item.get("order")
