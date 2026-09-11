@@ -11,6 +11,8 @@ introduces a heading of its own, silently truncates the owner's own text on
 the page rather than looking wrong.
 """
 
+import pytest
+
 from agora_runner.nova_boards import append_detail_note, parse_board
 
 BOARD = """---
@@ -266,18 +268,39 @@ type: board
 """
 
 
-def _write_comment(monkeypatch, **kwargs):
-    """`comment_on_row` for real, with only the vault boundary faked."""
+class _VaultTouched(BaseException):
+    """Not an `Exception`: a landmine the code under test can catch proves
+    nothing, and `comment_on_row` catches the store's own errors."""
+
+
+def _records(monkeypatch):
+    """A fake #203 record store holding `_ROW`, and a vault that must not be
+    touched -- the comment button writes the records, never his file (#203)."""
     import agora_runner.nova_capture as nova_capture
-    seen = {}
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (_ROW, "7-abc"))
-    monkeypatch.setattr(
-        nova_capture, "vault_write_path",
-        lambda path, body, if_rev=None: seen.update(body=body) or "written")
+    from tests.test_board_records import writable
+
+    _, fake = writable(board="issue", markdown=_ROW)
+    monkeypatch.setattr(nova_capture, "board_store", fake)
+
+    def landmine(*a, **k):
+        raise _VaultTouched("the comment button touched the markdown")
+
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", landmine)
+    monkeypatch.setattr(nova_capture, "vault_write_path", landmine)
+    return fake
+
+
+def _write_comment(monkeypatch, **kwargs):
+    """`comment_on_row` for real against the fake store; returns #94's
+    write-up as stored."""
+    import agora_runner.nova_capture as nova_capture
+    from agora_runner import board_records
+
+    store = _records(monkeypatch)
     ok, message = nova_capture.comment_on_row(
         "issues", 94, "Not taken this cycle.", "08-17", **kwargs)
     assert ok, message
-    return seen["body"]
+    return board_records.contents("issue", store=store)["details"][94]
 
 
 def test_a_cycles_reply_is_written_under_novas_name(monkeypatch):
@@ -304,15 +327,88 @@ def test_the_reply_does_not_leave_the_row_reading_as_waiting_on_him(monkeypatch)
     rendered name would pass if `unanswered_comments` keyed on something
     else entirely, so this asks the ranking's own predicate.
     """
-    from agora_runner.nova_boards import unanswered_comments
+    from agora_runner.nova_boards import unanswered_comment_bodies_from_details
 
-    assert 94 in unanswered_comments(_write_comment(monkeypatch, author="Edvard"))
-    assert 94 not in unanswered_comments(_write_comment(monkeypatch, author="Nova"))
+    def waiting(author):
+        body = _write_comment(monkeypatch, author=author)
+        return unanswered_comment_bodies_from_details({94: body})
+
+    assert 94 in waiting("Edvard")
+    assert 94 not in waiting("Nova")
 
 
 def test_an_unstated_author_is_still_him(monkeypatch):
     """The page is his; the default must not move under the site."""
     assert "**Edvard, 08-17:**" in _write_comment(monkeypatch)
+
+
+# --- the comment button writes the #203 record store (Cycle 1382) -----------
+
+
+def test_the_comment_landmine_is_armed(monkeypatch):
+    import agora_runner.nova_capture as nova_capture
+    _records(monkeypatch)
+    with pytest.raises(_VaultTouched):
+        nova_capture.vault_write_path("x", "y")
+
+
+def test_a_comment_is_one_record_write_that_stamps_updated(monkeypatch):
+    import agora_runner.nova_capture as nova_capture
+    from agora_runner import board_records
+
+    store = _records(monkeypatch)
+    before = board_records.contents("issue", store=store)
+    ok, message = nova_capture.comment_on_row("issues", 94, "Why?", "08-18")
+    assert ok and "#94" in message
+    assert len([c for c in store.calls if c[0] == "write_row"]) == 1
+    after = board_records.contents("issue", store=store)
+    assert after["details"][94] == \
+        "> His statement of the problem.\n\n**Edvard, 08-18:** Why?"
+    row = next(i for i in after["items"] if i["number"] == 94)
+    assert row["updated"] == "08-18"
+    assert row["title"] == "A dormant app" and row["priority"] == "🟠 High"
+    assert after["captures"] == before["captures"]
+
+
+@pytest.mark.parametrize("target, number, text, why", [
+    ("issues", 999, "hello", "is not a row"),     # no such row
+    ("issues", 95, "hello", "is not a row"),      # a row with no write-up
+    ("issues", 94, "two\nlines", "is not a row"),  # the site answers 409
+    ("notes", 94, "hello", "unknown target"),     # not a board
+])
+def test_a_refused_comment_writes_nothing(monkeypatch, target, number, text, why):
+    """The phrase is what `_post_board_comment` turns into a 409; the markdown
+    version said it for a missing row and a row with no write-up alike."""
+    import agora_runner.nova_capture as nova_capture
+    from agora_runner import board_records
+    from tests.test_board_records import writable
+
+    _records(monkeypatch)
+    extra = _ROW.replace(
+        "| 🟠 High |\n",
+        "| 🟠 High |\n| [[#95 — No write-up\\|95]] | No write-up | ⚪ Backlog | 08-16 | |\n")
+    _, fake = writable(board="issue", markdown=extra)
+    monkeypatch.setattr(nova_capture, "board_store", fake)
+    stored = board_records.contents("issue", store=fake)
+    assert 95 in [i["number"] for i in stored["items"]] and 95 not in stored["details"], \
+        "the fixture no longer holds a row without a write-up"
+    ok, message = nova_capture.comment_on_row(target, number, text, "08-18")
+    assert not ok and why in message
+    assert [c for c in fake.calls if c[0] == "write_row"] == []
+
+
+def test_a_store_passed_in_is_the_one_a_comment_lands_in(monkeypatch):
+    import agora_runner.nova_capture as nova_capture
+    from agora_runner import board_records
+    from tests.test_board_records import writable
+
+    patched = _records(monkeypatch)
+    _, other = writable(board="issue", markdown=_ROW)
+    ok, _ = nova_capture.comment_on_row("issues", 94, "Here.", "08-18", store=other)
+    assert ok
+    assert "**Edvard, 08-18:** Here." in \
+        board_records.contents("issue", store=other)["details"][94]
+    assert [c for c in patched.calls if c[0] == "write_row"] == []
 
 
 # --- The `Updated` cell ------------------------------------------------

@@ -1198,7 +1198,7 @@ def _archive_deleted_row(target, number, text):
     log(f"nova-capture could not archive deleted #{number} on {target}: {result}")
 
 
-def comment_on_row(target, number, comment, dated, author="Edvard"):
+def comment_on_row(target, number, comment, dated, author="Edvard", store=None):
     """Add one comment to a boarded row's write-up. (ok, message)
 
     Idea #64, rated 🔴 Immediately and open since 2026-08-12: *"Lets me
@@ -1222,16 +1222,40 @@ def comment_on_row(target, number, comment, dated, author="Edvard"):
     already reads, under the row it is about. What a cycle owes it is a
     reply on the next line -- same call, `author="Nova"`.
 
-    `_amend_board` gives it the 409 retry the other four write paths have,
-    and it matters more here than anywhere: the concurrent writer is a
-    cycle appending to these same write-ups in step 6.
+    **Written to the #203 record store, not to his markdown** -- the second
+    of the app's board writers off the file, after `set_priority`. It is
+    `board_write.append_note`, which is `append_detail_note`'s records half:
+    the same one-line refusals, the same `NOTE_AUTHORS` check, the note at the
+    end of the write-up, and the row's `updated` cell stamped with `dated` in
+    the same write.
+
+    Every refusal comes back as `"#N is not a row on <target>: <why>"`. The
+    phrase is load-bearing: `_post_board_comment` answers 409 on it and 502 on
+    anything else, and the markdown version said exactly that for a missing
+    row *and* for a row with no write-up, because `append_detail_note`
+    returned `None` for both. The reason after the colon is new.
+
+    **No retry**, for `set_priority`'s reason: a row is its own document now,
+    so the only collision left is somebody writing this same row in between,
+    which `change_row` refuses without writing.
+
+    `store` is for tests, looked up at call time like `set_priority`'s.
     """
-    return _amend_board(
-        target,
-        number,
-        lambda md: append_detail_note(md, number, comment, dated, author=author),
-        "commented on",
-    )
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
+    store = store or board_store
+    try:
+        board_write.append_note(
+            board, number, comment, dated, author=author, store=store)
+    except board_write.WriteRefused as problem:
+        log(f"nova-capture refused a comment on #{number} on {target}: {problem}")
+        return False, f"#{number} is not a row on {target}: {problem}"
+    except (board_write.BoardDamaged, board_records.RecordError) as problem:
+        log(f"nova-capture failed commenting on #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture commented on #{number} on {target}")
+    return True, f"#{number} commented on on {target}"
 
 
 #: The app's two board targets, named the way the record store names them.
