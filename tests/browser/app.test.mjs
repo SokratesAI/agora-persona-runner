@@ -14687,12 +14687,12 @@ describe("the project page", () => {
       "moving a milestone in the drawer did not write through the pin route");
   });
 
-  test("a task in the drawer moves inside its own board's seats, through the row order route", async () => {
+  test("a task in the drawer moves among the whole milestone's seats, through the row order route", async () => {
     /* Issue #202, part 3: *"also adding functionality for me to change it."*
-     * `POST /api/row/order` numbers the open rows of ONE board inside a
-     * (project, milestone), so the arrows count positions among same-board
-     * open rows only -- an idea never trades a seat with an issue, and a
-     * done row has no arrows at all. The list is drawn in seat order. */
+     * `POST /api/row/order` numbers the open rows of a (project, milestone)
+     * across BOTH boards, so the arrows count positions among every open
+     * row in the list -- an issue can move past an idea, and a done row has
+     * no arrows at all. The list is drawn in seat order. */
     const posted = [];
     const window = await loadSite("/projects", {
       project: (url) => {
@@ -14745,17 +14745,20 @@ describe("the project page", () => {
        "#46 sleep", "#43 notes", "#45 old"],
       "the drawer is not drawing tasks in the order the server seats them");
     const buttons = (t) => [...t.querySelectorAll(".project-task-move-btn")];
-    // #41 is the only open issue: nowhere to go on its own board.
-    assert.deepEqual(buttons(tasks[0]).map((b) => b.disabled), [true, true],
-      "an issue can be moved past an idea, which is a seat on another board");
-    assert.deepEqual(buttons(tasks[1]).map((b) => b.disabled), [true, false]);
-    // #43 is the last OPEN idea; the done #45 below it is not a seat.
+    // #41 is the only open issue and it can still go down, past an idea.
+    assert.deepEqual(buttons(tasks[0]).map((b) => b.disabled), [true, false],
+      "an issue cannot move past an idea, so the milestone is two queues");
+    assert.deepEqual(buttons(tasks[1]).map((b) => b.disabled), [false, false]);
+    // #43 is the last OPEN row; the done #45 below it is not a seat.
     assert.deepEqual(buttons(tasks[4]).map((b) => b.disabled), [false, true]);
     assert.equal(buttons(tasks[5]).length, 0, "a done row has arrows");
-    // #46 is third among the open ideas, so "up" asks for seat 2.
+    // #46 is fourth among all the open rows, so "up" asks for seat 3.
     click(window, buttons(tasks[3]).find((b) => b.textContent === "↑"));
     await new Promise((resolve) => setTimeout(resolve, 40));
-    assert.deepEqual(posted, [{ target: "ideas", number: 46, position: 2 }],
+    click(window, buttons(tasks[0]).find((b) => b.textContent === "↓"));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(posted, [{ target: "ideas", number: 46, position: 3 },
+      { target: "issues", number: 41, position: 2 }],
       "moving a task did not write through the row order route");
   });
 

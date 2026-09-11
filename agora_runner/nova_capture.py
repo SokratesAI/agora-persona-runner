@@ -71,7 +71,7 @@ from agora_runner.nova_boards import (
     _frontmatter_end,
     OUTDATED_STATUS,
     STATUS_LABELS,
-    row_order_seats as _row_order_seats,
+    board_row_order_seats as _board_row_order_seats,
     priority_key,
     status_key,
     split_capture_done,
@@ -1656,6 +1656,12 @@ def set_row_order(target, number, position, store=None):
     each seat written is a dense number, so the worst a half-finished group
     can show is two rows on one seat until the next placement renumbers it.
 
+    **`position` counts the whole milestone, both boards** (issue #202): the
+    seed seated each group across issues and ideas, so both boards are read
+    and a move can rewrite seats on the board the row is not on. Either
+    board unreadable is "not written" -- a seat computed from one board would
+    collide with the other's.
+
     A missing row answers with `edit_row`'s 409 phrase, decided off the read.
     **No retry**, for `set_priority`'s reason. `store` is for tests, looked
     up at call time.
@@ -1664,21 +1670,25 @@ def set_row_order(target, number, position, store=None):
     if board is None:
         return False, f"unknown target: {target!r}"
     store = store or board_store
-    try:
-        before = board_records.contents(board, store=store)
-    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
-        log(f"nova-capture could not read the {target} records: {problem}")
-        return False, f"could not read {target}: {problem}"
-    if not any(item.get("number") == number for item in before["items"]):
+    boards = {}
+    for name, each in RECORD_BOARDS.items():  # issues first: a tie's order
+        try:
+            boards[each] = board_records.contents(each, store=store)["items"]
+        except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+            log(f"nova-capture could not read the {name} records: {problem}")
+            return False, f"could not read {name}: {problem}"
+    if not any(item.get("number") == number for item in boards[board]):
         return False, f"#{number} is not a row on {target}"
-    seats = _row_order_seats(before["items"], number, position)
+    seats = _board_row_order_seats(boards, board, number, position)
     if seats is None:
         return False, f"cannot place #{number} on {target} at {position!r}"
-    held = {item["number"]: item.get("order") for item in before["items"]}
-    moves = [(row, seat) for row, seat in seats if held.get(row) != seat]
-    for written, (row, seat) in enumerate(moves):
+    held = {(each, item["number"]): item.get("order")
+            for each, items in boards.items() for item in items}
+    moves = [(each, row, seat) for each, row, seat in seats
+             if held.get((each, row)) != seat]
+    for written, (each, row, seat) in enumerate(moves):
         try:
-            board_write.change_row(board, row, {"order": seat}, store=store)
+            board_write.change_row(each, row, {"order": seat}, store=store)
         except (board_write.WriteRefused, board_write.BoardDamaged,
                 board_records.RecordError) as problem:
             log(f"nova-capture failed placing #{number} on {target}: {problem}")

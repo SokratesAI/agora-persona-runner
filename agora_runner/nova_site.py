@@ -4928,14 +4928,11 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         milestone a number is in without parsing the board, and a second
         parse here would be a second opinion about the same file.
 
-        **The scope of `position` is one board, and there is no page
-        driving this yet for that reason.** `set_row_order` groups by
-        (project, milestone) inside the document it is handed, while
-        `nova_next.rank` merges both boards -- so one milestone spanning
-        `issues.md` and `ideas.md` can hold two rows at position 1 and the
-        merged list cannot say which is first. That is a question about
-        what a milestone's order *means*, not about this route, and it is
-        filed rather than guessed at here.
+        **The scope of `position` is the whole milestone, both boards**
+        (issue #202): `set_row_order` counts it across issues and ideas, the
+        way `nova_next.rank` and the drawer merge them, so a move can
+        reseat rows on the board `target` does not name -- which is why a
+        write invalidates both.
         """
         target = payload.get("target")
         number = payload.get("number")
@@ -4959,8 +4956,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
 
         if ok:
             # The board he is looking at still shows the old order, exactly
-            # the staleness `_post_priority` invalidates for.
-            invalidate("board:" + target)
+            # the staleness `_post_priority` invalidates for -- on both
+            # boards, since a seat on the other one may have moved too.
+            invalidate("board:issues")
+            invalidate("board:ideas")
 
         audit(
             "Nova",

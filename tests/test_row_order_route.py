@@ -38,12 +38,37 @@ type: board
 # --- the capture layer: the #203 record store, and never his file ---
 
 
-def _records(monkeypatch, markdown=BOARD):
-    """A fake record store holding `markdown` as the ideas board, and a vault
-    that must not be touched -- the order button writes the records."""
-    from tests.test_board_records import writable
+#: The issues board. Its one row is in another group, so it stays out of
+#: every placement on BOARD's (Marcus, Push) -- `set_row_order` reads both
+#: boards now, and an absent one would be a refusal rather than an empty.
+ISSUES = """---
+type: board
+---
 
-    _, fake = writable(board="idea", markdown=markdown)
+# Nova — Issues
+
+## Board
+
+| # | Issue | Status | Updated | Priority | Project | Size | Milestone |
+|---|---|---|---|---|---|---|---|
+| [[#5 — Elsewhere\\|5]] | Elsewhere | ⚪ Backlog | 09-05 | 🟠 High | Nova | S | Other |
+"""
+
+#: An issue in BOARD's (Marcus, Push) group, carrying the SAME number as the
+#: idea rated Low -- so a seat keyed on the number alone lands on the wrong
+#: row. Medium, so the rating seed puts it between the two ideas.
+SHARED = ISSUES + (
+    "| [[#7 — Same number\\|7]] | Same number | ⚪ Backlog | 09-05 | 🔵 Medium "
+    "| Marcus | S | Push |\n")
+
+
+def _records(monkeypatch, markdown=BOARD, issues=ISSUES):
+    """A fake record store holding `markdown` as the ideas board and `issues`
+    as the issues board, and a vault that must not be touched -- the order
+    button writes the records."""
+    from tests.test_nova_capture import _dest_records
+
+    fake = _dest_records(markdown, source=issues)
     monkeypatch.setattr(nova_capture, "board_store", fake)
 
     def landmine(*a, **k):
@@ -54,10 +79,38 @@ def _records(monkeypatch, markdown=BOARD):
     return fake
 
 
-def _stored_orders(store):
+def _stored_orders(store, board="idea"):
     from agora_runner import board_records
     return {item["number"]: item["order"]
-            for item in board_records.contents("idea", store=store)["items"]}
+            for item in board_records.contents(board, store=store)["items"]}
+
+
+def test_the_position_counts_the_milestone_across_both_boards(monkeypatch):
+    # Seed: idea #8 High, issue #7 Medium, idea #7 Low. Placing idea #7 first
+    # reseats the issue too -- one queue, so no two rows share a seat.
+    store = _records(monkeypatch, issues=SHARED)
+    ok, message = nova_capture.set_row_order("ideas", 7, 1)
+    assert ok, message
+    assert _stored_orders(store) == {7: 1, 8: 2}
+    assert _stored_orders(store, "issue") == {5: None, 7: 3}
+
+
+def test_an_issue_and_an_idea_with_one_number_are_different_rows(monkeypatch):
+    store = _records(monkeypatch, issues=SHARED)
+    ok, message = nova_capture.set_row_order("issues", 7, 1)
+    assert ok, message
+    assert _stored_orders(store, "issue") == {5: None, 7: 1}
+    assert _stored_orders(store) == {8: 2, 7: 3}
+
+
+def test_the_last_seat_is_the_size_of_the_merged_group(monkeypatch):
+    # Three open rows across two boards: seat 3 exists, seat 4 does not.
+    store = _records(monkeypatch, issues=SHARED)
+    assert nova_capture.set_row_order("ideas", 8, 3)[0]
+    assert _stored_orders(store) == {7: 2, 8: 3}
+    assert _stored_orders(store, "issue")[7] == 1
+    ok, message = nova_capture.set_row_order("ideas", 8, 4)
+    assert not ok and "cannot place #8" in message, message
 
 
 def _count_writes(monkeypatch):
@@ -179,9 +232,9 @@ def test_a_row_vanishing_after_a_seat_landed_is_not_the_409_phrase(monkeypatch):
 
 
 def test_set_row_order_writes_to_the_store_it_is_handed(monkeypatch):
-    from tests.test_board_records import writable
+    from tests.test_nova_capture import _dest_records
     _records(monkeypatch)
-    _, mine = writable(board="idea", markdown=BOARD)
+    mine = _dest_records(BOARD, source=ISSUES)
     ok, message = nova_capture.set_row_order("ideas", 7, 1, store=mine)
     assert ok, message
     assert _stored_orders(mine) == {7: 1, 8: 2}
@@ -232,8 +285,9 @@ def test_a_good_request_passes_all_three_and_drops_the_cached_board(monkeypatch)
     assert status == 200 and body["ok"] is True
     assert calls == [("ideas", 7, 1)]
     # He is looking at the old order right now; without this the page
-    # redraws from cache and the drag springs back.
-    assert dropped == ["board:ideas"]
+    # redraws from cache and the drag springs back. Both boards: a seat on
+    # the one `target` does not name may have moved as well.
+    assert dropped == ["board:issues", "board:ideas"]
 
 
 def test_a_target_that_is_not_one_of_his_two_boards_is_refused(monkeypatch):

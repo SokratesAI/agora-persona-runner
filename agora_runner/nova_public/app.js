@@ -9208,19 +9208,16 @@
    * old priority system and order the tasks in the correct new order and
    * also adding functionality for me to change it."*
    *
-   * The position is counted among the open rows of the SAME board only,
-   * because that is the group `set_row_order` numbers: one milestone can
-   * hold rows from both boards and each board keeps its own seats. So an
-   * arrow moves a task past its nearest same-board neighbour, and an idea
-   * never trades a seat with an issue.
+   * The position is counted among ALL the open rows of the milestone, issues
+   * and ideas together, because that is the group `set_row_order` numbers:
+   * one milestone is one queue whichever board a task was filed on, the
+   * same merge this list is sorted by. So an arrow moves a task past its
+   * nearest open neighbour, and an issue can trade a seat with an idea.
    *
-   * Arrows, no grip yet: `attachRowDrag` measures one flat list, and a drag
-   * across a mixed-board list would land on a position in the wrong group.
-   * On the right, note first, for the reason `projectMoveControls` gives. */
+   * Arrows, no grip yet. On the right, note first, for the reason
+   * `projectMoveControls` gives. */
   function taskMoveControls(row, mine) {
-    var peers = mine.filter(function (other) {
-      return other.board === row.board && taskIsOpen(other);
-    });
+    var peers = mine.filter(taskIsOpen);
     var index = peers.indexOf(row);
     var wrap = el("div", "project-task-move");
     var note = el("span", "project-task-move-note", "");

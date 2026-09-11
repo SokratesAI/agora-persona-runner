@@ -2208,15 +2208,40 @@ def row_order_seats(items, number, position):
     keep theirs leaves a group that is half ordered by hand and half by
     rating, which is not a state anything here can render honestly.
     """
+    seats = board_row_order_seats({"": items}, "", number, position)
+    return None if seats is None else [(row, seat) for _, row, seat in seats]
+
+
+def board_row_order_seats(boards, board, number, position):
+    """`[(board, row number, seat)]` for the group of `board`'s row `number`
+    after placing it at `position`, counted across EVERY board in `boards`,
+    or `None` if refused.
+
+    `boards` maps a board name to its row list. `row_order_seats` is this
+    with one board, and every rule and refusal it documents holds here.
+
+    **One milestone is one queue, whichever board a task was filed on.**
+    Issue #202's seed (`nova_next.seed_seats`) seated each (project,
+    milestone) group across both boards, because `nova_next.rank` and the
+    project drawer both merge the boards on the seat. Numbering one board's
+    group 1..N on an arrow press put that board's rows on seats the other
+    board already held, so an issue and an idea could both read seat 2 and
+    the picker and the drawer broke the tie in different ways. Counting the
+    position in the merged group keeps the seats one sequence. A tie between
+    two boards on one seat -- left over from a press before this -- falls to
+    the order `boards` lists them in, issues first by the caller.
+    """
     try:
         position = int(position)
     except (TypeError, ValueError):
         return None
 
-    open_rows = [item for item in items
+    open_rows = [dict(item, board=name) for name, board_items in boards.items()
+                 for item in board_items
                  if not item["done"]
                  and status_key(item["status"]) not in _CLOSED_STATUS_KEYS]
-    target = next((item for item in open_rows if item["number"] == number), None)
+    target = next((item for item in open_rows if item["board"] == board
+                   and item["number"] == number), None)
     if target is None:
         return None
 
@@ -2246,10 +2271,11 @@ def row_order_seats(items, number, position):
     )
 
     moving = seeded.index(next(i for i, item in enumerate(group)
-                               if item["number"] == number))
+                               if item is target))
     which = seeded.pop(moving)
     seeded.insert(position - 1, which)
-    return [(group[i]["number"], seat) for seat, i in enumerate(seeded, start=1)]
+    return [(group[i]["board"], group[i]["number"], seat)
+            for seat, i in enumerate(seeded, start=1)]
 
 
 def parse_project_order_cell(cell):
