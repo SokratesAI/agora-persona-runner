@@ -25,7 +25,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from agora_runner import nova_site, nova_sources  # noqa: E402
-from agora_runner.nova_boards import BOARD_PATHS  # noqa: E402
+from agora_runner.nova_boards import BOARD_PATHS, parse_board  # noqa: E402
 from agora_runner.nova_comments import COMMENTS_PATH  # noqa: E402
 from agora_runner.nova_costs import COST_LEDGER_PATH  # noqa: E402
 from agora_runner.nova_journal import JOURNAL_DIR, JOURNAL_PATH  # noqa: E402
@@ -80,8 +80,16 @@ def build_payload():
         files = journal_files if prefix == JOURNAL_DIR else VaultFiles()
         return (files, {}) if with_mtimes else files
 
+    # His half of a board comes out of the #203 record store and nowhere
+    # else, and the records answer exactly what `parse_board` answers for
+    # the markdown they were migrated from -- so the store is faked by
+    # parsing the same fixture the vault fake hands back for his path.
+    def his_board(name):
+        return parse_board(fake_read(BOARD_PATHS[name]["edvard"]))
+
     with patch.object(nova_sources, "vault_read_path", side_effect=fake_read), \
-            patch.object(nova_sources, "vault_bulk_fetch", side_effect=fake_bulk):
+            patch.object(nova_sources, "vault_bulk_fetch", side_effect=fake_bulk), \
+            patch.object(nova_site, "_his_board", side_effect=his_board):
         board = nova_site.board_payload("issues")
         journal = nova_site.journal_payload()
         return {

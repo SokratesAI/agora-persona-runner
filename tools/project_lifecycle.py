@@ -18,7 +18,8 @@ satisfaction score is his outright, so it has a button and no CLI. This one
 is shared, so it has both halves and each half writes its own cell.
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.project_trl` and `tools.board_size` hold, so the caller
+contract `tools.project_trl` and `tools.board_row` hold (`board_size` held it
+until #203 converted it onto the record store), so the caller
 owns the compare-and-swap: `vault_tool.py get --rev-file` before,
 `vault_tool.py put --if-rev-file` after.
 

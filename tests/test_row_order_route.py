@@ -18,7 +18,6 @@ import re
 
 import agora_runner.nova_capture as nova_capture
 import agora_runner.nova_site as nova_site
-from agora_runner.nova_boards import parse_board
 from agora_runner.nova_site import NovaSiteHandler
 
 BOARD = """---
@@ -36,77 +35,167 @@ type: board
 """
 
 
-def _orders(markdown):
-    return {item["number"]: item["order"] for item in parse_board(markdown)["items"]}
+# --- the capture layer: the #203 record store, and never his file ---
 
 
-# --- the capture layer: read, modify, write, and what it will not retry ---
+def _records(monkeypatch, markdown=BOARD):
+    """A fake record store holding `markdown` as the ideas board, and a vault
+    that must not be touched -- the order button writes the records."""
+    from tests.test_board_records import writable
+
+    _, fake = writable(board="idea", markdown=markdown)
+    monkeypatch.setattr(nova_capture, "board_store", fake)
+
+    def landmine(*a, **k):
+        raise AssertionError("the order button touched the markdown")
+
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", landmine)
+    monkeypatch.setattr(nova_capture, "vault_write_path", landmine)
+    return fake
 
 
-def _wire(monkeypatch, doc=BOARD, results=("written",)):
-    seen = {"doc": doc, "writes": [], "revs": []}
-    pending = list(results)
-
-    def read(path):
-        seen["path"] = path
-        return seen["doc"], "rev-1"
-
-    def write(path, body, if_rev=None):
-        seen["writes"].append(body)
-        seen["revs"].append(if_rev)
-        return pending.pop(0) if pending else "written"
-
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", read)
-    monkeypatch.setattr(nova_capture, "vault_write_path", write)
-    return seen
+def _stored_orders(store):
+    from agora_runner import board_records
+    return {item["number"]: item["order"]
+            for item in board_records.contents("idea", store=store)["items"]}
 
 
-def test_a_placement_writes_the_group_back_against_the_revision_it_read(monkeypatch):
-    seen = _wire(monkeypatch)
+def _count_writes(monkeypatch):
+    from agora_runner import board_write
+    real = board_write.change_row
+    rows = []
+
+    def counting(board, number, changes, *a, **k):
+        rows.append((number, dict(changes)))
+        return real(board, number, changes, *a, **k)
+
+    monkeypatch.setattr(board_write, "change_row", counting)
+    return rows
+
+
+# #9 sits in the same (Marcus, Push) group and is archived, so a position is
+# not a statement about it: it is neither placeable nor counted in the group.
+CLOSED = BOARD + (
+    "| [[#9 — Old one\\|9]] | Old one | ⚫ Outdated | 09-01 | | Marcus | S | Push |\n")
+
+
+def test_a_placement_writes_the_records_and_numbers_the_whole_group(monkeypatch):
+    store = _records(monkeypatch)
     ok, message = nova_capture.set_row_order("ideas", 7, 1)
     assert ok, message
-    # The revision goes back with the write -- that compare-and-swap is the
-    # whole reason this is not a bare put, since a cycle boarding this file
-    # is the concurrent writer and boarding is what step 6 does every cycle.
-    assert seen["revs"] == ["rev-1"]
     # The first placement numbers the whole group, not just the row moved.
-    assert _orders(seen["writes"][-1]) == {7: 1, 8: 2}
+    assert _stored_orders(store) == {7: 1, 8: 2}
 
 
-def test_a_missing_file_is_refused_rather_than_created(monkeypatch):
-    # The message is the assertion, not the absent write. An empty document
-    # is refused one layer down too -- `set_row_order` finds no board in it
-    # -- so "nothing was written" passes whether or not this layer looked at
-    # the file at all, and a check whose pass is guaranteed in advance is
-    # not a check. `not found` can only come from here.
-    seen = _wire(monkeypatch, doc=None)
+def test_the_seed_is_the_rating_when_nobody_has_placed_anything(monkeypatch):
+    # #8 is High and #7 Low, so before any placement #8 sits first; placing
+    # #8 at 2 has to put #7 above it rather than leave the seed standing.
+    store = _records(monkeypatch)
+    ok, message = nova_capture.set_row_order("ideas", 8, 2)
+    assert ok, message
+    assert _stored_orders(store) == {7: 1, 8: 2}
+
+
+def test_a_row_already_in_its_seat_is_not_rewritten(monkeypatch):
+    store = _records(monkeypatch)
+    assert nova_capture.set_row_order("ideas", 7, 1)[0]
+    rows = _count_writes(monkeypatch)
+    ok, message = nova_capture.set_row_order("ideas", 7, 1)
+    assert ok, message
+    assert rows == []
+    assert _stored_orders(store) == {7: 1, 8: 2}
+
+
+def test_a_missing_row_says_the_phrase_the_site_answers_409_on(monkeypatch):
+    _records(monkeypatch)
+    rows = _count_writes(monkeypatch)
+    ok, message = nova_capture.set_row_order("ideas", 99, 1)
+    assert not ok
+    assert "is not a row" in message, message
+    assert rows == []
+
+
+def test_a_closed_row_is_refused_and_writes_nothing(monkeypatch):
+    store = _records(monkeypatch, CLOSED)
+    rows = _count_writes(monkeypatch)
+    ok, message = nova_capture.set_row_order("ideas", 9, 1)
+    assert not ok and "cannot place #9" in message, message
+    # Refused, not missing: the site must not tell the page to re-read.
+    assert "is not a row" not in message
+    assert rows == []
+    assert _stored_orders(store)[9] is None
+
+
+def test_a_position_past_the_end_of_the_group_writes_nothing(monkeypatch):
+    # Two open rows in the group; the archived #9 does not make it three.
+    store = _records(monkeypatch, CLOSED)
+    rows = _count_writes(monkeypatch)
+    ok, message = nova_capture.set_row_order("ideas", 7, 3)
+    assert not ok and "cannot place #7" in message, message
+    assert rows == []
+    assert set(_stored_orders(store).values()) == {None}
+
+
+def test_a_write_that_fails_part_way_says_how_many_landed(monkeypatch):
+    from agora_runner import board_write
+    store = _records(monkeypatch)
+    real = board_write.change_row
+    calls = []
+
+    def second_fails(board, number, changes, *a, **k):
+        calls.append(number)
+        if len(calls) == 2:
+            raise board_write.WriteRefused("row moved")
+        return real(board, number, changes, *a, **k)
+
+    monkeypatch.setattr(board_write, "change_row", second_fails)
     ok, message = nova_capture.set_row_order("ideas", 7, 1)
     assert not ok
-    assert "not found" in message, message
-    assert seen["writes"] == []
+    assert "1 of 2 seat(s) were written" in message, message
+    assert "is not a row" not in message
 
 
-def test_a_refusal_from_the_markdown_layer_is_not_retried(monkeypatch):
-    # #99 is on no board here. Re-reading gives the same answer, so a 409
-    # loop around it would just spin -- the distinction `set_priority` draws.
-    seen = _wire(monkeypatch)
-    ok, message = nova_capture.set_row_order("ideas", 99, 1)
-    assert not ok and "99" in message
-    assert seen["writes"] == []
+def test_a_row_vanishing_after_a_seat_landed_is_not_the_409_phrase(monkeypatch):
+    # `change_row`'s own words for a row deleted mid-group carry the site's
+    # 409 phrase; after a seat has landed that would tell the page nothing
+    # was written. The raised text is `change_row`'s real one, not a stand-in.
+    from agora_runner import board_write
+    store = _records(monkeypatch)
+    real = board_write.change_row
+    calls = []
+
+    def second_vanishes(board, number, changes, *a, **k):
+        calls.append(number)
+        if len(calls) == 2:
+            store.docs = [doc for doc in store.docs
+                          if doc.get("_id") != f"board:idea:{number}"]
+        return real(board, number, changes, *a, **k)
+
+    monkeypatch.setattr(board_write, "change_row", second_vanishes)
+    ok, message = nova_capture.set_row_order("ideas", 7, 1)
+    assert not ok
+    assert "1 of 2 seat(s) were written" in message, message
+    assert "is not a row" not in message, message
 
 
-def test_a_conflict_is_retried_from_a_fresh_read(monkeypatch):
-    seen = _wire(monkeypatch, results=("409 conflict", "written"))
-    ok, message = nova_capture.set_row_order("ideas", 8, 1)
+def test_set_row_order_writes_to_the_store_it_is_handed(monkeypatch):
+    from tests.test_board_records import writable
+    _records(monkeypatch)
+    _, mine = writable(board="idea", markdown=BOARD)
+    ok, message = nova_capture.set_row_order("ideas", 7, 1, store=mine)
     assert ok, message
-    assert len(seen["writes"]) == 2
+    assert _stored_orders(mine) == {7: 1, 8: 2}
+    assert set(_stored_orders(nova_capture.board_store).values()) == {None}
 
 
-def test_an_unknown_target_never_reaches_the_vault(monkeypatch):
-    seen = _wire(monkeypatch)
+def test_an_unknown_target_never_reaches_the_store(monkeypatch):
+    class Refuses:
+        def __getattr__(self, name):
+            raise AssertionError(f"the store was asked for {name}")
+
+    monkeypatch.setattr(nova_capture, "board_store", Refuses())
     ok, message = nova_capture.set_row_order("notes-of-his", 7, 1)
     assert not ok and "unknown target" in message
-    assert "path" not in seen
 
 
 # --- the HTTP layer: what a client is allowed to send ---
@@ -194,3 +283,19 @@ def test_the_route_is_dispatched_and_in_the_post_allowlist():
     assert re.search(
         r'if path == "/api/row/order":\n\s+self\._post_row_order\(payload\)',
         source)
+
+
+def test_a_missing_row_is_a_409_and_not_a_502(monkeypatch):
+    # The page's cue to re-read, as on every sibling row route.
+    (status, body), _calls, dropped = _call(
+        {"target": "ideas", "number": 99, "position": 1}, monkeypatch,
+        result=(False, "#99 is not a row on ideas"))
+    assert status == 409, body
+    assert dropped == []
+
+
+def test_a_refused_placement_is_still_a_502(monkeypatch):
+    (status, body), _calls, _dropped = _call(
+        {"target": "ideas", "number": 7, "position": 9}, monkeypatch,
+        result=(False, "cannot place #7 on ideas at 9"))
+    assert status == 502, body

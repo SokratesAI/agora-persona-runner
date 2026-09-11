@@ -311,7 +311,6 @@ def test_an_owed_roll_prints_the_command_that_clears_it():
     assert f"put '{archive_path}'" in printed
     assert f"put '{live_path}' " in printed
     assert "--allow-shrink" in printed
-    assert "tools.ticket_drift --sync" in printed
     # The archive is written first: stopping between the two writes must be
     # able to duplicate a capture, never to lose one.
     assert printed.index(f"put '{archive_path}'") < printed.index(
@@ -423,7 +422,6 @@ def test_every_command_line_in_the_block_is_bare():
     assert "`" not in "\n".join(block)
     commands = [ln.strip() for ln in block
                 if ln.strip().startswith(("cd ", "&& ", "python3 "))]
-    assert "python3 -m tools.ticket_drift --sync" in commands
     for line in commands:
         assert not line.endswith(":"), line
         # A continuation ends in `\`; the last command in a chain ends in

@@ -14,6 +14,7 @@ A test that only checked the new rows appeared would pass just as happily
 with 654 notes silently truncated, so the two are asserted together.
 """
 
+from agora_runner import nova_site
 from agora_runner.nova_boards import parse_board, parse_notes
 
 # The shape of one of my files after this change: prose, head bullets,
@@ -120,6 +121,7 @@ def test_board_payload_puts_my_rows_on_the_page(monkeypatch):
         return ""
 
     monkeypatch.setattr(nova_sources, "vault_read_path", read)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name: parse_board(""))
     payload = board_payload("issues")
 
     assert [item["number"] for item in payload["novaItems"]] == [1, 2]
@@ -211,6 +213,7 @@ def test_my_rows_get_a_search_blob_of_their_own(monkeypatch):
         return MINE if path == BOARD_PATHS["issues"]["nova"] else ""
 
     monkeypatch.setattr(nova_sources, "vault_read_path", read)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name: parse_board(""))
     blobs = board_payload("issues")["novaSearchText"]
 
     assert set(blobs) == {"1", "2"}
@@ -271,7 +274,9 @@ def test_the_same_query_on_the_two_tabs_does_not_share_one_etag():
 
     nova_site.reset_cache()
     try:
-        with patch.object(nova_sources, "vault_read_path", side_effect=read):
+        with patch.object(nova_sources, "vault_read_path", side_effect=read), \
+                patch.object(nova_site, "_his_board",
+                             side_effect=lambda name: parse_board("")):
             _, _, his = _get("/api/board?name=issues&q=feeds")
             _, _, mine = _get("/api/board?name=issues&q=feeds&mine=1")
     finally:
@@ -279,3 +284,160 @@ def test_the_same_query_on_the_two_tabs_does_not_share_one_etag():
     assert json.loads(his)["matches"] == []
     assert json.loads(mine)["matches"] == [1]
     assert json.loads(his)["version"] != json.loads(mine)["version"]
+
+
+# --- The module that reads those two files (issue #203, cycle 1356) -------
+#
+# `nova_site.board_payload` used to make three `parse_board` calls and only
+# one of them was the owner's. `tools.board_reader_inventory` greps a module
+# for the name, so `nova_site` could not leave the switchover's count however
+# much of it was converted, and exempting it would have excused the
+# owner-side read too. The split moved the two calls on my own files into
+# `agora_runner.nova_own_board`, which has the `NOT_A_BOARD` entry those two
+# files earn, and left `nova_site` with one door on his board.
+#
+# The last test here is the one that stops the split coming undone: it counts
+# `parse_board` calls in `nova_site` rather than asking the inventory tool,
+# because a guard spelled the same way as the thing it guards agrees with it
+# by construction.
+
+import re
+from pathlib import Path
+
+from agora_runner.nova_own_board import own_board
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+
+LIVE = """---
+type: log
+status: built
+---
+
+# Nova — Issues
+
+## Board
+
+| # | Title | Status | Rating | Updated |
+| --- | --- | --- | --- | --- |
+| [[#7 — a live row\\|7]] | a live row | 🟡 In progress | 🟠 High | 2026-09-10 |
+
+# Details
+
+### #7 — a live row
+
+the newer half, written this week
+
+## Entries
+
+- 2026-09-10 (Cycle 1356) — a live note
+"""
+
+ARCHIVE = """---
+type: log
+status: built
+maintenance: Captures rolled off Nova's live capture file, newest first.
+---
+
+# Nova — Issues Archive
+
+# Details
+
+### #7 — a live row
+
+the older half, rolled off
+
+### #4 — a row whose write-up was rolled
+
+a body with no live half left
+
+## Entries
+
+- 2026-08-05 (Cycle 24) — an archived note
+"""
+
+
+def test_the_archived_half_of_a_write_up_is_drawn_in_front_of_the_live_half():
+    """A `# Details` body is append-only, so the archive is the older half.
+
+    `setdefault` here — live wins, archived half dropped — is what stopped
+    an open row's write-up from ever being rolled, because the roller moves
+    the older paragraphs off and the next cycle writes the row again within
+    the hour.
+    """
+    board, _ = own_board(LIVE, ARCHIVE)
+    body = board["details"][7]
+    assert "the older half, rolled off" in body
+    assert "the newer half, written this week" in body
+    assert body.index("the older half") < body.index("the newer half"), \
+        "the archive is by construction the older half and is drawn first"
+
+
+def test_a_row_whose_only_write_up_is_archived_still_gets_one():
+    board, _ = own_board(LIVE, ARCHIVE)
+    assert "a body with no live half left" in board["details"][4]
+
+
+def test_the_archive_adds_bodies_and_never_rows():
+    """`parse_board` over an archive with no `## Board` table returns no
+    items, so an archived row is still a row on the live board."""
+    board, _ = own_board(LIVE, ARCHIVE)
+    assert [item["number"] for item in board["items"]] == [7]
+    # The precondition: #4 really is in the archive and really does have a
+    # body, so "not a row" is a measurement rather than a fixture that
+    # never mentioned it.
+    assert 4 in board["details"]
+
+
+def test_notes_come_from_both_files_live_first():
+    """Both files are newest-first and the archive holds only what is older
+    than the live file's oldest, so appending preserves the order."""
+    _, notes = own_board(LIVE, ARCHIVE)
+    assert [note["cycle"] for note in notes] == [1356, 24]
+
+
+def test_the_archives_frontmatter_is_not_glued_onto_a_note():
+    """Two parses rather than one over a concatenation. `parse_notes` joins
+    a non-bullet line onto the note above it, so concatenating would put
+    the archive's `maintenance:` line on the end of my oldest live note."""
+    _, notes = own_board(LIVE, ARCHIVE)
+    assert not any("maintenance:" in note["text"] for note in notes)
+
+
+def test_a_missing_archive_is_the_behaviour_from_before_the_first_roll():
+    board, notes = own_board(LIVE, "")
+    assert board["details"][7].strip() == "the newer half, written this week"
+    assert [note["cycle"] for note in notes] == [1356]
+
+
+def _parse_board_calls(source):
+    """Every `parse_board(` call in a source file, with its argument text.
+
+    Comments and docstrings are stripped first — `nova_site` discusses
+    `parse_board` in prose far more often than it calls it, and a raw grep
+    reads every one of those as a call.
+    """
+    stripped = re.sub(r'"""(?:.|\n)*?"""', "", source)
+    stripped = re.sub(r"^\s*#.*$", "", stripped, flags=re.M)
+    return re.findall(r"\bparse_board\(\s*([^)]*)", stripped)
+
+
+def test_nova_site_parses_no_board_now():
+    """The seam, asserted where it can come undone.
+
+    Issue #203's flip deleted the last `parse_board` call here, the markdown
+    fallback onto his board; his half comes out of the record store and my
+    own half out of `nova_own_board`. Nothing stops a later cycle putting a
+    `parse_board(...)` back into `board_payload`, and the inventory tool
+    would then hold `nova_site` in the count again. This counts the calls in
+    the file rather than asking the tool, so the two disagree out loud
+    instead of agreeing by construction.
+    """
+    calls = _parse_board_calls((ROOT / "agora_runner" / "nova_site.py").read_text())
+    assert calls == [], calls
+    # The precondition: the detector finds calls at all. Without this, a
+    # regex that matched nothing would pass the day the door was deleted
+    # and every day a second call was added.
+    own = _parse_board_calls((ROOT / "agora_runner" / "nova_own_board.py").read_text())
+    assert len(own) == 2, own

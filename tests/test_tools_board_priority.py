@@ -1,291 +1,240 @@
 """`tools.board_priority` -- re-rating one row moves exactly that cell.
 
-`tests/test_board_priority.py` one file over covers `set_row_priority`
-itself. What is tested here is the half that did not exist until Cycle
-1087: the CLI around it, and specifically `check`, which re-parses the
-whole document and refuses the write unless the rating named is the only
-thing that moved.
+`tests/test_board_priority.py` one file over covers `set_row_priority`, the
+markdown function this tool no longer calls. What is tested here is the CLI's
+own vocabulary after the #203 conversion (Cycle 1377): the change set a
+re-rating writes, and the refusals that have to happen while nothing has been
+written yet.
 
-Every assertion is on `parse_board` output rather than on the string, for
-the same reason `test_tools_board_status` gives: these files are rendered
-through that parser, so a shifted cell is still a well-formed table and
-reads as plausible right up until the page draws a title in the rating
-column.
+**Every test here goes through the fake store and none of them holds a line of
+board markdown**, except the one string the fixture is built from -- the rule
+`tests/test_tools_board_status.py` follows, for the reason it gives: a test
+that asserts on `parse_board` of a file on disk agrees with a converted and an
+unconverted tool alike, so it cannot tell the two apart.
+
+The after-check is `board_write.change_row`'s now and is tested there.
 """
 
 import pytest
 
-from agora_runner.nova_boards import parse_board, parse_notes
-from tools.board_priority import check, main, resolve_priority
+from agora_runner import board_records, nova_boards
+from tests.test_board_records import writable
+from tools import board_priority
+from tools.board_priority import (
+    CLOSED_STATUS_KEYS,
+    main,
+    priority_changes,
+    refuse_row,
+    resolve_priority,
+)
 
-BOARD = """---
-type: log
----
-
-# Nova — Ideas
-
-## Entries
-
-- 2026-09-06 (Cycle 1087) — a bullet nothing here may touch
+# #258 is the row the finished-row refusal is about: `✅ Done` and still in
+# `## Board`, so `done` is false and only the status cell says it is finished.
+BOARD = """- A capture nothing here may touch.
 
 ## Board
 
-| # | Item | Status | Updated | Priority |
-|---|------|--------|---------|---|
-| [[#260 — Redesign the picker\\|260]] | Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |
-| [[#259 — Demos live two weeks\\|259]] | Demos live two weeks | 🟡 In progress | 09-06 | 🔵 Medium |
-| [[#258 — Spread the load\\|258]] | Spread the load | ✅ Done | 09-05 | |
+| # | Item | Status | Updated | Priority | Project | Size | Milestone | Order |
+|---|---|---|---|---|---|---|---|---|
+| [[#260 — Redesign the picker\\|260]] | Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High | | | | |
+| [[#259 — Demos live two weeks\\|259]] | Demos live two weeks | 🟡 In progress | 09-06 | 🔵 Medium | | | | |
+| [[#258 — Spread the load\\|258]] | Spread the load | ✅ Done | 09-05 | | | | | |
 
 ## Done
 
 | # | Item | Landed | Where |
-|---|------|--------|-------|
+|---|---|---|---|
 | [[#51 — One way\\|51]] | One way | 08-10 | inbox.md |
 
 # Details
 
-### #260 — Redesign the picker
+## #260 — Redesign the picker
 
 The full spec lives in its own note.
 
-### #259 — Demos live two weeks
+## #259 — Demos live two weeks
 
 Body text nothing here may touch.
 """
 
 
-def _run(tmp_path, board=BOARD, **overrides):
-    path = tmp_path / "ideas.md"
-    path.write_text(board, encoding="utf-8")
-    argv = ["--file", str(path), "--number", "260", "--priority", "immediate"]
-    for flag, value in overrides.items():
-        flag = "--" + flag.replace("_", "-")
-        if value is True:
-            argv.append(flag)
-        elif value is not None:
-            argv += [flag, str(value)]
-    return main(argv), path
+@pytest.fixture
+def store(monkeypatch):
+    """A migrated, writable fake of that board, wired in where `main` looks."""
+    _, fake = writable(board="idea", markdown=BOARD)
+    monkeypatch.setattr(board_priority, "board_store", fake)
+    return fake
 
 
-def _rows(path):
-    return {item["number"]: item for item in parse_board(path.read_text(encoding="utf-8"))["items"]}
+def _contents(store):
+    return board_records.contents("idea", store=store)
 
 
-def _rows_from(markdown):
-    return {item["number"]: item for item in parse_board(markdown)["items"]}
+def _rows(store):
+    return {item["number"]: item for item in _contents(store)["items"]}
 
 
-def test_the_named_row_is_re_rated_and_keeps_everything_else(tmp_path):
-    code, path = _run(tmp_path)
-    assert code == 0
-    row = _rows(path)[260]
+def _writes(store):
+    return [call for call in store.calls if call[0] == "write_row"]
+
+
+def _run(*argv, number="260", priority="immediate"):
+    return main(["--board", "idea", "--number", str(number),
+                 "--priority", priority, *argv])
+
+
+def test_the_named_row_is_re_rated_and_keeps_everything_else(store):
+    before = _rows(store)[260]
+    assert _run() == 0
+
+    row = _rows(store)[260]
     assert row["priority"] == "🔴 Immediately"
-    assert row["title"] == "Redesign the picker"
-    assert row["status"] == "⚪ Backlog"
-    assert row["updated"] == "09-06"
+    assert row["priorityKey"] == "immediate"
+    assert {k: v for k, v in row.items() if k not in ("priority", "priorityKey")} == \
+        {k: v for k, v in before.items() if k not in ("priority", "priorityKey")}
 
 
-def test_every_other_row_is_untouched(tmp_path):
-    before = _rows_from(BOARD)
-    _, path = _run(tmp_path)
-    after = _rows(path)
-    assert after[259] == before[259]
-    assert after[258] == before[258]
-    assert after[51] == before[51]
+def test_every_other_row_the_captures_and_the_write_ups_survive(store):
+    before = _contents(store)
+    assert _run() == 0
+    after = _contents(store)
+
+    assert [row for row in after["items"] if row["number"] != 260] == \
+        [row for row in before["items"] if row["number"] != 260]
+    assert after["captures"] == before["captures"]
+    assert after["details"] == before["details"]
 
 
-def test_the_bullet_stream_and_write_ups_survive(tmp_path):
-    _, path = _run(tmp_path)
-    text = path.read_text(encoding="utf-8")
-    assert [note["text"] for note in parse_notes(text)] == \
-        [note["text"] for note in parse_notes(BOARD)]
-    assert parse_board(text)["details"] == parse_board(BOARD)["details"]
+def test_dated_without_a_note_leaves_the_updated_cell_alone(store):
+    """A re-rating is not a touch of the row; `updated` moves only with the
+    note that explains why."""
+    assert _run("--dated", "09-11") == 0
+    assert _rows(store)[260]["updated"] == "09-06"
 
 
-@pytest.mark.parametrize(
-    "spelling", ["immediate", "Immediately", "🔴 Immediately", "urgent", "now"]
-)
+def test_a_note_is_appended_and_moves_updated_in_the_same_write(store):
+    assert _run("--dated", "09-11", "--note", "it gates every other project",
+                "--cycle", "1377") == 0
+
+    assert len(_writes(store)) == 1
+    row = _rows(store)[260]
+    assert row["priority"] == "🔴 Immediately"
+    assert row["updated"] == "09-11"
+    body = _contents(store)["details"][260]
+    assert body.startswith("The full spec lives in its own note.")
+    assert "it gates every other project" in body
+    assert "(Cycle 1377)" in body
+
+
+def test_a_note_without_a_date_is_refused_by_name(store, capsys):
+    before = _contents(store)
+    assert _run("--note", "no date here") == 1
+    assert "needs --dated" in capsys.readouterr().err
+    assert _contents(store) == before
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--dated", "09-11 | extra"),
+    ("--dated", " "),
+    ("--dated", "09-11\nmore"),
+    ("--dated", "09-11\rmore"),
+    ("--note", "why | not"),
+    ("--note", "why\nnot"),
+    ("--note", "why\rnot"),
+])
+def test_a_cell_delimiter_is_refused_before_anything_is_written(store, flag, value):
+    before = _contents(store)
+    argv = [flag, value] + (["--dated", "09-11"] if flag == "--note" else [])
+    assert _run(*argv) == 1
+    assert _contents(store) == before
+    assert not _writes(store)
+
+
+@pytest.mark.parametrize("spelling", ["", "  ", "nearly", "🟣 Purple"])
+def test_a_rating_the_system_does_not_have_is_refused(store, spelling):
+    before = _contents(store)
+    assert _run(priority=spelling) == 1
+    assert _contents(store) == before
+    assert not _writes(store)
+
+
+def test_a_done_row_still_on_the_board_is_refused(store, capsys):
+    """The case `done` alone cannot see. A `✅ Done` row that never moved to
+    `## Done` has `done` false, and `change_row` would rate it happily --
+    putting a chip on a finished item, the state Cycle 188 left empty."""
+    before = _contents(store)
+    assert _rows(store)[258]["done"] is False, "the fixture's finished open-table row"
+    assert _rows(store)[258]["status"] == "✅ Done"
+
+    assert _run(number=258) == 1
+    assert "finished" in capsys.readouterr().err
+    assert _contents(store) == before
+    assert not _writes(store)
+
+
+def test_a_row_in_the_done_table_is_refused(store):
+    before = _contents(store)
+    assert _rows(store)[51]["done"] is True, "the fixture's done row"
+    assert _run(number=51) == 1
+    assert _contents(store) == before
+    assert not _writes(store)
+
+
+def test_a_row_that_does_not_exist_is_refused(store, capsys):
+    before = _contents(store)
+    assert _run(number=999) == 1
+    assert "not a row" in capsys.readouterr().err
+    assert _contents(store) == before
+
+
+def test_dry_run_prints_the_move_and_writes_nothing(store, capsys):
+    before = _contents(store)
+    assert _run("--dry-run") == 0
+    assert "🟠 High -> 🔴 Immediately" in capsys.readouterr().out
+    assert _contents(store) == before
+    assert not _writes(store)
+
+
+def test_it_never_opens_the_markdown(store, monkeypatch):
+    """The point of the conversion: after the switchover the markdown is a view
+    generated from the records, so a tool that edited it would have its edit
+    overwritten by the next render. Both markdown doors raise here."""
+    def no_markdown(*a, **k):
+        raise AssertionError("board_priority reached for board markdown")
+
+    monkeypatch.setattr(nova_boards, "parse_board", no_markdown)
+    monkeypatch.setattr(nova_boards, "set_row_priority", no_markdown)
+    assert _run("--dated", "09-11", "--note", "why") == 0
+    assert _rows(store)[260]["priority"] == "🔴 Immediately"
+
+
+def test_it_takes_a_board_not_a_file():
+    with pytest.raises(SystemExit):
+        main(["--file", "ideas.md", "--number", "260", "--priority", "high"])
+
+
+@pytest.mark.parametrize("spelling", ["immediate", "🔴 Immediately", "Immediately", "urgent", "now"])
 def test_every_spelling_the_rest_of_the_system_treats_as_equal(spelling):
     assert resolve_priority(spelling) == "🔴 Immediately"
 
 
-@pytest.mark.parametrize("spelling", ["", "   ", None, "critical", "P0", "🟣 Vital"])
-def test_a_rating_the_system_does_not_have_is_refused(spelling):
-    """Blank is the one `set_row_priority` itself accepts and this must not:
-    it is the state that means nobody has looked."""
-    assert resolve_priority(spelling) is None
+def test_the_closed_status_copy_matches_the_module():
+    """Hand-copied because the module's is private; this is what stops drift."""
+    assert CLOSED_STATUS_KEYS == nova_boards._CLOSED_STATUS_KEYS
 
 
-def test_a_blank_rating_is_refused_at_the_cli(tmp_path, capsys):
-    code, path = _run(tmp_path, priority="")
-    assert code == 1
-    assert _rows(path)[260]["priority"] == "🟠 High"
-    assert "is not a rating" in capsys.readouterr().err
+def test_the_change_set_carries_the_key_the_cell_derives_and_never_updated():
+    assert priority_changes("🔵 Medium") == {
+        "priority": "🔵 Medium", "priorityKey": "medium"}
 
 
-def test_a_finished_row_cannot_be_rated(tmp_path, capsys):
-    """`set_row_priority` refuses one, because Cycle 188 left a closed row's
-    chip deliberately empty and a chip written back could never be cleared."""
-    code, path = _run(tmp_path, number=258)
-    assert code == 1
-    assert _rows(path)[258]["priority"] == ""
-    assert "not an open row" in capsys.readouterr().err
-
-
-def test_a_row_that_is_not_there_is_refused(tmp_path, capsys):
-    code, path = _run(tmp_path, number=999)
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
-    assert "not an open row" in capsys.readouterr().err
-
-
-def test_a_note_is_appended_to_that_rows_write_up(tmp_path):
-    code, path = _run(tmp_path, dated="09-07", note="you asked for this", cycle=1087)
-    assert code == 0
-    details = parse_board(path.read_text(encoding="utf-8"))["details"]
-    assert details[260].startswith(parse_board(BOARD)["details"][260])
-    assert "you asked for this" in details[260]
-    assert details[259] == parse_board(BOARD)["details"][259]
-
-
-def test_a_note_without_a_date_is_refused(tmp_path, capsys):
-    code, path = _run(tmp_path, note="no date here")
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
-    assert "needs --dated" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("bad", ["a | b", "a\nb", " "])
-def test_a_cell_splitting_note_is_refused(tmp_path, bad, capsys):
-    code, path = _run(tmp_path, dated="09-07", note=bad)
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
-    assert "REFUSED" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("bad", ["09|06", "09\n06", " "])
-def test_a_cell_splitting_date_is_refused(tmp_path, bad, capsys):
-    code, path = _run(tmp_path, dated=bad, note="fine")
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
-    assert "REFUSED" in capsys.readouterr().err
-
-
-def test_dry_run_prints_the_move_and_writes_nothing(tmp_path, capsys):
-    code, path = _run(tmp_path, dry_run=True)
-    assert code == 0
-    assert path.read_text(encoding="utf-8") == BOARD
-    assert "🟠 High -> 🔴 Immediately" in capsys.readouterr().out
-
-
-def test_out_leaves_the_source_alone(tmp_path):
-    target = tmp_path / "copy.md"
-    code, path = _run(tmp_path, out=str(target))
-    assert code == 0
-    assert path.read_text(encoding="utf-8") == BOARD
-    assert _rows_from(target.read_text(encoding="utf-8"))[260]["priority"] == "🔴 Immediately"
-
-
-def test_check_catches_a_second_row_moving_underneath_it():
-    """The guard, driven directly: `check` is the only thing standing between
-    a damaged table and his file, so it is tested against damage the CLI
-    cannot produce on its own."""
-    after = BOARD.replace(
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🔴 Immediately |",
-    ).replace("Demos live two weeks | 🟡 In progress", "Demos live two weeks | ⚪ Backlog")
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
-    assert any("#259 changed underneath the re-rating" in p for p in problems)
-
-
-def test_check_catches_the_target_row_losing_a_cell():
-    after = BOARD.replace(
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
-        "| Redesign the picker | 🟡 In progress | 09-06 | 🔴 Immediately |",
-    )
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
-    assert any("other than its rating" in p for p in problems)
-
-
-def test_check_catches_a_lost_bullet():
-    after = BOARD.replace(
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🔴 Immediately |",
-    ).replace("- 2026-09-06 (Cycle 1087) — a bullet nothing here may touch\n", "")
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
-    assert any("bullet stream changed" in p for p in problems)
-
-
-def test_check_catches_a_rewritten_write_up():
-    after = BOARD.replace(
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🔴 Immediately |",
-    ).replace("The full spec lives in its own note.", "Something else entirely.")
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=True)
-    assert any("was rewritten, not appended to" in p for p in problems)
-
-
-def test_check_passes_the_note_carrying_write_on_a_date_the_row_did_not_have(tmp_path):
-    """The reviewer's finding, pinned. `append_detail_note` stamps `Updated`
-    with `--dated`, and a re-rating carries a *new* date almost every time --
-    the row is re-rated because time has passed. The first `check` excluded
-    only the two rating fields, so it refused this, and every test I had
-    written passed `--dated 09-06` against a row already dated 09-06, which
-    is a positive result guaranteed in advance."""
-    code, path = _run(tmp_path, dated="09-07", note="you asked for this", cycle=1087)
-    assert code == 0
-    text = path.read_text(encoding="utf-8")
-    assert _rows_from(text)[260]["updated"] == "09-07"
-    assert check(BOARD, text, 260, "🔴 Immediately", noted=True, dated="09-07") == []
-
-
-def test_check_refuses_a_date_the_caller_did_not_ask_for():
-    """The forgiveness asserts the new value rather than skipping the field:
-    excluding `updated` outright would let any date through."""
-    after = BOARD.replace(
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
-        "| Redesign the picker | ⚪ Backlog | 01-01 | 🔴 Immediately |",
-    )
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=True, dated="09-07")
-    assert any("came back updated" in p for p in problems)
-
-
-def test_a_re_rating_without_a_note_may_not_move_the_date():
-    after = BOARD.replace(
-        "| Redesign the picker | ⚪ Backlog | 09-06 | 🟠 High |",
-        "| Redesign the picker | ⚪ Backlog | 09-07 | 🔴 Immediately |",
-    )
-    problems = check(BOARD, after, 260, "🔴 Immediately", noted=False)
-    assert any("other than its rating" in p for p in problems)
-
-
-def test_main_actually_refuses_when_check_reports_a_problem(tmp_path, monkeypatch):
-    """The reviewer's second finding: every test drove `check` as a function
-    and nothing proved `main` wires its result into the write path. Deleting
-    the gate left all 33 green. It does not now."""
-    import tools.board_priority as module
-
-    monkeypatch.setattr(module, "check", lambda *a, **k: ["invented problem"])
-    code, path = _run(tmp_path)
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
-
-
-def test_the_rating_cell_derives_exactly_the_keys_check_forgives():
-    """`_RATING_KEYS` is a hand-written claim about `parse_board`'s output,
-    and a hand-written claim about another module is how two copies drift.
-    If the parser ever derives a third field from the rating cell, `check`
-    would refuse a legitimate re-rating -- the safe direction, but silently,
-    so this pins the pair instead."""
-    from tools.board_priority import _RATING_KEYS
-
-    after = set_row_priority_for_test()
-    was = _rows_from(BOARD)[260]
-    now = _rows_from(after)[260]
-    assert {key for key in was if was[key] != now[key]} == set(_RATING_KEYS)
-
-
-def set_row_priority_for_test():
-    from agora_runner.nova_boards import set_row_priority
-
-    return set_row_priority(BOARD, 260, "🔴 Immediately")
+def test_refuse_row_passes_an_open_row_and_stops_both_kinds_of_finished():
+    contents = {"items": [
+        {"number": 1, "done": False, "status": "⚪ Backlog"},
+        {"number": 2, "done": True, "status": ""},
+        {"number": 3, "done": False, "status": "⚫ Outdated"},
+    ]}
+    assert refuse_row(contents, 1) is None
+    assert refuse_row(contents, 2) is not None
+    assert refuse_row(contents, 3) is not None
+    assert refuse_row(contents, 4) is not None

@@ -67,7 +67,7 @@ has `order: None` -- and `None` is a different answer from `0`, which is
 
 import json
 
-from . import nova_boards
+from . import nova_boards, rank_key
 
 #: Every board document carries this. CouchDB is one database per vault,
 #: not one per kind, so a view that wants rows has to be able to say so.
@@ -322,6 +322,10 @@ def to_capture_document(text, board, capture_id, rank=None, replies=()):
         "text": text,
     }
     if rank is not None:
+        # One shape per board, or `captures_in_order` compares an int with a
+        # str and every read of his board raises (Cycle 1391).
+        if not rank_key.is_valid(rank):
+            raise DocumentError(f"capture rank must be a rank_key, not {rank!r}")
         doc["rank"] = rank
     if replies:
         # Absent and empty are the same thing to `parse_board`, which hands

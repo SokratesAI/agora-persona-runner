@@ -11,7 +11,20 @@ the page with the string still looking fine. Every assertion below is on
 import pytest
 
 from agora_runner.nova_boards import add_row, parse_board, parse_notes
-from tools.board_row import check, main
+from agora_runner.nova_boards import parse_board, parse_notes
+from tools.board_row import check_from_contents, main
+
+
+def _texts(markdown):
+    """The bullet stream `check_from_contents` compares, read the way `main` reads it."""
+    return [note["text"] for note in parse_notes(markdown)]
+
+
+def check(before, after, *rest):
+    """The guard called the way `main` calls it: every read taken here."""
+    return check_from_contents(
+        parse_board(before), parse_board(after), _texts(before), _texts(after), *rest
+    )
 
 BOARD = """---
 type: log
@@ -130,6 +143,22 @@ def test_dry_run_does_not_write(tmp_path):
      "fell off the board"),
     (lambda text: text.replace("Why the second thing matters.", "something else"),
      "the write-up for #2 changed"),
+    # Three cells this guard compared on nothing until Cycle 1317. It read
+    # `title` and `status` only, so every other cell on a pre-existing row
+    # could move underneath a clean-looking add. The rating one is the
+    # damage `_move_another_row` actually does.
+    (lambda text: text.replace(
+        "| The second thing | 🟡 In progress | 08-25 | 🟠 High |",
+        "| The second thing | 🟡 In progress | 08-25 | 🔴 Immediately |"),
+     "#2 changed underneath the new row"),
+    (lambda text: text.replace(
+        "| The second thing | 🟡 In progress | 08-25 | 🟠 High |",
+        "| The second thing | 🟡 In progress | 09-01 | 🟠 High |"),
+     "#2 changed underneath the new row"),
+    (lambda text: text.replace(
+        "| The first thing | ✅ Done | 08-25 |  |",
+        "| The first thing | ✅ Done | 08-25 | 🔵 Medium |"),
+     "#1 changed underneath the new row"),
 ])
 def test_check_catches_collateral_damage(damage, expected):
     after, _ = __import__(

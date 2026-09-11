@@ -20,26 +20,47 @@ it becomes a title and had no third case, so his tag went in as prose.
 now calls it; this is the pass over the rows that were already boarded
 before it existed.
 
-    python3 -m tools.board_untag_project --file /tmp/ideas.md --dry-run
+    python3 -m tools.board_untag_project --board idea --dry-run
 
-Every affected row is done in one pass for `tools.board_project`'s reason:
-this is one compare-and-swap on his file, and doing it a row at a time
-means 38 of them, any one of which can lose. `--number` narrows it to
-named rows when that is wanted; the default is every row that carries a
-tag.
+**This is the second of the ten `tools/board_*.py` writers converted onto
+`board_write.change_row` for issue #203**, and it is the first one that
+moves *two* cells of a row rather than one -- `change_row` takes a change
+set, so `{"title": ..., "project": ...}` is the whole of what used to be
+`set_row_title` followed by `set_row_project`, with one after-check instead
+of a hand-copied one. The path on disk is gone with it: this reads the
+record store and writes it, so there is no `--file` and no compare-and-swap
+for the caller to own.
 
-**It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.board_project`, `tools.board_row` and `tools.board_status`
-hold, so the caller owns the compare-and-swap: `vault_tool.py get
---rev-file` before, `put --if-rev-file` after.
+**One guard did not move into `change_row` and must not, because it is this
+tool's own vocabulary rather than the shared one.** `change_row` refuses
+unless the row came back exactly as asked -- which says nothing about
+whether what was *asked* was right. The failure this tool has to catch is a
+regex that ate a word too many, and a check built on that regex's own output
+agrees with it perfectly. So `refuse_move` reads the removed head off the
+**original** title, without re-running the regex, and refuses unless it is a
+parenthesised tag and nothing else. It runs before the first write, beside
+the row-exists and legal-name checks, for `tools.board_project`'s reason:
+one document per row means five rows are five writes, so the only promise
+that survives is that a run naming a bad row writes nothing at all.
 
-`check` is the tight one, because this moves *two* cells on a row rather
-than one: the new title must be exactly the old title with that exact
-prefix removed -- not merely shorter, and never re-derived by re-running
-the regex on the result -- the project cell must hold the tag, and nothing
-else on the board or in the write-ups may have moved. A row whose tag
-names something `set_row_project` would refuse is skipped and reported
-rather than half-written.
+The project name rules are `tools.board_project`'s, imported rather than
+restated -- they are about the generated markdown view the daily backup
+renders, they are already written down once, and a second copy here is the
+duplication issue #203 exists to remove.
+
+**Neither pre-write refusal can currently fire on a real board, and saying
+so is the point of keeping them.** `split_capture_project` bounds the name
+it returns to `set_row_project`'s characters and its 40-character limit, and
+it returns a suffix of the title by construction -- so today it can only
+hand `refusals` a legal name and a legal move. That makes both guards
+untestable through the CLI, and a guard whose failure branch is unreachable
+is a guard that cannot be proved to work. They stay because they are the
+place two copies of one rule are compared: this regex and
+`board_project.refuse_project` are the same cell rule written down twice,
+and nothing else would notice them drifting apart. The tests therefore drive
+`refusals` and `refuse_move` directly and stage the CLI refusal through the
+`refusals` seam, and there is one test that pins the unreachability itself
+rather than leaving it as an assumption in this paragraph.
 """
 
 import argparse
@@ -50,129 +71,85 @@ import sys
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.nova_boards import (  # noqa: E402
-    parse_board,
-    parse_notes,
-    set_row_project,
-    set_row_title,
-    split_capture_project,
-)
+from agora_runner import board_records, board_store, board_write  # noqa: E402
+from agora_runner.board_document import BOARDS  # noqa: E402
+from agora_runner.nova_boards import board_projects, split_capture_project  # noqa: E402
+from tools.board_project import refuse_project  # noqa: E402
 
 
-def tagged_rows(markdown, numbers=None):
+def tagged_rows_from_contents(contents, numbers=None):
     """`[(number, project, old_title, new_title)]` for every row carrying a tag.
 
-    Read off `parse_board` rather than off the raw table, so a row this
-    reports is a row the site sees. `numbers` narrows it; `None` is all of
-    them.
+    Read off a parsed record set rather than off the raw table, so a row
+    this reports is a row the site sees. `numbers` narrows it; `None` is
+    all of them.
     """
     wanted = set(numbers or ())
     found = []
-    for item in parse_board(markdown)["items"]:
+    for item in contents["items"]:
         if wanted and item["number"] not in wanted:
             continue
         project, rest = split_capture_project(item["title"])
         if not project or not rest:
             # No tag, or a title that is *only* a tag -- the second would
-            # leave the row with an empty title, which `set_row_title`
-            # reads as a delete. Neither is touched.
+            # leave the row with an empty title, which is a delete wearing
+            # a retag's clothes. Neither is touched.
             continue
         found.append((item["number"], project, item["title"], rest))
     return found
 
 
-def check(before, after, moves):
-    """Refuse the write unless exactly those rows moved, exactly that far."""
+def refuse_move(old_title, new_title):
+    """Why this title rewrite may not be written, or `None` if it may.
+
+    The one check `change_row` cannot make for us. It reads the head that
+    would be removed off the *original* title and asserts its shape; it
+    deliberately does not re-run `split_capture_project`, because a regex
+    that ate a word too many produces a `new_title` that any check built on
+    the same regex agrees with.
+
+    There is deliberately no separate "and shorter" clause. A `new_title`
+    equal to the old one leaves an empty head, and an empty head is not
+    parenthesised, so the check below already refuses it -- a mutation
+    proved that clause could not change any answer, and a condition that
+    cannot fail is a condition nothing can test.
+    """
+    if not new_title:
+        return "the retagged title would be empty"
+    if not old_title.endswith(new_title):
+        return "the new title is not a suffix of the old one"
+    head = old_title[: len(old_title) - len(new_title)].strip()
+    if not (head.startswith("(") and head.endswith(")")):
+        return f"more than a tag would come off the title: {head[:60]!r}"
+    return None
+
+
+def refusals(contents, moves):
+    """Every reason not to start writing, in the order the rows were named.
+
+    One document per row, so this is what is left of the old all-or-nothing
+    promise: the way this used to fail -- a good row and a bad one, half a
+    project tagged -- is still refused with nothing written at all.
+    """
+    on_board = {item["number"] for item in contents["items"]}
     problems = []
-    old = parse_board(before)
-    new = parse_board(after)
-    old_by_number = {item["number"]: item for item in old["items"]}
-    new_by_number = {item["number"]: item for item in new["items"]}
-    expected = {number: (project, new_title) for number, project, _, new_title in moves}
-
     for number, project, old_title, new_title in moves:
-        now = new_by_number.get(number)
-        if now is None:
-            problems.append(f"#{number} is not on the board afterwards")
+        if number not in on_board:
+            problems.append(f"#{number} is not a row on this board")
             continue
-        if now["title"] != new_title:
-            problems.append(f"#{number} came back titled {now['title'][:60]!r}")
-        got = (now.get("project") or "").strip()
-        if got != project:
-            problems.append(f"#{number} came back under {got!r}, asked for {project!r}")
-        # The title must be the old one minus *a parenthesised tag*, and
-        # nothing else. Comparing against `new_title` above is not enough
-        # on its own: `new_title` came from the same regex, so a regex
-        # that ate a word too many agrees with itself perfectly. This
-        # reads the removed head off the *original* title and asserts its
-        # shape, without re-running the regex that produced it.
-        was = old_by_number.get(number, {}).get("title", "")
-        if not was.endswith(new_title) or len(was) <= len(new_title):
-            problems.append(f"#{number}'s new title is not a suffix of its old one")
-            continue
-        head = was[: len(was) - len(new_title)].strip()
-        if not (head.startswith("(") and head.endswith(")")):
-            problems.append(
-                f"#{number} lost more than a tag from its title: {head[:60]!r}"
-            )
-
-    if len(new["items"]) != len(old["items"]):
-        problems.append(
-            f"row count went {len(old['items'])} -> {len(new['items'])}, expected no change"
-        )
-    for was in old["items"]:
-        now = new_by_number.get(was["number"])
-        if now is None:
-            problems.append(f"#{was['number']} fell off the board")
-            continue
-        if was["number"] in expected:
-            rest = {k: v for k, v in now.items() if k not in ("project", "title")}
-            if rest != {k: v for k, v in was.items() if k not in ("project", "title")}:
-                problems.append(f"#{was['number']} changed more than its title and project")
-        elif now != was:
-            problems.append(f"#{was['number']} changed underneath the retag")
-
-    old_notes = [note["text"] for note in parse_notes(before)]
-    new_notes = [note["text"] for note in parse_notes(after)]
-    if old_notes != new_notes:
-        problems.append(
-            f"the bullet stream changed: {len(old_notes)} -> {len(new_notes)} note(s)"
-        )
-
-    # The write-ups carry the same title in their `### #N — ...` heading,
-    # so they are *expected* to move on a retagged row and only there.
-    for number, body in old["details"].items():
-        if number in expected:
-            continue
-        if new["details"].get(number) != body:
-            problems.append(f"the write-up for #{number} changed")
+        bad_name = refuse_project(project)
+        if bad_name:
+            problems.append(f"#{number}: {bad_name}")
+        bad_move = refuse_move(old_title, new_title)
+        if bad_move:
+            problems.append(f"#{number}: {bad_move}")
     return problems
-
-
-def untag(markdown, numbers=None):
-    """`(after, moves, skipped)`. `after is None` means nothing to do."""
-    moves = tagged_rows(markdown, numbers)
-    after = markdown
-    done, skipped = [], []
-    for number, project, old_title, new_title in moves:
-        stepped = set_row_title(after, number, new_title)
-        if stepped is None:
-            skipped.append((number, project, "could not rewrite the title"))
-            continue
-        tagged = set_row_project(stepped, number, project)
-        if tagged is None:
-            skipped.append((number, project, f"{project!r} is not a legal project name"))
-            continue
-        after = tagged
-        done.append((number, project, old_title, new_title))
-    if not done:
-        return None, [], skipped
-    return after, done, skipped
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--file", required=True, help="his board markdown on disk")
+    parser.add_argument("--board", required=True, choices=list(BOARDS),
+                        help="which board to sweep")
     parser.add_argument(
         "--number",
         action="append",
@@ -180,34 +157,60 @@ def main(argv=None):
         default=None,
         help="repeatable; default is every row carrying a tag",
     )
-    parser.add_argument("--out", help="where to write (default: in place)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    before = open(args.file, encoding="utf-8").read()
-    after, moves, skipped = untag(before, args.number)
+    try:
+        before = board_records.contents(args.board, store=board_store)
+    except board_records.RecordError as problem:
+        print(f"REFUSED: {problem}", file=sys.stderr)
+        return 1
 
-    for number, project, reason in skipped:
-        print(f"SKIPPED #{number} ({project!r}): {reason}", file=sys.stderr)
-    if after is None:
+    moves = tagged_rows_from_contents(before, args.number)
+    if not moves:
         print("nothing to do: no boarded row carries a '(Project: X)' title")
-        return 0 if not skipped else 1
+        return 0
 
-    problems = check(before, after, moves)
+    problems = refusals(before, moves)
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)
+        print(f"nothing was written -- {len(moves)} row(s) were named",
+              file=sys.stderr)
         return 1
 
     for number, project, old_title, new_title in moves:
         print(f"#{number} -> project {project!r}")
         print(f"   was: {old_title[:90]}")
         print(f"   now: {new_title[:90]}")
-    print(f"{len(moves)} row(s) retagged; {len(before)} -> {len(after)} bytes")
     if args.dry_run:
         return 0
-    open(args.out or args.file, "w", encoding="utf-8").write(after)
-    print(f"wrote {args.out or args.file}")
+
+    landed = []
+    for number, project, _old_title, new_title in moves:
+        try:
+            board_write.change_row(
+                args.board, number, {"title": new_title, "project": project},
+                store=board_store)
+        except (board_write.WriteRefused, board_write.BoardDamaged,
+                board_records.RecordError) as problem:
+            print(f"REFUSED: #{number}: {problem}", file=sys.stderr)
+            if landed:
+                # One document per row, so there is no revision spanning
+                # these writes to roll back. Naming what landed is what
+                # makes the re-run the rows that did not.
+                print(
+                    "already written: "
+                    + ", ".join(f"#{n}" for n in landed)
+                    + " -- re-run for the rest, not for these",
+                    file=sys.stderr,
+                )
+            return 1
+        landed.append(number)
+
+    after = board_records.contents(args.board, store=board_store)
+    print(f"{len(landed)} row(s) retagged on the {args.board} board")
+    print(f"projects on this board: {', '.join(board_projects(after['items']))}")
     return 0
 
 

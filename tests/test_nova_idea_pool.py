@@ -11,6 +11,12 @@ no fields at all, which is how the bug got as far as a browser.
 
 from unittest.mock import patch
 
+import pytest
+
+from agora_runner import (
+    board_document, board_records, board_store, board_write)
+from tests.test_board_records import writable
+
 from agora_runner import nova_idea_pool
 from agora_runner.nova_idea_pool import (
     COMMENT_HEADING,
@@ -19,10 +25,7 @@ from agora_runner.nova_idea_pool import (
     comment as pool_comment,
     decide,
     find_candidate,
-    insert_board_row,
-    insert_detail,
     insert_discarded,
-    next_number,
     parse_history,
     parse_pool,
     remove_candidate,
@@ -153,54 +156,15 @@ def test_remove_takes_one_candidate_and_leaves_the_rest():
     assert "# Idea pool" in after
 
 
-def test_next_number_reads_the_board():
-    assert next_number(LIVE_IDEAS) == 115
-
-
-def test_next_number_on_an_empty_board_starts_at_one():
-    assert next_number("---\ntype: log\n---\n\n## Board\n\n| # | Idea |\n|---|---|\n") == 1
-
-
-def test_an_approved_row_renders_as_five_cells():
-    """The wikilink's `|` has to be escaped or the row gains a sixth cell
-    against five headers, which is a table Obsidian draws wrong on his
-    phone. Checked by re-parsing rather than by string match, so the
-    assertion is about what the board reader sees."""
-    from agora_runner.nova_boards import parse_board
-
-    updated, error = insert_board_row(LIVE_IDEAS, 115, "A new idea", "🟠 High", "08-25")
-    assert error == ""
-    items = {i["number"]: i for i in parse_board(updated)["items"]}
-    assert items[115]["title"] == "A new idea"
-    assert items[115]["priority"] == "🟠 High"
-    assert items[115]["status"] == "⚪ Backlog"
-    assert items[115]["updated"] == "08-25"
-    # Newest first, matching the file: #115 above #114, not appended below.
-    assert updated.index("#115 —") < updated.index("#114 —")
-
-
-def test_the_detail_section_exists_so_the_wikilink_is_not_dead():
-    updated, error = insert_board_row(LIVE_IDEAS, 115, "A new idea", "🟠 High", "08-25")
-    assert error == ""
-    updated, error = insert_detail(updated, 115, "A new idea", "The body.", "08-25")
-    assert error == ""
-
-    from agora_runner.nova_boards import parse_board
-
-    details = parse_board(updated)["details"]
-    assert 115 in details
-    assert "The body." in details[115]
-    # Directly under `# Details`, above the older write-ups.
-    assert updated.index("## 115 —") < updated.index("## 114 —")
-
-
-def test_a_missing_board_table_is_an_error_not_a_silent_no_op():
+def test_a_missing_discarded_table_is_an_error_not_a_silent_no_op():
     """The failure direction that matters: returning the markdown unchanged
-    with no error would report a decision saved and lose the row."""
-    _, error = insert_board_row("---\ntype: log\n---\n\nNo board here.\n", 1, "x", "", "08-25")
-    assert error
-    _, error = insert_detail("No details here.\n", 1, "x", "y", "08-25")
-    assert error
+    with no error would report a decision saved and lose the reason.
+
+    The approve half of this test went with `insert_board_row` and
+    `insert_detail` in the #203 conversion -- `board_write.add_row` raises
+    `RowRefused` rather than returning a string, and the board it writes to
+    cannot be missing a table because it is not a table.
+    """
     _, error = insert_discarded("No discarded here.\n", "x", "y")
     assert error
 
@@ -224,6 +188,11 @@ class _Vault:
         self.docs = {nova_idea_pool.POOL_PATH: pool, nova_idea_pool.IDEAS_PATH: ideas}
         self.fail = fail or set()
         self.writes = []
+        # Issue #203: an approval lands in the records, not in `ideas`
+        # above. The markdown is still the fixture the store is built from,
+        # so both halves of `decide` are exercised against the same board he
+        # actually has -- but only the reject half writes a document.
+        _, self.store = writable(board="idea", markdown=ideas)
 
     def read(self, path):
         return self.docs.get(path), "1-abc"
@@ -238,8 +207,36 @@ class _Vault:
 
 def _run(vault, fn):
     with patch.object(nova_idea_pool, "vault_read_path_rev", vault.read), \
-            patch.object(nova_idea_pool, "vault_write_path", vault.write):
+            patch.object(nova_idea_pool, "vault_write_path", vault.write), \
+            patch.object(nova_idea_pool, "board_store", vault.store):
         return fn()
+
+
+def _boarded(vault):
+    """His ideas board as records: `{number: item}`, plus the write-ups.
+
+    Every approval assertion below goes through this rather than through
+    `parse_board` of a string. A test that reads the markdown agrees with a
+    converted and an unconverted `decide` alike, so it cannot tell the two
+    apart -- `tests/test_tools_board_size.py` set that rule and this is the
+    same reason.
+    """
+    contents = board_records.contents("idea", store=vault.store)
+    return ({item["number"]: item for item in contents["items"]},
+            contents["details"])
+
+
+def _history(vault, markdown=None):
+    """`parse_history` with both its halves.
+
+    The approvals come out of the records and the rejections out of the
+    markdown -- see `parse_history` for why those are two places -- so a test
+    that wants either has to hand it both. `markdown` overrides the vault's
+    copy for the tests that build a document by hand.
+    """
+    return parse_history(
+        vault.docs[nova_idea_pool.IDEAS_PATH] if markdown is None else markdown,
+        board_records.contents("idea", store=vault.store))
 
 
 def test_approve_boards_the_row_and_empties_the_pool_slot():
@@ -248,9 +245,7 @@ def test_approve_boards_the_row_and_empties_the_pool_slot():
     ok, message = _run(vault, lambda: decide(1, title, "approve", "", "08-25"))
     assert ok, message
 
-    from agora_runner.nova_boards import parse_board
-
-    items = {i["number"]: i for i in parse_board(vault.docs[nova_idea_pool.IDEAS_PATH])["items"]}
+    items, _ = _boarded(vault)
     assert items[115]["title"] == title
     # The candidate's own rating rode across rather than being re-guessed.
     assert items[115]["priority"] == "🟠 High"
@@ -277,15 +272,28 @@ def test_a_failed_pool_write_is_reported_rather_than_called_success():
     assert not ok
     assert "still in the pool" in message
     # And the board row really did land, which is what the message claims.
-    assert "115" in vault.docs[nova_idea_pool.IDEAS_PATH]
+    assert 115 in _boarded(vault)[0]
 
 
 def test_a_failed_board_write_leaves_the_pool_alone():
-    """The other direction: nothing was decided, so nothing may be removed."""
-    vault = _Vault(fail={nova_idea_pool.IDEAS_PATH})
+    """The other direction: nothing was decided, so nothing may be removed.
+
+    An approval no longer writes a vault document, so the failure is
+    injected where the write now is -- `board_write.add_row` raising through
+    the store. `_board_the_candidate` catches `WriteRefused`/`BoardDamaged`
+    and returns `(False, ...)`, and the pool write is only reached on a
+    success.
+    """
+    vault = _Vault()
     title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
-    ok, _ = _run(vault, lambda: decide(0, title, "approve", "", "08-25"))
+
+    def _refuse(_doc):
+        raise board_write.BoardDamaged("the board came back damaged")
+
+    vault.store.write_row = _refuse
+    ok, message = _run(vault, lambda: decide(0, title, "approve", "", "08-25"))
     assert not ok
+    assert "damaged" in message
     assert nova_idea_pool.POOL_PATH not in vault.writes
     assert len(parse_pool(vault.docs[nova_idea_pool.POOL_PATH])["candidates"]) == 2
 
@@ -294,7 +302,7 @@ def test_his_comment_rides_onto_the_row_and_into_the_discard_reason():
     vault = _Vault()
     candidates = parse_pool(LIVE_POOL)["candidates"]
     _run(vault, lambda: decide(0, candidates[0]["title"], "approve", "do the cheap half", "08-25"))
-    assert "do the cheap half" in vault.docs[nova_idea_pool.IDEAS_PATH]
+    assert "do the cheap half" in "\n".join(_boarded(vault)[1].values())
 
     vault = _Vault()
     _run(vault, lambda: decide(0, candidates[0]["title"], "reject", "already have this", "08-25"))
@@ -322,21 +330,20 @@ def test_a_second_approve_of_the_same_idea_does_not_board_it_twice():
     is the state the losing request sees, and the board it re-reads already
     carries the winner's row.
     """
-    from agora_runner.nova_boards import parse_board
-
     candidate = parse_pool(LIVE_POOL)["candidates"][0]
     winner = _Vault()
     _run(winner, lambda: decide(0, candidate["title"], "approve", "", "08-25"))
-    landed = winner.docs[nova_idea_pool.IDEAS_PATH]
-    assert sum(1 for i in parse_board(landed)["items"]
+    assert sum(1 for i in _boarded(winner)[0].values()
                if i["title"] == candidate["title"]) == 1
 
     # The loser: the pool still holds the candidate (it read before the
-    # winner's removal) and his board already has the row.
-    loser = _Vault(pool=LIVE_POOL, ideas=landed)
+    # winner's removal) and his board already has the row. Same store, so
+    # the second request sees exactly what the first one wrote.
+    loser = _Vault()
+    loser.store = winner.store
     ok, _ = _run(loser, lambda: decide(0, candidate["title"], "approve", "", "08-25"))
     assert ok
-    rows = [i for i in parse_board(loser.docs[nova_idea_pool.IDEAS_PATH])["items"]
+    rows = [i for i in _boarded(loser)[0].values()
             if i["title"] == candidate["title"]]
     assert len(rows) == 1, f"boarded {len(rows)} times, not once"
     # And it still cleared the pool, so the candidate does not linger.
@@ -344,15 +351,70 @@ def test_a_second_approve_of_the_same_idea_does_not_board_it_twice():
         c["title"] for c in parse_pool(loser.docs[nova_idea_pool.POOL_PATH])["candidates"]]
 
 
+@pytest.mark.parametrize("raised", [
+    board_store.RowConflict("409 conflict on the row document"),
+    board_document.DocumentError("idea-0115 is already stored"),
+])
+def test_a_lost_mint_race_is_a_message_not_an_unhandled_exception(raised):
+    """The two exceptions the concurrent-approve race actually raises.
+
+    Reviewer finding on this commit, and it is the one the docstring made
+    hardest to see: `_board_the_candidate` says the collision "surfaces as a
+    refusal here instead of as a lost row", and the `except` named
+    `WriteRefused` and `BoardDamaged` -- neither of which is what
+    `board_store` throws. `RowConflict` is a `StoreError(RuntimeError)` and
+    `DocumentError` is a bare `ValueError`, so both went straight through
+    `decide` and out of the route as a 500, with the candidate still in the
+    pool and nothing telling him why.
+
+    Both are asserted, not one: they come from two different modules and
+    neither inherits from the other, so a clause that caught one would pass
+    a test written against the other.
+    """
+    vault = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+
+    def _raise(_doc):
+        raise raised
+
+    vault.store.write_row = _raise
+    ok, message = _run(vault, lambda: decide(0, title, "approve", "", "08-25"))
+    assert not ok
+    assert str(raised) in message
+    # And nothing was decided, so the candidate is still his to decide again.
+    assert nova_idea_pool.POOL_PATH not in vault.writes
+    assert len(parse_pool(vault.docs[nova_idea_pool.POOL_PATH])["candidates"]) == 2
+
+
+def test_an_explicitly_passed_store_is_the_one_written_to():
+    """`store=` on `decide` has to reach the write, not just be accepted.
+
+    Found by a mutation, not by a review: `store = store or board_store`
+    collapsed to `store = board_store` and every test still passed, because
+    they all patch the module global and pass nothing. That makes the
+    argument a decoration -- a caller handing `decide` a store would have
+    its approval land somewhere else, silently. This is the only test that
+    passes one, so it is the only thing holding the parameter honest.
+    """
+    vault = _Vault()
+    other = _Vault()
+    title = parse_pool(LIVE_POOL)["candidates"][0]["title"]
+    with patch.object(nova_idea_pool, "vault_read_path_rev", vault.read), \
+            patch.object(nova_idea_pool, "vault_write_path", vault.write), \
+            patch.object(nova_idea_pool, "board_store", other.store):
+        ok, message = decide(0, title, "approve", "", "08-25", store=vault.store)
+    assert ok, message
+    assert title in [i["title"] for i in _boarded(vault)[0].values()]
+    assert title not in [i["title"] for i in _boarded(other)[0].values()]
+
+
 def test_a_different_idea_with_a_different_title_still_boards():
     """The guard is a title match, so it has to not swallow real work."""
-    from agora_runner.nova_boards import parse_board
-
     candidates = parse_pool(LIVE_POOL)["candidates"]
     vault = _Vault()
     _run(vault, lambda: decide(0, candidates[0]["title"], "approve", "", "08-25"))
     _run(vault, lambda: decide(0, candidates[1]["title"], "approve", "", "08-25"))
-    titles = [i["title"] for i in parse_board(vault.docs[nova_idea_pool.IDEAS_PATH])["items"]]
+    titles = [i["title"] for i in _boarded(vault)[0].values()]
     assert candidates[0]["title"] in titles
     assert candidates[1]["title"] in titles
 
@@ -404,7 +466,7 @@ def test_history_reads_back_a_decision_the_pool_itself_made():
     _run(vault, lambda: decide(
         0, candidates[1]["title"], "approve", "Yes, and make it loud.", "08-25"))
 
-    history = parse_history(vault.docs[nova_idea_pool.IDEAS_PATH])
+    history = _history(vault)
 
     approved = [a for a in history["approved"] if a["title"] == candidates[1]["title"]]
     assert len(approved) == 1
@@ -420,14 +482,14 @@ def test_history_reads_back_a_decision_the_pool_itself_made():
 def test_history_leaves_out_write_ups_the_pool_did_not_write():
     """`## 114` is a row he typed himself. It carries no pool byline, and
     reporting it as something he approved would be a made-up decision."""
-    history = parse_history(LIVE_IDEAS)
+    history = _history(_Vault())
     assert [a["title"] for a in history["approved"]] == []
 
 
 def test_history_shows_a_discarded_row_that_predates_the_pool():
     """The `## Discarded` table already had rows before the pool existed and
     no page has ever rendered any of them. They are still decisions."""
-    history = parse_history(LIVE_IDEAS)
+    history = _history(_Vault())
     assert history["rejected"] == [
         {"title": "Local model fallback (Ollama/LocalAI)",
          "why": "The box can't afford a resident model — see 3"},
@@ -440,7 +502,7 @@ def test_history_keeps_an_approval_he_said_nothing_about():
     candidates = parse_pool(LIVE_POOL)["candidates"]
     vault = _Vault()
     _run(vault, lambda: decide(0, candidates[0]["title"], "approve", "", "08-25"))
-    approved = parse_history(vault.docs[nova_idea_pool.IDEAS_PATH])["approved"]
+    approved = _history(vault)["approved"]
     assert [(a["title"], a["comment"]) for a in approved] == [
         (candidates[0]["title"], ""),
     ]
@@ -449,8 +511,8 @@ def test_history_keeps_an_approval_he_said_nothing_about():
 def test_history_does_not_read_past_the_discarded_table():
     """`## Discarded` is followed by `# Details`, which is full of `|` in
     wikilinks. A parser that keeps going swallows write-ups as rejections."""
-    history = parse_history(LIVE_IDEAS + "\n## 92 — A project dashboard\n\n"
-                            "| not | a rejection |\n")
+    history = _history(_Vault(), LIVE_IDEAS + "\n## 92 — A project dashboard\n\n"
+                       "| not | a rejection |\n")
     assert [r["title"] for r in history["rejected"]] == [
         "Local model fallback (Ollama/LocalAI)"]
 
@@ -480,7 +542,7 @@ def test_a_reason_with_a_pipe_in_it_does_not_break_his_table():
     assert len(row.strip("|").split("|")) == 2 + row.count(r"\|")
     assert row.count("|") - row.count(r"\|") == 3  # two cells, three delimiters
 
-    rejected = parse_history(written)["rejected"]
+    rejected = _history(vault, written)["rejected"]
     assert [r["why"] for r in rejected if r["title"] == candidates[0]["title"]] == [
         "No good | too expensive",
     ]
@@ -497,7 +559,7 @@ def test_a_reason_written_over_several_lines_survives_whole():
     written = vault.docs[nova_idea_pool.IDEAS_PATH]
 
     assert "|\nI do not care" not in written
-    rejected = parse_history(written)["rejected"]
+    rejected = _history(vault, written)["rejected"]
     assert [r["why"] for r in rejected if r["title"] == candidates[0]["title"]] == [
         "No. I do not care about the cost per journal.",
     ]
@@ -512,7 +574,7 @@ def test_a_multi_line_approval_comment_is_not_cut_at_the_first_line():
     _run(vault, lambda: decide(
         0, candidates[0]["title"], "approve",
         "This is worth doing.\nPlease raise the priority too.", "08-25"))
-    approved = parse_history(vault.docs[nova_idea_pool.IDEAS_PATH])["approved"]
+    approved = _history(vault)["approved"]
     assert [a["comment"] for a in approved] == [
         "This is worth doing.\nPlease raise the priority too.",
     ]
@@ -581,13 +643,13 @@ def test_an_earlier_comment_rides_onto_the_row_when_he_finally_approves():
     _run(vault, lambda: pool_comment(0, title, "only the cheap half", "2026-08-30"))
     ok, _ = _run(vault, lambda: decide(0, title, "approve", "and rename it", "08-31"))
     assert ok
-    ideas = vault.docs[nova_idea_pool.IDEAS_PATH]
-    assert "only the cheap half" in ideas
-    assert "and rename it" in ideas
+    write_up = "\n".join(_boarded(vault)[1].values())
+    assert "only the cheap half" in write_up
+    assert "and rename it" in write_up
     # One `You said:` block, because `parse_history` keeps only the last one
     # and two blocks would show him the newer note as the whole of it.
-    assert ideas.count("You said:") == 1
-    approved = parse_history(ideas)["approved"]
+    assert write_up.count("You said:") == 1
+    approved = _history(vault)["approved"]
     assert approved[0]["comment"] == "only the cheap half\nand rename it"
 
 
@@ -630,3 +692,84 @@ def test_a_comment_block_stays_inside_its_own_candidate():
     assert COMMENT_HEADING not in remaining
     assert len(parse_pool(remaining)["candidates"]) == 1
 
+
+
+# ---------------------------------------------------------------------------
+# Issue #203: the records-shaped rules.
+#
+# Every dict below is hand-built and none of these tests holds a line of
+# board markdown, on purpose. A test that writes a table and parses it
+# agrees with a converted and an unconverted reader alike, so it cannot
+# tell the two apart -- and `board_records.contents` hands back shapes a
+# board file cannot express, which is exactly where a reader that assumed
+# the parser's invariants breaks.
+
+
+def _contents(items):
+    """`parse_board`'s four keys, built by hand rather than parsed."""
+    return {"captures": [], "captureReplies": {}, "items": items, "details": {}}
+
+
+def _row(number, title):
+    return {"number": number, "title": title, "status": "🟡 In progress",
+            "statusKey": "in-progress", "done": False, "updated": "09-09",
+            "priority": "🔵 Medium", "priorityKey": "medium",
+            "project": "", "milestone": "", "size": ""}
+
+
+def test_already_boarded_in_contents_matches_on_the_title():
+    contents = _contents([_row(114, "  a fine idea  ")])
+    assert nova_idea_pool._already_boarded_in_contents(contents, "a fine idea")
+    assert not nova_idea_pool._already_boarded_in_contents(contents, "another one")
+
+
+def test_already_boarded_in_contents_refuses_an_empty_title():
+    """An empty candidate title would match every row whose title is blank,
+    so the guard would report `True` and silently drop a real write."""
+    assert not nova_idea_pool._already_boarded_in_contents(
+        _contents([_row(114, "")]), "   ")
+
+
+def test_the_module_cannot_reach_the_parser_at_all():
+    """`board-records.md` bans a facade, and this is what that means here.
+
+    The guard used to be a monkeypatched `parse_board` that raised, because
+    the module still imported one and a twin that quietly fell back to it
+    would return the *right answer* for every caller still holding markdown
+    -- nothing but a raising parser catches that. There is nothing left to
+    patch: `decide` writes through `board_write.add_row` and `parse_history`
+    reads `board_records.contents`, so the import is gone. The absence is
+    the assertion now, and it is the stronger one -- a name that is not
+    there cannot be called from a branch no test covers.
+    """
+    assert not hasattr(nova_idea_pool, "parse_board")
+    assert "parse_board" not in open(nova_idea_pool.__file__).read()
+
+
+def test_approving_parses_his_ideas_board_exactly_once(monkeypatch):
+    """Two questions, one read of the board.
+
+    The dedup guard and the number used to parse the file separately. On a
+    string that is two identical answers; on `board_records.contents` it is
+    two `_all_docs` pairs a write can land between -- and the write that
+    lands between them is the concurrent approve this guard exists to
+    absorb, so it would answer "no row carries this title" against one
+    board and "the highest number is 114" against another.
+    """
+    vault = _Vault()
+    calls = []
+    real = vault.store.read_rows
+
+    def _counted(board):
+        calls.append(board)
+        return real(board)
+
+    monkeypatch.setattr(vault.store, "read_rows", _counted)
+    title = parse_pool(LIVE_POOL)["candidates"][1]["title"]
+    ok, message = _run(vault, lambda: decide(1, title, "approve", "", "08-25"))
+    assert ok, message
+    # One for the dedup guard's `contents`; the rest belong to `add_row`'s
+    # own before/after check, which is tested where it lives. What must not
+    # happen is this module asking twice for its own two questions.
+    assert calls[:1] == ["idea"]
+    assert len(calls) <= 4, calls

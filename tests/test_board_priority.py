@@ -98,43 +98,127 @@ def test_labels_round_trip_through_priority_key():
         assert priority_key(label) == key
 
 
-def test_set_priority_writes_once_and_sends_the_revision_it_read(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
+# --- the app's rating button, which writes the #203 record store (Cycle 1381) ---
+#
+# Every test below goes through a fake store and a vault that raises if it is
+# touched at all: a test that let the markdown writer run would pass against
+# the converted and the unconverted button alike.
 
-    calls = []
+import pytest  # noqa: E402
 
-    def fake_write(path, body, if_rev=None):
-        # Counted, not just recorded: `seen` alone holds the *last* call, so
-        # a retry loop that failed to break on success would leave every
-        # assertion below still passing. The name of this test claims once.
-        calls.append(path)
-        seen.update(path=path, body=body, if_rev=if_rev)
-        return "written"
+from agora_runner import board_records  # noqa: E402
+from tests.test_board_records import writable  # noqa: E402
+from tests.test_tools_board_priority import BOARD as RECORD_BOARD  # noqa: E402
 
-    monkeypatch.setattr(nova_capture, "vault_write_path", fake_write)
-    ok, message = nova_capture.set_priority("issues", 57, "High")
-    assert ok and "#57" in message
-    assert len(calls) == 1
-    assert seen["if_rev"] == "7-abc"
+
+class _VaultTouched(BaseException):
+    """Not an `Exception`: `set_priority` catches every `Exception` on the
+    read, and a landmine it swallows proves nothing."""
+
+
+@pytest.fixture
+def records(monkeypatch):
+    _, fake = writable(board="idea", markdown=RECORD_BOARD)
+    monkeypatch.setattr(nova_capture, "board_store", fake)
+
+    def landmine(*a, **k):
+        raise _VaultTouched("the rating button touched the markdown")
+
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", landmine)
+    monkeypatch.setattr(nova_capture, "vault_write_path", landmine)
+    return fake
+
+
+def _row(store, number):
+    return {item["number"]: item
+            for item in board_records.contents("idea", store=store)["items"]}[number]
+
+
+def _row_writes(store):
+    return [call for call in store.calls if call[0] == "write_row"]
+
+
+def test_the_landmine_is_armed(records):
+    with pytest.raises(_VaultTouched):
+        nova_capture.vault_write_path("x", "y")
+
+
+def test_set_priority_writes_the_record_once_and_never_the_file(records):
+    before = board_records.contents("idea", store=records)
+    ok, message = nova_capture.set_priority("ideas", 260, "High")
+    assert ok and "#260" in message
+    assert len(_row_writes(records)) == 1
+    row = _row(records, 260)
     # The invariant that survived both renames, and the only one the owner
     # ever actually asked for: the **word** is in what gets written. The
     # glyph came back beside it in Cycle 274 (*"if you use the symbol and
     # text, thats completely fine!"*); what may never come back is the
     # glyph on its own, which is what he could not read.
-    assert "🟠 High" in seen["body"]
-    assert "🟠" not in seen["body"].replace("🟠 High", "")
+    assert row["priority"] == "🟠 High"
+    assert row["priorityKey"] == "high"
+    after = board_records.contents("idea", store=records)
+    assert [r for r in after["items"] if r["number"] != 260] == \
+        [r for r in before["items"] if r["number"] != 260]
+    assert after["details"] == before["details"]
+    assert after["captures"] == before["captures"]
 
 
-def test_set_priority_does_not_write_when_the_row_is_not_open(monkeypatch):
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
+def test_clearing_a_rating_back_to_unrated_is_still_reachable(records):
+    ok, _ = nova_capture.set_priority("ideas", 259, "")
+    assert ok
+    assert _row(records, 259)["priority"] == ""
+    assert _row(records, 259)["priorityKey"] == ""
 
-    def refuse(*a, **k):
-        raise AssertionError("must not write")
 
-    monkeypatch.setattr(nova_capture, "vault_write_path", refuse)
-    ok, message = nova_capture.set_priority("issues", 51, "🟠 High")
+def test_a_store_passed_in_is_the_one_written(records, monkeypatch):
+    """`store = store or board_store` collapsing to `board_store` left every
+    test that only patches the module global green (Cycle 1345's lesson)."""
+    _, other = writable(board="idea", markdown=RECORD_BOARD)
+    ok, _ = nova_capture.set_priority("ideas", 260, "Low", store=other)
+    assert ok
+    assert _row(other, 260)["priority"] == "⚪ Low"
+    assert _row_writes(records) == []
+
+
+@pytest.mark.parametrize("target, number, priority, why", [
+    ("ideas", 258, "High", "not an open row"),      # ✅ Done, still in ## Board
+    ("ideas", 51, "High", "not an open row"),       # in ## Done
+    ("ideas", 999, "High", "not an open row"),      # not there at all
+    ("ideas", 260, "🟣 Whenever", "unknown priority"),
+    ("notes", 260, "High", "unknown target"),       # not a board
+])
+def test_set_priority_writes_nothing_it_refuses(records, target, number, priority, why):
+    ok, message = nova_capture.set_priority(target, number, priority)
+    assert not ok and why in message
+    assert _row_writes(records) == []
+
+
+def test_a_row_in_done_is_refused_even_when_its_status_cell_reads_open(records):
+    """`done` is which table a row is in, not what its status cell says.
+
+    Every `## Done` row the migration writes also reads `✅ Done`, so the
+    status check hides the `done` check on any fixture built from markdown --
+    dropping `row.get("done")` left the whole file green. A stored record can
+    carry both, so this one does.
+    """
+    doc = next(d for d in records.docs if d.get("number") == 51)
+    doc["status"] = "🟡 In progress"
+    row = _row(records, 51)
+    assert row["done"] is True and row["status"] == "🟡 In progress", \
+        "the fixture no longer builds the row this test is about"
+    ok, message = nova_capture.set_priority("ideas", 51, "High")
     assert not ok and "not an open row" in message
+    assert _row_writes(records) == []
+
+
+def test_an_outdated_row_is_refused_by_the_button_too(monkeypatch):
+    board = RECORD_BOARD.replace("| Demos live two weeks | 🟡 In progress |",
+                                 "| Demos live two weeks | " + OUTDATED_STATUS + " |")
+    assert board != RECORD_BOARD, "the fixture row was not rewritten"
+    _, fake = writable(board="idea", markdown=board)
+    ok, message = nova_capture.set_priority("ideas", 259, "High", store=fake)
+    assert not ok and "not an open row" in message
+    assert [call for call in fake.calls if call[0] == "write_row"] == []
 
 
 # --- the other half of the same capture: a rating typed with the capture ---
@@ -216,7 +300,7 @@ def test_capture_prefixes_only_the_first_bullet_of_a_paste(monkeypatch):
     monkeypatch.setattr(
         nova_capture, "vault_write_path",
         lambda path, body, if_rev=None: written.update(body=body) or "written")
-    ok, _ = nova_capture.capture("issues", "first line\nsecond line", "High")
+    ok, _ = nova_capture.capture("notes", "first line\nsecond line", "High")
     assert ok
     assert "- 🟠 High: first line" in written["body"]
     assert "- second line" in written["body"]
@@ -238,7 +322,7 @@ def test_an_unrated_capture_is_written_exactly_as_typed(monkeypatch):
     monkeypatch.setattr(
         nova_capture, "vault_write_path",
         lambda path, body, if_rev=None: written.update(body=body) or "written")
-    ok, _ = nova_capture.capture("issues", "plain thought")
+    ok, _ = nova_capture.capture("notes", "plain thought")
     assert ok and "- plain thought" in written["body"]
 
 
@@ -384,3 +468,11 @@ def test_a_tag_no_project_cell_could_hold_is_not_lifted():
         "(Project: " + "M" * 41 + ") a thing",
     ):
         assert split_capture_project(bullet) == ("", bullet)
+
+
+def test_the_buttons_board_names_are_the_sites():
+    """`nova_capture.RECORD_BOARDS` is a hand copy of `nova_site._RECORD_BOARDS`
+    (neither can import `tools/`); a board added on one side only must fail
+    here, not on his phone. The reviewer's finding on df42e5c."""
+    from agora_runner import nova_site
+    assert nova_capture.RECORD_BOARDS == nova_site._RECORD_BOARDS

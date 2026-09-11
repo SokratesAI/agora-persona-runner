@@ -226,7 +226,7 @@ def claims_ledger_json():
     at the end of one: `tools/claim.py` takes a row before the work
     starts and releases it after, so this is the only document on the
     server that says what is happening *now* instead of what happened.
-    Shaping is `nova_next.next_payload`, which does no I/O.
+    Shaping is `nova_next.next_payload_from_contents`, which does no I/O.
 
     `""` when the document does not exist, which the shaping reports as
     an unreadable ledger rather than an empty one -- the two look
@@ -274,9 +274,9 @@ def edvard_board_markdown(name):
     Split out of the three-file read this used to be, because it is now
     the expensive half and the only one that can be skipped:
     `nova_site.board_payload` reads his rows, write-ups and captures out
-    of `nova_tickets` whenever the store can prove it is current, and
+    of the #203 record store whenever it can prove it is current, and
     `issues.md` is 537KB. The two files below are mine, are small, and
-    have no ticket documents behind them, so they are fetched on every
+    have no records behind them, so they are fetched on every
     build and this one is fetched only on the fallback path.
 
     Keeping them as two calls rather than one call with a flag is what

@@ -47,11 +47,14 @@ capture at all.
 import re
 from datetime import datetime
 
+from agora_runner import (
+    board_document, board_records, board_store, board_view, board_write,
+    entity_id, rank_key)
+from agora_runner.board_store import CaptureConflict, RegistryConflict
 from agora_runner.config import OSLO
 from agora_runner.log import log
 from agora_runner.nova_boards import (
-    BOARD_PATHS,
-    add_row,
+    _CLOSED_STATUS_KEYS,
     CAPTURE_PRIORITY_SEP,
     PRIORITY_LABELS,
     MILESTONE_PINS_PATH,
@@ -65,16 +68,12 @@ from agora_runner.nova_boards import (
     canonical_priority,
     append_detail_note,
     capture_entries,
-    delete_row,
     _frontmatter_end,
-    extract_row,
     OUTDATED_STATUS,
     STATUS_LABELS,
-    set_row_order as _set_row_order_md,
-    set_row_priority,
-    set_row_project,
-    set_row_status,
-    set_row_title,
+    row_order_seats as _row_order_seats,
+    priority_key,
+    status_key,
     split_capture_done,
     split_capture_priority,
 )
@@ -294,7 +293,7 @@ def replace_capture(markdown, index, original, bullets):
     return "\n".join(lines[:begin] + [f"- {b}" for b in bullets] + kept + lines[end:])
 
 
-def amend(target, index, original, text):
+def amend(target, index, original, text, store=None):
     """Edit or delete one capture. Empty `text` deletes. Returns (ok, message).
 
     Issues #66: *"The reported issues should be able to be edited and
@@ -307,6 +306,9 @@ def amend(target, index, original, text):
     losing attempt's re-read no longer contains the bullet, the capture
     was boarded or removed between the attempts, and `replace_capture`
     returns `None` rather than resurrecting it.
+
+    **His two boards go to the #203 record store** (`_amend_records`); only
+    `notes`, which has no records, still reads and writes the file here.
     """
     path = CAPTURE_TARGETS.get(target)
     if path is None:
@@ -314,6 +316,10 @@ def amend(target, index, original, text):
     if not (original or "").strip():
         return False, "nothing to amend"
     bullets = clean_capture_text(text or "")
+    board = RECORD_BOARDS.get(target)
+    if board is not None:
+        return _amend_records(target, board, index, original.strip(), bullets,
+                              store or board_store)
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):
@@ -335,6 +341,63 @@ def amend(target, index, original, text):
             break
     log(f"nova-capture failed amending {target}: {result}")
     return False, f"could not write to {target}: {result}"
+
+
+def _amend_records(target, board, index, wanted, bullets, store):
+    """`amend` on one of his two boards: the capture's record, never his file.
+
+    The same two-part address as `replace_capture`: `board_records.capture_at`
+    finds the bullet at the position his page showed, and its own words must
+    still read `wanted`, or the answer is `STALE_CAPTURE` and nothing is
+    written. An edit is `board_write.change_capture_text`, which keeps the
+    replies under the bullet and checks the rest of the board came back
+    untouched; a delete is `board_store.delete_capture`, which takes the
+    replies with it, as the markdown delete did.
+
+    **The conflict retry survives the move, and it is the markdown loop's 409
+    retry on a different store.** Both writes are conditional on the revision
+    `capture_at` read, so a cycle replying under this bullet in between is a
+    `CaptureConflict`: re-read, re-check the words, write again -- and a
+    re-read that no longer finds them is stale rather than a resurrection.
+    A delete that finds the document already gone (a second tap) is stale too.
+
+    **One bullet only.** The file path turns a multi-line edit into several
+    bullets; the records have no capture-insert door until the capture box
+    itself moves, so that edit is refused here rather than half-written.
+    """
+    if len(bullets) > 1:
+        return False, (
+            "an edit here is one bullet -- use the capture box to add the "
+            "others")
+    new_text = bullets[0] if bullets else ""
+    problem = None
+    for _ in range(WRITE_ATTEMPTS):
+        try:
+            doc = board_records.capture_at(board, index, store=store)
+        except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+            log(f"nova-capture could not read the {target} records: {error}")
+            return False, f"could not read {target}: {error}"
+        if doc is None or board_document.capture_text_of(doc) != wanted:
+            return False, f"that capture is {STALE_CAPTURE}"
+        try:
+            if not new_text:
+                if not store.delete_capture(doc):
+                    return False, f"that capture is {STALE_CAPTURE}"
+                log(f"nova-capture deleted a capture in {target}")
+                return True, f"deleted in {target}"
+            if new_text != wanted:
+                board_write.change_capture_text(board, doc, new_text, store=store)
+            log(f"nova-capture edited a capture in {target}")
+            return True, f"edited in {target}"
+        except CaptureConflict as error:
+            problem = error
+            continue
+        except (board_write.WriteRefused, board_write.BoardDamaged,
+                board_records.RecordError) as error:
+            problem = error
+            break
+    log(f"nova-capture failed amending {target}: {problem}")
+    return False, f"could not write to {target}: {problem}"
 
 
 def reply_under_capture(markdown, index, original, text):
@@ -365,7 +428,7 @@ def reply_under_capture(markdown, index, original, text):
     return "\n".join(lines[:end] + [f"  - {body}"] + lines[end:])
 
 
-def comment_on_capture(target, index, original, text):
+def comment_on_capture(target, index, original, text, store=None):
     """Answer one unboarded capture in place. Returns (ok, message).
 
     **The one class of item `tools.top_board_rows` ranks above everything
@@ -384,6 +447,9 @@ def comment_on_capture(target, index, original, text):
     Same read-modify-write and same 409 retry as `amend`, because the
     concurrent writer is the same one: a cycle boarding these files while
     the reply is being written.
+
+    **His two boards go to the #203 record store** (`_reply_records`); only
+    `notes`, which has no records, still reads and writes the file here.
     """
     path = CAPTURE_TARGETS.get(target)
     if path is None:
@@ -395,6 +461,10 @@ def comment_on_capture(target, index, original, text):
         return False, "nothing to say"
     if "\n" in body or "\r" in body:
         return False, "a reply cannot contain a line break"
+    board = RECORD_BOARDS.get(target)
+    if board is not None:
+        return _reply_records(target, board, index, original.strip(), body,
+                              store or board_store)
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):
@@ -412,6 +482,47 @@ def comment_on_capture(target, index, original, text):
             break
     log(f"nova-capture failed replying in {target}: {result}")
     return False, f"could not write to {target}: {result}"
+
+
+def _reply_records(target, board, index, wanted, body, store):
+    """`comment_on_capture` on one of his two boards: the capture's record.
+
+    The same address as `reply_under_capture` -- the position his page showed,
+    and his words (or the older folded spelling, his words with the replies
+    welded on) must still be there -- and the reply goes on the end of the
+    record's `replies`, under any earlier one, as the file put it.
+
+    The write is `write_capture` on the document as read, so it is
+    conditional on that revision: a second writer on this bullet in between is
+    a `CaptureConflict`, answered by re-reading and re-checking the words, the
+    markdown loop's 409 retry on a different store. Nothing else on the board
+    is touched, because nothing else is sent.
+    """
+    problem = None
+    for _ in range(WRITE_ATTEMPTS):
+        try:
+            doc = board_records.capture_at(board, index, store=store)
+        except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+            log(f"nova-capture could not read the {target} records: {error}")
+            return False, f"could not read {target}: {error}"
+        if doc is None:
+            return False, f"that capture is {STALE_CAPTURE}"
+        text = board_document.capture_text_of(doc)
+        replies = board_document.capture_replies_of(doc)
+        if wanted not in (text, " ".join([text] + replies)):
+            return False, f"that capture is {STALE_CAPTURE}"
+        try:
+            store.write_capture(dict(doc, replies=replies + [body]))
+        except CaptureConflict as error:
+            problem = error
+            continue
+        except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+            problem = error
+            break
+        log(f"nova-capture replied under a capture in {target}")
+        return True, f"replied in {target}"
+    log(f"nova-capture failed replying in {target}: {problem}")
+    return False, f"could not write to {target}: {problem}"
 
 
 def convert_capture(source, index, original, dest):
@@ -506,7 +617,7 @@ def capture_title(text):
     return (match.group(1) if match else body).strip()
 
 
-def promote_capture(target, index, original, priority=None):
+def promote_capture(target, index, original, priority=None, store=None):
     """Turn one unboarded capture into a numbered row. Returns (ok, message).
 
     The owner, capture 2026-08-26: *"Whats with the not boarded
@@ -516,16 +627,18 @@ def promote_capture(target, index, original, priority=None):
     ideas you have not seen before and you pick it up, prioritised them
     and make them as their own nice item like the rest."*
 
-    **One write, not two, and that is the whole reason this is not shaped
-    like `convert_capture`.** A capture and the board it is promoted onto
-    live in the *same file* -- `issues.md` holds the bullet list at the
-    top, `## Board` in the middle and `# Details` at the bottom -- so
-    adding the row and removing the bullet are one read-modify-write
-    against one revision, and there is no half-done state to choose a
-    lesser evil between. `convert_capture` has to write two files and
-    says so; this one does not and must not, because a row written by a
-    first call and a bullet removed by a second would show him his own
-    text twice for as long as the second call took to fail.
+    **Records only, since #203: both boards a capture can be promoted on are
+    in the record store, and `notes` has no board to promote onto.** The row
+    is `board_write.add_row` -- it mints the number from the store, puts the
+    row at the top as the file did, and checks the board afterwards -- and
+    the bullet then goes with `board_store.delete_capture` on the document
+    as read.
+
+    **Two writes now, where the file made it one, so the order is chosen
+    for what the half-done state costs him** -- `convert_capture`'s call.
+    Row first: if the delete then fails, his text is on the board AND in the
+    box, which he can see and clear in one tap, and the message says so.
+    Delete first would lose his sentence to a failed row write.
 
     The rating rides across if he set one and `priority` overrides it --
     the point of the ask is that a cycle *rates* the thing on the way
@@ -533,56 +646,68 @@ def promote_capture(target, index, original, priority=None):
 
     A cycle's earlier answers under the bullet ride across as dated notes
     on the write-up, so the thread he says he likes survives the move.
-    `None` from `replace_capture` means the address is stale, which is
-    the one failure worth telling apart: nothing has been written, and
-    the page needs re-reading rather than the write retrying.
+    A stale address -- a second tap, or a bullet boarded by someone else --
+    writes nothing, and the page needs re-reading rather than a retry.
     """
-    paths = BOARD_PATHS.get(target)
-    path = paths.get("edvard") if paths else None
-    if path is None or target not in CAPTURE_TARGETS:
+    board = RECORD_BOARDS.get(target)
+    if board is None:
         return False, f"unknown target: {target!r}"
+    store = store or board_store
     wanted = (original or "").strip()
     if not wanted:
         return False, "nothing to promote"
 
     dated = datetime.now(OSLO).strftime("%m-%d")
-    result = ""
-    for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(path)
-        if current is None:
-            return False, f"{path} not found"
-        entries = capture_entries(current)
-        if not isinstance(index, int) or not 0 <= index < len(entries):
-            return False, f"that capture is {STALE_CAPTURE}"
-        _, _, text, replies = entries[index]
-        if text != wanted:
-            return False, f"that capture is {STALE_CAPTURE}"
-        rating, body = split_capture_priority(text)
-        _, body = split_capture_done(body)
-        chosen = canonical_priority(rating if priority is None else priority)
-        if chosen is None:
-            return False, f"unknown priority: {priority!r}"
-        title = capture_title(body)
-        if not title:
-            return False, "nothing to promote"
-        # A pipe would close the table cell it is written into and a
-        # newline would end the row; `add_row` refuses both. Folding them
-        # is not this function's call to make, so the refusal is passed on.
-        boarded, number = add_row(
-            current, title, dated, chosen, write_up=body, notes=replies)
-        if boarded is None:
-            return False, f"could not board {title!r}"
-        updated = replace_capture(boarded, index, wanted, [])
-        if updated is None:
-            return False, f"that capture is {STALE_CAPTURE}"
-        result = vault_write_path(path, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture promoted a {target} capture to #{number}")
-            return True, f"boarded as #{number}"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed to promote a {target} capture: {result}")
-    return False, f"could not write to {target}: {result}"
+    try:
+        doc = board_records.capture_at(board, index, store=store)
+    except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {error}")
+        return False, f"could not read {target}: {error}"
+    if doc is None or board_document.capture_text_of(doc) != wanted:
+        return False, f"that capture is {STALE_CAPTURE}"
+    rating, body = split_capture_priority(wanted)
+    _, body = split_capture_done(body)
+    chosen = canonical_priority(rating if priority is None else priority)
+    if chosen is None:
+        return False, f"unknown priority: {priority!r}"
+    title = capture_title(body)
+    if not title:
+        return False, "nothing to promote"
+    try:
+        # A pipe would close the table cell the generated view draws and a
+        # newline would end the row; `add_row` refuses both. Folding them is
+        # not this function's call to make, so the refusal is passed on.
+        row = board_write.add_row(
+            board, title, dated, chosen, write_up=body,
+            notes=board_document.capture_replies_of(doc), store=store)
+    except board_write.WriteRefused as error:
+        return False, f"could not board {title!r}: {error}"
+    except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture failed to promote a {target} capture: {error}")
+        return False, f"could not write to {target}: {error}"
+    number = row["number"]
+    try:
+        removed = store.delete_capture(doc)
+    except Exception as error:  # noqa: BLE001 -- a conflict included
+        log(f"nova-capture boarded a {target} capture as #{number} but left "
+            f"the bullet: {error}")
+        return False, (
+            f"boarded as #{number}, but could not take the bullet out of the "
+            f"box ({error}) — check the box for it and delete it there")
+    if not removed:
+        # `False` is `delete_capture`'s "already gone", not a failure: the
+        # bullet left the box between the read and the delete. The one writer
+        # that does that is a second Board on the same bullet, which will have
+        # minted its own row -- so this is done, and says where a duplicate
+        # would be rather than sending him to a box that is already clean.
+        # Reviewer finding, Cycle 1390.
+        log(f"nova-capture boarded a {target} capture as #{number}; the "
+            "bullet had already left the box")
+        return True, (
+            f"boarded as #{number} — the bullet had already left the box, so "
+            "check the board for a second row from a double tap")
+    log(f"nova-capture promoted a {target} capture to #{number}")
+    return True, f"boarded as #{number}"
 
 
 def clean_capture_text(text, one_item=False):
@@ -704,8 +829,11 @@ def insert_captures(markdown, bullets):
     return "\n".join(lines[:start] + block + lines[end:])
 
 
-def capture(target, text, priority="", one_item=False, project=""):
-    """Append a capture to `issues.md` or `ideas.md`. Returns (ok, message).
+def capture(target, text, priority="", one_item=False, project="", store=None):
+    """Add a capture to one of his three boxes. Returns (ok, message).
+
+    **His two boards go to the #203 record store** (`_capture_records`);
+    only `notes`, which has no records, still reads and writes the file here.
 
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
     client sends is ever used to address a vault document.
@@ -754,6 +882,9 @@ def capture(target, text, priority="", one_item=False, project=""):
     slug = project_slug(project)
     if slug:
         bullets[0] = bullets[0] + " " + PROJECT_TAG_PREFIX + slug
+    board = RECORD_BOARDS.get(target)
+    if board is not None:
+        return _capture_records(target, board, bullets, store or board_store)
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):
@@ -774,54 +905,79 @@ def capture(target, text, priority="", one_item=False, project=""):
     return False, f"could not write to {target}: {result}"
 
 
-def _amend_board(target, number, mutate, what):
-    """Read-modify-write one of the owner's board files. Returns (ok, message).
+def _capture_records(target, board, bullets, store):
+    """`capture` on one of his two boards: one new capture record per bullet.
 
-    The fourth and fifth write paths on this site share one loop rather
-    than copying `set_priority`'s a fourth and fifth time. The 409 retry
-    is the same and matters for the same reason -- a cycle boarding these
-    files in step 6 is the concurrent writer, and it is the one most
-    likely to be running.
+    Same place as `insert_captures` puts them: below every capture already
+    there, in the order they were typed: `rank_key.between(last, None)`. A
+    capture rank is a `rank_key` and nothing else -- `tools.board_migrate`
+    seeds them with `rank_key.sequence` since Cycle 1391 and
+    `to_capture_document` refuses any other shape -- so a board still holding
+    an old whole-number rank fails the add loudly rather than growing a second
+    shape beside it.
 
-    `mutate` returning `None` is not a write failure and is never
-    retried: the row is not there, or the new title is not writable. A
-    re-read returns the same answer and a 409 loop around it would spin.
+    **The ids are minted and the registry written before any capture is.**
+    `entity_id.mint_capture` is a high-water mark, so an id written into the
+    registry and then never used is a gap and costs nothing, while a capture
+    stored under an id the registry never recorded is one the next mint hands
+    out again. A `RegistryConflict` is a second writer minting at the same
+    time: re-read and mint again, never resend -- `write_registry`'s rule.
 
-    **The path comes from `BOARD_PATHS`, not `CAPTURE_TARGETS`, and that
-    is the reviewer's point rather than mine.** The two dicts hold the
-    same string for `issues` and `ideas` today and it is a coincidence:
-    `CAPTURE_TARGETS` also carries `notes`, which is not a board at all,
-    and `BOARD_PATHS` already splits his file from mine. Reading a board
-    row's path out of the capture dict works until one of them is
-    restructured for its own reasons, and then this writes somewhere else
-    with nothing to say so. `["edvard"]` is also the scope boundary he
-    set in #85 -- *"This is only for the ones i have reported"* -- said in
-    the addressing rather than checked separately.
+    Nothing here rewrites a stored capture, so the owner's other bullets and
+    the replies under them cannot be touched; each write creates one document.
+    Two phones adding at once can take the same rank, and both bullets still
+    land -- their order between each other is then CouchDB's id order.
     """
-    paths = BOARD_PATHS.get(target)
-    path = paths.get("edvard") if paths else None
-    if path is None:
-        return False, f"unknown target: {target!r}"
-
-    result = ""
+    problem = None
     for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(path)
-        if current is None:
-            return False, f"{path} not found"
-        updated = mutate(current)
-        if updated is None:
-            return False, f"#{number} is not a row on {target}"
-        result = vault_write_path(path, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture {what} #{number} on {target}")
-            return True, f"#{number} {what} on {target}"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed to {what} #{number} on {target}: {result}")
-    return False, f"could not write to {target}: {result}"
+        try:
+            registry = store.read_registry()
+            held = board_records.capture_documents(board, store=store)
+            ranked = [doc["rank"] for doc in held if doc.get("rank") is not None]
+            last = ranked[-1] if ranked else None
+            ranks = []
+            for _ in bullets:
+                last = rank_key.between(last, None)
+                ranks.append(last)
+            # A registry whose high-water lags the stored ids would hand out
+            # one of his existing captures' ids -- which the real store refuses
+            # forever and a blind one overwrites -- so mint past any id already
+            # stored. `mint_capture` bumps the mark each call, which repairs it.
+            taken = {doc.get("captureId") for doc in held}
+            ids = []
+            for _ in bullets:
+                capture_id = entity_id.mint_capture(registry, board)
+                while capture_id in taken:
+                    capture_id = entity_id.mint_capture(registry, board)
+                ids.append(capture_id)
+            store.write_registry(registry)
+        except RegistryConflict as error:
+            problem = error
+            continue
+        except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+            log(f"nova-capture could not mint on the {target} records: {error}")
+            return False, f"could not write to {target}: {error}"
+        break
+    else:
+        log(f"nova-capture failed writing to {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+
+    written = 0
+    try:
+        for text, capture_id, rank in zip(bullets, ids, ranks):
+            store.write_capture(board_document.to_capture_document(
+                text, board, capture_id, rank=rank))
+            written += 1
+    except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture failed writing to {target} after {written} of "
+            f"{len(bullets)}: {error}")
+        return False, (f"could not write to {target}: {error} "
+                       f"({written} of {len(bullets)} landed)")
+    log(f"nova-capture wrote {len(bullets)} bullet(s) to {target}")
+    return True, f"captured to {target}"
 
 
-def edit_row(target, number, title):
+def edit_row(target, number, title, store=None):
     """Retitle one boarded row. Returns (ok, message).
 
     The owner, issue #84: *"I need to be able to edit and especially delete
@@ -837,12 +993,51 @@ def edit_row(target, number, title):
     might want to correct and currently cannot is the sentence he typed.
     If he wants the write-up editable too, that is one more field and he
     can say so in a sentence.
+
+    **Written to the #203 record store, not to his markdown** -- the third of
+    the app's board writers off the file, after `set_priority` and
+    `comment_on_row`. The title is one key on the row's record. The markdown
+    version moved three copies of it by hand (the cell, the wiki-link, the
+    write-up heading); the generated view draws all three from that one key,
+    so there is nothing left to keep in step.
+
+    A missing row comes back as `"#N is not a row on <target>"`, the phrase
+    `_post_board_edit` answers 409 on. Checked here, off a read, rather than
+    read off `change_row`'s `WriteRefused`: that exception also means "the
+    row moved between your read and your write", and a second tap lands on
+    that one, so it must stay a 502. The title goes through
+    `board_write.refuse_cell`, which also refuses a bare `\\r` --
+    `set_row_title` never did, and CommonMark breaks the row on it.
+
+    **No retry**, for `set_priority`'s reason. `store` is for tests, looked
+    up at call time.
     """
-    return _amend_board(
-        target, number, lambda md: set_row_title(md, number, title), "edited")
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
+    title = (title or "").strip()
+    refused = board_write.refuse_cell(title, "the title")
+    if refused:
+        return False, f"could not retitle #{number} on {target}: {refused}"
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    if not any(item.get("number") == number for item in before["items"]):
+        return False, f"#{number} is not a row on {target}"
+    try:
+        board_write.change_row(board, number, {"title": title}, store=store)
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed retitling #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture edited #{number} on {target}")
+    return True, f"#{number} edited on {target}"
 
 
-def archive_row(target, number, dated=None):
+def archive_row(target, number, dated=None, store=None):
     """Close one boarded row as `⚫ Outdated`. Returns (ok, message).
 
     The owner, `issues.md` capture 2026-09-03: *"We should be able to
@@ -868,31 +1063,61 @@ def archive_row(target, number, dated=None):
     in his file, and comes back with one status change. That is why this
     one does not ask for a confirmation on the page and Delete does.
 
-    `set_row_status` clears the rating on the way through -- a chip on a
-    row nobody will build is the same noise as a chip on a shipped one --
-    and refuses anything that is not an open row in `## Board`, which is
-    the `None` this turns into a 409 rather than a 502.
+    **Written to the #203 record store, not to his markdown** -- the fourth
+    of the app's board writers off the file, after `set_priority`,
+    `comment_on_row` and `edit_row`. It is one `change_row` over five keys:
+    the status and its key, the rating and its key cleared (a chip on a row
+    nobody will build is the same noise as a chip on a shipped one, which is
+    what `set_row_status` did in the markdown), and `updated` stamped.
+
+    A closed row is refused off the same read that finds it. That covers a
+    row in the finished table, which `from_document` gives the `done` status
+    key whatever its cell says, and a `## Board` row that already reads
+    `✅ Done` or `⚫ Outdated`. From this button a shipped row turning
+    Outdated would be a lie about history -- `⚫ Outdated` means "never
+    built". A missing row answers with `edit_row`'s 409 phrase, decided off
+    the read for `edit_row`'s reason: `WriteRefused` also means "moved under
+    you" and that one must stay a 502.
+
+    **No retry**, for `set_priority`'s reason. `store` is for tests, looked
+    up at call time.
     """
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
     stamp = dated or datetime.now(OSLO).strftime("%m-%d")
-    closed = {}
-
-    def mutate(markdown):
-        # `set_row_status` will happily rewrite a `✅ Done` row, and it
-        # should -- a cycle correcting a status needs that. From this
-        # button it would be a lie about history: `⚫ Outdated` means
-        # "never built", and a shipped row is not that. Refused here
-        # rather than in `set_row_status` so the other callers keep it.
-        row = extract_row(markdown, number) or ""
-        for label in (STATUS_LABELS["done"], OUTDATED_STATUS):
-            if label in row:
-                closed["label"] = label
-                return None
-        return set_row_status(markdown, number, OUTDATED_STATUS, updated=stamp)
-
-    ok, message = _amend_board(target, number, mutate, "archived")
-    if not ok and "label" in closed:
-        return False, f"#{number} is already {closed['label']} on {target}"
-    return ok, message
+    refused = board_write.refuse_cell(stamp, "the date")
+    if refused:
+        return False, f"could not archive #{number} on {target}: {refused}"
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    row = next(
+        (item for item in before["items"] if item.get("number") == number), None)
+    if row is None:
+        return False, f"#{number} is not a row on {target}"
+    if row.get("statusKey") in _CLOSED_STATUS_KEYS:
+        label = (STATUS_LABELS["done"] if row["statusKey"] == "done"
+                 else OUTDATED_STATUS)
+        return False, f"#{number} is already {label} on {target}"
+    changes = {
+        "status": OUTDATED_STATUS,
+        "statusKey": status_key(OUTDATED_STATUS),
+        "priority": "",
+        "priorityKey": priority_key(""),
+        "updated": stamp,
+    }
+    try:
+        board_write.change_row(board, number, changes, store=store)
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed archiving #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture archived #{number} on {target}")
+    return True, f"#{number} archived on {target}"
 
 
 def set_project_priority(project, priority, dated=None):
@@ -1101,7 +1326,7 @@ def project_priorities():
     return parse_project_meta(current or "")
 
 
-def set_project(target, number, project):
+def set_project(target, number, project, store=None):
     """Move one boarded row to a project. Returns (ok, message).
 
     His capture, 2026-09-01: *"I/you should easily be able to assign
@@ -1113,17 +1338,63 @@ def set_project(target, number, project):
     which is exactly what `edit_row` was written to end for the title.
 
     **Creating a project is this call with a name no row carries yet**,
-    and that is why nothing here checks the name against a list.
-    `board_projects` reads the set of projects back off the rows, so a
-    new name in one cell is a new project and there is no second
-    document to keep in step. The only bound is `set_row_project`'s own,
-    which refuses the characters that would break out of the table cell.
+    and that is why nothing here checks the name against a list. The row
+    stores a name and `board_records.store_item` mints the project id the
+    first time it sees one, so there is still no second document to keep in
+    step. The bounds are `set_row_project`'s, kept: `refuse_cell`'s three
+    characters, plus a `*` (unbalanced emphasis does not stop at the cell in
+    his file) and 40 characters.
+
+    **Written to the #203 record store, not to his markdown** -- the fifth
+    of the app's board writers off the file, after `set_priority`,
+    `comment_on_row`, `edit_row` and `archive_row`. One `change_row` over the
+    `project` key; the milestone name stays, as the markdown cell did, and
+    now resolves under the new project.
+
+    A row in the finished table is refused, as `set_row_project` refused
+    it: the `## Done` view has no Project column (`board_view.DONE_COLUMNS`),
+    so the change would land in the record and show nowhere. A missing row
+    answers with `edit_row`'s 409 phrase, decided off the read for
+    `edit_row`'s reason.
+
+    **No retry**, for `set_priority`'s reason. `store` is for tests, looked
+    up at call time.
     """
-    return _amend_board(
-        target, number, lambda md: set_row_project(md, number, project), "moved")
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
+    name = (project or "").strip()
+    refused = board_write.refuse_cell(name, "the project")
+    if refused is None and "*" in name:
+        refused = "the project carries a '*', which is emphasis in his file"
+    if refused is None and len(name) > 40:
+        refused = "the project is longer than 40 characters"
+    if refused:
+        return False, f"could not move #{number} on {target}: {refused}"
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    row = next(
+        (item for item in before["items"] if item.get("number") == number), None)
+    if row is None:
+        return False, f"#{number} is not a row on {target}"
+    if row.get("done"):
+        return False, (f"#{number} is in the finished table on {target}, "
+                       "which has no Project column")
+    try:
+        board_write.change_row(board, number, {"project": name}, store=store)
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed moving #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture moved #{number} on {target}")
+    return True, f"#{number} moved on {target}"
 
 
-def remove_row(target, number):
+def remove_row(target, number, store=None):
     """Delete one boarded row and its write-up. Returns (ok, message).
 
     *"and especially delete"*. Irreversible from the app's side, which is
@@ -1150,19 +1421,51 @@ def remove_row(target, number):
     leave him unable to remove a row because a file he has never heard of
     would not write. The archive is logged instead, and the audit trail in
     `nova_site` records the deletion either way.
+
+    **Written to the #203 record store, not to his markdown** -- the sixth and
+    last of the app's board writers off the file, and the last caller of the
+    markdown read-modify-write loop, which is deleted with it. One
+    `board_write.remove_row`: the row's document is deleted on the revision it
+    was read at, and the rest of the board is checked to come back untouched.
+    The archived text is drawn by `board_view` from the record as it was read:
+    the row line at the full `BOARD_COLUMNS` width (so an `ideas.md` row, whose
+    generated table stops at `Milestone`, carries one empty trailing cell here)
+    and the `### #N —` write-up. A finished-table row can still be deleted, as
+    before.
+
+    A missing row answers with `edit_row`'s 409 phrase, decided off a read
+    for `edit_row`'s reason: `WriteRefused` also means "moved under you",
+    which must stay a 502. **No retry**, for `set_priority`'s reason. `store`
+    is for tests, looked up at call time.
     """
-    captured = {}
-
-    def mutate(markdown):
-        updated = delete_row(markdown, number)
-        if updated is not None:
-            captured["text"] = extract_row(markdown, number)
-        return updated
-
-    ok, message = _amend_board(target, number, mutate, "deleted")
-    if ok:
-        _archive_deleted_row(target, number, captured.get("text"))
-    return ok, message
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    if not any(item.get("number") == number for item in before["items"]):
+        return False, f"#{number} is not a row on {target}"
+    try:
+        item, write_up = board_write.remove_row(board, number, store=store)
+    except board_write.RowGone:
+        # A second delete of the same row lost to the first: the row he asked
+        # to delete is gone, so this is the page's cue to re-read, not a 502.
+        return False, f"#{number} is not a row on {target}"
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed deleting #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture deleted #{number} on {target}")
+    text = board_view.render_row(item)
+    if write_up:
+        text += "\n\n" + board_view.render_detail(
+            number, item.get("title"), write_up)
+    _archive_deleted_row(target, number, text)
+    return True, f"#{number} deleted on {target}"
 
 
 def _archive_deleted_row(target, number, text):
@@ -1195,7 +1498,7 @@ def _archive_deleted_row(target, number, text):
     log(f"nova-capture could not archive deleted #{number} on {target}: {result}")
 
 
-def comment_on_row(target, number, comment, dated, author="Edvard"):
+def comment_on_row(target, number, comment, dated, author="Edvard", store=None):
     """Add one comment to a boarded row's write-up. (ok, message)
 
     Idea #64, rated 🔴 Immediately and open since 2026-08-12: *"Lets me
@@ -1219,56 +1522,116 @@ def comment_on_row(target, number, comment, dated, author="Edvard"):
     already reads, under the row it is about. What a cycle owes it is a
     reply on the next line -- same call, `author="Nova"`.
 
-    `_amend_board` gives it the 409 retry the other four write paths have,
-    and it matters more here than anywhere: the concurrent writer is a
-    cycle appending to these same write-ups in step 6.
+    **Written to the #203 record store, not to his markdown** -- the second
+    of the app's board writers off the file, after `set_priority`. It is
+    `board_write.append_note`, which is `append_detail_note`'s records half:
+    the same one-line refusals, the same `NOTE_AUTHORS` check, the note at the
+    end of the write-up, and the row's `updated` cell stamped with `dated` in
+    the same write.
+
+    A `NoteRefused` comes back as `"#N is not a row on <target>: <why>"`. The
+    phrase is load-bearing: `_post_board_comment` answers 409 on it -- "nothing
+    there, do not retry" -- and 502 on anything else, and the markdown version
+    said exactly that for a missing row *and* for a row with no write-up,
+    because `append_detail_note` returned `None` for both. `append_note` checks
+    the write-up before the row, so a missing row's reason reads "has no
+    write-up" too; the 409 is right either way and the words are only
+    approximately so.
+
+    **No retry**, for `set_priority`'s reason: a row is its own document now,
+    so the only collision left is somebody writing this same row in between,
+    which `change_row` refuses without writing. That refusal is a plain
+    `WriteRefused` and deliberately does **not** get the phrase: a tap again
+    would work, so it is a 502 rather than a 409 telling the page there is
+    nothing there.
+
+    `store` is for tests, looked up at call time like `set_priority`'s.
     """
-    return _amend_board(
-        target,
-        number,
-        lambda md: append_detail_note(md, number, comment, dated, author=author),
-        "commented on",
-    )
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
+    store = store or board_store
+    try:
+        board_write.append_note(
+            board, number, comment, dated, author=author, store=store)
+    except board_write.NoteRefused as problem:
+        log(f"nova-capture refused a comment on #{number} on {target}: {problem}")
+        return False, f"#{number} is not a row on {target}: {problem}"
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed commenting on #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture commented on #{number} on {target}")
+    return True, f"#{number} commented on on {target}"
 
 
-def set_priority(target, number, priority):
+#: The app's two board targets, named the way the record store names them.
+#: Spelled here rather than imported from `tools.board_put`: the site image
+#: copies `agora_runner/` and not `tools/`, so that import is green in tests
+#: and an ImportError on the pod (the same call `nova_site._RECORD_BOARDS`
+#: makes).
+RECORD_BOARDS = {"issues": "issue", "ideas": "idea"}
+
+
+def set_priority(target, number, priority, store=None):
     """Change one boarded row's rating. Returns (ok, message).
 
-    The third write path on this site, and the first that edits something
-    *I* wrote rather than something the owner wrote. Same read-modify-write
-    and same 409 retry as `capture` and `amend`, for the same reason: a
-    cycle boarding these very files is the concurrent writer, and it is
-    the one most likely to be running, since boarding is what step 6 of
-    every cycle does.
+    **Written to the #203 record store, not to his markdown** -- the rating
+    button is the first of the app's board writers off the file. It goes
+    through `board_write.change_row`, which re-reads the whole board after the
+    write and refuses if anything but this row's two keys moved, so the page
+    cannot be damaged by a rating any more than by `tools.board_priority`,
+    which makes the same write.
 
-    `set_row_priority` returning `None` is not a write failure and is not
-    retried -- the row is gone, done, or the rating is not one of the four.
-    Re-reading would return the same answer and a 409 loop around it would
-    just spin, which is the distinction `amend` draws too.
+    Refused before anything is written, all as `(False, message)`: a target
+    that is not one of his two boards, a rating that is not one of the four
+    (or blank, which is "unrated" and is allowed), a row that is not there, and
+    a finished row -- off `done` *and* off the status cell, because a `✅ Done`
+    row that never moved to `## Done` has `done` false, and a rating chip on a
+    finished item is the state Cycle 188 left empty on purpose.
+
+    **No retry.** The markdown version retried a 409 because the whole file
+    was one document and a cycle boarding anything collided with it. A row is
+    its own document now, so the only collision left is somebody writing this
+    same row between the read and the write, which `change_row` refuses
+    without writing; he taps again.
+
+    `store` is for tests. It is looked up at call time, not bound as a
+    default, so a monkeypatched `board_store` is the one a real call uses.
     """
-    path = CAPTURE_TARGETS.get(target)
-    if path is None:
+    board = RECORD_BOARDS.get(target)
+    if board is None:
         return False, f"unknown target: {target!r}"
+    priority = canonical_priority(priority)
+    if priority is None:
+        return False, f"unknown priority -- one of {sorted(PRIORITY_LABELS.values())}"
+    store = store or board_store
 
-    result = ""
-    for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(path)
-        if current is None:
-            return False, f"{path} not found"
-        updated = set_row_priority(current, number, priority)
-        if updated is None:
-            return False, f"#{number} is not an open row on {target}"
-        result = vault_write_path(path, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture rated #{number} on {target} as {priority or '(unrated)'}")
-            return True, f"#{number} is now {priority or 'unrated'}"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed rating #{number} on {target}: {result}")
-    return False, f"could not write to {target}: {result}"
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    row = next((item for item in before["items"] if item.get("number") == number), None)
+    if row is None or row.get("done") or \
+            status_key(row.get("status", "")) in _CLOSED_STATUS_KEYS:
+        return False, f"#{number} is not an open row on {target}"
+
+    try:
+        board_write.change_row(
+            board, number,
+            {"priority": priority, "priorityKey": priority_key(priority)},
+            store=store,
+        )
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed rating #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture rated #{number} on {target} as {priority or '(unrated)'}")
+    return True, f"#{number} is now {priority or 'unrated'}"
 
 
-def set_row_order(target, number, position):
+def set_row_order(target, number, position, store=None):
     """Place one boarded row at `position` inside its milestone. Returns (ok, message).
 
     Part 3 of `row-order-and-priority-migration.md`: *"make another cycle
@@ -1277,38 +1640,55 @@ def set_row_order(target, number, position):
     half shipped in #918 and nothing called it, so the Order cell existed and
     he had no way to write one.
 
-    Same read-modify-write and same 409 retry as `set_priority` one function
-    up, against the same two documents and for the same reason -- a cycle
-    boarding these files is the concurrent writer.
+    **Written to the #203 record store, not to his markdown** -- the seventh
+    of the app's board writers off the file, after `set_priority`,
+    `comment_on_row`, `edit_row`, `archive_row`, `set_project` and
+    `remove_row`. The seats are `nova_boards.row_order_seats`, where the rule
+    and every refusal are documented: the first placement numbers the whole
+    (project, milestone) group, seeded by rating.
 
-    **A missing file is a refusal, unlike `capture`'s.** A capture creates the
-    file because the first capture has to land somewhere; a position is a
-    statement about a list of rows, and a file with no rows has no list.
+    **One `change_row` per row whose seat moves, and every refusal is decided
+    before the first of them.** A group is several documents, so there is no
+    revision spanning the writes; what survives of the old single-put promise
+    is that a placement naming a missing row, a closed row or a position
+    outside the group writes nothing at all. A row already in its seat is not
+    rewritten. If a write fails part-way the message says how many landed --
+    each seat written is a dense number, so the worst a half-finished group
+    can show is two rows on one seat until the next placement renumbers it.
 
-    `set_row_order` in `nova_boards` answering `None` is not a write failure
-    and is not retried, the same distinction `set_priority` draws: the row is
-    gone, closed, or the position is outside its own group, and re-reading
-    returns the same answer.
+    A missing row answers with `edit_row`'s 409 phrase, decided off the read.
+    **No retry**, for `set_priority`'s reason. `store` is for tests, looked
+    up at call time.
     """
-    path = CAPTURE_TARGETS.get(target)
-    if path is None:
+    board = RECORD_BOARDS.get(target)
+    if board is None:
         return False, f"unknown target: {target!r}"
-
-    result = ""
-    for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(path)
-        if current is None:
-            return False, f"{path} not found"
-        updated = _set_row_order_md(current, number, position)
-        if updated is None:
-            return False, f"cannot place #{number} on {target} at {position!r}"
-        result = vault_write_path(path, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture placed #{number} on {target} at {position}")
-            return True, f"#{number} is now #{position} in its milestone"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed placing #{number} on {target}: {result}")
-    return False, f"could not write to {target}: {result}"
-
-
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    if not any(item.get("number") == number for item in before["items"]):
+        return False, f"#{number} is not a row on {target}"
+    seats = _row_order_seats(before["items"], number, position)
+    if seats is None:
+        return False, f"cannot place #{number} on {target} at {position!r}"
+    held = {item["number"]: item.get("order") for item in before["items"]}
+    moves = [(row, seat) for row, seat in seats if held.get(row) != seat]
+    for written, (row, seat) in enumerate(moves):
+        try:
+            board_write.change_row(board, row, {"order": seat}, store=store)
+        except (board_write.WriteRefused, board_write.BoardDamaged,
+                board_records.RecordError) as problem:
+            log(f"nova-capture failed placing #{number} on {target}: {problem}")
+            said = str(problem)
+            if written:
+                # `change_row` words a row that vanished mid-group with the
+                # site's 409 phrase, and a 409 tells the page nothing was
+                # written -- false once a seat has landed, so reword it.
+                said = said.replace("is not a row", "was no longer a row")
+            return False, (f"could not write to {target}: {said} -- "
+                           f"{written} of {len(moves)} seat(s) were written")
+    log(f"nova-capture placed #{number} on {target} at {position}")
+    return True, f"#{number} is now #{position} in its milestone"

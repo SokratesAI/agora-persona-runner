@@ -1,8 +1,8 @@
 """`vault_doc_rev` reads a revision without paying for the document.
 
 `vault_read_path_rev` answers the same question and fetches the whole
-file to do it -- 656KB on `ideas.md`. The ticket store's currency check
-runs on every board payload build, so it needs the cheap form, and it
+file to do it -- 656KB on `ideas.md`. The record store's currency check
+(`board_records.currency`) runs on every board payload build, so it needs the cheap form, and it
 needs the same three-way split between absent, present and unreadable
 that `vault_read_path_rev` makes: folding "CouchDB refused" into "the
 file is missing" is the bug `VaultUnreadableDocument` exists to stop.

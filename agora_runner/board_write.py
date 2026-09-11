@@ -111,8 +111,8 @@ def refuse_cell(value, flag, allow_blank=False):
     sentence in every one of them: `board_status` had the only copy and
     `board_milestone` would have been the second, with `board_size` and
     `board_priority` still to convert. Four copies of a cell rule is how two
-    of them come to disagree. Three of the four are here now; `board_priority`
-    is the one still on markdown, and `board_size` deliberately does **not**
+    of them come to disagree. All four are here now (`board_priority` was the
+    last, Cycle 1377), and `board_size` deliberately does **not**
     route its own `--size` through this -- that value is bounded to four
     constants, so the vocabulary check is already the cell check.
 
@@ -265,6 +265,71 @@ def change_row(board, number, changes, detail=None, store=board_store):
             "between, re-read the board and try again; this check cannot tell "
             "that apart from damage")
     return held, landed
+
+
+class RowGone(WriteRefused):
+    """The row was there when the board was read and gone when the delete
+    reached it -- another delete of the same row won, most likely a second
+    tap. Its own class because the caller's answer is "that row is not there"
+    rather than "the write failed"."""
+
+
+def remove_row(board, number, store=board_store):
+    """Delete row `number` of `board` and its write-up, and check the board.
+
+    The records half of the app's Delete button. The row's document is read
+    straight after the board, as `change_row` reads its revision, and deleted
+    on that revision -- so a row another writer changed after this read comes
+    back as a refusal rather than a delete of text nobody here has seen. The
+    after-check is `change_row`'s with the expected board being the one read
+    minus this row: every other row, the order, the captures, the replies and
+    every other write-up come back exactly as they were.
+
+    Returns `(item, write_up)` as they were read, `write_up` being `None` for
+    a row that had none -- the caller archives the deleted text off these.
+    Raises `WriteRefused` before deleting anything, or `BoardDamaged` after a
+    delete that did not leave the rest of the board intact.
+    """
+    before = board_records.contents(board, store=store)
+    doc = store.read_row(board, number)
+    held = next(
+        (item for item in before["items"] if item.get("number") == number), None)
+    if held is None or doc is None:
+        raise WriteRefused(
+            f"#{number} is not a row on board {board!r} -- it holds "
+            f"{len(before['items'])} row(s)")
+    try:
+        removed = store.delete_row(doc)
+    except board_store.RowConflict as problem:
+        raise WriteRefused(
+            f"row #{number} of board {board!r} changed between reading the "
+            f"board and deleting it; re-read the board and try again ({problem})")
+    if not removed:
+        raise RowGone(
+            f"row #{number} of board {board!r} was already gone when the "
+            "delete reached it")
+
+    after = board_records.contents(board, store=store)
+    expected = {**before, "items": [
+        item for item in before["items"] if item.get("number") != number]}
+    problems = _differences(expected, after, number)
+    expected_details = {key: body for key, body in before["details"].items()
+                        if key != number}
+    if after["details"] != expected_details:
+        changed = sorted(
+            key for key in set(expected_details) | set(after["details"])
+            if expected_details.get(key) != after["details"].get(key))
+        problems.append(
+            "the write-up under "
+            f"{', '.join('#' + str(key) for key in changed)} changed")
+    if problems:
+        raise BoardDamaged(
+            f"the delete of row #{number} of board {board!r} landed and the "
+            "board came back wrong: " + "; ".join(problems)
+            + " -- if another cycle wrote a different row of this board in "
+            "between, re-read the board; this check cannot tell that apart "
+            "from damage")
+    return held, before["details"].get(number)
 
 
 class NoteRefused(WriteRefused):

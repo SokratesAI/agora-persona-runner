@@ -185,19 +185,12 @@ from agora_runner.nova_boards import (
     # `nova_boards` owns that answer, and a second copy would disagree with
     # it the first time a status is added.
     _CLOSED_STATUS_KEYS,
-    # The one parser for "what is a capture", imported rather than
-    # respelled: `_captures_from_store` has to reach exactly the same
-    # answer off the store's head text as `parse_board` reaches off the
-    # markdown, and two spellings of that rule would disagree silently.
-    _captures as captures_in,
     rank_projects,
     STATUS_LABELS,
     board_projects,
     canonical_priority,
     is_relayed,
-    parse_board,
     unanswered_comment_bodies_from_details,
-    parse_notes,
     priority_key,
     split_capture_done,
     split_capture_priority,
@@ -206,6 +199,7 @@ from agora_runner.nova_boards import (
     PROJECT_SATISFACTION_MAX,
     canonical_satisfaction,
 )
+from agora_runner.nova_own_board import own_board
 from agora_runner.nova_conversation_reads import mark_seen as mark_conversation_seen
 from agora_runner.nova_conversations import (
     autotitle as conversation_autotitle,
@@ -253,7 +247,7 @@ from agora_runner.vault import (vault_doc_rev, vault_read_path, vault_read_path_
                                 vault_write_path)
 from agora_runner.nova_notes import notes_payload
 from agora_runner.nova_costs import costs_payload as shape_costs
-from agora_runner.nova_next import (next_payload, next_payload_from_contents,
+from agora_runner.nova_next import (next_payload_from_contents,
                                     project_milestones, rank)
 from agora_runner.nova_plan import GOAL_STATUSES, set_goal_status
 from agora_runner.nova_push import store_subscription, vapid_key
@@ -264,7 +258,6 @@ from agora_runner.nova_boards import BOARD_PATHS, parse_milestone_pins
 from agora_runner.nova_galaxy import galaxy_payload
 from agora_runner.nova_sources import (
     claims_ledger_json,
-    edvard_board_markdown,
     milestone_pins_markdown,
     project_meta_markdown,
     nova_board_markdown,
@@ -279,8 +272,6 @@ from agora_runner.nova_sources import (
     retro_ledger_json,
 )
 from agora_runner import board_records
-from agora_runner import ticket_docs
-from agora_runner.ticket_docs import read_details, read_head, read_rows
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
 
@@ -765,226 +756,31 @@ def _split_details(bodies):
 
 
 
-def _store_currency(path):
-    """`(verdict, detail)` on whether the store is current with the file.
+def _his_board(name):
+    """His whole board, out of the #203 record store and nothing else.
 
-    Wrapped rather than called inline because the verdict is advisory
-    today: it is logged beside the field-by-field comparison and decides
-    nothing, so an unreachable ticket database must not turn into a failed
-    board page. `ticket_docs.UNKNOWN` is exactly the right answer to "the
-    check itself would not run".
+    Issue #203's flip. Until it, this returned `None` on anything short of
+    a proven-current store and the page drew his markdown file instead.
+    After it the records ARE his board -- every button in the app and the
+    capture box writes them, and the markdown is a view generated from them
+    -- so a markdown fallback would draw a copy that can be missing the
+    edits he just made, with nothing on the page saying so.
+
+    A store that will not answer raises, and the request fails rather than
+    serving the old file. A currency verdict other than `CURRENT` is logged
+    and does not change what is drawn: after the flip it means something
+    wrote the generated view, and that write is the bug, not the records.
     """
+    board = _RECORD_BOARDS[name]
     try:
-        return ticket_docs.currency(path, vault_doc_rev(path))
-    except Exception as problem:  # noqa: BLE001 -- see the docstring
-        return ticket_docs.UNKNOWN, f"the check could not run: {problem}"
-
-
-def _rows_from_store(name, parsed):
-    """His board's rows out of `nova_tickets`, or the parsed ones.
-
-    Returns `parsed` unchanged whenever the store does not answer with
-    exactly the same rows in the same order. That is deliberately strict:
-    a row-projection view that has drifted is not a smaller answer to fall
-    back from, it is a different board, and the page has no way to tell.
-    `tools.ticket_drift` is what reports the drift; this only decides
-    which of the two the owner is shown, and it shows the file.
-
-    The comparison is the whole value of reading the store at all today.
-    The rows carry ten fields and the markdown carries those ten plus the
-    bodies, so agreeing here means the store reproduces the list exactly
-    -- measured on every payload build rather than once a cycle.
-    """
-    path = BOARD_PATHS[name]["edvard"]
-    try:
-        rows = read_rows(path)
-    except Exception as problem:
-        # Every failure mode is the same decision: draw the file. A
-        # narrower except would let a new CouchDB error empty his board,
-        # which is the one outcome this function exists to prevent.
-        log(f"nova-site {name} rows unreadable from the ticket store: {problem}")
-        return parsed
-    # Said in the same line either way: whether the store *claims* to be
-    # current, by revision, and whether it *is*, by comparing every field.
-    # The two answers are what the next slice of this migration turns on.
-    # A reader that stops fetching the markdown loses the field-by-field
-    # check with the fetch, so the revision has to be trustworthy first --
-    # and the only way to find out is to log both while the strong check
-    # is still running and see whether they ever disagree.
-    verdict, why = _store_currency(path)
-    if rows != parsed:
-        # Said out loud rather than absorbed. A fallback nothing reports
-        # is the failure this loop keeps filing against itself: the page
-        # would look right forever while the store the migration is
-        # supposed to end up on quietly stopped agreeing with the file.
-        log(
-            f"nova-site {name} rows disagree with the ticket store: "
-            f"{len(parsed)} parsed against {len(rows)} stored; drawing the file "
-            f"(revision says {verdict}: {why})"
-        )
-        return parsed
-    if verdict != ticket_docs.CURRENT:
-        # Not a fallback and not an error -- the rows agree, so the page is
-        # right. It is the *revision* that could not confirm it, which is
-        # the one thing standing between this migration and dropping the
-        # markdown fetch, so it is worth a line rather than silence.
-        log(f"nova-site {name} rows agree with the ticket store but its "
-            f"revision says {verdict}: {why}")
-    return rows
-
-
-def _details_from_store(name, parsed):
-    """His board's write-ups out of `nova_tickets`, or the parsed ones.
-
-    The second reader of the one-document-per-ticket migration, built to
-    the same rule as `_rows_from_store` above: the store's answer is used
-    only when it matches the markdown exactly, and the markdown is drawn
-    on any disagreement, any missing write-up and any failure to read at
-    all. A write-up is his prose about his own problem -- a truncated or
-    stale one is worse than a slow one.
-
-    Why the whole dict is compared rather than the numbers: the row view
-    carries ten short fields and a body carries kilobytes, so the failure
-    mode this catches is not a missing row but a body that stopped
-    tracking edits to the file. Only an exact match tells them apart.
-
-    This still saves no fetch, and that is the same deliberate position
-    the rows landed in. His unboarded captures and the unanswered-comment
-    flags are parsed out of the same markdown this call has already
-    fetched, so they are the remaining slices; the markdown fetch may go
-    when the last of them moves and the revision verdict has been seen to
-    agree with these comparisons, not before.
-    """
-    path = BOARD_PATHS[name]["edvard"]
-    try:
-        stored = read_details(path)
-    except Exception as problem:
-        # One decision for every failure mode, exactly as the rows do it:
-        # draw the file. A narrower except would let a new CouchDB error
-        # blank out his write-ups.
-        log(f"nova-site {name} write-ups unreadable from the ticket store: {problem}")
-        return parsed
-    if stored != parsed:
-        # Said out loud rather than absorbed. A fallback nothing reports
-        # is how the page would go on looking right forever while the
-        # store this migration ends up on quietly stopped agreeing.
-        log(
-            f"nova-site {name} write-ups disagree with the ticket store: "
-            f"{len(parsed)} parsed against {len(stored)} stored; drawing the file"
-        )
-        return parsed
-    return stored
-
-
-def _captures_from_store(name, parsed):
-    """His unboarded capture bullets out of `nova_tickets`, or the parsed ones.
-
-    The third and last reader of the one-document-per-ticket migration,
-    built to the same rule as `_rows_from_store` and `_details_from_store`
-    above: the store's answer is used only when it matches the markdown
-    exactly, and the markdown is drawn on any disagreement and on any
-    failure to read at all. `parsed` and the return value are both the
-    `(captures, captureReplies)` pair, kept together because they are
-    parallel lists and a reader that took one from each side could put my
-    answer under his next bullet.
-
-    A capture is the strongest signal a cycle gets and it is the owner
-    typing directly, so the same asymmetry the other two readers make
-    applies harder here: a stale capture is worse than a slow one.
-
-    **This is the call that lets the markdown fetch go.** The rows and the
-    write-ups moved first and neither saved a byte, because the captures
-    were still parsed out of the same half-megabyte the page had already
-    fetched.
-    Dropping the fetch is its own slice and is not done here -- what is
-    done is that nothing on the board page is left that only the markdown
-    can answer.
-    """
-    path = BOARD_PATHS[name]["edvard"]
-    try:
-        head = read_head(path)
-    except Exception as problem:
-        # One decision for every failure mode, exactly as the two readers
-        # above do it: draw the file. A narrower except would let a new
-        # CouchDB error take his captures off the page, and they are the
-        # one thing on it that nothing else in this loop displays.
-        log(f"nova-site {name} captures unreadable from the ticket store: {problem}")
-        return parsed
-    stored = captures_in(head)
-    if stored != parsed:
-        # Said out loud rather than absorbed, the same reason the other
-        # two say it: a fallback nothing reports is how the page goes on
-        # looking right forever while the store quietly stops agreeing.
-        log(
-            f"nova-site {name} captures disagree with the ticket store: "
-            f"{len(parsed[0])} parsed against {len(stored[0])} stored; drawing the file"
-        )
-        return parsed
-    return stored
-
-
-def _board_from_store(name):
-    """His whole board out of `nova_tickets`, or `None` to fetch the file.
-
-    The last slice of the one-document-per-ticket migration, and the
-    first one that saves anything: the three readers above each proved
-    the store agreed with the markdown by *fetching the markdown*, so
-    every one of them made the page correct and none of them made it
-    cheaper. `issues.md` is 537KB and the board page is the most-opened
-    page on the site.
-
-    What replaces the per-build comparison is `ticket_docs.currency`,
-    which answers the same question off a 207-byte revision document
-    instead of the file. It is only trusted here because it has been
-    watched: `runner#679` wired the verdict in beside the field-by-field
-    comparison and logged both, `runner#685` fixed the repair command
-    that was deleting the stamp, `runner#686` made a board found
-    identical stamp its own revision, and both of his boards have since
-    been measured answering `current` live. `tools.ticket_drift` still
-    renders each board out of CouchDB and diffs it against the markdown
-    once a cycle, so the strong check did not go away -- it moved off the
-    request path and into preflight, where its verdict is written down.
-
-    `None` on anything short of a proven-current, fully readable board,
-    and the caller then does exactly what it always did. Three ways to
-    get it: the revision cannot confirm the store (`stale`, `unknown`, or
-    a check that could not run), a projection fails to read, or the store
-    answers with **no rows at all**. That last one is the failure mode
-    the revision cannot see -- the stamp is its own document, so a lost
-    or half-written layout document leaves the stamp current and the
-    board empty -- and neither of his boards has ever been empty, so
-    paying one fetch to find out is the right trade.
-    """
-    path = BOARD_PATHS[name]["edvard"]
-    verdict, why = _store_currency(path)
-    if verdict != ticket_docs.CURRENT:
-        # Not an error and usually not even a problem -- a board written
-        # from a process that could not learn the revision stamps
-        # nothing, and `unknown` is the honest answer to that. Logged
-        # because the fetch it costs is the whole point of this slice.
-        log(f"nova-site {name} fetching the markdown: "
-            f"revision says {verdict}: {why}")
-        return None
-    try:
-        rows = read_rows(path)
-        details = read_details(path)
-        captures, capture_replies = captures_in(read_head(path))
-    except Exception as problem:  # noqa: BLE001
-        # One decision for every failure mode, the same one the three
-        # readers above make: draw the file. A narrower except would let
-        # a new CouchDB error empty his board.
-        log(f"nova-site {name} unreadable from the ticket store: {problem}")
-        return None
-    if not rows:
-        log(f"nova-site {name} has no rows in the ticket store though its "
-            f"revision says current; fetching the markdown")
-        return None
-    return {
-        "items": rows,
-        "details": details,
-        "captures": captures,
-        "captureReplies": capture_replies,
-    }
+        verdict, why = board_records.currency(
+            board, vault_doc_rev(BOARD_PATHS[name]["edvard"]))
+    except Exception as problem:  # noqa: BLE001 -- a log line, never a gate
+        verdict, why = board_records.UNKNOWN, str(problem)
+    if verdict != board_records.CURRENT:
+        log(f"nova-site {name}: the generated markdown and the records "
+            f"disagree ({verdict}: {why}); drawing the records")
+    return board_records.contents(board)
 
 
 def board_payload(name):
@@ -997,39 +793,9 @@ def board_payload(name):
     ~60KB of that -- which is precisely why they never go out with the
     list. See `board_page`.
     """
-    # **His half of the page comes out of the ticket store when the store
-    # can prove it is current, and his file is not fetched at all.** That
-    # is the whole of what this migration was for; everything before it
-    # made the page correct off the store while still paying for the
-    # markdown to check it. `_board_from_store` says what "prove" means
-    # and returns `None` on anything less, which drops straight through
-    # to the code that has always been here.
-    board = _board_from_store(name)
-    if board is None:
-        # **The fallback, and it is still the source of truth.** A store
-        # that is unreachable, behind, or missing a row must not empty his
-        # board -- the markdown is the file he edits and it is always
-        # right. On this path the three readers below each take the
-        # store's answer *only when it matches the file field by field*,
-        # and say so out loud when it does not, which is what proved the
-        # store trustworthy enough for the fast path above to exist.
-        board = parse_board(edvard_board_markdown(name))
-        board["items"] = _rows_from_store(name, board["items"])
-        # The write-up and the conversation appended under it, told apart
-        # further down rather than on the page: `render_blocks` flattens
-        # both into the same list of paragraphs, and once that has
-        # happened nothing downstream can tell his question from my
-        # answer from the problem statement above them both. His capture,
-        # 2026-08-26: *"boarded issues does not have those nice colored
-        # comments like there are now in the 'not boarded yet' box"*.
-        board["details"] = _details_from_store(name, board["details"])
-        # His unboarded captures. They are not tickets, so there was
-        # nothing to read them back off until `to_records` started filing
-        # every line that is neither a row nor a write-up as a text block
-        # in the layout -- the bullets above `## Board` are the layout's
-        # opening run of text, and `ticket_docs.read_head` returns it.
-        board["captures"], board["captureReplies"] = _captures_from_store(
-            name, (board["captures"], board["captureReplies"]))
+    # **His half of the page comes out of the #203 record store and his
+    # file is never fetched.** `_his_board` says why there is no fallback.
+    board = _his_board(name)
     nova_markdown, nova_archive_markdown = nova_board_markdown(name)
     # Which rows he asked a question on and nobody answered. Stamped onto
     # the row here rather than worked out again by whoever needs it,
@@ -1060,67 +826,18 @@ def board_payload(name):
             # it would raise the relays this loop was told not to raise.
             item["relayed"] = is_relayed(waiting_bodies[item["number"]])
     details, detail_comments = _split_details(board["details"])
-    # My own two files get parsed as a board as well as a note stream --
-    # issue #97, the half of it the owner kept: *"making your board like
-    # mine and giving yourself more tidiness is an improvement"*. Until
-    # now `parse_board` was only ever pointed at his file, so my side of
-    # the page could only ever be a flat bullet list and there was no way
-    # to say a thing I filed was open, rated, or finished.
-    #
-    # The notes stream is untouched and stays underneath. That is the
-    # design rather than a step on the way to migrating it: 654 issue
-    # bullets and 221 idea bullets are a log, and a board built out of all
-    # of them would be a worse board than none. A cycle boards the few
-    # that are real work; the rest stay history.
-    mine = parse_board(nova_markdown)
-    # Rendered inline rather than fetched per row, which is the opposite
-    # of what `details` above does and is deliberate. His `# Details` is
-    # ~60KB and is stripped from the list for that reason; mine is 0 bytes
-    # today and every row on it will have been put there by a cycle that
-    # judged it worth tracking. When it grows past a page it takes the
-    # same treatment -- `board_page` is where that would go.
-    # A write-up that has been rolled into the archive is still that
-    # row's write-up. Nothing moves a `# Details` body out of the live
-    # file yet -- `tools/roll_captures.py` moves the older *captures* and
-    # stops there -- and that is precisely the order this has to happen
-    # in: `mine` is the live file only, so the day the roller learns to
-    # move a body, every row it moved would draw an empty write-up on the
-    # page with nothing failing anywhere. The page has to be able to read
-    # a rolled body before the roller may write one.
-    #
-    # A number in both files is one write-up in two halves, not two
-    # versions of one, so both are drawn -- archived half first. A
-    # `# Details` body is append-only: the row's original statement sits
-    # at the top and every later cycle adds a `**Nova, <date> (Cycle
-    # N):**` paragraph under it. So the older half is not superseded by
-    # the newer one, and the archive is by construction the older.
-    #
-    # This used to be `setdefault` -- live wins, archived half dropped --
-    # and that is what stops an *open* row's write-up from ever being
-    # rolled: the roller moves the older paragraphs off, the row is
-    # written again within the hour, and the moved half silently
-    # disappears from the page. Only a done row could be rolled, and
-    # those are 1 of 29 (`tools.roll_health`, 2026-09-06), which is why
-    # 48,118 bytes of open-row bodies sit unbounded on my own issues.md.
-    #
-    # `parse_board` over an archive that has no `## Board` table returns
-    # no items, so this adds bodies and never rows -- an archived row is
-    # still a row on the live board.
-    for number, body in parse_board(nova_archive_markdown)["details"].items():
-        live_body = mine["details"].get(number)
-        if live_body is None:
-            mine["details"][number] = body
-        else:
-            mine["details"][number] = body.rstrip() + "\n\n" + live_body.lstrip()
+    # My own board is read by `nova_own_board`, which holds the only two
+    # `parse_board` calls left in this loop that point at *my* files rather
+    # than his. Issue #203: the switchover has nothing to convert those two
+    # to, and while they sat in this module `board_reader_inventory` could
+    # never let `nova_site` leave the count however much of it was
+    # converted. Rendering stays here -- what the page draws is not a
+    # property of my board files.
+    mine, nova_notes = own_board(nova_markdown, nova_archive_markdown)
     nova_details, nova_detail_comments = _split_details(mine["details"])
-    # Live first, then the rolled-off older half -- both files are
-    # newest-first and the archive holds only what is older than the live
-    # file's oldest, so appending preserves the order rather than
-    # requiring a sort. `parse_notes` is deliberately run twice instead
-    # of over a concatenation; `board_markdown` says why.
     notes = [
         dict(note, blocks=render_blocks(note.pop("text")))
-        for note in parse_notes(nova_markdown) + parse_notes(nova_archive_markdown)
+        for note in nova_notes
     ]
     return {
         "name": name,
@@ -1897,56 +1614,18 @@ def galaxy_up_payload():
 _RECORD_BOARDS = {"issues": "issue", "ideas": "idea"}
 
 
-def _next_from_records():
-    """Both of his boards out of the #203 record store, or `None`.
+def _his_boards():
+    """Both of his boards out of the #203 record store, for `/api/next`.
 
-    Issue #203's switchover, for `/api/next`. `next_up_payload` is the
-    slowest payload this server builds -- 7.41s cold, measured against the
-    live pod on 2026-09-07 -- and most of that is fetching and regex-parsing
-    537KB of `issues.md` and 920KB of `ideas.md` to rank them. The records
-    answer the same four keys without either file.
-
-    **Both boards or neither.** Ranking one board out of the store and the
-    other out of the markdown is one list built from two sources, and
-    `rank` interleaves them, so a row could sort above another row that is
-    a revision older with nothing on the page saying so. `None` here means
-    the caller draws both from the file exactly as it always did.
-
-    The gate is `board_records.currency` against the revision the vault
-    holds now, which is the same shape `_board_from_store` uses for the
-    ticket store and for the same reason: the point of the store is not
-    fetching the 700KB file, so a check that fetched it would spend what it
-    is saving. `UNKNOWN` does not pass -- a board that carries no source
-    stamp says nothing about drift, and treating that as "no drift found"
-    would serve stale rows with more confidence than reading the file.
-
-    Every failure returns `None` and is logged. A board CouchDB will not
-    answer for, an unmigrated store, a revision check that will not run:
-    they are all the same decision here, which is to draw the file. That is
-    the opposite of `tools.top_board_rows`, where every failure raises, and
-    the difference is the reader -- a cycle can read a refusal and act on
-    it, while a visitor gets a page that failed to build.
+    Issue #203's flip. `next_up_payload` was the slowest payload this
+    server builds -- 7.41s cold, measured against the live pod on
+    2026-09-07 -- and most of that was fetching and regex-parsing 537KB of
+    `issues.md` and 920KB of `ideas.md` to rank them. The records answer
+    the same four keys without either file, and after the flip they are the
+    only copy that carries his latest edits, so there is no fallback: a
+    board the store will not answer for raises, as `_his_board` does.
     """
-    contents = {}
-    for name, board in _RECORD_BOARDS.items():
-        path = BOARD_PATHS[name]["edvard"]
-        try:
-            verdict, why = board_records.currency(board, vault_doc_rev(path))
-        except Exception as problem:  # noqa: BLE001 -- see the docstring
-            log(f"nova-site next: {board} records unreadable, drawing the "
-                f"markdown: the revision check could not run: {problem}")
-            return None
-        if verdict != board_records.CURRENT:
-            log(f"nova-site next: {board} records say {verdict}, drawing the "
-                f"markdown: {why}")
-            return None
-        try:
-            contents[name] = board_records.contents(board)
-        except Exception as problem:  # noqa: BLE001 -- see the docstring
-            log(f"nova-site next: {board} records unreadable, drawing the "
-                f"markdown: {problem}")
-            return None
-    return contents
+    return {name: _his_board(name) for name in _RECORD_BOARDS}
 
 
 def next_up_payload():
@@ -1957,10 +1636,8 @@ def next_up_payload():
     Both halves are answered by `tools/top_board_rows.py` at the start of
     every cycle and neither has ever left the terminal.
 
-    **His two boards come out of the #203 record store when it can prove
-    it is current, and neither file is fetched.** `_next_from_records`
-    says what "prove" means and returns `None` on anything less, which
-    drops through to the markdown door this always used. The ranking needs
+    **His two boards come out of the #203 record store and neither file
+    is fetched** -- `_his_boards` says why there is no fallback. The ranking needs
     the board *details* as well as the rows -- an unanswered comment is
     read off the write-up under the row -- and `board_records.contents`
     answers exactly what `parse_board` answered, all four keys, which is
@@ -1973,19 +1650,10 @@ def next_up_payload():
     rest at 15 seconds, which is short enough that a claim taken mid-cycle
     shows up while he is looking at it.
     """
-    contents = _next_from_records()
-    if contents is not None:
-        return next_payload_from_contents(
-            contents["issues"],
-            contents["ideas"],
-            claims_ledger_json(),
-            datetime.now(OSLO),
-            projects_markdown=project_meta_markdown(),
-            milestones_markdown=milestone_pins_markdown(),
-        )
-    return next_payload(
-        edvard_board_markdown("issues"),
-        edvard_board_markdown("ideas"),
+    contents = _his_boards()
+    return next_payload_from_contents(
+        contents["issues"],
+        contents["ideas"],
         claims_ledger_json(),
         datetime.now(OSLO),
         projects_markdown=project_meta_markdown(),
@@ -5291,7 +4959,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
             is_error=not ok,
         )
-        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+        # A missing row is the page's cue to re-read, as on every sibling row
+        # route; until #203 this one answered it with the generic 502.
+        stale = "is not a row" in message
+        self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
 
     def _post_project(self, payload):
         """`POST /api/board/project` -- the owner moving a row to a project.
@@ -5310,7 +4981,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         free text by design -- `board_projects` derives the project list
         from the cells, so typing a name no row carries is how a project
         is created, and a fixed set here would be the constant that
-        design ruled out. What bounds it is `set_row_project`, which
+        design ruled out. What bounds it is `nova_capture.set_project`, which
         refuses a `|`, a line break, a `*` and anything past 40
         characters -- the four things that would break out of the cell
         rather than merely be unexpected in it.
@@ -5358,7 +5029,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
             is_error=not ok,
         )
-        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+        # A missing row is the page's cue to re-read, as on every sibling row
+        # route; until #203 this one answered it with the generic 502.
+        stale = "is not a row" in message
+        self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
 
     def _post_project_priority(self, payload):
         """`POST /api/project/priority` -- rating a project, not a row.
@@ -5662,7 +5336,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         failed, there is simply nothing there to comment under, and the
         page should say so rather than retry.
 
-        **`_amend_board` fails in two ways and only one of them is that**,
+        **A board write fails in two ways and only one of them is that**,
         which the first version of this route missed while its docstring
         claimed otherwise (reviewer). The other is a genuine write
         failure: `WRITE_ATTEMPTS` exhausted against a losing

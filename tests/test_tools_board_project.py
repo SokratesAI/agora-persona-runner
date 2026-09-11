@@ -1,81 +1,47 @@
-"""`tools.board_project` -- tagging rows with a project moves exactly those cells.
+"""`tools.board_project` -- tagging rows with a project, against the record store.
 
-`tests/test_board_project.py` one file over covers `set_row_project` itself,
-including the header widening that stops a six-cell row landing under a
-five-cell header. What is tested here is the half that did not exist until
-Cycle 700: the CLI around it, and specifically two things the library call
-cannot do on its own.
+`tests/test_board_project.py` one file over still covers `set_row_project`,
+the markdown writer, which this tool no longer calls: issue #203 moves the
+boards out of markdown, so what this CLI now does is read `board_records`,
+name a cell, and hand the row to `board_write.change_row`.
 
-The first is `check`, which re-parses the whole document and refuses the
-write unless the rows named are the only things that moved -- same shape as
-`tools.board_status.check`, and tighter, because setting a project may not
-change a title, a status, a rating, a write-up or the bullet stream.
+**Every test here goes through the fake store, and none of them holds a line
+of board markdown.** That is the same rule `tests/test_board_write.py` sets
+and it matters more here, because the old version of this file asserted on
+`parse_board` output of a file on disk -- which agrees with a converted and
+an unconverted tool alike, and so could not tell the two apart.
 
-The second is that **several rows are set in one process**. A project is by
-definition more than one row, and tagging them one run at a time would mean
-one compare-and-swap pair per row on the same document; losing one of those
-halfway leaves a project that exists on some of its rows and not others.
-So the all-or-nothing behaviour is asserted here rather than assumed: a run
-naming a good row and a bad one must leave the file exactly as it found it.
+What is left worth testing is the vocabulary and the refusals, since the
+after-check the old `check_from_contents` performed lives in `change_row`
+now and is tested there against a damaged store rather than a bad argument:
 
-Every assertion is on `parse_board` output rather than on the string, for
-the same reason `test_tools_board_status` gives: these files are rendered
-through that parser, so a shifted cell is still a well-formed table and
-reads as plausible right up until the page draws a title in a status column.
+- the named rows get the project and nothing else on the board moves;
+- **a run naming a good row and an absent one writes nothing at all** -- the
+  half of the old all-or-nothing promise that survives one document per row,
+  and the one that catches a typo'd number halfway through a project;
+- a name that would escape its own cell in the generated markdown view is
+  refused here, by name, before the store is read.
 """
 
-from agora_runner.nova_boards import (
-    DEFAULT_PROJECT,
-    board_projects,
-    parse_board,
-    parse_notes,
-)
-from tools.board_project import check, main
+import pytest
 
-BOARD = """---
-type: log
----
-
-# Nova — Issues
-
-## Entries
-
-- 2026-08-26 (Cycle 480) — a bullet nothing here may touch
-
-## Board
-
-| # | Item | Status | Updated | Priority |
-|---|------|--------|---------|---|
-| [[#122 — k3s on the NAS\\|122]] | k3s on the NAS | ⏸ Blocked on Edvard | 08-30 | 🔴 Immediately |
-| [[#131 — server1 memory\\|131]] | server1 memory | 🟡 In progress | 08-31 | 🔴 Immediately |
-| [[#104 — Metered API\\|104]] | Metered API | ⚪ Backlog | 08-24 | 🟠 High |
-
-## Done
-
-| # | Item | Landed | Where |
-|---|------|--------|-------|
-| [[#51 — One way\\|51]] | One way | 08-10 | inbox.md |
-
-# Details
-
-### #122 — k3s on the NAS
-
-Body text nothing here may touch.
-
-### #131 — server1 memory
-
-More body text nothing here may touch.
-
-### #104 — Metered API
-
-Yet more body text nothing here may touch.
-"""
+from agora_runner import board_records, board_write
+from agora_runner.nova_boards import DEFAULT_PROJECT, board_projects
+from tests.test_board_records import writable
+from tools import board_project
+from tools.board_project import main, missing_rows, refuse_project
 
 
-def _run(tmp_path, board=BOARD, numbers=("122",), project="NAS", **overrides):
-    path = tmp_path / "issues.md"
-    path.write_text(board, encoding="utf-8")
-    argv = ["--file", str(path), "--project", project]
+@pytest.fixture
+def store(monkeypatch):
+    """A migrated, writable fake store, wired in where `main` looks for it."""
+    _, fake = writable()
+    monkeypatch.setattr(board_project, "board_store", fake)
+    return fake
+
+
+def _run(numbers=(41,), project="NAS", board="issue", **overrides):
+    argv = ["--board", board, "--project", project]
     for number in numbers:
         argv += ["--number", str(number)]
     for flag, value in overrides.items():
@@ -84,142 +50,142 @@ def _run(tmp_path, board=BOARD, numbers=("122",), project="NAS", **overrides):
             argv.append(flag)
         elif value is not None:
             argv += [flag, str(value)]
-    return main(argv), path
+    return main(argv)
 
 
-def _rows(path):
-    text = path.read_text(encoding="utf-8")
-    return {item["number"]: item for item in parse_board(text)["items"]}
+def _rows(store, board="issue"):
+    return {item["number"]: item
+            for item in board_records.contents(board, store=store)["items"]}
 
 
-def test_one_row_gets_the_project_and_keeps_everything_else(tmp_path):
-    code, path = _run(tmp_path)
-    assert code == 0
-    row = _rows(path)[122]
+def test_one_row_gets_the_project_and_keeps_everything_else(store):
+    before = _rows(store)[42]
+    assert _run(numbers=(42,)) == 0
+    row = _rows(store)[42]
     assert row["project"] == "NAS"
-    assert row["title"] == "k3s on the NAS"
-    assert row["status"] == "⏸ Blocked on Edvard"
-    assert row["priority"] == "🔴 Immediately"
+    assert row == dict(before, project="NAS")
 
 
-def test_every_named_row_lands_in_one_run(tmp_path):
-    code, path = _run(tmp_path, numbers=("122", "131"))
-    assert code == 0
-    rows = _rows(path)
-    assert rows[122]["project"] == "NAS"
-    assert rows[131]["project"] == "NAS"
-    # The row nobody named keeps the board's default rather than inheriting
-    # the one being written -- a blank sixth cell reads as `DEFAULT_PROJECT`,
-    # which is why "untagged" and "under NAS" are distinguishable at all.
-    assert rows[104]["project"] == DEFAULT_PROJECT
+def test_every_named_row_lands_in_one_run(store):
+    assert _run(numbers=(41, 42)) == 0
+    rows = _rows(store)
+    assert rows[41]["project"] == "NAS"
+    assert rows[42]["project"] == "NAS"
+    # The row nobody named keeps what it had rather than inheriting the one
+    # being written -- which is why "untagged" and "under NAS" are
+    # distinguishable at all.
+    assert rows[43]["project"] == "Marcus"
+    assert rows[40]["project"] == DEFAULT_PROJECT
 
 
-def test_the_project_list_is_read_back_off_the_rows(tmp_path):
-    code, path = _run(tmp_path, numbers=("122", "131"))
-    assert code == 0
-    items = parse_board(path.read_text(encoding="utf-8"))["items"]
-    # Row order decides the list order, and #122 and #131 come first, so the
-    # two tagged rows lead and the untagged one falls back to the default.
-    assert board_projects(items) == ["NAS", DEFAULT_PROJECT]
+def test_the_rest_of_the_board_is_untouched(store):
+    before = board_records.contents("issue", store=store)
+    assert _run(numbers=(42,)) == 0
+    after = board_records.contents("issue", store=store)
+    assert after["captures"] == before["captures"]
+    assert after["captureReplies"] == before["captureReplies"]
+    assert after["details"] == before["details"]
+    assert [item["number"] for item in after["items"]] \
+        == [item["number"] for item in before["items"]]
 
 
-def test_the_header_grows_to_the_full_board_width(tmp_path):
-    """A data row wider than its header is dropped by Obsidian.
+def test_the_project_list_is_read_back_off_the_rows(store, capsys):
+    assert _run(numbers=(41, 42)) == 0
+    printed = capsys.readouterr().out
+    assert "projects on this board: " in printed
+    # Row 40 is never named and stays under the default, so the list is
+    # read off the rows rather than being the argument echoed back.
+    assert board_projects(
+        board_records.contents("issue", store=store)["items"]) \
+        == ["NAS", "Marcus", DEFAULT_PROJECT]
 
-    The widener takes the header to `_BOARD_WIDTH` in one go rather than to
-    the one column the caller is setting, so writing a project also names
-    the `Size` column that milestone M2 added. Both headings are asserted
-    by name and not only by a `|` count: a count passes on a header that
-    grew an unlabelled cell, which is the failure the width constant is
-    supposed to have made impossible.
+
+def test_an_absent_row_in_a_multi_row_run_writes_nothing(store, capsys):
+    """The half of all-or-nothing that survives one document per row.
+
+    The assertion is on the *first* named row, not only on the exit code: a
+    tool that wrote #41 and then discovered #999 would exit 1 too, and the
+    whole point of checking the board before the first write is that it does
+    not. A mutation moving `missing_rows` below the write loop passes a test
+    that reads the code alone.
     """
-    code, path = _run(tmp_path)
-    assert code == 0
-    text = path.read_text(encoding="utf-8")
-    header = [line for line in text.split("\n") if line.startswith("| # |")][0]
-    assert header.count("|") == 10, header
-    assert header.rstrip().endswith(
-        "| Priority | Project | Size | Milestone | Order |"), header
+    before = _rows(store)[41]
+    assert _run(numbers=(41, 999)) == 1
+    assert _rows(store)[41] == before
+    assert "#999 is not a row on the issue board" in capsys.readouterr().err
 
 
-def test_a_bad_row_in_a_multi_row_run_writes_nothing(tmp_path, capsys):
-    """All or nothing: a half-tagged project is worse than an untagged one.
+def test_a_pipe_in_the_project_name_is_refused(store):
+    before = _rows(store)[42]
+    assert _run(numbers=(42,), project="NAS | server1") == 1
+    assert _rows(store)[42] == before
 
-    The assertion is on *which* refusal fires, not only on the exit code.
-    `check` would also refuse this run — it reports every named row that did
-    not come back under the project — so stopping at the first bad row is
-    invisible from the exit code alone, and a mutation replacing the `return`
-    with a `continue` passes a test that reads only the code and the file.
-    What the loop actually buys is the message: the row that could not be
-    reached is named, with the reason, instead of arriving as a downstream
-    parse comparison the reader has to work backwards from.
+
+@pytest.mark.parametrize("name,phrase", [
+    ("   ", "may not be blank"),
+    ("N" * 41, "41 characters"),
+    ("NAS*", "a '*'"),
+    ("NAS\nserver1", "a newline"),
+])
+def test_a_name_that_escapes_its_cell_is_refused_by_name(name, phrase):
+    """Refused before the store is read, and the message names the reason.
+
+    Each of these exits 1, so a test reading only the exit code cannot tell
+    the four apart -- and cannot tell any of them from a refusal further
+    down. The phrase is what says which rule fired.
     """
-    code, path = _run(tmp_path, numbers=("122", "999"))
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
+    assert phrase in (refuse_project(name.strip()) or "")
+
+
+def test_a_legal_name_is_not_refused():
+    """The negative half. Without it, `refuse_project` could refuse always."""
+    assert refuse_project("NAS") is None
+
+
+def test_dry_run_prints_the_moves_and_writes_nothing(store, capsys):
+    before = _rows(store)[42]
+    assert _run(numbers=(42,), dry_run=True) == 0
+    assert _rows(store)[42] == before
+    # `contents` fills an unfiled row with `DEFAULT_PROJECT`, so the "from"
+    # side is a name and never a blank -- there is no `(none)` on a record.
+    assert "#42: Nova -> NAS" in capsys.readouterr().out
+
+
+def test_missing_rows_keeps_the_order_it_was_given(store):
+    contents = board_records.contents("issue", store=store)
+    assert missing_rows(contents, [999, 41, 998]) == [999, 998]
+
+
+def test_an_unmigrated_store_is_refused_rather_than_read_as_an_empty_board(
+        monkeypatch, capsys):
+    """`contents` raises here, and the tool may not turn that into a no-op."""
+
+    class Unmigrated:
+        def read_registry(self):
+            return {}
+
+    monkeypatch.setattr(board_project, "board_store", Unmigrated())
+    assert _run(numbers=(41,)) == 1
+    assert "never been written" in capsys.readouterr().err
+
+
+def test_a_row_the_after_check_refuses_names_what_already_landed(
+        store, monkeypatch, capsys):
+    """Two rows, the second write refused: the first is named, not hidden.
+
+    One document per row means there is no revision spanning the two writes
+    to roll back, so the re-run has to be the rows that did not land -- and
+    the caller can only know which those are if this says so.
+    """
+    real = board_write.change_row
+
+    def refuse_the_second(board, number, changes, **kwargs):
+        if number == 42:
+            raise board_write.WriteRefused("the row moved underneath")
+        return real(board, number, changes, **kwargs)
+
+    monkeypatch.setattr(board_write, "change_row", refuse_the_second)
+    assert _run(numbers=(41, 42)) == 1
     err = capsys.readouterr().err
-    assert "#999 is not a row in '## Board'" in err, err
-
-
-def test_a_row_only_in_done_is_out_of_reach(tmp_path):
-    code, path = _run(tmp_path, numbers=("51",))
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
-
-
-def test_a_pipe_in_the_project_name_is_refused(tmp_path):
-    code, path = _run(tmp_path, project="NAS | server1")
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
-
-
-def test_a_blank_project_is_refused(tmp_path, capsys):
-    """And refused *here*, by name, rather than falling through to the library.
-
-    `set_row_project` also rejects an empty name, so the exit code is 1
-    either way and a test that reads only the code cannot tell the CLI's own
-    guard from the one underneath it. The two produce different messages, and
-    the one that says "--project may not be blank" is the one that names the
-    argument the caller actually typed.
-    """
-    code, path = _run(tmp_path, project="   ")
-    assert code == 1
-    assert path.read_text(encoding="utf-8") == BOARD
-    assert "--project may not be blank" in capsys.readouterr().err
-
-
-def test_dry_run_prints_and_writes_nothing(tmp_path):
-    code, path = _run(tmp_path, dry_run=True)
-    assert code == 0
-    assert path.read_text(encoding="utf-8") == BOARD
-
-
-def test_check_catches_a_status_changed_underneath_the_project_move(tmp_path):
-    """`check` reads the document, not the diff it was handed."""
-    after = BOARD.replace("🟡 In progress", "✅ Done")
-    problems = check(BOARD, after, [122], "NAS")
-    assert any("#131" in problem for problem in problems), problems
-
-
-def test_check_catches_a_row_that_did_not_get_the_project(tmp_path):
-    problems = check(BOARD, BOARD, [122], "NAS")
-    assert any("asked for 'NAS'" in problem for problem in problems), problems
-
-
-def test_check_catches_an_edited_write_up(tmp_path):
-    code, path = _run(tmp_path)
-    assert code == 0
-    good = path.read_text(encoding="utf-8")
-    bad = good.replace("Body text nothing here may touch.", "rewritten")
-    problems = check(BOARD, bad, [122], "NAS")
-    assert any("write-up" in problem for problem in problems), problems
-
-
-def test_check_catches_a_lost_bullet(tmp_path):
-    code, path = _run(tmp_path)
-    assert code == 0
-    good = path.read_text(encoding="utf-8")
-    bad = good.replace("- 2026-08-26 (Cycle 480) — a bullet nothing here may touch\n", "")
-    assert len(parse_notes(bad)) < len(parse_notes(BOARD))
-    problems = check(BOARD, bad, [122], "NAS")
-    assert any("bullet stream" in problem for problem in problems), problems
+    assert "already written: #41" in err, err
+    assert _rows(store)[41]["project"] == "NAS"

@@ -65,7 +65,8 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import (  # noqa: E402
-    board_document, board_records, board_store, board_view, entity_id)
+    board_document, board_records, board_store, board_view, entity_id,
+    rank_key)
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
@@ -84,7 +85,12 @@ def captures(markdown, board, registry, reuse=None):
     store would hand his board back with the bullets deleted.
 
     Rank is the bullet's position in his file, so the order he wrote them in
-    survives the trip. Ids come from `entity_id.mint_capture`, which is the
+    survives the trip -- as a `rank_key`, the shape every row and every
+    capture writer uses. It was `index + 1` until Cycle 1391, and one whole
+    number beside one key on the same board is a TypeError in
+    `captures_in_order` on every read of it.
+
+    Ids come from `entity_id.mint_capture`, which is the
     one id here that is not seeded from a name -- his words are the thing he
     edits, so a slug of them would orphan the replies underneath.
 
@@ -108,12 +114,14 @@ def captures(markdown, board, registry, reuse=None):
     for text, held in (reuse or {}).items():
         pool[text] = list(held)
     docs = []
-    for index, (text, under) in enumerate(preflight.board_captures(markdown)):
+    bullets = list(preflight.board_captures(markdown))
+    keys = rank_key.sequence(len(bullets))
+    for (text, under), key in zip(bullets, keys):
         held = pool.get(text)
         capture_id = (held.pop(0) if held
                       else entity_id.mint_capture(registry, board))
         docs.append(board_document.to_capture_document(
-            text, board, capture_id, rank=index + 1, replies=under))
+            text, board, capture_id, rank=key, replies=under))
     return docs
 
 
@@ -234,8 +242,11 @@ def stored_capture_ids(board, store=board_store):
     """
     held = store.stored_capture_documents(board)
     by_text = {}
-    for doc in sorted(held.values(),
-                      key=lambda doc: (doc.get("rank") or 0, doc.get("_id"))):
+    # `captures_in_order`, not `rank or 0`: with string ranks one unranked
+    # capture made that key compare `0` with a str. Pre-sorted by id so ties
+    # keep the order they always had.
+    by_id = sorted(held.values(), key=lambda doc: doc.get("_id") or "")
+    for doc in board_document.captures_in_order(by_id):
         by_text.setdefault(doc.get("text"), []).append(doc.get("captureId"))
     return by_text
 

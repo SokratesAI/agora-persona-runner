@@ -348,7 +348,7 @@ def board_contents(board, local=None, store=None):
     the migration is allowed to read markdown in, rather than through
     `parse_board` here -- so this tool no longer names the parser and
     `board_reader_inventory` stops counting it. That door is a migration
-    seam and comes out with the window, like the two in `nova_next`.
+    seam and comes out with the window; the three `nova_next` had are gone.
 
     `store=None` rather than the real store as a default argument: a
     default binds its value at import, so `board_records.board_store`
@@ -700,9 +700,10 @@ def _capture_board_help(captures):
                "then `python3 -m tools.board_put <vault path> <file> --if-rev-file`, "
                "in ONE Bash call.")
     out.append("  board_put, not vault_tool.py put: it writes the vault first and "
-               "then updates that board's CouchDB ticket documents, which a bare "
-               "put cannot do from another process. Exit 4 means the board landed "
-               "and the store did not -- run ticket_drift --sync.")
+               "then resyncs that board's rows in the #203 record store, which a "
+               "bare put cannot do from another process. Exit 4 means the board "
+               "landed and the records did not -- the line it prints names the "
+               "resync command.")
     return out
 
 

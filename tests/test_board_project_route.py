@@ -8,15 +8,16 @@ what did not was any route the app could reach, so every `Project` cell
 on both boards had been written by a cycle at a shell.
 
 `tests/test_board_project.py` covers `set_row_project` itself. This file
-covers the two layers above it: the vault write path and the HTTP
-validation, which is where a route can put arbitrary text into a cell of
-his file.
+covers the two layers above it: the write into the #203 record store and
+the HTTP validation, which is where a route can put arbitrary text into a
+cell of his board.
 """
 
 import json
 
+import pytest
+
 import agora_runner.nova_capture as nova_capture
-from agora_runner.nova_boards import parse_board
 
 BOARD = """---
 type: board
@@ -27,8 +28,15 @@ type: board
 | # | Item | Status | Updated | Priority | Project |
 |---|------|--------|---------|---|---|
 | [[#57 — More pages\\|57]] | More pages | 🟡 In progress | 08-11 | 🔵 Medium | Nova |
-| [[#59 — Small pickings\\|59]] | Small pickings | ⚪ Backlog | 08-11 |
-| [[#76 — Already finished\\|76]] | Already finished | ✅ Done | 08-14 | | Nova |
+| [[#59 — Small pickings\\|59]] | Small pickings | ⚪ Backlog | 08-11 | | Nova |
+
+## Done
+
+| # | Item | Landed | Where |
+|---|------|--------|-------|
+| [[#51 — One way\\|51]] | One way | 08-10 | inbox.md |
+
+# Details
 
 ## #57 — More pages
 
@@ -36,63 +44,128 @@ Body text I must not touch.
 """
 
 
-def _writer(monkeypatch, body=BOARD):
-    seen = {}
-    calls = []
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (body, "7-abc"))
+def _records(monkeypatch):
+    """A fake record store holding `BOARD`, and a vault that must not be
+    touched -- the project button writes the records, never his file."""
+    from tests.test_board_records import writable
 
-    def fake_write(path, text, if_rev=None):
-        calls.append(path)
-        seen.update(path=path, body=text, if_rev=if_rev)
-        return "written"
+    _, fake = writable(board="issue", markdown=BOARD)
+    monkeypatch.setattr(nova_capture, "board_store", fake)
 
-    monkeypatch.setattr(nova_capture, "vault_write_path", fake_write)
-    return seen, calls
+    def landmine(*a, **k):
+        raise AssertionError("the project button touched the markdown")
+
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", landmine)
+    monkeypatch.setattr(nova_capture, "vault_write_path", landmine)
+    return fake
 
 
-def test_set_project_writes_once_with_the_revision_it_read(monkeypatch):
-    seen, calls = _writer(monkeypatch)
+def _row(store, number):
+    from agora_runner import board_records
+    return next(item for item in board_records.contents("issue", store=store)["items"]
+                if item["number"] == number)
+
+
+def test_set_project_writes_the_record_and_not_his_file(monkeypatch):
+    from agora_runner import board_records
+
+    store = _records(monkeypatch)
     ok, message = nova_capture.set_project("issues", 57, "Marcus")
-    assert ok and "#57" in message
-    assert len(calls) == 1
-    assert seen["if_rev"] == "7-abc"
-    row = [i for i in parse_board(seen["body"])["items"] if i["number"] == 57][0]
+    assert (ok, message) == (True, "#57 moved on issues")
+    row = _row(store, 57)
     assert row["project"] == "Marcus"
     # The rest of the row is the row, not a re-render of it.
     assert row["title"] == "More pages" and row["priority"] == "🔵 Medium"
-    assert "Body text I must not touch." in seen["body"]
+    details = board_records.contents("issue", store=store)["details"]
+    assert "Body text I must not touch." in details[57]
 
 
 def test_a_name_no_row_carries_is_how_a_project_is_created(monkeypatch):
     """The create half of his ask, and it needs no second document.
 
-    `board_projects` reads the project list back off the cells, so
-    writing a name nothing else uses *is* creating the project. This test
-    is the one that would fail if a later cycle added an allowed-projects
-    list to the route.
+    `store_item` mints the id the first time a name appears, so writing a
+    name nothing else uses *is* creating the project. This test is the one
+    that would fail if a later cycle added an allowed-projects list.
     """
-    seen, _ = _writer(monkeypatch)
-    ok, _message = nova_capture.set_project("ideas", 57, "Infra")
-    assert ok
+    from agora_runner import board_records
     from agora_runner.nova_boards import board_projects
-    assert "Infra" in board_projects(parse_board(seen["body"])["items"])
+
+    store = _records(monkeypatch)
+    ok, _message = nova_capture.set_project("issues", 59, "Infra")
+    assert ok
+    items = board_records.contents("issue", store=store)["items"]
+    assert "Infra" in board_projects(items)
 
 
-def test_set_project_does_not_write_a_name_that_would_break_the_cell(monkeypatch):
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
+@pytest.mark.parametrize("bad", ["a|b", "**bold", "two\nlines", "a\rb", "   ", "x" * 41])
+def test_set_project_refuses_a_name_that_would_break_the_cell(monkeypatch, bad):
+    store = _records(monkeypatch)
+    ok, message = nova_capture.set_project("issues", 57, bad)
+    assert not ok
+    # A bad name is not a missing row: the page must not give up on a row
+    # that is sitting right there.
+    assert "is not a row" not in message
+    assert _row(store, 57)["project"] == "Nova"
 
-    def refuse(*a, **k):
-        raise AssertionError("must not write")
 
-    monkeypatch.setattr(nova_capture, "vault_write_path", refuse)
-    for bad in ("a|b", "**bold", "two\nlines", "   ", "x" * 41):
-        ok, message = nova_capture.set_project("issues", 57, bad)
-        assert not ok, bad
-        assert "not a row" in message or "could not write" in message
+def test_set_project_strips_the_name_it_was_handed(monkeypatch):
+    store = _records(monkeypatch)
+    assert nova_capture.set_project("issues", 57, "  Marcus  ")[0]
+    assert _row(store, 57)["project"] == "Marcus"
+
+
+def test_forty_characters_is_still_a_name(monkeypatch):
+    store = _records(monkeypatch)
+    assert nova_capture.set_project("issues", 57, "x" * 40)[0]
+    assert _row(store, 57)["project"] == "x" * 40
+
+
+def test_a_row_in_the_finished_table_is_refused_and_writes_nothing(monkeypatch):
+    """`set_row_project` could not reach the `## Done` table, and the view's
+    Done table has no Project column, so a write there would show nowhere."""
+    store = _records(monkeypatch)
+    before = _row(store, 51)
+    assert before["done"] is True, "the fixture must exercise the finished table"
+    ok, message = nova_capture.set_project("issues", 51, "Marcus")
+    assert not ok and "finished table" in message
+    assert "is not a row" not in message
+    assert _row(store, 51) == before
+
+
+def test_a_missing_row_says_the_phrase_the_site_answers_409_on(monkeypatch):
+    _records(monkeypatch)
+    assert nova_capture.set_project("issues", 999, "Marcus") == (
+        False, "#999 is not a row on issues")
+
+
+def test_a_row_that_moved_under_the_write_is_not_reported_as_missing(monkeypatch):
+    from agora_runner import board_write
+
+    _records(monkeypatch)
+
+    def moved(board, number, changes, detail=None, store=None):
+        raise board_write.WriteRefused(
+            f"row #{number} of board {board!r} changed between reading the "
+            "board and writing it")
+
+    monkeypatch.setattr(board_write, "change_row", moved)
+    ok, message = nova_capture.set_project("issues", 57, "Marcus")
+    assert not ok
+    assert "is not a row" not in message and "changed between" in message
+
+
+def test_set_project_writes_to_the_store_it_is_handed(monkeypatch):
+    from tests.test_board_records import writable
+
+    _records(monkeypatch)
+    _, handed = writable(board="issue", markdown=BOARD)
+    assert nova_capture.set_project("issues", 57, "Marcus", store=handed)[0]
+    assert _row(handed, 57)["project"] == "Marcus"
+    assert _row(nova_capture.board_store, 57)["project"] == "Nova"
 
 
 def test_set_project_refuses_an_unknown_target(monkeypatch):
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
+    _records(monkeypatch)
     ok, message = nova_capture.set_project("notes", 57, "Nova")
     assert not ok and "unknown target" in message
 
@@ -151,6 +224,16 @@ def test_a_failed_write_does_not_invalidate(monkeypatch):
         {"target": "issues", "number": 57, "project": "Marcus"},
         result=(False, "could not write"), monkeypatch=monkeypatch)
     assert status == 502 and body["ok"] is False
+    assert not any(c[0] == "invalidate" for c in calls if isinstance(c, tuple) and len(c) == 2)
+
+
+def test_a_missing_row_is_a_409_and_not_a_502(monkeypatch):
+    """The phrase `set_project` answers a missing row with is the page's cue
+    to re-read; every sibling row route answers it 409, and this one did not."""
+    (status, body), calls = _call(
+        {"target": "issues", "number": 999, "project": "Marcus"},
+        result=(False, "#999 is not a row on issues"), monkeypatch=monkeypatch)
+    assert status == 409 and body["ok"] is False
     assert not any(c[0] == "invalidate" for c in calls if isinstance(c, tuple) and len(c) == 2)
 
 

@@ -40,8 +40,11 @@ can decide again, which is recoverable in one tap.
 
 import re
 
+from agora_runner import board_records, board_store, board_write
+from agora_runner.board_document import DocumentError
+from agora_runner.board_store import StoreError
 from agora_runner.log import log
-from agora_runner.nova_boards import canonical_priority, parse_board, priority_key
+from agora_runner.nova_boards import canonical_priority, priority_key
 from agora_runner.vault import vault_read_path_rev, vault_write_path
 
 POOL_PATH = "projects/sokrates/projects/agora/nova/resources/idea-pool.md"
@@ -349,21 +352,8 @@ def set_generate_flag(markdown, requested):
     return "\n".join(lines)
 
 
-def next_number(ideas_markdown):
-    """One past the highest row number on his ideas board.
-
-    Reads `## Board` *and* `## Done` through `parse_board`, so a number
-    that has been finished and moved is never handed out twice -- every
-    journal entry, claim slug and board comment points at these numbers,
-    so reuse is worse than a gap.
-    """
-    items = parse_board(ideas_markdown or "").get("items", [])
-    numbers = [i["number"] for i in items if isinstance(i.get("number"), int)]
-    return (max(numbers) + 1) if numbers else 1
-
-
-def _already_boarded(ideas_markdown, title):
-    """Is a row with exactly this title already on his ideas board?
+def _already_boarded_in_contents(contents, title):
+    """Is this candidate already a row? Takes `board_records.contents`.
 
     The de-duplication guard for a decision that arrives twice. Matched on
     the title because that is what the candidate carries -- the number does
@@ -371,74 +361,100 @@ def _already_boarded(ideas_markdown, title):
     `## Done` counts too: an idea approved, finished and moved is still one
     he already said yes to, and re-boarding it would hand him a duplicate
     of something he has already closed.
+
+    **It reads `items`, and that key means the same thing on both sides of
+    issue #203**, which is why this function did not have to change when
+    `_board_the_candidate` stopped parsing his file: `board_records.contents`
+    returns the four keys the parser returned, out of CouchDB, and never
+    parses anything. The number half of this pair is gone -- the store mints
+    it now -- so what is left is one question against one read.
     """
     want = (title or "").strip()
     if not want:
         return False
     return any(
         (item.get("title") or "").strip() == want
-        for item in parse_board(ideas_markdown or "").get("items", [])
+        for item in contents.get("items", [])
     )
 
 
-def _board_table_head(lines):
-    """Index just past the `## Board` table's header separator, or None.
+def _board_the_candidate(candidate, said_text, dated, store=None):
+    """Board one approved candidate as a record. Returns `(ok, message)`.
 
-    New rows go at the *top* of the table because that is where the board
-    already keeps its newest -- #114 is the first row in his file, not the
-    last -- and a row appended to the bottom would be the one place he
-    never looks.
+    Issue #203: the approve half of `decide` used to build two pieces of
+    markdown -- a `## Board` row and a `# Details` write-up -- and hand them
+    to `_write_with_retry` against his `ideas.md`. `board_write.add_row` is
+    the records door that does both, so `insert_board_row` and
+    `insert_detail` are deleted rather than kept beside it. A markdown
+    writer with no caller is the facade `board-records.md` bans: it is the
+    second source of truth, waiting.
+
+    **`add_row` mints the number itself and that is the point rather than a
+    detail.** The old body read the board for `next_number_from_contents`
+    and a caller holding a number it read a moment ago is exactly how two
+    approvals mint the same one -- against markdown that was a merge
+    conflict, against records it is one document taking the other's place.
+    `board_store.write_row` refuses an id that is already stored, so the
+    collision surfaces as a refusal here instead of as a lost row. That
+    leaves `next_number_from_contents` with no caller, and it goes with the
+    two inserters for the same reason.
+
+    **The byline is written first, into the write-up, and it is load
+    bearing.** `APPROVED_BYLINE` is the only sentence that says a write-up
+    came from the pool rather than from something he typed, and
+    `_parse_approved` keys the whole approval history on finding it under a
+    `## <number> — <title>` heading. `insert_detail` wrote it above the body;
+    this writes it as the first paragraph of `write_up` so the rendered view
+    reads identically. Drop it and the history page silently forgets every
+    idea he ever approved -- which is the feature he asked for in the first
+    place.
+
+    **Idempotent, and a retry is not the only way this runs twice.** Two taps
+    on a phone are two requests on two threads, and both pass
+    `find_candidate` before either has emptied the pool. Checking the title
+    against the board first turns the second write into a no-op. It is one
+    `contents` read, and a title already on the board is a success rather
+    than an error: the second tap did nothing because the first one worked.
+    **`store` resolves to the module global when it is not passed**, rather
+    than being bound as a default at definition time. `board_records` and
+    `board_write` both take `store=board_store` that way, so a test that
+    swapped the global would still have been writing to the real one -- and
+    a records write nothing can redirect is a records write nothing can
+    test.
     """
-    for i, line in enumerate(lines):
-        if line.strip().lower() != "## board":
-            continue
-        for j in range(i + 1, min(i + 8, len(lines))):
-            if lines[j].lstrip().startswith("|---") or re.match(r"^\s*\|[\s:-]+\|", lines[j]):
-                return j + 1
-        return None
-    return None
-
-
-def insert_board_row(markdown, number, title, priority, dated):
-    """Add a numbered row to the top of `## Board`. Returns `(markdown, error)`.
-
-    The first cell is an Obsidian wikilink whose target is the row's
-    `# Details` heading, so the `|` inside it has to be escaped as `\\|` or
-    the table gains a sixth cell against five headers. Every existing row
-    in his file is written this way.
-    """
-    lines = (markdown or "").split("\n")
-    head = _board_table_head(lines)
-    if head is None:
-        return markdown, "could not find the ## Board table"
-    link = f"#{number} — {title}"
-    row = f"| [[{link}\\|{number}]] | {title} | ⚪ Backlog | {dated} | {priority} |"
-    lines.insert(head, row)
-    return "\n".join(lines), ""
-
-
-def insert_detail(markdown, number, title, body, dated):
-    """Add `## <number> — <title>` immediately under `# Details`.
-
-    Newest first, matching the file: `## 69` sits above `## 68`. Appending
-    at the bottom would put a new row's write-up below two hundred older
-    ones, which is the same "he never looks there" failure as appending to
-    the table.
-    """
-    lines = (markdown or "").split("\n")
-    for i, line in enumerate(lines):
-        if line.strip() == "# Details":
-            block = [
-                "",
-                f"## {number} — {title}",
-                "",
-                APPROVED_BYLINE.format(dated=dated),
-                "",
-            ]
-            if body:
-                block += [body, ""]
-            return "\n".join(lines[:i + 1] + block + lines[i + 1:]), ""
-    return markdown, "could not find the # Details section"
+    store = store or board_store
+    if _already_boarded_in_contents(board_records.contents("idea", store=store),
+                                    candidate["title"]):
+        return True, "already boarded"
+    body = candidate["body"]
+    if said_text:
+        body = (body + "\n\n" + f"You said: {said_text}").strip()
+    write_up = APPROVED_BYLINE.format(dated=dated)
+    if body:
+        write_up = write_up + "\n\n" + body
+    try:
+        board_write.add_row(
+            "idea", candidate["title"], dated,
+            candidate["priority"] or "🔵 Medium", write_up=write_up,
+            store=store)
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            StoreError, DocumentError) as exc:
+        # **The last two are the race this function's docstring is about, and
+        # naming only the first two was a reviewer finding on this commit.**
+        # They are imported by name rather than reached through
+        # `board_store.` because the module global is also this function's
+        # default store, and a test that swaps it -- which is the seam three
+        # paragraphs up -- would turn the class lookup into an attribute on a
+        # fake object, and the handler into an `AttributeError`.
+        # `write_row` refusing an id it already holds raises
+        # `board_document.DocumentError`, and CouchDB answering 409 raises
+        # `board_store.RowConflict`; neither is a `WriteRefused`, so the
+        # collision the docstring above promises "surfaces as a refusal here"
+        # went straight through `decide` as an unhandled exception -- a 500
+        # on his phone instead of a message, with the candidate left in the
+        # pool and nothing saying why.
+        return False, str(exc)
+    return True, "written"
 
 
 def insert_discarded(markdown, title, why):
@@ -507,7 +523,7 @@ def _write_with_retry(path, mutate):
     return False, f"could not write to {path}: {result}"
 
 
-def decide(index, title, decision, comment, dated):
+def decide(index, title, decision, comment, dated, store=None):
     """Approve or reject one candidate. Returns `(ok, message)`.
 
     Approve writes a numbered `## Board` row with the priority I already
@@ -541,31 +557,7 @@ def decide(index, title, decision, comment, dated):
     said_text = "\n".join(said)
 
     if decision == "approve":
-        priority = candidate["priority"] or "🔵 Medium"
-
-        def mutate(current):
-            # **Idempotent, because `_write_with_retry` is a retry loop and
-            # a retry here is not the only way this runs twice.** Two taps
-            # on a phone are two requests on two threads, and both pass
-            # `find_candidate` before either has emptied the pool. The
-            # first lands #115; the second loses the compare-and-swap,
-            # re-reads, recomputes `next_number()` as 116 and boards the
-            # same idea again -- and both report success, so nothing
-            # anywhere says he now has two identical rows. Reviewer finding
-            # on this PR. Checking the title before inserting turns the
-            # second write into a no-op instead.
-            if _already_boarded(current, candidate["title"]):
-                return current, ""
-            number = next_number(current)
-            updated, error = insert_board_row(
-                current, number, candidate["title"], priority, dated)
-            if error:
-                return current, error
-            body = candidate["body"]
-            if said_text:
-                body = (body + "\n\n" + f"You said: {said_text}").strip()
-            return insert_detail(updated, number, candidate["title"], body, dated)
-
+        ok, message = _board_the_candidate(candidate, said_text, dated, store)
         landed = "boarded on ideas"
     else:
         why_text = said_text or f"Rejected {dated}"
@@ -574,8 +566,11 @@ def decide(index, title, decision, comment, dated):
             return insert_discarded(current, candidate["title"], why_text)
 
         landed = "discarded"
-
-    ok, message = _write_with_retry(IDEAS_PATH, mutate)
+        # A rejection is a row in `## Discarded`, which is not a board table
+        # and which `board_records` has no record shape for, so this half
+        # stays on the markdown document until the switchover gives that
+        # section a home.
+        ok, message = _write_with_retry(IDEAS_PATH, mutate)
     if not ok:
         return False, message
 
@@ -593,8 +588,8 @@ def decide(index, title, decision, comment, dated):
     return True, landed
 
 
-def parse_history(ideas_markdown):
-    """His ideas file -> `{"approved": [...], "rejected": [...]}`.
+def parse_history(ideas_markdown, contents):
+    """His decisions -> `{"approved": [...], "rejected": [...]}`.
 
     The owner, capture 2026-08-25: *"I do not know if my comments on why or
     why not a pool idea is rejected or not. As in the comments i write. I
@@ -614,19 +609,49 @@ def parse_history(ideas_markdown):
     would be a second copy of a fact his file already holds, needing its own
     write path inside `decide`'s two-document dance -- and it would start
     empty, which is the one thing this must not do: he asked to see history
-    that has *already happened*. Everything below is parsed back out of the
-    writes `insert_detail` and `insert_discarded` were making anyway.
+    that has *already happened*. Everything below is read back out of the
+    writes `decide` was making anyway.
+
+    **The two halves now come from two places, and that is issue #203 rather
+    than an inconsistency.** An approval is a board row with a write-up, so
+    it moved into the records with every other row and `contents` is where it
+    lives -- `board_records.contents` returns the same `details` mapping the
+    parser used to return, so `_parse_approved` reads the same shape it
+    always did, rendered back under its own heading. A rejection is a row in
+    `## Discarded`, which is not a board table and which the records have no
+    shape for yet, so it is still read out of the markdown. Passing `contents`
+    in rather than reading it here keeps this function a pure function of
+    what it is given, which is what its tests are built on.
 
     What this cannot recover, said plainly rather than papered over: a
     rejection carries no date, because `insert_discarded` writes the reason
     *instead of* the date when he typed one, into a two-column table whose
     shape is his. The rows come back in file order, which is newest first.
     """
-    lines = (ideas_markdown or "").split("\n")
     return {
-        "approved": _parse_approved(lines),
-        "rejected": _parse_rejected(lines),
+        "approved": _parse_approved(_approved_lines(contents)),
+        "rejected": _parse_rejected((ideas_markdown or "").split("\n")),
     }
+
+
+def _approved_lines(contents):
+    """Every write-up in the records, back as the lines `_parse_approved` reads.
+
+    Rendered rather than re-parsed on purpose. `_parse_approved` owns two
+    things that must not be respelled here -- `_DETAIL_HEADING`, which
+    accepts both live write-up shapes, and the multi-line `You said:` block
+    -- and a second reader that walked `contents["details"]` directly would
+    be a second copy of both, drifting the first time either changes. So the
+    heading is written back in `insert_detail`'s old shape and the body goes
+    under it untouched.
+    """
+    lines = []
+    titles = {item["number"]: item.get("title", "")
+              for item in contents.get("items", [])}
+    for number, body in (contents.get("details") or {}).items():
+        lines.append(f"## {number} — {titles.get(number, '')}")
+        lines.extend((body or "").split("\n"))
+    return lines
 
 
 def _parse_approved(lines):
@@ -712,7 +737,7 @@ def _parse_rejected(lines):
     return rejected
 
 
-def history_payload():
+def history_payload(store=None):
     """What `GET /api/pool/history` answers.
 
     Its own endpoint rather than a field on `/api/pool`, because his ideas
@@ -723,7 +748,8 @@ def history_payload():
     markdown, _ = vault_read_path_rev(IDEAS_PATH)
     if markdown is None:
         return {"approved": [], "rejected": [], "missing": True}
-    payload = parse_history(markdown)
+    payload = parse_history(
+        markdown, board_records.contents("idea", store=store or board_store))
     payload["missing"] = False
     return payload
 

@@ -20,7 +20,8 @@ button, for my own two files.
         --priority high --write-up-file /tmp/w.md
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.roll_done_captures` and `tools.roll_captures` hold, so
+contract `tools.roll_captures` holds (`roll_done_captures` held it until
+#203 converted it onto the record store), so
 the caller owns the compare-and-swap. `prompt.md` step 6 carries the
 `get --rev-file` / `put --if-rev-file` wrapper.
 
@@ -33,6 +34,15 @@ the rest off the page; and a priority that is not one of the four. A
 blank rating is the state that means nobody has looked (`ideas.md` #69),
 so `--priority` is required here even though `add_row` would accept an
 empty one for the owner's board.
+
+**It stays on markdown after issue #203's switchover, and that is a
+decision rather than a module nobody got to.** The record store holds the
+owner's two boards -- `board_document.BOARDS` is "the two boards the owner
+keeps" and `document_id` mints one key range per kind -- and Nova's own two
+files have no board name in it. Converting this to `--board issue` would not
+move it onto records, it would point my board button at the owner's board. Two
+handoffs in a row named it as the next writer to convert; `board_reader_inventory`
+now carries the exemption and the evidence under it (Cycle 1335).
 
 The first three of those are reviewer findings on this tool's own PR, and
 they share one shape worth naming: `check` re-parses the whole document
@@ -76,14 +86,25 @@ def _priority_choices():
     ]
 
 
-def check(before, after, number, title):
+def check_from_contents(old, new, old_notes, new_notes, number, title):
     """Refuse the write unless the row is really there and nothing else moved.
 
-    Same shape as `roll_done_captures.check` and for the same reason: this
-    edits a document the site parses, so the test that matters is what
-    `parse_board` says afterwards, not what the string looks like. Every
-    row that was on the board stays on it with the same title and status,
-    and the new number is present exactly once.
+    Same shape as `roll_captures._check_render`, and for the
+    same reason: this edits a document the site parses, so the test that
+    matters is what `parse_board` says afterwards, not what the string
+    looks like. Every row that was on the board stays on it **unchanged in
+    every cell**, and the new number is present exactly once.
+
+    That used to read "with the same title and status", and those were the
+    only two cells it compared -- so a write that moved another row's
+    rating, size, milestone, project or date passed the guard silently.
+    Measured on the fixture in `tests/test_board_row.py`: flipping #2 from
+    `🟠 High` to `🔴 Immediately` alongside a clean add returned no
+    problems at all. The five single-cell writers (`board_status` and its
+    four siblings) have always compared the whole row dict with `now !=
+    was`; this one was the outlier, and the reason is that `add_row` only
+    ever appends, so there is no cell on an existing row it is allowed to
+    touch and nothing to exempt.
 
     **The bullet stream is checked with `parse_notes`, not with
     `parse_board`'s `captures`, and the difference is the whole guard.**
@@ -95,10 +116,14 @@ def check(before, after, number, title):
     against the live `resources/issues.md`: `captures` is `[]`,
     `parse_notes` is 764. Reviewer finding on runner#422, and it is the
     one that was dead rather than merely narrow.
+
+    `old` and `new` are the two parsed record sets and `old_notes` /
+    `new_notes` the two bullet streams, all four read by `main`. This
+    reaches for no document itself: #203 turns the source into a CouchDB
+    range query, and a guard that fetched its own copy would be checking
+    a version of the board the caller never saw.
     """
     problems = []
-    old = parse_board(before)
-    new = parse_board(after)
     old_by_number = {item["number"]: item for item in old["items"]}
     new_by_number = {item["number"]: item for item in new["items"]}
 
@@ -117,11 +142,9 @@ def check(before, after, number, title):
         now = new_by_number.get(was["number"])
         if now is None:
             problems.append(f"#{was['number']} fell off the board")
-        elif now["title"] != was["title"] or now["status"] != was["status"]:
+        elif now != was:
             problems.append(f"#{was['number']} changed underneath the new row")
 
-    old_notes = [note["text"] for note in parse_notes(before)]
-    new_notes = [note["text"] for note in parse_notes(after)]
     if old_notes != new_notes:
         problems.append(
             f"the '## Entries' bullet stream changed: "
@@ -183,6 +206,8 @@ def main(argv=None):
             return 1
 
     before = open(args.file, encoding="utf-8").read()
+    before_board = parse_board(before)
+    before_notes = [note["text"] for note in parse_notes(before)]
     after, number = add_row(
         before, args.title, args.dated, args.priority, write_up=write_up
     )
@@ -194,7 +219,11 @@ def main(argv=None):
         )
         return 1
 
-    problems = check(before, after, number, args.title.strip())
+    after_board = parse_board(after)
+    after_notes = [note["text"] for note in parse_notes(after)]
+    problems = check_from_contents(
+        before_board, after_board, before_notes, after_notes, number, args.title.strip()
+    )
     if problems:
         for problem in problems:
             print(f"REFUSED: {problem}", file=sys.stderr)

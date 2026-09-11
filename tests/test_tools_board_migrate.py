@@ -219,6 +219,35 @@ def test_the_capture_order_is_the_order_he_wrote_them_in(couch):
     assert None not in ranks, "an unranked capture is ordered by its id"
 
 
+def test_capture_ranks_are_rank_keys_in_the_order_he_wrote_them(couch):
+    """One shape per board (Cycle 1391). `index + 1` beside a `rank_key`
+    from the capture box made `captures_in_order` raise on every read."""
+    from agora_runner import rank_key
+
+    markdown = board_with_captures(
+        [(1, "Nova", "")], captures=["alpha", "beta", "gamma"])
+    board_migrate.migrate(markdown, "issue", apply=True)
+
+    by_text = {doc["text"]: doc["rank"] for doc
+               in board_store.stored_capture_documents("issue").values()}
+    ranks = [by_text["alpha"], by_text["beta"], by_text["gamma"]]
+    assert all(rank_key.is_valid(r) for r in ranks), ranks
+    assert ranks == sorted(ranks) and len(set(ranks)) == 3
+
+
+def test_reuse_reads_a_board_with_an_unranked_capture_beside_ranked_ones(couch):
+    """`rank or 0` compared `0` with a str the moment ranks became keys."""
+    from agora_runner import board_document, rank_key
+
+    board_store.write_captures("issue", [
+        board_document.to_capture_document("placed", "issue", "cap_1",
+                                           rank=rank_key.between(None, None)),
+        board_document.to_capture_document("unplaced", "issue", "cap_2"),
+    ])
+    assert board_migrate.stored_capture_ids("issue") == {
+        "placed": ["cap_1"], "unplaced": ["cap_2"]}
+
+
 def test_the_layout_is_stored_and_it_is_what_keeps_his_archive(couch):
     """The strong version of this test is a comparison, not an assertion that
     a document exists: rendering the same stored board with and without the
@@ -334,7 +363,7 @@ def test_the_migration_does_not_add_itself_to_the_gate():
     test and would agree with itself."""
     from tools import board_reader_inventory
 
-    found, _refs, _unreadable, _untokenized, _mine = board_reader_inventory.scan()
+    found = board_reader_inventory.scan()[0]
 
     names = {str(path) for path in found}
     assert not any(name.endswith("tools/board_migrate.py") for name in names), (

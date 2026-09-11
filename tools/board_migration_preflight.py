@@ -68,6 +68,8 @@ What it does not check: whether the generated markdown round-trips. That
 already has its own coverage in `board_view`, against these same files.
 """
 import argparse
+import difflib
+import re
 import sys
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
@@ -96,6 +98,155 @@ def board_details(markdown):
     parsed = nova_boards.parse_board(markdown)
     details = parsed.get("details") if isinstance(parsed, dict) else None
     return details if isinstance(details, dict) else {}
+
+
+def frontmatter_of(markdown):
+    """The document's own frontmatter block, or `""` when it has none.
+
+    Taken off the document rather than rebuilt, because it is the owner's:
+    both board files carry a `contract:` line there explaining themselves,
+    and nothing in the records holds it.
+    """
+    text = markdown or ""
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", 3)
+    return "" if end < 0 else text[:end + 4].rstrip()
+
+
+def document_round_trip(markdown):
+    """`parse -> render_document -> parse` on one board file.
+
+    The check `round_trip` above cannot make. That one compares the two
+    *tables* through the real store, so a lost capture bullet, a dropped
+    detail body or a mangled frontmatter all pass it -- the tables carry
+    none of those. This one renders the whole document `board_view` now
+    draws and reads it straight back, and it needs no store at all, so it
+    runs on every `--board` rather than on the one board a round trip is
+    allowed to touch.
+
+    Byte-identity is deliberately not the assertion: `board_view`'s module
+    comment says the live files are ragged and the first generated write is
+    a one-time reflow. Meaning is the assertion, key by key, and the report
+    names which key moved rather than a single boolean, because "the
+    document does not round trip" and "detail #57 lost its body" are the
+    same failure at two useful distances.
+
+    **It renders through the source document's own layout**, which is what
+    took `document_words_lost` on the two live boards from 19,653 and 6,469
+    to 120 and 216 (measured 2026-09-09). Without it the sections
+    `parse_board` does not model -- the owner's `## Processed captures`
+    archive, `# Done — detail`, `ideas.md`'s `## Discarded` table -- are
+    absent from the render, and the four-key comparison above cannot see
+    that because it is written in the parser's own four words. What was
+    left is the detail-heading reflow `board_view.render_detail` chose on
+    purpose: 60 and 108 write-ups on those boards are still written in the
+    older `## N —` shape and are emitted in the newer `### #N —` one, which
+    is two tokens each and no prose -- and it made `--assert-clean` exit 2
+    on both live boards forever, so the flip's first step could never pass
+    (measured 2026-09-11, Cycle 1392: exactly 120 and 216). `words_lost`
+    now reads the source in the renderer's heading spelling; it is 0 and 0.
+    """
+    was = nova_boards.parse_board(markdown)
+    document = board_view.render_document(
+        was, frontmatter_of(markdown),
+        layout=board_view.document_layout(markdown))
+    now = nova_boards.parse_board(document)
+    problems = []
+    for key in ("captures", "captureReplies", "items", "details"):
+        if was.get(key) != now.get(key):
+            problems.append(
+                f"{key} did not survive the document round trip "
+                f"({len(was.get(key) or ())} in, {len(now.get(key) or ())} back)")
+    lost = words_lost(markdown, document)
+    if lost:
+        problems.append(
+            f"{len(lost)} word(s) of the document did not survive as written: "
+            + " / ".join(sample_lost(lost)))
+    return {
+        "document_round_trip": not problems,
+        "document_bytes": len(document),
+        "document_words_lost": len(lost),
+    }, problems
+
+
+#: A markdown table's rule row, as one whitespace-free token. The dashes
+#: are padded to the widths of the header above, which the renderer redraws
+#: at a fixed three, so the same rule is a different word before and after.
+_RULE_RE = re.compile(r"^\|(?:-+\|)+$")
+
+
+#: A detail heading in any of the spellings `nova_boards._DETAIL_RE` parses
+#: -- `## 69 —`, `### 69 —`, `### #69 -` -- up to and including its dash.
+#: `board_view.render_detail` re-emits every one of them as `### #69 —`,
+#: on purpose, so the source is rewritten to that spelling before it is
+#: split. The number and the title after the dash are still compared.
+#: It is not section- or fence-aware, so a heading of the same shape that is
+#: not a write-up (`## 2026 — Year in review`) is rewritten too and then
+#: reported lost when the render keeps it as written -- a false alarm, never
+#: a hidden loss. Neither live board carries one (0 and 0, Cycle 1392).
+_DETAIL_HEADING_RE = re.compile(r"^#{2,3}[ \t]+#?(\d+)[ \t]*[—–-]", re.MULTILINE)
+
+
+def _normalise(word):
+    """One word of a document, with a table rule's padding taken out."""
+    return "|---|" if _RULE_RE.match(word) else word
+
+
+def _normalise_headings(markdown):
+    """The source with every detail heading in the one spelling the renderer writes."""
+    return _DETAIL_HEADING_RE.sub(r"### #\1 —", markdown or "")
+
+
+def words_lost(markdown, document):
+    """Words in the source that the rendered document does not carry.
+
+    **The four-key comparison above cannot see this and reported `True` on
+    both live boards while deleting 26,122 words between them.** That is
+    the positive result guaranteed in advance: `render_document` is built
+    out of `parse_board`'s four keys, so anything the parser does not model
+    is absent from both sides of every comparison made in its own terms.
+    Measured 2026-09-09, the sections in that hole are the owner's
+    `## Processed captures` archive on both boards, the `# Done — detail`
+    heading, and `ideas.md`'s `## Discarded` table.
+
+    So this compares the raw word streams instead, which is the one check
+    that is not written in the renderer's own vocabulary. It is a
+    *sequence* diff rather than a bag of words: a word deleted here and
+    added there is still a document that changed, and a multiset
+    comparison would call that clean.
+
+    Not byte-identity, deliberately -- `board_view`'s module comment says
+    the first generated write is a one-time reflow of ragged tables, and a
+    reflow moves whitespace rather than prose. Exactly one token moves with
+    it: a table's `|---|------|---|` rule is a single word whose dashes are
+    padded to the column widths above it, so a reflowed board would report
+    one lost word per table that it did not lose. `_RULE_RE` collapses that
+    one shape and nothing else -- a token made only of pipes and dashes is
+    a rule by definition, and a test pins that prose is still caught.
+
+    The other deliberate reflow is a detail heading's spelling, and
+    `_normalise_headings` rewrites it rather than dropping it: the heading
+    still has to come back, with the same number and the same title words,
+    so a lost or renumbered write-up is still caught. The line to hold is
+    that no *content* rule may be added here: a filter written in the
+    renderer's own vocabulary is precisely how the four-key comparison
+    above went blind.
+    """
+    was = [_normalise(word) for word in _normalise_headings(markdown).split()]
+    now = [_normalise(word) for word in (document or "").split()]
+    matcher = difflib.SequenceMatcher(None, was, now, autojunk=False)
+    lost = []
+    for tag, i1, i2, _, _ in matcher.get_opcodes():
+        if tag in ("delete", "replace"):
+            lost.extend(was[i1:i2])
+    return lost
+
+
+def sample_lost(lost, limit=12):
+    """The first few lost words, so the report names the section, not a count."""
+    head = " ".join(lost[:limit])
+    return [head + (" ..." if len(lost) > limit else "")]
 
 
 def board_captures(markdown):
@@ -361,15 +512,21 @@ def main(argv=None):
 
     items = []
     details = {}
+    document_reports = []
     for path in args.board:
         with open(path, encoding="utf-8") as handle:
             markdown = handle.read()
         items.extend(board_items(markdown))
         details.update(board_details(markdown))
+        document_reports.append((path, document_round_trip(markdown)))
 
     report, problems = compose(items)
     for name, value in report.items():
         print(f"{name}: {value}")
+    for path, (trip, trip_problems) in document_reports:
+        for name, value in trip.items():
+            print(f"{path} {name}: {value}")
+        problems.extend(f"{path}: {text}" for text in trip_problems)
     for problem in problems:
         print(f"PROBLEM: {problem}")
     if args.round_trip:

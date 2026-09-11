@@ -448,7 +448,7 @@ def near_miss_done_marker(bullet):
     marker, 130 of them parse, and the one that does not is Cycle 964's
     `DONE (Cycle 964) for the first half: ...` -- five words of report
     wedged between the paren and the colon. `split_capture_done` returned
-    `("", bullet)` for it, so `unboarded_captures` kept it, and
+    `("", bullet)` for it, so `unboarded_captures_from_contents` kept it, and
     `top_board_rows` printed a finished item at the very top of the
     ranking under *"these outrank every row below. Take one"* for a day.
     That is issue #88's failure exactly: a section that is partly noise
@@ -1632,8 +1632,10 @@ def capture_entries(markdown):
                 # above it, not something the owner just typed. Reading it
                 # as its own capture is what put a cycle's own closing note
                 # at the top of his `issues.md` and ranked it first on every
-                # cycle's board ranking -- see `roll_done_captures.plan`,
-                # which had the same blind spot and orphaned it there.
+                # cycle's board ranking. `roll_done_captures` used to have
+                # the same blind spot and orphaned it there; #203 deleted
+                # that walk outright, because a reply is `replies` on the
+                # capture document and no bullet in the records is one.
                 begin, _, text, replies = entries[-1]
                 entries[-1] = (begin, i + 1, text, replies + [stripped[2:].strip()])
             else:
@@ -2166,8 +2168,15 @@ def parse_project_meta(markdown):
     return out
 
 
-def set_row_order(markdown, number, position):
-    """Place one `## Board` row at `position` inside its milestone, 1-based.
+def row_order_seats(items, number, position):
+    """`[(row number, seat)]` for row `number`'s whole group after placing it
+    at `position`, 1-based, or `None` if refused.
+
+    `items` is `parse_board`'s row list, which is also what
+    `board_records.contents` hands back; the one writer is the record-store
+    `nova_capture.set_row_order`. The markdown writer that used to sit here
+    was deleted in #203's flip -- nothing called it once the app's reorder
+    button moved onto the records.
 
     His capture of 2026-09-08, the half that did not ship the same evening:
     *"Lets me organise/sort the milestones and tasks aswell. Convert the old
@@ -2191,22 +2200,20 @@ def set_row_order(markdown, number, position):
     the cells where he can see it and edit it, rather than being re-derived
     from a rating every time something is ranked.
 
-    Returns the new markdown, or `None` if refused: no open `## Board` row
-    carries that number, the row is closed (a position in a queue is a
-    statement about work still to do -- the same boundary `set_row_size`
-    and `set_row_milestone` draw), or `position` is outside `1..N` for the
-    group. `0` is refused rather than treated as "unplace": clearing one
-    row's position while its neighbours keep theirs leaves a group that is
-    half ordered by hand and half by rating, which is not a state anything
-    here can render honestly.
+    Refused (`None`) when no open row carries that number, the row is closed
+    (a position in a queue is a statement about work still to do -- the
+    same boundary `set_row_size` and `set_row_milestone` draw), or
+    `position` is outside `1..N` for the group. `0` is refused rather than
+    treated as "unplace": clearing one row's position while its neighbours
+    keep theirs leaves a group that is half ordered by hand and half by
+    rating, which is not a state anything here can render honestly.
     """
     try:
         position = int(position)
     except (TypeError, ValueError):
         return None
 
-    board = parse_board(markdown or "")
-    open_rows = [item for item in board["items"]
+    open_rows = [item for item in items
                  if not item["done"]
                  and status_key(item["status"]) not in _CLOSED_STATUS_KEYS]
     target = next((item for item in open_rows if item["number"] == number), None)
@@ -2242,20 +2249,7 @@ def set_row_order(markdown, number, position):
                                if item["number"] == number))
     which = seeded.pop(moving)
     seeded.insert(position - 1, which)
-
-    lines = (markdown or "").split("\n")
-    for seat, i in enumerate(seeded, start=1):
-        index, cells = _row_span(lines, group[i]["number"], tables=("board",))
-        if index is None:
-            return None
-        # Padded up to the new width rather than refused, the same way
-        # `set_row_milestone` pads a row that predates *its* column.
-        while len(cells) < _BOARD_WIDTH:
-            cells.append("")
-        cells[8] = str(seat)
-        lines[index] = "| " + " | ".join(cells) + " |"
-        _ensure_board_columns(lines, index)
-    return "\n".join(lines)
+    return [(group[i]["number"], seat) for seat, i in enumerate(seeded, start=1)]
 
 
 def parse_project_order_cell(cell):

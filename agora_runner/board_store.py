@@ -62,7 +62,8 @@ is a row; a lost registry write is every id on it.
 
 ## A document whose content has not changed is not written
 
-Straight from `ticket_docs.write_board`, and for the same measured reason:
+Carried over from the deleted `nova_tickets` mirror's `write_board`, for
+the same measured reason:
 rewriting every row on every call spreads the write amplification of the
 1.15 MB markdown document across four hundred revisions instead of
 removing it. A status change touches one row and must write one document.
@@ -484,12 +485,35 @@ def delete_capture(doc):
     blind delete this signature exists to refuse.
     """
     board_document._check_capture_identity(doc)
+    doc_id = board_document.capture_document_id(doc["board"], doc["captureId"])
+    return _delete_one(doc, doc_id, "a capture", CaptureConflict)
+
+
+def delete_row(doc):
+    """Remove one row's record, conditional on the revision it was read at.
+
+    `delete_capture`'s twin over the **row** range, for the app's Delete
+    button: until this existed the only records spelling of "this row is gone"
+    was an absence from the list handed to `write_rows(prune=True)`, which
+    lists the whole board with every write-up body to drop one document and
+    deletes whatever a stale list happens not to name. Same contract as the
+    capture delete, and shared with it through `_delete_one` so the two
+    cannot drift: the `_rev` is required, `True`/`False` says whether there
+    was a document to remove, and a 409 raises `RowConflict` -- re-read the
+    row and decide against what won, never re-send with the winner's `_rev`.
+    """
+    board_document._check_identity(doc)
+    doc_id = board_document.document_id(doc["board"], doc["number"])
+    return _delete_one(doc, doc_id, "a row", RowConflict)
+
+
+def _delete_one(doc, doc_id, what, conflict):
+    """The conditional DELETE behind `delete_capture` and `delete_row`."""
     rev = doc.get("_rev")
     if not rev:
         raise board_document.DocumentError(
-            "deleting a capture must carry the `_rev` it was read at, or it "
+            f"deleting {what} must carry the `_rev` it was read at, or it "
             "removes whatever is stored now -- read it first")
-    doc_id = board_document.capture_document_id(doc["board"], doc["captureId"])
     path = f"{ticket_docs.TICKET_DB}/{urllib.parse.quote(doc_id, safe='')}"
     status, body = ticket_docs._req(
         "DELETE", f"{path}?rev={urllib.parse.quote(rev, safe='')}")
@@ -498,7 +522,7 @@ def delete_capture(doc):
     if status == 404:
         return False
     if status == 409:
-        raise CaptureConflict(
+        raise conflict(
             f"{doc_id} moved since it was read: re-read it and decide against "
             "the record that won -- do not re-send this delete")
     raise StoreError(f"deleting {doc_id}: {status} {json.dumps(body)[:200]}")

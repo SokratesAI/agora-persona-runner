@@ -11,8 +11,8 @@ milestone's three fields that is mine to set. The spec's own assignment:
         --trl hardened
 
 **It takes a path on disk and knows nothing about the vault**, the same
-contract `tools.board_size`, `tools.board_priority` and `tools.board_status`
-hold, so the caller owns the compare-and-swap: `vault_tool.py get
+contract `tools.board_row` holds (`board_milestone`, `board_size` and
+`board_priority` held it until #203 converted them onto the record store), so the caller owns the compare-and-swap: `vault_tool.py get
 --rev-file` before, `vault_tool.py put --if-rev-file` after.
 
 Because the field is mine, there is deliberately **no control on his
@@ -56,7 +56,9 @@ _TRL_KEYS = frozenset({"trl"})
 def check(before, after, project, trl):
     """Refuse the write unless that one project's TRL moved, and nothing else.
 
-    Same shape and same reasoning as `tools.board_size.check`, against
+    Same shape and same reasoning as the `check_from_contents` that
+    `tools.board_priority` carried before #203 moved it onto
+    `board_write.change_row`, against
     `parse_project_meta` instead of `parse_board` because this is his
     project table rather than a board. There is no forgiveness here at all
     -- this tool writes no note and stamps no date, so a moved `Updated`
