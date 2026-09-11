@@ -28,9 +28,12 @@ def test_parse_board_refs_is_not_a_board_reader():
 def test_the_live_definition_is_a_parse_surface():
     """The control for the test above: nova_site really does parse.
 
-    It was nova_boards until #203's flip deleted the markdown
-    `set_row_order`, its only call of its own parser."""
-    text = (ROOT / "agora_runner/nova_site.py").read_text(encoding="utf-8")
+    It was nova_boards until #203 deleted the markdown `set_row_order`,
+    then nova_site until the flip deleted its markdown fallback, and no
+    live module is left that parses his boards -- so the control is a
+    synthetic text now rather than a live module that can stop parsing."""
+    text = ('board = parse_board(edvard_board_markdown(name))\n'
+            'path = BOARD_PATHS[name]["edvard"]\n')
     assert inv.surfaces(text) == ("parse_board", "BOARD_PATHS")
 
 
@@ -110,11 +113,12 @@ def test_a_tokenizing_file_is_not_named_as_a_fallback(tmp_path, capsys):
     assert "would not tokenize" not in capsys.readouterr().out
 
 
-def test_assert_migrated_raises_on_the_live_tree(capsys):
-    assert inv.main(["--assert-migrated"]) == 2
-    out = capsys.readouterr().out
-    assert "NOT MIGRATED" in out
-    assert "agora_runner/nova_boards.py" in out
+def test_assert_migrated_passes_on_the_live_tree(capsys):
+    """#203's flip: nova_site was the last module reading his boards as
+    markdown. `test_a_surviving_board_paths_read_does_not_block_migrated`
+    is the control that the same call still answers 2 for a reader."""
+    assert inv.main(["--assert-migrated"]) == 0
+    assert "NOT MIGRATED" not in capsys.readouterr().out
 
 
 def test_a_surviving_board_paths_read_does_not_block_migrated(tmp_path):
@@ -312,16 +316,16 @@ def test_a_by_design_module_is_not_vetoed_for_naming_his_board(tmp_path):
 
 
 def test_the_gate_names_none_of_the_excused_modules(capsys):
-    """On the live tree, so this is about the real exemptions."""
-    assert inv.main(["--assert-migrated"]) == 2
-    line = next(l for l in capsys.readouterr().out.split("\n")
-                if l.startswith("NOT MIGRATED"))
-    for rel in (*inv.NOT_A_BOARD, *inv.READS_MARKDOWN_BY_DESIGN,
-                "tools/roll_health.py"):
-        assert rel not in line, rel
-    # nova_boards left this line in #203's flip, when its one call of its
-    # own parser (the markdown `set_row_order`) was deleted.
-    assert "agora_runner/nova_site.py" in line
+    """On the live tree, so this is about the real exemptions.
+
+    After #203's flip there is no NOT MIGRATED line at all, so the check is
+    that every exempt module is still reported -- as excused, by name --
+    rather than silently dropped from the report."""
+    assert inv.main(["--assert-migrated"]) == 0
+    out = capsys.readouterr().out
+    assert "NOT MIGRATED" not in out
+    for rel in (*inv.READS_MARKDOWN_BY_DESIGN, "tools/roll_health.py"):
+        assert rel in out, rel
 
 
 # The mirror surface: `nova_tickets`, which the parse_board grep cannot see.
