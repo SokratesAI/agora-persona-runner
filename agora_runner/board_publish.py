@@ -162,22 +162,62 @@ def layout_differences(markdown, board, stored):
     captures` archive whether it survived or not. Compared through
     `to_layout_document`, the one spelling of a stored layout, because
     `document_layout` keeps a table header in a tuple and JSON has none.
+
+    **The stored layout is a memory of the document at migration, and
+    `board_view._laid_out` is allowed to move away from it in exactly three
+    ways**, each of which this accepts and nothing else: a write-up for a
+    row boarded since (a `detail` block whose number the store never
+    named), a write-up since deleted (a stored `detail` the markdown no
+    longer carries), and a table widened by columns appended on the right
+    (`board_width` adds `Order` the day a row carries a position). Until
+    Cycle 1401 this compared the two lists for equality, so the first row
+    boarded after the flip and the first seat written by #202 each made
+    every publish of that board refuse (issue #210; the Order column on
+    `ideas.md`). A detail skipped here is not unchecked: whether every
+    write-up in the records came back is `differences`' `details` key.
     """
     if stored is None:
         return [f"layout: the store holds no layout for {board}"]
     wanted = board_document.layout_blocks_of(
         board_document.to_layout_document(
             board_view.document_layout(markdown), board))
-    if wanted == stored:
-        return []
-    if len(wanted) != len(stored):
-        return [f"layout: {len(wanted)} block(s) from the markdown, "
-                f"{len(stored)} from the store"]
-    for index, (one, two) in enumerate(zip(wanted, stored)):
-        if one != two:
-            return [f"layout[{index}] differs: markdown {_head(one)} "
+    named = {int(b["number"]) for b in stored if b.get("kind") == "detail"}
+    drawn = {int(b["number"]) for b in wanted if b.get("kind") == "detail"}
+    one_at, two_at = 0, 0
+    while one_at < len(wanted) or two_at < len(stored):
+        one = wanted[one_at] if one_at < len(wanted) else None
+        two = stored[two_at] if two_at < len(stored) else None
+        if one is not None and two is not None and (
+                one == two or _widened(one, two)):
+            one_at, two_at = one_at + 1, two_at + 1
+        elif _detail_not_in(one, named):
+            one_at += 1
+        elif _detail_not_in(two, drawn):
+            two_at += 1
+        else:
+            return [f"layout[{one_at}] differs: markdown {_head(one)} "
                     f"vs store {_head(two)}"]
-    return []  # pragma: no cover -- unreachable: unequal lists differ somewhere
+    return []
+
+
+def _detail_not_in(block, numbers):
+    """Is `block` a write-up whose row number is not in `numbers`?"""
+    return (isinstance(block, dict) and block.get("kind") == "detail"
+            and int(block["number"]) not in numbers)
+
+
+def _widened(one, two):
+    """Is `one` the table block `two` with columns appended on the right?
+
+    Appended only: a renamed, dropped or reordered header is a different
+    table, and `parse_board` reads cells by position.
+    """
+    new, old = one.get("columns"), two.get("columns")
+    if new is None or old is None or one.get("kind") != two.get("kind"):
+        return False
+    rest = {k: v for k, v in one.items() if k != "columns"}
+    return (len(new) > len(old) and list(new[:len(old)]) == list(old)
+            and rest == {k: v for k, v in two.items() if k != "columns"})
 
 
 def reread(text):
