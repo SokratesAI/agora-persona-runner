@@ -2,7 +2,9 @@
 
 The one door a board file goes through into the vault. For his two boards
 that file is now only the generated view of the #203 records -- drawn by
-`tools.board_publish`, which prints this command rather than running it:
+`tools.board_publish`. Its `--publish` calls this module's `vault_get`
+and `vault_put` itself and then stamps the records; without it, it prints
+the bare command below, which after the flip leaves that stamp behind:
 
     python3 -m tools.board_put projects/sokrates/projects/nova/ideas.md \\
         ideas.md --if-rev-file /tmp/board.$$.rev

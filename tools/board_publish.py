@@ -11,12 +11,18 @@ bad migration is visible in a diff"* -- and until now nothing did it.
 `board_view.render_document` has drawn a whole board file since #960, and
 its only callers were a migration checker and its tests.
 
-**It writes a local file and never the vault.** `tools.board_put` is the
-one door a board goes through, because a vault write has to be followed
-by the ticket store, and putting a second door beside it is the split
-brain this migration exists to avoid. So this prints the exact
-`board_put` command instead of running it, and a cycle that means to
-publish types it.
+**Without `--publish` it writes a local file and never the vault**, and
+prints the `board_put` command a cycle would type.
+
+**`--publish` is the whole trip in one call, because after the flip the
+hand-typed version is wrong** (Cycle 1396). `board_put` no longer touches
+the records, so a view it writes moves the vault revision past the one the
+records are stamped with, and `nova_site._his_board` then logs every
+request as "the generated markdown and the records disagree". So this
+reads the live file and its revision, draws it, refuses unless it re-reads
+faithfully, writes it with that revision as the compare-and-swap, reads it
+back, and only when the vault holds exactly what was drawn stamps the new
+revision onto the records. A lost race writes nothing and stamps nothing.
 
 **The refusal is the round trip, not a word count.** The rendered file is
 faithful when it re-reads as the records it was drawn from -- all four of
@@ -39,7 +45,9 @@ That is the same call `lint_entry` makes on an absolute claim.
 
 import argparse
 import collections
+import os
 import sys
+import tempfile
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
@@ -49,6 +57,7 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner import (  # noqa: E402
     board_document, board_records, board_store, board_view)
 from tools import board_migrate  # noqa: E402
+from tools import board_put  # noqa: E402
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
@@ -102,12 +111,74 @@ def render(board, markdown, store=board_store):
     return text, problems
 
 
+def vault_path_of(board):
+    """His vault path for `board`, off `board_put`'s own table."""
+    for path, name in board_put.RECORD_BOARDS.items():
+        if name == board:
+            return path
+    raise KeyError(board)
+
+
+def publish(board, store=board_store):
+    """Draw `board` from the records, write it to the vault, stamp it.
+
+    Returns `(code, lines)`: 0 published or already current, 2 refused
+    before anything was written, 3 the vault write or its read-back
+    failed. The stamp is the LAST step and is only taken on a read-back
+    that matches what was drawn -- a stamp is a claim about what the vault
+    holds, and one taken on a write that lost a race would certify the
+    other writer's text.
+    """
+    path = vault_path_of(board)
+    lines = [f"board: {board} -> {path}"]
+    markdown, rev = board_put.vault_get(path)
+    if markdown is None or not rev:
+        return 2, lines + ["REFUSED: could not read the live file and its "
+                           "revision; nothing was written"]
+    try:
+        text, problems = render(board, markdown, store=store)
+    except board_records.UnmigratedStore as exc:
+        return 2, lines + [f"REFUSED: {exc}"]
+    if problems:
+        return 2, lines + [f"  {p}" for p in problems] + [
+            "REFUSED: the rendered document does not re-read as the records "
+            "it was drawn from; nothing was written"]
+    added, dropped = word_delta(markdown, text)
+    lines.append(f"words: +{added} / -{dropped}")
+    if text == markdown:
+        board_records.stamp_source_rev(board, rev, store=store)
+        return 0, lines + [f"unchanged: the vault already holds this view; "
+                           f"stamped {rev}"]
+    with tempfile.TemporaryDirectory(prefix="board-publish.") as scratch:
+        body = os.path.join(scratch, "board.md")
+        rev_file = os.path.join(scratch, "board.rev")
+        with open(body, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        with open(rev_file, "w", encoding="utf-8") as handle:
+            handle.write(f"{rev}\n")
+        done = board_put.vault_put(path, body, if_rev_file=rev_file)
+    if done.returncode != 0:
+        return 3, lines + [(done.stdout or "") + (done.stderr or ""),
+                           "FAILED: the vault write did not land; the records "
+                           "were not stamped"]
+    landed, new_rev = board_put.vault_get(path)
+    if landed != text or not new_rev:
+        return 3, lines + ["FAILED: the vault does not read back as the view "
+                           "just written; the records were not stamped"]
+    board_records.stamp_source_rev(board, new_rev, store=store)
+    return 0, lines + [f"published: {len(text)} bytes, vault {rev} -> "
+                       f"{new_rev}, records stamped {new_rev}"]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--board", required=True,
                         choices=sorted(board_document.BOARDS),
                         help="which board to draw")
-    parser.add_argument("--file", required=True, metavar="FILE",
+    parser.add_argument("--publish", action="store_true",
+                        help="read his live file from the vault, write the "
+                             "view back over it and stamp the records")
+    parser.add_argument("--file", metavar="FILE",
                         help="the live board markdown, for its frontmatter "
                              "and the word delta")
     parser.add_argument("--out", metavar="FILE",
@@ -117,6 +188,13 @@ def main(argv=None):
                         help="the vault path to print in the board_put "
                              "command; only used with --out")
     args = parser.parse_args(argv)
+
+    if args.publish:
+        code, lines = publish(args.board)
+        print("\n".join(lines))
+        return code
+    if not args.file:
+        parser.error("--file is required without --publish")
 
     with open(args.file, encoding="utf-8") as handle:
         markdown = handle.read()
