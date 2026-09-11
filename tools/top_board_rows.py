@@ -30,11 +30,10 @@ the board, above the handoff and above everything else. They are printed
 first and unranked, because a capture has no rating cell to sort on and
 because there are never many; see `unboarded_captures`.
 
-Ranking is rating first (Immediately > High > Medium > Low > unrated),
-then oldest `Updated` first, then issues before ideas, then row number.
-Age is the tiebreak on purpose: two High rows are not equally urgent when one has sat
-since 08-04, and "it has been waiting longest" is the only signal left
-once the rating is spent.
+Ranking reads no rating since issue #202 (Cycle 1415): his project order,
+then the milestone, then the row's position inside it, then oldest
+`Updated` first, then issues before ideas, then row number -- see
+`nova_next.rank`. The rating is his intent at capture and orders nothing.
 
 **Every named line now carries a `[claim: <slug>]`, and a row a live cycle
 already holds sinks to the bottom marked 🔒.** The owner is considering moving
