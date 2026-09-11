@@ -456,3 +456,13 @@ def test_two_rows_on_one_seat_are_numbered_rather_than_squeezed(monkeypatch):
     assert len(rows) == 4
     seats = _stored_orders(store)
     assert len(set(seats.values())) == 4
+
+
+def test_a_move_to_the_bottom_takes_a_seat_below_the_last_one(monkeypatch):
+    store = _records(monkeypatch, markdown=DENSE)
+    assert nova_capture.set_row_order("ideas", 4, 1)[0]  # spaced out
+    rows = _count_writes(monkeypatch)
+    ok, message = nova_capture.set_row_order("ideas", 4, 4)
+    assert ok, message
+    assert rows == [(4, {"order": 5 * S})]
+    assert _queue(store) == [1, 2, 3, 4]
