@@ -115,6 +115,25 @@ def test_a_repeated_placement_rewrites_nothing_on_either_board(monkeypatch):
     assert rows == []
 
 
+def test_the_other_board_unreadable_writes_nothing(monkeypatch):
+    # A seat computed from the ideas board alone would collide with the
+    # issues board's seats, so an unreadable issues board is a refusal.
+    from agora_runner import board_records
+    _records(monkeypatch, issues=SHARED)
+    rows = _count_writes(monkeypatch)
+    real = board_records.contents
+
+    def issues_down(board, *a, **k):
+        if board == "issue":
+            raise board_records.RecordError("issues board unreadable")
+        return real(board, *a, **k)
+
+    monkeypatch.setattr(board_records, "contents", issues_down)
+    ok, message = nova_capture.set_row_order("ideas", 7, 1)
+    assert not ok and "could not read issues" in message, message
+    assert rows == []
+
+
 def test_the_last_seat_is_the_size_of_the_merged_group(monkeypatch):
     # Three open rows across two boards: seat 3 exists, seat 4 does not.
     store = _records(monkeypatch, issues=SHARED)

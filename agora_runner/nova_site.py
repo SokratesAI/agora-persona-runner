@@ -4932,7 +4932,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         (issue #202): `set_row_order` counts it across issues and ideas, the
         way `nova_next.rank` and the drawer merge them, so a move can
         reseat rows on the board `target` does not name -- which is why a
-        write invalidates both.
+        successful write invalidates both. A write that failed part-way
+        (`"N of M seat(s) were written"`) invalidates neither, as before
+        this; that gap is filed, not fixed here.
         """
         target = payload.get("target")
         number = payload.get("number")
