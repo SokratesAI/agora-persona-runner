@@ -3601,6 +3601,7 @@ def test_the_first_press_on_next_does_not_pay_for_its_own_build():
             patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
             patch.object(nova_site, "project_meta_markdown", return_value=""), \
             patch.object(nova_site, "milestone_pins_markdown", return_value=""), \
+            patch.object(nova_site, "milestone_seats_markdown", return_value=""), \
             patch.object(nova_sources, "vault_read_path", return_value=""):
         nova_site.warm_cache()
         assert builds, "the warm never built /api/next's payload"
@@ -6210,10 +6211,12 @@ def _records_contents(rows=(), captures=(), details=None):
 
 
 def _next_side_reads():
-    """The three non-board reads `next_up_payload` makes, stubbed empty."""
+    """The non-board reads `next_up_payload` makes, stubbed empty. His pins
+    and my milestone seats (issue #202) share the third slot."""
     return (patch.object(nova_site, "claims_ledger_json", return_value="{}"),
             patch.object(nova_site, "project_meta_markdown", return_value=""),
-            patch.object(nova_site, "milestone_pins_markdown", return_value=""))
+            patch.multiple(nova_site, milestone_pins_markdown=lambda: "",
+                           milestone_seats_markdown=lambda: ""))
 
 
 def test_next_reads_the_record_store_and_never_the_board_markdown():
@@ -6314,6 +6317,7 @@ def test_next_ranks_each_board_from_its_own_records(monkeypatch):
                         lambda: json.dumps({"claims": []}))
     monkeypatch.setattr(nova_site, "project_meta_markdown", lambda: "")
     monkeypatch.setattr(nova_site, "milestone_pins_markdown", lambda: "")
+    monkeypatch.setattr(nova_site, "milestone_seats_markdown", lambda: "")
 
     payload = nova_site.next_up_payload()
 

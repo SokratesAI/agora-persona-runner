@@ -263,6 +263,7 @@ def test_the_site_route_builds_the_payload_off_the_records():
                               lambda: json.dumps({"claims": []})), \
             mock.patch.object(nova_site, "project_meta_markdown", lambda: ""), \
             mock.patch.object(nova_site, "milestone_pins_markdown", lambda: ""), \
+            mock.patch.object(nova_site, "milestone_seats_markdown", lambda: ""), \
             mock.patch.object(nova_sources, "vault_read_path",
                               _refuse_the_file):
         payload = nova_site.next_up_payload()
@@ -297,6 +298,7 @@ def test_the_site_route_refuses_an_unmigrated_store_rather_than_emptying_it():
                               lambda: json.dumps({"claims": []})), \
             mock.patch.object(nova_site, "project_meta_markdown", lambda: ""), \
             mock.patch.object(nova_site, "milestone_pins_markdown", lambda: ""), \
+            mock.patch.object(nova_site, "milestone_seats_markdown", lambda: ""), \
             mock.patch.object(nova_sources, "vault_read_path",
                               _refuse_the_file):
         with pytest.raises(board_records.RecordError):

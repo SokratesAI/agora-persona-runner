@@ -87,6 +87,7 @@ def _boards(monkeypatch):
     # pins by default, which is the steady state -- a pin is an override,
     # so an absent file means the computed order stands.
     monkeypatch.setattr(nova_site, "milestone_pins_markdown", lambda: "")
+    monkeypatch.setattr(nova_site, "milestone_seats_markdown", lambda: "")
 
 
 def test_index_lists_every_project_both_boards_name():
@@ -813,8 +814,10 @@ class TestProjectMilestones:
             return ""
 
         monkeypatch.setattr(nova_site, "milestone_pins_markdown", _counted)
+        monkeypatch.setattr(nova_site, "milestone_seats_markdown", _counted)
         payload = nova_site.project_payload()
         assert "milestones" not in payload
         assert calls == []
         nova_site.project_payload("Nova")
-        assert calls == [1]
+        # One read for his pins, one for my seats (issue #202).
+        assert calls == [1, 1]
