@@ -191,6 +191,23 @@ def test_a_bullet_that_cannot_be_deleted_is_reported_not_hidden():
     assert _board(store)["captures"] == [FIRST, SECOND]
 
 
+def test_a_bullet_already_gone_is_done_and_points_at_a_duplicate_not_the_box():
+    """`delete_capture` answers `False` for "already gone" -- a second Board
+    tap got there first. The row landed and the box is clean, so this is not
+    a failure, and the message must not send him to delete a bullet that is
+    not there. Reviewer finding, Cycle 1390."""
+    store = _store()
+    store.delete_capture = lambda doc: False
+
+    ok, message = nc.promote_capture("issues", 0, FIRST, store=store)
+
+    assert ok, message
+    assert message.startswith("boarded as #13")
+    assert "second row" in message
+    assert "check the box" not in message
+    assert 13 in [row["number"] for row in _board(store)["items"]]
+
+
 def test_notes_has_no_board_to_promote_onto():
     store = _store()
     ok, message = nc.promote_capture("notes", 0, FIRST, store=store)

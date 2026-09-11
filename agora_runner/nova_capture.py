@@ -689,15 +689,23 @@ def promote_capture(target, index, original, priority=None, store=None):
     try:
         removed = store.delete_capture(doc)
     except Exception as error:  # noqa: BLE001 -- a conflict included
-        removed, problem = False, error
-    else:
-        problem = "it was already gone"
-    if not removed:
         log(f"nova-capture boarded a {target} capture as #{number} but left "
-            f"the bullet: {problem}")
+            f"the bullet: {error}")
         return False, (
             f"boarded as #{number}, but could not take the bullet out of the "
-            f"box ({problem}) — check the box for it and delete it there")
+            f"box ({error}) — check the box for it and delete it there")
+    if not removed:
+        # `False` is `delete_capture`'s "already gone", not a failure: the
+        # bullet left the box between the read and the delete. The one writer
+        # that does that is a second Board on the same bullet, which will have
+        # minted its own row -- so this is done, and says where a duplicate
+        # would be rather than sending him to a box that is already clean.
+        # Reviewer finding, Cycle 1390.
+        log(f"nova-capture boarded a {target} capture as #{number}; the "
+            "bullet had already left the box")
+        return True, (
+            f"boarded as #{number} — the bullet had already left the box, so "
+            "check the board for a second row from a double tap")
     log(f"nova-capture promoted a {target} capture to #{number}")
     return True, f"boarded as #{number}"
 
