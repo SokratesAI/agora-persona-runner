@@ -143,6 +143,10 @@ READS_MARKDOWN_BY_DESIGN = {
     "tools/board_migration_preflight.py":
         "compares a board's markdown against the records it would produce, "
         "so both sides of that comparison are its subject",
+    "agora_runner/board_publish.py":
+        "re-reads the view it has just drawn from the records to prove the "
+        "render faithful; the markdown it parses is its own output, never "
+        "a source of rows",
 }
 
 #: The superseded store, and the surface `parse_board` cannot see: slice 1 of
