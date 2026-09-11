@@ -30,11 +30,10 @@ the board, above the handoff and above everything else. They are printed
 first and unranked, because a capture has no rating cell to sort on and
 because there are never many; see `unboarded_captures`.
 
-Ranking is rating first (Immediately > High > Medium > Low > unrated),
-then oldest `Updated` first, then issues before ideas, then row number.
-Age is the tiebreak on purpose: two High rows are not equally urgent when one has sat
-since 08-04, and "it has been waiting longest" is the only signal left
-once the rating is spent.
+Ranking reads no rating since issue #202 (Cycle 1415): his project order,
+then the milestone, then the row's position inside it, then oldest
+`Updated` first, then issues before ideas, then row number -- see
+`nova_next.rank`. The rating is his intent at capture and orders nothing.
 
 **Every named line now carries a `[claim: <slug>]`, and a row a live cycle
 already holds sinks to the bottom marked 🔒.** The owner is considering moving
@@ -493,8 +492,9 @@ def _project_tag(row, meta):
     **The milestone is on the same line for the same reason the project
     rating is**, and it was added the cycle the milestone tier was
     actually wired into this tool: the tier sits between the project and
-    the row's own rating, so a Medium row in a well-ranked milestone now
-    outranks a High row in a badly-ranked one *inside the same project*,
+    the row's own position, so a row in a well-ranked milestone outranks a
+    row in a badly-ranked one *inside the same project*, whatever either is
+    rated (no rating orders anything since #202),
     and a line that showed neither would read as a bug. `ungrouped` is
     printed rather than left blank because an ungrouped row sinks behind
     every grouped one in its project, which is a position a cycle should
@@ -788,7 +788,7 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         diagnoses_readable))
     # Milestone M6: every fifth cycle the project tier is forced onto
     # maintenance. It rewrites the project ranks and nothing else, so the
-    # captures above and the skip-to-top tier below are untouched -- and
+    # captures above and the milestone and row order below are untouched -- and
     # the note is printed whether it forced anything or fell through,
     # because a reservation nobody can see fired is one nobody can tell
     # apart from a broken one.

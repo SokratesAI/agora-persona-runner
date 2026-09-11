@@ -313,14 +313,14 @@ def apply_claims(items, live, my_cycle=None):
     return items
 
 
-#: The rating that means "ahead of the project order", not "the most
-#: urgent row inside its project". The redesign spec calls this tier
-#: skip-to-top and says it sits above the ordered project list; today the
-#: only lever that exists for it is the row's own Immediately tag, and the
-#: spec says so in as many words -- *"the row-level Immediately tag is the
-#: real, working lever today"*. So the key below reads that tag rather
-#: than inventing a second field for a mechanism nobody can set yet.
-_SKIP_TO_TOP = "immediate"
+#: Where `rank` puts a row whose project has no line in `projects.md`:
+#: behind every project that has one, placed or rated. It used to be
+#: `len(_RANK)`, which is 5 -- a real rank -- so Infra, Maintenance and
+#: Research tied with whichever listed project happened to sit at 5
+#: (cycle 1410 found them level with Sokrates Docs). `project_ranks` says an
+#: unrated project sorts last; a project nobody has listed at all has even
+#: less said about it, so it cannot sort ahead of one he rated.
+_UNLISTED_PROJECT = float("inf")
 
 
 def project_ranks(markdown):
@@ -545,10 +545,10 @@ def age_key(updated):
 def rank(rows, projects=None, milestones=None):
     """Best pick first. See the module docstring for why age is the tiebreak.
 
-    **`projects` is `project_ranks(projects_markdown)`, and it sits between
-    the skip-to-top tier and the row's own position.** That placement is the
-    redesign spec's picking order, not a new opinion: expedite, then
-    skip-to-top, then the project order, then the row inside it. Passing
+    **`projects` is `project_ranks(projects_markdown)`, and it sits directly
+    under the claimed, waiting and blocked flags.** That is the redesign
+    spec's picking order with the skip-to-top tier gone (issue #202): the
+    project order, then the milestone, then the row inside it. Passing
     nothing keeps the flat cross-project ranking every caller had before,
     which is what the site's own project page wants -- it has already
     picked the project, so ordering by project inside it would order
@@ -606,13 +606,16 @@ def rank(rows, projects=None, milestones=None):
         0 if r.get("waiting") and not r.get("replyHeldBy")
         and not r.get("relayed") else 1,
         1 if r.get("statusKey") == _BLOCKED else 0,
-        # Skip-to-top: ahead of the project order, which is the whole of
-        # what the tier means. A row he has called Immediately is one he
-        # wants next regardless of which project it belongs to, and
-        # ranking it inside its project would be the flat behaviour this
-        # change replaces, wearing the new shape.
-        0 if r["priorityKey"] == _SKIP_TO_TOP else 1,
-        (projects or {}).get((r.get("project") or "").lower(), len(_RANK)),
+        # **No rating above the project order either.** A skip-to-top key
+        # read the row's own 🔴 Immediately here until issue #202 closed:
+        # the spec's correction of 2026-09-10 keeps the rating only as the
+        # intent he taps in at capture, and *"nothing downstream --
+        # `nova_next.rank`, the picker, the project standings -- reads a
+        # rating again"*. That tier is also the exact jump idea #267 got on
+        # 2026-09-09 when a cycle's row read Immediately for half an hour.
+        # What he wants next goes at the top of his project list, or first
+        # in its milestone, and both are read below.
+        (projects or {}).get((r.get("project") or "").lower(), _UNLISTED_PROJECT),
         # **The milestone tier, inside the project the tier above just
         # chose.** `milestones` is `milestone_ranks(rows)` and passing
         # nothing keeps every caller's previous ordering, exactly the way
@@ -715,8 +718,8 @@ def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
     left out, which is `held_by`'s own rule and not re-decided here.
 
     `projects_markdown` is `projects.md`, his own rating of the projects
-    themselves, and it orders the board between the skip-to-top tier and
-    the row's position -- see `rank`. Passing nothing is the flat ranking this
+    themselves, and it orders the board above the milestone and the row's
+    position -- see `rank`. Passing nothing is the flat ranking this
     function had before, so a caller that has not got the file still gets
     an answer rather than an exception; the tool that prints this for a
     cycle says out loud when it could not read it.
@@ -957,9 +960,10 @@ def reserve_maintenance(projects, rows, cycle, every=MAINTENANCE_EVERY):
     sentence when something was, or when the reservation was due and fell
     through -- the caller prints it. **The reservation is a rewrite of the
     project rank map and nothing else**, which is exactly the tier the spec
-    puts it in: an expedite or a skip-to-top row still wins, because those
-    keys sort above the project one in `rank`, and the ordering *inside*
-    maintenance is untouched.
+    puts it in: an unanswered comment of his still wins, because that key
+    sorts above the project one in `rank`, and the ordering *inside*
+    maintenance is untouched. A 🔴 Immediately row no longer does -- issue
+    #202 took the skip-to-top tier out of `rank`.
 
     **Falling through when the queue is empty is the spec's rule, and it is
     reported rather than silent.** A reserved cycle that finds no
