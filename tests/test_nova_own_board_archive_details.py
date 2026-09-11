@@ -83,6 +83,12 @@ def _payload(monkeypatch, live=MINE, archive=ARCHIVE):
         return ""
 
     monkeypatch.setattr(nova_sources, "vault_read_path", read)
+    # His half comes out of the #203 record store and nowhere else; these
+    # tests are about my own file, so his board is empty, as the "" his
+    # path used to read back here was.
+    from agora_runner import nova_site
+    from agora_runner.nova_boards import parse_board
+    monkeypatch.setattr(nova_site, "_his_board", lambda name: parse_board(""))
     return board_payload("issues")
 
 

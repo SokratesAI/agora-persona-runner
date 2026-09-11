@@ -23,6 +23,7 @@ from agora_runner.nova_boards import (
     unanswered_comments,
 )
 from agora_runner import nova_site
+from agora_runner.nova_boards import parse_board as _parse_his_board
 
 
 BOARD = """---
@@ -150,7 +151,7 @@ def test_a_note_the_page_can_read_back_is_the_one_the_writer_wrote():
 
 
 def test_the_detail_request_carries_the_thread_and_the_list_does_not(monkeypatch):
-    monkeypatch.setattr(nova_site, "edvard_board_markdown", lambda name: BOARD)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(lambda name: BOARD): _parse_his_board(_f(name)))
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
     payload = nova_site.board_payload("issues")
 
@@ -187,7 +188,7 @@ def test_search_still_reaches_a_comment(monkeypatch):
     substance is, and half the substance of an old row is the argument
     underneath it.
     """
-    monkeypatch.setattr(nova_site, "edvard_board_markdown", lambda name: BOARD)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(lambda name: BOARD): _parse_his_board(_f(name)))
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
     payload = nova_site.board_payload("issues")
     assert nova_site.board_page(payload, search="still open") == {
