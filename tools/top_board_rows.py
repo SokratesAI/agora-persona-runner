@@ -95,7 +95,8 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
-    BOARD_PATHS, MILESTONE_PINS_PATH, PROJECT_META_PATH, capture_entries,
+    BOARD_PATHS, MILESTONE_PINS_PATH, MILESTONE_SEATS_PATH, PROJECT_META_PATH,
+    capture_entries,
     is_relayed, parse_milestone_pins, parse_project_meta, status_key,
     unanswered_comment_bodies_from_details,
 )
@@ -251,6 +252,12 @@ def fetch_milestone_pins(path=MILESTONE_PINS_PATH):
     mean "rank it the way I would have", which is what this tier does by
     default anyway.
     """
+    return _fetch(path) or ""
+
+
+def fetch_milestone_seats(path=MILESTONE_SEATS_PATH):
+    """`markdown` for `milestone-seats.md`, or `""` -- the order I set
+    (issue #202). Absent means the computed order, as for the pins above."""
     return _fetch(path) or ""
 
 
@@ -733,7 +740,7 @@ def _claim_footer(rows, captures, claims_readable):
 
 def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
            projects_markdown="", projects_readable=True,
-           milestone_pins_markdown="",
+           milestone_pins_markdown="", milestone_seats_markdown="",
            diagnoses_text="", diagnoses_readable=True, cycle=None):
     """The captures first, then the ranked board. Never one without the other.
 
@@ -810,7 +817,8 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     # function that builds that list is the one that has to know.
     ranked = rank(rows, project_rank_map,
                   milestone_ranks(rows, parse_milestone_pins(
-                      milestone_pins_markdown)))
+                      milestone_pins_markdown),
+                      parse_milestone_pins(milestone_seats_markdown)))
     if not ranked:
         out.append("TOP OF EDVARD'S BOARD — no open rows on either board.")
     else:
@@ -925,6 +933,8 @@ def main(argv=None):
                     help="local projects.md instead of a vault fetch")
     ap.add_argument("--milestone-pins",
                     help="local milestones.md instead of a vault fetch")
+    ap.add_argument("--milestone-seats",
+                    help="local milestone-seats.md instead of a vault fetch")
     ap.add_argument("--diagnoses",
                     help="local satisfaction-diagnoses.json instead of a "
                          "vault fetch")
@@ -1005,6 +1015,8 @@ def main(argv=None):
 
     milestone_pins_md = (open(args.milestone_pins, encoding="utf-8").read()
                          if args.milestone_pins else fetch_milestone_pins())
+    milestone_seats_md = (open(args.milestone_seats, encoding="utf-8").read()
+                          if args.milestone_seats else fetch_milestone_seats())
 
     if args.diagnoses:
         with open(args.diagnoses, encoding="utf-8") as fh:
@@ -1017,6 +1029,7 @@ def main(argv=None):
                  projects_markdown=projects_md,
                  projects_readable=projects_readable,
                  milestone_pins_markdown=milestone_pins_md,
+                 milestone_seats_markdown=milestone_seats_md,
                  diagnoses_text=diagnoses_text,
                  diagnoses_readable=diagnoses_readable,
                  cycle=args.cycle))

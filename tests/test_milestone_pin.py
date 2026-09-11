@@ -246,7 +246,7 @@ def test_top_board_rows_reads_the_pins(monkeypatch):
     seen = {}
     real = tbr.milestone_ranks
     monkeypatch.setattr(tbr, "milestone_ranks",
-                        lambda rows, pins=None: seen.setdefault("pins", pins)
+                        lambda rows, pins=None, seats=None: seen.setdefault("pins", pins)
                         or real(rows, pins))
     tbr.render([], milestone_pins_markdown=set_milestone_pin(
         "", "Nova", "Picking", 1, "09-07"))

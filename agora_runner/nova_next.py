@@ -385,7 +385,7 @@ _IMPORTANCE = {"immediate": 13.0, "high": 5.0, "medium": 2.0, "low": 1.0,
                "": 1.0}
 
 
-def milestone_ranks(rows, pins=None):
+def milestone_ranks(rows, pins=None, seats=None):
     """Open rows -> `{(project, milestone): rank}`, best first, per project.
 
     Milestone M4 of `task-prioritization-redesign.md`, and the tier that
@@ -437,6 +437,15 @@ def milestone_ranks(rows, pins=None):
     a pin is a decision of his about one milestone, not a thumb on the
     scale that changes what the others score. See `_apply_pins` for what
     "position" means when the pin and the list disagree.
+
+    **`seats` is the order I set, and it sits between the formula and his
+    pins** -- issue #202, which retires the row rating this formula divides.
+    Dropping `_IMPORTANCE` on its own reorders six of eleven projects
+    (measured Cycle 1408 on 210 live rows), and writing today's order into
+    `milestones.md` as pins would put "pinned" and an Unpin button on every
+    milestone he never touched. So a seat lives in its own file
+    (`nova_boards.MILESTONE_SEATS_PATH`), is never reported as a pin, and
+    loses to one: `_apply_seats` runs first, `_apply_pins` on its result.
     """
     best = {}
     for row in rows or []:
@@ -460,7 +469,32 @@ def milestone_ranks(rows, pins=None):
     scored.sort(key=lambda pair: (pair[1], pair[0]))
     order = [key for key, _ in scored]
     return {key: position
-            for position, key in enumerate(_apply_pins(order, pins))}
+            for position, key in
+            enumerate(_apply_pins(_apply_seats(order, seats), pins))}
+
+
+def _apply_seats(order, seats):
+    """Put each project's seated milestones first, in seat order.
+
+    Same slot rule as `_apply_pins`: only the slots a project already holds
+    in the global list are permuted, so a seat in one project cannot move
+    another's. A milestone with no seat -- one that appeared after the seats
+    were written -- keeps its computed order and goes after every seated one
+    in its project, because the seats are a decision and the formula is
+    not. A seat naming a milestone no open row carries is ignored.
+    """
+    if not seats:
+        return order
+    out = list(order)
+    for project in {key[0] for key in order if key in seats}:
+        slots = [i for i, key in enumerate(out) if key[0] == project]
+        group = sorted((out[i] for i in slots),
+                       key=lambda k: (0, seats[k]) if k in seats
+                       else (1, slots[0]))
+        # `sorted` is stable, so the unseated keep their computed order.
+        for slot, key in zip(slots, group):
+            out[slot] = key
+    return out
 
 
 def _apply_pins(order, pins):
@@ -685,7 +719,7 @@ def seed_seats(rows):
 
 def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
                                now, top=5, projects_markdown="",
-                               milestones_markdown=""):
+                               milestones_markdown="", seats_markdown=""):
     """What a cycle waking up now would take, in the order it would take it.
 
     Three lists, and the order between them is `prompt.md` step 2's, not
@@ -742,7 +776,8 @@ def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
     # no pins to pass byte-identical to what it was.
     ranked = rank(rows, project_ranks(projects_markdown),
                   milestone_ranks(rows,
-                                  parse_milestone_pins(milestones_markdown)))
+                                  parse_milestone_pins(milestones_markdown),
+                                  parse_milestone_pins(seats_markdown)))
 
     active = []
     for slug, cycle in sorted(live.items(), key=lambda pair: pair[1], reverse=True):
@@ -977,7 +1012,7 @@ def reserve_maintenance(projects, rows, cycle, every=MAINTENANCE_EVERY):
         "that queue. Take the top row below; it is a maintenance row.")
 
 
-def project_milestones(rows, project, pins=None):
+def project_milestones(rows, project, pins=None, seats=None):
     """One project's milestones, in the order `milestone_ranks` puts them.
 
     The rendering half of milestone M4 of
@@ -1012,7 +1047,7 @@ def project_milestones(rows, project, pins=None):
     wanted = (project or "").strip().lower()
     if not wanted:
         return []
-    ranks = milestone_ranks(rows, pins)
+    ranks = milestone_ranks(rows, pins, seats)
     spelling = {}
     counts = {}
     for row in rows or []:

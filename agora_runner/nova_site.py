@@ -261,6 +261,7 @@ from agora_runner.nova_galaxy import galaxy_payload
 from agora_runner.nova_sources import (
     claims_ledger_json,
     milestone_pins_markdown,
+    milestone_seats_markdown,
     project_meta_markdown,
     nova_board_markdown,
     catalog_markdown,
@@ -1535,7 +1536,8 @@ def project_payload(name=None):
     ]
     result["milestones"] = project_milestones(
         open_everywhere, matched or wanted,
-        parse_milestone_pins(milestone_pins_markdown()))
+        parse_milestone_pins(milestone_pins_markdown()),
+        parse_milestone_pins(milestone_seats_markdown()))
     return result
 
 
@@ -1646,6 +1648,7 @@ def next_up_payload():
         datetime.now(OSLO),
         projects_markdown=project_meta_markdown(),
         milestones_markdown=milestone_pins_markdown(),
+        seats_markdown=milestone_seats_markdown(),
     )
 
 
