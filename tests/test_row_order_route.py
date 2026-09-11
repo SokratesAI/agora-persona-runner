@@ -103,6 +103,18 @@ def test_an_issue_and_an_idea_with_one_number_are_different_rows(monkeypatch):
     assert _stored_orders(store) == {8: 2, 7: 3}
 
 
+def test_a_repeated_placement_rewrites_nothing_on_either_board(monkeypatch):
+    # Issue #7 already holds seat 3; its idea namesake holds seat 1. Judging
+    # "already in its seat" by the number alone reads the idea's seat for
+    # the issue and rewrites a row that did not move.
+    _records(monkeypatch, issues=SHARED)
+    assert nova_capture.set_row_order("ideas", 7, 1)[0]
+    rows = _count_writes(monkeypatch)
+    ok, message = nova_capture.set_row_order("ideas", 7, 1)
+    assert ok, message
+    assert rows == []
+
+
 def test_the_last_seat_is_the_size_of_the_merged_group(monkeypatch):
     # Three open rows across two boards: seat 3 exists, seat 4 does not.
     store = _records(monkeypatch, issues=SHARED)
