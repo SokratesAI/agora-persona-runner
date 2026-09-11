@@ -17,6 +17,12 @@ from agora_runner.nova_site import PAGE_ROUTES
 from tools import see_page
 
 
+@pytest.fixture(autouse=True)
+def _private_work_dir(tmp_path, monkeypatch):
+    """`render` writes `shot.js` to the work dir; keep a test out of the real one."""
+    monkeypatch.setenv("NOVA_BROWSER_WORK", str(tmp_path / "default-work"))
+
+
 def _root(tmp_path, *, fonts=True, libdirs=True, browsers=True, playwright=True):
     """A browser root as `bootstrap.sh` leaves it, minus whatever is switched off.
 
@@ -276,13 +282,55 @@ def test_the_repo_copy_of_shot_js_is_the_one_that_runs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(see_page, "render_env", lambda root: {})
     monkeypatch.setattr(see_page.subprocess, "run", fake_run)
-    stale = tmp_path / "shot.js"
+    work = tmp_path / "work"
+    monkeypatch.setenv("NOVA_BROWSER_WORK", str(work))
+    work.mkdir()
+    stale = work / "shot.js"
     stale.write_text("// a copy some cycle left here in 2026")
     see_page.render(["/"], root=tmp_path)
     fresh = (
         pathlib.Path(see_page.__file__).resolve().parent / "browser" / "shot.js"
     ).read_text(encoding="utf-8")
     assert stale.read_text(encoding="utf-8") == fresh
+
+
+def test_a_read_only_browser_root_still_renders(tmp_path, monkeypatch):
+    """The bridge image puts the browser in `/opt`, on a read-only root filesystem.
+
+    The first render after that image rolled died copying `shot.js` into the
+    root (Cycle 1425). So nothing may be written under the root: the script
+    and its screenshots go to the work directory, node runs there, and
+    `NODE_PATH` points back at the root's `node_modules` so `require` still
+    finds `playwright-core`.
+    """
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(cwd=kwargs["cwd"], node_path=kwargs["env"].get("NODE_PATH"))
+        return SimpleNamespace(stdout=json.dumps(_row()), stderr="")
+
+    (tmp_path / "root").mkdir()
+    root = _root(tmp_path / "root")
+    work = tmp_path / "work"
+    monkeypatch.setenv("NOVA_BROWSER_WORK", str(work))
+    monkeypatch.setattr(see_page.subprocess, "run", fake_run)
+    before = sorted(p.name for p in root.iterdir())
+    root.chmod(0o555)
+    try:
+        see_page.render(["/"], root=root)
+    finally:
+        root.chmod(0o755)
+    assert sorted(p.name for p in root.iterdir()) == before
+    assert seen == {"cwd": str(work), "node_path": str(root / "node_modules")}
+    assert (work / "shot.js").exists() and (work / "shots").is_dir()
+
+
+def test_the_printed_screenshot_path_is_in_the_work_dir(tmp_path, monkeypatch, capsys):
+    """shot.js writes `shots/` under its cwd, so the path printed must be there too."""
+    monkeypatch.setenv("NOVA_BROWSER_WORK", str(tmp_path / "work"))
+    monkeypatch.setattr(see_page, "render", lambda paths, **k: [_row(path=p) for p in paths])
+    assert see_page.main(["/retro"]) == 0
+    assert f"{tmp_path / 'work' / 'shots'}/retro-390.png" in capsys.readouterr().out
 
 
 def test_the_base_reaches_the_browser(tmp_path, monkeypatch):

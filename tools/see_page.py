@@ -93,6 +93,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
@@ -129,6 +130,19 @@ class BrowserMissing(RuntimeError):
 
 def browser_root() -> Path:
     return Path(os.environ.get("NOVA_BROWSER_ROOT", str(DEFAULT_ROOT)))
+
+
+def work_dir() -> Path:
+    """Where `shot.js` runs and writes its screenshots -- never the browser root.
+
+    The root is `/opt/nova-browser` in the bridge image now, and that pod runs
+    with `readOnlyRootFilesystem: true`, so the first render after the image
+    rolled died on `OSError: [Errno 30] Read-only file system:
+    '/opt/nova-browser/shot.js'` (measured Cycle 1425). The browser is read
+    from the root; everything written goes here, and `NODE_PATH` is what lets
+    the script find `playwright-core` from outside it.
+    """
+    return Path(os.environ.get("NOVA_BROWSER_WORK", str(Path(tempfile.gettempdir()) / "nova-see-page")))
 
 
 def missing_pieces(root: Path) -> list:
@@ -211,17 +225,20 @@ def render(paths, root=None, base=DEFAULT_BASE, width=PHONE_WIDTH) -> list:
     env = render_env(root)
     env["NOVA_SITE"] = base
     env["NOVA_WIDTH"] = str(width)
-    # `node shot.js` runs with cwd=root, so the script that actually runs
-    # is the copy in the sysroot and not the one in this repo. Nothing kept
+    env["NODE_PATH"] = str(root / "node_modules")
+    work = work_dir()
+    (work / "shots").mkdir(parents=True, exist_ok=True)
+    # `node shot.js` runs with cwd=work, so the script that actually runs
+    # is the copy there and not the one in this repo. Nothing kept
     # those in step -- `bootstrap.sh` does not install it, so the root copy
     # was placed by hand once and has been whatever a cycle last left there.
     # An edit to the version-controlled file would silently not take effect,
     # which is the worst possible failure for the one tool whose whole job
     # is showing a cycle what it really shipped. Copy it every run.
-    shutil.copyfile(Path(__file__).resolve().parent / "browser" / "shot.js", root / "shot.js")
+    shutil.copyfile(Path(__file__).resolve().parent / "browser" / "shot.js", work / "shot.js")
     proc = subprocess.run(
         ["node", "shot.js", *paths],
-        cwd=str(root),
+        cwd=str(work),
         env=env,
         capture_output=True,
         text=True,
@@ -258,11 +275,11 @@ def main(argv=None) -> int:
     except (BrowserMissing, RuntimeError) as exc:
         print(exc)
         return 1
-    root = browser_root()
+    work = work_dir()
     for row in rows:
         print(
             f"{row['path']:<12} {row['status']} {row['textLen']:>6} chars  "
-            f"{root / 'shots'}/{_shot_name(row['path'], width)}.png"
+            f"{work / 'shots'}/{_shot_name(row['path'], width)}.png"
         )
     found = problems(rows)
     for line in found:
