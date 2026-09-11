@@ -8763,13 +8763,10 @@
    * this is the reading; putting the counts inside the pills would have
    * made an eleven-item scannable strip into eleven sentences.
    *
-   * Two calls worth knowing, both reversible in a sentence. The worst
-   * *open* rating under a project is shown whatever it is, rather than
-   * only when it is red -- "the worst thing here is Low" is a real answer
-   * and a threshold I picked would be one nobody agreed to. And the order
-   * is the server's, which is by the rating he set on the project, not by
-   * how far along each is: a sort by progress would put the projects he
-   * cares least about at the top on the day they finish.
+   * No rating is drawn on a card: the worst-open-row chip that sat here
+   * went with issue #202. The order is the server's, not a sort by how far
+   * along each is: that would put the projects he cares least about at the
+   * top on the day they finish.
    */
   function renderProjectStandings(payload) {
     var projects = (payload && payload.projects) || [];
@@ -8904,25 +8901,15 @@
     if (standingPace) {
       link.appendChild(el("div", "project-standing-pace", standingPace));
     }
-    // The worst rating among the *open* rows -- "is there anything red
-    // under this project", which is the question the four status columns
-    // on the page below cannot answer. `priorities` is already in
-    // `PRIORITY_ORDER`, worst first, with unrated appended last under an
-    // empty key; an unrated row is not a severity, so it is skipped rather
-    // than shown as the worst thing here.
-    var worst = null;
-    var entries = summary.priorities || [];
-    for (var i = 0; i < entries.length; i++) {
-      if (entries[i].key) { worst = entries[i]; break; }
-    }
-    if (worst) {
-      link.appendChild(el("span", "chip prio prio-" + worst.key,
-        worst.label + " · " + worst.count));
-    }
+    /* No rating chip on the card. It carried the worst rating among the
+     * project's open rows until issue #202, whose spec says no rating
+     * appears on a boarded row and names this chip and the page's count
+     * strip as going with it: the order inside a milestone is what says
+     * what is next now, not a colour. */
     /* The card is the control -- his ask, 2026-09-08: *"make the whole card
      * clickable to expand, not just the progressbar."* The bar and the name
-     * were inside the button already; the projected finish and the worst-row
-     * chip were not, so the bottom third of the card did nothing when
+     * were inside the button already; the projected finish was not, so the
+     * bottom third of the card did nothing when
      * pressed. Everything that describes the project is in the disclosure
      * now; only the move controls stay outside it, because they do
      * something else. */
@@ -9536,14 +9523,6 @@
     box.appendChild(track);
     var pace = paceSentence(summary.pace);
     if (pace) box.appendChild(el("div", "project-summary-pace", pace));
-    if (summary.priorities && summary.priorities.length) {
-      var chips = el("div", "project-summary-prios");
-      summary.priorities.forEach(function (entry) {
-        chips.appendChild(el("span", "project-summary-prio prio-" + (entry.key || "none"),
-          entry.label + " · " + entry.count));
-      });
-      box.appendChild(chips);
-    }
     return box;
   }
 

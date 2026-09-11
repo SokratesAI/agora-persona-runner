@@ -138,7 +138,6 @@ from agora_runner.nova_capture import (
     archive_row,
     edit_row,
     remove_row,
-    set_priority,
     set_row_order,
     set_project,
     set_project_priority,
@@ -180,7 +179,6 @@ from agora_runner.nova_replies import (
 from agora_runner.nova_boards import (
     BOARD_PATHS,
     PRIORITY_LABELS,
-    PRIORITY_ORDER,
     # Which statuses close a row. Imported rather than respelled here:
     # `nova_boards` owns that answer, and a second copy would disagree with
     # it the first time a status is added.
@@ -1159,18 +1157,16 @@ def _project_summary(items):
     everything. So `percentDone` is `done / (done + open)` and `dropped`
     is reported beside it rather than folded into it.
 
-    The open rows are counted by rating in `PRIORITY_ORDER`, which is the
-    question a project page is actually asked -- "is there anything red
-    under this project" -- and which four status columns do not answer,
-    because a column is sorted by state and a person triaging is sorted by
-    rating. Unrated is listed last with the word "Unrated" rather than a
-    blank, since `PRIORITY_LABELS[""]` is the empty string and a count
-    beside nothing reads as a rendering bug.
+    **No count by rating.** This used to list the open rows by rating,
+    worst first, for the page's chip strip and the index card's
+    worst-row chip; issue #202 retires the rating on a boarded row and
+    both went with it. Order inside a milestone is what says what is
+    next now, and that is `_project_backlog`'s job, not this one's.
     """
     done = 0
     dropped = 0
     blocked = 0
-    counts = {}
+    open_rows = 0
     for item in items:
         key = item.get("statusKey") or ""
         if key == "outdated":
@@ -1181,19 +1177,7 @@ def _project_summary(items):
             continue
         if key == "blocked-on-edvard":
             blocked += 1
-        rating = item.get("priorityKey") or ""
-        counts[rating] = counts.get(rating, 0) + 1
-    open_rows = sum(counts.values())
-    priorities = []
-    for key in PRIORITY_ORDER:
-        if counts.get(key):
-            priorities.append({
-                "key": key,
-                "label": PRIORITY_LABELS.get(key, key),
-                "count": counts[key],
-            })
-    if counts.get(""):
-        priorities.append({"key": "", "label": "Unrated", "count": counts[""]})
+        open_rows += 1
     tracked = done + open_rows
     return {
         "total": len(items),
@@ -1202,7 +1186,6 @@ def _project_summary(items):
         "open": open_rows,
         "blocked": blocked,
         "percentDone": int(round(done * 100.0 / tracked)) if tracked else 0,
-        "priorities": priorities,
     }
 
 
@@ -4850,60 +4833,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         )
         self._send_json(200 if ok else 502, {"ok": ok, "message": message})
 
-    def _post_priority(self, payload):
-        """`POST /api/board/priority` -- the owner re-rating a row I rated.
-
-        His capture, 2026-08-14: *"i want that aswell ... when they are
-        boarded its possible for me to change the priority."* Every rating
-        on both boards today was set by Cycle 188, not by him, so this is
-        the first way he can disagree with one without opening Obsidian.
-
-        Same two boundaries as the capture box and for the same reason:
-        `target` is a key into a dict of literal paths, never a path, and
-        `priority` is checked against the four labels here rather than
-        written through -- a client cannot put arbitrary text into a cell
-        of his file. `number` is `int` only; `True` is an int in Python
-        and would address row 1, which is the trap `_post_amend` names.
-        """
-        target = payload.get("target")
-        number = payload.get("number")
-        priority = payload.get("priority")
-        if target not in BOARD_PATHS:
-            self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
-            return
-        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
-            self._send_json(400, {"error": "number must be a positive integer"})
-            return
-        priority = canonical_priority(priority)
-        if priority is None:
-            self._send_json(
-                400, {"error": f"priority must be one of {sorted(PRIORITY_LABELS.values())}"})
-            return
-
-        try:
-            ok, message = set_priority(target, number, priority)
-        except Exception as e:
-            log(f"nova-site priority failed: {e}")
-            self._send_json(502, {"error": str(e)[:300]})
-            return
-
-        if ok:
-            # The board the owner is looking at now shows the old rating, and
-            # `app.js` reloads on the next tick -- exactly the staleness
-            # the capture box invalidates for.
-            invalidate("board:" + target)
-
-        audit(
-            "Nova",
-            "",
-            "nova_capture",
-            f"Rate #{number} on {target} \u00b7 {'ok' if ok else message}",
-            after=priority or "(unrated)",
-            output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
-            is_error=not ok,
-        )
-        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
-
     def _post_row_order(self, payload):
         """`POST /api/row/order` -- where a task sits inside its milestone.
 
@@ -6178,7 +6107,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if path not in (
             "/api/capture", "/api/capture/edit", "/api/capture/delete",
             "/api/capture/convert", "/api/capture/promote", "/api/comment",
-            "/api/board/priority", "/api/board/project",
+            "/api/board/project",
             "/api/row/order",
             "/api/project/priority", "/api/project/order",
             "/api/project/satisfaction",
@@ -6270,9 +6199,6 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/capture/promote":
             self._post_promote(payload)
-            return
-        if path == "/api/board/priority":
-            self._post_priority(payload)
             return
         if path == "/api/board/project":
             self._post_project(payload)
