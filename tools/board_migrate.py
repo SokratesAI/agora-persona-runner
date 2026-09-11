@@ -65,7 +65,8 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import (  # noqa: E402
-    board_document, board_records, board_store, board_view, entity_id, rank_key)
+    board_document, board_records, board_store, board_view, entity_id,
+    rank_key)
 from tools import board_migration_preflight as preflight  # noqa: E402
 
 
@@ -87,7 +88,9 @@ def captures(markdown, board, registry, reuse=None):
     survives the trip -- as a `rank_key`, the shape every row and every
     capture writer uses. It was `index + 1` until Cycle 1391, and one whole
     number beside one key on the same board is a TypeError in
-    `captures_in_order` on every read of it. Ids come from `entity_id.mint_capture`, which is the
+    `captures_in_order` on every read of it.
+
+    Ids come from `entity_id.mint_capture`, which is the
     one id here that is not seeded from a name -- his words are the thing he
     edits, so a slug of them would orphan the replies underneath.
 

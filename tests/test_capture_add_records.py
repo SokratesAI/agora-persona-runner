@@ -172,13 +172,17 @@ def test_a_new_capture_is_ranked_with_a_rank_key_after_the_last(monkeypatch):
 
 def test_a_board_holding_an_old_whole_number_rank_refuses_the_add(monkeypatch):
     """A migration run before Cycle 1391 stored `index + 1`. Extending it
-    would keep two shapes alive; the add fails and writes nothing."""
+    would keep two shapes alive; the add fails and writes nothing -- not even
+    the registry, because the rank is worked out before an id is minted
+    (review, Cycle 1391: an int branch here minted, wrote the registry, then
+    failed at `to_capture_document`)."""
     store = _records(monkeypatch)
     for index, doc in enumerate(d for d in store.docs if d.get("type") == "capture"):
         doc["rank"] = index + 1
     ok, message = capture("issues", "one")
     assert not ok
-    assert not [c for c in store.calls if c[0] == "write_capture"]
+    assert not [c for c in store.calls
+                if c[0] in ("write_capture", "write_registry")], store.calls
 
 
 def test_ideas_writes_the_idea_board(monkeypatch):
