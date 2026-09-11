@@ -267,6 +267,13 @@ def change_row(board, number, changes, detail=None, store=board_store):
     return held, landed
 
 
+class RowGone(WriteRefused):
+    """The row was there when the board was read and gone when the delete
+    reached it -- another delete of the same row won, most likely a second
+    tap. Its own class because the caller's answer is "that row is not there"
+    rather than "the write failed"."""
+
+
 def remove_row(board, number, store=board_store):
     """Delete row `number` of `board` and its write-up, and check the board.
 
@@ -298,7 +305,7 @@ def remove_row(board, number, store=board_store):
             f"row #{number} of board {board!r} changed between reading the "
             f"board and deleting it; re-read the board and try again ({problem})")
     if not removed:
-        raise WriteRefused(
+        raise RowGone(
             f"row #{number} of board {board!r} was already gone when the "
             "delete reached it")
 

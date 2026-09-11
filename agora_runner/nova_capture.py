@@ -1222,9 +1222,11 @@ def remove_row(target, number, store=None):
     markdown read-modify-write loop, which is deleted with it. One
     `board_write.remove_row`: the row's document is deleted on the revision it
     was read at, and the rest of the board is checked to come back untouched.
-    The archived text is drawn by `board_view` from the record as it was read,
-    so it is the same row line and `### #N —` write-up the generated view
-    showed. A finished-table row can still be deleted, as before.
+    The archived text is drawn by `board_view` from the record as it was read:
+    the row line at the full `BOARD_COLUMNS` width (so an `ideas.md` row, whose
+    generated table stops at `Milestone`, carries one empty trailing cell here)
+    and the `### #N —` write-up. A finished-table row can still be deleted, as
+    before.
 
     A missing row answers with `edit_row`'s 409 phrase, decided off a read
     for `edit_row`'s reason: `WriteRefused` also means "moved under you",
@@ -1244,6 +1246,10 @@ def remove_row(target, number, store=None):
         return False, f"#{number} is not a row on {target}"
     try:
         item, write_up = board_write.remove_row(board, number, store=store)
+    except board_write.RowGone:
+        # A second delete of the same row lost to the first: the row he asked
+        # to delete is gone, so this is the page's cue to re-read, not a 502.
+        return False, f"#{number} is not a row on {target}"
     except (board_write.WriteRefused, board_write.BoardDamaged,
             board_records.RecordError) as problem:
         log(f"nova-capture failed deleting #{number} on {target}: {problem}")

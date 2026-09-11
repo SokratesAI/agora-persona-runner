@@ -516,6 +516,18 @@ def test_a_row_that_moved_under_the_delete_is_not_reported_as_missing(monkeypatc
     assert writes == [] and 84 in _numbers(store)
 
 
+def test_a_second_tap_that_loses_to_the_first_says_not_a_row_not_failed(monkeypatch):
+    """Two deletes of one row both read it, the first removes it, and the
+    second's delete finds nothing. The row he asked to delete is gone, so the
+    answer is the 409 phrase -- the page re-reads -- and not "could not write",
+    which the site turns into a 502 saying his delete failed. Reviewer."""
+    store, writes = _archive_only(monkeypatch)
+    monkeypatch.setattr(store, "delete_row", lambda doc: False, raising=False)
+    ok, message = nova_capture.remove_row("issues", 84)
+    assert not ok and message == "#84 is not a row on issues"
+    assert writes == []
+
+
 def test_delete_writes_to_the_store_it_is_handed(monkeypatch):
     from tests.test_board_records import writable
 

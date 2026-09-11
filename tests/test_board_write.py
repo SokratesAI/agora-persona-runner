@@ -440,10 +440,13 @@ class _AlreadyGone(WritableFakeStore):
         return False
 
 
-def test_a_row_already_gone_when_the_delete_reaches_it_is_refused():
+def test_a_row_already_gone_when_the_delete_reaches_it_is_its_own_refusal():
+    """A second tap lost to the first. `RowGone` rather than a bare
+    `WriteRefused`, so the caller can answer "not there" instead of "failed"
+    -- the reviewer's double-tap finding."""
     _, plain = writable()
     store = _AlreadyGone(plain.docs, plain.registry)
-    with pytest.raises(board_write.WriteRefused, match="already gone"):
+    with pytest.raises(board_write.RowGone, match="already gone"):
         board_write.remove_row("issue", 41, store=store)
 
 
