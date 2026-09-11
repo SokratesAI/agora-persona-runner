@@ -143,9 +143,9 @@ def test_a_half_sized_milestone_counts_only_what_is_known():
 def test_an_ungrouped_row_sinks_below_the_grouped_rows_of_its_project():
     rows = [row(1, IMMEDIATE, "Marcus", "S", ""),
             row(2, LOW, "Marcus", "S", "grouped")]
-    # #1 is Immediately and still sorts second: issue #202 took the
-    # skip-to-top tier out, so no rating reaches above the milestone tier.
-    assert order(rows) == [2, 1]
+    # #1 is Immediately, so only the milestone tier can put it second --
+    # and skip-to-top sits ABOVE the milestone tier, so it does not.
+    assert order(rows) == [1, 2]
     quiet = [row(1, HIGH, "Marcus", "S", ""), row(2, LOW, "Marcus", "S", "grouped")]
     assert order(quiet) == [2, 1]
 

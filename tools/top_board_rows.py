@@ -30,10 +30,13 @@ the board, above the handoff and above everything else. They are printed
 first and unranked, because a capture has no rating cell to sort on and
 because there are never many; see `unboarded_captures`.
 
-Ranking reads no rating since issue #202 (Cycle 1415): his project order,
-then the milestone, then the row's position inside it, then oldest
-`Updated` first, then issues before ideas, then row number -- see
-`nova_next.rank`. The rating is his intent at capture and orders nothing.
+Ranking puts a row he rated Immediately first, ahead of the project order;
+no other rating orders anything (issue #202). Below that it is project,
+milestone, the row's position, then oldest `Updated` first, then issues
+before ideas, then row number.
+Age is the tiebreak on purpose: two High rows are not equally urgent when one has sat
+since 08-04, and "it has been waiting longest" is the only signal left
+once the rating is spent.
 
 **Every named line now carries a `[claim: <slug>]`, and a row a live cycle
 already holds sinks to the bottom marked 🔒.** The owner is considering moving
@@ -95,7 +98,7 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
     BOARD_PATHS, MILESTONE_PINS_PATH, MILESTONE_SEATS_PATH, PROJECT_META_PATH,
-    capture_entries,
+    capture_entries, priority_key, split_capture_priority,
     is_relayed, parse_milestone_pins, parse_project_meta, status_key,
     unanswered_comment_bodies_from_details,
 )
@@ -149,6 +152,7 @@ IDEAS_PATH = BOARD_PATHS["ideas"]["edvard"]
 # above come from `BOARD_PATHS`: a hand-typed copy of a path that has moved
 # once will be wrong the next time it moves.
 NOTES_PATH = CAPTURE_TARGETS["notes"]
+PROPOSED_PROJECTS_PATH = CAPTURE_TARGETS["projects"]
 
 # His own rating of the projects themselves, written by the app's project
 # picker. Imported rather than spelled again for `BOARD_PATHS`' reason: a
@@ -409,6 +413,32 @@ def unread_notes(markdown):
             in enumerate(capture_entries(markdown or ""))]
 
 
+def unread_projects(markdown):
+    """`proposed-projects.md` -> the projects he has proposed that no cycle has moved.
+
+    Same structural rule as `unread_notes`: the bare bullets above the first
+    heading are the unread ones. Unlike a note, a proposed project carries his
+    rating at the front of the bullet, the way a board capture does, and that
+    rating is the point. His capture, 2026-09-11: *"If I rate a whole new
+    (unboarded) project Immediately, the next cycle should first onboard it --
+    break it into milestones and tasks -- then place it on top, not just slot
+    the raw project in."* Until this, nothing here read the file at all, so a
+    project he rated Immediately was visible only to a cycle that happened to
+    open it in step 1a.
+    """
+    out = []
+    for index, (_, _, text, _) in enumerate(capture_entries(markdown or "")):
+        rating, body = split_capture_priority(text)
+        out.append({"board": "project", "priority": rating, "text": body,
+                    "index": index, "original": text,
+                    "slug": slug_for_capture(text)})
+    return out
+
+
+def _is_immediate(capture):
+    return priority_key(capture.get("priority") or "") == "immediate"
+
+
 def _reply_claim(row):
     """`  [reply-claim: <slug>]`, or nothing if this row cannot name one.
 
@@ -492,9 +522,8 @@ def _project_tag(row, meta):
     **The milestone is on the same line for the same reason the project
     rating is**, and it was added the cycle the milestone tier was
     actually wired into this tool: the tier sits between the project and
-    the row's own position, so a row in a well-ranked milestone outranks a
-    row in a badly-ranked one *inside the same project*, whatever either is
-    rated (no rating orders anything since #202),
+    the row's own rating, so a Medium row in a well-ranked milestone now
+    outranks a High row in a badly-ranked one *inside the same project*,
     and a line that showed neither would read as a bug. `ungrouped` is
     printed rather than left blank because an ungrouped row sinks behind
     every grouped one in its project, which is a position a cycle should
@@ -626,6 +655,15 @@ def _capture_line(capture):
     claim = _claim_tag(capture)
     if capture["board"] == "note":
         return f"notes.md  {held}{capture['text']}{claim}"
+    if capture["board"] == "project":
+        # His rule for a new project rated Immediately is onboard-then-top,
+        # not "slot the raw project in", so the line says the whole order.
+        onboard = ("  [🔴 ONBOARD FIRST: write its project note under "
+                   "projects/sokrates/projects/, break it into milestones and "
+                   "tasks on the board, then put it at the top of projects.md]"
+                   ) if _is_immediate(capture) else ""
+        return (f"proposed-projects.md  {held}{capture['priority'] or '(unrated)'}"
+                f"  {capture['text']}{claim}{onboard}")
     rating = capture["priority"] or "(unrated)"
     text = capture["text"]
     # An open row on the same board already carries this sentence. The
@@ -652,7 +690,7 @@ def _capture_reply_help(captures):
     did and write the answer into its journal entry instead.
     """
     out = ["  Answer one where he wrote it — POST http://nova-site.agents.svc.cluster.local:8083/api/capture/comment",
-           "  with {\"target\": \"issues\"|\"ideas\"|\"notes\", \"index\": N, \"original\": \"<his bullet, verbatim>\", \"text\": \"...\"}."]
+           "  with {\"target\": \"issues\"|\"ideas\"|\"notes\"|\"projects\", \"index\": N, \"original\": \"<his bullet, verbatim>\", \"text\": \"...\"}."]
     for capture in captures:
         board = "notes" if capture["board"] == "note" else capture["board"] + "s"
         # `original`, whole -- not `text`. `text` is stripped of the rating
@@ -760,8 +798,11 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         # ones. The section still outranks the board -- an unprocessed
         # capture is unprocessed whoever typed it -- so this orders within
         # the section rather than removing anything from it.
+        # A capture he rated 🔴 Immediately goes to the front of the box, the
+        # same skip-to-top his capture of 2026-09-11 asks of a boarded row.
         captures = sorted(captures, key=lambda c: (
-            1 if c.get("heldBy") else 0, 1 if c.get("relayed") else 0))
+            1 if c.get("heldBy") else 0, 1 if c.get("relayed") else 0,
+            0 if _is_immediate(c) else 1))
         relayed = sum(1 for c in captures if c.get("relayed"))
         # The old header said "FROM EDVARD" of every bullet in the section,
         # which is the collapse his ask names: Sokrates relaying him
@@ -788,7 +829,7 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         diagnoses_readable))
     # Milestone M6: every fifth cycle the project tier is forced onto
     # maintenance. It rewrites the project ranks and nothing else, so the
-    # captures above and the milestone and row order below are untouched -- and
+    # captures above and the skip-to-top tier below are untouched -- and
     # the note is printed whether it forced anything or fell through,
     # because a reservation nobody can see fired is one nobody can tell
     # apart from a broken one.
@@ -928,6 +969,8 @@ def main(argv=None):
     # where `vault_tool.py` exists, and exits 1 anywhere else -- a test that
     # passes for a reason that has nothing to do with what it asserts.
     ap.add_argument("--notes", help="local notes.md instead of a vault fetch")
+    ap.add_argument("--proposed-projects",
+                    help="local proposed-projects.md instead of a vault fetch")
     ap.add_argument("--claims", help="local claims.json instead of a vault fetch")
     ap.add_argument("--projects",
                     help="local projects.md instead of a vault fetch")
@@ -991,6 +1034,20 @@ def main(argv=None):
         missing.append(NOTES_PATH)
     else:
         captures.extend(unread_notes(notes_md))
+
+    # A local run that named its notes but not this file reads no project
+    # captures rather than falling through to the vault -- the CI trap the
+    # `--notes` comment in `main`'s parser describes.
+    if args.proposed_projects:
+        proposed_md = open(args.proposed_projects, encoding="utf-8").read()
+    elif args.notes:
+        proposed_md = ""
+    else:
+        proposed_md = _fetch(PROPOSED_PROJECTS_PATH)
+    if proposed_md is None:
+        missing.append(PROPOSED_PROJECTS_PATH)
+    else:
+        captures.extend(unread_projects(proposed_md))
 
     apply_claims(rows, live, args.cycle)
     apply_claims(captures, live, args.cycle)
