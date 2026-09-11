@@ -62,7 +62,8 @@ is a row; a lost registry write is every id on it.
 
 ## A document whose content has not changed is not written
 
-Straight from `ticket_docs.write_board`, and for the same measured reason:
+Carried over from the deleted `nova_tickets` mirror's `write_board`, for
+the same measured reason:
 rewriting every row on every call spreads the write amplification of the
 1.15 MB markdown document across four hundred revisions instead of
 removing it. A status change touches one row and must write one document.
