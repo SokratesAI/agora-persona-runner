@@ -40,6 +40,14 @@ def test_an_immediately_project_line_says_onboard_it_before_anything_else():
     assert "ONBOARD FIRST" not in t._capture_line(low)
 
 
+def test_an_immediately_capture_is_printed_first_in_the_box():
+    """Written low-first so file order and the asserted order disagree."""
+    low, immediate = t.unread_projects(
+        "- ⚪ Low: A reading list\n- 🔴 Immediately: A bike route sharer\n")
+    page = t.render([], captures=[low, immediate])
+    assert page.index("A bike route sharer") < page.index("A reading list")
+
+
 def test_an_empty_file_is_no_captures_not_an_error():
     assert t.unread_projects("") == []
     assert t.unread_projects(None) == []
