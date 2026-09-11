@@ -39,6 +39,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agora_runner.nova_boards import parse_board as _parse_his_board
 from agora_runner import nova_boards, nova_capture, nova_comments, nova_journal, nova_replies, nova_site, nova_sources, vault
 from agora_runner.config import OSLO
 from agora_runner.nova_site import MIN_COMPRESS_BYTES
@@ -3596,7 +3597,7 @@ def test_the_first_press_on_next_does_not_pay_for_its_own_build():
         return {"projects": [], "waiting": []}
 
     with patch.object(nova_site, "next_payload_from_contents", side_effect=counted), \
-            patch.object(nova_site, "edvard_board_markdown", return_value=""), \
+            patch.object(nova_site, "_his_board", return_value=_parse_his_board("")), \
             patch.object(nova_site, "claims_ledger_json", return_value="{}"), \
             patch.object(nova_site, "project_meta_markdown", return_value=""), \
             patch.object(nova_site, "milestone_pins_markdown", return_value=""), \
@@ -4328,8 +4329,7 @@ def test_a_capture_is_in_the_board_on_the_very_next_request():
     """The bug, stated as the behaviour the owner expects."""
     nova_site.reset_cache()
     live = {"text": "---\n---\n\n- an older capture\n- \n\n## Board\n"}
-    with patch.object(nova_site, "edvard_board_markdown",
-                      side_effect=lambda name: live["text"]), \
+    with patch.object(nova_site, "_his_board", side_effect=lambda name, _f=(lambda name: live["text"]): _parse_his_board(_f(name))), \
             patch.object(nova_site, "nova_board_markdown",
                          side_effect=lambda name: ("", "")):
         assert _board_captures() == ["an older capture"]
@@ -4351,8 +4351,7 @@ def test_capturing_an_idea_does_not_invalidate_the_issues_board():
     """The invalidation is keyed on the target, not a blanket cache drop:
     a cache cleared on every write is the 3.5s cold journal load back."""
     nova_site.reset_cache()
-    with patch.object(nova_site, "edvard_board_markdown",
-                      side_effect=lambda name: "---\n---\n\n- x\n- \n\n## Board\n"), \
+    with patch.object(nova_site, "_his_board", side_effect=lambda name, _f=(lambda name: "---\n---\n\n- x\n- \n\n## Board\n"): _parse_his_board(_f(name))), \
             patch.object(nova_site, "nova_board_markdown",
                          side_effect=lambda name: ("", "")):
         _board_captures("issues")
@@ -4366,8 +4365,7 @@ def test_a_failed_capture_leaves_the_cache_alone():
     """Nothing was written, so making the next reader pay a cold build
     buys nothing."""
     nova_site.reset_cache()
-    with patch.object(nova_site, "edvard_board_markdown",
-                      side_effect=lambda name: "---\n---\n\n- x\n- \n\n## Board\n"), \
+    with patch.object(nova_site, "_his_board", side_effect=lambda name, _f=(lambda name: "---\n---\n\n- x\n- \n\n## Board\n"): _parse_his_board(_f(name))), \
             patch.object(nova_site, "nova_board_markdown",
                          side_effect=lambda name: ("", "")):
         _board_captures("issues")
@@ -5475,7 +5473,7 @@ def test_the_payloads_capture_address_still_resolves_when_answered():
         "## Board\n\n| # | Issue | Status | Updated | Priority |\n"
         "|---|---|---|---|---|\n"
     )
-    with patch.object(nova_site, "edvard_board_markdown", return_value=markdown), \
+    with patch.object(nova_site, "_his_board", return_value=_parse_his_board(markdown)), \
             patch.object(nova_site, "nova_board_markdown", return_value=("", "")):
         payload = nova_site.board_payload("issues")
     capture = payload["captures"][0]
@@ -6267,8 +6265,7 @@ def test_the_next_landmine_is_armed():
     forever. This asserts the fall-back path dies on it.
     """
     nova_site.reset_cache()
-    with patch.object(nova_site, "edvard_board_markdown",
-                      side_effect=AssertionError("fetched the markdown")), \
+    with patch.object(nova_site, "_his_board", side_effect=lambda name, _f=(AssertionError("fetched the markdown")): _parse_his_board(_f(name))), \
             patch.object(nova_site.board_records, "currency",
                          return_value=(nova_site.board_records.UNKNOWN, "no stamp")), \
             patch.object(nova_site, "vault_doc_rev", return_value="1-aaa"), \
@@ -6286,7 +6283,7 @@ def test_a_board_that_cannot_prove_it_is_current_draws_the_file(verdict):
     confident than reading the file, which is always right.
     """
     nova_site.reset_cache()
-    with patch.object(nova_site, "edvard_board_markdown", return_value="") as fetched, \
+    with patch.object(nova_site, "_his_board", return_value=_parse_his_board("")) as fetched, \
             patch.object(nova_site.board_records, "currency",
                          return_value=(verdict, "why")), \
             patch.object(nova_site.board_records, "contents",
@@ -6314,7 +6311,7 @@ def test_one_current_board_and_one_stale_one_draws_both_from_the_file():
     nova_site.reset_cache()
     verdicts = {"issue": (nova_site.board_records.CURRENT, "built from 1-aaa"),
                 "idea": (nova_site.board_records.STALE, "built from 1-old")}
-    with patch.object(nova_site, "edvard_board_markdown", return_value="") as fetched, \
+    with patch.object(nova_site, "_his_board", return_value=_parse_his_board("")) as fetched, \
             patch.object(nova_site.board_records, "currency",
                          side_effect=lambda board, rev, **_k: verdicts[board]), \
             patch.object(nova_site.board_records, "contents",
@@ -6335,7 +6332,7 @@ def test_an_unreadable_record_store_draws_the_file_rather_than_failing():
     can act on a refusal, a visitor gets a blank page.
     """
     nova_site.reset_cache()
-    with patch.object(nova_site, "edvard_board_markdown", return_value="") as fetched, \
+    with patch.object(nova_site, "_his_board", return_value=_parse_his_board("")) as fetched, \
             patch.object(nova_site.board_records, "currency",
                          return_value=(nova_site.board_records.CURRENT, "built from 1-aaa")), \
             patch.object(nova_site.board_records, "contents",
@@ -6353,7 +6350,7 @@ def test_a_revision_check_that_cannot_run_draws_the_file():
     """`vault_doc_rev` raising is the check being unable to run, which is
     not the same as the records being current and must not read as it."""
     nova_site.reset_cache()
-    with patch.object(nova_site, "edvard_board_markdown", return_value="") as fetched, \
+    with patch.object(nova_site, "_his_board", return_value=_parse_his_board("")) as fetched, \
             patch.object(nova_site, "vault_doc_rev",
                          side_effect=RuntimeError("the vault said no")), \
             patch.object(nova_site.board_records, "contents",
@@ -6389,7 +6386,7 @@ def test_the_next_fallback_reads_each_board_from_its_own_file(monkeypatch):
         return files[name]
 
     monkeypatch.setattr(nova_site, "_next_from_records", lambda: None)
-    monkeypatch.setattr(nova_site, "edvard_board_markdown", markdown)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(markdown): _parse_his_board(_f(name)))
     monkeypatch.setattr(nova_site, "claims_ledger_json",
                         lambda: json.dumps({"claims": []}))
     monkeypatch.setattr(nova_site, "project_meta_markdown", lambda: "")

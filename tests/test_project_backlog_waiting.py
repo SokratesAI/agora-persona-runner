@@ -23,6 +23,7 @@ comments this loop was told not to raise.
 """
 
 from agora_runner import nova_site
+from agora_runner.nova_boards import parse_board as _parse_his_board
 
 
 BOARD = """---
@@ -62,7 +63,7 @@ The write-up.
 
 
 def _payload(monkeypatch):
-    monkeypatch.setattr(nova_site, "edvard_board_markdown", lambda name: BOARD)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(lambda name: BOARD): _parse_his_board(_f(name)))
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
     return nova_site.board_payload("issues")
 
@@ -162,8 +163,7 @@ def test_the_page_orders_the_real_payload_by_the_question_he_asked(monkeypatch):
     Without the stamp the order is 2, 1, 3 -- rating, then the lower number
     of the two Lows. With it, his question comes first.
     """
-    monkeypatch.setattr(nova_site, "edvard_board_markdown",
-                        lambda name: BOARD if name == "issues" else "")
+    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(lambda name: BOARD if name == "issues" else ""): _parse_his_board(_f(name)))
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
     monkeypatch.setattr(
         nova_site, "cached_payload",

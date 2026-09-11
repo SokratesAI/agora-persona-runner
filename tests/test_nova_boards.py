@@ -12,12 +12,14 @@ row of both live files and it is what a naive `split("|")` gets wrong.
 deliberately the shape with no cycle number, which the live file has.
 """
 
+from contextlib import ExitStack
 import json
 import os
 from unittest.mock import patch
 
 import pytest
 
+from agora_runner.nova_boards import parse_board as _parse_his_board
 from agora_runner import nova_site, nova_sources
 from agora_runner.nova_boards import (
     BOARD_PATHS,
@@ -65,7 +67,14 @@ def _serve(board_md, notes_md, archive_md=""):
         if path.endswith("-archive.md"):
             return archive_md
         return notes_md if "/nova/resources/" in path else board_md
-    return patch.object(nova_sources, "vault_read_path", side_effect=read)
+    # His half comes out of the record store after the #203 flip, and
+    # `board_records.contents` answers what `parse_board` answers.
+    stack = ExitStack()
+    stack.enter_context(
+        patch.object(nova_sources, "vault_read_path", side_effect=read))
+    stack.enter_context(patch.object(
+        nova_site, "_his_board", side_effect=lambda name: parse_board(board_md)))
+    return stack
 
 
 def test_a_row_survives_the_alias_pipe_inside_its_wiki_link(board_md):
@@ -1022,7 +1031,7 @@ def _no_markdown(monkeypatch):
         raise AssertionError("reached markdown")
 
     monkeypatch.setattr(nova_site, "parse_board", refuse)
-    monkeypatch.setattr(nova_site, "edvard_board_markdown", refuse)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(refuse): _parse_his_board(_f(name)))
 
 
 def test_a_current_store_composes_his_board_without_reaching_markdown(
@@ -1059,7 +1068,7 @@ def test_the_fallback_path_parses_his_board_exactly_once(monkeypatch):
         return _contents() if markdown == "HIS" else real_parse(markdown)
 
     monkeypatch.setattr(nova_site, "parse_board", counting_parse)
-    monkeypatch.setattr(nova_site, "edvard_board_markdown", lambda name: "HIS")
+    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(lambda name: "HIS"): _parse_his_board(_f(name)))
     monkeypatch.setattr(nova_site, "_board_from_records", lambda name: None)
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
 
@@ -1084,7 +1093,7 @@ def test_the_fallback_path_reads_the_board_it_was_asked_for(monkeypatch):
 
     monkeypatch.setattr(nova_site, "parse_board",
                         lambda m: _contents() if m == "HIS" else real_parse(m))
-    monkeypatch.setattr(nova_site, "edvard_board_markdown", markdown)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name, _f=(markdown): _parse_his_board(_f(name)))
     monkeypatch.setattr(nova_site, "_board_from_records", lambda name: None)
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
 

@@ -190,7 +190,6 @@ from agora_runner.nova_boards import (
     board_projects,
     canonical_priority,
     is_relayed,
-    parse_board,
     unanswered_comment_bodies_from_details,
     priority_key,
     split_capture_done,
@@ -259,7 +258,6 @@ from agora_runner.nova_boards import BOARD_PATHS, parse_milestone_pins
 from agora_runner.nova_galaxy import galaxy_payload
 from agora_runner.nova_sources import (
     claims_ledger_json,
-    edvard_board_markdown,
     milestone_pins_markdown,
     project_meta_markdown,
     nova_board_markdown,
@@ -758,69 +756,31 @@ def _split_details(bodies):
 
 
 
-def _board_from_records(name):
-    """His whole board out of the #203 record store, or `None` to fetch the file.
+def _his_board(name):
+    """His whole board, out of the #203 record store and nothing else.
 
-    Issue #203. This fast path used to read the `nova_tickets` mirror
-    (`ticket_docs`), which an earlier migration filled from the markdown on
-    every `board_put`. The record store supersedes it, and the mirror had
-    stopped earning its read: measured live on 2026-09-11 against pod
-    `nova-site-96b5576df-rtk96`, the ideas board answered 274 rows out of it
-    against 284 in his file, so every build of that page fetched the
-    markdown anyway and paid for three mirror reads on top. The record store
-    is what the page reads after the flip, so it is what this reads now, and
-    nothing on the site reads `nova_tickets` any more.
+    Issue #203's flip. Until it, this returned `None` on anything short of
+    a proven-current store and the page drew his markdown file instead.
+    After it the records ARE his board -- every button in the app and the
+    capture box writes them, and the markdown is a view generated from them
+    -- so a markdown fallback would draw a copy that can be missing the
+    edits he just made, with nothing on the page saying so.
 
-    The gate is `_next_from_records`'s, for the same reason: the records'
-    own source stamp against the revision the vault holds now, so proving
-    currency costs a revision lookup and not the 537KB file. **`UNKNOWN`
-    does not pass** -- a board that carries no stamp says nothing about
-    drift. `None` on anything short of a proven-current, fully readable
-    board, and the caller draws the file exactly as it always has: a
-    revision that cannot confirm the records, a store that will not answer
-    (an unmigrated one raises in `board_records.contents`), or a board with
-    **no rows at all**, which is the one failure a current stamp cannot see
-    because the stamp is its own document. Neither of his boards has ever
-    been empty, so one fetch is the right price for finding out.
-
-    Every failure is logged and returns `None`, never raises: a visitor
-    gets his file, not a page that failed to build.
+    A store that will not answer raises, and the request fails rather than
+    serving the old file. A currency verdict other than `CURRENT` is logged
+    and does not change what is drawn: after the flip it means something
+    wrote the generated view, and that write is the bug, not the records.
     """
     board = _RECORD_BOARDS[name]
-    path = BOARD_PATHS[name]["edvard"]
     try:
-        verdict, why = board_records.currency(board, vault_doc_rev(path))
-    except Exception as problem:  # noqa: BLE001 -- see the docstring
-        log(f"nova-site {name} fetching the markdown: the revision check "
-            f"could not run: {problem}")
-        return None
+        verdict, why = board_records.currency(
+            board, vault_doc_rev(BOARD_PATHS[name]["edvard"]))
+    except Exception as problem:  # noqa: BLE001 -- a log line, never a gate
+        verdict, why = board_records.UNKNOWN, str(problem)
     if verdict != board_records.CURRENT:
-        log(f"nova-site {name} fetching the markdown: "
-            f"records say {verdict}: {why}")
-        return None
-    try:
-        contents = board_records.contents(board)
-    except Exception as problem:  # noqa: BLE001 -- see the docstring
-        log(f"nova-site {name} records unreadable, fetching the markdown: "
-            f"{problem}")
-        return None
-    if not contents["items"]:
-        log(f"nova-site {name} has no rows in the record store though its "
-            f"revision says current; fetching the markdown")
-        return None
-    return contents
-
-
-def his_board_file_contents(name):
-    """His board file, parsed -- the one markdown door onto his boards here.
-
-    `board_payload` and `next_up_payload` both fall back to it when the
-    record store cannot prove it is current. It is one function so that
-    this module keeps a single `parse_board` call on his board, which is
-    what `test_nova_site_parses_only_his_board_now` counts, and the flip
-    deletes it along with both fallbacks (issue #203).
-    """
-    return parse_board(edvard_board_markdown(name))
+        log(f"nova-site {name}: the generated markdown and the records "
+            f"disagree ({verdict}: {why}); drawing the records")
+    return board_records.contents(board)
 
 
 def board_payload(name):
@@ -833,19 +793,9 @@ def board_payload(name):
     ~60KB of that -- which is precisely why they never go out with the
     list. See `board_page`.
     """
-    # **His half of the page comes out of the #203 record store when the
-    # store can prove it is current, and his file is not fetched at all.**
-    # `_board_from_records` says what "prove" means and returns `None` on
-    # anything less, which drops through to the code that has always been
-    # here.
-    board = _board_from_records(name)
-    if board is None:
-        # **The fallback, and it is still the source of truth until the
-        # flip.** A store that is unreachable, unstamped, behind or empty
-        # must not empty his board -- the markdown is the file he edits.
-        # `his_board_file_contents` is the only markdown left on his half
-        # of the page, and the flip deletes it (issue #203).
-        board = his_board_file_contents(name)
+    # **His half of the page comes out of the #203 record store and his
+    # file is never fetched.** `_his_board` says why there is no fallback.
+    board = _his_board(name)
     nova_markdown, nova_archive_markdown = nova_board_markdown(name)
     # Which rows he asked a question on and nobody answered. Stamped onto
     # the row here rather than worked out again by whoever needs it,
@@ -1664,56 +1614,18 @@ def galaxy_up_payload():
 _RECORD_BOARDS = {"issues": "issue", "ideas": "idea"}
 
 
-def _next_from_records():
-    """Both of his boards out of the #203 record store, or `None`.
+def _his_boards():
+    """Both of his boards out of the #203 record store, for `/api/next`.
 
-    Issue #203's switchover, for `/api/next`. `next_up_payload` is the
-    slowest payload this server builds -- 7.41s cold, measured against the
-    live pod on 2026-09-07 -- and most of that is fetching and regex-parsing
-    537KB of `issues.md` and 920KB of `ideas.md` to rank them. The records
-    answer the same four keys without either file.
-
-    **Both boards or neither.** Ranking one board out of the store and the
-    other out of the markdown is one list built from two sources, and
-    `rank` interleaves them, so a row could sort above another row that is
-    a revision older with nothing on the page saying so. `None` here means
-    the caller draws both from the file exactly as it always did.
-
-    The gate is `board_records.currency` against the revision the vault
-    holds now, which is the same gate `_board_from_records` uses for the
-    board page and for the same reason: the point of the store is not
-    fetching the 700KB file, so a check that fetched it would spend what it
-    is saving. `UNKNOWN` does not pass -- a board that carries no source
-    stamp says nothing about drift, and treating that as "no drift found"
-    would serve stale rows with more confidence than reading the file.
-
-    Every failure returns `None` and is logged. A board CouchDB will not
-    answer for, an unmigrated store, a revision check that will not run:
-    they are all the same decision here, which is to draw the file. That is
-    the opposite of `tools.top_board_rows`, where every failure raises, and
-    the difference is the reader -- a cycle can read a refusal and act on
-    it, while a visitor gets a page that failed to build.
+    Issue #203's flip. `next_up_payload` was the slowest payload this
+    server builds -- 7.41s cold, measured against the live pod on
+    2026-09-07 -- and most of that was fetching and regex-parsing 537KB of
+    `issues.md` and 920KB of `ideas.md` to rank them. The records answer
+    the same four keys without either file, and after the flip they are the
+    only copy that carries his latest edits, so there is no fallback: a
+    board the store will not answer for raises, as `_his_board` does.
     """
-    contents = {}
-    for name, board in _RECORD_BOARDS.items():
-        path = BOARD_PATHS[name]["edvard"]
-        try:
-            verdict, why = board_records.currency(board, vault_doc_rev(path))
-        except Exception as problem:  # noqa: BLE001 -- see the docstring
-            log(f"nova-site next: {board} records unreadable, drawing the "
-                f"markdown: the revision check could not run: {problem}")
-            return None
-        if verdict != board_records.CURRENT:
-            log(f"nova-site next: {board} records say {verdict}, drawing the "
-                f"markdown: {why}")
-            return None
-        try:
-            contents[name] = board_records.contents(board)
-        except Exception as problem:  # noqa: BLE001 -- see the docstring
-            log(f"nova-site next: {board} records unreadable, drawing the "
-                f"markdown: {problem}")
-            return None
-    return contents
+    return {name: _his_board(name) for name in _RECORD_BOARDS}
 
 
 def next_up_payload():
@@ -1724,11 +1636,8 @@ def next_up_payload():
     Both halves are answered by `tools/top_board_rows.py` at the start of
     every cycle and neither has ever left the terminal.
 
-    **His two boards come out of the #203 record store when it can prove
-    it is current, and neither file is fetched.** `_next_from_records`
-    says what "prove" means and returns `None` on anything less, which
-    drops through to parsing his two board files here, the one module
-    that still owns that fallback until the flip deletes it. The ranking needs
+    **His two boards come out of the #203 record store and neither file
+    is fetched** -- `_his_boards` says why there is no fallback. The ranking needs
     the board *details* as well as the rows -- an unanswered comment is
     read off the write-up under the row -- and `board_records.contents`
     answers exactly what `parse_board` answered, all four keys, which is
@@ -1741,19 +1650,10 @@ def next_up_payload():
     rest at 15 seconds, which is short enough that a claim taken mid-cycle
     shows up while he is looking at it.
     """
-    contents = _next_from_records()
-    if contents is not None:
-        return next_payload_from_contents(
-            contents["issues"],
-            contents["ideas"],
-            claims_ledger_json(),
-            datetime.now(OSLO),
-            projects_markdown=project_meta_markdown(),
-            milestones_markdown=milestone_pins_markdown(),
-        )
+    contents = _his_boards()
     return next_payload_from_contents(
-        his_board_file_contents("issues"),
-        his_board_file_contents("ideas"),
+        contents["issues"],
+        contents["ideas"],
         claims_ledger_json(),
         datetime.now(OSLO),
         projects_markdown=project_meta_markdown(),
