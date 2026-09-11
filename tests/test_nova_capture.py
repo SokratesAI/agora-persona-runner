@@ -34,7 +34,7 @@ from agora_runner.nova_capture import (
     replace_capture,
     reply_under_capture,
 )
-from agora_runner import vault
+from agora_runner import board_records, vault
 from tests.couch_fake import FakeCouch
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -607,7 +607,7 @@ def test_a_capture_that_is_no_longer_there_is_not_an_edit(issues_md):
 def test_amend_reports_a_boarded_capture_without_writing(issues_md):
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(issues_md, "1-x")), \
             patch.object(nova_capture, "vault_write_path") as write:
-        ok, message = amend("issues", 0, "not in the file", "new text")
+        ok, message = amend("notes", 0, "not in the file", "new text")
     assert not ok
     assert "no longer" in message
     write.assert_not_called()
@@ -617,10 +617,10 @@ def test_amend_writes_the_edited_file_to_the_right_path(issues_md):
     start = insert_captures(issues_md, ["the app needs a restart"])
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(start, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
-        ok, message = amend("issues", 0, "the app needs a restart", "the app needs two restarts")
+        ok, message = amend("notes", 0, "the app needs a restart", "the app needs two restarts")
     assert ok, message
     path, content = write.call_args[0]
-    assert path == CAPTURE_TARGETS["issues"]
+    assert path == CAPTURE_TARGETS["notes"]
     assert list_captures(content)[-1] == "the app needs two restarts"
 
 
@@ -628,7 +628,7 @@ def test_amend_with_no_text_deletes(issues_md):
     start = insert_captures(issues_md, ["a typo I want gone"])
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(start, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
-        ok, message = amend("issues", 0, "a typo I want gone", "")
+        ok, message = amend("notes", 0, "a typo I want gone", "")
     assert ok, message
     assert "deleted" in message
     assert "a typo I want gone" not in list_captures(write.call_args[0][1])
@@ -651,7 +651,7 @@ def test_an_amend_conflict_is_retried_against_freshly_read_content(issues_md):
                        side_effect=[(c, "1-x") for c in [start, meanwhile]]) as read, \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=["FAILED(409)", "written"]) as write:
-        ok, message = amend("issues", 0, "mine", "mine, reworded")
+        ok, message = amend("notes", 0, "mine", "mine, reworded")
     assert ok, message
     assert read.call_count == 2
     final = write.call_args[0][1]
@@ -669,7 +669,7 @@ def test_an_amend_conflict_that_loses_to_a_boarding_does_not_resurrect_it(issues
                        side_effect=[(c, "1-x") for c in [start, issues_md]]), \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=["FAILED(409)", "written"]) as write:
-        ok, message = amend("issues", 0, "mine", "mine, reworded")
+        ok, message = amend("notes", 0, "mine", "mine, reworded")
     assert not ok
     assert "no longer" in message
     assert write.call_count == 1
@@ -727,7 +727,7 @@ def test_an_amend_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
     losing-and-retrying case only exists when the rest of the file moved,
     which is what a cycle boarding an item actually does.
     """
-    path = CAPTURE_TARGETS["issues"]
+    path = CAPTURE_TARGETS["notes"]
     start = insert_captures(issues_md, ["mine"])
     his_board = start.replace(
         "|---|------|--------|---------|",
@@ -736,7 +736,7 @@ def test_an_amend_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
     couch = _seeded(path, start)
     couch.interleave = {2: lambda c: c.seed(path, his_board)}
     with patch.object(vault, "couch_req", couch.req):
-        ok, message = amend("issues", 0, "mine", "mine, edited")
+        ok, message = amend("notes", 0, "mine", "mine, edited")
     assert ok, message
     assert couch.rejected == 1, "the losing write must have been refused"
     final = couch.text(path)
@@ -752,6 +752,13 @@ def test_an_amend_that_loses_a_real_race_keeps_the_writer_that_won(issues_md):
 # way of changing it or editing it. So we need crude operations for notes,
 # but also the possibility to change issues/ideas/notes into one of the
 # other."*
+
+
+def _source_records(markdown):
+    """His issues board as a fake #203 record store: a move off one of his
+    boards removes the capture's record, not a line of his file."""
+    from tests.test_board_records import writable
+    return writable(board="issue", markdown=markdown)[1]
 
 
 def _two_file_vault(paths):
@@ -802,21 +809,25 @@ def test_convert_says_so_when_the_copy_landed_but_the_removal_did_not(notes_md, 
 
 def test_convert_carries_the_rating_between_the_two_boards(issues_md, ideas_md):
     rated = "🟠 High: the runner drops replies"
-    couch = _two_file_vault({"issues": insert_captures(issues_md, [rated]),
-                             "ideas": ideas_md})
-    with patch.object(vault, "couch_req", couch.req):
+    records = _source_records(insert_captures(issues_md, [rated]))
+    couch = _two_file_vault({"ideas": ideas_md})
+    with patch.object(vault, "couch_req", couch.req), \
+            patch.object(nova_capture, "board_store", records):
         ok, message = convert_capture("issues", 0, rated, "ideas")
     assert ok, message
     assert "- " + rated in couch.text(CAPTURE_TARGETS["ideas"])
+    assert board_records.contents("issue", store=records)["captures"] == [], \
+        "the source half of a move off his board is the capture's record"
 
 
 def test_convert_strips_the_rating_going_into_notes(issues_md, notes_md):
     """`notes.md` is *"never numbered, never boarded"* -- a priority label
     in a file with no board is vocabulary from a page that does not exist."""
     rated = "🟠 High: the runner drops replies"
-    couch = _two_file_vault({"issues": insert_captures(issues_md, [rated]),
-                             "notes": notes_md})
-    with patch.object(vault, "couch_req", couch.req):
+    records = _source_records(insert_captures(issues_md, [rated]))
+    couch = _two_file_vault({"notes": notes_md})
+    with patch.object(vault, "couch_req", couch.req), \
+            patch.object(nova_capture, "board_store", records):
         ok, message = convert_capture("issues", 0, rated, "notes")
     assert ok, message
     notes = couch.text(CAPTURE_TARGETS["notes"])
@@ -986,7 +997,7 @@ def test_the_board_pages_folded_address_never_rewrites_a_capture(issues_md):
     assert replace_capture(answered, 0, "his line", ["reworded"]) is not None
 
 
-def test_convert_never_deletes_the_source_when_addressed_by_the_folded_form(issues_md):
+def test_convert_never_deletes_the_source_when_addressed_by_the_folded_form(issues_md, ideas_md):
     """A move that carried the answer into the other file and deleted both
     lines from this one. Same cause as the test above, one layer up.
 
@@ -1000,14 +1011,17 @@ def test_convert_never_deletes_the_source_when_addressed_by_the_folded_form(issu
     markdown = insert_captures(issues_md, ["his line"])
     answered = reply_under_capture(markdown, 0, "his line", "my answer")
     folded = "his line my answer"
+    records = _source_records(answered)
     writes = []
-    with patch.object(nova_capture, "vault_read_path_rev", return_value=(answered, "1-x")), \
+    with patch.object(nova_capture, "vault_read_path_rev", return_value=(ideas_md, "1-x")), \
+            patch.object(nova_capture, "board_store", records), \
             patch.object(nova_capture, "vault_write_path",
                          side_effect=lambda path, content, if_rev=None: (
                              writes.append((path, content)) or "written")):
         ok, message = convert_capture("issues", 0, folded, "ideas")
     assert not ok
     assert "check ideas for a duplicate" in message
+    assert records.calls == [], "the source record must not be touched"
     # The source was never rewritten, so his line and the answer under it
     # are both still there -- the thing the reviewer found was that they
     # were not.

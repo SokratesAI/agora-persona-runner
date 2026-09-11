@@ -47,7 +47,9 @@ capture at all.
 import re
 from datetime import datetime
 
-from agora_runner import board_records, board_store, board_view, board_write
+from agora_runner import (
+    board_document, board_records, board_store, board_view, board_write)
+from agora_runner.board_store import CaptureConflict
 from agora_runner.config import OSLO
 from agora_runner.log import log
 from agora_runner.nova_boards import (
@@ -292,7 +294,7 @@ def replace_capture(markdown, index, original, bullets):
     return "\n".join(lines[:begin] + [f"- {b}" for b in bullets] + kept + lines[end:])
 
 
-def amend(target, index, original, text):
+def amend(target, index, original, text, store=None):
     """Edit or delete one capture. Empty `text` deletes. Returns (ok, message).
 
     Issues #66: *"The reported issues should be able to be edited and
@@ -305,6 +307,9 @@ def amend(target, index, original, text):
     losing attempt's re-read no longer contains the bullet, the capture
     was boarded or removed between the attempts, and `replace_capture`
     returns `None` rather than resurrecting it.
+
+    **His two boards go to the #203 record store** (`_amend_records`); only
+    `notes`, which has no records, still reads and writes the file here.
     """
     path = CAPTURE_TARGETS.get(target)
     if path is None:
@@ -312,6 +317,10 @@ def amend(target, index, original, text):
     if not (original or "").strip():
         return False, "nothing to amend"
     bullets = clean_capture_text(text or "")
+    board = RECORD_BOARDS.get(target)
+    if board is not None:
+        return _amend_records(target, board, index, original.strip(), bullets,
+                              store or board_store)
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):
@@ -333,6 +342,63 @@ def amend(target, index, original, text):
             break
     log(f"nova-capture failed amending {target}: {result}")
     return False, f"could not write to {target}: {result}"
+
+
+def _amend_records(target, board, index, wanted, bullets, store):
+    """`amend` on one of his two boards: the capture's record, never his file.
+
+    The same two-part address as `replace_capture`: `board_records.capture_at`
+    finds the bullet at the position his page showed, and its own words must
+    still read `wanted`, or the answer is `STALE_CAPTURE` and nothing is
+    written. An edit is `board_write.change_capture_text`, which keeps the
+    replies under the bullet and checks the rest of the board came back
+    untouched; a delete is `board_store.delete_capture`, which takes the
+    replies with it, as the markdown delete did.
+
+    **The conflict retry survives the move, and it is the markdown loop's 409
+    retry on a different store.** Both writes are conditional on the revision
+    `capture_at` read, so a cycle replying under this bullet in between is a
+    `CaptureConflict`: re-read, re-check the words, write again -- and a
+    re-read that no longer finds them is stale rather than a resurrection.
+    A delete that finds the document already gone (a second tap) is stale too.
+
+    **One bullet only.** The file path turns a multi-line edit into several
+    bullets; the records have no capture-insert door until the capture box
+    itself moves, so that edit is refused here rather than half-written.
+    """
+    if len(bullets) > 1:
+        return False, (
+            "an edit here is one bullet -- use the capture box to add the "
+            "others")
+    new_text = bullets[0] if bullets else ""
+    problem = None
+    for _ in range(WRITE_ATTEMPTS):
+        try:
+            doc = board_records.capture_at(board, index, store=store)
+        except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+            log(f"nova-capture could not read the {target} records: {error}")
+            return False, f"could not read {target}: {error}"
+        if doc is None or board_document.capture_text_of(doc) != wanted:
+            return False, f"that capture is {STALE_CAPTURE}"
+        try:
+            if not new_text:
+                if not store.delete_capture(doc):
+                    return False, f"that capture is {STALE_CAPTURE}"
+                log(f"nova-capture deleted a capture in {target}")
+                return True, f"deleted in {target}"
+            if new_text != wanted:
+                board_write.change_capture_text(board, doc, new_text, store=store)
+            log(f"nova-capture edited a capture in {target}")
+            return True, f"edited in {target}"
+        except CaptureConflict as error:
+            problem = error
+            continue
+        except (board_write.WriteRefused, board_write.BoardDamaged,
+                board_records.RecordError) as error:
+            problem = error
+            break
+    log(f"nova-capture failed amending {target}: {problem}")
+    return False, f"could not write to {target}: {problem}"
 
 
 def reply_under_capture(markdown, index, original, text):
