@@ -493,8 +493,9 @@ def _project_tag(row, meta):
     **The milestone is on the same line for the same reason the project
     rating is**, and it was added the cycle the milestone tier was
     actually wired into this tool: the tier sits between the project and
-    the row's own rating, so a Medium row in a well-ranked milestone now
-    outranks a High row in a badly-ranked one *inside the same project*,
+    the row's own position, so a row in a well-ranked milestone outranks a
+    row in a badly-ranked one *inside the same project*, whatever either is
+    rated (no rating orders anything since #202),
     and a line that showed neither would read as a bug. `ungrouped` is
     printed rather than left blank because an ungrouped row sinks behind
     every grouped one in its project, which is a position a cycle should

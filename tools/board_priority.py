@@ -31,8 +31,9 @@ lost its last one, the skip-to-top tier, in Cycle 1415), so re-rating one of
 mine would change nothing a cycle does. Immediately stays refused anyway: it is
 the rating #267 carried when it took the queue, it is his intent to state, and
 refusing it costs nothing now that it orders nothing. So a blank row may still
-be rated -- blank means nobody has looked -- but only below Immediately. A cycle that thinks one
-of his ratings is wrong says so in a comment on the row, and he decides.
+be rated -- blank means nobody has looked -- but only below Immediately. A
+cycle that thinks one of his ratings is wrong says so in a comment on the row,
+and he decides.
 
 **This is the last of the `tools/board_*.py` writers converted onto
 `agora_runner.board_write` for issue #203** (Cycle 1377). Until then it parsed

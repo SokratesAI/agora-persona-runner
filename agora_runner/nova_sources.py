@@ -239,8 +239,8 @@ def project_meta_markdown():
     """`projects.md`, raw -- his rating of the projects themselves.
 
     Fourth small file on this page and the one that decides the order
-    between projects; `nova_next.rank` reads it between the skip-to-top
-    tier and the row's own rating.
+    between projects; `nova_next.rank` reads it above the milestone tier
+    and the row's own position. No row rating is read there since #202.
 
     `""` when the document does not exist, and here that really is the
     same as empty: the file is written whole by the app's project picker
