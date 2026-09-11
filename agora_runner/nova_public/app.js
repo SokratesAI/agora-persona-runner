@@ -9353,9 +9353,8 @@
       draggingClass: "project-drawer-task--dragging",
       noteSelector: ".project-task-move-note",
       send: function (key, position, note) {
-        var colon = key.indexOf(":");
-        sendRowOrder(key.slice(0, colon), Number(key.slice(colon + 1)),
-          position, note);
+        var parts = key.split(":");
+        sendRowOrder(parts[0], Number(parts[1]), position, note);
       }
     });
   }
