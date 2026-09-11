@@ -85,6 +85,16 @@ PLAIN_FIELDS = (
     "title", "status", "updated", "where", "priority", "size", "order", "done",
 )
 
+#: Record fields a row may carry and `parse_board` never produces, because
+#: his markdown has no cell for them. Absent unless written, so a row that
+#: never had one reads exactly as `parse_board` would have made it.
+#:
+#: `placedBy` is issue #202's *"A position or rating he set is recorded as
+#: his, and a cycle may not overwrite it"* -- the position half. `order` is
+#: a dense seat and says nothing about who chose it, so without this a task
+#: he dragged and a task a cycle seated are the same value.
+OPTIONAL_FIELDS = ("placedBy",)
+
 
 class DocumentError(ValueError):
     """A row that cannot become a document, or a document that is malformed."""
@@ -134,6 +144,9 @@ def to_document(item, board, project_id=None, milestone_id=None, rank=None,
     for field in PLAIN_FIELDS:
         if field in item:
             doc[field] = item[field]
+    for field in OPTIONAL_FIELDS:
+        if item.get(field):
+            doc[field] = item[field]
     doc["done"] = bool(item.get("done"))
     if project_id is not None:
         doc["projectId"] = project_id
@@ -166,7 +179,7 @@ def from_document(doc, project_name=None, milestone_name=None):
     priority = doc.get("priority", "")
     size = doc.get("size", "")
     done = bool(doc.get("done"))
-    return {
+    item = {
         "number": doc["number"],
         "title": doc.get("title", ""),
         "status": status,
@@ -186,6 +199,10 @@ def from_document(doc, project_name=None, milestone_name=None):
         "order": doc.get("order"),
         "done": done,
     }
+    for field in OPTIONAL_FIELDS:
+        if doc.get(field):
+            item[field] = doc[field]
+    return item
 
 
 def detail_of(doc):

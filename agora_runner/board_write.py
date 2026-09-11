@@ -185,7 +185,8 @@ def _differences(before, after, number, added=False):
     return problems
 
 
-def change_row(board, number, changes, detail=None, store=board_store):
+def change_row(board, number, changes, detail=None, store=board_store,
+               expect=None):
     """Change `changes` on row `number` of `board`, and check the whole board.
 
     `changes` is `{item key: new value}` in `parse_board`'s row vocabulary --
@@ -214,7 +215,18 @@ def change_row(board, number, changes, detail=None, store=board_store):
         raise WriteRefused(
             f"#{number} is not a row on board {board!r} -- it holds "
             f"{len(before['items'])} row(s)")
-    unknown = sorted(key for key in changes if key not in held)
+    # `expect` is `{key: value}` the row must still hold, judged on this read
+    # -- which the compare-and-swap below ties to the write -- rather than on
+    # whatever older read the caller decided from.
+    for key, value in (expect or {}).items():
+        if held.get(key) != value:
+            raise WriteRefused(
+                f"row #{number} of board {board!r} now has {key} "
+                f"{held.get(key)!r}, not {value!r}; nothing was written")
+    # An optional field is absent from a row until it is first written, so
+    # "not a key on this row" is not the test for one.
+    unknown = sorted(key for key in changes if key not in held
+                     and key not in board_document.OPTIONAL_FIELDS)
     if unknown:
         raise WriteRefused(
             f"{', '.join(unknown)} is not a key on a row of board {board!r}; "

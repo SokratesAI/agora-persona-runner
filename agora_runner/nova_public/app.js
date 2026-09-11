@@ -9178,7 +9178,10 @@
     return fetch("/api/row/order", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target: target, number: number, position: position })
+      // `author` is what records the placement as his: a cycle may not move
+      // a task he placed (issue #202).
+      body: JSON.stringify({ target: target, number: number, position: position,
+        author: "Edvard" })
     })
       .then(json)
       .then(function (result) {
