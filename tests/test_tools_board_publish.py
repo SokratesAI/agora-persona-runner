@@ -214,3 +214,118 @@ def test_a_render_that_drops_his_capture_bullet_is_refused_by_the_four_keys(
     assert "a bare capture of his" not in text
     assert problems
     assert any(problem.startswith("captures") for problem in problems)
+
+
+# --- `--publish`: the whole trip, and the stamp that makes it legitimate ---
+
+import subprocess  # noqa: E402
+
+from agora_runner import board_records  # noqa: E402
+from tools import board_put  # noqa: E402
+
+
+class FakeVault:
+    """His board file in the vault: one text, one revision, and a
+    compare-and-swap `put` that refuses a revision that has moved -- the
+    one behaviour of `vault_tool.py` the publish leans on."""
+
+    def __init__(self, text, rev="5-a"):
+        self.text, self.rev, self.puts, self.gets = text, rev, 0, 0
+        self.stale_rev = None      # what the first get reports, if not rev
+        self.read_back = None      # what every get after a put returns
+
+    def get(self, path):
+        self.gets += 1
+        if self.gets == 1 and self.stale_rev:
+            return self.text, self.stale_rev
+        if self.read_back is not None and self.puts:
+            return self.read_back, "9-z"
+        return self.text, self.rev
+
+    def put(self, path, local_file, if_rev_file=None):
+        self.puts += 1
+        with open(if_rev_file, encoding="utf-8") as handle:
+            sent = handle.read().strip()
+        if sent != self.rev:
+            return subprocess.CompletedProcess([], 3, "", "conflict")
+        with open(local_file, encoding="utf-8") as handle:
+            self.text = handle.read()
+        self.rev = f"{int(self.rev.split('-')[0]) + 1}-b"
+        return subprocess.CompletedProcess([], 0, "written", "")
+
+
+@pytest.fixture
+def vault(couch, monkeypatch):
+    markdown = seeded(couch, FRONTMATTER + board(
+        [(1, "Nova", ""), (2, "Marcus", "v1")], details=[(1, "why row 1")]))
+    fake = FakeVault(markdown + "\na line the records never held\n")
+    monkeypatch.setattr(board_put, "vault_get", fake.get)
+    monkeypatch.setattr(board_put, "vault_put", fake.put)
+    return fake
+
+
+def test_publish_writes_the_view_and_stamps_the_revision_it_landed_at(vault):
+    """After the flip the markdown is a view: publishing it must leave the
+    records stamped with the revision the view now sits at, or the site
+    logs every request as the view and the records disagreeing."""
+    code, lines = board_publish.publish("issue")
+
+    drawn, problems = board_publish.render("issue", vault.text)
+    assert code == 0, lines
+    assert problems == [] and vault.text == drawn
+    assert "a line the records never held" not in vault.text
+    assert vault.rev == "6-b"
+    assert board_records.currency("issue", "6-b")[0] == board_records.CURRENT
+
+
+def test_a_lost_race_writes_nothing_and_stamps_nothing(vault):
+    """The revision moved between the read and the write: the vault
+    refuses, and a stamp here would certify the other writer's text."""
+    vault.stale_rev = "4-old"
+    before = board_records.stored_source_rev("issue")
+
+    code, lines = board_publish.publish("issue")
+
+    assert code == 3, lines
+    assert "a line the records never held" in vault.text
+    assert "the vault write did not land" in lines[-1]
+    assert board_records.stored_source_rev("issue") == before
+
+
+def test_a_read_back_that_differs_is_not_stamped(vault):
+    """The write said it landed, but the vault reads back something else:
+    the stamp is a claim about what the vault holds, so it is withheld."""
+    vault.read_back = "somebody else's board\n"
+    before = board_records.stored_source_rev("issue")
+
+    code, lines = board_publish.publish("issue")
+
+    assert code == 3, lines
+    assert board_records.stored_source_rev("issue") == before
+
+
+def test_an_unfaithful_render_is_never_written_or_stamped(vault, monkeypatch):
+    real = board_view.render_document
+
+    def lossy(contents, **kwargs):
+        return real(dict(contents, details={}), **kwargs)
+
+    monkeypatch.setattr(board_view, "render_document", lossy)
+    before = board_records.stored_source_rev("issue")
+
+    code, lines = board_publish.publish("issue")
+
+    assert code == 2, lines
+    assert vault.puts == 0
+    assert board_records.stored_source_rev("issue") == before
+
+
+def test_a_view_already_current_is_stamped_without_a_write(vault):
+    """Publishing twice must not cost a vault revision the second time."""
+    vault.text, _ = board_publish.render("issue", vault.text)
+
+    code, lines = board_publish.publish("issue")
+
+    assert code == 0, lines
+    assert vault.puts == 0
+    assert board_records.stored_source_rev("issue") == "5-a"
