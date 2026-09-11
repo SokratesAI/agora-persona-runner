@@ -164,12 +164,14 @@ def layout_differences(markdown, board, stored):
     `document_layout` keeps a table header in a tuple and JSON has none.
 
     **The stored layout is a memory of the document at migration, and
-    `board_view._laid_out` is allowed to move away from it in exactly three
+    `board_view._laid_out` is allowed to move away from it in exactly four
     ways**, each of which this accepts and nothing else: a write-up for a
-    row boarded since (a `detail` block whose number the store never
-    named), a write-up since deleted (a stored `detail` the markdown no
-    longer carries), and a table widened by columns appended on the right
-    (`board_width` adds `Order` the day a row carries a position). Until
+    row boarded since (a `detail` block whose number the store never named,
+    and only in the seat `_laid_out` gives it, after the last stored one),
+    a write-up since deleted (a stored `detail` the markdown no longer
+    carries), a `## Done` table left out while no row is done, and a table
+    widened by columns appended on the right (`board_width` adds `Order`
+    the day a row carries a position). Until
     Cycle 1401 this compared the two lists for equality, so the first row
     boarded after the flip and the first seat written by #202 each made
     every publish of that board refuse (issue #210; the Order column on
@@ -183,6 +185,11 @@ def layout_differences(markdown, board, stored):
             board_view.document_layout(markdown), board))
     named = {int(b["number"]) for b in stored if b.get("kind") == "detail"}
     drawn = {int(b["number"]) for b in wanted if b.get("kind") == "detail"}
+    # `_laid_out` writes a new write-up straight after the last stored one
+    # (at the end when there is none), so that is the only seat it may take.
+    seats = [i for i, b in enumerate(stored) if b.get("kind") == "detail"]
+    seat = seats[-1] + 1 if seats else len(stored)
+    done_drawn = any(b.get("kind") == "done" for b in wanted)
     one_at, two_at = 0, 0
     while one_at < len(wanted) or two_at < len(stored):
         one = wanted[one_at] if one_at < len(wanted) else None
@@ -190,10 +197,13 @@ def layout_differences(markdown, board, stored):
         if one is not None and two is not None and (
                 one == two or _widened(one, two)):
             one_at, two_at = one_at + 1, two_at + 1
-        elif _detail_not_in(one, named):
+        elif two_at >= seat and _detail_not_in(one, named):
             one_at += 1
         elif _detail_not_in(two, drawn):
             two_at += 1
+        elif (isinstance(two, dict) and two.get("kind") == "done"
+              and not done_drawn):
+            two_at += 1  # `## Done` is left out while no row is done
         else:
             return [f"layout[{one_at}] differs: markdown {_head(one)} "
                     f"vs store {_head(two)}"]

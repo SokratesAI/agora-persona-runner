@@ -107,3 +107,25 @@ def test_a_table_that_narrows_or_renames_a_column_is_still_drift():
 
     assert layout_differences(markdown, "issue", wider)
     assert layout_differences(markdown, "issue", renamed)
+
+
+def test_the_done_table_left_out_when_nothing_is_done_is_not_drift():
+    done = dict(item(2), done=True)
+    old = layout_of(draw([item(1), done], {1: "one", 2: "two"}, tail=ARCHIVE))
+    markdown = draw([item(1), item(2)], {1: "one", 2: "two"}, layout=old)
+    assert "done" in [b["kind"] for b in old]
+    assert "done" not in [b["kind"] for b in layout_of(markdown)]
+
+    assert layout_differences(markdown, "issue", old) == []
+
+
+def test_a_new_write_up_anywhere_but_after_the_last_one_is_drift():
+    """`_laid_out` seats a new write-up after the last stored one; the same
+    block ahead of the board is a document the renderer did not draw."""
+    old = stored()
+    ahead = [{"kind": "detail", "number": 3}] + old
+    markdown = draw([item(1), item(2), item(3)],
+                    {1: "one", 2: "two", 3: "three"}, layout=ahead)
+    assert layout_of(markdown)[0] == {"kind": "detail", "number": 3}
+
+    assert layout_differences(markdown, "issue", old)
