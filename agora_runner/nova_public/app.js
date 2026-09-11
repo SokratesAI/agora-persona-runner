@@ -9140,10 +9140,11 @@
       tasks.appendChild(el("li", "project-drawer-empty",
         "Nothing is filed under this milestone yet."));
     }
-    /* In the order a cycle takes them: the row's own Order seat, then issues
-     * before ideas, then number -- `nova_next.rank`'s keys inside one
-     * milestone. Every open row on both boards carries a seat since #918's
-     * seeding, so this is his order and not a rating. */
+    /* In the order the server seats them: `taskSeat` (the Order cell, or
+     * for an unseated row the rating seed `row_order_seats` applies), then
+     * issues before ideas, then number. Most open rows have no seat yet --
+     * 172 of 203 on the issues board, measured 2026-09-11 -- so the seed is
+     * the common case, not an edge. */
     mine.sort(function (a, b) {
       return (taskSeat(a) - taskSeat(b))
         || ((a.board === "issue" ? 0 : 1) - (b.board === "issue" ? 0 : 1))
