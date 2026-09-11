@@ -633,6 +633,58 @@ def rank(rows, projects=None, milestones=None):
     ))
 
 
+def _seed_key(r):
+    """`rank`'s tiebreak below the order tier, and nothing above it."""
+    return (_RANK.get(r["priorityKey"], len(_RANK)), age_key(r["updated"]),
+            0 if r["board"] == "issue" else 1, r["number"])
+
+
+def seed_seats(rows):
+    """`(seats, skipped)`: the one-time seating issue #202's part 1 asks for.
+
+    *"order every task inside its milestone seeded from the rating it carries
+    today (Immediately at the top, unrated at the bottom, once)"*. `rows` is
+    `open_rows_from_contents` over BOTH boards; `seats` is
+    `{(board, number): seat}` for every open row that has no seat yet, and
+    `skipped` names the (project, milestone) groups left alone.
+
+    **The seat is the row's place in its group across both boards, ordered
+    by `rank`'s own tiebreak** -- rating, age, issue before idea, number.
+    `row_order_seats` seeds one board at a time, and `rank` merges both
+    boards inside a milestone on the seat, so seeding each board 1..N would
+    put an issue rated Low at seat 2 ahead of an idea rated Medium at seat 3.
+    Seated this way, `rank` returns exactly the order it returned before,
+    and the drawer, which sorts both boards on the seat, shows that order.
+    Each board's seats have gaps, and **an arrow press does not keep this
+    cross-board order**: `row_order_seats` renumbers one board's group
+    1..N, so that board's rows jump ahead of the other board's seats. That
+    gap predates this seed -- unseated, the other board sank below every
+    placed row outright, which is worse -- and it is the next slice of #202.
+
+    A group where some row already holds a seat other than the one this
+    would give it has been ordered by hand and is skipped whole -- a seed
+    must never overrule him. A group whose seated rows all agree with the
+    seed is a seeding that stopped part-way, and only its missing rows are
+    returned, so running it again finishes the job and then does nothing.
+    """
+    groups = {}
+    for r in rows:
+        key = ((r.get("project") or "").strip().lower(),
+               (r.get("milestone") or "").strip().lower())
+        groups.setdefault(key, []).append(r)
+    seats, skipped = {}, []
+    for key, group in groups.items():
+        wanted = {(r["board"], r["number"]): seat for seat, r in
+                  enumerate(sorted(group, key=_seed_key), start=1)}
+        if any(r.get("order") and r["order"] != wanted[(r["board"], r["number"])]
+               for r in group):
+            skipped.append(key)
+            continue
+        seats.update({(r["board"], r["number"]): wanted[(r["board"], r["number"])]
+                      for r in group if not r.get("order")})
+    return seats, skipped
+
+
 def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
                                now, top=5, projects_markdown="",
                                milestones_markdown=""):
