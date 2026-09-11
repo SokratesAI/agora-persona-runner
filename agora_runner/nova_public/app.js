@@ -16191,11 +16191,24 @@
         start.disabled = true;
         chatWriteFull("/api/conversations/new", { name: nextUntitledName() })
           .then(function (answer) {
-            var made = answer.result || {};
-            if (!made.id) throw new Error("no conversation came back");
+            /* `result` IS the new id, a string, and `name` rides beside it
+             * -- the contract `/api/conversations/new` has answered with
+             * since 08-27 (#445), pinned server-side by
+             * `test_chat_write_result_key.py`.
+             *
+             * His report, 2026-09-11: *"I'm not able to start new
+             * converssations"*, with the toast "could not start: no
+             * conversation came back". This read `answer.result.id` since
+             * the 09-07 switcher rebuild (#863), and a string has no `.id`
+             * -- so every tap created a conversation on the server and then
+             * told him it had not. The browser test passed because its
+             * fixture was written in the shape this code wanted rather than
+             * the shape the server sends. */
+            var id = typeof answer.result === "string" ? answer.result : "";
+            if (!id) throw new Error("no conversation came back");
             // Straight into it: he tapped `+` to start talking, not to
             // watch a list redraw. `switchTo` shuts the switcher for us.
-            switchTo({ kind: "conv", id: made.id, name: made.name || UNTITLED_LABEL });
+            switchTo({ kind: "conv", id: id, name: answer.name || UNTITLED_LABEL });
             listCache = null;
           })
           .catch(function (err) { toast("could not start: " + err.message, true); })

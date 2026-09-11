@@ -13796,7 +13796,13 @@ describe("holding a conversation in the switcher opens edit options", () => {
     const window = await openSwitcher({
       convThread: () => ({ messages: [], waiting: false }),
     });
-    window.postReply = { ok: true, result: { id: "c-9", name: "New chat" } };
+    /* The server's real reply, not the shape the client wishes it sent.
+     * This fixture used to say `result: { id, name }`, which is what the
+     * 09-07 client read -- so the two agreed with each other while the
+     * server (`nova_site._post_conversation_new`, pinned by
+     * `test_chat_write_result_key.py`) answered `result: "<id>"` with
+     * `name` beside it, and every real tap failed. Mirror the route. */
+    window.postReply = { ok: true, result: "c-9", name: "New chat", message: "c-9" };
     const fab = window.document.querySelector("#chat-list .chat-list-fab");
     assert.ok(fab, "no floating new-conversation button");
     fab.dispatchEvent(new window.Event("click"));
@@ -13807,6 +13813,11 @@ describe("holding a conversation in the switcher opens edit options", () => {
       "the + opened a form instead of starting a thread");
     assert.deepEqual(window.posted.map((p) => p.url), ["/api/conversations/new"]);
     assert.equal(window.document.getElementById("chat-title").textContent, "New chat");
+    // And no failure toast: the conversation was made, so saying otherwise
+    // is the bug he hit.
+    const toastEl = window.document.getElementById("nova-toast");
+    assert.ok(!toastEl || !/could not start/.test(toastEl.textContent),
+      "the + reported a failure for a conversation the server made");
   });
 
   test("the default name steps aside for one already taken", async () => {
