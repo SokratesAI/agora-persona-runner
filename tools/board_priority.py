@@ -1,17 +1,37 @@
-"""Re-rate one board row, in the record store.
+"""Rate one unrated board row, in the record store.
 
 `agora_runner.nova_boards.set_row_priority` has existed since Cycle 274
 and the only thing that has ever called it is `nova_capture.board_note`,
 which rates a bullet **on its way onto the board for the first time**.
-There was no way to change a rating already written until Cycle 1087
-built this, on a capture from the owner:
+Cycle 1087 built this to change a rating already written, on a capture from
+the owner:
 
 > *"Bump idea #260 (task-prioritization redesign) to Priority: Immediately.
 > I see it as the most important project right now because it gives us
 > control over how every other project gets worked."*
 
-    python3 -m tools.board_priority --board idea --number 260 \\
-        --priority immediate --dated 09-06 --note 'why it moved' --cycle 1087
+    python3 -m tools.board_priority --board idea --number 261 \\
+        --priority medium --dated 09-11 --note 'why this rating' --cycle 1412
+
+**It no longer changes a rating that is already there, and it never writes
+🔴 Immediately** (issue #202, Cycle 1412). The spec's section "His ranking is
+not a cycle's to change" is why: on 2026-09-09 idea #267, a row a cycle wrote,
+read 🔴 Immediately at 06:29 and 🔵 Medium at 06:57 with the owner touching
+neither, and in between it sat at the top of `/api/next` and took most of the
+merged PRs. The only writers were cycles. His rule, in
+`row-order-and-priority-migration.md`: *"A position or rating he set is
+recorded as his, and a cycle may not overwrite it. `tools/board_priority.py`
+and every write path refuse it, loudly, rather than winning quietly."* The
+app's own rating route went in Cycle 1404, so this is the one write path left.
+
+Nothing records who set a rating, so every rating already on an open row is
+treated as his. That over-covers the rows I rated at boarding, and it costs
+nothing: after #202 no ranking reads a rating below the skip-to-top tier
+(`nova_next.rank`), so re-rating one of mine would change nothing a cycle does.
+The one rating that still moves work is Immediately, the skip-to-top tier, and
+that is the exact jump #267 got. So a blank row may still be rated -- blank
+means nobody has looked -- but only below Immediately. A cycle that thinks one
+of his ratings is wrong says so in a comment on the row, and he decides.
 
 **This is the last of the `tools/board_*.py` writers converted onto
 `agora_runner.board_write` for issue #203** (Cycle 1377). Until then it parsed
@@ -77,6 +97,10 @@ from agora_runner.nova_boards import (
 # both tools so neither can drift.
 CLOSED_STATUS_KEYS = frozenset({"done", "outdated"})
 
+# The skip-to-top tier `nova_next.rank` still reads. Only the owner puts a row
+# there; see the module docstring.
+IMMEDIATE = PRIORITY_LABELS["immediate"]
+
 
 def _priority_choices():
     """Every accepted spelling: the four keys and the four written forms."""
@@ -114,20 +138,28 @@ def priority_changes(priority):
     return {"priority": priority, "priorityKey": priority_key(priority)}
 
 
-def refuse_row(contents, number):
-    """Why this row may not be re-rated, or `None` if it may.
+def refuse_row(contents, number, priority=None):
+    """Why this row may not be rated `priority`, or `None` if it may.
 
     Read off a board fetched **before** anything is written, because every
     answer here has to mean "nothing happened". `change_row` refuses an absent
     row itself; a finished one it would happily rate, so that refusal lives
     here -- off `done` *and* off the status cell, because a `✅ Done` row that
-    never moved to `## Done` has `done` false.
+    never moved to `## Done` has `done` false. The two #202 refusals are here
+    too, for the same reason: a rating already on the row, and Immediately.
     """
     for item in contents["items"]:
         if item.get("number") == number:
             if item.get("done") or status_key(item.get("status", "")) in CLOSED_STATUS_KEYS:
                 return (f"#{number} is finished ({item.get('status') or 'in ## Done'}), "
                         "and a finished row deliberately carries no rating")
+            if item.get("priority"):
+                return (f"#{number} already carries {item['priority']}, and a rating on "
+                        "a boarded row is his: a cycle may not overwrite it (issue #202). "
+                        "Propose the change in a comment on the row instead")
+            if priority == IMMEDIATE:
+                return (f"#{number}: {IMMEDIATE} is the skip-to-top tier and it is his "
+                        "to give -- a cycle may not put a row there (issue #202)")
             return None
     return f"#{number} is not a row on this board"
 
@@ -178,7 +210,7 @@ def main(argv=None):
         print(f"REFUSED: {problem}", file=sys.stderr)
         return 1
 
-    refusal = refuse_row(before, args.number)
+    refusal = refuse_row(before, args.number, priority)
     if refusal:
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
