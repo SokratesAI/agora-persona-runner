@@ -181,6 +181,10 @@ _RULE_RE = re.compile(r"^\|(?:-+\|)+$")
 #: `board_view.render_detail` re-emits every one of them as `### #69 —`,
 #: on purpose, so the source is rewritten to that spelling before it is
 #: split. The number and the title after the dash are still compared.
+#: It is not section- or fence-aware, so a heading of the same shape that is
+#: not a write-up (`## 2026 — Year in review`) is rewritten too and then
+#: reported lost when the render keeps it as written -- a false alarm, never
+#: a hidden loss. Neither live board carries one (0 and 0, Cycle 1392).
 _DETAIL_HEADING_RE = re.compile(r"^#{2,3}[ \t]+#?(\d+)[ \t]*[—–-]", re.MULTILINE)
 
 

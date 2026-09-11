@@ -1643,10 +1643,9 @@ def set_row_order(target, number, position, store=None):
     **Written to the #203 record store, not to his markdown** -- the seventh
     of the app's board writers off the file, after `set_priority`,
     `comment_on_row`, `edit_row`, `archive_row`, `set_project` and
-    `remove_row`. The seats are `nova_boards.row_order_seats`, the same rule
-    the markdown `set_row_order` runs, so the two cannot disagree about who
-    sits where: the first placement numbers the whole (project, milestone)
-    group, seeded by rating.
+    `remove_row`. The seats are `nova_boards.row_order_seats`, where the rule
+    and every refusal are documented: the first placement numbers the whole
+    (project, milestone) group, seeded by rating.
 
     **One `change_row` per row whose seat moves, and every refusal is decided
     before the first of them.** A group is several documents, so there is no

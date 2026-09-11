@@ -2168,8 +2168,15 @@ def parse_project_meta(markdown):
     return out
 
 
-def set_row_order(markdown, number, position):
-    """Place one `## Board` row at `position` inside its milestone, 1-based.
+def row_order_seats(items, number, position):
+    """`[(row number, seat)]` for row `number`'s whole group after placing it
+    at `position`, 1-based, or `None` if refused.
+
+    `items` is `parse_board`'s row list, which is also what
+    `board_records.contents` hands back; the one writer is the record-store
+    `nova_capture.set_row_order`. The markdown writer that used to sit here
+    was deleted in #203's flip -- nothing called it once the app's reorder
+    button moved onto the records.
 
     His capture of 2026-09-08, the half that did not ship the same evening:
     *"Lets me organise/sort the milestones and tasks aswell. Convert the old
@@ -2193,43 +2200,13 @@ def set_row_order(markdown, number, position):
     the cells where he can see it and edit it, rather than being re-derived
     from a rating every time something is ranked.
 
-    Returns the new markdown, or `None` if refused: no open `## Board` row
-    carries that number, the row is closed (a position in a queue is a
-    statement about work still to do -- the same boundary `set_row_size`
-    and `set_row_milestone` draw), or `position` is outside `1..N` for the
-    group. `0` is refused rather than treated as "unplace": clearing one
-    row's position while its neighbours keep theirs leaves a group that is
-    half ordered by hand and half by rating, which is not a state anything
-    here can render honestly.
-    """
-    seats = row_order_seats(parse_board(markdown or "")["items"], number, position)
-    if seats is None:
-        return None
-
-    lines = (markdown or "").split("\n")
-    for row_number, seat in seats:
-        index, cells = _row_span(lines, row_number, tables=("board",))
-        if index is None:
-            return None
-        # Padded up to the new width rather than refused, the same way
-        # `set_row_milestone` pads a row that predates *its* column.
-        while len(cells) < _BOARD_WIDTH:
-            cells.append("")
-        cells[8] = str(seat)
-        lines[index] = "| " + " | ".join(cells) + " |"
-        _ensure_board_columns(lines, index)
-    return "\n".join(lines)
-
-
-def row_order_seats(items, number, position):
-    """`[(row number, seat)]` for row `number`'s whole group after placing it
-    at `position`, or `None` if refused -- `set_row_order`'s rule, on rows.
-
-    Split out of `set_row_order` for issue #203 so the markdown writer and
-    the record-store writer (`nova_capture.set_row_order`) run one rule
-    rather than two copies of it. `items` is `parse_board`'s row list, which
-    is also what `board_records.contents` hands back. Every refusal and the
-    seeding are documented on `set_row_order`.
+    Refused (`None`) when no open row carries that number, the row is closed
+    (a position in a queue is a statement about work still to do -- the
+    same boundary `set_row_size` and `set_row_milestone` draw), or
+    `position` is outside `1..N` for the group. `0` is refused rather than
+    treated as "unplace": clearing one row's position while its neighbours
+    keep theirs leaves a group that is half ordered by hand and half by
+    rating, which is not a state anything here can render honestly.
     """
     try:
         position = int(position)

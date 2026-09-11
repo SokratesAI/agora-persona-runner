@@ -26,8 +26,11 @@ def test_parse_board_refs_is_not_a_board_reader():
 
 
 def test_the_live_definition_is_a_parse_surface():
-    """The control for the test above: nova_boards really does parse."""
-    text = (ROOT / "agora_runner/nova_boards.py").read_text(encoding="utf-8")
+    """The control for the test above: nova_site really does parse.
+
+    It was nova_boards until #203's flip deleted the markdown
+    `set_row_order`, its only call of its own parser."""
+    text = (ROOT / "agora_runner/nova_site.py").read_text(encoding="utf-8")
     assert inv.surfaces(text) == ("parse_board", "BOARD_PATHS")
 
 
@@ -316,7 +319,9 @@ def test_the_gate_names_none_of_the_excused_modules(capsys):
     for rel in (*inv.NOT_A_BOARD, *inv.READS_MARKDOWN_BY_DESIGN,
                 "tools/roll_health.py"):
         assert rel not in line, rel
-    assert "agora_runner/nova_boards.py" in line
+    # nova_boards left this line in #203's flip, when its one call of its
+    # own parser (the markdown `set_row_order`) was deleted.
+    assert "agora_runner/nova_site.py" in line
 
 
 # The mirror surface: `nova_tickets`, which the parse_board grep cannot see.

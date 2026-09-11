@@ -1,4 +1,4 @@
-"""The `Order` cell: `set_row_order`, the parser round-trip, and the tier.
+"""The `Order` cell: `row_order_seats`, the parser, and the tier.
 
 His capture of 2026-09-08 -- *"Lets me organise/sort the milestones and
 tasks aswell. Convert the old priority to the ordered list so high is at
@@ -13,9 +13,14 @@ beside seven that still rank by something else is a control whose effect
 he cannot see. And `nova_next.rank` has to actually read the cell -- the
 comment in `open_rows` records that M4's first run shipped a tier reading a
 field that function dropped, which is a tier doing nothing with no symptom.
+
+These ran against the markdown `nova_boards.set_row_order` until #203's
+flip deleted it; the rule was always `row_order_seats`, and the one writer
+left (`nova_capture.set_row_order`, on the records) is pinned in
+`tests/test_row_order_route.py`.
 """
 
-from agora_runner.nova_boards import parse_board, set_row_order
+from agora_runner.nova_boards import parse_board, row_order_seats
 from agora_runner import nova_next
 
 BOARD = """# Nova — Ideas
@@ -49,91 +54,89 @@ Body text I must not touch.
 """
 
 
-def rows(markdown):
-    return {item["number"]: item for item in parse_board(markdown)["items"]}
+def contents():
+    return parse_board(BOARD)
+
+
+def place(board, number, position):
+    """`board` with the seats `row_order_seats` hands back written onto its
+    rows -- what the record writer does, one `order` field per row."""
+    seats = row_order_seats(board["items"], number, position)
+    assert seats is not None, (number, position)
+    for row_number, seat in seats:
+        next(item for item in board["items"]
+             if item["number"] == row_number)["order"] = seat
+    return board
+
+
+def orders(board):
+    return {item["number"]: item["order"] for item in board["items"]}
 
 
 def test_a_board_nobody_has_ordered_reports_no_position():
     # The whole of "this ships without changing a single row": every live
     # row predates the column, and `None` rather than `0` is what makes the
     # rating still decide the order for them.
-    assert [item["order"] for item in parse_board(BOARD)["items"]] == [
-        None] * len(parse_board(BOARD)["items"])
+    assert [item["order"] for item in contents()["items"]] == [
+        None] * len(contents()["items"])
 
 
 def test_placing_one_row_numbers_its_whole_milestone_by_rating():
     # High, Medium, Low -- "high at the top and low at the bottom", which is
     # the migration his capture asks for, performed on the group he touched.
-    after = set_row_order(BOARD, 9, 1)
-    assert after is not None
-    placed = rows(after)
-    assert placed[9]["order"] == 1
-    assert placed[8]["order"] == 2
-    assert placed[7]["order"] == 3
+    assert row_order_seats(contents()["items"], 9, 1) == [(9, 1), (8, 2), (7, 3)]
 
 
 def test_the_group_is_the_milestone_and_not_the_board():
-    after = set_row_order(BOARD, 8, 1)
-    placed = rows(after)
+    seated = [number for number, _ in row_order_seats(contents()["items"], 8, 1)]
     # Same project, different milestone; and same milestone name, different
     # project. Neither is in the group, so neither is renumbered.
-    assert placed[10]["order"] is None
-    assert placed[11]["order"] is None
+    assert 10 not in seated
+    assert 11 not in seated
 
 
 def test_a_second_move_reorders_the_seats_already_written():
-    after = set_row_order(set_row_order(BOARD, 9, 1), 7, 1)
-    placed = rows(after)
-    assert (placed[7]["order"], placed[9]["order"], placed[8]["order"]) == (1, 2, 3)
+    placed = orders(place(place(contents(), 9, 1), 7, 1))
+    assert (placed[7], placed[9], placed[8]) == (1, 2, 3)
 
 
 def test_a_closed_row_is_refused_and_is_not_in_the_group():
-    assert set_row_order(BOARD, 12, 1) is None
+    items = contents()["items"]
+    assert row_order_seats(items, 12, 1) is None
     # Three open rows in Push/Marcus, so 4 is past the end of the group --
     # which is the check that the closed row was left out of the count.
-    assert set_row_order(BOARD, 8, 4) is None
-    assert rows(set_row_order(BOARD, 8, 1))[12]["order"] is None
+    assert row_order_seats(items, 8, 4) is None
+    assert 12 not in [number for number, _ in row_order_seats(items, 8, 1)]
 
 
 def test_a_position_outside_the_group_and_a_nonsense_one_are_refused():
-    assert set_row_order(BOARD, 8, 0) is None
-    assert set_row_order(BOARD, 8, -1) is None
-    assert set_row_order(BOARD, 8, "top") is None
-    assert set_row_order(BOARD, 999, 1) is None
+    items = contents()["items"]
+    assert row_order_seats(items, 8, 0) is None
+    assert row_order_seats(items, 8, -1) is None
+    assert row_order_seats(items, 8, "top") is None
+    assert row_order_seats(items, 999, 1) is None
 
 
-def test_the_write_touches_the_table_and_nothing_else():
-    after = set_row_order(BOARD, 9, 1)
-    assert "a bullet nothing here may touch" in after
-    assert "Body text I must not touch." in after
-    # The header grows a labelled ninth column rather than an unnamed one.
-    assert "| Milestone | Order |" in after
-    changed = [(a, b) for a, b in zip(BOARD.split("\n"), after.split("\n")) if a != b]
-    assert len(changed) == 5, changed
-
-
-def _ranked(markdown):
+def _ranked(board):
     # Both real callers -- `next_payload` and `tools.top_board_rows` -- pass
     # the milestone tier, and it is what separates one group's seats from
     # another's. Ranking flat here would be testing a call shape nothing
     # makes on board rows, and the seats would interleave across groups.
-    rows = nova_next.open_rows_from_contents(
-        parse_board(markdown), "idea")
+    rows = nova_next.open_rows_from_contents(board, "idea")
     return [row["number"] for row in nova_next.rank(
         rows, None, nova_next.milestone_ranks(rows))]
 
 
 def test_rank_follows_the_hand_order_ahead_of_the_rating():
     # Untouched, the rating decides and High leads its milestone.
-    assert _ranked(BOARD)[:3] == [8, 9, 7]
+    assert _ranked(contents())[:3] == [8, 9, 7]
     # Placed, his order decides -- Low first, against its own rating.
-    after = set_row_order(BOARD, 7, 1)
-    assert _ranked(after)[:3] == [7, 8, 9]
+    assert _ranked(place(contents(), 7, 1))[:3] == [7, 8, 9]
 
 
 def test_an_unplaced_row_sinks_below_the_placed_ones_in_its_milestone():
     # #10 is Marcus/Video and untouched; placing the Push rows must not
     # push an unplaced row of another milestone around.
-    before = _ranked(BOARD).index(10)
-    after = _ranked(set_row_order(BOARD, 7, 1)).index(10)
+    before = _ranked(contents()).index(10)
+    after = _ranked(place(contents(), 7, 1)).index(10)
     assert before == after
