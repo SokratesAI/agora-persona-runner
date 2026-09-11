@@ -76,7 +76,6 @@ from agora_runner.nova_boards import (
     priority_key,
     status_key,
     set_row_project,
-    set_row_status,
     split_capture_done,
     split_capture_priority,
 )
@@ -883,7 +882,7 @@ def edit_row(target, number, title, store=None):
     return True, f"#{number} edited on {target}"
 
 
-def archive_row(target, number, dated=None):
+def archive_row(target, number, dated=None, store=None):
     """Close one boarded row as `⚫ Outdated`. Returns (ok, message).
 
     The owner, `issues.md` capture 2026-09-03: *"We should be able to
@@ -909,31 +908,61 @@ def archive_row(target, number, dated=None):
     in his file, and comes back with one status change. That is why this
     one does not ask for a confirmation on the page and Delete does.
 
-    `set_row_status` clears the rating on the way through -- a chip on a
-    row nobody will build is the same noise as a chip on a shipped one --
-    and refuses anything that is not an open row in `## Board`, which is
-    the `None` this turns into a 409 rather than a 502.
+    **Written to the #203 record store, not to his markdown** -- the fourth
+    of the app's board writers off the file, after `set_priority`,
+    `comment_on_row` and `edit_row`. It is one `change_row` over five keys:
+    the status and its key, the rating and its key cleared (a chip on a row
+    nobody will build is the same noise as a chip on a shipped one, which is
+    what `set_row_status` did in the markdown), and `updated` stamped.
+
+    A closed row is refused off the same read that finds it. That covers a
+    row in the finished table, which `from_document` gives the `done` status
+    key whatever its cell says, and a `## Board` row that already reads
+    `✅ Done` or `⚫ Outdated`. From this button a shipped row turning
+    Outdated would be a lie about history -- `⚫ Outdated` means "never
+    built". A missing row answers with `edit_row`'s 409 phrase, decided off
+    the read for `edit_row`'s reason: `WriteRefused` also means "moved under
+    you" and that one must stay a 502.
+
+    **No retry**, for `set_priority`'s reason. `store` is for tests, looked
+    up at call time.
     """
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
     stamp = dated or datetime.now(OSLO).strftime("%m-%d")
-    closed = {}
-
-    def mutate(markdown):
-        # `set_row_status` will happily rewrite a `✅ Done` row, and it
-        # should -- a cycle correcting a status needs that. From this
-        # button it would be a lie about history: `⚫ Outdated` means
-        # "never built", and a shipped row is not that. Refused here
-        # rather than in `set_row_status` so the other callers keep it.
-        row = extract_row(markdown, number) or ""
-        for label in (STATUS_LABELS["done"], OUTDATED_STATUS):
-            if label in row:
-                closed["label"] = label
-                return None
-        return set_row_status(markdown, number, OUTDATED_STATUS, updated=stamp)
-
-    ok, message = _amend_board(target, number, mutate, "archived")
-    if not ok and "label" in closed:
-        return False, f"#{number} is already {closed['label']} on {target}"
-    return ok, message
+    refused = board_write.refuse_cell(stamp, "the date")
+    if refused:
+        return False, f"could not archive #{number} on {target}: {refused}"
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    row = next(
+        (item for item in before["items"] if item.get("number") == number), None)
+    if row is None:
+        return False, f"#{number} is not a row on {target}"
+    if row.get("statusKey") in _CLOSED_STATUS_KEYS:
+        label = (STATUS_LABELS["done"] if row["statusKey"] == "done"
+                 else OUTDATED_STATUS)
+        return False, f"#{number} is already {label} on {target}"
+    changes = {
+        "status": OUTDATED_STATUS,
+        "statusKey": status_key(OUTDATED_STATUS),
+        "priority": "",
+        "priorityKey": priority_key(""),
+        "updated": stamp,
+    }
+    try:
+        board_write.change_row(board, number, changes, store=store)
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed archiving #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture archived #{number} on {target}")
+    return True, f"#{number} archived on {target}"
 
 
 def set_project_priority(project, priority, dated=None):

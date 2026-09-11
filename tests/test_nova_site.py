@@ -5776,44 +5776,81 @@ def test_archiving_a_row_that_is_already_closed_is_a_409_through_the_real_module
     case of pressing Archive twice must read as "re-read the page", not as
     "the vault failed".
     """
+    from agora_runner import board_records
+    from tests.test_board_records import writable
+
     board = ("---\n---\n\n## Board\n\n| # | Item | Status | Updated | Priority |\n"
              "|---|---|---|---|---|\n"
              "| [[#57 — A row\\|57]] | A row | ✅ Done | 08-11 | |\n")
-    with patch.object(nova_capture, "vault_read_path_rev", return_value=(board, "3-abc")), \
-            patch.object(nova_capture, "vault_write_path") as write:
+    _, store = writable(board="issue", markdown=board)
+
+    def landmine(*a, **k):
+        raise AssertionError("the archive route touched a markdown board")
+
+    with patch.object(nova_capture, "board_store", store), \
+            patch.object(nova_capture, "vault_read_path_rev", side_effect=landmine), \
+            patch.object(nova_capture, "vault_write_path", side_effect=landmine):
         status, _, body = _post("/api/board/archive", {"target": "issues", "number": 57})
-    write.assert_not_called()
     assert status == 502, "a refusal that is not staleness must not read as staleness"
     payload = json.loads(body)
     assert payload["ok"] is False
     # And it says which state it is in, rather than "is not a row" -- the
     # row is right there on his board and the page would be lying.
     assert "already" in payload["message"], payload
+    rows = board_records.contents("issue", store=store)["items"]
+    assert [row["status"] for row in rows if row["number"] == 57] == ["✅ Done"]
 
 
-def test_archiving_writes_the_outdated_status_and_todays_date_into_his_row():
-    """End to end through the real `archive_row`: what lands in the file.
+def test_archiving_writes_the_outdated_status_and_todays_date_into_his_record():
+    """End to end through the real `archive_row`: what lands in his record
+    store, and that neither markdown board is touched (#203).
 
-    It asserts the status cell the app's `chip-outdated` class and
+    It asserts the status the app's `chip-outdated` class and
     `top_board_rows`' closed-row filter both key on, rather than any word
     of my own -- inventing a sixth status would give one state two
-    spellings and drop the row out of neither.
+    spellings and drop the row out of neither. `target: "issues"` has to
+    land on the `issue` board: the fake store holds only that one, so a
+    swapped lookup answers 409 here.
     """
+    from datetime import datetime
+
+    from agora_runner import board_records
+    from agora_runner.config import OSLO
+    from tests.test_board_records import writable
+
     board = ("---\n---\n\n## Board\n\n| # | Item | Status | Updated | Priority |\n"
              "|---|---|---|---|---|\n"
              "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 | 🟠 High |\n")
-    written = {}
-    with patch.object(nova_capture, "vault_read_path_rev", return_value=(board, "3-abc")), \
-            patch.object(nova_capture, "vault_write_path",
-                         side_effect=lambda p, t, if_rev=None: written.update(
-                             path=p, text=t) or "written"):
+    _, store = writable(board="issue", markdown=board)
+
+    def landmine(*a, **k):
+        raise AssertionError("the archive route touched a markdown board")
+
+    today = {datetime.now(OSLO).strftime("%m-%d")}
+    with patch.object(nova_capture, "board_store", store), \
+            patch.object(nova_capture, "vault_read_path_rev", side_effect=landmine), \
+            patch.object(nova_capture, "vault_write_path", side_effect=landmine):
         status, _, _ = _post("/api/board/archive", {"target": "issues", "number": 57})
+    today.add(datetime.now(OSLO).strftime("%m-%d"))
     assert status == 200
-    row = [ln for ln in written["text"].split("\n") if "#57" in ln][0]
-    assert nova_boards.OUTDATED_STATUS in row, row
-    # Still his row: the number, the title and the wiki-link all survive.
-    assert "A row" in row and "[[#57" in row
-    assert written["path"] == nova_boards.BOARD_PATHS["issues"]["edvard"]
+    row = [r for r in board_records.contents("issue", store=store)["items"]
+           if r["number"] == 57][0]
+    assert row["status"] == nova_boards.OUTDATED_STATUS, row
+    assert row["priority"] == "" and row["updated"] in today, row
+    # Still his row: the number and the title survive.
+    assert row["title"] == "A row"
+
+
+def test_a_board_archive_of_a_missing_row_is_a_409_through_the_real_module():
+    from tests.test_board_records import writable
+
+    board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
+            "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
+    _, store = writable(board="issue", markdown=board)
+    with patch.object(nova_capture, "board_store", store):
+        status, _, body = _post("/api/board/archive", {"target": "issues", "number": 999})
+    assert status == 409, "a row that is not there was reported as a store failure"
+    assert json.loads(body)["ok"] is False
 
 
 # Every duration in `warm_cache`'s docstring was taken by hand against the

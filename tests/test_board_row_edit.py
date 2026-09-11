@@ -315,6 +315,95 @@ def test_edit_writes_to_the_store_it_is_handed(monkeypatch):
     assert _row(nova_capture.board_store, 84)["title"] == "Hold a card"
 
 
+# --- the archive button writes the record store (#203) ---
+
+def test_archive_sets_outdated_clears_the_rating_and_stamps_the_date(monkeypatch):
+    from agora_runner import board_records
+
+    store = _records(monkeypatch)
+    ok, message = nova_capture.archive_row("issues", 84, dated="09-11")
+    assert ok and message == "#84 archived on issues"
+    row = _row(store, 84)
+    assert row["status"] == "⚫ Outdated" and row["statusKey"] == "outdated"
+    assert row["priority"] == "" and row["updated"] == "09-11"
+    # Still his row: the title and the write-up come back with one status
+    # change, which is the whole difference from delete.
+    assert row["title"] == "Hold a card"
+    details = board_records.contents("issue", store=store)["details"]
+    assert "His words about holding a card." in details[84]
+
+
+def test_archive_refuses_a_row_in_the_finished_table_and_writes_nothing(monkeypatch):
+    store = _records(monkeypatch)
+    ok, message = nova_capture.archive_row("issues", 51, dated="09-11")
+    assert (ok, message) == (False, "#51 is already ✅ Done on issues")
+    assert _row(store, 51)["statusKey"] == "done"
+
+
+def test_archive_refuses_a_board_row_whose_cell_already_reads_done(monkeypatch):
+    """Not the finished table: a `## Board` row whose status cell says
+    `✅ Done`. `from_document` sets `done` only for the table, so a check on
+    that flag alone would turn a shipped row Outdated."""
+    from tests.test_board_records import writable
+
+    board = ("---\n---\n\n## Board\n\n| # | Item | Status | Updated | Priority |\n"
+             "|---|---|---|---|---|\n"
+             "| [[#57 — A row\\|57]] | A row | ✅ Done | 08-11 | |\n")
+    _records(monkeypatch)
+    _, store = writable(board="issue", markdown=board)
+    assert _row(store, 57)["done"] is False, "the fixture must exercise the cell, not the table"
+    ok, message = nova_capture.archive_row("issues", 57, dated="09-11", store=store)
+    assert (ok, message) == (False, "#57 is already ✅ Done on issues")
+    assert _row(store, 57)["status"] == "✅ Done"
+
+
+def test_archiving_twice_says_already_outdated_and_keeps_the_first_date(monkeypatch):
+    store = _records(monkeypatch)
+    assert nova_capture.archive_row("issues", 57, dated="09-10")[0]
+    ok, message = nova_capture.archive_row("issues", 57, dated="09-11")
+    assert (ok, message) == (False, "#57 is already ⚫ Outdated on issues")
+    assert _row(store, 57)["updated"] == "09-10"
+
+
+def test_archive_of_a_missing_row_says_the_phrase_the_site_answers_409_on(monkeypatch):
+    _records(monkeypatch)
+    assert nova_capture.archive_row("issues", 999) == (False, "#999 is not a row on issues")
+
+
+def test_a_row_that_moved_under_the_archive_is_not_reported_as_missing(monkeypatch):
+    from agora_runner import board_write
+
+    _records(monkeypatch)
+
+    def moved(board, number, changes, detail=None, store=None):
+        raise board_write.WriteRefused(
+            f"row #{number} of board {board!r} changed between reading the "
+            "board and writing it")
+
+    monkeypatch.setattr(board_write, "change_row", moved)
+    ok, message = nova_capture.archive_row("issues", 84)
+    assert not ok
+    assert "is not a row" not in message and "changed between" in message
+
+
+def test_archive_refuses_a_date_that_escapes_its_cell_and_writes_nothing(monkeypatch):
+    store = _records(monkeypatch)
+    for dated in ["09|11", "09\n11", "09\r11"]:
+        ok, message = nova_capture.archive_row("issues", 84, dated=dated)
+        assert not ok and "is not a row" not in message, dated
+    assert _row(store, 84)["status"] == "🟡 In progress"
+
+
+def test_archive_writes_to_the_store_it_is_handed(monkeypatch):
+    from tests.test_board_records import writable
+
+    _records(monkeypatch)
+    _, handed = writable(board="issue", markdown=BOARD)
+    assert nova_capture.archive_row("issues", 84, dated="09-11", store=handed)[0]
+    assert _row(handed, 84)["status"] == "⚫ Outdated"
+    assert _row(nova_capture.board_store, 84)["status"] == "🟡 In progress"
+
+
 # --- the vault write around delete, which is still markdown ---
 
 
