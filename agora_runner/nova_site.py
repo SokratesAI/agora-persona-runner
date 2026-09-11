@@ -201,6 +201,10 @@ from agora_runner.nova_own_board import own_board
 from agora_runner.nova_conversation_reads import mark_seen as mark_conversation_seen
 from agora_runner.nova_conversations import (
     autotitle as conversation_autotitle,
+    retitle as conversation_retitle,
+    prefs as conversation_prefs,
+    set_mute as conversation_set_mute,
+    set_style as conversation_set_style,
     conversations as conversation_list,
     create as conversation_create,
     starting_name as conversation_starting_name,
@@ -3949,6 +3953,21 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                     log(f"nova-site conversation marker failed: {e}")
                 self._send_json(200, payload)
                 return
+            if path == "/api/conversations/prefs":
+                # What the Settings drawer shows for this thread: mute and
+                # answer style, read off the conversation's own tags.
+                cid = (query.get("id") or [""])[0]
+                try:
+                    ok, result = conversation_prefs(cid)
+                except Exception as e:
+                    log(f"nova-site conversations/prefs failed: {e}")
+                    self._send_json(502, {"error": str(e)[:300]})
+                    return
+                if not ok:
+                    self._send_json(404 if "gone" in result else 400, {"error": result})
+                    return
+                self._send_json(200, dict(result, ok=True))
+                return
             if path == "/api/conversations/model":
                 # Which model answers in this thread, plus the catalog he
                 # may switch it to. Its own route rather than a field on
@@ -5584,6 +5603,21 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
              "there was no title"),
             lambda p: (p.get("id"), p.get("name"), p.get("text")))
 
+    def _post_conversation_retitle(self, payload):
+        """`/api/conversations/retitle` -- Haiku writes a fresh title on demand.
+
+        The Settings drawer's "Generate title", his ask 2026-09-11, for a
+        thread that has drifted from the title it was given. Answers under
+        `result` with the new name, like every other `/api/conversations/*`
+        write, so the page's one chat writer reads it the same way.
+        """
+        self._conversation_write(
+            payload,
+            conversation_retitle,
+            "retitle",
+            ("which conversation", "there is nothing of his"),
+            lambda p: (p.get("id"),))
+
     def _post_conversation_rename(self, payload):
         """`/api/conversations/rename` -- change what a thread is called.
 
@@ -6118,7 +6152,8 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             "/api/conversations/send", "/api/conversations/cancel",
             "/api/conversations/new",
             "/api/conversations/watching", "/api/conversations/rename",
-            "/api/conversations/autotitle",
+            "/api/conversations/autotitle", "/api/conversations/retitle",
+            "/api/conversations/mute", "/api/conversations/style",
             "/api/conversations/move", "/api/conversations/delete",
             "/api/conversations/archive",
             "/api/conversations/folder", "/api/conversations/model",
@@ -6151,6 +6186,21 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/conversations/new":
             self._post_conversation_new(payload)
+            return
+        if path == "/api/conversations/retitle":
+            self._post_conversation_retitle(payload)
+            return
+        if path == "/api/conversations/mute":
+            self._conversation_write(
+                payload, conversation_set_mute, "mute",
+                ("which conversation", "muted must be"),
+                lambda p: (p.get("id"), p.get("muted")))
+            return
+        if path == "/api/conversations/style":
+            self._conversation_write(
+                payload, conversation_set_style, "style",
+                ("which conversation", "style must be"),
+                lambda p: (p.get("id"), p.get("style")))
             return
         if path == "/api/conversations/watching":
             self._post_conversation_watching(payload)

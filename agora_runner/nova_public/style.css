@@ -2991,20 +2991,20 @@ body.has-full-chart { overflow: hidden; }
    margin has to land on; when a voice button is on screen the `~` rule
    below hands the margin over to that one instead and this drops to 0. */
 .chat-actions .chat-plus { margin-left: auto; margin-right: 0.1rem; font-size: 1.5rem; }
-/* The two voice buttons (ideas.md #221) sit in the same right-hand group.
+/* The voice button (ideas.md #221 -- the mic; its speaker sibling was
+   removed 2026-09-11) sits in the same right-hand group.
    The `auto` margin has to land on the first control that is actually on
-   screen, and both of these are hidden on a browser with no speech API --
+   screen, and the mic is hidden on a browser with no speech API --
    `:not([hidden])` is what keeps the paperclip from being stranded in the
-   middle of a `space-between` row when they are. */
+   middle of a `space-between` row when it is. */
 .chat-actions .chat-voice:not([hidden]) { margin-left: auto; }
 .chat-actions .chat-voice:not([hidden]) ~ .chat-voice,
 .chat-actions .chat-voice:not([hidden]) ~ .attach-btn { margin-left: 0; }
 /* Pressed is a real state here rather than a hover flourish: the mic stays
-   pressed while it is listening and the speaker while it is switched on, and
-   on a phone there is no hover to tell him either. */
-/* Pressed is still a real state -- the mic while it listens, the speaker
- * while it is on -- drawn as a filled disc now the resting button has no
- * ring to recolour. */
+   pressed while it is listening, and on a phone there is no hover to tell
+   him either. */
+/* Pressed is still a real state -- the mic while it listens -- drawn as a
+ * filled disc now the resting button has no ring to recolour. */
 .chat-voice[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
 .chat-voice[aria-pressed="true"] .chat-glyph { filter: none; opacity: 1; }
 
@@ -3200,7 +3200,14 @@ body.has-full-chart { overflow: hidden; }
   grid-template-columns: repeat(3, 1fr);
   gap: 0.6rem;
 }
-.chat-extras .extras-tile {
+/* Shared by the `+` drawer and Settings, one selector per drawer in every
+   rule below. On 2026-09-11 a text replace widened these by inserting the
+   Settings selector AFTER `.chat-extras .extras-tile`, which cut the `:hover`
+   and `[aria-pressed]` off the `+` half -- so every `+` tile wore the accent
+   border permanently and he saw two different borders. Each part keeps its
+   own qualifier; a test now fails if one ever loses it. */
+.chat-extras .extras-tile,
+.msg-sheet--settings .extras-tile {
   /* Overrides `.attach-btn`'s round 44px: in here they are cards. */
   display: flex;
   flex-direction: column;
@@ -3215,10 +3222,13 @@ body.has-full-chart { overflow: hidden; }
   border-radius: 14px;
   color: var(--text);
 }
-.chat-extras .extras-tile:hover:not(:disabled) { border-color: var(--accent); }
+.chat-extras .extras-tile:hover:not(:disabled),
+.msg-sheet--settings .extras-tile:hover:not(:disabled) { border-color: var(--accent); }
 .extras-label { font-size: 0.8rem; line-height: 1.2; color: var(--dim); }
-.chat-extras .extras-tile[aria-pressed="true"] { border-color: var(--accent); }
-.chat-extras .extras-tile[aria-pressed="true"] .extras-label { color: var(--bg); }
+.chat-extras .extras-tile[aria-pressed="true"],
+.msg-sheet--settings .extras-tile[aria-pressed="true"] { border-color: var(--accent); }
+.chat-extras .extras-tile[aria-pressed="true"] .extras-label,
+.msg-sheet--settings .extras-tile[aria-pressed="true"] .extras-label { color: var(--bg); }
 /* The model picker, under the tiles (his ask, 2026-09-08). A row and not
  * a fourth tile: it is a <select> whose whole point is the model NAME, and
  * a 5rem tile would ellipsis that away. Label left, pill right. */
@@ -3476,12 +3486,15 @@ body.has-full-chart { overflow: hidden; }
  * with_the_divider_token` caught the first version of this rule doing
  * exactly that. */
 .capture-submit .attach-btn { border: 1px solid var(--outline); }
-.chat-actions .attach-btn { border: 1px solid var(--outline); }
+/* The chat `+` has no ring since 2026-09-11 (his ask), matching `⋮` beside
+   it. The capture box's `+` keeps its ring: that row's neighbours are all
+   ringed, this one's are not. */
 
 .attach-btn:hover:not(:disabled) { color: var(--text); }
-/* The emoji in these two carry their own colour, which no `color` can
- * reach -- the speaker renders bright blue beside two monochrome glyphs.
- * Desaturating is the one thing that makes the row read as one set. */
+/* The mic's emoji carries its own colour, which no `color` can reach, and
+ * desaturating is what makes it read as one set with the monochrome glyphs
+ * beside it. (The speaker's bright blue was the case that forced this; the
+ * speaker was removed on 2026-09-11.) */
 .chat-glyph { filter: grayscale(1); opacity: 0.85; font-size: 1.05rem; }
 .attach-btn:disabled { color: var(--dim); cursor: default; }
 
@@ -4215,6 +4228,64 @@ body.chat-open { overflow: hidden; }
   cursor: pointer;
 }
 .chat-send:disabled { opacity: 0.45; cursor: default; }
+
+/* `⋮` -- the Settings drawer's button, first in the composer row (his ask,
+   2026-09-11). Its own class and NOT `.attach-btn`: that class carries
+   `margin-left: auto` in this row, and a second auto margin here would split
+   the free space and strand `+` mid-row -- the bug fixed on 2026-09-08.
+   `--outline` for the edge, per the 3:1 control-contrast test. */
+.chat-settings {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 999px;
+  /* No ring -- his ask, 2026-09-11. It is a glyph he taps now and then,
+     and the ring made it read as a second `+`. */
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.chat-settings:hover { color: var(--text); }
+
+/* The Settings drawer is the `+` drawer's grid of tiles (his ask,
+   2026-09-11) -- the tile rules above are widened to it rather than copied.
+   What is its own: the model tile carries the picker's <select> laid over the
+   whole tile, invisible, so a tap opens the native list; and a pressed tile is
+   FILLED, because the shared rule turns the label the background colour and
+   only the mic, which fills itself, looked right with that. */
+.settings-tile[hidden] { display: none; }
+.settings-model-tile { position: relative; }
+.settings-model-tile #chat-model-host,
+.settings-model-tile .model-pick-bar { position: absolute; inset: 0; margin: 0; }
+.settings-model-tile select.model-pick {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;   /* beats the inline width `fitModelPick` writes */
+  max-width: none;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+/* The sheet's own colour behind every tile, like the `+` drawer's -- his
+   report, 2026-09-11: *"the white background is wierd."* Those tiles are
+   `.attach-btn`s, which clear the button face (`background: none`); these are
+   plain <button>s, so the phone painted its default white face behind the
+   glyph and label. Stated here rather than by borrowing `.attach-btn`, whose
+   round-44px sizing and auto margin do not belong on a tile. */
+.msg-sheet--settings .extras-tile {
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+.msg-sheet--settings .extras-tile[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--bg);
+}
+.msg-sheet--settings .extras-tile:disabled { opacity: 0.55; cursor: default; }
 
 /* The model picker, in the composer instead of across the top of the panel.
  * A compact pill beside `+`, the way Claude shows "Sonnet 5" -- it was a

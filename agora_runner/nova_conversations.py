@@ -35,7 +35,7 @@ from agora_runner.audit import fold_text_streams, narration_passage
 from agora_runner.config import (
     CLAUDE_BRIDGE_TOKEN, CLAUDE_BRIDGE_URL, NOVA_PERSONA_ID,
 )
-from agora_runner.http_util import agora_get, agora_internal, agora_public
+from agora_runner.http_util import agora_get, agora_internal, agora_public, http_json
 from agora_runner.log import log
 from agora_runner.nova_conversation_reads import is_unread, load_reads
 
@@ -723,107 +723,258 @@ TOPIC_STOPWORDS = frozenset((
 TOPIC_WORD_CHARS = 4
 
 
-def topic_words(text):
-    """The set of words in `text` that say what it is about.
+# Haiku on the SUBSCRIPTION, through the bridge's fast lane -- never the
+# metered API. Rule 9 of identity.md: *"Production never spends the metered
+# API."* `claude-cli:claude-haiku-4-5-20251001` is in the catalog unmetered,
+# and the lane is the one comment replies already use (`nova_replies._generate`):
+# stateless, no tools, and it does not queue behind a cycle holding the lock.
+TITLE_MODEL = "claude-haiku-4-5-20251001"
+# A title is a nicety. It must never hold a request open for the bridge's full
+# turn window; if Haiku is slow the thread keeps the title it has.
+TITLE_TIMEOUT_SECONDS = 60
 
-    Lowercased, punctuation stripped, short and common words dropped. This is
-    the whole of the topic model and it is deliberately not a model call --
-    rule 9 in `identity.md` forbids production work on the metered API, and
-    the subscription path costs a whole turn of a cycle's window.
+_TITLE_SYSTEM = (
+    "You name chat conversations. Reply with a short title of 2 to 6 words "
+    "that names the TOPIC of the conversation -- not a quote of what was "
+    "said, and not a sentence. Write it in the language the messages are "
+    "in. Reply with the title only: no quotes, no trailing punctuation, no "
+    "explanation."
+)
+
+
+_REPLY_OPENER = re.compile(
+    r"^(i['’]?ll|i will|i can|i['’]?m|sure|okay|ok|here['’]?s|here is|certainly|"
+    r"let me|of course|the (chat )?title|this conversation|a title)\b", re.I)
+
+
+def _clean_title(raw):
+    """One line of model output made into a title, or "" if it is not one."""
+    if not isinstance(raw, str):
+        return ""
+    head = raw.strip().split("\n", 1)[0]
+    head = re.sub(r"^(title|topic)\s*:\s*", "", head, flags=re.I)
+    head = " ".join(head.split()).strip(" \t-*#>`\"'“”")
+    head = head.rstrip(".")
+    if not head or not re.search(r"\w", head):
+        return ""
+    # A reply is not a title. If Haiku answers the message anyway, the
+    # thread must not be named "I'll help you spin up a test deployment..." --
+    # returning "" sends the caller to its fallback instead. A title is 2-6
+    # words; nine is already a sentence, and so is anything that opens like
+    # an assistant or carries a full stop in the middle.
+    if (len(head.split()) > 8 or _REPLY_OPENER.match(head)
+            or re.search(r"[.!?]\s+\S", head)):
+        return ""
+    if len(head) > TITLE_CHARS:
+        clipped = head[:TITLE_CHARS]
+        space = clipped.rfind(" ")
+        head = (clipped[:space] if space >= TITLE_CHARS // 2 else clipped).rstrip() + "\u2026"
+    return head
+
+
+def model_title(texts, conversation_id=""):
+    """A topic title for a thread, written by Haiku from his own messages.
+
+    His ask, 2026-09-11: *"have my first message analysed by a cheap model
+    who sets the topic as title."* The mechanical title this replaces
+    (`title_from_message`) clips his opening line, so a thread reads as
+    whatever he happened to type rather than what it is about.
+
+    Returns "" on any failure -- no bridge, a refusal, a timeout, output that
+    is not a title. The caller decides what "" means: the first-message path
+    falls back to the mechanical title, the manual regenerate does not.
+
+    The bridge sees `nova-title:<id>`, not the thread's own id, so his Stop
+    button (which cancels by conversation id) cannot kill a title and a title
+    cannot kill his turn.
     """
-    if not isinstance(text, str):
-        return frozenset()
-    words = set()
-    for raw in re.split(r"[^0-9A-Za-z']+", text.lower()):
-        word = raw.strip("'")
-        if len(word) >= TOPIC_WORD_CHARS and word not in TOPIC_STOPWORDS:
-            words.add(word)
-    return frozenset(words)
-
-
-def title_is_derived(name, texts):
-    """Did this code write `name`, or did he?
-
-    The prerequisite for re-titling anything, and it needs no stored flag:
-    every title this app writes is by construction `title_from_message` of
-    one of the thread's own messages, so a name that reproduces exactly is a
-    name I wrote. A name he typed does not reproduce -- unless he typed the
-    derivation of his own opening line character for character, which is him
-    agreeing with the title rather than a case to protect.
-
-    `UNTITLED_NAME` counts: nobody chose it either.
-    """
-    if not isinstance(name, str) or not name:
-        return False
-    if name == UNTITLED_NAME:
-        return True
-    for text in (texts or ()):
-        if name == title_from_message(text):
-            return True
-    return False
-
-
-def topic_moved(name, recent, text):
-    """Has the thread moved off what its title says, for long enough to retitle?
-
-    His ask, `issues.md` #139: a thread should *"keep adjusting as the topic
-    shifts"*. The judgement here is what a shift is, and the risk is a title
-    that flaps -- one aside about something else is not a new topic, and a
-    name that changes under him every message is worse than a stale one.
-
-    So a shift is **two messages in a row** that share no topic word with the
-    current title: the one he just sent and the one before it. That makes the
-    earliest possible re-title his third message, and it means an aside
-    answered and dropped never renames anything.
-
-    A title with no topic words of its own cannot be judged this way, so it
-    is left alone. Refusing is the safe direction: a title that stays is a
-    worse name, a title that moves wrongly is his thread renamed under him.
-    """
-    title = topic_words(name)
-    if not title:
-        return False
-    if topic_words(text) & title:
-        return False
-    previous = None
-    for candidate in (recent or ()):
-        if isinstance(candidate, str) and candidate.strip():
-            previous = candidate
-    if previous is None:
-        return False
-    return not (topic_words(previous) & title)
+    lines = [t.strip() for t in (texts or []) if isinstance(t, str) and t.strip()]
+    if not lines or not CLAUDE_BRIDGE_URL:
+        return ""
+    # The instruction goes in the USER turn and his text is fenced off, not
+    # left to `system` alone. Measured through the real bridge on 2026-09-11:
+    # with the instruction only in `system`, Haiku *answered* his message --
+    # "I'll help you spin up a test deployment for the Marcus app..." -- because
+    # the CLI wraps it in its own helpful-agent prompt and a bare message reads
+    # as a request. Fenced as an excerpt, it reads as something to label.
+    prompt = (
+        "Name the topic of the conversation excerpt below in a title of 2 to 6 "
+        "words.\nDo NOT reply to it, answer it, or help with it -- you are only "
+        "labelling it.\nOutput the title and nothing else: no quotes, no "
+        "trailing punctuation.\n\n<excerpt>\n"
+        + "\n\n".join(t[:600] for t in lines)
+        + "\n</excerpt>\n\nTitle:"
+    )
+    headers = {"x-bridge-token": CLAUDE_BRIDGE_TOKEN} if CLAUDE_BRIDGE_TOKEN else {}
+    body = {
+        "conversation_id": "nova-title:" + (conversation_id or "new"),
+        "system": _TITLE_SYSTEM,
+        "prompt": prompt,
+        "model": TITLE_MODEL,
+        "restricted": True,
+        "stateless": True,
+        "allow_concurrent": True,
+    }
+    try:
+        status, resp = http_json("POST", f"{CLAUDE_BRIDGE_URL}/generate", body, headers,
+                                 timeout=TITLE_TIMEOUT_SECONDS)
+    except Exception as e:
+        log(f"nova_conversations: title model unreachable: {type(e).__name__}: {e}")
+        return ""
+    if status != 200 or not isinstance(resp, dict):
+        log(f"nova_conversations: title model answered HTTP {status}")
+        return ""
+    return _clean_title(resp.get("text") or "")
 
 
 def autotitle(conversation_id, current_name, text, recent=None):
     """(ok, message). Name an untitled thread after the first thing he said.
 
-    `current_name` is what the page believes the thread is called, and this
-    refuses unless it is exactly `UNTITLED_NAME`. That check is the whole
-    safety of the route: a thread he named is never renamed under him. It is
-    a claim from the page rather than a fact read from the store, and that is
-    deliberate -- Agora publishes no `GET /conversations/{id}` (measured, it
-    404s), so the only way to read one name is to list all 700, which is the
-    single most expensive call this app makes. The page is not being trusted
-    with any authority it did not already have: `/api/conversations/rename`
-    lets it rename any thread to anything.
+    **Set once**, his call 2026-09-11: *"Set once. If the conversation
+    genuinely changes the so be it."* Until then this also re-titled a thread
+    whose title it had derived whenever `topic_moved` decided the subject
+    had shifted -- #139 part 3 -- which renamed his threads to a clipped copy
+    of his latest message (measured the same morning: "Compare that to whats
+    actually been built" was the *last* line of a thread that opened on a
+    Marcus test deployment). That path is gone. A thread that drifts is
+    re-titled on purpose, from Settings, through `retitle`.
 
-    `recent` is his own earlier messages in the thread, oldest first, not
-    including `text`. With it, a thread whose title this code derived can be
-    re-titled when the topic moves -- the third part of #139. Without it the
-    route behaves exactly as it did before: only `UNTITLED_NAME` is renamed,
-    because `title_is_derived` has nothing to reproduce the name from.
+    `current_name` must be `UNTITLED_NAME` (or a numbered one), and that
+    check is the whole safety of the route: a thread he named is never
+    renamed under him. See the note that used to be here on why the name is
+    read off the page -- Agora publishes no `GET /conversations/{id}`.
+
+    Haiku writes it; if Haiku cannot, the mechanical title does, so a thread
+    never stays "New chat" because the bridge was busy. `recent` is still
+    accepted from older pages and no longer read.
     """
     if not conversation_id:
         return False, "which conversation?"
     if not is_untitled(current_name):
-        if not title_is_derived(current_name, recent):
-            return False, "that conversation already has a name"
-        if not topic_moved(current_name, recent, text):
-            return False, "that conversation is still about the same thing"
-    title = title_from_message(text)
+        return False, "that conversation already has a name"
+    title = model_title([text], conversation_id) or title_from_message(text)
     if not title:
         return False, "there was no title in that message"
     return rename(conversation_id, title)
+
+
+def retitle(conversation_id):
+    """(ok, message). Write a fresh title for a thread that has drifted.
+
+    His ask, 2026-09-11: a "generate title" action in the composer's Settings
+    drawer *"that prompts the haiku to re-generate the title if i notice the
+    conversation drifts too much."* It reads the thread as it stands -- his
+    first message and his most recent ones -- because drift is the reason he
+    pressed it, and titling from the opening line alone would reproduce the
+    title he is replacing.
+
+    It renames whatever the thread is called, including a name he typed: he
+    pressed the button. And it does NOT fall back to the mechanical title --
+    a clipped copy of his latest line is the exact thing he asked to be rid
+    of, so a Haiku failure is reported as one instead.
+    """
+    if not conversation_id:
+        return False, "which conversation?"
+    status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit=200")
+    if status != 200:
+        raise RuntimeError(f"conversation fetch returned {status}")
+    mine = [
+        (m.get("text") or "").strip()
+        for m in (detail.get("messages") or [])
+        if m.get("sender") == OWNER_SENDER and not m.get("activity")
+        and not m.get("system") and not m.get("thinking") and (m.get("text") or "").strip()
+    ]
+    if not mine:
+        return False, "there is nothing of his in that conversation to title"
+    texts = mine[:1] + [t for t in mine[-8:] if t is not mine[0]]
+    title = model_title(texts, conversation_id)
+    if not title:
+        return False, "could not write a title just now"
+    return rename(conversation_id, title)
+
+#: Per-conversation settings from the chat's Settings drawer (his ask,
+#: 2026-09-11), stored as tags on the Agora conversation. Agora withholds a
+#: push for `nova:mute` in `/notify`; the runner's `build_system` reads the
+#: style tag. The spellings are shared with those two, so change all three.
+MUTE_TAG = "nova:mute"
+STYLE_TAG_PREFIX = "nova:style="
+STYLES = ("brief", "detailed")
+
+
+def _current_tags(conversation_id):
+    """The conversation's tags, or None if Agora no longer holds it.
+
+    Read off `GET /conversations/:id/messages?limit=1`, which spreads the
+    whole conversation into its answer -- Agora has no `GET /conversations/:id`,
+    and listing all ~1,400 to find one would be the most expensive call
+    this app makes."""
+    status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit=1")
+    if status == 404:
+        return None
+    if status != 200:
+        raise RuntimeError(f"conversation fetch returned {status}")
+    return [t for t in (detail.get("tags") or []) if isinstance(t, str)]
+
+
+def _rewrite_tags(conversation_id, change):
+    """(ok, tags-or-message). Read-modify-write, because Agora's PATCH
+    replaces `tags` wholesale -- writing only the one tag would erase every
+    other one, including the `evolve-cycle:` tag a cycle thread is found by.
+
+    Two writers racing between the read and the PATCH can still lose one
+    change; Agora's PATCH takes no revision to guard it. The writers here
+    are his taps in one drawer, so that window is his own double-tap."""
+    tags = _current_tags(conversation_id)
+    if tags is None:
+        return False, "that conversation is gone"
+    new = change(list(tags))
+    status, _body = agora_internal("PATCH", f"/conversations/{conversation_id}", {"tags": new})
+    if status != 200:
+        log(f"nova_conversations: tag write failed HTTP {status}")
+        return False, "could not save that setting"
+    return True, new
+
+
+def prefs(conversation_id):
+    """(ok, {"muted": bool, "style": str}) -- what Settings shows for a thread."""
+    if not conversation_id:
+        return False, "which conversation?"
+    tags = _current_tags(conversation_id)
+    if tags is None:
+        return False, "that conversation is gone"
+    # Brief is the default -- his call, 2026-09-11 -- so it is the ABSENCE of
+    # a style tag, and only Detailed is ever written.
+    detailed = (STYLE_TAG_PREFIX + "detailed") in tags
+    return True, {"muted": MUTE_TAG in tags, "style": "detailed" if detailed else "brief"}
+
+
+def set_mute(conversation_id, muted):
+    """(ok, "on"|"off"). `muted` is a string, not a bool, because the shared
+    chat-write route validates every field as a string."""
+    if not conversation_id:
+        return False, "which conversation?"
+    if muted not in ("on", "off"):
+        return False, "muted must be on or off"
+    ok, result = _rewrite_tags(conversation_id, lambda tags: (
+        [t for t in tags if t != MUTE_TAG] + ([MUTE_TAG] if muted == "on" else [])))
+    return (True, muted) if ok else (False, result)
+
+
+def set_style(conversation_id, style):
+    """(ok, style). One toggle in Settings, Brief <-> Detailed.
+
+    Brief is the default, so choosing it REMOVES the tag rather than writing
+    `nova:style=brief`: a thread he never touched and a thread he set back
+    to Brief are then the same thread, and there is one way to be Brief."""
+    if not conversation_id:
+        return False, "which conversation?"
+    style = (style or "").strip()
+    if style not in STYLES:
+        return False, "style must be brief or detailed"
+    ok, result = _rewrite_tags(conversation_id, lambda tags: (
+        [t for t in tags if not t.startswith(STYLE_TAG_PREFIX)]
+        + ([STYLE_TAG_PREFIX + "detailed"] if style == "detailed" else [])))
+    return (True, style) if ok else (False, result)
 
 
 def create(name):

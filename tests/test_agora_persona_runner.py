@@ -6123,6 +6123,44 @@ def test_execute_tool_terminal_exec_dispatches_with_audit(runner):
     assert audit_args[3] == "echo hi"
 
 
+def test_build_system_carries_the_brief_style_he_picked_for_a_thread(runner):
+    """Nova's Settings drawer, 2026-09-11: a per-conversation answer style,
+    carried as a tag on the conversation."""
+    persona = {"name": "Nova", "personality": "You are Nova."}
+    system = runner.build_system(persona, {"tags": ["nova:style=brief"]})
+    assert "Answer style for this conversation: Brief" in system
+
+
+def test_build_system_carries_detailed_and_says_nothing_without_a_style(runner):
+    persona = {"name": "Nova", "personality": "You are Nova."}
+    assert "Detailed" in runner.build_system(persona, {"tags": ["nova:style=detailed"]})
+    plain = runner.build_system(persona, {"tags": ["nova-ask"]})
+    assert "Answer style for this conversation" not in plain
+    # An unknown value is ignored rather than guessed at.
+    odd = runner.build_system(persona, {"tags": ["nova:style=shouty"]})
+    assert "Answer style for this conversation" not in odd
+
+
+def test_an_untagged_thread_gets_the_default_style_only_when_one_is_passed(runner):
+    persona = {"name": "Nova", "personality": "You are Nova."}
+    assert "Brief" in runner.build_system(persona, {"tags": []}, default_style="brief")
+    # A heartbeat or a workflow passes none, and must stay unstyled.
+    assert "Answer style" not in runner.build_system(persona, {"tags": []})
+    # An explicit Detailed beats the Brief default.
+    assert "Detailed" in runner.build_system(persona, {"tags": ["nova:style=detailed"]},
+                                             default_style="brief")
+
+
+def test_the_brief_default_is_for_his_chats_with_nova_only():
+    """His call, 2026-09-11: Brief by default -- in the Nova app's chats. A
+    cycle persona or Marcus must not inherit it."""
+    from agora_runner.conversations import default_answer_style
+    from agora_runner.nova_conversations import ANSWER_PERSONA_ID
+    assert default_answer_style({"id": ANSWER_PERSONA_ID}) == "brief"
+    assert default_answer_style({"id": "some-other-persona"}) == ""
+    assert default_answer_style({"id": None}) == ""
+
+
 def test_build_system_includes_terminal_exec_blurb_when_capability_on(runner):
     persona = {
         "name": "Test", "personality": "You are Test.",

@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convPrefs, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -263,6 +263,11 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
      * listing carries no `found`, so answered with it the picker would stay
      * hidden -- and a test asserting it is absent would pass against code
      * that never drew it. */
+    // The Settings drawer's per-thread read (2026-09-11).
+    if (url.includes("/api/conversations/prefs")) {
+      const body = typeof convPrefs === "function" ? convPrefs(url) : convPrefs;
+      return res(body || { ok: true, muted: false, style: "" });
+    }
     if (url.includes("/api/conversations/model")) {
       const body = typeof convModel === "function" ? convModel(url) : convModel;
       if (body && typeof body.then === "function") return body;
@@ -7436,36 +7441,33 @@ describe("the priority picker (buildPrioPicker)", () => {
       `the project drawer opened with no height of its own: "${upper.style.height}"`);
   });
 
-  test("the `+` is ringed like the controls beside it, in both composers", () => {
-    /* His ask, 2026-09-08: *"make the + button have a border like the rest.
-     * Do that in the chat capture box aswell."* `.attach-btn` sets
-     * `border: 0` for every use of it, which is right in the `+` drawer
-     * (a card) and in the comment box (it stands alone) and wrong in the
-     * two rows where it is the one control in a line of outlined ones.
-     *
-     * Read off the sheet: jsdom applies no cascade worth trusting here, and
-     * what can break is that one of the two rows gets the rule and the
-     * other does not -- which is exactly the shape of the bug he reported. */
+  test("the capture box's + keeps its ring and the chat's + has none", () => {
+    /* 2026-09-08 ringed both (his ask then); 2026-09-11 took the chat's off
+     * (his ask now), to match the unringed ⋮ beside it. */
     const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
-    for (const row of [".capture-submit", ".chat-actions"]) {
-      /* Every rule for that row's `+`, not the first one: both rows already
-       * had one before this (the auto margin that pushes the group right),
-       * and matching only the first would read the wrong declaration and
-       * say nothing about the border. */
-      const bodies = [...sheet.matchAll(
-        new RegExp(row.replace(".", "\\.") + " \\.attach-btn[^{]*\\{([^}]*)\\}", "g"))]
-        .map((m) => m[1]);
-      const rule = [null, bodies.find((b) => /border:/.test(b))];
-      assert.ok(rule[1], `the \`+\` in ${row} has no border of its own`);
-      /* `--outline`, not `--line`. The first version of this used `--line`
-       * in the chat row to match `.chat-send` beside it, and
-       * `test_no_control_borders_its_edge_with_the_divider_token` failed it
-       * in CI: that token is 1.2:1 against `--card`, which is a divider's
-       * contrast and not a control's, and #890 holds every control edge to
-       * WCAG SC 1.4.11's 3:1. Matching a neighbour was the weaker argument
-       * -- `.chat-send` is filled, and carries its contrast in the fill. */
-      assert.match(rule[1], /border:\s*1px solid var\(--outline\)/,
-        `the \`+\` in ${row} is edged in something other than --outline`);
+    const bodies = (row) => [...sheet.matchAll(
+      new RegExp(row.replace(".", "\\.") + " \\.attach-btn[^{]*\\{([^}]*)\\}", "g"))].map((m) => m[1]);
+    assert.ok(bodies(".capture-submit").some((b) => /border:\s*1px solid var\(--outline\)/.test(b)),
+      "the capture box's + lost its ring");
+    assert.equal(bodies(".chat-actions").some((b) => /border:\s*1px/.test(b)), false,
+      "the chat's + still has a ring");
+  });
+
+  test("every hover or pressed tile rule keeps its qualifier on each selector", () => {
+    /* The bug this pins, his report 2026-09-11: *"Make the squares on the +
+     * drawer have the same border as the settings ones."* They were meant to
+     * share one border already. A text replace had widened the hover and
+     * pressed rules by inserting the Settings selector after
+     * `.chat-extras .extras-tile`, which left that half with no `:hover` /
+     * `[aria-pressed]` -- so every + tile wore the accent border at rest. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const [, sel, body] of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      if (!/extras-tile/.test(sel)) continue;
+      if (!/border-color:\s*var\(--accent\)|color:\s*var\(--bg\)/.test(body)) continue;
+      for (const part of sel.split(",").map((p) => p.trim())) {
+        assert.match(part, /:hover|aria-pressed/,
+          `"${part}" paints the accent state on every tile, not only hovered or pressed ones`);
+      }
     }
   });
 
@@ -13737,6 +13739,140 @@ describe("holding a conversation in the switcher opens edit options", () => {
       "the + reported a failure for a conversation the server made");
   });
 
+  test("⋮ is first in the composer row and opens Settings", async () => {
+    /* His ask, 2026-09-11: *"a three stacked dot button on the left side that
+     * opens a 'settings' drawer and move the 'choose model' and read out loud
+     * to be moved there. The speak and files should still be in the + button.
+     * ... a third thing which is 'generate title'."* */
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    const row = window.document.querySelector(".chat-actions");
+    assert.equal(row.firstElementChild.id, "chat-settings", "⋮ is not the leftmost control");
+    // `+` keeps Files and Speak, and only those.
+    const extras = window.document.getElementById("chat-extras");
+    assert.ok(extras.contains(window.document.getElementById("chat-mic")), "Speak left the + drawer");
+    assert.equal(window.document.getElementById("chat-speak"), null,
+      "read-aloud was removed and is back");
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const sheet = window.document.querySelector(".msg-sheet--settings");
+    assert.ok(sheet && !sheet.hidden, "⋮ opened nothing");
+    assert.equal(sheet.querySelector(".msg-sheet-title").textContent, "Settings");
+    assert.ok(sheet.querySelector("#chat-model-host"), "no model picker in Settings");
+    const labels = [...sheet.querySelectorAll(".extras-label")].map((l) => l.textContent);
+    assert.equal(labels.includes("Read aloud"), false, "Read aloud is still in Settings");
+    assert.equal(sheet.querySelector('input[aria-label="Conversation name"]'), null,
+      "Rename is still in Settings");
+    // No ring on the button -- his ask, 2026-09-11.
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(css, /\.chat-settings \{[^}]*border:\s*0;/, "the settings button still has a border");
+    // Tiles, three to a row, like the + drawer (his ask, 2026-09-11).
+    const grid = sheet.querySelector(".extras-grid");
+    assert.ok(grid, "Settings is not a grid of tiles");
+    assert.ok(tileNamed(sheet, "Generate title"), "no Generate title tile in Settings");
+  });
+
+  test("Generate title asks for a fresh one and puts it in the header", async () => {
+    /* The manual override for drift, since titles are otherwise set once.
+     * The reply mirrors the real route: `result` IS the new name. */
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    window.postReply = { ok: true, result: "c-9", name: "New chat", message: "c-9" };
+    window.document.querySelector("#chat-list .chat-list-fab")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    window.posted.length = 0;
+    window.postReply = { ok: true, result: "Gutter repair", message: "Gutter repair" };
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const button = tileNamed(window.document.querySelector(".msg-sheet--settings"), "Generate title");
+    button.dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/retitle", { id: "c-9" }]]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Gutter repair");
+  });
+
+  const tileNamed = (sheet, label) => [...sheet.querySelectorAll(".extras-tile")].find((t) => t.querySelector(".extras-label").textContent === label);
+
+  async function newThreadWithSettings(window) {
+    window.postReply = { ok: true, result: "c-9", name: "New chat", message: "c-9" };
+    window.document.querySelector("#chat-list .chat-list-fab")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    window.posted.length = 0;
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await tick();
+    await tick();
+    return window.document.querySelector(".msg-sheet--settings");
+  }
+
+  test("answer style is one tile that toggles, Brief by default", async () => {
+    /* His call, 2026-09-11: *"make the answer style just a button that
+     * toggles between the states, with brief being the default."* An
+     * untouched thread reads Brief; a tap makes it Detailed, a tap back
+     * makes it Brief again. */
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+      convPrefs: { ok: true, muted: false, style: "brief" },
+    });
+    const sheet = await newThreadWithSettings(window);
+    const style = tileNamed(sheet, "Brief");
+    assert.ok(style, "an untouched thread did not read as Brief");
+    window.postReply = { ok: true, result: "detailed" };
+    style.dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.equal(style.querySelector(".extras-label").textContent, "Detailed");
+    window.postReply = { ok: true, result: "brief" };
+    style.dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.equal(style.querySelector(".extras-label").textContent, "Brief");
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]), [
+      ["/api/conversations/style", { id: "c-9", style: "detailed" }],
+      ["/api/conversations/style", { id: "c-9", style: "brief" }],
+    ]);
+  });
+
+  test("the notifications tile mutes and says so", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    const sheet = await newThreadWithSettings(window);
+    const mute = tileNamed(sheet, "Notifications");
+    assert.equal(mute.getAttribute("aria-pressed"), "false");
+    window.postReply = { ok: true, result: "on" };
+    mute.dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/mute", { id: "c-9", muted: "on" }]]);
+    assert.equal(mute.getAttribute("aria-pressed"), "true");
+    assert.equal(mute.querySelector(".extras-label").textContent, "Muted");
+  });
+
+  test("the model tile carries the picker itself, laid over the tile", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    const sheet = await newThreadWithSettings(window);
+    const tile = sheet.querySelector(".settings-model-tile");
+    assert.ok(tile && tile.contains(window.document.getElementById("chat-model-host")),
+      "the model picker is not inside its tile");
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(css, /\.settings-model-tile select\.model-pick \{[^}]*opacity:\s*0/,
+      "the select is not laid invisibly over the tile");
+    // No white button face: the sheet's own colour behind the tiles, as in
+    // the + drawer (his report, 2026-09-11). The + tiles get it from
+    // `.attach-btn`; these are plain buttons and must say it themselves.
+    assert.match(css, /\.msg-sheet--settings \.extras-tile \{[^}]*background:\s*none/,
+      "the settings tiles fall back to the browser's white button face");
+  });
+
   test("the default name steps aside for one already taken", async () => {
     /* "New chat", then "New chat - 2". Both still count as untitled to
      * `autotitle` (`is_untitled` server-side), so a numbered one still
@@ -16869,8 +17005,17 @@ describe("the model picker on a thread", () => {
       model: "anthropic:claude-opus-5", models: CATALOG, found: true,
     });
     const host = window.document.getElementById("chat-model-host");
-    assert.ok(window.document.getElementById("chat-extras").contains(host),
-      "the model picker is not inside the `+` drawer");
+    /* It moved again, 2026-09-11: out of the `+` drawer and into Settings,
+     * behind `⋮`. `+` is for adding to a message; the model is how the
+     * conversation behaves. Still MOVED rather than rebuilt -- the last
+     * assertion below is what would catch a rebuild. */
+    assert.equal(window.document.getElementById("chat-extras").contains(host), false,
+      "the model picker is still inside the `+` drawer");
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const settings = window.document.querySelector(".msg-sheet--settings");
+    assert.ok(settings && settings.contains(host),
+      "the model picker is not inside the Settings drawer");
     assert.equal(window.document.querySelector(".chat-actions #chat-model-host"), null,
       "the model picker is still sitting in the composer row");
     assert.equal(pickerIn(window).value, "anthropic:claude-opus-5",
@@ -17046,13 +17191,6 @@ describe("talking to Nova", () => {
     };
   }
 
-  function fakeSynth(record) {
-    return {
-      speak(utterance) { record.spoken.push(utterance.text); },
-      cancel() { record.cancels += 1; },
-    };
-  }
-
   function withSpeech(win, { recognition, synthesis } = {}) {
     if (recognition) win.webkitSpeechRecognition = recognition;
     if (synthesis) {
@@ -17061,12 +17199,13 @@ describe("talking to Nova", () => {
     }
   }
 
-  test("a browser with no speech API shows neither button", async () => {
+  test("a browser with no speech API shows no mic, and there is no speaker at all", async () => {
     const window = await loadSite("/");
     assert.ok(window.document.getElementById("chat-mic").hasAttribute("hidden"),
       "a mic that cannot listen is worse than no mic");
-    assert.ok(window.document.getElementById("chat-speak").hasAttribute("hidden"),
-      "a speaker that cannot speak is worse than no speaker");
+    // Read-aloud was removed on 2026-09-11 -- his words, "I will never use it".
+    assert.equal(window.document.getElementById("chat-speak"), null,
+      "the read-aloud speaker is back");
   });
 
   test("dictation lands in the box he types in rather than sending on its own", async () => {
@@ -17118,64 +17257,6 @@ describe("talking to Nova", () => {
     assert.equal(record.started, 1);
   });
 
-  test("with the speaker on, an answer that arrives is read aloud and his own question is not", async () => {
-    const record = { spoken: [], cancels: 0 };
-    let timers;
-    const window = await loadSite("/", {
-      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
-      ask: answersOnPoll(),
-    });
-    const speaker = window.document.getElementById("chat-speak");
-    assert.equal(speaker.hasAttribute("hidden"), false, "the speaker stayed hidden on a browser that has one");
-    speaker.dispatchEvent(new window.Event("click"));
-    assert.equal(speaker.getAttribute("aria-pressed"), "true");
-
-    tap(window, "chat-btn");
-    await timers.fire();
-    assert.deepEqual(record.spoken, [], "it read the thread he opened, not the answer he was waiting for");
-
-    await timers.fire();
-    assert.deepEqual(record.spoken, ["Seven."], "the answer that landed was not read out");
-  });
-
-  test("with the speaker off, nothing is spoken", async () => {
-    const record = { spoken: [], cancels: 0 };
-    let timers;
-    const window = await loadSite("/", {
-      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
-      ask: answersOnPoll(),
-    });
-    // Deliberately not tapping the speaker: the default is silence, and this
-    // is the control for the test above -- without it that one would pass on
-    // a build that reads every answer aloud whatever the button says.
-    assert.equal(window.document.getElementById("chat-speak").getAttribute("aria-pressed"), "false");
-    tap(window, "chat-btn");
-    await timers.fire();
-    await timers.fire();
-    assert.deepEqual(record.spoken, []);
-  });
-
-  test("markdown markers come out of what is read aloud", async () => {
-    const record = { spoken: [], cancels: 0 };
-    let timers;
-    const answer = {
-      conversationId: "c", waiting: false,
-      messages: [
-        { id: "1", sender: "Edvard", text: "q" },
-        { id: "2", sender: "Nova", text: "**merged** `runner#42` and [the PR](https://x/1)\n\n```\nnpm test\n```" },
-      ],
-    };
-    let turn = 0;
-    const window = await loadSite("/", {
-      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
-      ask: () => { turn += 1; return turn === 1 ? { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] } : answer; },
-    });
-    window.document.getElementById("chat-speak").dispatchEvent(new window.Event("click"));
-    tap(window, "chat-btn");
-    await timers.fire();
-    await timers.fire();
-    assert.deepEqual(record.spoken, ["merged runner#42 and the PR code block"]);
-  });
 });
 
 /* The page half of the push prefetch (ideas #224 and #226).
