@@ -29,13 +29,13 @@ from tests.test_nova_next_milestones import (
 def rows():
     """Two Nova milestones and one Marcus one, with a known computed order.
 
-    `nova/a` is High at size S and `nova/b` is Low at size XL, so the
-    formula puts `a` first; Marcus sits between them once sorted globally,
-    which is what makes the cross-project assertion below mean something.
+    `nova/a` is size S and `nova/b` is size XL, so the formula puts `a`
+    first; Marcus at size M sits between them once sorted globally, which
+    is what makes the cross-project assertion below mean something.
     """
     return [row(1, HIGH, "Nova", "S", "A"),
             row(2, LOW, "Nova", "XL", "B"),
-            row(3, MEDIUM, "Marcus", "S", "C")]
+            row(3, MEDIUM, "Marcus", "M", "C")]
 
 
 def test_no_pins_is_the_function_it_was():

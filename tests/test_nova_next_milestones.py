@@ -1,18 +1,15 @@
 """The milestone tier: `milestone_ranks`, and where it sits in `rank`.
 
-Milestone M4 of idea #260's picking redesign. The spec hands this tier to
-me rather than to the owner and says how to order it: *"Rank by whatever
-importance signal the milestone carries, divided by its rolled-up size ...
-size alone would let a trivial milestone nobody needs jump ahead of an
-important large one."*
+Milestone M4 of idea #260's picking redesign. The spec ordered this tier
+by the milestone's best rating divided by its size; issue #202 retires the
+rating, so the computed order is smallest first and `milestone-seats.md`
+holds the order that used to come from the rating.
 
-So the three things that have to hold are the divide itself (a big
-important milestone can lose to a small one, and a trivial small one still
-loses to an important big one), the rollup rule (importance is the best row
-in the group, size is the sum), and the placement -- below the project
-order, above the row's own rating. Each test names which of the three it
-is, because a ranking test that only asserts a final order does not say
-which rule produced it.
+So the three things that have to hold are the size order (and that no
+rating moves it), the rollup rule (size is the sum of the rows), and the
+placement -- below the project order, above the row's own rating. Each test
+names which of the three it is, because a ranking test that only asserts a
+final order does not say which rule produced it.
 """
 
 from agora_runner.nova_boards import PRIORITY_LABELS, STATUS_LABELS, parse_board
@@ -69,22 +66,13 @@ def test_a_small_milestone_beats_a_large_one_of_the_same_importance():
     assert order(rows) == [2, 1]
 
 
-def test_size_alone_does_not_decide_it():
-    """The half the spec calls out by name: importance is the numerator.
+def test_the_rating_no_longer_moves_a_milestone():
+    """Issue #202: the row rating is retired, so it may not order this tier.
 
-    `small` is one S of Low work; `big` is four S's of High work. Under
-    smallest-first the trivial one wins, and that is exactly the failure
-    the divide exists to avoid.
-
-    It also pins the *scale* of the numerator, which is the one number in
-    this module I chose rather than measured. On a linear reading of the
-    ratings -- High 3, Low 1, which is what `len(_RANK) - rank` gives --
-    `big` scores 3/4 and `small` scores 1/1, so the trivial row wins and
-    the divide has bought nothing. On `_IMPORTANCE` it is 5/4 against 1/1.
-
-    #2 is High rather than Immediately on purpose: an Immediately row skips
-    to the top a tier above this one, so it would pass whatever the divide
-    did.
+    `big` holds a High row and is four S's of work; `small` is one Low S. Under the old WSJF numerator `big` scored 5/4
+    against 1/1 and won; with the rating gone the smaller one is first.
+    The second half swaps every rating and asserts the map is identical,
+    which is the property itself rather than one case of it.
     """
     rows = [
         row(1, LOW, "Marcus", "S", "small"),
@@ -93,32 +81,34 @@ def test_size_alone_does_not_decide_it():
         row(4, LOW, "Marcus", "S", "big"),
         row(5, LOW, "Marcus", "S", "big"),
     ]
-    assert order(rows)[-1] == 1
+    ranks = milestone_ranks(rows)
+    assert ranks[("marcus", "small")] < ranks[("marcus", "big")]
+    swapped = [dict(r, priorityKey={"low": "high", "high": "low"}[
+        r["priorityKey"]]) for r in rows]
+    assert milestone_ranks(swapped) == ranks
 
 
-def test_importance_is_the_best_row_and_size_is_the_sum():
+def test_size_is_the_sum_of_the_rows():
     """The rollup rule, asserted on the numbers rather than on an order.
 
-    Max on importance and sum on size is the one design call in this
-    function: importance does not accumulate, work does. A milestone
-    holding the one Immediately row is an Immediately milestone and does
-    not become less urgent by also holding three Low rows.
+    `pair` is two S rows (cost 2) and `solo` one L row (cost 3), so `pair`
+    is first -- and if size took the largest row instead of the sum,
+    `pair` would cost 1 and still be first, so the second half puts the
+    sum on the other side of the line: three S rows (cost 3) against one M
+    (cost 2) is `solo` first only under a sum.
     """
     rows = [
-        row(1, IMMEDIATE, "Marcus", "S", "mixed"),
-        row(2, LOW, "Marcus", "S", "mixed"),
-        row(3, HIGH, "Marcus", "M", "solo"),
+        row(1, IMMEDIATE, "Marcus", "S", "pair"),
+        row(2, LOW, "Marcus", "S", "pair"),
+        row(3, HIGH, "Marcus", "L", "solo"),
     ]
     ranks = milestone_ranks(rows)
-    # mixed: importance 13 / size 2. solo: importance 5 / size 2.
-    assert ranks[("marcus", "mixed")] < ranks[("marcus", "solo")]
-    # If importance summed instead of maxing, `mixed` would win by even
-    # more, so pin the other direction too: drop the Immediately row and
-    # the two Low rows must not beat `solo`.
-    quiet = milestone_ranks([row(1, LOW, "Marcus", "S", "mixed"),
-                             row(2, LOW, "Marcus", "S", "mixed"),
-                             row(3, HIGH, "Marcus", "M", "solo")])
-    assert quiet[("marcus", "solo")] < quiet[("marcus", "mixed")]
+    assert ranks[("marcus", "pair")] < ranks[("marcus", "solo")]
+    three = milestone_ranks([row(1, LOW, "Marcus", "S", "three"),
+                             row(2, LOW, "Marcus", "S", "three"),
+                             row(3, LOW, "Marcus", "S", "three"),
+                             row(4, LOW, "Marcus", "M", "solo")])
+    assert three[("marcus", "solo")] < three[("marcus", "three")]
 
 
 def test_the_same_name_in_two_projects_is_two_milestones():

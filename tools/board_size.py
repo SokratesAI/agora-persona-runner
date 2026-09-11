@@ -8,8 +8,8 @@ spec's reason for the field, in his words:
 > done. That is practical for the ordering of projects/milestones as we
 > might do the smaller ones first."*
 
-M4 ranks on importance divided by size, so this is the number that ranking
-divides by -- which is why the field has to exist and be filled before the
+M4 ranks milestones smallest first (the rating it once divided came out
+with issue #202), so this is the number that ranking sorts on -- which is why the field has to exist and be filled before the
 ranking can be written, and why the spec puts M2 in front of M4 as a real
 dependency rather than a preference.
 

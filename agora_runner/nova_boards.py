@@ -253,9 +253,9 @@ PRIORITY_ORDER = ("immediate", "high", "medium", "low")
 # task/project/milestone going for t-shirt sizes s/m/l/xl. Just a
 # guess/estimate on the amount of work needed to be done. That is practical
 # for the ordering of projects/milestones as we might do the smaller ones
-# first."* It is the job-size half of importance-divided-by-size, which is
-# what milestone M4 of that spec ranks on, so the field has to exist and be
-# filled before the ranking that divides by it can be written.
+# first."* Milestone M4 of that spec ranks milestones on it -- smallest
+# first since issue #202 took the rating out of the numerator (Cycle 1410)
+# -- so the field has to exist and be filled for that ranking to mean anything.
 #
 # **No glyph, and that is the spec's own reasoning rather than an omission.**
 # A rating and a status both carry one because more is plainly worse or
@@ -2958,7 +2958,7 @@ _MILESTONE_PINS_HEADER = """---
 type: board
 tags: [agora, milestones, board]
 status: built
-contract: Nova writes this only when the owner pins a milestone. One row per pinned milestone; a milestone with no row here is unpinned and ranks by the computed WSJF order in nova_next.milestone_ranks. The set of milestones that exist is read off the Milestone column on issues.md and ideas.md, never from here -- a row here naming a milestone no board row carries is a pin waiting for its milestone, not a milestone.
+contract: Nova writes this only when the owner pins a milestone. One row per pinned milestone; a milestone with no row here is unpinned and ranks by Nova's order in nova_next.milestone_ranks (milestone-seats.md, then smallest first). The set of milestones that exist is read off the Milestone column on issues.md and ideas.md, never from here -- a row here naming a milestone no board row carries is a pin waiting for its milestone, not a milestone.
 ---
 
 # Milestone pins
