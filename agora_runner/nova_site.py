@@ -138,6 +138,7 @@ from agora_runner.nova_capture import (
     archive_row,
     edit_row,
     remove_row,
+    ROW_ORDER_AUTHORS,
     set_row_order,
     set_project,
     set_project_priority,
@@ -4890,6 +4891,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         target = payload.get("target")
         number = payload.get("number")
         position = payload.get("position")
+        # Required, with no default, for `/api/board/comment`'s reason: a
+        # default naming the owner would stamp a cycle's move as his, and one
+        # of "Nova" would leave his drag unrecorded (issue #202).
+        author = payload.get("author")
         if target not in BOARD_PATHS:
             self._send_json(400, {"error": f"target must be one of {sorted(BOARD_PATHS)}"})
             return
@@ -4899,9 +4904,12 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         if not isinstance(position, int) or isinstance(position, bool) or position < 1:
             self._send_json(400, {"error": "position must be an integer of 1 or more"})
             return
+        if author not in ROW_ORDER_AUTHORS:
+            self._send_json(400, {"error": f"author must be one of {list(ROW_ORDER_AUTHORS)}"})
+            return
 
         try:
-            ok, message = set_row_order(target, number, position)
+            ok, message = set_row_order(target, number, position, author)
         except Exception as e:
             log(f"nova-site row order failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
@@ -4915,7 +4923,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             invalidate("board:ideas")
 
         audit(
-            "Nova",
+            author,
             "",
             "nova_capture",
             f"Place #{number} on {target} \u00b7 {'ok' if ok else message}",
