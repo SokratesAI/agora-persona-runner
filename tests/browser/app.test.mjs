@@ -1257,14 +1257,9 @@ describe("an outdated row leaves Open without claiming it shipped", () => {
     assert.ok(row, "the row the URL named was filtered off the page");
     assert.equal(row.querySelector(".item-meta-row > .chip.prio"), null,
       "an outdated row was offered a rating the server will not write");
-    // The selector is the one the picker actually renders, not a guess:
-    // an open row in the same payload must still have it, or this test
-    // would pass against a picker that had simply been renamed.
-    const openRow = window.document.getElementById(
-      "item-" + payload.board.items[0].number);
-    const trigger = openRow.querySelector(".item-meta-row > .chip.prio");
-    assert.ok(trigger, "the selector matches nothing at all, so the assertion above is vacuous");
-    assert.equal(trigger.tagName, "BUTTON", "an editable row's chip should be a clickable trigger");
+    // Since issue #202 no boarded row carries a rating, open or not; the
+    // meta row itself must still be drawn, or the absence above is vacuous.
+    assert.ok(row.querySelector(".item-meta-row > .chip"), "the outdated row drew no meta row at all");
   });
 });
 
@@ -7590,115 +7585,38 @@ describe("the priority picker (buildPrioPicker)", () => {
     assert.equal(window.posted[0].body.oneItem, false);
   });
 
-  test("picking a rating on a boarded row posts it and updates the chip", async () => {
-    const window = await loadSite("/issues#57");
-    const trigger = window.document.getElementById("item-57").querySelector(".item-meta-row > .chip.prio");
-    assert.ok(trigger, "the open row has no priority trigger");
-    assert.equal(trigger.textContent, "Unrated", "#57 is unrated in the fixture");
-    assert.equal(trigger.className, "chip prio", "an unrated trigger must carry no prio-<key> colour class");
-    click(window, trigger);
-    const low = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "⚪ Low");
-    click(window, low);
-    await new Promise((r) => window.setTimeout(r, 0));
-    const posted = window.posted.find((p) => p.url === "/api/board/priority");
-    assert.ok(posted, "no write reached /api/board/priority");
-    assert.equal(posted.body.number, 57);
-    assert.equal(posted.body.priority, "⚪ Low");
-    assert.equal(trigger.textContent, "⚪ Low", "the trigger did not adopt the full new label");
-    assert.equal(trigger.className, "chip prio prio-low");
-  });
-
-  test("a failed write reverts the chip and reports the error, rather than keeping an unsaved choice", async () => {
-    const window = await loadSite("/issues#57");
-    window.postReply = { ok: false, message: "conflict" };
-    const row = window.document.getElementById("item-57");
-    const trigger = row.querySelector(".item-meta-row > .chip.prio");
-    const before = trigger.textContent;
-    click(window, trigger);
-    const high = [...window.document.querySelectorAll(".prio-option")].find((o) => o.textContent === "🟠 High");
-    click(window, high);
-    await new Promise((r) => window.setTimeout(r, 0));
-    assert.equal(trigger.textContent, before, "the chip did not revert once the write failed");
-    assert.match(row.querySelector(".item-prio-note").textContent, /Could not save/);
-  });
-
-  test("a board row's priority trigger is in the head, so a closed row still shows it", async () => {
-    // the owner, 2026-08-14: "on issues and ideas the priority button should
-    // be the priority tag instead, not a separate button" -- the old
-    // picker lived in `.item-body`, which only exists once a row opens.
-    const window = await loadSite("/issues");
-    const row = window.document.getElementById("item-57");
-    assert.equal(row.querySelector(".item-head").getAttribute("aria-expanded"), "false");
-    const trigger = row.querySelector(".item-meta-row > .chip.prio");
-    assert.ok(trigger, "the trigger is not beside the head, or the row waited to open first");
-    assert.equal(trigger.tagName, "BUTTON");
-  });
-
-  test("a rated board row's trigger keeps the original cycle-171 chip look", async () => {
-    // the owner, 2026-08-14: "i liked the old issue priority status better...
-    // make it into a button that opens the modal, but the visual design is
-    // not changed from the old design" -- same class, same full text, on
-    // a <button> instead of a <span>.
-    //
-    // A fresh, explicit board rather than `payload.board.items.find(...)`:
-    // the default fixture's items are shared, mutable state across every
-    // test in this file (`loadSite` hands `payload.board` straight to
-    // app.js with no clone when nothing overrides it), and the picking
-    // test above mutates `item.priority` on the real object by reference.
-    // Reading the fixture back out here would sometimes see that test's
-    // leftovers instead of what this test itself set up.
+  test("a boarded row carries no rating, open or done -- issue #202", async () => {
+    // His correction of 2026-09-10: the rating is his intent at capture
+    // time; once a row is boarded its place is its position. So neither the
+    // open row's picker nor the done row's read-only chip is drawn -- and
+    // both rows are RATED here, so the old code would have drawn both.
     const window = await loadSite("/issues", {
       board: (url) => {
         if (url.includes("q=") || url.includes("item=")) return null;
         const board = JSON.parse(JSON.stringify(payload.board));
-        const rated = board.items.find((i) => i.statusKey !== "done");
-        rated.priority = "🔵 Medium";
-        rated.priorityKey = "medium";
-        return board;
-      },
-    });
-    const rated = payload.board.items.find((i) => i.statusKey !== "done");
-    const trigger = window.document.getElementById("item-" + rated.number)
-      .querySelector(".item-meta-row > .chip.prio");
-    assert.equal(trigger.textContent, "🔵 Medium");
-    assert.equal(trigger.className, "chip prio prio-medium");
-  });
-
-  test("a done row shows a read-only chip instead of a picker", async () => {
-    const window = await loadSite("/issues", {
-      board: (url) => {
-        if (url.includes("q=") || url.includes("item=")) return null;
-        const board = JSON.parse(JSON.stringify(payload.board));
+        const open = board.items.find((i) => i.statusKey !== "done");
+        open.priority = "🔵 Medium";
+        open.priorityKey = "medium";
         const done = board.items.find((i) => i.statusKey === "done");
         done.priority = "🟠 High";
         done.priorityKey = "high";
         return board;
       },
     });
+    const open = payload.board.items.find((i) => i.statusKey !== "done");
     const done = payload.board.items.find((i) => i.statusKey === "done");
     click(window, window.document.querySelector(".board-filter-btn"));
     click(window, [...window.document.querySelectorAll(".filter")].find((c) => c.textContent.startsWith("All")));
-    const row = window.document.getElementById("item-" + done.number);
-    const indicator = row.querySelector(".item-meta-row > .chip.prio");
-    assert.ok(indicator, "no priority chip on the done row");
-    assert.notEqual(indicator.tagName, "BUTTON", "a done row's priority chip must not be a clickable trigger");
-    assert.equal(indicator.textContent, "🟠 High");
-    assert.equal(indicator.className, "chip prio prio-high");
-  });
-
-  test("an unrated done row shows no chip at all -- the cycle-171 rule this design brought back", async () => {
-    const window = await loadSite("/issues", {
-      board: (url) => {
-        if (url.includes("q=") || url.includes("item=")) return null;
-        return payload.board;
-      },
-    });
-    const done = payload.board.items.find((i) => i.statusKey === "done" && !i.priority);
-    assert.ok(done, "fixture has no unrated done row to test against");
-    click(window, window.document.querySelector(".board-filter-btn"));
-    click(window, [...window.document.querySelectorAll(".filter")].find((c) => c.textContent.startsWith("All")));
-    const row = window.document.getElementById("item-" + done.number);
-    assert.equal(row.querySelector(".item-meta-row > .chip.prio"), null);
+    for (const item of [open, done]) {
+      const row = window.document.getElementById("item-" + item.number);
+      assert.ok(row, "row #" + item.number + " is not on the page");
+      // The status chip shares the meta row, so a missing meta row cannot
+      // make the absence below pass.
+      assert.ok(row.querySelector(".item-meta-row > .chip"), "row #" + item.number + " drew no meta row");
+      assert.equal(row.querySelector(".item-meta-row > .chip.prio"), null,
+        "row #" + item.number + " still shows a rating");
+    }
+    assert.equal(window.document.querySelector(".item-prio-note"), null);
   });
 });
 
@@ -15261,14 +15179,14 @@ describe("the project page", () => {
       ["issue #5", "idea #6", "issue #7", "idea #8"]);
   });
 
-  test("a rating is a word beside its symbol, and an unrated row gets no chip", async () => {
+  test("a backlog row carries no rating chip, rated or not", async () => {
     const window = await loadSite("/project/Nova",
       { project: () => ({ ...SUMMARISED, backlog: BACKLOG }) });
     const rows = [...window.document.querySelectorAll(".project-backlog-row")];
-    assert.deepEqual(rows.map((r) => {
-      const chip = r.querySelector(".chip.prio");
-      return chip ? chip.textContent : null;
-    }), ["🔴 Immediately", "🟠 High", null, "⚪ Low"]);
+    // Three of the four fixture rows are rated, and none shows it: the
+    // backlog's order is the position (issue #202).
+    assert.equal(BACKLOG.filter((b) => b.priority).length, 3);
+    assert.deepEqual(rows.map((r) => r.querySelector(".chip.prio")), [null, null, null, null]);
     // Only the row that is down here *because* it is on him says so; every
     // other status is already the column the row sits in below.
     assert.deepEqual(rows.map((r) => !!r.querySelector(".project-backlog-blocked")),
@@ -15347,10 +15265,12 @@ describe("the project page", () => {
     assert.deepEqual(heads, ["Issues · 2"], "the empty Ideas board was drawn anyway");
   });
 
-  test("a row with no priority draws no chip rather than an empty one", async () => {
+  test("a project page row draws no rating chip, rated or not -- issue #202", async () => {
     const window = await loadSite("/project/Nova", { project: NOVA });
     const rows = window.document.querySelectorAll(".project-row");
-    assert.equal(rows[0].querySelectorAll(".chip.prio").length, 1);
+    assert.equal(rows.length, 2, "the fixture's two rows were not drawn");
+    // The first fixture row is rated -- the old code drew one chip on it.
+    assert.equal(rows[0].querySelectorAll(".chip.prio").length, 0);
     assert.equal(rows[1].querySelectorAll(".chip.prio").length, 0);
   });
 
@@ -17370,40 +17290,6 @@ describe("the rating picker says what the rating does", () => {
   };
 
   const caption = (w) => w.document.querySelector(".prio-menu .prio-caption");
-
-  test("a board row's picker names all three jobs the rating now has", async () => {
-    const window = await loadSite("/issues");
-    const row = window.document.getElementById("item-" + payload.board.items[0].number);
-    const trigger = row.querySelector(".item-meta-row > .chip.prio");
-    // Asserted before the click, so a caption test can never pass because
-    // the picker it was aimed at had been renamed out from under it.
-    assert.ok(trigger, "the board row has no rating trigger to open");
-    assert.equal(caption(window), null, "the caption was on screen before the popup opened");
-    click(window, trigger);
-    const text = caption(window).textContent;
-    assert.match(text, /^Importance:/, "the caption does not lead with the field's new name: " + text);
-    assert.match(text, /milestone/, "the caption does not say the rating is scoped to a milestone: " + text);
-    assert.match(text, /Immediately still jumps the whole board/,
-      "the caption drops the one job that is still global: " + text);
-  });
-
-  test("the caption is described, not offered — it is no fifth rating", async () => {
-    const window = await loadSite("/issues");
-    const row = window.document.getElementById("item-" + payload.board.items[0].number);
-    click(window, row.querySelector(".item-meta-row > .chip.prio"));
-    const menu = window.document.querySelector(".prio-menu");
-    const node = caption(window);
-    assert.equal(node.getAttribute("role"), null, "the caption announces as a selectable option");
-    assert.equal(menu.getAttribute("aria-describedby"), node.id,
-      "the listbox does not point at its own caption");
-    // Four ratings and Unrated, and the caption is none of them: a
-    // paragraph that had been appended as a `.prio-option` would still
-    // satisfy every assertion above.
-    assert.equal(window.document.querySelectorAll(".prio-menu .prio-option").length, 5);
-    assert.ok(![...window.document.querySelectorAll(".prio-menu .prio-option")]
-      .some((o) => /Importance/.test(o.textContent)), "the caption is one of the choices");
-  });
-
 
   test("the board's sort control offers Importance, and the sort key is untouched", async () => {
     /* The word changes; `priority` does not. It is the value in the URL

@@ -1975,7 +1975,6 @@ body.nav-open { overflow: hidden; }
   gap: 0.5rem;
 }
 
-.item-prio-note { align-self: center; }
 
 /* Edit mode on a boarded row (issue #84): the title in a box under the
  * card's own line, and save / cancel / delete below it. The head stays --
@@ -2557,7 +2556,6 @@ body.has-full-chart { overflow: hidden; }
   background: var(--card, #1c1c1c);
   color: inherit;
 }
-.item-prio-note { font-size: 0.8rem; opacity: 0.8; }
 
 /* Held one glyph -- a ball, or a dash for unrated -- until Cycle 268, when
  * the owner, 2026-08-19: *"Please do not use these symbols '🟠' as i can't

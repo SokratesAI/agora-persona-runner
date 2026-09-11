@@ -4488,8 +4488,8 @@
     // The file's row order, stamped on before anything cuts the list
     // down, so a filtered view still sorts and breaks ties the way the
     // whole board would. Stamped on the row itself rather than on a
-    // copy: `renderPriorityPicker` writes back to the object it was
-    // handed, and a copy would take that write with it.
+    // copy, so anything that writes back to the object it was handed
+    // keeps it.
     items.forEach(function (item, index) { item.index = index; });
     var shown = items.filter(currentFilter().match);
     TOGGLES.forEach(function (toggle) {
@@ -4779,55 +4779,6 @@
     });
 
     return { el: trigger, getValue: function () { return current; }, setValue: setValue };
-  }
-
-  /* The rating cell of one boarded row, as something the owner can change --
-   * the row's own priority indicator in `.item-meta-row`, not a second
-   * control hidden inside the write-up (the owner, 2026-08-14: "on issues and
-   * ideas the priority button should be the priority tag instead, not a
-   * separate button"). `note` is a sibling element the caller places; this
-   * only fills it in. No save button on the picker itself, because the
-   * only action it can take is the one just chosen, and a button would be
-   * a second thing to get wrong. It goes disabled while the write is in
-   * flight so a double-tap cannot race two writes at one cell, and on
-   * failure it snaps back to what the server still holds rather than
-   * showing a rating that was never written. */
-  function renderPriorityPicker(board, item, note) {
-    return buildPrioPicker({
-      current: item.priority || "",
-      ariaLabel: "Importance of #" + item.number,
-      // The three things `nova_next.rank_rows` actually does with this
-      // value, in the order it does them. Immediately is `_SKIP_TO_TOP`
-      // and sorts ahead of the project tier; the rest is the row's place
-      // inside its milestone, and `milestone_ranks` takes the best rating
-      // any open row in the group carries as that milestone's importance.
-      caption: "Importance: where this row sits in its milestone, and the "
-        + "best one in a milestone lifts the whole milestone. Immediately "
-        + "still jumps the whole board.",
-      chipStyle: true,
-      onPick: function (chosen) {
-        note.textContent = "Saving…";
-        return fetch("/api/board/priority", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target: board, number: item.number, priority: chosen })
-        })
-          .then(json)
-          .then(function (payload) {
-            if (!payload || !payload.ok) throw new Error((payload && payload.message) || "failed");
-            item.priority = chosen;
-            note.textContent = "";
-            // The trigger in the head is built from `item`, so the row has
-            // to be redrawn for the change to be visible without a reload
-            // -- which is the whole point of editing it here.
-            loadBoard(board);
-          })
-          .catch(function (err) {
-            note.textContent = "Could not save: " + err;
-            throw err;
-          });
-      },
-    });
   }
 
   /* the owner, issue #84: *"If i hold the card for more than 1 second i get
@@ -5180,24 +5131,12 @@
     var metaRow = el("div", "item-meta-row");
     metaRow.appendChild(el("span", "chip chip-" + item.statusKey, item.status));
 
-    // Every rating on both boards was set by a cycle, not by the owner
-    // (issues.md capture, 2026-08-14). A finished row keeps the original
-    // cycle-171 read-only chip if it has a rating and nothing if it does
-    // not -- unrated getting no chip at all, rather than a grey "none"
-    // one, is what tells the owner which open rows still want a rating; a
-    // done row is not one he is going to visit for that. `item.done`
-    // alone is not the editable test, it only means the row is in the
-    // `## Done` table and most finished rows never move there --
-    // `statusKey` is what the server refuses a write on. An outdated row
-    // is closed the same way, and the server refuses a rating on it for
-    // the same reason (`_CLOSED_STATUS_KEYS` in `nova_boards.py`).
-    var editable = !item.done && item.statusKey !== "done" && !isOutdated(item);
-    var prioNote = el("span", "item-prio-note", "");
-    if (editable) {
-      metaRow.appendChild(renderPriorityPicker(board, item, prioNote).el);
-    } else if (item.priority) {
-      metaRow.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
-    }
+    // No rating on a boarded row, open or closed -- issue #202 and his
+    // correction of 2026-09-10: *"When you board my ideas you then break it
+    // down to milestones and tasks and then order them"*. The rating is his
+    // intent at capture time and the capture box keeps its picker; once a
+    // row is boarded its place is the position the project drawer's arrows
+    // set, and a chip here would be a second ordering beside that one.
     // The size badge, milestone M2 of the picking redesign. A lettered
     // badge and deliberately not a coloured chip: a rating and a status
     // both step down in weight because more really is worse or further
@@ -5211,7 +5150,6 @@
       metaRow.appendChild(el("span", "chip size size-" + item.sizeKey, item.size));
     }
     head.appendChild(metaRow);
-    if (editable) head.appendChild(prioNote);
 
     // Below the status/priority line rather than beside it (the owner,
     // 2026-08-14: "the date should be placed below them").
@@ -8783,12 +8721,7 @@
       var row = el("li", "project-row");
       row.appendChild(el("span", "project-row-num", "#" + item.number));
       row.appendChild(el("span", "project-row-title", item.title));
-      // Only when there is one. A `## Done` row carries no priority cell
-      // at all, so an unconditional chip would draw an empty coloured pill
-      // on every finished row.
-      if (item.priority) {
-        row.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
-      }
+      // No rating chip: a boarded row is placed by position (issue #202).
       list.appendChild(row);
     }
     wrap.appendChild(list);
@@ -9514,7 +9447,7 @@
    * `buildPrioPicker` verbatim, the same control the board rows use, so a
    * project's rating and a row's rating are picked the same way and read
    * the same colour. It saves on change with no Save button, for the
-   * reason `renderPriorityPicker` gives: the only action it can take is
+   * reason the board rows' picker gave: the only action it can take is
    * the one just chosen.
    *
    * It lives on the project page rather than on every pill of the index.
@@ -9661,12 +9594,7 @@
         (item.board === "issue" ? "issue #" : "idea #") + item.number);
       li.appendChild(num);
       li.appendChild(link);
-      // Word beside the symbol, never the symbol alone: `item.priority` is
-      // already "🟠 High" off the board cell. An unrated row gets no chip
-      // rather than an empty coloured pill.
-      if (item.priority) {
-        li.appendChild(el("span", "chip prio prio-" + item.priorityKey, item.priority));
-      }
+      // No rating chip: the backlog's order IS the position (issue #202).
       // Only when it is the reason the row is down here. Every other status
       // is already the column the row sits in below.
       if (item.statusKey === "blocked-on-edvard") {
