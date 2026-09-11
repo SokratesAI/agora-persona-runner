@@ -226,7 +226,8 @@ def open_rows_from_contents(contents, board):
             # project -- and they have to be answered off one read of one
             # board or they can disagree.
             "project": (item.get("project") or "").strip(),
-            # The two cells `milestone_ranks` divides one by the other.
+            # The two cells `milestone_ranks` reads -- the milestone name and
+            # (since issue #202) only the size beside it.
             # Carried for the same reason `project` is: the ranking has to
             # be computed off one read of one board, and a tier that reads
             # a field this function drops is a tier that silently does

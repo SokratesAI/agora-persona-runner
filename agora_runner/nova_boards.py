@@ -2958,7 +2958,7 @@ _MILESTONE_PINS_HEADER = """---
 type: board
 tags: [agora, milestones, board]
 status: built
-contract: Nova writes this only when the owner pins a milestone. One row per pinned milestone; a milestone with no row here is unpinned and ranks by the computed WSJF order in nova_next.milestone_ranks. The set of milestones that exist is read off the Milestone column on issues.md and ideas.md, never from here -- a row here naming a milestone no board row carries is a pin waiting for its milestone, not a milestone.
+contract: Nova writes this only when the owner pins a milestone. One row per pinned milestone; a milestone with no row here is unpinned and ranks by Nova's order in nova_next.milestone_ranks (milestone-seats.md, then smallest first). The set of milestones that exist is read off the Milestone column on issues.md and ideas.md, never from here -- a row here naming a milestone no board row carries is a pin waiting for its milestone, not a milestone.
 ---
 
 # Milestone pins
