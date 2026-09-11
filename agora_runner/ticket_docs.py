@@ -766,8 +766,8 @@ def currency(path, live_rev):
     before any reader may stop fetching the markdown, and it is why the
     stamp exists at all.
 
-    Today `nova_site._rows_from_store` proves the store agrees with the
-    file by fetching the file and comparing 411 rows field by field, which
+    `nova_site._rows_from_store` (deleted with the site's last mirror read,
+    issue #203) proved the store agreed with the file by fetching the file and comparing 411 rows field by field, which
     is the strongest check available and also the reason the migration
     saves nothing yet: the fetch it would remove is the fetch the check
     depends on. A revision is the one thing that answers "has his file

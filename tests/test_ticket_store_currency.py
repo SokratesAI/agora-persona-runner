@@ -1,7 +1,7 @@
 """The store can say whether it is still current with the markdown.
 
-`nova_site._rows_from_store` proves the store agrees with his file by
-fetching the file and comparing every field -- which is the strongest
+`nova_site._rows_from_store` (since deleted, issue #203) proved the store
+agreed with his file by fetching the file and comparing every field -- which is the strongest
 check available and also why the migration saves nothing yet: the fetch it
 would remove is the fetch the check depends on. A revision answers the
 same question without the file, so these tests pin the two halves of it:

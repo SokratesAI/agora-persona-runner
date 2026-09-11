@@ -155,8 +155,8 @@ MIRROR_MODULE = "ticket_docs"
 MIRROR_READS = frozenset({
     "read_board", "read_rows", "read_details", "read_head", "row_order",
     "render_from_couch",
-    # GETs against nova_tickets too; `nova_site._store_currency` reads as a
-    # health banner, so converting the four obvious calls and keeping this
+    # GETs against nova_tickets too; `nova_site._store_currency` read it as
+    # a health banner until #203 deleted it, so converting the four obvious calls and keeping this
     # one would clear the gate with every render still fetching the store.
     "currency", "stored_source_rev",
 })

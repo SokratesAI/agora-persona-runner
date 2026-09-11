@@ -89,8 +89,8 @@ def test_a_revision_lookup_that_fails_still_pushes(monkeypatch, pushes):
     The rev is read after the PUT landed, so it is a second call that can
     fail on its own. Losing the push with it would trade a check that says
     "cannot say" for a store that is actually behind -- the worse of the
-    two by far, since the field-by-field comparison in
-    `nova_site._rows_from_store` is what the page relies on today.
+    two by far while `tools.ticket_drift` still reads the store (the page
+    stopped reading it in issue #203).
     """
     def explode(path):
         raise vault.VaultUnreadableDocument("couchdb said 503")
