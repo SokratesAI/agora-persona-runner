@@ -909,12 +909,12 @@ def _capture_records(target, board, bullets, store):
     """`capture` on one of his two boards: one new capture record per bullet.
 
     Same place as `insert_captures` puts them: below every capture already
-    there, in the order they were typed. **The rank follows whatever the board
-    already stores**, because `captures_in_order` compares ranks with each
-    other and an int beside a str is a TypeError on every read of his board:
-    `tools.board_migrate` writes whole numbers (`index + 1`) while
-    `board_document` documents a `rank_key` and the fixtures use one. So the
-    next whole number after an int, `rank_key.between(last, None)` otherwise.
+    there, in the order they were typed: `rank_key.between(last, None)`. A
+    capture rank is a `rank_key` and nothing else -- `tools.board_migrate`
+    seeds them with `rank_key.sequence` since Cycle 1391 and
+    `to_capture_document` refuses any other shape -- so a board still holding
+    an old whole-number rank fails the add loudly rather than growing a second
+    shape beside it.
 
     **The ids are minted and the registry written before any capture is.**
     `entity_id.mint_capture` is a high-water mark, so an id written into the
@@ -937,8 +937,7 @@ def _capture_records(target, board, bullets, store):
             last = ranked[-1] if ranked else None
             ranks = []
             for _ in bullets:
-                last = (last + 1 if isinstance(last, int)
-                        else rank_key.between(last, None))
+                last = rank_key.between(last, None)
                 ranks.append(last)
             # A registry whose high-water lags the stored ids would hand out
             # one of his existing captures' ids -- which the real store refuses

@@ -255,7 +255,8 @@ def test_an_unranked_capture_lands_after_the_ranked_ones_not_before():
     seat in the file, for the one bullet nobody has placed. The migration
     reads a file that states an order and nothing else, so `None` has to
     stay a different answer from first, the same as a row's `order`."""
-    placed = to_capture_document("placed", "issue", "cap_1", rank="0|b:")
+    placed = to_capture_document("placed", "issue", "cap_1",
+                                 rank=rank_key.between(None, None))
     unplaced = to_capture_document("unplaced", "issue", "cap_2")
     assert "rank" not in unplaced
     assert captures_map([unplaced, placed])["captures"] == ["placed", "unplaced"]
@@ -299,6 +300,11 @@ def test_a_malformed_capture_is_refused_rather_than_stored():
             to_capture_document("hi", "issue", bad_id)
     with pytest.raises(DocumentError):
         to_capture_document("hi", "roadmap", "cap_1")
+    # A whole number is the shape `tools.board_migrate` used to store; beside
+    # a key it makes `captures_in_order` raise on every read (Cycle 1391).
+    for bad_rank in (1, "", "0|b:", "V0"):
+        with pytest.raises(DocumentError):
+            to_capture_document("hi", "issue", "cap_1", rank=bad_rank)
 
 
 def test_a_capture_whose_id_disagrees_with_its_fields_is_refused():

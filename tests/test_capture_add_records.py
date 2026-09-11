@@ -156,16 +156,29 @@ def test_a_write_that_fails_part_way_says_how_many_landed(monkeypatch):
     assert _captures(store)[0] == [FIRST, SECOND, "one"]
 
 
-def test_a_board_migrated_with_whole_number_ranks_gets_the_next_number(monkeypatch):
-    """`tools.board_migrate` stores `index + 1`, not a rank_key. A rank_key
-    beside those ints makes every later read of his board a TypeError."""
+def test_a_new_capture_is_ranked_with_a_rank_key_after_the_last(monkeypatch):
+    """One shape per board: a whole number beside a key is a TypeError on
+    every read of it (Cycle 1391)."""
+    from agora_runner import rank_key
+
+    store = _records(monkeypatch)
+    last = [d["rank"] for d in store.docs if d.get("type") == "capture"][-1]
+    ok, message = capture("issues", "one\ntwo")
+    assert ok, message
+    ranks = [c[1]["rank"] for c in store.calls if c[0] == "write_capture"]
+    assert all(rank_key.is_valid(r) for r in ranks), ranks
+    assert last < ranks[0] < ranks[1]
+
+
+def test_a_board_holding_an_old_whole_number_rank_refuses_the_add(monkeypatch):
+    """A migration run before Cycle 1391 stored `index + 1`. Extending it
+    would keep two shapes alive; the add fails and writes nothing."""
     store = _records(monkeypatch)
     for index, doc in enumerate(d for d in store.docs if d.get("type") == "capture"):
         doc["rank"] = index + 1
-    ok, message = capture("issues", "one\ntwo")
-    assert ok, message
-    assert [c[1]["rank"] for c in store.calls if c[0] == "write_capture"] == [3, 4]
-    assert _captures(store)[0] == [FIRST, SECOND, "one", "two"]
+    ok, message = capture("issues", "one")
+    assert not ok
+    assert not [c for c in store.calls if c[0] == "write_capture"]
 
 
 def test_ideas_writes_the_idea_board(monkeypatch):
