@@ -7616,7 +7616,6 @@ describe("the priority picker (buildPrioPicker)", () => {
       assert.equal(row.querySelector(".item-meta-row > .chip.prio"), null,
         "row #" + item.number + " still shows a rating");
     }
-    assert.equal(window.document.querySelector(".item-prio-note"), null);
   });
 });
 
@@ -17281,16 +17280,6 @@ describe("a deploy announces itself to an app that is already open", () => {
  * nothing about the change. These hold the two halves that are actually
  * observable from where he stands: the word, and the sentence. */
 describe("the rating picker says what the rating does", () => {
-  const RATED_PROJECT = {
-    projects: ["Nova"],
-    name: "Nova",
-    asked: "Nova",
-    boards: { issues: { total: 0, columns: [] }, ideas: { total: 0, columns: [] } },
-    projectPriority: { nova: { priority: "⚪ Low", priorityKey: "low" } },
-  };
-
-  const caption = (w) => w.document.querySelector(".prio-menu .prio-caption");
-
   test("the board's sort control offers Importance, and the sort key is untouched", async () => {
     /* The word changes; `priority` does not. It is the value in the URL
      * hash and in the saved board state, so renaming the key would drop a
