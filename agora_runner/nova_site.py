@@ -272,6 +272,7 @@ from agora_runner.nova_sources import (
     retro_ledger_json,
 )
 from agora_runner import board_records
+from agora_runner import board_publish
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
 
@@ -2315,6 +2316,12 @@ def _build_lock(name):
         return lock
 
 
+def _publish_write(path, text, rev):
+    """`board_publish`'s write: a compare-and-swap put, as `(ok, detail)`."""
+    result = vault_write_path(path, text, if_rev=rev)
+    return result == "written", result
+
+
 def invalidate(name):
     """Drop one cached payload so the next request rebuilds it cold.
 
@@ -2347,6 +2354,11 @@ def invalidate(name):
         # read the vault before the write landed, so its result is stale
         # and `_refresh` will now discard it. Clearing the flag here would
         # let a *second* refresh start while the first is still running.
+    # Issue #203: his board file is a view of the records now, and this is
+    # the one call every board writer here already makes after a write that
+    # landed. `request` is a no-op until `main` starts the publisher.
+    if name.startswith("board:") and name[len("board:"):] in _RECORD_BOARDS:
+        board_publish.request(_RECORD_BOARDS[name[len("board:"):]])
 
 
 def _invalidate_capture_target(target):
@@ -6397,4 +6409,8 @@ def start_nova_site():
     # runs, a comment it was holding shows the owner nothing. See
     # `nova_replies.recover`.
     threading.Thread(target=recover_replies, name="nova-site-recover", daemon=True).start()
+
+    # Issue #203: redraw his issues.md / ideas.md a few seconds after a
+    # board write, so the markdown view stops falling behind the app.
+    board_publish.start(vault_read_path_rev, _publish_write, log=log)
     return server

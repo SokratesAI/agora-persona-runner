@@ -44,7 +44,6 @@ That is the same call `lint_entry` makes on an absolute claim.
 """
 
 import argparse
-import collections
 import os
 import sys
 import tempfile
@@ -54,61 +53,23 @@ import tempfile
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner import (  # noqa: E402
-    board_document, board_records, board_store, board_view)
-from tools import board_migrate  # noqa: E402
+from agora_runner import board_document, board_records, board_store  # noqa: E402
+from agora_runner import board_publish as shared  # noqa: E402
 from tools import board_put  # noqa: E402
-from tools import board_migration_preflight as preflight  # noqa: E402
 
 
-def frontmatter_of(markdown):
-    """The `---` block at the top of a board file, verbatim, or `""`.
-
-    Passed into `render_document` rather than derived from the records for
-    the reason its docstring gives: the frontmatter is his, it carries the
-    `contract:` line each board file explains itself with, and nothing in
-    the store holds it. Taking it off the live document is therefore not a
-    shortcut -- it is the only place it exists.
-    """
-    lines = (markdown or "").splitlines()
-    if not lines or lines[0].strip() != "---":
-        return ""
-    for index in range(1, len(lines)):
-        if lines[index].strip() == "---":
-            return "\n".join(lines[:index + 1])
-    return ""
-
-
-def word_delta(before, after):
-    """`(added, dropped)` word counts between two documents.
-
-    Multisets, not sets: a word that appears four times in his archive and
-    once in the render has lost three, and a set difference reports zero.
-    """
-    one = collections.Counter((before or "").split())
-    two = collections.Counter((after or "").split())
-    added = sum((two - one).values())
-    dropped = sum((one - two).values())
-    return added, dropped
+# The render, the round-trip refusal and the publish itself live in
+# `agora_runner.board_publish` now (Cycle 1397), because nova-site runs them
+# after every board write and `tools/` is not in its image. What stays here is
+# the bridge pod's way to the vault: `vault_tool.py` in a subprocess, since
+# `agora_runner.vault` answers 401 from this pod.
+frontmatter_of = shared.frontmatter_of
+word_delta = shared.word_delta
 
 
 def render(board, markdown, store=board_store):
-    """`(text, problems)` -- his board drawn from the records.
-
-    `problems` is empty when the render re-reads as the records it came
-    from. `markdown` is the live document and is used for two things only:
-    its frontmatter, which the store does not hold, and the word delta.
-    """
-    contents = board_records.contents(board, store=store)
-    layout = store.read_layout(board)
-    text = board_view.render_document(
-        contents,
-        frontmatter=frontmatter_of(markdown),
-        layout=layout)
-    problems = board_migrate.differences(
-        contents, preflight.board_contents(text))
-    problems += board_migrate.layout_differences(text, board, layout)
-    return text, problems
+    """`(text, problems)` -- see `agora_runner.board_publish.render`."""
+    return shared.render(board, markdown, store=store)
 
 
 def vault_path_of(board):
@@ -119,36 +80,12 @@ def vault_path_of(board):
     raise KeyError(board)
 
 
-def publish(board, store=board_store):
-    """Draw `board` from the records, write it to the vault, stamp it.
+def _read(path):
+    return board_put.vault_get(path)
 
-    Returns `(code, lines)`: 0 published or already current, 2 refused
-    before anything was written, 3 the vault write or its read-back
-    failed. The stamp is the LAST step and is only taken on a read-back
-    that matches what was drawn -- a stamp is a claim about what the vault
-    holds, and one taken on a write that lost a race would certify the
-    other writer's text.
-    """
-    path = vault_path_of(board)
-    lines = [f"board: {board} -> {path}"]
-    markdown, rev = board_put.vault_get(path)
-    if markdown is None or not rev:
-        return 2, lines + ["REFUSED: could not read the live file and its "
-                           "revision; nothing was written"]
-    try:
-        text, problems = render(board, markdown, store=store)
-    except board_records.UnmigratedStore as exc:
-        return 2, lines + [f"REFUSED: {exc}"]
-    if problems:
-        return 2, lines + [f"  {p}" for p in problems] + [
-            "REFUSED: the rendered document does not re-read as the records "
-            "it was drawn from; nothing was written"]
-    added, dropped = word_delta(markdown, text)
-    lines.append(f"words: +{added} / -{dropped}")
-    if text == markdown:
-        board_records.stamp_source_rev(board, rev, store=store)
-        return 0, lines + [f"unchanged: the vault already holds this view; "
-                           f"stamped {rev}"]
+
+def _write(path, text, rev):
+    """One compare-and-swap put through `vault_tool.py`, as `(ok, detail)`."""
     with tempfile.TemporaryDirectory(prefix="board-publish.") as scratch:
         body = os.path.join(scratch, "board.md")
         rev_file = os.path.join(scratch, "board.rev")
@@ -157,17 +94,13 @@ def publish(board, store=board_store):
         with open(rev_file, "w", encoding="utf-8") as handle:
             handle.write(f"{rev}\n")
         done = board_put.vault_put(path, body, if_rev_file=rev_file)
-    if done.returncode != 0:
-        return 3, lines + [(done.stdout or "") + (done.stderr or ""),
-                           "FAILED: the vault write did not land; the records "
-                           "were not stamped"]
-    landed, new_rev = board_put.vault_get(path)
-    if landed != text or not new_rev:
-        return 3, lines + ["FAILED: the vault does not read back as the view "
-                           "just written; the records were not stamped"]
-    board_records.stamp_source_rev(board, new_rev, store=store)
-    return 0, lines + [f"published: {len(text)} bytes, vault {rev} -> "
-                       f"{new_rev}, records stamped {new_rev}"]
+    return done.returncode == 0, (done.stdout or "") + (done.stderr or "")
+
+
+def publish(board, store=board_store):
+    """Draw, write, read back and stamp -- `agora_runner.board_publish.publish`
+    over the bridge pod's vault client. Same `(code, lines)` contract."""
+    return shared.publish(board, _read, _write, store=store)
 
 
 def main(argv=None):

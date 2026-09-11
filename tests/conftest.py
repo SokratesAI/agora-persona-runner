@@ -185,3 +185,19 @@ def lifecycle_events(monkeypatch):
 
     monkeypatch.setattr(runner_main, "runner_lifecycle", Ledger())
     return events
+
+
+@pytest.fixture(autouse=True)
+def _no_board_publisher(monkeypatch):
+    """No test may start the site's board publisher (issue #203).
+
+    `nova_site.start_nova_site` starts it, several tests drive that real
+    entry point, and the publisher is a module global: once one test had
+    started it, every later `invalidate("board:issues")` in the session
+    queued a real draw-and-write of his board file (Cycle 1397, caught by
+    the network block above). Tests of the publisher build their own
+    `board_publish.Publisher` and never go through `start`.
+    """
+    from agora_runner import board_publish
+    monkeypatch.setattr(board_publish, "start", lambda *args, **kwargs: None)
+    monkeypatch.setattr(board_publish, "_publisher", None)
