@@ -87,3 +87,57 @@ def test_a_seat_is_never_reported_as_his_pin():
 
 def test_render_refuses_a_pipe():
     assert render_milestone_seats([("Mar|cus", "x")]) is None
+
+
+def test_top_board_rows_reads_the_seats(monkeypatch):
+    """The wiring, for `test_top_board_rows_reads_the_pins`'s reason: a
+    seat file nothing passes on ranks exactly like no seat file, silently."""
+    from tools import top_board_rows as tbr
+    fetched = []
+    monkeypatch.setattr(tbr, "_fetch", lambda path: fetched.append(path))
+    assert tbr.fetch_milestone_seats() == ""
+    assert fetched == ["projects/sokrates/projects/nova/milestone-seats.md"]
+
+    seen = {}
+    real = tbr.milestone_ranks
+    monkeypatch.setattr(tbr, "milestone_ranks",
+                        lambda rows, pins=None, seats=None:
+                        seen.setdefault("seats", seats) or real(rows, pins))
+    tbr.render([], milestone_seats_markdown=render_milestone_seats(
+        [("Nova", "Picking")]))
+    assert seen["seats"] == {("nova", "picking"): 1}
+
+
+def test_the_site_hands_the_seats_to_both_milestone_orders():
+    """Source-level, the way `test_milestone_pin_route` pins the pins: the
+    project drawer and the Next page each rank milestones, and a seat that
+    reaches one and not the other is two answers to one question."""
+    import inspect
+    from agora_runner import nova_site
+    source = inspect.getsource(nova_site)
+    assert "parse_milestone_pins(milestone_seats_markdown()))" in source
+    assert "seats_markdown=milestone_seats_markdown()," in source
+
+
+def test_next_payload_orders_by_the_seats():
+    from agora_runner.nova_next import next_payload_from_contents
+    from agora_runner.nova_boards import parse_board, PRIORITY_LABELS
+    from tests.test_nova_next import NOW
+    board = parse_board(
+        "## Board\n\n| # | Idea | Status | Updated | Priority | Project "
+        "| Size | Milestone |\n|---|---|---|---|---|---|---|---|\n"
+        f"| [[#1 — a\\|1]] | a | ⚪ Backlog | 09-01 | "
+        # High, not Immediately: `rank` still lifts an Immediately row over
+        # every milestone, which would hide the seat this test is about.
+        f"{PRIORITY_LABELS['high']} | Nova | S | Urgent |\n"
+        f"| [[#2 — b\\|2]] | b | ⚪ Backlog | 09-01 | "
+        f"{PRIORITY_LABELS['low']} | Nova | XL | Trivial |\n")
+    empty = parse_board("")
+
+    def top(**kw):
+        payload = next_payload_from_contents(empty, board, "", NOW, **kw)
+        return [r["number"] for r in payload["next"]]
+
+    assert top()[0] == 1
+    seats = render_milestone_seats([("Nova", "Trivial"), ("Nova", "Urgent")])
+    assert top(seats_markdown=seats)[0] == 2
