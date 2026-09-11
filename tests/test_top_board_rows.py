@@ -96,14 +96,13 @@ IN_PROGRESS = STATUS_LABELS["in-progress"]
 OUTDATED = STATUS_LABELS["outdated"]
 
 
-def test_the_older_row_outranks_an_immediately_one_across_both_boards():
-    """Issue #202 took the skip-to-top tier out: 🔴 no longer jumps the age key."""
+def test_immediately_outranks_high_across_both_boards():
     issues = board((10, "a high issue", BACKLOG, "2026-08-01", HIGH))
     ideas = board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE))
     rows = (open_rows(issues, "issue")
             + open_rows(ideas, "idea"))
     top = top_board_rows.rank(rows)[0]
-    assert (top["board"], top["number"]) == ("issue", 10)
+    assert (top["board"], top["number"]) == ("idea", 64)
 
 
 def test_older_row_wins_at_equal_rating():
@@ -128,13 +127,13 @@ def test_a_row_with_no_usable_date_sorts_last_in_its_rating():
     assert [r["number"] for r in ranked] == [2, 1]
 
 
-def test_no_rating_orders_rows_any_more_immediately_included():
+def test_the_rating_no_longer_orders_rows_below_immediately():
     """Issue #202: once every row is seated the rating never orders again.
 
     It used to sort an unrated row below a Low one whatever their age; now
-    the older row is first, and swapping every rating -- Immediately onto
-    the newest row included -- leaves the order identical, which is the
-    property rather than one case. The skip-to-top tier is gone with it.
+    the older row is first, and swapping every rating below Immediately
+    leaves the order identical, which is the property rather than one case.
+    Immediately still reads, as skip-to-top -- that is a separate tier.
     """
     text = board((1, "unrated", BACKLOG, "2026-08-01", ""),
                  (2, "rated low", BACKLOG, "2026-08-14", LOW),
@@ -142,7 +141,7 @@ def test_no_rating_orders_rows_any_more_immediately_included():
     rows = open_rows(text, "issue")
     ranked = top_board_rows.rank(rows)
     assert [r["number"] for r in ranked] == [1, 2, 3]
-    swap = {"": "medium", "low": "high", "high": "immediate"}
+    swap = {"": "high", "low": "medium", "high": ""}
     swapped = [dict(r, priorityKey=swap[r["priorityKey"]]) for r in rows]
     assert [r["number"] for r in top_board_rows.rank(swapped)] == [1, 2, 3]
 
@@ -186,8 +185,8 @@ def test_main_reads_both_local_boards(tmp_path, capsys):
                                 "--notes", str(notes)])
     out = capsys.readouterr().out
     assert code == 0
-    assert "-> issue #10" in out
-    assert "idea #64" in out           # the runner-up is still shown
+    assert "-> idea #64" in out
+    assert "issue #10" in out          # the runner-up is still shown
     assert "COULD NOT READ" not in out
 
 
@@ -1011,8 +1010,8 @@ def test_a_held_reply_stops_the_row_jumping_the_queue():
     """The raise exists to get him answered. Once somebody is answering, it
     is only pointing the next cycle at a duplicate."""
     rows = open_rows(_waiting_board(), "issue")
-    rows.append({"board": "issue", "number": 3, "title": "older", "status": BACKLOG,
-                 "updated": "2026-07-02", "priority": IMMEDIATE,
+    rows.append({"board": "issue", "number": 3, "title": "immediate", "status": BACKLOG,
+                 "updated": "2026-08-02", "priority": IMMEDIATE,
                  "priorityKey": "immediate", "statusKey": "backlog", "waiting": False})
     slug = rows[0]["replySlug"]
     assert top_board_rows.rank(rows)[0]["number"] == 7
@@ -1134,11 +1133,11 @@ def test_a_spent_claim_does_not_move_the_row_down_the_ranking():
     """A spent claim is a fact about the ledger, never about the work.
 
     `heldBy` sinks a row because somebody is on it this minute. Nobody is
-    on this one, and it is the older row -- so
+    on this one, and `prompt.md` still ranks a 🔴 above everything -- so
     hiding it would be the tool making the judgement the reader has to.
     """
     rows = (open_rows(
-                board((63, "four cycles an hour", IN_PROGRESS, "2026-08-13", IMMEDIATE)), "idea")
+                board((63, "four cycles an hour", IN_PROGRESS, "2026-08-23", IMMEDIATE)), "idea")
             + open_rows(
                 board((92, "a dashboard", BACKLOG, "2026-08-19", HIGH)), "idea"))
     top_board_rows.apply_finished(rows, {"idea-63": {"cycle": 347, "outcome": "part of it"}})
@@ -1388,10 +1387,7 @@ RELAY = ("Sokrates here (Claude, posting on Edvard's behalf, not Edvard "
 
 def test_a_relayed_comment_does_not_jump_the_queue():
     """The whole ask: this raise is what must not fire on a relay."""
-    # The relayed row is the NEWER one, so only the comment raise could
-    # put it first -- with no rating tier any more, an older relayed row
-    # would win on age and this test would pass whatever the relay rule did.
-    relayed = board((10, "relayed", BACKLOG, "2026-08-20", LOW)) + details(
+    relayed = board((10, "relayed", BACKLOG, "2026-08-01", LOW)) + details(
         (10, "relayed", f"Problem.\n\n**Edvard, 08-29:** {RELAY}do the thing."))
     other = board((64, "the immediate idea", BACKLOG, "2026-08-12", IMMEDIATE))
     rows = (open_rows(relayed, "issue")

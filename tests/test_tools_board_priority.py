@@ -275,13 +275,13 @@ def test_a_rated_row_is_refused_before_the_dry_run_prints_a_move(store, capsys):
 
 @pytest.mark.parametrize("spelling", ["immediate", "🔴 Immediately", "urgent"])
 def test_immediately_is_refused_even_on_an_unrated_row(store, capsys, spelling):
-    """Immediately is his to give, and it is the rating idea #267 carried
-    when it took the queue. A blank row may be rated, only never there."""
+    """The skip-to-top tier is the one rating that still moves work, and the
+    jump idea #267 got. A blank row may be rated, only never there."""
     before = _contents(store)
     assert _rows(store)[261]["priority"] == "", "the fixture row must be unrated"
 
     assert _run(priority=spelling) == 1
-    assert "his to give" in capsys.readouterr().err
+    assert "skip-to-top" in capsys.readouterr().err
     assert _contents(store) == before
     assert not _writes(store)
 

@@ -322,6 +322,11 @@ def apply_claims(items, live, my_cycle=None):
 #: less said about it, so it cannot sort ahead of one he rated.
 _UNLISTED_PROJECT = float("inf")
 
+#: The rating that means "ahead of the project order", not "the most urgent
+#: row inside its project" -- the skip-to-top tier in `rank`. Removed by
+#: issue #202 and restored on his capture of 2026-09-11; see `rank`.
+_SKIP_TO_TOP = "immediate"
+
 
 def project_ranks(markdown):
     """`projects.md` -> `{lowercased project name: rank}`, best first.
@@ -606,15 +611,18 @@ def rank(rows, projects=None, milestones=None):
         0 if r.get("waiting") and not r.get("replyHeldBy")
         and not r.get("relayed") else 1,
         1 if r.get("statusKey") == _BLOCKED else 0,
-        # **No rating above the project order either.** A skip-to-top key
-        # read the row's own 🔴 Immediately here until issue #202 closed:
-        # the spec's correction of 2026-09-10 keeps the rating only as the
-        # intent he taps in at capture, and *"nothing downstream --
-        # `nova_next.rank`, the picker, the project standings -- reads a
-        # rating again"*. That tier is also the exact jump idea #267 got on
-        # 2026-09-09 when a cycle's row read Immediately for half an hour.
-        # What he wants next goes at the top of his project list, or first
-        # in its milestone, and both are read below.
+        # **Skip-to-top: a row he rated 🔴 Immediately goes ahead of the
+        # project order.** Issue #202 took this tier out (Cycle 1415) and he
+        # asked for it back four hours later, capture 2026-09-11: *"a
+        # task/issue I rate Immediately should be done by the very next
+        # cycle, ahead of project/milestone order, regardless of which
+        # project it's in."* The jump idea #267 got on 2026-09-09 was a
+        # CYCLE's row reading Immediately; `tools.board_priority` refuses a
+        # cycle that rating since Cycle 1412, so the only Immediately left
+        # to read here is his. It sits under the blocked key on purpose: a
+        # row waiting on him cannot be done by the next cycle whatever he
+        # rated it.
+        0 if r["priorityKey"] == _SKIP_TO_TOP else 1,
         (projects or {}).get((r.get("project") or "").lower(), _UNLISTED_PROJECT),
         # **The milestone tier, inside the project the tier above just
         # chose.** `milestones` is `milestone_ranks(rows)` and passing

@@ -85,12 +85,11 @@ def test_the_reservation_changes_which_row_ranks_first():
     assert rank(rows, forced)[0]["number"] == 11
 
 
-def test_an_immediately_row_no_longer_beats_the_reservation():
-    """Issue #202 took the skip-to-top tier out of `rank`, so a 🔴 row in
-    Nova waits for the maintenance row on a reserved cycle like any other."""
+def test_skip_to_top_still_beats_the_reservation():
+    """The spec puts the reservation in tier 3, under skip-to-top."""
     rows = [row(10, "Nova", priority="immediate"), row(11, "Infra")]
     forced, _ = reserve_maintenance({"nova": 0, "infra": 1}, rows, 1105)
-    assert rank(rows, forced)[0]["number"] == 11
+    assert rank(rows, forced)[0]["number"] == 10
 
 
 def test_both_board_names_are_reserved():

@@ -26,14 +26,12 @@ app's own rating route went in Cycle 1404, so this is the one write path left.
 
 Nothing records who set a rating, so every rating already on an open row is
 treated as his. That over-covers the rows I rated at boarding, and it costs
-nothing: since #202 closed, no ranking reads a rating at all (`nova_next.rank`
-lost its last one, the skip-to-top tier, in Cycle 1415), so re-rating one of
-mine would change nothing a cycle does. Immediately stays refused anyway: it is
-the rating #267 carried when it took the queue, it is his intent to state, and
-refusing it costs nothing now that it orders nothing. So a blank row may still
-be rated -- blank means nobody has looked -- but only below Immediately. A
-cycle that thinks one of his ratings is wrong says so in a comment on the row,
-and he decides.
+nothing: after #202 no ranking reads a rating below the skip-to-top tier
+(`nova_next.rank`), so re-rating one of mine would change nothing a cycle does.
+The one rating that still moves work is Immediately, the skip-to-top tier, and
+that is the exact jump #267 got. So a blank row may still be rated -- blank
+means nobody has looked -- but only below Immediately. A cycle that thinks one
+of his ratings is wrong says so in a comment on the row, and he decides.
 
 **This is the last of the `tools/board_*.py` writers converted onto
 `agora_runner.board_write` for issue #203** (Cycle 1377). Until then it parsed
@@ -99,7 +97,8 @@ from agora_runner.nova_boards import (
 # both tools so neither can drift.
 CLOSED_STATUS_KEYS = frozenset({"done", "outdated"})
 
-# Only the owner puts a row at this rating; see the module docstring.
+# The skip-to-top tier `nova_next.rank` still reads. Only the owner puts a row
+# there; see the module docstring.
 IMMEDIATE = PRIORITY_LABELS["immediate"]
 
 
@@ -159,8 +158,8 @@ def refuse_row(contents, number, priority=None):
                         "a boarded row is his: a cycle may not overwrite it (issue #202). "
                         "Propose the change in a comment on the row instead")
             if priority == IMMEDIATE:
-                return (f"#{number}: {IMMEDIATE} is his to give -- a cycle may not "
-                        "put a row there (issue #202)")
+                return (f"#{number}: {IMMEDIATE} is the skip-to-top tier and it is his "
+                        "to give -- a cycle may not put a row there (issue #202)")
             return None
     return f"#{number} is not a row on this board"
 
