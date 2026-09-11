@@ -9031,6 +9031,7 @@
       list.appendChild(milestoneDrawer(
         project, milestone, rows, index, milestones.length));
     });
+    attachDrawerMilestoneDrag(list, project);
     wrap.appendChild(list);
 
     // The full page keeps its place: this drawer answers "what is left",
@@ -9332,6 +9333,26 @@
       gripClass: "project-milestone-grip",
       nameAttr: "data-milestone",
       draggingClass: "project-milestone--dragging",
+      noteSelector: ".project-milestone-move-note",
+      send: function (name, position, note) {
+        sendMilestonePin(project, name, position, note);
+      }
+    });
+  }
+
+  /* The same gesture on the milestones in the project drawer. The drawer
+   * drew `milestoneMoveControls`, grip included, from the day the arrows
+   * went in, and nothing attached the gesture to it -- so the grip sat
+   * there and did nothing when pressed. Same grip class, same note and the
+   * same `sendMilestonePin` as the project page's list; only the row class
+   * differs, and the drawer draws the same `payload.milestones` in the same
+   * order, so a drop position means the same seat on both screens. */
+  function attachDrawerMilestoneDrag(list, project) {
+    attachRowDrag(list, {
+      rowClass: "project-drawer-milestone",
+      gripClass: "project-milestone-grip",
+      nameAttr: "data-milestone",
+      draggingClass: "project-drawer-milestone--dragging",
       noteSelector: ".project-milestone-move-note",
       send: function (name, position, note) {
         sendMilestonePin(project, name, position, note);

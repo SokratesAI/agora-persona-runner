@@ -14764,6 +14764,92 @@ describe("the project page", () => {
       "a task drag did not write the seat it landed on through the row order route");
   });
 
+  test("a milestone in the drawer can be dragged by its grip, and a task grip inside it cannot", async () => {
+    /* Issue #202: the drawer drew a milestone grip beside the arrows and
+     * nothing attached the gesture to it, so pressing it did nothing. The
+     * milestone list holds each milestone's task list, and that list has a
+     * drag of its own -- so the second half proves a task drag bubbling up
+     * through the milestone list is not also read as a milestone drag. */
+    const pins = [];
+    const orders = [];
+    const window = await loadSite("/projects", {
+      project: (url) => {
+        if (!String(url).includes("name=Marcus")) return STANDING;
+        return {
+          name: "Marcus", asked: "Marcus",
+          milestones: [{ name: "M1", open: 2, pin: 0 },
+                       { name: "M2", open: 0, pin: 0 },
+                       { name: "M3", open: 0, pin: 0 }],
+          boards: {
+            issues: { total: 2, columns: [{ key: "backlog", label: "Backlog", items: [
+              { number: 41, title: "a", milestone: "M1", order: 1 },
+              { number: 42, title: "b", milestone: "M1", order: 2 },
+            ] }] },
+            ideas: { total: 0, columns: [] },
+          },
+        };
+      },
+    });
+    window.fetch = ((real) => (url, options) => {
+      const sink = { "/api/milestone/pin": pins, "/api/row/order": orders }[String(url)];
+      if (sink) {
+        sink.push(JSON.parse(options.body));
+        return Promise.resolve({ ok: true, status: 200,
+          json: () => Promise.resolve({ ok: true }) });
+      }
+      return real(url, options);
+    })(window.fetch);
+    const press = (node, type, clientY) => node.dispatchEvent(
+      new window.MouseEvent(type, { bubbles: true, cancelable: true, clientY }));
+
+    const row = standings(window)[0];
+    const head = row.querySelector(".project-standing-link");
+    click(window, head);
+    for (let i = 0; i < 40 && !row.querySelector(".project-drawer-milestone"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const milestones = [...row.querySelectorAll(".project-drawer-milestone")];
+    assert.equal(milestones.length, 3);
+    // Centres 20, 60, 100.
+    milestones.forEach((m, i) => {
+      m.getBoundingClientRect = () => ({
+        top: i * 40, bottom: (i * 40) + 40, height: 40, left: 0, right: 100, width: 100,
+      });
+    });
+    const tasks = [...milestones[0].querySelectorAll(".project-drawer-task")];
+    // Centres 220, 260 -- clear of the milestone rows.
+    tasks.forEach((t, i) => {
+      t.getBoundingClientRect = () => ({
+        top: 200 + (i * 40), bottom: 240 + (i * 40), height: 40, left: 0, right: 100, width: 100,
+      });
+    });
+    const grip = (m) => m.querySelector(".project-milestone-move .project-milestone-grip");
+    assert.equal(grip(milestones[0]).getAttribute("data-milestone"), "M1");
+
+    click(window, grip(milestones[0]));
+    assert.equal(head.getAttribute("aria-expanded"), "true",
+      "tapping a milestone's grip folded the project drawer");
+
+    // A task drag inside M1: #41 from 220 to 265, past #42 -> seat 2.
+    const taskGrip = tasks[0].querySelector(".project-task-grip");
+    press(taskGrip, "pointerdown", 220);
+    press(taskGrip, "pointermove", 265);
+    press(taskGrip, "pointerup", 265);
+    // A wobble on M3's grip under the slop is a tap, not a move.
+    press(grip(milestones[2]), "pointerdown", 100);
+    press(grip(milestones[2]), "pointermove", 104);
+    press(grip(milestones[2]), "pointerup", 104);
+    // M1 from 20 to 105: past M2 (60) and M3 (100) -> position 3.
+    press(grip(milestones[0]), "pointerdown", 20);
+    press(grip(milestones[0]), "pointermove", 105);
+    press(grip(milestones[0]), "pointerup", 105);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(orders, [{ target: "issues", number: 41, position: 2 }],
+      "the task drag did not write through the row order route");
+    assert.deepEqual(pins, [{ project: "Marcus", milestone: "M1", position: 3 }],
+      "a milestone drag in the drawer did not write the position it landed on through the pin route");
+  });
+
   test("the milestone controls sit on the right too, grip last", () => {
     // Same mechanism as the project card's, and the same mistake avoided:
     // the note's auto margin is what pushes them right, so the note has to
