@@ -20,7 +20,7 @@
  * read on his phone as "the buttons are gone". The activate handler below
  * deletes every cache whose key is not this one, so changing the name is
  * what evicts the stale shell. Bump it whenever the shell files change. */
-var CACHE = "nova-v21";
+var CACHE = "nova-v22";
 /* Where a push handler parks the thread its notification is about.
  *
  * A second cache rather than a corner of the first one, because the two
