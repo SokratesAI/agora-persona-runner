@@ -14865,7 +14865,7 @@
      * moves behind the `+`.
      *
      * The three controls are MOVED here, not rebuilt: `attach.button` and
-     * the two voice buttons already carry their own listeners and their own
+     * the mic already carries its own listeners and its own
      * state (`aria-pressed` while the mic is listening), and a second copy
      * would be a second set of both. Only their parent changes.
      *
@@ -14919,20 +14919,83 @@
     }
     asTile(attach.button, "Files");
     asTile(document.getElementById("chat-mic"), "Speak");
-    asTile(document.getElementById("chat-speak"), "Read aloud");
+    /* The model picker left this drawer on 2026-09-11 for the Settings
+     * drawer behind `⋮` (below), and read-aloud was removed outright. This one is "add something to what
+     * I am about to send"; those two are how the conversation behaves. */
 
-    /* The model picker joins them -- his ask, 2026-09-08. It was a pill in
-     * the composer row beside `+`, which is a control he changes rarely
-     * sitting permanently next to the one he uses constantly. In here it is
-     * a full row under the tiles rather than a fourth tile: it is a
-     * <select> with a name in it, not a glyph, and squeezing "Claude Opus
-     * 5" into a 5rem tile would either wrap or ellipsis away the one thing
-     * it says. The host is MOVED, so the picker keeps whatever it has
-     * already fetched and its change handler with it. */
-    var modelRow = el("div", "extras-model");
-    modelRow.appendChild(el("span", "extras-model-label", "Model"));
+
+    /* The Settings drawer behind `⋮` -- his ask, 2026-09-11: *"a three
+     * stacked dot button on the left side that opens a 'settings' drawer and
+     * move the 'choose model' and read out loud to be moved there... in
+     * settings we can add a third thing which is 'generate title' that prompts
+     * the haiku to re-geneate the title if i notice the conversation drifts
+     * too much."*
+     *
+     * Built on `makeActionSheet`, the same drawer factory the message actions
+     * and the capture sheet use, so it slides, drags and dismisses like every
+     * other drawer here. Nothing closes it on a tap: it holds three settings,
+     * and toggling read-aloud should not take the model picker away.
+     *
+     * The model host is MOVED in, never rebuilt, for the reason the `+`
+     * drawer gave: it carries its own state and handlers. */
+    var settingsBtn = document.getElementById("chat-settings");
+    var settingsSheet = makeActionSheet({
+      className: "msg-sheet--settings",
+      openVh: 40,
+      minVh: STEP_SHEET_MIN_VH,
+      maxVh: STEP_SHEET_MAX_VH,
+      dismissVh: STEP_SHEET_DISMISS_VH
+    });
+    var modelRow = el("div", "settings-row");
+    modelRow.appendChild(el("span", "settings-label", "Model"));
     if (modelHost) modelRow.appendChild(modelHost);
-    extrasBody.appendChild(modelRow);
+    var titleBtn = el("button", "settings-action", "Generate title");
+    titleBtn.type = "button";
+    titleBtn.title = "Ask Haiku for a fresh title from this conversation";
+
+    /* Parked in the document, hidden, until the drawer first opens -- the
+     * same pattern `#capture-types` uses. Left detached, the model picker
+     * paints into a node nothing can see, and nothing else can reach it. `open` moves them into the sheet from here. */
+    var settingsParking = el("div", "settings-parking");
+    settingsParking.hidden = true;
+    settingsParking.appendChild(modelRow);
+    settingsParking.appendChild(titleBtn);
+    document.body.appendChild(settingsParking);
+
+    titleBtn.addEventListener("click", function () {
+      if (titleBtn.disabled) return;
+      if (!source || source.kind !== "conv" || !source.id) {
+        toast("only a conversation can be retitled", true);
+        return;
+      }
+      var forId = source.id;
+      titleBtn.disabled = true;
+      titleBtn.textContent = "Generating…";
+      chatWrite("/api/conversations/retitle", { id: forId })
+        .then(function (named) {
+          if (typeof named !== "string" || !named) throw new Error("no title came back");
+          // He may have switched threads while Haiku thought about it.
+          if (!source || source.id !== forId) return;
+          source.name = named;
+          source.untitled = false;
+          titleEl.textContent = named;
+          rememberSource();
+          if (dock.classList.contains("list-open")) loadList(true);
+          toast("Title: " + named);
+        })
+        .catch(function (err) { toast("could not generate a title: " + err.message, true); })
+        .then(function () {
+          titleBtn.disabled = false;
+          titleBtn.textContent = "Generate title";
+        });
+    });
+
+    if (settingsBtn) {
+      settingsBtn.addEventListener("click", function () {
+        var rows = [modelRow, titleBtn];
+        settingsSheet.open(rows, "Settings", { closeOnPick: false });
+      });
+    }
 
     var plusBtn = document.getElementById("chat-plus");
     var extrasHide = null;
@@ -14989,80 +15052,31 @@
      * text like this."*
      *
      * This is the browser half and it is the whole of the first slice. The
-     * mic dictates into the same box he types in; the speaker reads each new
-     * answer back. There is no server, no model and no per-token cost --
-     * `SpeechRecognition` and `speechSynthesis` are the phone's own, and on
+     * mic dictates into the same box he types in. (A speaker that read each
+     * answer back was removed on 2026-09-11, his words: *"I will never use
+     * it."*) There is no server, no model and no per-token cost --
+     * `SpeechRecognition` is the phone's own, and on
      * iOS the recogniser is still only under the `webkit` prefix. The
      * mechanism the row was open about (a WhatsApp call, some other dialler,
      * or something in the app) is answered here by the cheapest of the three:
      * it ships in one page load and needs nothing of his to be set up.
      *
-     * Each button is revealed only if the API behind it is present, so a
-     * browser with neither shows exactly the composer it always had.
+     * The mic is revealed only if the API behind it is present, so a
+     * browser without one shows exactly the composer it always had.
      */
-    var voice = (function () {
+    (function () {
       var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      var synth = window.speechSynthesis;
       var micBtn = document.getElementById("chat-mic");
-      var speakBtn = document.getElementById("chat-speak");
-      var SPEAK_KEY = "nova-chat-speak";
       var listening = null;
-      var speakOn = false;
-      /* The newest message as it stood at the last paint, sender and text
-       * together. A *count* is the obvious key and it is the wrong one:
-       * `loadOlder` prepends history, so the array grows by twenty without a
-       * word being said, and a count-based rule would read a message from
-       * last Tuesday out loud. Comparing the tail only moves when the tail
-       * moves. `null` means nothing painted yet. */
-      var lastTail = null;
-
       function speechLang() {
         return document.documentElement.lang
           || (window.navigator && window.navigator.language)
           || "en-US";
       }
 
-      /* Markdown is written to be looked at. Read aloud, the markers are
-       * noise -- "star star merged star star" -- so they come out and the
-       * words stay. A fenced block becomes the words "code block" rather
-       * than being spelled character by character. */
-      function plainSpeech(text) {
-        return String(text)
-          .replace(/```[\s\S]*?```/g, " code block ")
-          .replace(/`([^`]*)`/g, "$1")
-          .replace(/!\[[^\]]*\]\([^)]*\)/g, " image ")
-          .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-          // A `#` only comes out at the start of a line, where it is a
-          // heading. Stripping it everywhere turns `runner#42` into
-          // "runner 42", and a PR number is the one thing in these answers
-          // he most needs to hear correctly. `_` is left alone for the same
-          // reason -- `nova_site` is a name, not emphasis.
-          .replace(/^[ \t]*[#>]+[ \t]*/gm, "")
-          .replace(/\*/g, "")
-          .replace(/\s+/g, " ")
-          .trim();
-      }
-
-      function say(text) {
-        var words = plainSpeech(text);
-        if (!words) return;
-        // One answer at a time: a second one arriving mid-sentence replaces
-        // the first rather than queueing behind it, because the one he is
-        // waiting to hear is always the newest.
-        synth.cancel();
-        var utterance = new window.SpeechSynthesisUtterance(words);
-        utterance.lang = speechLang();
-        synth.speak(utterance);
-      }
-
       function syncMic() {
         if (!micBtn) return;
         micBtn.setAttribute("aria-pressed", listening ? "true" : "false");
-      }
-
-      function syncSpeak() {
-        if (!speakBtn) return;
-        speakBtn.setAttribute("aria-pressed", speakOn ? "true" : "false");
       }
 
       function startListening() {
@@ -15104,27 +15118,6 @@
         }
       }
 
-      /* Called on every paint of the thread. */
-      function heard(messages) {
-        var list = messages || [];
-        var newest = list.length ? list[list.length - 1] : null;
-        var tail = newest ? (newest.sender + "\n" + newest.text) : "";
-        var was = lastTail;
-        lastTail = tail;
-        // First paint is history he has already read, and an unchanged tail
-        // is a repaint. Neither is something to read out.
-        if (was === null || tail === was) return;
-        if (!speakOn || !synth) return;
-        if (!newest || newest.sender === "Edvard" || !newest.text) return;
-        say(newest.text);
-      }
-
-      /* Switching threads makes the next paint history again -- without
-       * this, opening another conversation reads its last answer aloud. */
-      function forget() {
-        lastTail = null;
-      }
-
       if (micBtn && Recognition) {
         micBtn.removeAttribute("hidden");
         micBtn.addEventListener("click", function () {
@@ -15136,27 +15129,6 @@
         });
       }
 
-      if (speakBtn && synth) {
-        speakBtn.removeAttribute("hidden");
-        try {
-          speakOn = window.localStorage.getItem(SPEAK_KEY) === "on";
-        } catch (err) {
-          speakOn = false;
-        }
-        syncSpeak();
-        speakBtn.addEventListener("click", function () {
-          speakOn = !speakOn;
-          // Switching it off stops the sentence in progress. Leaving it
-          // talking would make the button a lie about the next answer only.
-          if (!speakOn) synth.cancel();
-          try {
-            window.localStorage.setItem(SPEAK_KEY, speakOn ? "on" : "off");
-          } catch (err) { /* private mode: the toggle still works, it just won't survive a reload */ }
-          syncSpeak();
-        });
-      }
-
-      return { heard: heard, forget: forget };
     })();
 
     function setDot(on) {
@@ -15190,10 +15162,6 @@
        * check only ever tests the mutation I thought of. */
       if (!isOpen && loaded && messages.length > lastCount) setDot(true);
       lastCount = messages.length;
-      // Reads the newest answer aloud when the speaker is switched on. It
-      // runs on every paint, including the ones that change nothing -- the
-      // decision about whether anything is new lives inside it.
-      voice.heard(messages);
       /* Both of these are read **before** the repaint and neither can be read
        * after it: `renderAskThread` empties the container, and emptying it
        * puts `scrollTop` back to 0. So a version of this that asked where he
@@ -15932,9 +15900,6 @@
       // looking at right now.
       loaded = false;
       lastCount = 0;
-      // Same reason, for the speaker: the newest message on a thread he has
-      // just opened is not an answer that arrived, so it is not read aloud.
-      voice.forget();
       // A new thread opens on its newest page, whatever he had scrolled back
       // to on the last one.
       pageLimit = PAGE_STEP;
@@ -16607,7 +16572,12 @@
       // message can name an untitled thread, and a re-title is impossible
       // before his third message because the server wants two in a row.
       var mine = thread.querySelectorAll(".ask-msg.ask-mine");
-      var titleFor = conv && (source.untitled || mine.length >= 2)
+      /* The first message only -- his call, 2026-09-11, *"Set once."* This
+       * used to fire on every message after the second as well, so the
+       * server could re-title a thread it thought had drifted; that is what
+       * renamed his threads to his latest line. Drift is now his button, in
+       * Settings. */
+      var titleFor = conv && source.untitled
         ? { id: source.id, name: source.name, text: text,
             // Every message of his in the thread, oldest first, not this
             // one. The server reads two different things out of it: which

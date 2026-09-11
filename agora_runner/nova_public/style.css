@@ -2991,20 +2991,20 @@ body.has-full-chart { overflow: hidden; }
    margin has to land on; when a voice button is on screen the `~` rule
    below hands the margin over to that one instead and this drops to 0. */
 .chat-actions .chat-plus { margin-left: auto; margin-right: 0.1rem; font-size: 1.5rem; }
-/* The two voice buttons (ideas.md #221) sit in the same right-hand group.
+/* The voice button (ideas.md #221 -- the mic; its speaker sibling was
+   removed 2026-09-11) sits in the same right-hand group.
    The `auto` margin has to land on the first control that is actually on
-   screen, and both of these are hidden on a browser with no speech API --
+   screen, and the mic is hidden on a browser with no speech API --
    `:not([hidden])` is what keeps the paperclip from being stranded in the
-   middle of a `space-between` row when they are. */
+   middle of a `space-between` row when it is. */
 .chat-actions .chat-voice:not([hidden]) { margin-left: auto; }
 .chat-actions .chat-voice:not([hidden]) ~ .chat-voice,
 .chat-actions .chat-voice:not([hidden]) ~ .attach-btn { margin-left: 0; }
 /* Pressed is a real state here rather than a hover flourish: the mic stays
-   pressed while it is listening and the speaker while it is switched on, and
-   on a phone there is no hover to tell him either. */
-/* Pressed is still a real state -- the mic while it listens, the speaker
- * while it is on -- drawn as a filled disc now the resting button has no
- * ring to recolour. */
+   pressed while it is listening, and on a phone there is no hover to tell
+   him either. */
+/* Pressed is still a real state -- the mic while it listens -- drawn as a
+ * filled disc now the resting button has no ring to recolour. */
 .chat-voice[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
 .chat-voice[aria-pressed="true"] .chat-glyph { filter: none; opacity: 1; }
 
@@ -3479,9 +3479,10 @@ body.has-full-chart { overflow: hidden; }
 .chat-actions .attach-btn { border: 1px solid var(--outline); }
 
 .attach-btn:hover:not(:disabled) { color: var(--text); }
-/* The emoji in these two carry their own colour, which no `color` can
- * reach -- the speaker renders bright blue beside two monochrome glyphs.
- * Desaturating is the one thing that makes the row read as one set. */
+/* The mic's emoji carries its own colour, which no `color` can reach, and
+ * desaturating is what makes it read as one set with the monochrome glyphs
+ * beside it. (The speaker's bright blue was the case that forced this; the
+ * speaker was removed on 2026-09-11.) */
 .chat-glyph { filter: grayscale(1); opacity: 0.85; font-size: 1.05rem; }
 .attach-btn:disabled { color: var(--dim); cursor: default; }
 
@@ -4215,6 +4216,52 @@ body.chat-open { overflow: hidden; }
   cursor: pointer;
 }
 .chat-send:disabled { opacity: 0.45; cursor: default; }
+
+/* `⋮` -- the Settings drawer's button, first in the composer row (his ask,
+   2026-09-11). Its own class and NOT `.attach-btn`: that class carries
+   `margin-left: auto` in this row, and a second auto margin here would split
+   the free space and strand `+` mid-row -- the bug fixed on 2026-09-08.
+   `--outline` for the edge, per the 3:1 control-contrast test. */
+.chat-settings {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 999px;
+  /* No ring -- his ask, 2026-09-11. It is a glyph he taps now and then,
+     and the ring made it read as a second `+`. */
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.chat-settings:hover { color: var(--text); }
+
+/* The rows inside that drawer: a label left, its control right. */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  min-height: 44px;
+  padding: 0.3rem 0;
+}
+.settings-label { font-size: 0.9rem; color: var(--dim); }
+.settings-row #chat-model-host select { max-width: 60vw; }
+.settings-action {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 0.5rem;
+  border-radius: 10px;
+  border: 1px solid var(--outline);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-action:disabled { opacity: 0.55; cursor: default; }
 
 /* The model picker, in the composer instead of across the top of the panel.
  * A compact pill beside `+`, the way Claude shows "Sonnet 5" -- it was a

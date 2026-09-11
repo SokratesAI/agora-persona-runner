@@ -206,18 +206,22 @@
     <textarea id="chat-box" class="chat-box" rows="1" placeholder="Ask anything&#8230;"
               autocapitalize="sentences" autocomplete="off"></textarea>
     <div class="chat-actions">
+      <!-- Settings, on the LEFT -- his ask, 2026-09-11: *"a three stacked dot
+           button on the left side that opens a 'settings' drawer"*. The model
+           picker and read-aloud move into it; `+` keeps Speak and Files. It
+           is on the left on purpose despite the right-thumb rule: that rule is
+           for controls he presses constantly, and these he changes rarely. -->
+      <button id="chat-settings" class="chat-settings" type="button"
+              title="Settings" aria-label="Settings" aria-haspopup="dialog">&#8942;</button>
       <div id="chat-model-host"></div>
       <p id="chat-status" class="chat-status" role="status" aria-live="polite"></p>
-      <!-- Both start hidden and app.js reveals whichever of the two speech
-           APIs this browser actually has (ideas.md #221). A control that
+      <!-- The mic starts hidden and app.js reveals it only on a browser that
+           has speech recognition (ideas.md #221). Its sibling, a speaker that
+           read answers aloud, was removed on 2026-09-11 at his ask. A control that
            cannot do anything is worse than no control. -->
       <button id="chat-mic" class="attach-btn chat-voice" type="button" hidden
               title="Speak your question" aria-label="Speak your question" aria-pressed="false">
         <span class="chat-glyph" aria-hidden="true">&#127908;</span>
-      </button>
-      <button id="chat-speak" class="attach-btn chat-voice" type="button" hidden
-              title="Read answers aloud" aria-label="Read answers aloud" aria-pressed="false">
-        <span class="chat-glyph" aria-hidden="true">&#128266;</span>
       </button>
       <!-- `+` sits here, immediately left of Send, and the model picker
            moved into the drawer behind it (his ask, 2026-09-08). -->

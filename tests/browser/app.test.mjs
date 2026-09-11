@@ -13737,6 +13737,61 @@ describe("holding a conversation in the switcher opens edit options", () => {
       "the + reported a failure for a conversation the server made");
   });
 
+  test("⋮ is first in the composer row and opens Settings", async () => {
+    /* His ask, 2026-09-11: *"a three stacked dot button on the left side that
+     * opens a 'settings' drawer and move the 'choose model' and read out loud
+     * to be moved there. The speak and files should still be in the + button.
+     * ... a third thing which is 'generate title'."* */
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    const row = window.document.querySelector(".chat-actions");
+    assert.equal(row.firstElementChild.id, "chat-settings", "⋮ is not the leftmost control");
+    // `+` keeps Files and Speak, and only those.
+    const extras = window.document.getElementById("chat-extras");
+    assert.ok(extras.contains(window.document.getElementById("chat-mic")), "Speak left the + drawer");
+    assert.equal(window.document.getElementById("chat-speak"), null,
+      "read-aloud was removed and is back");
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const sheet = window.document.querySelector(".msg-sheet--settings");
+    assert.ok(sheet && !sheet.hidden, "⋮ opened nothing");
+    assert.equal(sheet.querySelector(".msg-sheet-title").textContent, "Settings");
+    assert.ok(sheet.querySelector("#chat-model-host"), "no model picker in Settings");
+    assert.equal([...sheet.querySelectorAll(".settings-label")]
+      .some((l) => l.textContent === "Read aloud"), false, "Read aloud is still in Settings");
+    // No ring on the button -- his ask, 2026-09-11.
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(css, /\.chat-settings \{[^}]*border:\s*0;/, "the settings button still has a border");
+    assert.ok([...sheet.querySelectorAll(".settings-action")]
+      .some((b) => b.textContent === "Generate title"), "no Generate title in Settings");
+  });
+
+  test("Generate title asks for a fresh one and puts it in the header", async () => {
+    /* The manual override for drift, since titles are otherwise set once.
+     * The reply mirrors the real route: `result` IS the new name. */
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    window.postReply = { ok: true, result: "c-9", name: "New chat", message: "c-9" };
+    window.document.querySelector("#chat-list .chat-list-fab")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    window.posted.length = 0;
+    window.postReply = { ok: true, result: "Gutter repair", message: "Gutter repair" };
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const button = [...window.document.querySelectorAll(".msg-sheet--settings .settings-action")]
+      .find((b) => b.textContent === "Generate title");
+    button.dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/retitle", { id: "c-9" }]]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Gutter repair");
+  });
+
   test("the default name steps aside for one already taken", async () => {
     /* "New chat", then "New chat - 2". Both still count as untitled to
      * `autotitle` (`is_untitled` server-side), so a numbered one still
@@ -16869,8 +16924,17 @@ describe("the model picker on a thread", () => {
       model: "anthropic:claude-opus-5", models: CATALOG, found: true,
     });
     const host = window.document.getElementById("chat-model-host");
-    assert.ok(window.document.getElementById("chat-extras").contains(host),
-      "the model picker is not inside the `+` drawer");
+    /* It moved again, 2026-09-11: out of the `+` drawer and into Settings,
+     * behind `⋮`. `+` is for adding to a message; the model is how the
+     * conversation behaves. Still MOVED rather than rebuilt -- the last
+     * assertion below is what would catch a rebuild. */
+    assert.equal(window.document.getElementById("chat-extras").contains(host), false,
+      "the model picker is still inside the `+` drawer");
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    const settings = window.document.querySelector(".msg-sheet--settings");
+    assert.ok(settings && settings.contains(host),
+      "the model picker is not inside the Settings drawer");
     assert.equal(window.document.querySelector(".chat-actions #chat-model-host"), null,
       "the model picker is still sitting in the composer row");
     assert.equal(pickerIn(window).value, "anthropic:claude-opus-5",
@@ -17046,13 +17110,6 @@ describe("talking to Nova", () => {
     };
   }
 
-  function fakeSynth(record) {
-    return {
-      speak(utterance) { record.spoken.push(utterance.text); },
-      cancel() { record.cancels += 1; },
-    };
-  }
-
   function withSpeech(win, { recognition, synthesis } = {}) {
     if (recognition) win.webkitSpeechRecognition = recognition;
     if (synthesis) {
@@ -17061,12 +17118,13 @@ describe("talking to Nova", () => {
     }
   }
 
-  test("a browser with no speech API shows neither button", async () => {
+  test("a browser with no speech API shows no mic, and there is no speaker at all", async () => {
     const window = await loadSite("/");
     assert.ok(window.document.getElementById("chat-mic").hasAttribute("hidden"),
       "a mic that cannot listen is worse than no mic");
-    assert.ok(window.document.getElementById("chat-speak").hasAttribute("hidden"),
-      "a speaker that cannot speak is worse than no speaker");
+    // Read-aloud was removed on 2026-09-11 -- his words, "I will never use it".
+    assert.equal(window.document.getElementById("chat-speak"), null,
+      "the read-aloud speaker is back");
   });
 
   test("dictation lands in the box he types in rather than sending on its own", async () => {
@@ -17118,64 +17176,6 @@ describe("talking to Nova", () => {
     assert.equal(record.started, 1);
   });
 
-  test("with the speaker on, an answer that arrives is read aloud and his own question is not", async () => {
-    const record = { spoken: [], cancels: 0 };
-    let timers;
-    const window = await loadSite("/", {
-      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
-      ask: answersOnPoll(),
-    });
-    const speaker = window.document.getElementById("chat-speak");
-    assert.equal(speaker.hasAttribute("hidden"), false, "the speaker stayed hidden on a browser that has one");
-    speaker.dispatchEvent(new window.Event("click"));
-    assert.equal(speaker.getAttribute("aria-pressed"), "true");
-
-    tap(window, "chat-btn");
-    await timers.fire();
-    assert.deepEqual(record.spoken, [], "it read the thread he opened, not the answer he was waiting for");
-
-    await timers.fire();
-    assert.deepEqual(record.spoken, ["Seven."], "the answer that landed was not read out");
-  });
-
-  test("with the speaker off, nothing is spoken", async () => {
-    const record = { spoken: [], cancels: 0 };
-    let timers;
-    const window = await loadSite("/", {
-      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
-      ask: answersOnPoll(),
-    });
-    // Deliberately not tapping the speaker: the default is silence, and this
-    // is the control for the test above -- without it that one would pass on
-    // a build that reads every answer aloud whatever the button says.
-    assert.equal(window.document.getElementById("chat-speak").getAttribute("aria-pressed"), "false");
-    tap(window, "chat-btn");
-    await timers.fire();
-    await timers.fire();
-    assert.deepEqual(record.spoken, []);
-  });
-
-  test("markdown markers come out of what is read aloud", async () => {
-    const record = { spoken: [], cancels: 0 };
-    let timers;
-    const answer = {
-      conversationId: "c", waiting: false,
-      messages: [
-        { id: "1", sender: "Edvard", text: "q" },
-        { id: "2", sender: "Nova", text: "**merged** `runner#42` and [the PR](https://x/1)\n\n```\nnpm test\n```" },
-      ],
-    };
-    let turn = 0;
-    const window = await loadSite("/", {
-      install: (win) => { timers = captureTimers(win); withSpeech(win, { synthesis: fakeSynth(record) }); },
-      ask: () => { turn += 1; return turn === 1 ? { conversationId: "c", waiting: true, messages: [{ id: "1", sender: "Edvard", text: "q" }] } : answer; },
-    });
-    window.document.getElementById("chat-speak").dispatchEvent(new window.Event("click"));
-    tap(window, "chat-btn");
-    await timers.fire();
-    await timers.fire();
-    assert.deepEqual(record.spoken, ["merged runner#42 and the PR code block"]);
-  });
 });
 
 /* The page half of the push prefetch (ideas #224 and #226).
