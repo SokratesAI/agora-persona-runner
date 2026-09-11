@@ -5000,6 +5000,18 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .project-milestone-unpin { min-width: 0; padding: 0 12px; font-size: 0.85rem; }
 .project-milestone-move-btn:disabled { opacity: 0.3; cursor: default; }
 .project-milestone-move-note { color: var(--dim); font-size: 0.85rem; }
+/* A task's arrows in the project drawer (issue #202). The milestone
+   controls' rules, one level down; the note eats the free space so the
+   arrows sit against the right edge. */
+.project-drawer-task { flex-wrap: wrap; }
+.project-task-move { display: flex; align-items: center; gap: 0.4rem; flex-basis: 100%; }
+.project-task-move-note { margin-right: auto; color: var(--dim); font-size: 0.85rem; }
+.project-task-move-btn {
+  min-width: 44px; min-height: 44px; border-radius: 8px;
+  border: 1px solid var(--outline); background: transparent; color: var(--text);
+  font-size: 1rem; cursor: pointer;
+}
+.project-task-move-btn:disabled { opacity: 0.3; cursor: default; }
 /* The grip he drags a milestone by (idea #260, M4). Same rules as the
    standing grip above and for the same reasons: `touch-action: none` on
    this element alone, so a finger anywhere else on the row still scrolls

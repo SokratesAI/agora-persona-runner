@@ -14687,6 +14687,78 @@ describe("the project page", () => {
       "moving a milestone in the drawer did not write through the pin route");
   });
 
+  test("a task in the drawer moves inside its own board's seats, through the row order route", async () => {
+    /* Issue #202, part 3: *"also adding functionality for me to change it."*
+     * `POST /api/row/order` numbers the open rows of ONE board inside a
+     * (project, milestone), so the arrows count positions among same-board
+     * open rows only -- an idea never trades a seat with an issue, and a
+     * done row has no arrows at all. The list is drawn in seat order. */
+    const posted = [];
+    const window = await loadSite("/projects", {
+      project: (url) => {
+        if (!String(url).includes("name=Marcus")) return STANDING;
+        return {
+          name: "Marcus", asked: "Marcus",
+          milestones: [{ name: "M1 — coach", open: 3, pin: 0 }],
+          boards: {
+            issues: { total: 1, columns: [{ key: "backlog", label: "Backlog", items: [
+              { number: 41, title: "the card lies", milestone: "M1 — coach", order: 1 },
+            ] }] },
+            ideas: { total: 3, columns: [
+              { key: "backlog", label: "Backlog", items: [
+                { number: 42, title: "log the set", milestone: "M1 — coach", order: 2 },
+                { number: 44, title: "rest timer", milestone: "M1 — coach", order: 1 },
+                /* Unseated: the server seeds these behind the seated rows
+                 * BY RATING, so #46 (Immediately) precedes #43 (Low) even
+                 * though its number is higher. */
+                { number: 43, title: "notes", milestone: "M1 — coach",
+                  order: null, priorityKey: "low" },
+                { number: 46, title: "sleep", milestone: "M1 — coach",
+                  order: null, priorityKey: "immediate" },
+              ] },
+              { key: "done", label: "Done", items: [
+                { number: 45, title: "old", milestone: "M1 — coach", done: true },
+              ] },
+            ] },
+          },
+        };
+      },
+    });
+    window.fetch = ((real) => (url, options) => {
+      if (String(url) === "/api/row/order") {
+        posted.push(JSON.parse(options.body));
+        return Promise.resolve({ ok: true, status: 200,
+          json: () => Promise.resolve({ ok: true }) });
+      }
+      return real(url, options);
+    })(window.fetch);
+
+    const row = standings(window)[0];
+    click(window, row.querySelector(".project-standing-link"));
+    for (let i = 0; i < 40 && !row.querySelector(".project-drawer-milestone"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const tasks = [...row.querySelectorAll(".project-drawer-task")];
+    assert.deepEqual(
+      tasks.map((t) => t.querySelector(".project-drawer-task-link").textContent),
+      ["#41 the card lies", "#44 rest timer", "#42 log the set",
+       "#46 sleep", "#43 notes", "#45 old"],
+      "the drawer is not drawing tasks in the order the server seats them");
+    const buttons = (t) => [...t.querySelectorAll(".project-task-move-btn")];
+    // #41 is the only open issue: nowhere to go on its own board.
+    assert.deepEqual(buttons(tasks[0]).map((b) => b.disabled), [true, true],
+      "an issue can be moved past an idea, which is a seat on another board");
+    assert.deepEqual(buttons(tasks[1]).map((b) => b.disabled), [true, false]);
+    // #43 is the last OPEN idea; the done #45 below it is not a seat.
+    assert.deepEqual(buttons(tasks[4]).map((b) => b.disabled), [false, true]);
+    assert.equal(buttons(tasks[5]).length, 0, "a done row has arrows");
+    // #46 is third among the open ideas, so "up" asks for seat 2.
+    click(window, buttons(tasks[3]).find((b) => b.textContent === "↑"));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(posted, [{ target: "ideas", number: 46, position: 2 }],
+      "moving a task did not write through the row order route");
+  });
+
   test("the milestone controls sit on the right too, grip last", () => {
     // Same mechanism as the project card's, and the same mistake avoided:
     // the note's auto margin is what pushes them right, so the note has to
