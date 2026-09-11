@@ -393,11 +393,14 @@ def test_a_project_that_dropped_everything_is_not_a_hundred_percent(monkeypatch)
     assert summary["open"] == 0
 
 
-def test_open_rows_are_counted_by_rating_worst_first(monkeypatch):
-    """Worst news first, and unrated last with a word rather than a blank.
+def test_the_summary_counts_open_rows_without_a_count_by_rating(monkeypatch):
+    """Issue #202: no rating on a boarded row, so no count of them either.
 
-    `PRIORITY_LABELS[""]` is the empty string, so an unrated bucket that
-    took its label from there would render a count beside nothing.
+    The summary sent `priorities` for the page's chip strip and the index
+    card's worst-row chip; both are gone, and a field nothing draws is a
+    field a later change draws again. The rows below are rated on purpose
+    -- an unrated fixture would pass whether or not the count survived --
+    and the open count must not move now that ratings are not tallied.
     """
     rows = [
         dict(_row(40, "A", "⚪ Backlog", "backlog", "Ghost"),
@@ -416,11 +419,8 @@ def test_open_rows_are_counted_by_rating_worst_first(monkeypatch):
         lambda name: {"items": rows if name == "issues" else []},
     )
     summary = nova_site.project_payload("Ghost")["summary"]
-    assert [(p["key"], p["count"]) for p in summary["priorities"]] == [
-        ("immediate", 1), ("low", 1), ("", 1),
-    ]
-    assert summary["priorities"][0]["label"] == "🔴 Immediately"
-    assert summary["priorities"][-1]["label"] == "Unrated"
+    assert "priorities" not in summary
+    assert (summary["open"], summary["done"]) == (3, 1)
 
 
 def test_the_index_carries_no_summary():

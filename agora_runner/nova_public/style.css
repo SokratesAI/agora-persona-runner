@@ -4792,14 +4792,6 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
    derived from. */
 .project-summary-pace { color: var(--dim); font-size: 0.85rem; margin-top: 6px; }
 .project-standing-pace { color: var(--dim); font-size: 0.8rem; margin-top: 4px; }
-.project-summary-prios { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.project-summary-prio {
-  font-size: 0.8rem;
-  color: var(--dim);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
 /* The portfolio standing, on the index -- idea #228's project-manager
    pass. Deliberately not styled as another row of pills: the pills above
    are a strip to scan and this is a list to read, so each entry is a full

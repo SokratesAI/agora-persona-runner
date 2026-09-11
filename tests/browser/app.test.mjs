@@ -14759,25 +14759,27 @@ describe("the project page", () => {
       "the drag grip toggled the drawer as well as being a grip");
   });
 
-  test("the project's own rating is gone; the worst open row's is not", async () => {
-    /* Two different facts wore the same chip until 2026-09-08. His ask --
-     * *"I do not want the old priority anymore, only the placement sorting
-     * priority"* -- removes the project's own rating, which was the weaker
-     * of two orderings and only ranked a project that had no position.
+  test("a project card carries no rating chip, even when the payload has one", async () => {
+    /* The project's own rating went on 2026-09-08 (*"I do not want the old
+     * priority anymore, only the placement sorting priority"*), and the
+     * worst-open-row chip beside it went with issue #202, whose spec says
+     * no rating appears on a boarded row and names this chip.
      *
-     * The other chip stays: it is the worst rating among the project's open
-     * ROWS, which is a fact about the work rather than a second dial for
-     * ordering the list. Deleting the test that covered both is how that
-     * one would have gone quietly. */
+     * STANDING still sends `priorities` with an Immediately in it on
+     * purpose: a cached server can, and the chip was drawn from exactly
+     * that, so an empty fixture would pass whether or not the code that
+     * drew it is gone. */
     const window = await loadSite("/projects", { project: () => STANDING });
     const rows = standings(window);
-    assert.deepEqual(
-      [...rows[0].querySelectorAll(".chip")].map((c) => c.textContent),
-      ["🔴 Immediately · 2"],
-      "the project's own rating chip is still drawn beside the row's worst");
-    // Nova's only open row is unrated, and "unrated" is not a severity.
-    assert.deepEqual(
-      [...rows[1].querySelectorAll(".chip")].map((c) => c.textContent), []);
+    assert.ok(STANDING.projectSummary.marcus.priorities.some((p) => p.key === "immediate"),
+      "the fixture no longer carries the rating the old chip was drawn from");
+    rows.forEach((row) => {
+      assert.deepEqual(
+        [...row.querySelectorAll(".chip")].map((c) => c.textContent), [],
+        "a rating chip is still drawn on a project card");
+      assert.equal(row.querySelector("[class*='prio']"), null,
+        "something rating-coloured is still drawn on a project card");
+    });
   });
 
   test("the index shows where each project stands, in the server's order", async () => {
@@ -15101,16 +15103,18 @@ describe("the project page", () => {
     assert.equal(counts, "4 done · 5 open");
   });
 
-  test("the rating counts carry the word, worst first", async () => {
+  test("the strip draws no count by rating, even when the payload has one", async () => {
+    /* Issue #202's spec names this strip with the project card's chip: no
+     * rating on a boarded row, and a count of them is a rating by another
+     * name. SUMMARISED still carries `priorities` so the test can fail --
+     * a cached server sends it, and this strip was drawn from it. */
     const window = await loadSite("/project/Nova", { project: () => SUMMARISED });
-    const chips = [...window.document.querySelectorAll(".project-summary-prio")];
-    assert.deepEqual(chips.map((c) => c.textContent), [
-      "🔴 Immediately · 1", "🟠 High · 3", "Unrated · 1",
-    ]);
-    // A reader who has to know a colour code has not been told anything --
-    // the word is in the label, and the class only colours it.
-    assert.ok(chips[0].classList.contains("prio-immediate"));
-    assert.ok(chips[2].classList.contains("prio-none"));
+    assert.ok(SUMMARISED.summary.priorities.length, "the fixture lost its ratings");
+    const box = window.document.querySelector(".project-summary");
+    assert.ok(box, "the strip itself is gone, not only its ratings");
+    assert.equal(box.querySelector(".project-summary-prios"), null);
+    assert.doesNotMatch(box.textContent, /Immediately|High|Unrated/,
+      "a rating word is still printed in the project's summary strip");
   });
 
   test("a project with no rows draws no strip at all", async () => {

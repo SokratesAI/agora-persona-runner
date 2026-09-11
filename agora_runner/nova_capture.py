@@ -56,7 +56,6 @@ from agora_runner.log import log
 from agora_runner.nova_boards import (
     _CLOSED_STATUS_KEYS,
     CAPTURE_PRIORITY_SEP,
-    PRIORITY_LABELS,
     MILESTONE_PINS_PATH,
     PROJECT_META_PATH,
     parse_project_meta,
@@ -1571,64 +1570,6 @@ def comment_on_row(target, number, comment, dated, author="Edvard", store=None):
 #: and an ImportError on the pod (the same call `nova_site._RECORD_BOARDS`
 #: makes).
 RECORD_BOARDS = {"issues": "issue", "ideas": "idea"}
-
-
-def set_priority(target, number, priority, store=None):
-    """Change one boarded row's rating. Returns (ok, message).
-
-    **Written to the #203 record store, not to his markdown** -- the rating
-    button is the first of the app's board writers off the file. It goes
-    through `board_write.change_row`, which re-reads the whole board after the
-    write and refuses if anything but this row's two keys moved, so the page
-    cannot be damaged by a rating any more than by `tools.board_priority`,
-    which makes the same write.
-
-    Refused before anything is written, all as `(False, message)`: a target
-    that is not one of his two boards, a rating that is not one of the four
-    (or blank, which is "unrated" and is allowed), a row that is not there, and
-    a finished row -- off `done` *and* off the status cell, because a `✅ Done`
-    row that never moved to `## Done` has `done` false, and a rating chip on a
-    finished item is the state Cycle 188 left empty on purpose.
-
-    **No retry.** The markdown version retried a 409 because the whole file
-    was one document and a cycle boarding anything collided with it. A row is
-    its own document now, so the only collision left is somebody writing this
-    same row between the read and the write, which `change_row` refuses
-    without writing; he taps again.
-
-    `store` is for tests. It is looked up at call time, not bound as a
-    default, so a monkeypatched `board_store` is the one a real call uses.
-    """
-    board = RECORD_BOARDS.get(target)
-    if board is None:
-        return False, f"unknown target: {target!r}"
-    priority = canonical_priority(priority)
-    if priority is None:
-        return False, f"unknown priority -- one of {sorted(PRIORITY_LABELS.values())}"
-    store = store or board_store
-
-    try:
-        before = board_records.contents(board, store=store)
-    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
-        log(f"nova-capture could not read the {target} records: {problem}")
-        return False, f"could not read {target}: {problem}"
-    row = next((item for item in before["items"] if item.get("number") == number), None)
-    if row is None or row.get("done") or \
-            status_key(row.get("status", "")) in _CLOSED_STATUS_KEYS:
-        return False, f"#{number} is not an open row on {target}"
-
-    try:
-        board_write.change_row(
-            board, number,
-            {"priority": priority, "priorityKey": priority_key(priority)},
-            store=store,
-        )
-    except (board_write.WriteRefused, board_write.BoardDamaged,
-            board_records.RecordError) as problem:
-        log(f"nova-capture failed rating #{number} on {target}: {problem}")
-        return False, f"could not write to {target}: {problem}"
-    log(f"nova-capture rated #{number} on {target} as {priority or '(unrated)'}")
-    return True, f"#{number} is now {priority or 'unrated'}"
 
 
 def set_row_order(target, number, position, store=None):
