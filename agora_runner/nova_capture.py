@@ -1229,15 +1229,21 @@ def comment_on_row(target, number, comment, dated, author="Edvard", store=None):
     end of the write-up, and the row's `updated` cell stamped with `dated` in
     the same write.
 
-    Every refusal comes back as `"#N is not a row on <target>: <why>"`. The
-    phrase is load-bearing: `_post_board_comment` answers 409 on it and 502 on
-    anything else, and the markdown version said exactly that for a missing
-    row *and* for a row with no write-up, because `append_detail_note`
-    returned `None` for both. The reason after the colon is new.
+    A `NoteRefused` comes back as `"#N is not a row on <target>: <why>"`. The
+    phrase is load-bearing: `_post_board_comment` answers 409 on it -- "nothing
+    there, do not retry" -- and 502 on anything else, and the markdown version
+    said exactly that for a missing row *and* for a row with no write-up,
+    because `append_detail_note` returned `None` for both. `append_note` checks
+    the write-up before the row, so a missing row's reason reads "has no
+    write-up" too; the 409 is right either way and the words are only
+    approximately so.
 
     **No retry**, for `set_priority`'s reason: a row is its own document now,
     so the only collision left is somebody writing this same row in between,
-    which `change_row` refuses without writing.
+    which `change_row` refuses without writing. That refusal is a plain
+    `WriteRefused` and deliberately does **not** get the phrase: a tap again
+    would work, so it is a 502 rather than a 409 telling the page there is
+    nothing there.
 
     `store` is for tests, looked up at call time like `set_priority`'s.
     """
@@ -1248,10 +1254,11 @@ def comment_on_row(target, number, comment, dated, author="Edvard", store=None):
     try:
         board_write.append_note(
             board, number, comment, dated, author=author, store=store)
-    except board_write.WriteRefused as problem:
+    except board_write.NoteRefused as problem:
         log(f"nova-capture refused a comment on #{number} on {target}: {problem}")
         return False, f"#{number} is not a row on {target}: {problem}"
-    except (board_write.BoardDamaged, board_records.RecordError) as problem:
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
         log(f"nova-capture failed commenting on #{number} on {target}: {problem}")
         return False, f"could not write to {target}: {problem}"
     log(f"nova-capture commented on #{number} on {target}")

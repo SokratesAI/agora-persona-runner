@@ -397,6 +397,29 @@ def test_a_refused_comment_writes_nothing(monkeypatch, target, number, text, why
     assert [c for c in fake.calls if c[0] == "write_row"] == []
 
 
+def test_a_same_row_collision_is_not_answered_as_a_missing_row(monkeypatch):
+    """`change_row` refuses when the row's revision moves between its two
+    reads. A tap again would land, so the site must answer 502, not the 409
+    that tells the page there is nothing there (reviewer, Cycle 1382)."""
+    import agora_runner.nova_capture as nova_capture
+
+    store = _records(monkeypatch)
+    real = store.read_row
+    seen = []
+
+    def moving(board, number):
+        seen.append(number)
+        doc = real(board, number)
+        return dict(doc, _rev=f"{len(seen)}-moved") if doc else doc
+
+    monkeypatch.setattr(store, "read_row", moving)
+    ok, message = nova_capture.comment_on_row("issues", 94, "Why?", "08-18")
+    assert len(seen) >= 2, "the collision was never staged -- change_row read once"
+    assert not ok and "changed between reading" in message
+    assert "is not a row" not in message
+    assert [c for c in store.calls if c[0] == "write_row"] == []
+
+
 def test_a_store_passed_in_is_the_one_a_comment_lands_in(monkeypatch):
     import agora_runner.nova_capture as nova_capture
     from agora_runner import board_records
