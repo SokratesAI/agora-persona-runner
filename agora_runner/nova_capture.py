@@ -70,7 +70,7 @@ from agora_runner.nova_boards import (
     _frontmatter_end,
     OUTDATED_STATUS,
     STATUS_LABELS,
-    set_row_order as _set_row_order_md,
+    row_order_seats as _row_order_seats,
     priority_key,
     status_key,
     split_capture_done,
@@ -1426,7 +1426,7 @@ def set_priority(target, number, priority, store=None):
     return True, f"#{number} is now {priority or 'unrated'}"
 
 
-def set_row_order(target, number, position):
+def set_row_order(target, number, position, store=None):
     """Place one boarded row at `position` inside its milestone. Returns (ok, message).
 
     Part 3 of `row-order-and-priority-migration.md`: *"make another cycle
@@ -1435,38 +1435,50 @@ def set_row_order(target, number, position):
     half shipped in #918 and nothing called it, so the Order cell existed and
     he had no way to write one.
 
-    Same read-modify-write and same 409 retry as `set_priority` one function
-    up, against the same two documents and for the same reason -- a cycle
-    boarding these files is the concurrent writer.
+    **Written to the #203 record store, not to his markdown** -- the seventh
+    of the app's board writers off the file, after `set_priority`,
+    `comment_on_row`, `edit_row`, `archive_row`, `set_project` and
+    `remove_row`. The seats are `nova_boards.row_order_seats`, the same rule
+    the markdown `set_row_order` runs, so the two cannot disagree about who
+    sits where: the first placement numbers the whole (project, milestone)
+    group, seeded by rating.
 
-    **A missing file is a refusal, unlike `capture`'s.** A capture creates the
-    file because the first capture has to land somewhere; a position is a
-    statement about a list of rows, and a file with no rows has no list.
+    **One `change_row` per row whose seat moves, and every refusal is decided
+    before the first of them.** A group is several documents, so there is no
+    revision spanning the writes; what survives of the old single-put promise
+    is that a placement naming a missing row, a closed row or a position
+    outside the group writes nothing at all. A row already in its seat is not
+    rewritten. If a write fails part-way the message says how many landed --
+    each seat written is a dense number, so the worst a half-finished group
+    can show is two rows on one seat until the next placement renumbers it.
 
-    `set_row_order` in `nova_boards` answering `None` is not a write failure
-    and is not retried, the same distinction `set_priority` draws: the row is
-    gone, closed, or the position is outside its own group, and re-reading
-    returns the same answer.
+    A missing row answers with `edit_row`'s 409 phrase, decided off the read.
+    **No retry**, for `set_priority`'s reason. `store` is for tests, looked
+    up at call time.
     """
-    path = CAPTURE_TARGETS.get(target)
-    if path is None:
+    board = RECORD_BOARDS.get(target)
+    if board is None:
         return False, f"unknown target: {target!r}"
-
-    result = ""
-    for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(path)
-        if current is None:
-            return False, f"{path} not found"
-        updated = _set_row_order_md(current, number, position)
-        if updated is None:
-            return False, f"cannot place #{number} on {target} at {position!r}"
-        result = vault_write_path(path, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture placed #{number} on {target} at {position}")
-            return True, f"#{number} is now #{position} in its milestone"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed placing #{number} on {target}: {result}")
-    return False, f"could not write to {target}: {result}"
-
-
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    if not any(item.get("number") == number for item in before["items"]):
+        return False, f"#{number} is not a row on {target}"
+    seats = _row_order_seats(before["items"], number, position)
+    if seats is None:
+        return False, f"cannot place #{number} on {target} at {position!r}"
+    held = {item["number"]: item.get("order") for item in before["items"]}
+    moves = [(row, seat) for row, seat in seats if held.get(row) != seat]
+    for written, (row, seat) in enumerate(moves):
+        try:
+            board_write.change_row(board, row, {"order": seat}, store=store)
+        except (board_write.WriteRefused, board_write.BoardDamaged,
+                board_records.RecordError) as problem:
+            log(f"nova-capture failed placing #{number} on {target}: {problem}")
+            return False, (f"could not write to {target}: {problem} -- "
+                           f"{written} of {len(moves)} seat(s) were written")
+    log(f"nova-capture placed #{number} on {target} at {position}")
+    return True, f"#{number} is now #{position} in its milestone"

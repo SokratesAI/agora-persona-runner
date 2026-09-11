@@ -2202,13 +2202,41 @@ def set_row_order(markdown, number, position):
     half ordered by hand and half by rating, which is not a state anything
     here can render honestly.
     """
+    seats = row_order_seats(parse_board(markdown or "")["items"], number, position)
+    if seats is None:
+        return None
+
+    lines = (markdown or "").split("\n")
+    for row_number, seat in seats:
+        index, cells = _row_span(lines, row_number, tables=("board",))
+        if index is None:
+            return None
+        # Padded up to the new width rather than refused, the same way
+        # `set_row_milestone` pads a row that predates *its* column.
+        while len(cells) < _BOARD_WIDTH:
+            cells.append("")
+        cells[8] = str(seat)
+        lines[index] = "| " + " | ".join(cells) + " |"
+        _ensure_board_columns(lines, index)
+    return "\n".join(lines)
+
+
+def row_order_seats(items, number, position):
+    """`[(row number, seat)]` for row `number`'s whole group after placing it
+    at `position`, or `None` if refused -- `set_row_order`'s rule, on rows.
+
+    Split out of `set_row_order` for issue #203 so the markdown writer and
+    the record-store writer (`nova_capture.set_row_order`) run one rule
+    rather than two copies of it. `items` is `parse_board`'s row list, which
+    is also what `board_records.contents` hands back. Every refusal and the
+    seeding are documented on `set_row_order`.
+    """
     try:
         position = int(position)
     except (TypeError, ValueError):
         return None
 
-    board = parse_board(markdown or "")
-    open_rows = [item for item in board["items"]
+    open_rows = [item for item in items
                  if not item["done"]
                  and status_key(item["status"]) not in _CLOSED_STATUS_KEYS]
     target = next((item for item in open_rows if item["number"] == number), None)
@@ -2244,20 +2272,7 @@ def set_row_order(markdown, number, position):
                                if item["number"] == number))
     which = seeded.pop(moving)
     seeded.insert(position - 1, which)
-
-    lines = (markdown or "").split("\n")
-    for seat, i in enumerate(seeded, start=1):
-        index, cells = _row_span(lines, group[i]["number"], tables=("board",))
-        if index is None:
-            return None
-        # Padded up to the new width rather than refused, the same way
-        # `set_row_milestone` pads a row that predates *its* column.
-        while len(cells) < _BOARD_WIDTH:
-            cells.append("")
-        cells[8] = str(seat)
-        lines[index] = "| " + " | ".join(cells) + " |"
-        _ensure_board_columns(lines, index)
-    return "\n".join(lines)
+    return [(group[i]["number"], seat) for seat, i in enumerate(seeded, start=1)]
 
 
 def parse_project_order_cell(cell):
