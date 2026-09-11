@@ -913,16 +913,81 @@ def test_a_reply_lands_as_an_indented_bullet_under_his_capture(issues_md):
     is keyed by a row number and a capture has none. Six handoffs in a row
     filed it.
     """
-    markdown = insert_captures(issues_md, ["the thing he typed"])
+    markdown = insert_captures(notes_md_text(), ["the thing he typed"])
+    index = [entry[2] for entry in nova_capture.capture_entries(markdown)].index(
+        "the thing he typed")
     with patch.object(nova_capture, "vault_read_path_rev", return_value=(markdown, "1-x")), \
             patch.object(nova_capture, "vault_write_path", return_value="written") as write:
-        ok, message = comment_on_capture("issues", 0, "the thing he typed", "Answered, cycle 430.")
+        ok, message = comment_on_capture("notes", index, "the thing he typed", "Answered, cycle 430.")
     assert ok, message
     path, content = write.call_args[0]
-    assert path == CAPTURE_TARGETS["issues"]
+    assert path == CAPTURE_TARGETS["notes"]
     assert "- the thing he typed\n  - Answered, cycle 430." in content
     # And the reply is not a second capture: his list still reads the same.
     assert list_captures(content) == list_captures(markdown)
+
+
+def notes_md_text():
+    return _fixture("notes_capture_sample.md")
+
+
+def test_a_reply_on_his_board_lands_on_the_captures_record(issues_md):
+    """His two boards are the #203 record store: the reply goes on the
+    record's `replies`, and nothing else on the board moves."""
+    records = _source_records(insert_captures(issues_md, ["the thing he typed"]))
+    before = board_records.contents("issue", store=records)
+    ok, message = comment_on_capture(
+        "issues", 0, "the thing he typed", "Answered, cycle 430.", store=records)
+    assert ok, message
+    after = board_records.contents("issue", store=records)
+    assert after["captures"] == before["captures"] == ["the thing he typed"]
+    assert after["captureReplies"] == [["Answered, cycle 430."]]
+    assert after["items"] == before["items"]
+    assert after["details"] == before["details"]
+
+
+def test_a_second_reply_on_his_board_goes_under_the_first(issues_md):
+    records = _source_records(insert_captures(issues_md, ["his line"]))
+    assert comment_on_capture("issues", 0, "his line", "first", store=records)[0]
+    assert comment_on_capture("issues", 0, "his line", "second", store=records)[0]
+    # The folded spelling -- his words with the replies welded on -- still
+    # addresses the same bullet, as it does in the file.
+    assert comment_on_capture("issues", 0, "his line first second", "third",
+                              store=records)[0]
+    assert board_records.contents("issue", store=records)["captureReplies"] == [
+        ["first", "second", "third"]]
+
+
+def test_a_reply_on_his_board_that_loses_a_race_is_retried(issues_md):
+    """A `CaptureConflict` is a second writer on this bullet: re-read and
+    write again, never report it as a failure the first time."""
+    records = _source_records(insert_captures(issues_md, ["his line"]))
+    real = records.write_capture
+    attempts = []
+
+    def once_conflicting(doc):
+        attempts.append(doc)
+        if len(attempts) == 1:
+            raise nova_capture.CaptureConflict("someone else wrote it")
+        return real(doc)
+
+    records.write_capture = once_conflicting
+    ok, message = comment_on_capture("issues", 0, "his line", "answer", store=records)
+    assert ok, message
+    assert len(attempts) == 2
+    assert board_records.contents("issue", store=records)["captureReplies"] == [["answer"]]
+
+
+def test_a_reply_on_his_board_that_keeps_conflicting_gives_up(issues_md):
+    records = _source_records(insert_captures(issues_md, ["his line"]))
+
+    def always(doc):
+        raise nova_capture.CaptureConflict("someone else wrote it")
+
+    records.write_capture = always
+    ok, message = comment_on_capture("issues", 0, "his line", "answer", store=records)
+    assert not ok
+    assert "could not write" in message
 
 
 def test_a_second_reply_goes_under_the_first(issues_md):
@@ -952,13 +1017,16 @@ def test_the_board_page_address_answers_the_same_capture(issues_md):
 
 def test_a_reply_to_a_capture_that_moved_is_refused(issues_md):
     """A cycle boarded it while the reply was being written: no write."""
-    markdown = insert_captures(issues_md, ["his line"])
-    with patch.object(nova_capture, "vault_read_path_rev", return_value=(markdown, "1-x")), \
-            patch.object(nova_capture, "vault_write_path") as write:
-        ok, message = comment_on_capture("issues", 0, "something he never typed", "hi")
+    records = _source_records(insert_captures(issues_md, ["his line"]))
+    ok, message = comment_on_capture(
+        "issues", 0, "something he never typed", "hi", store=records)
     assert not ok
     assert STALE_CAPTURE in message
-    write.assert_not_called()
+    assert records.calls == []
+    ok, message = comment_on_capture("issues", 5, "his line", "hi", store=records)
+    assert not ok
+    assert STALE_CAPTURE in message
+    assert records.calls == []
 
 
 def test_a_reply_with_a_line_break_never_reaches_the_vault(issues_md):
