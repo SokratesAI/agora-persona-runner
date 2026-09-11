@@ -5864,6 +5864,8 @@ def test_the_warm_logs_what_each_payload_cost(journal_md):
     nova_site.reset_cache()
     lines = []
     with patch.object(nova_sources, "vault_read_path", return_value=journal_md), \
+            patch.object(nova_site, "_his_board",
+                         side_effect=lambda name: _parse_his_board("")), \
             patch.object(nova_site, "log", side_effect=lines.append):
         nova_site.warm_cache()
     timed = [ln for ln in lines if ln.startswith("nova-site warm ")]
@@ -5942,6 +5944,8 @@ def test_the_warm_total_covers_the_whole_run_not_one_payload(journal_md):
         return real(name, build)
 
     with patch.object(nova_sources, "vault_read_path", return_value=journal_md), \
+            patch.object(nova_site, "_his_board",
+                         side_effect=lambda name: _parse_his_board("")), \
             patch.object(nova_site, "cached_payload", side_effect=slow), \
             patch.object(nova_site, "log", side_effect=lines.append):
         nova_site.warm_cache()

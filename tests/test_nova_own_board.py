@@ -14,6 +14,7 @@ A test that only checked the new rows appeared would pass just as happily
 with 654 notes silently truncated, so the two are asserted together.
 """
 
+from agora_runner import nova_site
 from agora_runner.nova_boards import parse_board, parse_notes
 
 # The shape of one of my files after this change: prose, head bullets,
@@ -120,6 +121,7 @@ def test_board_payload_puts_my_rows_on_the_page(monkeypatch):
         return ""
 
     monkeypatch.setattr(nova_sources, "vault_read_path", read)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name: parse_board(""))
     payload = board_payload("issues")
 
     assert [item["number"] for item in payload["novaItems"]] == [1, 2]
@@ -211,6 +213,7 @@ def test_my_rows_get_a_search_blob_of_their_own(monkeypatch):
         return MINE if path == BOARD_PATHS["issues"]["nova"] else ""
 
     monkeypatch.setattr(nova_sources, "vault_read_path", read)
+    monkeypatch.setattr(nova_site, "_his_board", lambda name: parse_board(""))
     blobs = board_payload("issues")["novaSearchText"]
 
     assert set(blobs) == {"1", "2"}
@@ -271,7 +274,9 @@ def test_the_same_query_on_the_two_tabs_does_not_share_one_etag():
 
     nova_site.reset_cache()
     try:
-        with patch.object(nova_sources, "vault_read_path", side_effect=read):
+        with patch.object(nova_sources, "vault_read_path", side_effect=read), \
+                patch.object(nova_site, "_his_board",
+                             side_effect=lambda name: parse_board("")):
             _, _, his = _get("/api/board?name=issues&q=feeds")
             _, _, mine = _get("/api/board?name=issues&q=feeds&mine=1")
     finally:
@@ -418,19 +423,19 @@ def _parse_board_calls(source):
     return re.findall(r"\bparse_board\(\s*([^)]*)", stripped)
 
 
-def test_nova_site_parses_only_his_board_now():
+def test_nova_site_parses_no_board_now():
     """The seam, asserted where it can come undone.
 
-    Nothing stops a later cycle putting a `parse_board(nova_markdown)` back
-    into `board_payload`, and the inventory tool would then hold
-    `nova_site` in the count forever with its exemption sitting on the
-    wrong module. This counts the calls in the file rather than asking the
-    tool, so the two disagree out loud instead of agreeing by construction.
+    Issue #203's flip deleted the last `parse_board` call here, the markdown
+    fallback onto his board; his half comes out of the record store and my
+    own half out of `nova_own_board`. Nothing stops a later cycle putting a
+    `parse_board(...)` back into `board_payload`, and the inventory tool
+    would then hold `nova_site` in the count again. This counts the calls in
+    the file rather than asking the tool, so the two disagree out loud
+    instead of agreeing by construction.
     """
     calls = _parse_board_calls((ROOT / "agora_runner" / "nova_site.py").read_text())
-    assert len(calls) == 1, calls
-    assert "edvard_board_markdown" in calls[0], calls
-    assert "nova_markdown" not in calls[0], calls
+    assert calls == [], calls
     # The precondition: the detector finds calls at all. Without this, a
     # regex that matched nothing would pass the day the door was deleted
     # and every day a second call was added.
