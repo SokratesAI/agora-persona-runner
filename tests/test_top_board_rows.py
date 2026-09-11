@@ -1332,9 +1332,35 @@ def test_the_capture_block_prints_how_to_board_one():
     assert "tools.board_capture" in body
     assert "backlog|in-progress|done|blocked-on-edvard" in body
     # Highest index first, or the second cut lands on the wrong bullet.
-    positions = [body.index("--index 3  "), body.index("--index 0  ")]
+    positions = [body.index("--board idea --index 3  "),
+                 body.index("--board issue --index 0  ")]
     assert positions == sorted(positions)
     assert _capture_board_help([]) == []
+
+
+def test_the_board_help_names_the_records_tool_not_a_file():
+    """Since the flip (Cycle 1395) board_capture takes --board and writes the
+    records; the old --file / board_put / resync advice would send a cycle to
+    put a generated view over his app edits."""
+    from tools.top_board_rows import _capture_board_help
+
+    body = "\n".join(_capture_board_help(
+        [{"board": "issue", "index": 0, "text": "A thing", "original": "x"}]))
+    assert "--board issue|idea" in body
+    for stale in ("--file", "--projects-from", "board_put", "resync"):
+        assert stale not in body, stale
+
+
+def test_notes_get_no_board_help():
+    """notes.md is never boarded; board_capture refuses --board note."""
+    from tools.top_board_rows import _capture_board_help
+
+    note = {"board": "note", "index": 0, "text": "A note", "original": "x"}
+    assert _capture_board_help([note]) == []
+    issue = {"board": "issue", "index": 2, "text": "An issue", "original": "y"}
+    body = "\n".join(_capture_board_help([note, issue]))
+    assert "--board issue --index 2" in body
+    assert "A note" not in body
 
 
 # A Sokrates relay ranks below a comment the owner typed himself.

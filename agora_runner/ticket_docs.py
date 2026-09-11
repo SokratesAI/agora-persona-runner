@@ -14,9 +14,10 @@ What is left is what `board_store` imports: the database name, the
 credentials, the request helper, `ensure_database` and `_payload`. The
 records live in the same `nova_tickets` database in their own key
 ranges, so the name stays even though the tickets are gone. The mirror's
-old documents (`ticket:`, `layout:`, `source-rev:` and three `_design/`
-documents) are still in that database until something deletes them;
-nothing reads them.
+old documents -- 529 `ticket:<path>:<n>`, four `rev:<path>`, four
+`board:<path>` (a `/` in the id, unlike every record) and three
+`_design/` -- were deleted on 2026-09-11 (Cycle 1398); a copy of each is
+in `/data/workspace/nova-1398-mirror-backup/` on the bridge pod.
 
 **Its own database, not the vault's.** These documents are not files, and
 a LiveSync database is a set of files -- `vault_bulk_list("")` walks

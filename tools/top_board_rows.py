@@ -679,31 +679,24 @@ def _capture_board_help(captures):
     **Highest index first, and the line says so**, because
     `capture_entries` renumbers as soon as one is removed and a cycle
     working top-down boards the wrong bullets from the second call on.
+
+    **Notes are left out**: `notes.md` is never boarded, and `board_capture`
+    takes `--board issue|idea` only. Since the flip (Cycle 1395) it reads
+    and writes the #203 records itself -- no file, no compare-and-swap, no
+    `board_put` -- so this prints the filled-in call and nothing around it.
     """
-    if not captures:
+    boardable = [c for c in captures if c["board"] in ("issue", "idea")]
+    if not boardable:
         return []
-    out = ["  Board one — python3 -m tools.board_capture --file <his file on disk> "
+    out = ["  Board one — python3 -m tools.board_capture --board issue|idea "
            "--index N --priority low|medium|high|immediate "
-           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD "
-           "--projects-from <the OTHER board on disk>",
-           "  It adds the row AND cuts the bullet, so the item is in one place. "
-           "Board highest --index first: the indices renumber after each cut.",
-           "  --projects-from is what makes the project he picked in the app "
-           "reach the cell: the picker offers the projects on BOTH boards and "
-           "board_capture can only see the one file you hand it, so without it "
-           "a project with no row on this board resolves to nothing and the "
-           "#slug stays in the title."]
-    for capture in sorted(captures, key=lambda c: -c["index"]):
-        board = "notes" if capture["board"] == "note" else capture["board"] + "s"
-        out.append(f"     --index {capture['index']}  ({board})  ->  {capture['text'][:70]}")
-    out.append("  The caller owns the compare-and-swap: vault_tool.py get --rev-file, "
-               "then `python3 -m tools.board_put <vault path> <file> --if-rev-file`, "
-               "in ONE Bash call.")
-    out.append("  board_put, not vault_tool.py put: it writes the vault first and "
-               "then resyncs that board's rows in the #203 record store, which a "
-               "bare put cannot do from another process. Exit 4 means the board "
-               "landed and the records did not -- the line it prints names the "
-               "resync command.")
+           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD",
+           "  It adds the row AND deletes the bullet in the record store, so "
+           "the item is in one place; the site redraws his markdown. "
+           "Board highest --index first: the indices renumber after each cut."]
+    for capture in sorted(boardable, key=lambda c: -c["index"]):
+        out.append(f"     --board {capture['board']} --index {capture['index']}"
+                   f"  ->  {capture['text'][:70]}")
     return out
 
 
