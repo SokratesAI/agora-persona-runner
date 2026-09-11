@@ -73,6 +73,19 @@ def notify(conversation_id, text, sender, system=False, push=True, thinking=Fals
     return status, message_id
 
 
+def default_answer_style(persona):
+    """Brief, in his chats with Nova; nothing anywhere else.
+
+    His call, 2026-09-11: an answer style in the chat's Settings drawer,
+    "with brief being the default". The drawer lives in the Nova app, which
+    talks to exactly one persona (`ANSWER_PERSONA_ID`), so that is the only
+    persona whose untagged threads are styled. Imported here rather than at
+    the top because `nova_conversations` is the site's module and this one
+    is the runner's; the import runs only when a turn is being built."""
+    from agora_runner.nova_conversations import ANSWER_PERSONA_ID
+    return "brief" if (persona or {}).get("id") == ANSWER_PERSONA_ID else ""
+
+
 def speak(conversation, detail, thread, speaker_name, model_override=None):
     participants = detail.get("personas") or []
     link = next((p for p in participants if p.get("name") == speaker_name), None)
@@ -90,7 +103,7 @@ def speak(conversation, detail, thread, speaker_name, model_override=None):
         }
     caps = persona.get("capabilities") or dict(NO_CAPS)
     multi = len(participants) > 1
-    system = build_system(persona, detail)
+    system = build_system(persona, detail, default_style=default_answer_style(persona))
     history = merge_history(thread, persona["name"], multi)
     sticky = bool(detail.get("stickyFallback", False))
 

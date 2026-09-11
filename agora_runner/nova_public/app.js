@@ -14946,134 +14946,92 @@
       maxVh: STEP_SHEET_MAX_VH,
       dismissVh: STEP_SHEET_DISMISS_VH
     });
-    var modelRow = el("div", "settings-row");
-    modelRow.appendChild(el("span", "settings-label", "Model"));
-    if (modelHost) modelRow.appendChild(modelHost);
-    var titleBtn = el("button", "settings-action", "Generate title");
-    titleBtn.type = "button";
-    titleBtn.title = "Ask Haiku for a fresh title from this conversation";
 
-    /* Three more rows, his pick from the list 2026-09-11: Rename, an answer
-     * style, and Mute. Mute and style are stored as tags on the conversation
-     * (`/api/conversations/mute`, `/style`), which is what Agora (for the
-     * push) and the runner (for the style) read -- so they are per thread,
-     * and only a real conversation has them. */
-    var styleRow = el("div", "settings-row");
-    styleRow.appendChild(el("span", "settings-label", "Answer style"));
-    var styleSeg = el("div", "settings-seg");
-    var styleBtns = {};
-    ["brief", "detailed"].forEach(function (key) {
-      var b = el("button", "settings-seg-btn", key === "brief" ? "Brief" : "Detailed");
-      b.type = "button";
-      b.setAttribute("aria-pressed", "false");
-      styleBtns[key] = b;
-      styleSeg.appendChild(b);
-    });
-    styleRow.appendChild(styleSeg);
+    /* Tiles, three to a row -- his ask, 2026-09-11: *"make all of the
+     * settings buttons designed like the square ones on the + drawer in a
+     * matrix with 3 buttons on each row."* They ARE the `+` drawer's tiles:
+     * the same `extras-grid` / `extras-tile` / `extras-label`, with the
+     * stylesheet's selectors widened to this sheet, so the two drawers cannot
+     * drift apart in looks.
+     *
+     * Rename was here for an hour and is gone at his ask; the list's own
+     * editor still renames. */
+    var settingsGrid = el("div", "extras-grid settings-grid");
 
-    var muteRow = el("div", "settings-row");
-    muteRow.appendChild(el("span", "settings-label", "Notifications"));
-    var muteBtn = el("button", "settings-toggle", "On");
-    muteBtn.type = "button";
-    muteBtn.setAttribute("aria-pressed", "false");
-    muteRow.appendChild(muteBtn);
+    function settingsTile(tag, glyph, label) {
+      var tile = el(tag, "extras-tile settings-tile");
+      if (tag === "button") tile.type = "button";
+      var mark = el("span", "chat-glyph", glyph);
+      var text = el("span", "extras-label", label);
+      tile.appendChild(mark);
+      tile.appendChild(text);
+      settingsGrid.appendChild(tile);
+      return { tile: tile, glyph: mark, label: text };
+    }
 
-    var renameRow = el("div", "settings-row settings-rename");
-    var renameInput = document.createElement("input");
-    renameInput.type = "text";
-    renameInput.className = "settings-input";
-    renameInput.setAttribute("aria-label", "Conversation name");
-    renameInput.maxLength = 200;
-    var renameSave = el("button", "settings-mini", "Rename");
-    renameSave.type = "button";
-    renameRow.appendChild(renameInput);
-    renameRow.appendChild(renameSave);
+    /* Model. The picker's own <select> is laid invisibly over the whole
+     * tile, so a tap opens the phone's native list -- the picker is MOVED in,
+     * not rebuilt, so its catalog, its change handler and every test that
+     * finds `.model-pick` keep working. The label reads the chosen name. */
+    var modelTile = settingsTile("div", "🧠", "Model");
+    modelTile.tile.classList.add("settings-model-tile");
+    if (modelHost) modelTile.tile.appendChild(modelHost);
+    function paintModelTile() {
+      var pick = modelHost && modelHost.querySelector("select");
+      var chosen = pick && pick.options && pick.options[pick.selectedIndex];
+      modelTile.label.textContent = chosen && chosen.value ? chosen.textContent : "Model";
+    }
+    if (modelHost) modelHost.addEventListener("change", paintModelTile);
+
+    /* Answer style: one tile that toggles, Brief by default (his call, the
+     * same day). Brief is the absence of a tag server-side. */
+    var styleTile = settingsTile("button", "📝", "Brief");
+    var muteTile = settingsTile("button", "🔔", "Notifications");
+    var titleTile = settingsTile("button", "✨", "Generate title");
+    var styleNow = "brief";
+    var mutedNow = false;
 
     function paintPrefs(p) {
-      var style = (p && p.style) || "";
-      Object.keys(styleBtns).forEach(function (key) {
-        styleBtns[key].setAttribute("aria-pressed", key === style ? "true" : "false");
-      });
-      var muted = !!(p && p.muted);
-      muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
-      muteBtn.textContent = muted ? "Muted" : "On";
+      styleNow = p && p.style === "detailed" ? "detailed" : "brief";
+      styleTile.label.textContent = styleNow === "detailed" ? "Detailed" : "Brief";
+      mutedNow = !!(p && p.muted);
+      muteTile.glyph.textContent = mutedNow ? "🔕" : "🔔";
+      muteTile.label.textContent = mutedNow ? "Muted" : "Notifications";
+      muteTile.tile.setAttribute("aria-pressed", mutedNow ? "true" : "false");
     }
 
     function convId() {
       return source && source.kind === "conv" ? source.id : "";
     }
 
-    Object.keys(styleBtns).forEach(function (key) {
-      styleBtns[key].addEventListener("click", function () {
-        var id = convId();
-        if (!id) return;
-        // Tapping the style it is already on puts it back on the default.
-        var next = styleBtns[key].getAttribute("aria-pressed") === "true" ? "" : key;
-        chatWrite("/api/conversations/style", { id: id, style: next })
-          .then(function () { paintPrefs({ style: next, muted: muteBtn.getAttribute("aria-pressed") === "true" }); })
-          .catch(function (err) { toast("could not save the style: " + err.message, true); });
-      });
-    });
-
-    muteBtn.addEventListener("click", function () {
+    styleTile.tile.addEventListener("click", function () {
       var id = convId();
       if (!id) return;
-      var next = muteBtn.getAttribute("aria-pressed") === "true" ? "off" : "on";
-      var style = "";
-      Object.keys(styleBtns).forEach(function (k) {
-        if (styleBtns[k].getAttribute("aria-pressed") === "true") style = k;
-      });
+      var next = styleNow === "brief" ? "detailed" : "brief";
+      chatWrite("/api/conversations/style", { id: id, style: next })
+        .then(function () { paintPrefs({ style: next, muted: mutedNow }); })
+        .catch(function (err) { toast("could not save the style: " + err.message, true); });
+    });
+
+    muteTile.tile.addEventListener("click", function () {
+      var id = convId();
+      if (!id) return;
+      var next = mutedNow ? "off" : "on";
       chatWrite("/api/conversations/mute", { id: id, muted: next })
-        .then(function () { paintPrefs({ muted: next === "on", style: style }); })
+        .then(function () { paintPrefs({ style: styleNow, muted: next === "on" }); })
         .catch(function (err) { toast("could not change notifications: " + err.message, true); });
     });
 
-    renameSave.addEventListener("click", function () {
+    titleTile.tile.addEventListener("click", function () {
       var id = convId();
-      var name = renameInput.value.trim();
-      if (!id || !name || renameSave.disabled) return;
-      renameSave.disabled = true;
-      chatWrite("/api/conversations/rename", { id: id, name: name })
-        .then(function (named) {
-          named = typeof named === "string" && named ? named : name;
-          if (!source || source.id !== id) return;
-          source.name = named;
-          source.untitled = false;
-          titleEl.textContent = named;
-          rememberSource();
-          if (dock.classList.contains("list-open")) loadList(true);
-          toast("Renamed");
-        })
-        .catch(function (err) { toast("could not rename: " + err.message, true); })
-        .then(function () { renameSave.disabled = false; });
-    });
-
-    /* Parked in the document, hidden, until the drawer first opens -- the
-     * same pattern `#capture-types` uses. Left detached, the model picker
-     * paints into a node nothing can see, and nothing else can reach it. `open` moves them into the sheet from here. */
-    var settingsParking = el("div", "settings-parking");
-    settingsParking.hidden = true;
-    settingsParking.appendChild(modelRow);
-    settingsParking.appendChild(titleBtn);
-    settingsParking.appendChild(styleRow);
-    settingsParking.appendChild(muteRow);
-    settingsParking.appendChild(renameRow);
-    document.body.appendChild(settingsParking);
-
-    titleBtn.addEventListener("click", function () {
-      if (titleBtn.disabled) return;
-      if (!source || source.kind !== "conv" || !source.id) {
-        toast("only a conversation can be retitled", true);
-        return;
-      }
-      var forId = source.id;
-      titleBtn.disabled = true;
-      titleBtn.textContent = "Generating…";
-      chatWrite("/api/conversations/retitle", { id: forId })
+      if (titleTile.tile.disabled || !id) return;
+      titleTile.tile.disabled = true;
+      titleTile.label.textContent = "Generating…";
+      chatWrite("/api/conversations/retitle", { id: id })
         .then(function (named) {
           if (typeof named !== "string" || !named) throw new Error("no title came back");
           // He may have switched threads while Haiku thought about it.
-          if (!source || source.id !== forId) return;
+          if (!source || source.id !== id) return;
           source.name = named;
           source.untitled = false;
           titleEl.textContent = named;
@@ -15083,28 +15041,36 @@
         })
         .catch(function (err) { toast("could not generate a title: " + err.message, true); })
         .then(function () {
-          titleBtn.disabled = false;
-          titleBtn.textContent = "Generate title";
+          titleTile.tile.disabled = false;
+          titleTile.label.textContent = "Generate title";
         });
     });
 
+    /* Parked in the document, hidden, until the drawer first opens -- the
+     * same pattern `#capture-types` uses. Left detached, the model picker
+     * paints into a node nothing can see, and nothing else can reach it. */
+    var settingsParking = el("div", "settings-parking");
+    settingsParking.hidden = true;
+    settingsParking.appendChild(settingsGrid);
+    document.body.appendChild(settingsParking);
+
     if (settingsBtn) {
       settingsBtn.addEventListener("click", function () {
-        var rows = [modelRow];
         var id = convId();
+        // Style, notifications and the title belong to a real conversation;
+        // the legacy ask thread has only the model.
+        [styleTile, muteTile, titleTile].forEach(function (t) { t.tile.hidden = !id; });
+        paintModelTile();
+        paintPrefs(null);
         if (id) {
-          // The per-thread settings, read fresh each open: a cycle, another
-          // device or Agora itself may have changed the tags since.
-          rows.push(styleRow, muteRow, renameRow);
-          renameInput.value = (source && source.name) || "";
-          paintPrefs(null);
+          // Read fresh each open: a cycle, another device or Agora itself
+          // may have changed the tags since.
           fetch("/api/conversations/prefs?id=" + encodeURIComponent(id))
             .then(function (r) { return r.json().catch(function () { return {}; }); })
             .then(function (p) { if (p && p.ok && convId() === id) paintPrefs(p); })
             .catch(function () { /* stays on the defaults it painted */ });
         }
-        rows.push(titleBtn);
-        settingsSheet.open(rows, "Settings", { closeOnPick: false });
+        settingsSheet.open([settingsGrid], "Settings", { closeOnPick: false });
       });
     }
 

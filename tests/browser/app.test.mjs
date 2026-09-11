@@ -7441,36 +7441,33 @@ describe("the priority picker (buildPrioPicker)", () => {
       `the project drawer opened with no height of its own: "${upper.style.height}"`);
   });
 
-  test("the `+` is ringed like the controls beside it, in both composers", () => {
-    /* His ask, 2026-09-08: *"make the + button have a border like the rest.
-     * Do that in the chat capture box aswell."* `.attach-btn` sets
-     * `border: 0` for every use of it, which is right in the `+` drawer
-     * (a card) and in the comment box (it stands alone) and wrong in the
-     * two rows where it is the one control in a line of outlined ones.
-     *
-     * Read off the sheet: jsdom applies no cascade worth trusting here, and
-     * what can break is that one of the two rows gets the rule and the
-     * other does not -- which is exactly the shape of the bug he reported. */
+  test("the capture box's + keeps its ring and the chat's + has none", () => {
+    /* 2026-09-08 ringed both (his ask then); 2026-09-11 took the chat's off
+     * (his ask now), to match the unringed ⋮ beside it. */
     const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
-    for (const row of [".capture-submit", ".chat-actions"]) {
-      /* Every rule for that row's `+`, not the first one: both rows already
-       * had one before this (the auto margin that pushes the group right),
-       * and matching only the first would read the wrong declaration and
-       * say nothing about the border. */
-      const bodies = [...sheet.matchAll(
-        new RegExp(row.replace(".", "\\.") + " \\.attach-btn[^{]*\\{([^}]*)\\}", "g"))]
-        .map((m) => m[1]);
-      const rule = [null, bodies.find((b) => /border:/.test(b))];
-      assert.ok(rule[1], `the \`+\` in ${row} has no border of its own`);
-      /* `--outline`, not `--line`. The first version of this used `--line`
-       * in the chat row to match `.chat-send` beside it, and
-       * `test_no_control_borders_its_edge_with_the_divider_token` failed it
-       * in CI: that token is 1.2:1 against `--card`, which is a divider's
-       * contrast and not a control's, and #890 holds every control edge to
-       * WCAG SC 1.4.11's 3:1. Matching a neighbour was the weaker argument
-       * -- `.chat-send` is filled, and carries its contrast in the fill. */
-      assert.match(rule[1], /border:\s*1px solid var\(--outline\)/,
-        `the \`+\` in ${row} is edged in something other than --outline`);
+    const bodies = (row) => [...sheet.matchAll(
+      new RegExp(row.replace(".", "\\.") + " \\.attach-btn[^{]*\\{([^}]*)\\}", "g"))].map((m) => m[1]);
+    assert.ok(bodies(".capture-submit").some((b) => /border:\s*1px solid var\(--outline\)/.test(b)),
+      "the capture box's + lost its ring");
+    assert.equal(bodies(".chat-actions").some((b) => /border:\s*1px/.test(b)), false,
+      "the chat's + still has a ring");
+  });
+
+  test("every hover or pressed tile rule keeps its qualifier on each selector", () => {
+    /* The bug this pins, his report 2026-09-11: *"Make the squares on the +
+     * drawer have the same border as the settings ones."* They were meant to
+     * share one border already. A text replace had widened the hover and
+     * pressed rules by inserting the Settings selector after
+     * `.chat-extras .extras-tile`, which left that half with no `:hover` /
+     * `[aria-pressed]` -- so every + tile wore the accent border at rest. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const [, sel, body] of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      if (!/extras-tile/.test(sel)) continue;
+      if (!/border-color:\s*var\(--accent\)|color:\s*var\(--bg\)/.test(body)) continue;
+      for (const part of sel.split(",").map((p) => p.trim())) {
+        assert.match(part, /:hover|aria-pressed/,
+          `"${part}" paints the accent state on every tile, not only hovered or pressed ones`);
+      }
     }
   });
 
@@ -13763,13 +13760,17 @@ describe("holding a conversation in the switcher opens edit options", () => {
     assert.ok(sheet && !sheet.hidden, "⋮ opened nothing");
     assert.equal(sheet.querySelector(".msg-sheet-title").textContent, "Settings");
     assert.ok(sheet.querySelector("#chat-model-host"), "no model picker in Settings");
-    assert.equal([...sheet.querySelectorAll(".settings-label")]
-      .some((l) => l.textContent === "Read aloud"), false, "Read aloud is still in Settings");
+    const labels = [...sheet.querySelectorAll(".extras-label")].map((l) => l.textContent);
+    assert.equal(labels.includes("Read aloud"), false, "Read aloud is still in Settings");
+    assert.equal(sheet.querySelector('input[aria-label="Conversation name"]'), null,
+      "Rename is still in Settings");
     // No ring on the button -- his ask, 2026-09-11.
     const css = readFileSync(join(publicDir, "style.css"), "utf8");
     assert.match(css, /\.chat-settings \{[^}]*border:\s*0;/, "the settings button still has a border");
-    assert.ok([...sheet.querySelectorAll(".settings-action")]
-      .some((b) => b.textContent === "Generate title"), "no Generate title in Settings");
+    // Tiles, three to a row, like the + drawer (his ask, 2026-09-11).
+    const grid = sheet.querySelector(".extras-grid");
+    assert.ok(grid, "Settings is not a grid of tiles");
+    assert.ok(tileNamed(sheet, "Generate title"), "no Generate title tile in Settings");
   });
 
   test("Generate title asks for a fresh one and puts it in the header", async () => {
@@ -13787,8 +13788,7 @@ describe("holding a conversation in the switcher opens edit options", () => {
     window.postReply = { ok: true, result: "Gutter repair", message: "Gutter repair" };
     window.document.getElementById("chat-settings")
       .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    const button = [...window.document.querySelectorAll(".msg-sheet--settings .settings-action")]
-      .find((b) => b.textContent === "Generate title");
+    const button = tileNamed(window.document.querySelector(".msg-sheet--settings"), "Generate title");
     button.dispatchEvent(new window.Event("click"));
     await tick();
     await tick();
@@ -13796,6 +13796,8 @@ describe("holding a conversation in the switcher opens edit options", () => {
       [["/api/conversations/retitle", { id: "c-9" }]]);
     assert.equal(window.document.getElementById("chat-title").textContent, "Gutter repair");
   });
+
+  const tileNamed = (sheet, label) => [...sheet.querySelectorAll(".extras-tile")].find((t) => t.querySelector(".extras-label").textContent === label);
 
   async function newThreadWithSettings(window) {
     window.postReply = { ok: true, result: "c-9", name: "New chat", message: "c-9" };
@@ -13811,62 +13813,64 @@ describe("holding a conversation in the switcher opens edit options", () => {
     return window.document.querySelector(".msg-sheet--settings");
   }
 
-  test("Settings shows this thread's style and mute, and changing them posts", async () => {
-    /* His pick, 2026-09-11: an answer style per thread and a mute. Both are
-     * tags on the conversation; the drawer reads them fresh each open. */
-    const window = await openSwitcher({
-      convThread: () => ({ messages: [], waiting: false }),
-      convPrefs: { ok: true, muted: false, style: "detailed" },
-    });
-    const sheet = await newThreadWithSettings(window);
-    const seg = [...sheet.querySelectorAll(".settings-seg-btn")];
-    assert.deepEqual(seg.map((b) => [b.textContent, b.getAttribute("aria-pressed")]),
-      [["Brief", "false"], ["Detailed", "true"]], "the drawer did not show the thread's style");
-    const mute = sheet.querySelector(".settings-toggle");
-    assert.equal(mute.getAttribute("aria-pressed"), "false");
-
-    window.postReply = { ok: true, result: "brief" };
-    seg[0].dispatchEvent(new window.Event("click"));
-    await tick();
-    window.postReply = { ok: true, result: "on" };
-    mute.dispatchEvent(new window.Event("click"));
-    await tick();
-    assert.deepEqual(window.posted.map((p) => [p.url, p.body]), [
-      ["/api/conversations/style", { id: "c-9", style: "brief" }],
-      ["/api/conversations/mute", { id: "c-9", muted: "on" }],
-    ]);
-    assert.equal(mute.getAttribute("aria-pressed"), "true");
-    assert.equal(mute.textContent, "Muted");
-    assert.equal(seg[0].getAttribute("aria-pressed"), "true");
-  });
-
-  test("tapping the style it is already on puts the thread back on the default", async () => {
+  test("answer style is one tile that toggles, Brief by default", async () => {
+    /* His call, 2026-09-11: *"make the answer style just a button that
+     * toggles between the states, with brief being the default."* An
+     * untouched thread reads Brief; a tap makes it Detailed, a tap back
+     * makes it Brief again. */
     const window = await openSwitcher({
       convThread: () => ({ messages: [], waiting: false }),
       convPrefs: { ok: true, muted: false, style: "brief" },
     });
     const sheet = await newThreadWithSettings(window);
-    window.postReply = { ok: true, result: "" };
-    sheet.querySelectorAll(".settings-seg-btn")[0].dispatchEvent(new window.Event("click"));
+    const style = tileNamed(sheet, "Brief");
+    assert.ok(style, "an untouched thread did not read as Brief");
+    window.postReply = { ok: true, result: "detailed" };
+    style.dispatchEvent(new window.Event("click"));
     await tick();
-    assert.deepEqual(window.posted.map((p) => p.body), [{ id: "c-9", style: "" }]);
+    assert.equal(style.querySelector(".extras-label").textContent, "Detailed");
+    window.postReply = { ok: true, result: "brief" };
+    style.dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.equal(style.querySelector(".extras-label").textContent, "Brief");
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]), [
+      ["/api/conversations/style", { id: "c-9", style: "detailed" }],
+      ["/api/conversations/style", { id: "c-9", style: "brief" }],
+    ]);
   });
 
-  test("Rename saves the name from Settings and puts it in the header", async () => {
+  test("the notifications tile mutes and says so", async () => {
     const window = await openSwitcher({
       convThread: () => ({ messages: [], waiting: false }),
     });
     const sheet = await newThreadWithSettings(window);
-    const input = sheet.querySelector(".settings-input");
-    assert.equal(input.value, "New chat", "the box did not start on the current name");
-    input.value = "Roof repairs";
-    window.postReply = { ok: true, result: "Roof repairs" };
-    sheet.querySelector(".settings-mini").dispatchEvent(new window.Event("click"));
-    await tick();
+    const mute = tileNamed(sheet, "Notifications");
+    assert.equal(mute.getAttribute("aria-pressed"), "false");
+    window.postReply = { ok: true, result: "on" };
+    mute.dispatchEvent(new window.Event("click"));
     await tick();
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
-      [["/api/conversations/rename", { id: "c-9", name: "Roof repairs" }]]);
-    assert.equal(window.document.getElementById("chat-title").textContent, "Roof repairs");
+      [["/api/conversations/mute", { id: "c-9", muted: "on" }]]);
+    assert.equal(mute.getAttribute("aria-pressed"), "true");
+    assert.equal(mute.querySelector(".extras-label").textContent, "Muted");
+  });
+
+  test("the model tile carries the picker itself, laid over the tile", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    const sheet = await newThreadWithSettings(window);
+    const tile = sheet.querySelector(".settings-model-tile");
+    assert.ok(tile && tile.contains(window.document.getElementById("chat-model-host")),
+      "the model picker is not inside its tile");
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    assert.match(css, /\.settings-model-tile select\.model-pick \{[^}]*opacity:\s*0/,
+      "the select is not laid invisibly over the tile");
+    // No white button face: the sheet's own colour behind the tiles, as in
+    // the + drawer (his report, 2026-09-11). The + tiles get it from
+    // `.attach-btn`; these are plain buttons and must say it themselves.
+    assert.match(css, /\.msg-sheet--settings \.extras-tile \{[^}]*background:\s*none/,
+      "the settings tiles fall back to the browser's white button face");
   });
 
   test("the default name steps aside for one already taken", async () => {

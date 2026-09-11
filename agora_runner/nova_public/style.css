@@ -3200,7 +3200,14 @@ body.has-full-chart { overflow: hidden; }
   grid-template-columns: repeat(3, 1fr);
   gap: 0.6rem;
 }
-.chat-extras .extras-tile {
+/* Shared by the `+` drawer and Settings, one selector per drawer in every
+   rule below. On 2026-09-11 a text replace widened these by inserting the
+   Settings selector AFTER `.chat-extras .extras-tile`, which cut the `:hover`
+   and `[aria-pressed]` off the `+` half -- so every `+` tile wore the accent
+   border permanently and he saw two different borders. Each part keeps its
+   own qualifier; a test now fails if one ever loses it. */
+.chat-extras .extras-tile,
+.msg-sheet--settings .extras-tile {
   /* Overrides `.attach-btn`'s round 44px: in here they are cards. */
   display: flex;
   flex-direction: column;
@@ -3215,10 +3222,13 @@ body.has-full-chart { overflow: hidden; }
   border-radius: 14px;
   color: var(--text);
 }
-.chat-extras .extras-tile:hover:not(:disabled) { border-color: var(--accent); }
+.chat-extras .extras-tile:hover:not(:disabled),
+.msg-sheet--settings .extras-tile:hover:not(:disabled) { border-color: var(--accent); }
 .extras-label { font-size: 0.8rem; line-height: 1.2; color: var(--dim); }
-.chat-extras .extras-tile[aria-pressed="true"] { border-color: var(--accent); }
-.chat-extras .extras-tile[aria-pressed="true"] .extras-label { color: var(--bg); }
+.chat-extras .extras-tile[aria-pressed="true"],
+.msg-sheet--settings .extras-tile[aria-pressed="true"] { border-color: var(--accent); }
+.chat-extras .extras-tile[aria-pressed="true"] .extras-label,
+.msg-sheet--settings .extras-tile[aria-pressed="true"] .extras-label { color: var(--bg); }
 /* The model picker, under the tiles (his ask, 2026-09-08). A row and not
  * a fourth tile: it is a <select> whose whole point is the model NAME, and
  * a 5rem tile would ellipsis that away. Label left, pill right. */
@@ -3476,7 +3486,9 @@ body.has-full-chart { overflow: hidden; }
  * with_the_divider_token` caught the first version of this rule doing
  * exactly that. */
 .capture-submit .attach-btn { border: 1px solid var(--outline); }
-.chat-actions .attach-btn { border: 1px solid var(--outline); }
+/* The chat `+` has no ring since 2026-09-11 (his ask), matching `⋮` beside
+   it. The capture box's `+` keeps its ring: that row's neighbours are all
+   ringed, this one's are not. */
 
 .attach-btn:hover:not(:disabled) { color: var(--text); }
 /* The mic's emoji carries its own colour, which no `color` can reach, and
@@ -4239,62 +4251,41 @@ body.chat-open { overflow: hidden; }
 }
 .chat-settings:hover { color: var(--text); }
 
-/* The rows inside that drawer: a label left, its control right. */
-.settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  min-height: 44px;
-  padding: 0.3rem 0;
+/* The Settings drawer is the `+` drawer's grid of tiles (his ask,
+   2026-09-11) -- the tile rules above are widened to it rather than copied.
+   What is its own: the model tile carries the picker's <select> laid over the
+   whole tile, invisible, so a tap opens the native list; and a pressed tile is
+   FILLED, because the shared rule turns the label the background colour and
+   only the mic, which fills itself, looked right with that. */
+.settings-tile[hidden] { display: none; }
+.settings-model-tile { position: relative; }
+.settings-model-tile #chat-model-host,
+.settings-model-tile .model-pick-bar { position: absolute; inset: 0; margin: 0; }
+.settings-model-tile select.model-pick {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;   /* beats the inline width `fitModelPick` writes */
+  max-width: none;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
 }
-.settings-label { font-size: 0.9rem; color: var(--dim); }
-.settings-row #chat-model-host select { max-width: 60vw; }
-.settings-action {
-  width: 100%;
-  min-height: 44px;
-  margin-top: 0.5rem;
-  border-radius: 10px;
-  border: 1px solid var(--outline);
+/* The sheet's own colour behind every tile, like the `+` drawer's -- his
+   report, 2026-09-11: *"the white background is wierd."* Those tiles are
+   `.attach-btn`s, which clear the button face (`background: none`); these are
+   plain <button>s, so the phone painted its default white face behind the
+   glyph and label. Stated here rather than by borrowing `.attach-btn`, whose
+   round-44px sizing and auto margin do not belong on a tile. */
+.msg-sheet--settings .extras-tile {
   background: none;
-  color: var(--text);
   font: inherit;
   cursor: pointer;
 }
-.settings-action:disabled { opacity: 0.55; cursor: default; }
-/* Brief · Detailed, and the notifications toggle: pressed is the state,
-   drawn as a filled pill so it reads without a hover on a phone. */
-.settings-seg { display: flex; gap: 0.35rem; }
-.settings-seg-btn, .settings-toggle, .settings-mini {
-  min-height: 36px;
-  padding: 0 0.8rem;
-  border-radius: 999px;
-  border: 1px solid var(--outline);
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: 0.85rem;
-  cursor: pointer;
-}
-.settings-seg-btn[aria-pressed="true"], .settings-toggle[aria-pressed="true"] {
+.msg-sheet--settings .extras-tile[aria-pressed="true"] {
   background: var(--accent);
   color: var(--bg);
-  border-color: var(--accent);
 }
-.settings-rename { gap: 0.4rem; }
-.settings-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 36px;
-  padding: 0.3rem 0.6rem;
-  border-radius: 8px;
-  border: 1px solid var(--outline);
-  background: var(--card);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.9rem;
-}
-.settings-mini:disabled { opacity: 0.55; cursor: default; }
+.msg-sheet--settings .extras-tile:disabled { opacity: 0.55; cursor: default; }
 
 /* The model picker, in the composer instead of across the top of the panel.
  * A compact pill beside `+`, the way Claude shows "Sonnet 5" -- it was a

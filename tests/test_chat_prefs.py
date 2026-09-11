@@ -39,15 +39,22 @@ def test_muting_keeps_every_other_tag():
     assert set(state["tags"]) == {"evolve-cycle:1200", "nova:style=brief"}
 
 
-def test_a_style_replaces_the_old_one_and_empty_clears_it():
-    state, get, internal = _store(["evolve-cycle:1200", "nova:style=detailed"])
+def test_detailed_is_a_tag_and_brief_is_its_absence():
+    """Brief is the default (his call, 2026-09-11), so switching back to it
+    removes the tag -- one way to be Brief, not two."""
+    state, get, internal = _store(["evolve-cycle:1200"])
     with patch.object(convs, "agora_get", side_effect=get), \
             patch.object(convs, "agora_internal", side_effect=internal):
+        assert convs.set_style("c-1", "detailed") == (True, "detailed")
+        assert state["tags"] == ["evolve-cycle:1200", "nova:style=detailed"]
         assert convs.set_style("c-1", "brief") == (True, "brief")
-        assert state["tags"].count("nova:style=brief") == 1
-        assert "nova:style=detailed" not in state["tags"]
-        assert convs.set_style("c-1", "") == (True, "")
     assert state["tags"] == ["evolve-cycle:1200"]
+
+
+def test_an_untouched_thread_reads_as_brief():
+    _state, get, _internal = _store(["evolve-cycle:1200"])
+    with patch.object(convs, "agora_get", side_effect=get):
+        assert convs.prefs("c-1") == (True, {"muted": False, "style": "brief"})
 
 
 def test_prefs_reads_mute_and_style_off_the_tags():
@@ -60,6 +67,7 @@ def test_bad_values_are_refused_before_anything_is_written():
     with patch.object(convs, "agora_internal") as internal:
         assert convs.set_mute("c-1", "yes")[0] is False
         assert convs.set_style("c-1", "shouty")[0] is False
+        assert convs.set_style("c-1", "")[0] is False
     internal.assert_not_called()
 
 

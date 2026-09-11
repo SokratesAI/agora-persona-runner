@@ -417,7 +417,7 @@ def conversation_style(conversation):
     return ""
 
 
-def build_system(persona, conversation=None, heartbeat_extra=None):
+def build_system(persona, conversation=None, heartbeat_extra=None, default_style=""):
     parts = [persona.get("personality") or "You are a helpful assistant."]
     shared = (persona.get("sharedMemory") or "").strip()
     if shared:
@@ -431,8 +431,12 @@ def build_system(persona, conversation=None, heartbeat_extra=None):
         # way Agora carries mute. His words the same day: a reply was "a wall
         # of text that my brain hurt reading. My brain works in images" -- but
         # design threads want depth, so it is per conversation, not global.
-        style = conversation_style(conversation)
-        if style:
+        # `default_style` is what an untagged thread gets. Only `speak` passes
+        # one, and only for the persona the Nova app talks to -- cycles,
+        # workflows and every other persona build their prompts here too and
+        # must not be restyled by a default he set for his own chats.
+        style = conversation_style(conversation) or default_style
+        if style in STYLE_GUIDANCE:
             parts.append(STYLE_GUIDANCE[style])
     # A "## Participants" roster naming the other personas and teaching the
     # @mention convention used to be built here when `participants` held

@@ -942,11 +942,10 @@ def prefs(conversation_id):
     tags = _current_tags(conversation_id)
     if tags is None:
         return False, "that conversation is gone"
-    style = ""
-    for tag in tags:
-        if tag.startswith(STYLE_TAG_PREFIX) and tag[len(STYLE_TAG_PREFIX):] in STYLES:
-            style = tag[len(STYLE_TAG_PREFIX):]
-    return True, {"muted": MUTE_TAG in tags, "style": style}
+    # Brief is the default -- his call, 2026-09-11 -- so it is the ABSENCE of
+    # a style tag, and only Detailed is ever written.
+    detailed = (STYLE_TAG_PREFIX + "detailed") in tags
+    return True, {"muted": MUTE_TAG in tags, "style": "detailed" if detailed else "brief"}
 
 
 def set_mute(conversation_id, muted):
@@ -962,15 +961,19 @@ def set_mute(conversation_id, muted):
 
 
 def set_style(conversation_id, style):
-    """(ok, style). "" puts the thread back on the default."""
+    """(ok, style). One toggle in Settings, Brief <-> Detailed.
+
+    Brief is the default, so choosing it REMOVES the tag rather than writing
+    `nova:style=brief`: a thread he never touched and a thread he set back
+    to Brief are then the same thread, and there is one way to be Brief."""
     if not conversation_id:
         return False, "which conversation?"
     style = (style or "").strip()
-    if style not in ("",) + STYLES:
-        return False, "style must be brief, detailed or empty"
+    if style not in STYLES:
+        return False, "style must be brief or detailed"
     ok, result = _rewrite_tags(conversation_id, lambda tags: (
         [t for t in tags if not t.startswith(STYLE_TAG_PREFIX)]
-        + ([STYLE_TAG_PREFIX + style] if style else [])))
+        + ([STYLE_TAG_PREFIX + "detailed"] if style == "detailed" else [])))
     return (True, style) if ok else (False, result)
 
 
