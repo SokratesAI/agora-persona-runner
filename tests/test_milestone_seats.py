@@ -23,7 +23,7 @@ def _order(ranks, project):
 
 ROWS = [
     row(1, IMMEDIATE, "Marcus", "S", "Urgent"),
-    row(2, HIGH, "Marcus", "S", "Middle"),
+    row(2, HIGH, "Marcus", "M", "Middle"),
     row(3, LOW, "Marcus", "XL", "Trivial"),
     row(4, HIGH, "Demos", "S", "Other"),
 ]

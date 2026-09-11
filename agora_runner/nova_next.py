@@ -369,42 +369,27 @@ def project_ranks(markdown):
 #: this map on purpose -- see `milestone_ranks` for why it is not defaulted.
 _SIZE_COST = {"s": 1.0, "m": 2.0, "l": 3.0, "xl": 5.0}
 
-#: Cost of delay, the numerator of the divide. **Deliberately not
-#: `len(_RANK) - rank`**, which is the obvious reading of the ratings and
-#: is wrong here: on a linear 4/3/2/1 scale against a 1..5 size scale, a
-#: single trivial Low row scores 2.0 and a three-row Immediately milestone
-#: scores 1.67, so the trivial one wins -- which is the precise failure the
-#: spec names (*"size alone would let a trivial milestone nobody needs jump
-#: ahead of an important large one"*). It fails that way because the
-#: ratings are not linear: Immediately is not twice High, it is the label
-#: that means drop the others. So the numerator is spread over the same
-#: kind of scale as the denominator. An unrated row scores 1 rather than 0
-#: -- zero would make a whole unrated milestone score exactly zero however
-#: small it is, which is a stronger statement than "nobody has rated this".
-_IMPORTANCE = {"immediate": 13.0, "high": 5.0, "medium": 2.0, "low": 1.0,
-               "": 1.0}
-
-
 def milestone_ranks(rows, pins=None, seats=None):
     """Open rows -> `{(project, milestone): rank}`, best first, per project.
 
     Milestone M4 of `task-prioritization-redesign.md`, and the tier that
-    sits between the project order and the row's own rating. The spec is
-    explicit that this tier is **computed** rather than hand-ordered, and
-    that the formula is real WSJF: *"Rank by whatever importance signal the
-    milestone carries, divided by its rolled-up size ... size alone would
-    let a trivial milestone nobody needs jump ahead of an important large
-    one."*
+    sits between the project order and the row's own rating. The spec asked
+    for WSJF -- the best rating in the milestone divided by its size -- and
+    issue #202 retires the rating that numerator was, so **the computed
+    order is smallest first, and the seats below are what hold the order.**
+    Size is the **sum** of the milestone's rows' sizes, rolled up from the
+    rows as the spec asks (*"rolled up from their rows rather than
+    separately guessed"*).
 
-    Importance is the **best rating any open row in the milestone carries**
-    and size is the **sum** of its rows' sizes -- rolled up from the rows in
-    both cases, which is what the spec asks for on size (*"rolled up from
-    their rows rather than separately guessed"*) and the honest reading of
-    importance: a milestone containing the one thing he called Immediately
-    is an Immediately milestone, and it does not become less urgent by also
-    containing three Low rows. Max on one axis and sum on the other is
-    deliberate rather than an oversight: importance does not accumulate,
-    work does.
+    The rating came out only once `milestone-seats.md` held today's order
+    (Cycle 1409), so inside a project nothing moved when it went. What did
+    move is the one place the formula is still read raw: **two projects
+    that tie on the project tier interleave their milestones by this
+    list's global position**, and `rank` has no other key there. Measured
+    Cycle 1410 on 210 live rows: the top 156 picks are identical and 23
+    rows in the tail swap places. Smallest-first across two tied projects
+    is the same rule it is inside one, so that interleave is still a
+    ranking by work rather than an accident of dict order.
 
     **A milestone with no sized rows at all sorts last**, behind every
     milestone that has one, and is not given a default size. That is the
@@ -453,19 +438,13 @@ def milestone_ranks(rows, pins=None, seats=None):
         if not name:
             continue
         key = ((row.get("project") or "").strip().lower(), name.lower())
-        importance = _IMPORTANCE.get(row.get("priorityKey") or "", 1.0)
         cost = _SIZE_COST.get(row.get("sizeKey") or "")
-        carried = best.setdefault(key, {"importance": 0.0, "cost": 0.0})
-        carried["importance"] = max(carried["importance"], importance)
-        if cost:
-            carried["cost"] += cost
+        best[key] = best.get(key, 0.0) + (cost or 0.0)
     scored = []
-    for key, carried in best.items():
-        cost = carried["cost"]
+    for key, cost in best.items():
         # `(1, 0)` for an unsized milestone: sorted() puts it behind every
-        # scored one whatever its importance, which is the rule above.
-        scored.append((key, (0, -(carried["importance"] / cost))
-                       if cost else (1, 0)))
+        # sized one, which is the rule above.
+        scored.append((key, (0, cost) if cost else (1, 0)))
     scored.sort(key=lambda pair: (pair[1], pair[0]))
     order = [key for key, _ in scored]
     return {key: position
