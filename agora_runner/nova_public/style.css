@@ -801,7 +801,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   padding: 0.05rem 0.4rem;
   border-radius: 999px;
   background: var(--nova);
-  color: #12131a;
+  color: var(--bg);
   font-size: 0.68rem;
   font-weight: 700;
   line-height: 1.5;
