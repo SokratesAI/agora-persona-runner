@@ -4262,6 +4262,39 @@ body.chat-open { overflow: hidden; }
   cursor: pointer;
 }
 .settings-action:disabled { opacity: 0.55; cursor: default; }
+/* Brief · Detailed, and the notifications toggle: pressed is the state,
+   drawn as a filled pill so it reads without a hover on a phone. */
+.settings-seg { display: flex; gap: 0.35rem; }
+.settings-seg-btn, .settings-toggle, .settings-mini {
+  min-height: 36px;
+  padding: 0 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--outline);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.settings-seg-btn[aria-pressed="true"], .settings-toggle[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.settings-rename { gap: 0.4rem; }
+.settings-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0.3rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--outline);
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+}
+.settings-mini:disabled { opacity: 0.55; cursor: default; }
 
 /* The model picker, in the composer instead of across the top of the panel.
  * A compact pill beside `+`, the way Claude shows "Sonnet 5" -- it was a

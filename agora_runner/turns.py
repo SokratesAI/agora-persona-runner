@@ -384,6 +384,39 @@ DEMO_SECTION = (
 )
 
 
+#: Per-conversation answer style, set from Nova's Settings drawer as a tag
+#: on the Agora conversation (`nova:style=brief` / `nova:style=detailed`).
+STYLE_TAG_PREFIX = "nova:style="
+STYLE_GUIDANCE = {
+    "brief": (
+        "## Answer style for this conversation: Brief\n"
+        "He picked Brief. Lead with the answer in one or two sentences. Keep "
+        "the whole reply short enough to read on a phone in one screen: a "
+        "few bullets or a small table instead of paragraphs, no preamble, no "
+        "recap of what he said. Go longer only if he asks you to."
+    ),
+    "detailed": (
+        "## Answer style for this conversation: Detailed\n"
+        "He picked Detailed. Reason in full, show the trade-offs and the "
+        "evidence behind a recommendation, and do not cut an explanation "
+        "short for length -- still lead with the conclusion."
+    ),
+}
+
+
+def conversation_style(conversation):
+    """The style tag on a conversation, or "" when none is set.
+
+    Only the two values Nova writes are recognised: a tag this code does not
+    know says nothing, rather than guessing at an instruction."""
+    for tag in (conversation or {}).get("tags") or []:
+        if isinstance(tag, str) and tag.startswith(STYLE_TAG_PREFIX):
+            value = tag[len(STYLE_TAG_PREFIX):]
+            if value in STYLE_GUIDANCE:
+                return value
+    return ""
+
+
 def build_system(persona, conversation=None, heartbeat_extra=None):
     parts = [persona.get("personality") or "You are a helpful assistant."]
     shared = (persona.get("sharedMemory") or "").strip()
@@ -393,6 +426,14 @@ def build_system(persona, conversation=None, heartbeat_extra=None):
         memory = (conversation.get("memory") or "").strip()
         if memory:
             parts.append(f"## Conversation notes\n{memory}")
+        # The answer style he picked for this thread in Nova's Settings
+        # drawer, 2026-09-11 -- carried as a tag on the conversation, the same
+        # way Agora carries mute. His words the same day: a reply was "a wall
+        # of text that my brain hurt reading. My brain works in images" -- but
+        # design threads want depth, so it is per conversation, not global.
+        style = conversation_style(conversation)
+        if style:
+            parts.append(STYLE_GUIDANCE[style])
     # A "## Participants" roster naming the other personas and teaching the
     # @mention convention used to be built here when `participants` held
     # more than one name. Agora refuses a second persona (agora#67), so it

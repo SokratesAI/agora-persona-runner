@@ -892,6 +892,88 @@ def retitle(conversation_id):
         return False, "could not write a title just now"
     return rename(conversation_id, title)
 
+#: Per-conversation settings from the chat's Settings drawer (his ask,
+#: 2026-09-11), stored as tags on the Agora conversation. Agora withholds a
+#: push for `nova:mute` in `/notify`; the runner's `build_system` reads the
+#: style tag. The spellings are shared with those two, so change all three.
+MUTE_TAG = "nova:mute"
+STYLE_TAG_PREFIX = "nova:style="
+STYLES = ("brief", "detailed")
+
+
+def _current_tags(conversation_id):
+    """The conversation's tags, or None if Agora no longer holds it.
+
+    Read off `GET /conversations/:id/messages?limit=1`, which spreads the
+    whole conversation into its answer -- Agora has no `GET /conversations/:id`,
+    and listing all ~1,400 to find one would be the most expensive call
+    this app makes."""
+    status, detail = agora_get(f"/conversations/{conversation_id}/messages?limit=1")
+    if status == 404:
+        return None
+    if status != 200:
+        raise RuntimeError(f"conversation fetch returned {status}")
+    return [t for t in (detail.get("tags") or []) if isinstance(t, str)]
+
+
+def _rewrite_tags(conversation_id, change):
+    """(ok, tags-or-message). Read-modify-write, because Agora's PATCH
+    replaces `tags` wholesale -- writing only the one tag would erase every
+    other one, including the `evolve-cycle:` tag a cycle thread is found by.
+
+    Two writers racing between the read and the PATCH can still lose one
+    change; Agora's PATCH takes no revision to guard it. The writers here
+    are his taps in one drawer, so that window is his own double-tap."""
+    tags = _current_tags(conversation_id)
+    if tags is None:
+        return False, "that conversation is gone"
+    new = change(list(tags))
+    status, _body = agora_internal("PATCH", f"/conversations/{conversation_id}", {"tags": new})
+    if status != 200:
+        log(f"nova_conversations: tag write failed HTTP {status}")
+        return False, "could not save that setting"
+    return True, new
+
+
+def prefs(conversation_id):
+    """(ok, {"muted": bool, "style": str}) -- what Settings shows for a thread."""
+    if not conversation_id:
+        return False, "which conversation?"
+    tags = _current_tags(conversation_id)
+    if tags is None:
+        return False, "that conversation is gone"
+    style = ""
+    for tag in tags:
+        if tag.startswith(STYLE_TAG_PREFIX) and tag[len(STYLE_TAG_PREFIX):] in STYLES:
+            style = tag[len(STYLE_TAG_PREFIX):]
+    return True, {"muted": MUTE_TAG in tags, "style": style}
+
+
+def set_mute(conversation_id, muted):
+    """(ok, "on"|"off"). `muted` is a string, not a bool, because the shared
+    chat-write route validates every field as a string."""
+    if not conversation_id:
+        return False, "which conversation?"
+    if muted not in ("on", "off"):
+        return False, "muted must be on or off"
+    ok, result = _rewrite_tags(conversation_id, lambda tags: (
+        [t for t in tags if t != MUTE_TAG] + ([MUTE_TAG] if muted == "on" else [])))
+    return (True, muted) if ok else (False, result)
+
+
+def set_style(conversation_id, style):
+    """(ok, style). "" puts the thread back on the default."""
+    if not conversation_id:
+        return False, "which conversation?"
+    style = (style or "").strip()
+    if style not in ("",) + STYLES:
+        return False, "style must be brief, detailed or empty"
+    ok, result = _rewrite_tags(conversation_id, lambda tags: (
+        [t for t in tags if not t.startswith(STYLE_TAG_PREFIX)]
+        + ([STYLE_TAG_PREFIX + style] if style else [])))
+    return (True, style) if ok else (False, result)
+
+
 def create(name):
     """(ok, id-or-message). Starting a new thread from the page.
 

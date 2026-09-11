@@ -64,6 +64,8 @@ def chat_write_paths():
 ROUTE_FIXTURES = {
     "/api/conversations/new": ({"name": "STUFF"}, "conversation_create"),
     "/api/conversations/retitle": ({"id": "c-1"}, "conversation_retitle"),
+    "/api/conversations/mute": ({"id": "c-1", "muted": "on"}, "conversation_set_mute"),
+    "/api/conversations/style": ({"id": "c-1", "style": "brief"}, "conversation_set_style"),
     "/api/conversations/autotitle": ({"id": "c1", "name": "New chat", "text": "STUFF"},
                                      "conversation_autotitle"),
     "/api/conversations/rename": ({"id": "c1", "name": "STUFF"}, "conversation_rename"),

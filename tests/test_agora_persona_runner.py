@@ -6123,6 +6123,24 @@ def test_execute_tool_terminal_exec_dispatches_with_audit(runner):
     assert audit_args[3] == "echo hi"
 
 
+def test_build_system_carries_the_brief_style_he_picked_for_a_thread(runner):
+    """Nova's Settings drawer, 2026-09-11: a per-conversation answer style,
+    carried as a tag on the conversation."""
+    persona = {"name": "Nova", "personality": "You are Nova."}
+    system = runner.build_system(persona, {"tags": ["nova:style=brief"]})
+    assert "Answer style for this conversation: Brief" in system
+
+
+def test_build_system_carries_detailed_and_says_nothing_without_a_style(runner):
+    persona = {"name": "Nova", "personality": "You are Nova."}
+    assert "Detailed" in runner.build_system(persona, {"tags": ["nova:style=detailed"]})
+    plain = runner.build_system(persona, {"tags": ["nova-ask"]})
+    assert "Answer style for this conversation" not in plain
+    # An unknown value is ignored rather than guessed at.
+    odd = runner.build_system(persona, {"tags": ["nova:style=shouty"]})
+    assert "Answer style for this conversation" not in odd
+
+
 def test_build_system_includes_terminal_exec_blurb_when_capability_on(runner):
     persona = {
         "name": "Test", "personality": "You are Test.",

@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convPrefs, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -263,6 +263,11 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
      * listing carries no `found`, so answered with it the picker would stay
      * hidden -- and a test asserting it is absent would pass against code
      * that never drew it. */
+    // The Settings drawer's per-thread read (2026-09-11).
+    if (url.includes("/api/conversations/prefs")) {
+      const body = typeof convPrefs === "function" ? convPrefs(url) : convPrefs;
+      return res(body || { ok: true, muted: false, style: "" });
+    }
     if (url.includes("/api/conversations/model")) {
       const body = typeof convModel === "function" ? convModel(url) : convModel;
       if (body && typeof body.then === "function") return body;
@@ -13790,6 +13795,78 @@ describe("holding a conversation in the switcher opens edit options", () => {
     assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
       [["/api/conversations/retitle", { id: "c-9" }]]);
     assert.equal(window.document.getElementById("chat-title").textContent, "Gutter repair");
+  });
+
+  async function newThreadWithSettings(window) {
+    window.postReply = { ok: true, result: "c-9", name: "New chat", message: "c-9" };
+    window.document.querySelector("#chat-list .chat-list-fab")
+      .dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    window.posted.length = 0;
+    window.document.getElementById("chat-settings")
+      .dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await tick();
+    await tick();
+    return window.document.querySelector(".msg-sheet--settings");
+  }
+
+  test("Settings shows this thread's style and mute, and changing them posts", async () => {
+    /* His pick, 2026-09-11: an answer style per thread and a mute. Both are
+     * tags on the conversation; the drawer reads them fresh each open. */
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+      convPrefs: { ok: true, muted: false, style: "detailed" },
+    });
+    const sheet = await newThreadWithSettings(window);
+    const seg = [...sheet.querySelectorAll(".settings-seg-btn")];
+    assert.deepEqual(seg.map((b) => [b.textContent, b.getAttribute("aria-pressed")]),
+      [["Brief", "false"], ["Detailed", "true"]], "the drawer did not show the thread's style");
+    const mute = sheet.querySelector(".settings-toggle");
+    assert.equal(mute.getAttribute("aria-pressed"), "false");
+
+    window.postReply = { ok: true, result: "brief" };
+    seg[0].dispatchEvent(new window.Event("click"));
+    await tick();
+    window.postReply = { ok: true, result: "on" };
+    mute.dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]), [
+      ["/api/conversations/style", { id: "c-9", style: "brief" }],
+      ["/api/conversations/mute", { id: "c-9", muted: "on" }],
+    ]);
+    assert.equal(mute.getAttribute("aria-pressed"), "true");
+    assert.equal(mute.textContent, "Muted");
+    assert.equal(seg[0].getAttribute("aria-pressed"), "true");
+  });
+
+  test("tapping the style it is already on puts the thread back on the default", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+      convPrefs: { ok: true, muted: false, style: "brief" },
+    });
+    const sheet = await newThreadWithSettings(window);
+    window.postReply = { ok: true, result: "" };
+    sheet.querySelectorAll(".settings-seg-btn")[0].dispatchEvent(new window.Event("click"));
+    await tick();
+    assert.deepEqual(window.posted.map((p) => p.body), [{ id: "c-9", style: "" }]);
+  });
+
+  test("Rename saves the name from Settings and puts it in the header", async () => {
+    const window = await openSwitcher({
+      convThread: () => ({ messages: [], waiting: false }),
+    });
+    const sheet = await newThreadWithSettings(window);
+    const input = sheet.querySelector(".settings-input");
+    assert.equal(input.value, "New chat", "the box did not start on the current name");
+    input.value = "Roof repairs";
+    window.postReply = { ok: true, result: "Roof repairs" };
+    sheet.querySelector(".settings-mini").dispatchEvent(new window.Event("click"));
+    await tick();
+    await tick();
+    assert.deepEqual(window.posted.map((p) => [p.url, p.body]),
+      [["/api/conversations/rename", { id: "c-9", name: "Roof repairs" }]]);
+    assert.equal(window.document.getElementById("chat-title").textContent, "Roof repairs");
   });
 
   test("the default name steps aside for one already taken", async () => {

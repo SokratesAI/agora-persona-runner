@@ -14953,6 +14953,101 @@
     titleBtn.type = "button";
     titleBtn.title = "Ask Haiku for a fresh title from this conversation";
 
+    /* Three more rows, his pick from the list 2026-09-11: Rename, an answer
+     * style, and Mute. Mute and style are stored as tags on the conversation
+     * (`/api/conversations/mute`, `/style`), which is what Agora (for the
+     * push) and the runner (for the style) read -- so they are per thread,
+     * and only a real conversation has them. */
+    var styleRow = el("div", "settings-row");
+    styleRow.appendChild(el("span", "settings-label", "Answer style"));
+    var styleSeg = el("div", "settings-seg");
+    var styleBtns = {};
+    ["brief", "detailed"].forEach(function (key) {
+      var b = el("button", "settings-seg-btn", key === "brief" ? "Brief" : "Detailed");
+      b.type = "button";
+      b.setAttribute("aria-pressed", "false");
+      styleBtns[key] = b;
+      styleSeg.appendChild(b);
+    });
+    styleRow.appendChild(styleSeg);
+
+    var muteRow = el("div", "settings-row");
+    muteRow.appendChild(el("span", "settings-label", "Notifications"));
+    var muteBtn = el("button", "settings-toggle", "On");
+    muteBtn.type = "button";
+    muteBtn.setAttribute("aria-pressed", "false");
+    muteRow.appendChild(muteBtn);
+
+    var renameRow = el("div", "settings-row settings-rename");
+    var renameInput = document.createElement("input");
+    renameInput.type = "text";
+    renameInput.className = "settings-input";
+    renameInput.setAttribute("aria-label", "Conversation name");
+    renameInput.maxLength = 200;
+    var renameSave = el("button", "settings-mini", "Rename");
+    renameSave.type = "button";
+    renameRow.appendChild(renameInput);
+    renameRow.appendChild(renameSave);
+
+    function paintPrefs(p) {
+      var style = (p && p.style) || "";
+      Object.keys(styleBtns).forEach(function (key) {
+        styleBtns[key].setAttribute("aria-pressed", key === style ? "true" : "false");
+      });
+      var muted = !!(p && p.muted);
+      muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
+      muteBtn.textContent = muted ? "Muted" : "On";
+    }
+
+    function convId() {
+      return source && source.kind === "conv" ? source.id : "";
+    }
+
+    Object.keys(styleBtns).forEach(function (key) {
+      styleBtns[key].addEventListener("click", function () {
+        var id = convId();
+        if (!id) return;
+        // Tapping the style it is already on puts it back on the default.
+        var next = styleBtns[key].getAttribute("aria-pressed") === "true" ? "" : key;
+        chatWrite("/api/conversations/style", { id: id, style: next })
+          .then(function () { paintPrefs({ style: next, muted: muteBtn.getAttribute("aria-pressed") === "true" }); })
+          .catch(function (err) { toast("could not save the style: " + err.message, true); });
+      });
+    });
+
+    muteBtn.addEventListener("click", function () {
+      var id = convId();
+      if (!id) return;
+      var next = muteBtn.getAttribute("aria-pressed") === "true" ? "off" : "on";
+      var style = "";
+      Object.keys(styleBtns).forEach(function (k) {
+        if (styleBtns[k].getAttribute("aria-pressed") === "true") style = k;
+      });
+      chatWrite("/api/conversations/mute", { id: id, muted: next })
+        .then(function () { paintPrefs({ muted: next === "on", style: style }); })
+        .catch(function (err) { toast("could not change notifications: " + err.message, true); });
+    });
+
+    renameSave.addEventListener("click", function () {
+      var id = convId();
+      var name = renameInput.value.trim();
+      if (!id || !name || renameSave.disabled) return;
+      renameSave.disabled = true;
+      chatWrite("/api/conversations/rename", { id: id, name: name })
+        .then(function (named) {
+          named = typeof named === "string" && named ? named : name;
+          if (!source || source.id !== id) return;
+          source.name = named;
+          source.untitled = false;
+          titleEl.textContent = named;
+          rememberSource();
+          if (dock.classList.contains("list-open")) loadList(true);
+          toast("Renamed");
+        })
+        .catch(function (err) { toast("could not rename: " + err.message, true); })
+        .then(function () { renameSave.disabled = false; });
+    });
+
     /* Parked in the document, hidden, until the drawer first opens -- the
      * same pattern `#capture-types` uses. Left detached, the model picker
      * paints into a node nothing can see, and nothing else can reach it. `open` moves them into the sheet from here. */
@@ -14960,6 +15055,9 @@
     settingsParking.hidden = true;
     settingsParking.appendChild(modelRow);
     settingsParking.appendChild(titleBtn);
+    settingsParking.appendChild(styleRow);
+    settingsParking.appendChild(muteRow);
+    settingsParking.appendChild(renameRow);
     document.body.appendChild(settingsParking);
 
     titleBtn.addEventListener("click", function () {
@@ -14992,7 +15090,20 @@
 
     if (settingsBtn) {
       settingsBtn.addEventListener("click", function () {
-        var rows = [modelRow, titleBtn];
+        var rows = [modelRow];
+        var id = convId();
+        if (id) {
+          // The per-thread settings, read fresh each open: a cycle, another
+          // device or Agora itself may have changed the tags since.
+          rows.push(styleRow, muteRow, renameRow);
+          renameInput.value = (source && source.name) || "";
+          paintPrefs(null);
+          fetch("/api/conversations/prefs?id=" + encodeURIComponent(id))
+            .then(function (r) { return r.json().catch(function () { return {}; }); })
+            .then(function (p) { if (p && p.ok && convId() === id) paintPrefs(p); })
+            .catch(function () { /* stays on the defaults it painted */ });
+        }
+        rows.push(titleBtn);
         settingsSheet.open(rows, "Settings", { closeOnPick: false });
       });
     }
