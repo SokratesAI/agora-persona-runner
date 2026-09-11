@@ -300,7 +300,7 @@ def test_capture_prefixes_only_the_first_bullet_of_a_paste(monkeypatch):
     monkeypatch.setattr(
         nova_capture, "vault_write_path",
         lambda path, body, if_rev=None: written.update(body=body) or "written")
-    ok, _ = nova_capture.capture("issues", "first line\nsecond line", "High")
+    ok, _ = nova_capture.capture("notes", "first line\nsecond line", "High")
     assert ok
     assert "- 🟠 High: first line" in written["body"]
     assert "- second line" in written["body"]
@@ -322,7 +322,7 @@ def test_an_unrated_capture_is_written_exactly_as_typed(monkeypatch):
     monkeypatch.setattr(
         nova_capture, "vault_write_path",
         lambda path, body, if_rev=None: written.update(body=body) or "written")
-    ok, _ = nova_capture.capture("issues", "plain thought")
+    ok, _ = nova_capture.capture("notes", "plain thought")
     assert ok and "- plain thought" in written["body"]
 
 

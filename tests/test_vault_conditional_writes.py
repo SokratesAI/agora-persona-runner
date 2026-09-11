@@ -133,17 +133,17 @@ def test_the_capture_box_sends_the_revision_it_read():
     because the write refetched the revision. This is what connects them."""
     couch = FakeCouch()
     issues = "---\ntype: log\n---\n\n- \n\n## Board\n"
-    couch.seed(nova_capture.CAPTURE_TARGETS["issues"], issues)
+    couch.seed(nova_capture.CAPTURE_TARGETS["notes"], issues)
     with patch.object(vault, "couch_req", couch.req):
-        ok, message = nova_capture.capture("issues", "a new capture")
+        ok, message = nova_capture.capture("notes", "a new capture")
     assert ok, message
-    assert "- a new capture" in couch.text(nova_capture.CAPTURE_TARGETS["issues"])
+    assert "- a new capture" in couch.text(nova_capture.CAPTURE_TARGETS["notes"])
 
 
 def test_a_capture_that_loses_a_race_is_not_lost():
     """The owner typing on his phone while a cycle boards the same file. Both
     lines have to survive; before this the cycle's write silently won."""
-    path = nova_capture.CAPTURE_TARGETS["issues"]
+    path = nova_capture.CAPTURE_TARGETS["notes"]
     couch = FakeCouch()
     couch.seed(path, "---\ntype: log\n---\n\n- \n\n## Board\n")
 
@@ -152,7 +152,7 @@ def test_a_capture_that_loses_a_race_is_not_lost():
 
     couch.interleave = {2: cycle_boards_it}
     with patch.object(vault, "couch_req", couch.req):
-        ok, message = nova_capture.capture("issues", "typed on the phone")
+        ok, message = nova_capture.capture("notes", "typed on the phone")
 
     assert ok, message
     final = couch.text(path)

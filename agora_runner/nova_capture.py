@@ -48,8 +48,9 @@ import re
 from datetime import datetime
 
 from agora_runner import (
-    board_document, board_records, board_store, board_view, board_write)
-from agora_runner.board_store import CaptureConflict
+    board_document, board_records, board_store, board_view, board_write,
+    entity_id, rank_key)
+from agora_runner.board_store import CaptureConflict, RegistryConflict
 from agora_runner.config import OSLO
 from agora_runner.log import log
 from agora_runner.nova_boards import (
@@ -768,8 +769,11 @@ def insert_captures(markdown, bullets):
     return "\n".join(lines[:start] + block + lines[end:])
 
 
-def capture(target, text, priority="", one_item=False, project=""):
-    """Append a capture to `issues.md` or `ideas.md`. Returns (ok, message).
+def capture(target, text, priority="", one_item=False, project="", store=None):
+    """Add a capture to one of his three boxes. Returns (ok, message).
+
+    **His two boards go to the #203 record store** (`_capture_records`);
+    only `notes`, which has no records, still reads and writes the file here.
 
     `target` is a key into CAPTURE_TARGETS, never a path -- nothing a
     client sends is ever used to address a vault document.
@@ -818,6 +822,9 @@ def capture(target, text, priority="", one_item=False, project=""):
     slug = project_slug(project)
     if slug:
         bullets[0] = bullets[0] + " " + PROJECT_TAG_PREFIX + slug
+    board = RECORD_BOARDS.get(target)
+    if board is not None:
+        return _capture_records(target, board, bullets, store or board_store)
 
     result = ""
     for _ in range(WRITE_ATTEMPTS):
@@ -836,6 +843,79 @@ def capture(target, text, priority="", one_item=False, project=""):
             break
     log(f"nova-capture failed writing to {target}: {result}")
     return False, f"could not write to {target}: {result}"
+
+
+def _capture_records(target, board, bullets, store):
+    """`capture` on one of his two boards: one new capture record per bullet.
+
+    Same place as `insert_captures` puts them: below every capture already
+    there, in the order they were typed. **The rank follows whatever the board
+    already stores**, because `captures_in_order` compares ranks with each
+    other and an int beside a str is a TypeError on every read of his board:
+    `tools.board_migrate` writes whole numbers (`index + 1`) while
+    `board_document` documents a `rank_key` and the fixtures use one. So the
+    next whole number after an int, `rank_key.between(last, None)` otherwise.
+
+    **The ids are minted and the registry written before any capture is.**
+    `entity_id.mint_capture` is a high-water mark, so an id written into the
+    registry and then never used is a gap and costs nothing, while a capture
+    stored under an id the registry never recorded is one the next mint hands
+    out again. A `RegistryConflict` is a second writer minting at the same
+    time: re-read and mint again, never resend -- `write_registry`'s rule.
+
+    Nothing here rewrites a stored capture, so the owner's other bullets and
+    the replies under them cannot be touched; each write creates one document.
+    Two phones adding at once can take the same rank, and both bullets still
+    land -- their order between each other is then CouchDB's id order.
+    """
+    problem = None
+    for _ in range(WRITE_ATTEMPTS):
+        try:
+            registry = store.read_registry()
+            held = board_records.capture_documents(board, store=store)
+            ranked = [doc["rank"] for doc in held if doc.get("rank") is not None]
+            last = ranked[-1] if ranked else None
+            ranks = []
+            for _ in bullets:
+                last = (last + 1 if isinstance(last, int)
+                        else rank_key.between(last, None))
+                ranks.append(last)
+            # A registry whose high-water lags the stored ids would hand out
+            # one of his existing captures' ids -- which the real store refuses
+            # forever and a blind one overwrites -- so mint past any id already
+            # stored. `mint_capture` bumps the mark each call, which repairs it.
+            taken = {doc.get("captureId") for doc in held}
+            ids = []
+            for _ in bullets:
+                capture_id = entity_id.mint_capture(registry, board)
+                while capture_id in taken:
+                    capture_id = entity_id.mint_capture(registry, board)
+                ids.append(capture_id)
+            store.write_registry(registry)
+        except RegistryConflict as error:
+            problem = error
+            continue
+        except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+            log(f"nova-capture could not mint on the {target} records: {error}")
+            return False, f"could not write to {target}: {error}"
+        break
+    else:
+        log(f"nova-capture failed writing to {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+
+    written = 0
+    try:
+        for text, capture_id, rank in zip(bullets, ids, ranks):
+            store.write_capture(board_document.to_capture_document(
+                text, board, capture_id, rank=rank))
+            written += 1
+    except Exception as error:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture failed writing to {target} after {written} of "
+            f"{len(bullets)}: {error}")
+        return False, (f"could not write to {target}: {error} "
+                       f"({written} of {len(bullets)} landed)")
+    log(f"nova-capture wrote {len(bullets)} bullet(s) to {target}")
+    return True, f"captured to {target}"
 
 
 def edit_row(target, number, title, store=None):
