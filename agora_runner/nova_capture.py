@@ -47,7 +47,7 @@ capture at all.
 import re
 from datetime import datetime
 
-from agora_runner import board_records, board_store, board_write
+from agora_runner import board_records, board_store, board_view, board_write
 from agora_runner.config import OSLO
 from agora_runner.log import log
 from agora_runner.nova_boards import (
@@ -67,9 +67,7 @@ from agora_runner.nova_boards import (
     canonical_priority,
     append_detail_note,
     capture_entries,
-    delete_row,
     _frontmatter_end,
-    extract_row,
     OUTDATED_STATUS,
     STATUS_LABELS,
     set_row_order as _set_row_order_md,
@@ -774,53 +772,6 @@ def capture(target, text, priority="", one_item=False, project=""):
     return False, f"could not write to {target}: {result}"
 
 
-def _amend_board(target, number, mutate, what):
-    """Read-modify-write one of the owner's board files. Returns (ok, message).
-
-    The fourth and fifth write paths on this site share one loop rather
-    than copying `set_priority`'s a fourth and fifth time. The 409 retry
-    is the same and matters for the same reason -- a cycle boarding these
-    files in step 6 is the concurrent writer, and it is the one most
-    likely to be running.
-
-    `mutate` returning `None` is not a write failure and is never
-    retried: the row is not there, or the new title is not writable. A
-    re-read returns the same answer and a 409 loop around it would spin.
-
-    **The path comes from `BOARD_PATHS`, not `CAPTURE_TARGETS`, and that
-    is the reviewer's point rather than mine.** The two dicts hold the
-    same string for `issues` and `ideas` today and it is a coincidence:
-    `CAPTURE_TARGETS` also carries `notes`, which is not a board at all,
-    and `BOARD_PATHS` already splits his file from mine. Reading a board
-    row's path out of the capture dict works until one of them is
-    restructured for its own reasons, and then this writes somewhere else
-    with nothing to say so. `["edvard"]` is also the scope boundary he
-    set in #85 -- *"This is only for the ones i have reported"* -- said in
-    the addressing rather than checked separately.
-    """
-    paths = BOARD_PATHS.get(target)
-    path = paths.get("edvard") if paths else None
-    if path is None:
-        return False, f"unknown target: {target!r}"
-
-    result = ""
-    for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(path)
-        if current is None:
-            return False, f"{path} not found"
-        updated = mutate(current)
-        if updated is None:
-            return False, f"#{number} is not a row on {target}"
-        result = vault_write_path(path, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture {what} #{number} on {target}")
-            return True, f"#{number} {what} on {target}"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed to {what} #{number} on {target}: {result}")
-    return False, f"could not write to {target}: {result}"
-
-
 def edit_row(target, number, title, store=None):
     """Retitle one boarded row. Returns (ok, message).
 
@@ -1238,7 +1189,7 @@ def set_project(target, number, project, store=None):
     return True, f"#{number} moved on {target}"
 
 
-def remove_row(target, number):
+def remove_row(target, number, store=None):
     """Delete one boarded row and its write-up. Returns (ok, message).
 
     *"and especially delete"*. Irreversible from the app's side, which is
@@ -1265,19 +1216,45 @@ def remove_row(target, number):
     leave him unable to remove a row because a file he has never heard of
     would not write. The archive is logged instead, and the audit trail in
     `nova_site` records the deletion either way.
+
+    **Written to the #203 record store, not to his markdown** -- the sixth and
+    last of the app's board writers off the file, and the last caller of the
+    markdown read-modify-write loop, which is deleted with it. One
+    `board_write.remove_row`: the row's document is deleted on the revision it
+    was read at, and the rest of the board is checked to come back untouched.
+    The archived text is drawn by `board_view` from the record as it was read,
+    so it is the same row line and `### #N —` write-up the generated view
+    showed. A finished-table row can still be deleted, as before.
+
+    A missing row answers with `edit_row`'s 409 phrase, decided off a read
+    for `edit_row`'s reason: `WriteRefused` also means "moved under you",
+    which must stay a 502. **No retry**, for `set_priority`'s reason. `store`
+    is for tests, looked up at call time.
     """
-    captured = {}
-
-    def mutate(markdown):
-        updated = delete_row(markdown, number)
-        if updated is not None:
-            captured["text"] = extract_row(markdown, number)
-        return updated
-
-    ok, message = _amend_board(target, number, mutate, "deleted")
-    if ok:
-        _archive_deleted_row(target, number, captured.get("text"))
-    return ok, message
+    board = RECORD_BOARDS.get(target)
+    if board is None:
+        return False, f"unknown target: {target!r}"
+    store = store or board_store
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    if not any(item.get("number") == number for item in before["items"]):
+        return False, f"#{number} is not a row on {target}"
+    try:
+        item, write_up = board_write.remove_row(board, number, store=store)
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed deleting #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture deleted #{number} on {target}")
+    text = board_view.render_row(item)
+    if write_up:
+        text += "\n\n" + board_view.render_detail(
+            number, item.get("title"), write_up)
+    _archive_deleted_row(target, number, text)
+    return True, f"#{number} deleted on {target}"
 
 
 def _archive_deleted_row(target, number, text):

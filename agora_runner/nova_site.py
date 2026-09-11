@@ -5433,7 +5433,7 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         failed, there is simply nothing there to comment under, and the
         page should say so rather than retry.
 
-        **`_amend_board` fails in two ways and only one of them is that**,
+        **A board write fails in two ways and only one of them is that**,
         which the first version of this route missed while its docstring
         claimed otherwise (reviewer). The other is a genuine write
         failure: `WRITE_ATTEMPTS` exhausted against a losing

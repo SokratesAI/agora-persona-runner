@@ -404,121 +404,126 @@ def test_archive_writes_to_the_store_it_is_handed(monkeypatch):
     assert _row(nova_capture.board_store, 84)["status"] == "🟡 In progress"
 
 
-# --- the vault write around delete, which is still markdown ---
+# --- the delete button writes the records too; only its archive is a file ---
 
 
-def test_delete_writes_once_and_sends_the_revision_it_read(monkeypatch):
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
-    calls = []
-    monkeypatch.setattr(
-        nova_capture, "vault_write_path",
-        lambda path, body, if_rev=None: calls.append((path, body, if_rev)) or "written")
-    ok, message = nova_capture.remove_row("ideas", 84)
-    assert ok and "#84" in message
-    board_writes = [c for c in calls if c[0] == "projects/sokrates/projects/nova/ideas.md"]
-    assert len(board_writes) == 1
-    assert board_writes[0][2] == "7-abc"
-    assert "Hold a card" not in board_writes[0][1]
+def _archive_only(monkeypatch, result="written"):
+    """The records fixture, with the one vault path delete still writes -- the
+    deleted-rows archive -- let through and recorded. Any other path is his
+    board file, and touching it is the failure."""
+    store = _records(monkeypatch)
+    writes = []
+
+    def read(path):
+        if path != nova_capture.DELETED_ROWS_PATH:
+            raise _VaultTouched(f"the delete button read {path}")
+        return None, None
+
+    def write(path, body, if_rev=None):
+        if path != nova_capture.DELETED_ROWS_PATH:
+            raise _VaultTouched(f"the delete button wrote {path}")
+        writes.append((body, if_rev))
+        return result
+
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev", read)
+    monkeypatch.setattr(nova_capture, "vault_write_path", write)
+    return store, writes
+
+
+def _numbers(store):
+    from agora_runner import board_records
+    return [item["number"]
+            for item in board_records.contents("issue", store=store)["items"]]
+
+
+def test_delete_takes_the_row_and_its_write_up_out_of_the_records(monkeypatch):
+    from agora_runner import board_records
+
+    store, _ = _archive_only(monkeypatch)
+    before = _numbers(store)
+    ok, message = nova_capture.remove_row("issues", 84)
+    assert ok and message == "#84 deleted on issues"
+    after = board_records.contents("issue", store=store)
+    assert [item["number"] for item in after["items"]] == [
+        number for number in before if number != 84]
+    assert 84 not in after["details"] and 57 in after["details"]
 
 
 def test_a_deleted_row_is_archived_with_its_write_up(monkeypatch):
     """The owner, 2026-08-22: *"just to keep it as a deleted issue for future
     reference."* The row text and the write-up both have to survive, or the
     archive records that a number vanished rather than what it said."""
-    # Path-aware on purpose: the archive file does not exist yet, and a
-    # fixture that hands it a revision would hide the `if_rev=None` this
-    # asserts -- which is what "must not already exist" is expressed as.
-    monkeypatch.setattr(
-        nova_capture, "vault_read_path_rev",
-        lambda p: (None, None) if p == nova_capture.DELETED_ROWS_PATH else (BOARD, "7-abc"))
-    calls = []
-    monkeypatch.setattr(
-        nova_capture, "vault_write_path",
-        lambda path, body, if_rev=None: calls.append((path, body, if_rev)) or "written")
-    ok, _ = nova_capture.remove_row("ideas", 84)
-    assert ok
-    archive = [c for c in calls if c[0] == nova_capture.DELETED_ROWS_PATH]
-    assert len(archive) == 1
-    body = archive[0][1]
-    assert "## ideas #84 — deleted " in body
-    # The row line and its write-up -- the two spans `delete_row` drops.
-    assert "Hold a card" in body
-    assert "### #84 —" in body
+    _, writes = _archive_only(monkeypatch)
+    assert nova_capture.remove_row("issues", 84)[0]
+    assert len(writes) == 1
+    body, if_rev = writes[0]
+    assert "## issues #84 — deleted " in body
+    assert "| Hold a card |" in body
+    assert "### #84 — Hold a card" in body
+    assert "His words about holding a card." in body
     # The file did not exist, so the write must claim that rather than
     # sending a revision it never read.
-    assert archive[0][2] is None
+    assert if_rev is None
+
+
+def test_a_row_with_no_write_up_is_archived_as_its_line_alone(monkeypatch):
+    _, writes = _archive_only(monkeypatch)
+    assert nova_capture.remove_row("issues", 59)[0]
+    body = writes[0][0]
+    assert "| No link on this one |" in body and "### #59" not in body
+
+
+def test_delete_reaches_a_row_in_the_finished_table(monkeypatch):
+    store, writes = _archive_only(monkeypatch)
+    assert nova_capture.remove_row("issues", 51)[0]
+    assert 51 not in _numbers(store)
+    assert "The finished one." in writes[0][0]
 
 
 def test_a_failed_archive_does_not_fail_the_delete(monkeypatch):
     """He pressed Delete and the row is gone; refusing afterwards would
     say the delete failed when it did not."""
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
-
-    def write(path, body, if_rev=None):
-        if path == nova_capture.DELETED_ROWS_PATH:
-            return "500 boom"
-        return "written"
-
-    monkeypatch.setattr(nova_capture, "vault_write_path", write)
-    ok, message = nova_capture.remove_row("ideas", 84)
-    assert ok and "#84" in message
-
-
-def test_nothing_is_archived_when_no_row_was_deleted(monkeypatch):
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
-    calls = []
-    monkeypatch.setattr(
-        nova_capture, "vault_write_path",
-        lambda path, body, if_rev=None: calls.append(path) or "written")
-    ok, _ = nova_capture.remove_row("ideas", 999)
-    assert not ok
-    assert nova_capture.DELETED_ROWS_PATH not in calls
-
-
-def test_delete_does_not_write_when_the_row_is_gone(monkeypatch):
-    # The edit half of this is `test_edit_of_a_missing_row_says_...` above,
-    # against the records; delete is still a markdown writer.
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
-
-    def refuse(*a, **k):
-        raise AssertionError("must not write")
-
-    monkeypatch.setattr(nova_capture, "vault_write_path", refuse)
-    ok, message = nova_capture.remove_row("issues", 999)
-    assert not ok and "not a row" in message
-
-
-def test_a_conflict_is_retried_against_a_fresh_read(monkeypatch):
-    reads = []
-
-    def read(path):
-        reads.append(path)
-        return BOARD, f"{len(reads)}-abc"
-
-    results = ["409 conflict", "written", "written"]
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", read)
-    monkeypatch.setattr(
-        nova_capture, "vault_write_path",
-        lambda path, body, if_rev=None: results.pop(0))
-    # Delete, because edit no longer goes through `_amend_board`'s retry.
-    # The archive write reads its own file; count only the board's reads.
-    ok, _ = nova_capture.remove_row("issues", 84)
-    reads = [p for p in reads if p != nova_capture.DELETED_ROWS_PATH]
-    assert ok
-    # The second attempt re-read rather than resending the body it built
-    # against a revision that no longer exists.
-    assert len(reads) == 2
-
-
-def test_a_non_conflict_failure_is_not_retried(monkeypatch):
-    monkeypatch.setattr(nova_capture, "vault_read_path_rev", lambda p: (BOARD, "7-abc"))
-    calls = []
-    monkeypatch.setattr(
-        nova_capture, "vault_write_path",
-        lambda path, body, if_rev=None: calls.append(1) or "500 boom")
+    store, writes = _archive_only(monkeypatch, result="500 boom")
     ok, message = nova_capture.remove_row("issues", 84)
-    assert not ok and "500 boom" in message
-    assert len(calls) == 1
+    assert ok and message == "#84 deleted on issues"
+    assert writes and 84 not in _numbers(store)
+
+
+def test_delete_of_a_missing_row_says_the_phrase_the_site_answers_409_on(monkeypatch):
+    store, writes = _archive_only(monkeypatch)
+    before = _numbers(store)
+    ok, message = nova_capture.remove_row("issues", 999)
+    assert not ok and message == "#999 is not a row on issues"
+    assert writes == [] and _numbers(store) == before
+
+
+def test_a_row_that_moved_under_the_delete_is_not_reported_as_missing(monkeypatch):
+    """`WriteRefused` also means "the row changed between the read and the
+    delete", and a second tap lands on that one -- it must stay a 502."""
+    from agora_runner import board_write
+
+    store, writes = _archive_only(monkeypatch)
+
+    def moved(board, number, store=None):
+        raise board_write.WriteRefused(
+            f"row #{number} of board {board!r} changed between reading the "
+            "board and deleting it")
+
+    monkeypatch.setattr(board_write, "remove_row", moved)
+    ok, message = nova_capture.remove_row("issues", 84)
+    assert not ok
+    assert "is not a row" not in message and "changed between" in message
+    assert writes == [] and 84 in _numbers(store)
+
+
+def test_delete_writes_to_the_store_it_is_handed(monkeypatch):
+    from tests.test_board_records import writable
+
+    _archive_only(monkeypatch)
+    _, handed = writable(board="issue", markdown=BOARD)
+    assert nova_capture.remove_row("issues", 84, store=handed)[0]
+    assert 84 not in _numbers(handed)
+    assert 84 in _numbers(nova_capture.board_store)
 
 
 def test_notes_is_not_a_board_and_the_row_writers_refuse_it(monkeypatch):

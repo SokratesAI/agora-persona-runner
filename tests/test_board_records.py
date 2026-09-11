@@ -384,7 +384,15 @@ class WritableFakeStore(FakeStore):
         the thing that makes re-running a half-finished promotion free.
         """
         self.calls.append(("delete_capture", dict(doc)))
-        doc_id = board_document.capture_document_id(doc["board"], doc["captureId"])
+        return self._drop(board_document.capture_document_id(
+            doc["board"], doc["captureId"]))
+
+    def delete_row(self, doc):
+        """Remove one row by its own id; `delete_capture`'s fake, same reasons."""
+        self.calls.append(("delete_row", dict(doc)))
+        return self._drop(board_document.document_id(doc["board"], doc["number"]))
+
+    def _drop(self, doc_id):
         kept = [held for held in self.docs if held.get("_id") != doc_id]
         removed = len(kept) != len(self.docs)
         self.docs = kept

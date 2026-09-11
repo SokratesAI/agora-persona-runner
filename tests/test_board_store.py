@@ -984,6 +984,41 @@ def test_delete_capture_reaches_for_no_other_document(couch):
     assert [method for method, _ in couch.calls] == ["DELETE"]
 
 
+def test_delete_row_removes_it_and_says_it_did(couch):
+    """The app's Delete button, one document; a re-run answers False."""
+    stored = board_store.write_row(_row("issue", 5))
+    assert board_store.delete_row(stored) is True
+    assert board_store.read_row("issue", 5) is None
+    assert board_store.delete_row(stored) is False
+
+
+def test_a_row_delete_must_carry_the_revision_it_was_read_at(couch):
+    """`delete_capture`'s rule over the row range: no `_rev`, no delete."""
+    board_store.write_row(_row("issue", 5))
+    with pytest.raises(board_document.DocumentError):
+        board_store.delete_row(_row("issue", 5))
+    assert board_store.read_row("issue", 5) is not None
+
+
+def test_a_row_delete_on_a_stale_revision_raises_row_conflict(couch):
+    """Not `CaptureConflict`, and not a silent success: the row moved."""
+    stale = board_store.write_row(_row("issue", 5, title="a"))
+    board_store.write_row(dict(stale, title="b"))
+    with pytest.raises(board_store.RowConflict):
+        board_store.delete_row(stale)
+    assert board_store.read_row("issue", 5)["title"] == "b"
+
+
+def test_delete_row_reaches_for_no_other_document(couch):
+    """One row off the board is one request, not a listing of the board."""
+    board_store.write_row(_row("issue", 6))
+    stored = board_store.write_row(_row("issue", 5))
+    couch.calls.clear()
+    board_store.delete_row(stored)
+    assert [method for method, _ in couch.calls] == ["DELETE"]
+    assert board_store.read_row("issue", 6) is not None
+
+
 def test_an_unstamped_board_reads_as_none_and_a_stamped_one_comes_back(couch):
     assert board_store.read_source("issue") is None
 

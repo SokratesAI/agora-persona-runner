@@ -4641,18 +4641,21 @@ def test_a_failed_board_write_is_a_502():
 
 def test_a_stale_row_is_a_409_through_the_real_module_not_a_hand_typed_string():
     """The reviewer's finding: `_send_json(409 …)` keys on the substring
-    `"is not a row"`, which `nova_capture._amend_board` composes. Every
+    `"is not a row"`, which `nova_capture.remove_row` composes. Every
     other test here mocks that function and re-types the sentence, so the
     two sides agree by inspection and nothing pins them. Rewording the
     message would turn every stale row into a 502 -- "the vault failed",
     when nothing failed -- and the page would retry instead of re-reading.
 
-    This one runs the real `remove_row` against a board that genuinely has
-    no #999, with only the vault stubbed out.
+    This one runs the real `remove_row` against a record store that
+    genuinely has no #999 (#203), with the vault stubbed out.
     """
+    from tests.test_board_records import writable
+
     board = "---\n---\n\n## Board\n\n| # | Item | Status | Updated |\n|---|---|---|---|\n" \
             "| [[#57 — A row\\|57]] | A row | 🟡 In progress | 08-11 |\n"
-    with patch.object(nova_capture, "vault_read_path_rev", return_value=(board, "3-abc")), \
+    _, store = writable(board="issue", markdown=board)
+    with patch.object(nova_capture, "board_store", store), \
             patch.object(nova_capture, "vault_write_path") as write:
         status, _, body = _post("/api/board/delete", {"target": "issues", "number": 999})
     write.assert_not_called()
@@ -4880,7 +4883,7 @@ def test_a_row_with_no_write_up_is_a_409_and_not_a_502():
 
 
 def test_an_exhausted_write_is_a_502_and_not_a_409():
-    """`_amend_board` fails two ways and only one is "there is no such
+    """A board write fails two ways and only one is "there is no such
     row". A losing compare-and-swap against a cycle writing the same
     write-up returns `could not write to ...`, and reporting that as 409
     makes a real failure indistinguishable from an empty row in the log.

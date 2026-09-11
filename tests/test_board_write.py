@@ -365,6 +365,88 @@ _NOTE_ROW = 41  # the fixture's only row with a write-up to append to
 _NO_WRITE_UP = 42
 
 
+# --- remove_row: the app's Delete button (#203) ---
+
+
+def test_remove_takes_the_row_and_its_write_up_and_nothing_else():
+    parsed, store = writable()
+    assert parsed["details"][41], "the fixture's row 41 has a write-up"
+    item, write_up = board_write.remove_row("issue", 41, store=store)
+    assert item == item_numbered(parsed, 41)
+    assert write_up == parsed["details"][41]
+    assert board_records.contents("issue", store=store) == {
+        **parsed,
+        "items": [row for row in parsed["items"] if row["number"] != 41],
+        "details": {key: body for key, body in parsed["details"].items()
+                    if key != 41},
+    }
+
+
+def test_remove_of_a_row_that_is_not_there_deletes_nothing():
+    _, store = writable()
+    with pytest.raises(board_write.WriteRefused, match="is not a row"):
+        board_write.remove_row("issue", 999, store=store)
+    assert not [call for call in store.calls if call[0] == "delete_row"]
+
+
+class _DeletesTwo(WritableFakeStore):
+    """Deletes the row asked for and row 42 with it."""
+
+    def delete_row(self, doc):
+        super().delete_row(dict(doc, number=42))
+        return super().delete_row(doc)
+
+
+def test_a_delete_that_takes_another_row_with_it_is_caught():
+    _, plain = writable()
+    store = _DeletesTwo(plain.docs, plain.registry)
+    with pytest.raises(board_write.BoardDamaged, match="set of rows changed"):
+        board_write.remove_row("issue", 41, store=store)
+
+
+class _EatsANeighboursWriteUp(WritableFakeStore):
+    """Deletes the row asked for, then rewrites another row's write-up."""
+
+    def delete_row(self, doc):
+        removed = super().delete_row(doc)
+        neighbour = next(
+            item for item in board_records.contents("issue", store=self)["items"]
+            if item["number"] != doc["number"])
+        board_records.store_item("issue", neighbour, detail="eaten", store=self)
+        return removed
+
+
+def test_a_delete_that_eats_another_write_up_is_caught():
+    _, plain = writable()
+    store = _EatsANeighboursWriteUp(plain.docs, plain.registry)
+    with pytest.raises(board_write.BoardDamaged, match="write-up under"):
+        board_write.remove_row("issue", 41, store=store)
+
+
+class _MovedBeforeTheDelete(WritableFakeStore):
+    def delete_row(self, doc):
+        raise board_store.RowConflict("moved since it was read")
+
+
+def test_a_row_that_moved_before_the_delete_is_refused_not_deleted():
+    _, plain = writable()
+    store = _MovedBeforeTheDelete(plain.docs, plain.registry)
+    with pytest.raises(board_write.WriteRefused, match="changed between"):
+        board_write.remove_row("issue", 41, store=store)
+
+
+class _AlreadyGone(WritableFakeStore):
+    def delete_row(self, doc):
+        return False
+
+
+def test_a_row_already_gone_when_the_delete_reaches_it_is_refused():
+    _, plain = writable()
+    store = _AlreadyGone(plain.docs, plain.registry)
+    with pytest.raises(board_write.WriteRefused, match="already gone"):
+        board_write.remove_row("issue", 41, store=store)
+
+
 def _details(store, board="issue"):
     return board_records.contents(board, store=store)["details"]
 
