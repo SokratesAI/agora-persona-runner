@@ -725,245 +725,6 @@ def test_a_comment_that_merely_discusses_relaying_is_not_one():
 
 
 
-# --- His rows come out of the ticket store now ---------------------------
-#
-# The first reader of the one-document-per-ticket migration. Until this,
-# `nova_tickets` was written on every board write and read by nothing, so
-# a drift in it could only be found by `tools.ticket_drift` running once a
-# cycle. These pin the three answers `_rows_from_store` can give, because
-# every other test in this file exercises the fallback by accident --
-# there is no CouchDB under them, so `read_rows` raises and the parsed
-# rows come back looking exactly like a working switch.
-
-
-def test_his_rows_come_from_the_ticket_store_when_it_agrees():
-    parsed = [{"number": 9, "title": "b"}, {"number": 4, "title": "a"}]
-    stored = [{"number": 9, "title": "b"}, {"number": 4, "title": "a"}]
-    with patch.object(nova_site, "read_rows", return_value=stored):
-        got = nova_site._rows_from_store("issues", parsed)
-    # Identity, not equality: equality is what the function already
-    # checked, so asserting it again would pass on the fallback too and
-    # this test would never fail if the switch were reverted.
-    assert got is stored
-
-
-def test_a_store_that_disagrees_draws_the_file_and_says_so():
-    """His file is the source of truth and a silent fallback is the bug.
-
-    A row-projection view that has drifted is not a smaller answer to
-    degrade to, it is a different board, and the page cannot tell. So the
-    file wins -- and it is said out loud, because a fallback nobody is
-    told about is the invisible failure this loop keeps filing.
-    """
-    parsed = [{"number": 9, "title": "b"}, {"number": 4, "title": "a"}]
-    stored = [{"number": 4, "title": "a"}, {"number": 9, "title": "b"}]
-    said = []
-    with patch.object(nova_site, "read_rows", return_value=stored), \
-            patch.object(nova_site, "log", said.append):
-        got = nova_site._rows_from_store("issues", parsed)
-    assert got is parsed
-    assert said and "disagree" in said[0]
-
-
-def test_an_unreachable_store_draws_the_file_and_says_so():
-    said = []
-    with patch.object(nova_site, "read_rows", side_effect=RuntimeError("boom")), \
-            patch.object(nova_site, "log", said.append):
-        got = nova_site._rows_from_store("ideas", parsed := [{"number": 1}])
-    assert got is parsed
-    assert said and "unreadable" in said[0]
-
-
-def test_board_payload_actually_asks_the_store_for_his_rows(board_md, notes_md):
-    """The wiring, not the helper.
-
-    Every test above this one passes whether or not `board_payload` calls
-    `_rows_from_store` at all: there is no CouchDB under them, so the
-    helper returns the parsed rows and the payload looks identical either
-    way. Deleting the call is a mutation the rest of the file cannot see,
-    and it survived until this test existed.
-    """
-    asked = []
-
-    def only_the_store(name, parsed):
-        asked.append(name)
-        return parsed
-
-    with _serve(board_md, notes_md), \
-            patch.object(nova_site, "_rows_from_store", only_the_store):
-        payload = nova_site.board_payload("issues")
-    assert asked == ["issues"]
-    assert payload["items"], "the rows still have to reach the page"
-
-
-# --- And his write-ups come out of it too --------------------------------
-#
-# The second reader. Same three answers, same reason they need pinning
-# separately: with no CouchDB under the suite `read_details` raises and
-# the parsed bodies come back looking exactly like a working switch.
-
-
-def test_his_write_ups_come_from_the_ticket_store_when_it_agrees():
-    parsed = {9: "nine's write-up", 4: "four's"}
-    stored = {9: "nine's write-up", 4: "four's"}
-    with patch.object(nova_site, "read_details", return_value=stored):
-        got = nova_site._details_from_store("issues", parsed)
-    # Identity again, for the same reason: equality is what the function
-    # itself checked, so asserting it would pass on the fallback.
-    assert got is stored
-
-
-def test_a_store_missing_a_write_up_draws_the_file_and_says_so():
-    """The failure this actually guards. A body is kilobytes of his prose
-    about his own problem, so a store that has one of them and not the
-    other is not a smaller answer -- it is a page with a blank write-up
-    on a row that has one, and nothing on the page could tell."""
-    parsed = {9: "nine's write-up", 4: "four's"}
-    said = []
-    with patch.object(nova_site, "read_details", return_value={9: "nine's write-up"}), \
-            patch.object(nova_site, "log", said.append):
-        got = nova_site._details_from_store("issues", parsed)
-    assert got is parsed
-    assert said and "disagree" in said[0]
-
-
-def test_a_write_up_that_stopped_tracking_the_file_draws_the_file():
-    parsed = {9: "the edited write-up"}
-    said = []
-    with patch.object(nova_site, "read_details", return_value={9: "the old one"}), \
-            patch.object(nova_site, "log", said.append):
-        got = nova_site._details_from_store("issues", parsed)
-    assert got is parsed
-    assert said and "disagree" in said[0]
-
-
-def test_a_store_that_cannot_be_read_for_write_ups_draws_the_file():
-    said = []
-    with patch.object(nova_site, "read_details", side_effect=RuntimeError("boom")), \
-            patch.object(nova_site, "log", said.append):
-        got = nova_site._details_from_store("ideas", parsed := {1: "body"})
-    assert got is parsed
-    assert said and "unreadable" in said[0]
-
-
-def test_board_payload_actually_asks_the_store_for_his_write_ups(board_md, notes_md):
-    """The wiring, not the helper -- deleting the call is a mutation
-    nothing above this can see, exactly as it was for the rows."""
-    asked = []
-
-    def only_the_store(name, parsed):
-        asked.append(name)
-        return parsed
-
-    with _serve(board_md, notes_md), \
-            patch.object(nova_site, "_details_from_store", only_the_store):
-        payload = nova_site.board_payload("issues")
-    assert asked == ["issues"]
-    assert payload["details"], "the write-ups still have to reach the page"
-
-
-# --- And his unboarded captures come out of it too ------------------------
-#
-# The third and last reader. Same three answers, pinned separately for the
-# same reason as the other two: with no CouchDB under the suite
-# `read_head` raises, the parsed captures come back, and a payload built
-# without the call is byte-identical to one built with it.
-
-
-def _head(*bullets):
-    """A board file's text above its first row, as the store renders it."""
-    return "---\ntype: board\n---\n\n" + "\n".join(bullets) + "\n"
-
-
-def test_his_captures_come_from_the_ticket_store_when_it_agrees():
-    parsed = (["a thing he typed"], [[]])
-    with patch.object(nova_site, "read_head",
-                      return_value=_head("- a thing he typed")):
-        got = nova_site._captures_from_store("issues", parsed)
-    # Not `is parsed`, which is what the fallback returns: equal *and* a
-    # different object is the only shape that says the store's answer is
-    # the one on the page.
-    assert got == parsed
-    assert got is not parsed
-
-
-def test_a_store_missing_a_capture_draws_the_file_and_says_so():
-    """The failure this guards, and it is the worst one on the page: a
-    capture is the owner typing directly and `prompt.md` ranks it above
-    every board row, so one silently missing is work that never gets
-    picked."""
-    parsed = (["the first", "the second"], [[], []])
-    said = []
-    with patch.object(nova_site, "read_head", return_value=_head("- the first")), \
-            patch.object(nova_site, "log", said.append):
-        got = nova_site._captures_from_store("issues", parsed)
-    assert got is parsed
-    assert said and "disagree" in said[0]
-
-
-def test_a_stored_reply_that_stopped_tracking_the_file_draws_the_file():
-    """`captures` and `captureReplies` are parallel lists and the page
-    draws one under the other, so a store that agrees on his bullets and
-    disagrees on the answers under them is still the wrong page."""
-    parsed = (["his question"], [["Cycle 900 — the new answer"]])
-    said = []
-    with patch.object(nova_site, "read_head", return_value=_head(
-            "- his question", "  - Cycle 900 — the old answer")), \
-            patch.object(nova_site, "log", said.append):
-        got = nova_site._captures_from_store("issues", parsed)
-    assert got is parsed
-    assert said and "disagree" in said[0]
-
-
-def test_a_store_that_cannot_be_read_for_captures_draws_the_file():
-    said = []
-    with patch.object(nova_site, "read_head", side_effect=RuntimeError("boom")), \
-            patch.object(nova_site, "log", said.append):
-        got = nova_site._captures_from_store("ideas", parsed := (["one"], [[]]))
-    assert got is parsed
-    assert said and "unreadable" in said[0]
-
-
-def test_board_payload_actually_asks_the_store_for_his_captures(board_md, notes_md):
-    """The wiring, not the helper -- deleting the call is a mutation
-    nothing above this can see, exactly as it was for the rows and the
-    write-ups."""
-    asked = []
-
-    def only_the_store(name, parsed):
-        asked.append(name)
-        return parsed
-
-    with _serve(board_md, notes_md), \
-            patch.object(nova_site, "_captures_from_store", only_the_store):
-        payload = nova_site.board_payload("issues")
-    assert asked == ["issues"]
-    assert payload["captures"], "his captures still have to reach the page"
-
-
-def test_the_stored_head_reaches_the_page_and_not_just_the_helper(board_md, notes_md):
-    """The one test that can tell a wired reader from an unwired one at the
-    payload level, and it works by handing the store something the file
-    does not contain.
-
-    Equality is the whole contract, so on the live path the two sides are
-    identical and a payload built from either looks the same. Feeding a
-    head whose bullets are not in `board_sample.md` breaks the tie: the
-    helper must report the disagreement and the page must show *his*
-    file, never the store's version of it.
-    """
-    said = []
-    with _serve(board_md, notes_md), \
-            patch.object(nova_site, "read_head",
-                         return_value=_head("- a capture he never wrote")), \
-            patch.object(nova_site, "log", said.append):
-        payload = nova_site.board_payload("issues")
-    texts = [capture["text"] for capture in payload["captures"]]
-    assert "a capture he never wrote" not in texts
-    assert any("Small pickings on Nova ui" in text for text in texts)
-    assert any("captures disagree" in line for line in said)
-
-
 # --- unanswered_comment_bodies_from_details: one rule, two doors ----------
 
 
@@ -1027,19 +788,17 @@ def test_details_door_ignores_a_row_i_answered_last():
 def test_the_waiting_flag_follows_the_store_not_the_markdown(board_md, notes_md):
     """The wiring, and the only mutation the rest of the suite cannot see.
 
-    With no CouchDB under these tests `_details_from_store` falls back to
-    the parsed markdown, so the store's bodies and the file's bodies are
-    the same object and re-parsing the file gives an identical answer --
-    which means reverting `board_payload` to
-    `unanswered_comment_bodies(edvard_markdown)` passes everything else.
-    Caught by handing the store a comment the markdown does not contain:
-    if the flag is derived from the file, row 57 comes back unflagged.
+    Reverting `board_payload` to `unanswered_comment_bodies(edvard_markdown)`
+    passes every test that serves the same board from both sides. Caught by
+    handing the record store a comment the markdown does not contain: if
+    the flag is derived from the file, row 57 comes back unflagged.
     """
-    def store_says(name, parsed):
-        return {**parsed, 57: "the write-up\n\n**Edvard, 09-03:** and this?"}
+    parsed = parse_board(board_md)
+    contents = {**parsed, "details": {
+        **parsed["details"], 57: "the write-up\n\n**Edvard, 09-03:** and this?"}}
 
     with _serve(board_md, notes_md), \
-            patch.object(nova_site, "_details_from_store", store_says):
+            patch.object(nova_site, "_board_from_records", lambda name: contents):
         payload = nova_site.board_payload("issues")
 
     # The precondition: the file itself flags nothing, so a pass here
@@ -1051,30 +810,32 @@ def test_the_waiting_flag_follows_the_store_not_the_markdown(board_md, notes_md)
     assert flagged == {57}
 
 
-# --- And now his file is not fetched at all ------------------------------
+# --- His file is not fetched when the record store is current -----------
 #
-# The last slice of the migration, and the first one that saves anything.
-# The three readers above each proved the store agreed with the markdown
-# *by fetching the markdown*, so every one of them made the page correct
-# and none of them made it cheaper; `issues.md` is 537KB.
+# Issue #203. `_board_from_records` gates on `board_records.currency`, the
+# records' own source stamp against the revision the vault holds now, so
+# the current path never touches his 537KB file. These pin its four
+# answers and -- the one that matters -- that the fast path really does
+# skip the fetch. Every other test in this file takes the fallback by
+# accident: there is no CouchDB under them, so the revision check cannot
+# run.
 #
-# What replaces the per-build comparison is `ticket_docs.currency`, which
-# answers off a 207-byte revision document. These pin the four answers
-# `_board_from_store` can give, and -- the one that matters -- that the
-# fast path really does skip the fetch. Every other test in this file
-# takes the fallback by accident: there is no CouchDB under them, so
-# `_store_currency` cannot run and reports `unknown`.
+# It used to read the `nova_tickets` mirror instead. That mirror is
+# superseded, and it had drifted ten rows off his ideas board live, so the
+# page was drawing the file anyway.
 
 
-def _store(rows=None, details=None, head="", verdict=None):
-    """Patch the store the fast path reads, and its currency verdict."""
-    from agora_runner import ticket_docs
+def _records(contents=None, verdict=None, error=None):
+    """Patch the record store the fast path reads, and its currency verdict."""
+    from agora_runner import board_records
+    answer = {"side_effect": error} if error else {
+        "return_value": contents if contents is not None else {
+            "items": [], "details": {}, "captures": [], "captureReplies": []}}
     return (
-        patch.object(nova_site, "_store_currency",
-                     return_value=(verdict or ticket_docs.CURRENT, "stamped")),
-        patch.object(nova_site, "read_rows", return_value=rows or []),
-        patch.object(nova_site, "read_details", return_value=details or {}),
-        patch.object(nova_site, "read_head", return_value=head),
+        patch.object(nova_site, "vault_doc_rev", return_value="7-abc"),
+        patch.object(board_records, "currency",
+                     return_value=(verdict or board_records.CURRENT, "stamped")),
+        patch.object(board_records, "contents", **answer),
     )
 
 
@@ -1100,42 +861,58 @@ def test_a_current_store_serves_the_board_without_fetching_his_file(
     produce is his path never appearing in the reads.
     """
     parsed = parse_board(board_md)
-    currency, rows, details, head = _store(
-        rows=parsed["items"], details=parsed["details"])
+    rev, currency, contents = _records(parsed)
     serve, seen = _reads(board_md, notes_md)
-    with serve, currency, rows, details, head:
+    with serve, rev, currency, contents:
         payload = nova_site.board_payload("issues")
 
     assert BOARD_PATHS["issues"]["edvard"] not in seen
-    # My own two files are still fetched on every build: they are small
-    # and nothing in `nova_tickets` answers for them.
+    # My own two files are still fetched on every build: #203 does not
+    # migrate them, so nothing in the record store answers for them.
     assert BOARD_PATHS["issues"]["nova"] in seen
     assert BOARD_PATHS["issues"]["nova_archive"] in seen
     assert [item["number"] for item in payload["items"]] == \
         [item["number"] for item in parsed["items"]]
 
 
+def test_the_fast_path_asks_the_store_for_the_board_it_was_asked_for(
+        board_md, notes_md):
+    # `_RECORD_BOARDS` maps the page name to the record board name. Asking
+    # for "issue" on the ideas page would serve his issues under the ideas
+    # heading, and the rows-came-back test above cannot see which board
+    # was asked for.
+    from agora_runner import board_records
+    rev, currency, contents = _records(parse_board(board_md))
+    serve, _ = _reads(board_md, notes_md)
+    with serve, rev, currency as cur, contents as con:
+        nova_site.board_payload("ideas")
+    assert [c.args[0] for c in cur.call_args_list] == ["idea"]
+    assert [c.args[0] for c in con.call_args_list] == ["idea"]
+    assert cur.call_args.args[1] == "7-abc", \
+        "the stamp must be compared with the vault's live revision"
+    assert board_records.CURRENT == "current"
+
+
 def test_a_revision_that_cannot_confirm_the_store_fetches_his_file(
         board_md, notes_md):
     """`stale` and `unknown` are verdicts, not errors, and both fetch.
 
-    A board written from a process that could not learn the revision
-    stamps nothing, so `unknown` is the normal state after a cycle writes
-    from the bridge pod -- the page has to stay correct through it.
+    A board whose records were never stamped answers `unknown`, which is
+    the live state of both of his boards until the first `board_put` after
+    #983 -- the page has to stay correct through it.
     """
-    from agora_runner import ticket_docs
+    from agora_runner import board_records
 
     parsed = parse_board(board_md)
-    for verdict in (ticket_docs.STALE, ticket_docs.UNKNOWN):
+    for verdict in (board_records.STALE, board_records.UNKNOWN):
         nova_site.reset_cache()
         # The store is handed a full, agreeing answer on purpose: a store
         # that could not answer would fetch the file for its own reason
         # and this test would pass with the verdict ignored entirely.
-        currency, rows, details, head = _store(
-            rows=parsed["items"], details=parsed["details"], verdict=verdict)
+        rev, currency, contents = _records(parsed, verdict=verdict)
         serve, seen = _reads(board_md, notes_md)
         said = []
-        with serve, currency, rows, details, head, \
+        with serve, rev, currency, contents, \
                 patch.object(nova_site, "log", said.append):
             payload = nova_site.board_payload("issues")
 
@@ -1145,21 +922,17 @@ def test_a_revision_that_cannot_confirm_the_store_fetches_his_file(
                    for line in said), verdict
 
 
-def test_an_unreadable_projection_falls_back_even_when_current(
-        board_md, notes_md):
-    """The revision says current and CouchDB then refuses one of the three.
+def test_an_unreadable_store_falls_back_even_when_current(board_md, notes_md):
+    """The revision says current and CouchDB then refuses the read.
 
-    One decision for every failure mode, the same one the three readers
-    make: draw the file. The verdict is not a promise that the store will
-    answer -- it is only a promise about which text it was built from.
+    The verdict is not a promise that the store will answer -- it is only a
+    promise about which text it was built from. An unmigrated store lands
+    here too: `board_records.contents` raises `UnmigratedStore`.
     """
-    parsed = parse_board(board_md)
-    currency, rows, _, head = _store(rows=parsed["items"])
+    rev, currency, contents = _records(error=RuntimeError("boom"))
     serve, seen = _reads(board_md, notes_md)
     said = []
-    with serve, currency, rows, head, \
-            patch.object(nova_site, "read_details",
-                         side_effect=RuntimeError("boom")), \
+    with serve, rev, currency, contents, \
             patch.object(nova_site, "log", said.append):
         payload = nova_site.board_payload("issues")
 
@@ -1168,18 +941,32 @@ def test_an_unreadable_projection_falls_back_even_when_current(
     assert any("unreadable" in line for line in said)
 
 
+def test_a_revision_check_that_will_not_run_draws_the_file(board_md, notes_md):
+    rev, currency, contents = _records(parse_board(board_md))
+    serve, seen = _reads(board_md, notes_md)
+    said = []
+    with serve, currency, contents, \
+            patch.object(nova_site, "vault_doc_rev",
+                         side_effect=RuntimeError("401")), \
+            patch.object(nova_site, "log", said.append):
+        payload = nova_site.board_payload("issues")
+
+    assert BOARD_PATHS["issues"]["edvard"] in seen
+    assert payload["items"]
+    assert any("could not run" in line for line in said)
+
+
 def test_a_current_but_empty_store_draws_the_file(board_md, notes_md):
     """The failure the revision cannot see, and the reason for the guard.
 
-    The stamp is its own document, so a lost or half-written layout
-    document leaves the revision current and the board empty. Neither of
-    his boards has ever had nought rows, so one fetch is the right price
-    for finding out.
+    The stamp is its own document, so rows lost after a stamp leave the
+    revision current and the board empty. Neither of his boards has ever
+    had nought rows, so one fetch is the right price for finding out.
     """
-    currency, rows, details, head = _store(rows=[])
+    rev, currency, contents = _records()
     serve, seen = _reads(board_md, notes_md)
     said = []
-    with serve, currency, rows, details, head, \
+    with serve, rev, currency, contents, \
             patch.object(nova_site, "log", said.append):
         payload = nova_site.board_payload("issues")
 
@@ -1191,24 +978,19 @@ def test_a_current_but_empty_store_draws_the_file(board_md, notes_md):
 def test_board_payload_asks_the_store_before_it_fetches(board_md, notes_md):
     """The wiring, not the helper.
 
-    Deleting the `_board_from_store` call leaves every test above green:
-    they all describe what the fallback does, and the fallback is what a
-    deleted call produces. This one fails on it.
+    Deleting the `_board_from_records` call leaves every fallback test
+    green: they all describe what the fallback does, and the fallback is
+    what a deleted call produces. This one fails on it.
     """
     parsed = parse_board(board_md)
     asked = []
 
-    def from_store(name):
+    def from_records(name):
         asked.append(name)
-        return {
-            "items": parsed["items"],
-            "details": parsed["details"],
-            "captures": parsed["captures"],
-            "captureReplies": parsed["captureReplies"],
-        }
+        return parsed
 
     serve, seen = _reads(board_md, notes_md)
-    with serve, patch.object(nova_site, "_board_from_store", from_store):
+    with serve, patch.object(nova_site, "_board_from_records", from_records):
         payload = nova_site.board_payload("issues")
 
     assert asked == ["issues"]
@@ -1216,20 +998,7 @@ def test_board_payload_asks_the_store_before_it_fetches(board_md, notes_md):
     assert payload["items"]
 
 
-# --- His half of the page composes from records, not from a file ---------
-#
-# Issue #203. `board_payload`'s fallback branch used to parse his board and
-# then apply the three ticket-store merges inline, so the composition and
-# the markdown were one block of code and nothing could exercise either
-# without the other. `his_board_from_contents` is the composition; the
-# `parse_board` call feeding it is the door, and the door is what gets
-# deleted the day the source is `board_records.contents`.
-#
-# **No test below holds a line of markdown, on purpose.** A test that
-# builds a board file and parses it agrees with a converted and an
-# unconverted reader alike, so every input here is a hand-built dict, and
-# one of them carries a shape a board file cannot express -- a write-up
-# for a number that is on no row at all.
+# --- The fallback: his file, parsed once ---------------------------------
 
 
 def _contents(**over):
@@ -1248,7 +1017,7 @@ def _contents(**over):
 
 
 def _no_markdown(monkeypatch):
-    """Make every route from this module to a board file raise."""
+    """Make every route from this module to his board file raise."""
     def refuse(*args, **kwargs):
         raise AssertionError("reached markdown")
 
@@ -1256,75 +1025,21 @@ def _no_markdown(monkeypatch):
     monkeypatch.setattr(nova_site, "edvard_board_markdown", refuse)
 
 
-def test_his_board_composes_without_ever_reaching_markdown(monkeypatch):
-    # A records door that quietly fell back to the parser would return the
-    # right answer for any caller that still holds markdown, so nothing
-    # but a raising parser can catch it.
-    _no_markdown(monkeypatch)
-    contents = _contents()
-    with patch.object(nova_site, "read_rows", side_effect=Exception("no db")), \
-            patch.object(nova_site, "read_details", side_effect=Exception("no db")), \
-            patch.object(nova_site, "read_head", side_effect=Exception("no db")):
-        board = nova_site.his_board_from_contents("issues", contents)
-
-    assert board["items"] == contents["items"]
-    assert board["details"] == {9: "nine", 7: "orphan"}
-    assert board["captures"] == ["first", "second"]
-    assert board["captureReplies"] == [[], ["answered"]]
-
-
-def test_composing_his_board_does_not_write_into_the_records_it_was_given(
+def test_a_current_store_composes_his_board_without_reaching_markdown(
         monkeypatch):
-    # The caller's dict is the store's answer once the door goes, and a
-    # composition that rewrote it in place would hand a cached record set
-    # back to the next reader with the page's merges already baked in.
+    # A records path that quietly fell back to the parser would return the
+    # right answer whenever the file agreed, so only a raising parser can
+    # catch it -- and the landmine is armed first, or it proves nothing.
     _no_markdown(monkeypatch)
-    contents = _contents()
-    before = json.loads(json.dumps(contents, default=str))
-    with patch.object(nova_site, "read_rows", side_effect=Exception("no db")), \
-            patch.object(nova_site, "read_details", side_effect=Exception("no db")), \
-            patch.object(nova_site, "read_head", side_effect=Exception("no db")):
-        board = nova_site.his_board_from_contents("issues", contents)
+    with pytest.raises(AssertionError, match="reached markdown"):
+        nova_site.his_board_file_contents("issues")
+    monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
+    rev, currency, contents = _records(_contents())
+    with rev, currency, contents:
+        payload = nova_site.board_payload("issues")
 
-    assert json.loads(json.dumps(contents, default=str)) == before
-    assert board is not contents
-
-
-def test_each_of_his_three_halves_goes_through_its_own_store_reader(
-        monkeypatch):
-    # Each merge is what decides whether the owner is shown the store or
-    # the file, so a composition that dropped one would silently stop
-    # answering that question for that half of the page.
-    _no_markdown(monkeypatch)
-    seen = {}
-
-    def rows(name, parsed):
-        seen["rows"] = (name, parsed)
-        return [{"number": 1, "title": "from rows"}]
-
-    def details(name, parsed):
-        seen["details"] = (name, parsed)
-        return {1: "from details"}
-
-    def captures(name, parsed):
-        seen["captures"] = (name, parsed)
-        return (["from captures"], ["from replies"])
-
-    with patch.object(nova_site, "_rows_from_store", rows), \
-            patch.object(nova_site, "_details_from_store", details), \
-            patch.object(nova_site, "_captures_from_store", captures):
-        board = nova_site.his_board_from_contents("ideas", _contents())
-
-    assert seen["rows"] == ("ideas", _contents()["items"])
-    assert seen["details"] == ("ideas", _contents()["details"])
-    # The pair travels together. Two parallel lists merged separately can
-    # come back from different reads, which puts my answer under his next
-    # bullet -- that is why `_captures_from_store` takes and returns both.
-    assert seen["captures"] == ("ideas", (["first", "second"], [[], ["answered"]]))
-    assert board["items"] == [{"number": 1, "title": "from rows"}]
-    assert board["details"] == {1: "from details"}
-    assert board["captures"] == ["from captures"]
-    assert board["captureReplies"] == ["from replies"]
+    assert [item["number"] for item in payload["items"]] == [9, 4]
+    assert [c["text"] for c in payload["captures"]] == ["first", "second"]
 
 
 def test_the_fallback_path_parses_his_board_exactly_once(monkeypatch):
@@ -1345,10 +1060,7 @@ def test_the_fallback_path_parses_his_board_exactly_once(monkeypatch):
 
     monkeypatch.setattr(nova_site, "parse_board", counting_parse)
     monkeypatch.setattr(nova_site, "edvard_board_markdown", lambda name: "HIS")
-    monkeypatch.setattr(nova_site, "_board_from_store", lambda name: None)
-    monkeypatch.setattr(nova_site, "_rows_from_store", lambda name, parsed: parsed)
-    monkeypatch.setattr(nova_site, "_details_from_store", lambda name, parsed: parsed)
-    monkeypatch.setattr(nova_site, "_captures_from_store", lambda name, parsed: parsed)
+    monkeypatch.setattr(nova_site, "_board_from_records", lambda name: None)
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
 
     payload = nova_site.board_payload("issues")
@@ -1373,10 +1085,7 @@ def test_the_fallback_path_reads_the_board_it_was_asked_for(monkeypatch):
     monkeypatch.setattr(nova_site, "parse_board",
                         lambda m: _contents() if m == "HIS" else real_parse(m))
     monkeypatch.setattr(nova_site, "edvard_board_markdown", markdown)
-    monkeypatch.setattr(nova_site, "_board_from_store", lambda name: None)
-    monkeypatch.setattr(nova_site, "_rows_from_store", lambda name, parsed: parsed)
-    monkeypatch.setattr(nova_site, "_details_from_store", lambda name, parsed: parsed)
-    monkeypatch.setattr(nova_site, "_captures_from_store", lambda name, parsed: parsed)
+    monkeypatch.setattr(nova_site, "_board_from_records", lambda name: None)
     monkeypatch.setattr(nova_site, "nova_board_markdown", lambda name: ("", ""))
 
     nova_site.board_payload("ideas")

@@ -185,11 +185,6 @@ from agora_runner.nova_boards import (
     # `nova_boards` owns that answer, and a second copy would disagree with
     # it the first time a status is added.
     _CLOSED_STATUS_KEYS,
-    # The one parser for "what is a capture", imported rather than
-    # respelled: `_captures_from_store` has to reach exactly the same
-    # answer off the store's head text as `parse_board` reaches off the
-    # markdown, and two spellings of that rule would disagree silently.
-    _captures as captures_in,
     rank_projects,
     STATUS_LABELS,
     board_projects,
@@ -279,8 +274,6 @@ from agora_runner.nova_sources import (
     retro_ledger_json,
 )
 from agora_runner import board_records
-from agora_runner import ticket_docs
-from agora_runner.ticket_docs import read_details, read_head, read_rows
 from agora_runner.tools_mcp import handle_http as handle_mcp_http
 from agora_runner.vault import database_health
 
@@ -765,265 +758,57 @@ def _split_details(bodies):
 
 
 
-def _store_currency(path):
-    """`(verdict, detail)` on whether the store is current with the file.
+def _board_from_records(name):
+    """His whole board out of the #203 record store, or `None` to fetch the file.
 
-    Wrapped rather than called inline because the verdict is advisory
-    today: it is logged beside the field-by-field comparison and decides
-    nothing, so an unreachable ticket database must not turn into a failed
-    board page. `ticket_docs.UNKNOWN` is exactly the right answer to "the
-    check itself would not run".
+    Issue #203. This fast path used to read the `nova_tickets` mirror
+    (`ticket_docs`), which an earlier migration filled from the markdown on
+    every `board_put`. The record store supersedes it, and the mirror had
+    stopped earning its read: measured live on 2026-09-11 against pod
+    `nova-site-96b5576df-rtk96`, the ideas board answered 274 rows out of it
+    against 284 in his file, so every build of that page fetched the
+    markdown anyway and paid for three mirror reads on top. The record store
+    is what the page reads after the flip, so it is what this reads now, and
+    nothing on the site reads `nova_tickets` any more.
+
+    The gate is `_next_from_records`'s, for the same reason: the records'
+    own source stamp against the revision the vault holds now, so proving
+    currency costs a revision lookup and not the 537KB file. **`UNKNOWN`
+    does not pass** -- a board that carries no stamp says nothing about
+    drift. `None` on anything short of a proven-current, fully readable
+    board, and the caller draws the file exactly as it always has: a
+    revision that cannot confirm the records, a store that will not answer
+    (an unmigrated one raises in `board_records.contents`), or a board with
+    **no rows at all**, which is the one failure a current stamp cannot see
+    because the stamp is its own document. Neither of his boards has ever
+    been empty, so one fetch is the right price for finding out.
+
+    Every failure is logged and returns `None`, never raises: a visitor
+    gets his file, not a page that failed to build.
     """
+    board = _RECORD_BOARDS[name]
+    path = BOARD_PATHS[name]["edvard"]
     try:
-        return ticket_docs.currency(path, vault_doc_rev(path))
+        verdict, why = board_records.currency(board, vault_doc_rev(path))
     except Exception as problem:  # noqa: BLE001 -- see the docstring
-        return ticket_docs.UNKNOWN, f"the check could not run: {problem}"
-
-
-def _rows_from_store(name, parsed):
-    """His board's rows out of `nova_tickets`, or the parsed ones.
-
-    Returns `parsed` unchanged whenever the store does not answer with
-    exactly the same rows in the same order. That is deliberately strict:
-    a row-projection view that has drifted is not a smaller answer to fall
-    back from, it is a different board, and the page has no way to tell.
-    `tools.ticket_drift` is what reports the drift; this only decides
-    which of the two the owner is shown, and it shows the file.
-
-    The comparison is the whole value of reading the store at all today.
-    The rows carry ten fields and the markdown carries those ten plus the
-    bodies, so agreeing here means the store reproduces the list exactly
-    -- measured on every payload build rather than once a cycle.
-    """
-    path = BOARD_PATHS[name]["edvard"]
-    try:
-        rows = read_rows(path)
-    except Exception as problem:
-        # Every failure mode is the same decision: draw the file. A
-        # narrower except would let a new CouchDB error empty his board,
-        # which is the one outcome this function exists to prevent.
-        log(f"nova-site {name} rows unreadable from the ticket store: {problem}")
-        return parsed
-    # Said in the same line either way: whether the store *claims* to be
-    # current, by revision, and whether it *is*, by comparing every field.
-    # The two answers are what the next slice of this migration turns on.
-    # A reader that stops fetching the markdown loses the field-by-field
-    # check with the fetch, so the revision has to be trustworthy first --
-    # and the only way to find out is to log both while the strong check
-    # is still running and see whether they ever disagree.
-    verdict, why = _store_currency(path)
-    if rows != parsed:
-        # Said out loud rather than absorbed. A fallback nothing reports
-        # is the failure this loop keeps filing against itself: the page
-        # would look right forever while the store the migration is
-        # supposed to end up on quietly stopped agreeing with the file.
-        log(
-            f"nova-site {name} rows disagree with the ticket store: "
-            f"{len(parsed)} parsed against {len(rows)} stored; drawing the file "
-            f"(revision says {verdict}: {why})"
-        )
-        return parsed
-    if verdict != ticket_docs.CURRENT:
-        # Not a fallback and not an error -- the rows agree, so the page is
-        # right. It is the *revision* that could not confirm it, which is
-        # the one thing standing between this migration and dropping the
-        # markdown fetch, so it is worth a line rather than silence.
-        log(f"nova-site {name} rows agree with the ticket store but its "
-            f"revision says {verdict}: {why}")
-    return rows
-
-
-def _details_from_store(name, parsed):
-    """His board's write-ups out of `nova_tickets`, or the parsed ones.
-
-    The second reader of the one-document-per-ticket migration, built to
-    the same rule as `_rows_from_store` above: the store's answer is used
-    only when it matches the markdown exactly, and the markdown is drawn
-    on any disagreement, any missing write-up and any failure to read at
-    all. A write-up is his prose about his own problem -- a truncated or
-    stale one is worse than a slow one.
-
-    Why the whole dict is compared rather than the numbers: the row view
-    carries ten short fields and a body carries kilobytes, so the failure
-    mode this catches is not a missing row but a body that stopped
-    tracking edits to the file. Only an exact match tells them apart.
-
-    This still saves no fetch, and that is the same deliberate position
-    the rows landed in. His unboarded captures and the unanswered-comment
-    flags are parsed out of the same markdown this call has already
-    fetched, so they are the remaining slices; the markdown fetch may go
-    when the last of them moves and the revision verdict has been seen to
-    agree with these comparisons, not before.
-    """
-    path = BOARD_PATHS[name]["edvard"]
-    try:
-        stored = read_details(path)
-    except Exception as problem:
-        # One decision for every failure mode, exactly as the rows do it:
-        # draw the file. A narrower except would let a new CouchDB error
-        # blank out his write-ups.
-        log(f"nova-site {name} write-ups unreadable from the ticket store: {problem}")
-        return parsed
-    if stored != parsed:
-        # Said out loud rather than absorbed. A fallback nothing reports
-        # is how the page would go on looking right forever while the
-        # store this migration ends up on quietly stopped agreeing.
-        log(
-            f"nova-site {name} write-ups disagree with the ticket store: "
-            f"{len(parsed)} parsed against {len(stored)} stored; drawing the file"
-        )
-        return parsed
-    return stored
-
-
-def _captures_from_store(name, parsed):
-    """His unboarded capture bullets out of `nova_tickets`, or the parsed ones.
-
-    The third and last reader of the one-document-per-ticket migration,
-    built to the same rule as `_rows_from_store` and `_details_from_store`
-    above: the store's answer is used only when it matches the markdown
-    exactly, and the markdown is drawn on any disagreement and on any
-    failure to read at all. `parsed` and the return value are both the
-    `(captures, captureReplies)` pair, kept together because they are
-    parallel lists and a reader that took one from each side could put my
-    answer under his next bullet.
-
-    A capture is the strongest signal a cycle gets and it is the owner
-    typing directly, so the same asymmetry the other two readers make
-    applies harder here: a stale capture is worse than a slow one.
-
-    **This is the call that lets the markdown fetch go.** The rows and the
-    write-ups moved first and neither saved a byte, because the captures
-    were still parsed out of the same half-megabyte the page had already
-    fetched.
-    Dropping the fetch is its own slice and is not done here -- what is
-    done is that nothing on the board page is left that only the markdown
-    can answer.
-    """
-    path = BOARD_PATHS[name]["edvard"]
-    try:
-        head = read_head(path)
-    except Exception as problem:
-        # One decision for every failure mode, exactly as the two readers
-        # above do it: draw the file. A narrower except would let a new
-        # CouchDB error take his captures off the page, and they are the
-        # one thing on it that nothing else in this loop displays.
-        log(f"nova-site {name} captures unreadable from the ticket store: {problem}")
-        return parsed
-    stored = captures_in(head)
-    if stored != parsed:
-        # Said out loud rather than absorbed, the same reason the other
-        # two say it: a fallback nothing reports is how the page goes on
-        # looking right forever while the store quietly stops agreeing.
-        log(
-            f"nova-site {name} captures disagree with the ticket store: "
-            f"{len(parsed[0])} parsed against {len(stored[0])} stored; drawing the file"
-        )
-        return parsed
-    return stored
-
-
-def _board_from_store(name):
-    """His whole board out of `nova_tickets`, or `None` to fetch the file.
-
-    The last slice of the one-document-per-ticket migration, and the
-    first one that saves anything: the three readers above each proved
-    the store agreed with the markdown by *fetching the markdown*, so
-    every one of them made the page correct and none of them made it
-    cheaper. `issues.md` is 537KB and the board page is the most-opened
-    page on the site.
-
-    What replaces the per-build comparison is `ticket_docs.currency`,
-    which answers the same question off a 207-byte revision document
-    instead of the file. It is only trusted here because it has been
-    watched: `runner#679` wired the verdict in beside the field-by-field
-    comparison and logged both, `runner#685` fixed the repair command
-    that was deleting the stamp, `runner#686` made a board found
-    identical stamp its own revision, and both of his boards have since
-    been measured answering `current` live. `tools.ticket_drift` still
-    renders each board out of CouchDB and diffs it against the markdown
-    once a cycle, so the strong check did not go away -- it moved off the
-    request path and into preflight, where its verdict is written down.
-
-    `None` on anything short of a proven-current, fully readable board,
-    and the caller then does exactly what it always did. Three ways to
-    get it: the revision cannot confirm the store (`stale`, `unknown`, or
-    a check that could not run), a projection fails to read, or the store
-    answers with **no rows at all**. That last one is the failure mode
-    the revision cannot see -- the stamp is its own document, so a lost
-    or half-written layout document leaves the stamp current and the
-    board empty -- and neither of his boards has ever been empty, so
-    paying one fetch to find out is the right trade.
-    """
-    path = BOARD_PATHS[name]["edvard"]
-    verdict, why = _store_currency(path)
-    if verdict != ticket_docs.CURRENT:
-        # Not an error and usually not even a problem -- a board written
-        # from a process that could not learn the revision stamps
-        # nothing, and `unknown` is the honest answer to that. Logged
-        # because the fetch it costs is the whole point of this slice.
+        log(f"nova-site {name} fetching the markdown: the revision check "
+            f"could not run: {problem}")
+        return None
+    if verdict != board_records.CURRENT:
         log(f"nova-site {name} fetching the markdown: "
-            f"revision says {verdict}: {why}")
+            f"records say {verdict}: {why}")
         return None
     try:
-        rows = read_rows(path)
-        details = read_details(path)
-        captures, capture_replies = captures_in(read_head(path))
-    except Exception as problem:  # noqa: BLE001
-        # One decision for every failure mode, the same one the three
-        # readers above make: draw the file. A narrower except would let
-        # a new CouchDB error empty his board.
-        log(f"nova-site {name} unreadable from the ticket store: {problem}")
+        contents = board_records.contents(board)
+    except Exception as problem:  # noqa: BLE001 -- see the docstring
+        log(f"nova-site {name} records unreadable, fetching the markdown: "
+            f"{problem}")
         return None
-    if not rows:
-        log(f"nova-site {name} has no rows in the ticket store though its "
+    if not contents["items"]:
+        log(f"nova-site {name} has no rows in the record store though its "
             f"revision says current; fetching the markdown")
         return None
-    return {
-        "items": rows,
-        "details": details,
-        "captures": captures,
-        "captureReplies": capture_replies,
-    }
-
-
-def his_board_from_contents(name, contents):
-    """His board, composed from an already-parsed board and nothing else.
-
-    The records-shaped half of `board_payload`'s fallback path, split out
-    for issue #203 the same way `nova_next.next_payload_from_contents` and
-    `top_board_rows.closed_rows_waiting_from_contents` were: `contents` is
-    the four keys `nova_boards.parse_board` returns and the four keys
-    `board_records.contents` will return, and **nothing reachable from
-    here can read markdown or a path**. The `parse_board` call that feeds
-    it is the door, and the door is what gets deleted the day the source
-    is the record store.
-
-    The one rule that lives here is the pairing: `captures` and
-    `captureReplies` are parallel lists and `_captures_from_store` takes
-    and returns them together, so a caller that merged one and not the
-    other would put my answer under his next bullet. Keeping the three
-    merges in one place is what makes that impossible to get wrong from
-    the outside.
-    """
-    board = dict(contents)
-    board["items"] = _rows_from_store(name, board["items"])
-    # The write-up and the conversation appended under it, told apart
-    # further down rather than on the page: `render_blocks` flattens
-    # both into the same list of paragraphs, and once that has
-    # happened nothing downstream can tell his question from my
-    # answer from the problem statement above them both. His capture,
-    # 2026-08-26: *"boarded issues does not have those nice colored
-    # comments like there are now in the 'not boarded yet' box"*.
-    board["details"] = _details_from_store(name, board["details"])
-    # His unboarded captures. They are not tickets, so there was
-    # nothing to read them back off until `to_records` started filing
-    # every line that is neither a row nor a write-up as a text block
-    # in the layout -- the bullets above `## Board` are the layout's
-    # opening run of text, and `ticket_docs.read_head` returns it.
-    board["captures"], board["captureReplies"] = _captures_from_store(
-        name, (board["captures"], board["captureReplies"]))
-    return board
+    return contents
 
 
 def his_board_file_contents(name):
@@ -1048,29 +833,19 @@ def board_payload(name):
     ~60KB of that -- which is precisely why they never go out with the
     list. See `board_page`.
     """
-    # **His half of the page comes out of the ticket store when the store
-    # can prove it is current, and his file is not fetched at all.** That
-    # is the whole of what this migration was for; everything before it
-    # made the page correct off the store while still paying for the
-    # markdown to check it. `_board_from_store` says what "prove" means
-    # and returns `None` on anything less, which drops straight through
-    # to the code that has always been here.
-    board = _board_from_store(name)
+    # **His half of the page comes out of the #203 record store when the
+    # store can prove it is current, and his file is not fetched at all.**
+    # `_board_from_records` says what "prove" means and returns `None` on
+    # anything less, which drops through to the code that has always been
+    # here.
+    board = _board_from_records(name)
     if board is None:
-        # **The fallback, and it is still the source of truth.** A store
-        # that is unreachable, behind, or missing a row must not empty his
-        # board -- the markdown is the file he edits and it is always
-        # right. On this path the three readers below each take the
-        # store's answer *only when it matches the file field by field*,
-        # and say so out loud when it does not, which is what proved the
-        # store trustworthy enough for the fast path above to exist.
-        #
-        # **The parse is the door and the composition is behind it.**
-        # Everything this branch used to do inline now lives in
-        # `his_board_from_contents`, which takes the four keys
-        # `board_records.contents` also returns; `his_board_file_contents`
-        # is the only markdown left on his half of the page (issue #203).
-        board = his_board_from_contents(name, his_board_file_contents(name))
+        # **The fallback, and it is still the source of truth until the
+        # flip.** A store that is unreachable, unstamped, behind or empty
+        # must not empty his board -- the markdown is the file he edits.
+        # `his_board_file_contents` is the only markdown left on his half
+        # of the page, and the flip deletes it (issue #203).
+        board = his_board_file_contents(name)
     nova_markdown, nova_archive_markdown = nova_board_markdown(name)
     # Which rows he asked a question on and nobody answered. Stamped onto
     # the row here rather than worked out again by whoever needs it,
@@ -1905,8 +1680,8 @@ def _next_from_records():
     the caller draws both from the file exactly as it always did.
 
     The gate is `board_records.currency` against the revision the vault
-    holds now, which is the same shape `_board_from_store` uses for the
-    ticket store and for the same reason: the point of the store is not
+    holds now, which is the same gate `_board_from_records` uses for the
+    board page and for the same reason: the point of the store is not
     fetching the 700KB file, so a check that fetched it would spend what it
     is saving. `UNKNOWN` does not pass -- a board that carries no source
     stamp says nothing about drift, and treating that as "no drift found"

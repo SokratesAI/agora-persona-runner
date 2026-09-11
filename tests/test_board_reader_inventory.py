@@ -366,10 +366,18 @@ def test_a_module_on_both_surfaces_is_counted_once(tmp_path, capsys):
     assert "NOT MIGRATED — 1 module(s)" in out
 
 
-def test_the_site_still_reads_his_board_out_of_the_mirror():
+def test_the_site_no_longer_reads_his_board_out_of_the_mirror():
+    # Issue #203: the board page's fast path reads the record store now, so
+    # nothing on the request path reads `nova_tickets`. A mirror read added
+    # back to the site is a second source for one board, and it is a
+    # regression this pins rather than a surface the gate would forgive.
     rel = "agora_runner/nova_site.py"
     text = (ROOT / rel).read_text(encoding="utf-8")
-    assert inv.mirror_reads(text, rel), f"{rel} no longer reads nova_tickets"
+    assert not inv.mirror_reads(text, rel), f"{rel} reads nova_tickets again"
+    # The precondition: the detector still fires on the idiom the site used,
+    # so a pass above is not a detector that can no longer see anything.
+    assert inv.mirror_reads(
+        "from agora_runner.ticket_docs import read_rows\nread_rows(p)", rel)
 
 
 def test_the_mirror_module_counts_by_defining_the_api_not_by_its_name():
