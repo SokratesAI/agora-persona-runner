@@ -23,15 +23,18 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from agora_runner import board_records, nova_next
+from agora_runner import board_records, nova_next, nova_sources
 
 
 def _refuse_the_file(*_a, **_k):
     """The route must not reach his markdown for either board.
 
-    Patched over `nova_site.edvard_board_markdown` in the two route tests
-    below: it is still imported there for `board_payload`'s own fallback,
-    so its mere presence proves nothing and a call is what has to fail.
+    Patched over `nova_sources.vault_read_path` in the two route tests
+    below. `nova_site` has no markdown door for his boards since the #203
+    flip, so the vault read is the one way left to reach his file, and a
+    call is what has to fail. (It used to patch `nova_site.edvard_board_markdown`;
+    once that import was deleted the patch itself raised AttributeError,
+    which satisfied the strict xfail on both tests whatever the route did.)
     """
     raise AssertionError("next_up_payload read a board file")
 from agora_runner.nova_next import (
@@ -239,7 +242,6 @@ def test_an_unreadable_ledger_is_said_out_loud_and_keeps_the_rows():
     assert [r["number"] for r in payload["next"]] == [7]
 
 
-@pytest.mark.xfail(strict=True, reason="the switchover end state: /api/next keeps its currency-gated markdown fallback until the flip (#987) -- the nova_next doors are already gone -- and when the flip deletes the fallback this passes and strict fails it, so remove this marker then")
 def test_the_site_route_builds_the_payload_off_the_records():
     """`next_up_payload` was `next_payload`'s last source caller.
 
@@ -261,7 +263,7 @@ def test_the_site_route_builds_the_payload_off_the_records():
                               lambda: json.dumps({"claims": []})), \
             mock.patch.object(nova_site, "project_meta_markdown", lambda: ""), \
             mock.patch.object(nova_site, "milestone_pins_markdown", lambda: ""), \
-            mock.patch.object(nova_site, "edvard_board_markdown",
+            mock.patch.object(nova_sources, "vault_read_path",
                               _refuse_the_file):
         payload = nova_site.next_up_payload()
 
@@ -270,7 +272,6 @@ def test_the_site_route_builds_the_payload_off_the_records():
         ("issue", 7), ("idea", 64)]
 
 
-@pytest.mark.xfail(strict=True, reason="the switchover end state: /api/next keeps its currency-gated markdown fallback until the flip (#987) -- the nova_next doors are already gone -- and when the flip deletes the fallback this passes and strict fails it, so remove this marker then")
 def test_the_site_route_refuses_an_unmigrated_store_rather_than_emptying_it():
     """A store that cannot answer must reach the client as an error.
 
@@ -296,7 +297,7 @@ def test_the_site_route_refuses_an_unmigrated_store_rather_than_emptying_it():
                               lambda: json.dumps({"claims": []})), \
             mock.patch.object(nova_site, "project_meta_markdown", lambda: ""), \
             mock.patch.object(nova_site, "milestone_pins_markdown", lambda: ""), \
-            mock.patch.object(nova_site, "edvard_board_markdown",
+            mock.patch.object(nova_sources, "vault_read_path",
                               _refuse_the_file):
         with pytest.raises(board_records.RecordError):
             nova_site.next_up_payload()
