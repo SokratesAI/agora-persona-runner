@@ -7,6 +7,8 @@ is one new capture document per bullet, minted through the registry; only
 `notes`, which has no records, still goes to the file.
 """
 
+import copy
+
 import agora_runner.nova_capture as nova_capture
 from agora_runner import board_records, board_store
 from agora_runner.nova_capture import capture
@@ -22,6 +24,11 @@ def _records(monkeypatch):
     from tests.test_board_records import writable
 
     _, fake = writable(board="issue")
+    # A fresh copy per read, as the real GET is: the shared fake hands back
+    # its own dict, so a mint on an attempt that lost its conflict would stay
+    # visible to the retry -- a store kinder than CouchDB (review, Cycle 1389).
+    held = fake.read_registry
+    monkeypatch.setattr(fake, "read_registry", lambda: copy.deepcopy(held()))
     monkeypatch.setattr(nova_capture, "board_store", fake)
 
     def landmine(*a, **k):
