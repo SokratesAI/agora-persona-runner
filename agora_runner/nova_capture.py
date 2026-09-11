@@ -47,9 +47,11 @@ capture at all.
 import re
 from datetime import datetime
 
+from agora_runner import board_records, board_store, board_write
 from agora_runner.config import OSLO
 from agora_runner.log import log
 from agora_runner.nova_boards import (
+    _CLOSED_STATUS_KEYS,
     BOARD_PATHS,
     add_row,
     CAPTURE_PRIORITY_SEP,
@@ -71,7 +73,8 @@ from agora_runner.nova_boards import (
     OUTDATED_STATUS,
     STATUS_LABELS,
     set_row_order as _set_row_order_md,
-    set_row_priority,
+    priority_key,
+    status_key,
     set_row_project,
     set_row_status,
     set_row_title,
@@ -1231,41 +1234,70 @@ def comment_on_row(target, number, comment, dated, author="Edvard"):
     )
 
 
-def set_priority(target, number, priority):
+#: The app's two board targets, named the way the record store names them.
+#: Spelled here rather than imported from `tools.board_put`: the site image
+#: copies `agora_runner/` and not `tools/`, so that import is green in tests
+#: and an ImportError on the pod (the same call `nova_site._RECORD_BOARDS`
+#: makes).
+RECORD_BOARDS = {"issues": "issue", "ideas": "idea"}
+
+
+def set_priority(target, number, priority, store=None):
     """Change one boarded row's rating. Returns (ok, message).
 
-    The third write path on this site, and the first that edits something
-    *I* wrote rather than something the owner wrote. Same read-modify-write
-    and same 409 retry as `capture` and `amend`, for the same reason: a
-    cycle boarding these very files is the concurrent writer, and it is
-    the one most likely to be running, since boarding is what step 6 of
-    every cycle does.
+    **Written to the #203 record store, not to his markdown** -- the rating
+    button is the first of the app's board writers off the file. It goes
+    through `board_write.change_row`, which re-reads the whole board after the
+    write and refuses if anything but this row's two keys moved, so the page
+    cannot be damaged by a rating any more than by `tools.board_priority`,
+    which makes the same write.
 
-    `set_row_priority` returning `None` is not a write failure and is not
-    retried -- the row is gone, done, or the rating is not one of the four.
-    Re-reading would return the same answer and a 409 loop around it would
-    just spin, which is the distinction `amend` draws too.
+    Refused before anything is written, all as `(False, message)`: a target
+    that is not one of his two boards, a rating that is not one of the four
+    (or blank, which is "unrated" and is allowed), a row that is not there, and
+    a finished row -- off `done` *and* off the status cell, because a `✅ Done`
+    row that never moved to `## Done` has `done` false, and a rating chip on a
+    finished item is the state Cycle 188 left empty on purpose.
+
+    **No retry.** The markdown version retried a 409 because the whole file
+    was one document and a cycle boarding anything collided with it. A row is
+    its own document now, so the only collision left is somebody writing this
+    same row between the read and the write, which `change_row` refuses
+    without writing; he taps again.
+
+    `store` is for tests. It is looked up at call time, not bound as a
+    default, so a monkeypatched `board_store` is the one a real call uses.
     """
-    path = CAPTURE_TARGETS.get(target)
-    if path is None:
+    board = RECORD_BOARDS.get(target)
+    if board is None:
         return False, f"unknown target: {target!r}"
+    priority = canonical_priority(priority)
+    if priority is None:
+        return False, f"unknown priority -- one of {sorted(PRIORITY_LABELS.values())}"
+    store = store or board_store
 
-    result = ""
-    for _ in range(WRITE_ATTEMPTS):
-        current, rev = vault_read_path_rev(path)
-        if current is None:
-            return False, f"{path} not found"
-        updated = set_row_priority(current, number, priority)
-        if updated is None:
-            return False, f"#{number} is not an open row on {target}"
-        result = vault_write_path(path, updated, if_rev=rev)
-        if result == "written":
-            log(f"nova-capture rated #{number} on {target} as {priority or '(unrated)'}")
-            return True, f"#{number} is now {priority or 'unrated'}"
-        if "409" not in result:
-            break
-    log(f"nova-capture failed rating #{number} on {target}: {result}")
-    return False, f"could not write to {target}: {result}"
+    try:
+        before = board_records.contents(board, store=store)
+    except Exception as problem:  # noqa: BLE001 -- any failure is "not written"
+        log(f"nova-capture could not read the {target} records: {problem}")
+        return False, f"could not read {target}: {problem}"
+    row = next((item for item in before["items"] if item.get("number") == number), None)
+    if row is None or row.get("done") or \
+            status_key(row.get("status", "")) in _CLOSED_STATUS_KEYS:
+        return False, f"#{number} is not an open row on {target}"
+
+    try:
+        board_write.change_row(
+            board, number,
+            {"priority": priority, "priorityKey": priority_key(priority)},
+            store=store,
+        )
+    except (board_write.WriteRefused, board_write.BoardDamaged,
+            board_records.RecordError) as problem:
+        log(f"nova-capture failed rating #{number} on {target}: {problem}")
+        return False, f"could not write to {target}: {problem}"
+    log(f"nova-capture rated #{number} on {target} as {priority or '(unrated)'}")
+    return True, f"#{number} is now {priority or 'unrated'}"
 
 
 def set_row_order(target, number, position):
