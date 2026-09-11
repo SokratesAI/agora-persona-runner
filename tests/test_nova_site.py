@@ -5769,7 +5769,7 @@ def test_board_archive_refuses_a_number_that_is_not_a_positive_int():
         ar.assert_not_called()
 
 
-def test_archiving_a_row_that_is_already_closed_is_a_409_through_the_real_module():
+def test_archiving_a_row_that_is_already_closed_is_a_502_not_a_409_through_the_real_module():
     """The same pinning `test_a_stale_row_is_a_409...` does for delete, and
     it matters more here: `set_row_status` returns `None` for a row that is
     already `✅ Done` as well as for one that does not exist, so the common
