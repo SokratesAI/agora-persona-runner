@@ -82,10 +82,12 @@ A check built out of status codes calls that healthy. So the assertion
 here is on `textLen` and on console errors, and `/retro` rendering 2656
 characters is the evidence that the page is really there.
 
-The browser itself lives under `/data/workspace/nova-browser` rather than
-in this repo -- it is 1.5GB of Chromium and unpacked Debian libraries.
-`tools/browser/bootstrap.sh` rebuilds it from nothing in about three
-minutes if that directory is ever lost.
+The browser itself is built into the bridge image at `/opt/nova-browser`
+(agora-claude-bridge#113, `NOVA_BROWSER_ROOT` points there) rather than in
+this repo -- Chromium, fonts and playwright-core. `DEFAULT_ROOT` below is
+only the fallback for a pod without that layer: `tools/browser/bootstrap.sh`
+builds one there from nothing in about three minutes. The hand-built copy
+that used to live at that path was deleted in Cycle 1430.
 """
 
 import json

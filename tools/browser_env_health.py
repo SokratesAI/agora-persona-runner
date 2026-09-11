@@ -1,9 +1,11 @@
 """Is the browser environment every visual check depends on still there?
 
-Cycle 1210, working idea #248. `/data/workspace/nova-browser` is ~1.2 GB of
-downloaded Chromium, an unpacked Debian sysroot, fonts and `node_modules`.
-It is not in any image and not in any repo: it lives as untracked bytes on a
-volume. `tools/browser/bootstrap.sh` can rebuild it -- runner#857 made that
+Cycle 1210, working idea #248. `/data/workspace/nova-browser` was then ~1.2 GB
+of downloaded Chromium, an unpacked Debian sysroot, fonts and `node_modules`,
+in no image and no repo: untracked bytes on a volume. Since
+agora-claude-bridge#113 the bridge image carries it at `/opt/nova-browser`
+and the volume copy is gone (Cycle 1430); this still checks whichever root
+`see_page.browser_root()` names. `tools/browser/bootstrap.sh` can rebuild it -- runner#857 made that
 script trustworthy and proved it end to end -- but **nothing looks at whether
 the environment is still there**, and nothing runs the rebuild.
 

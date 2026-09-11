@@ -4,6 +4,8 @@
 # no apt lists, no X/GTK libraries and no fonts. Each of those is solvable without root.
 # Takes ~3 minutes and 1.2GB under $NOVA_BROWSER_ROOT, default /data/workspace/nova-browser
 # (which survives cycles). Measured cycle 1130 on a full rebuild from nothing.
+# The bridge image carries its own at /opt/nova-browser (agora-claude-bridge#113), so
+# this is only the rebuild path for a pod without that layer.
 set -euo pipefail
 # `tools.see_page` reads NOVA_BROWSER_ROOT and falls back to this same path, so
 # the builder and the consumer cannot disagree about where the environment is.
