@@ -8933,8 +8933,10 @@
      * that same guard and handled once, not twice. */
     li.addEventListener("click", function (event) {
       var target = event.target;
+      // `.project-drawer` too: the drawer sits inside this row, so without
+      // it a tap on a task's grip or a milestone's grip folded the card shut.
       if (target && target.closest
-          && target.closest("button, a, .project-standing-grip")) return;
+          && target.closest("button, a, .project-standing-grip, .project-drawer")) return;
       link.click();
     });
     return li;
@@ -9070,8 +9072,13 @@
         || ((a.board === "issue" ? 0 : 1) - (b.board === "issue" ? 0 : 1))
         || (a.item.number - b.item.number);
     });
+    /* A closed row carries a second class so `attachRowDrag`, which matches
+     * a row by its exact class name, leaves it out: the server seats open
+     * rows only, so a drop position counted with a done row among them
+     * would land one seat off. */
     mine.forEach(function (row) {
-      var task = el("li", "project-drawer-task");
+      var task = el("li", taskIsOpen(row)
+        ? "project-drawer-task" : "project-drawer-task project-drawer-task--closed");
       var link = el("a", "project-drawer-task-link",
         "#" + row.item.number + " " + (row.item.title || ""));
       link.setAttribute("href",
@@ -9081,6 +9088,7 @@
       if (taskIsOpen(row)) task.appendChild(taskMoveControls(row, mine));
       tasks.appendChild(task);
     });
+    attachTaskDrag(tasks);
     li.appendChild(tasks);
     /* The same controls the project page carries, in the drawer -- his ask,
      * 2026-09-08: *"Lets me organise/sort the milestones and tasks aswell."*
@@ -9134,7 +9142,7 @@
    * same merge this list is sorted by. So an arrow moves a task past its
    * nearest open neighbour, and an issue can trade a seat with an idea.
    *
-   * Arrows, no grip yet. On the right, note first, for the reason
+   * On the right, note first and grip last, for the reason
    * `projectMoveControls` gives. */
   function taskMoveControls(row, mine) {
     var peers = mine.filter(taskIsOpen);
@@ -9159,6 +9167,8 @@
     }
     wrap.appendChild(mover("↑", index, index > 0));
     wrap.appendChild(mover("↓", index + 2, index < peers.length - 1));
+    wrap.appendChild(dragHandle("project-task-grip", "data-task",
+      (row.board === "issue" ? "issues" : "ideas") + ":" + row.item.number));
     return wrap;
   }
 
@@ -9325,6 +9335,27 @@
       noteSelector: ".project-milestone-move-note",
       send: function (name, position, note) {
         sendMilestonePin(project, name, position, note);
+      }
+    });
+  }
+
+  /* The same gesture on a milestone's tasks in the project drawer -- the
+   * last piece of issue #202: *"give me drag-and-arrows on the task rows in
+   * the project drawer to change it."* The grip carries `issues:41` or
+   * `ideas:42`, because `set_row_order` needs the board as well as the
+   * number, and the drop writes through `sendRowOrder` exactly as the
+   * arrows do. */
+  function attachTaskDrag(list) {
+    attachRowDrag(list, {
+      rowClass: "project-drawer-task",
+      gripClass: "project-task-grip",
+      nameAttr: "data-task",
+      draggingClass: "project-drawer-task--dragging",
+      noteSelector: ".project-task-move-note",
+      send: function (key, position, note) {
+        var colon = key.indexOf(":");
+        sendRowOrder(key.slice(0, colon), Number(key.slice(colon + 1)),
+          position, note);
       }
     });
   }
