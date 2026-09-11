@@ -374,7 +374,7 @@ def milestone_ranks(rows, pins=None, seats=None):
     """Open rows -> `{(project, milestone): rank}`, best first, per project.
 
     Milestone M4 of `task-prioritization-redesign.md`, and the tier that
-    sits between the project order and the row's own rating. The spec asked
+    sits between the project order and the row's own position. The spec asked
     for WSJF -- the best rating in the milestone divided by its size -- and
     issue #202 retires the rating that numerator was, so **the computed
     order is smallest first, and the seats below are what hold the order.**
@@ -546,7 +546,7 @@ def rank(rows, projects=None, milestones=None):
     """Best pick first. See the module docstring for why age is the tiebreak.
 
     **`projects` is `project_ranks(projects_markdown)`, and it sits between
-    the skip-to-top tier and the row's own rating.** That placement is the
+    the skip-to-top tier and the row's own position.** That placement is the
     redesign spec's picking order, not a new opinion: expedite, then
     skip-to-top, then the project order, then the row inside it. Passing
     nothing keeps the flat cross-project ranking every caller had before,
@@ -629,18 +629,18 @@ def rank(rows, projects=None, milestones=None):
             ((r.get("project") or "").strip().lower(),
              (r.get("milestone") or "").strip().lower()),
             len(milestones or {})),
-        # **The hand-set position inside the milestone, and the rating only
-        # underneath it.** His capture of 2026-09-08: *"Convert the old
-        # priority to the ordered list so high is at the top and low is at
-        # the bottom."* Same layering as the project tier three keys up --
-        # a seat he set by hand is a decision and a rating is a
-        # description -- and the same fallback, so a group he has never
-        # dragged ranks exactly as it does today. An unplaced row sinks
-        # below every placed one **in its own milestone** rather than below
-        # the whole board: the tier above has already separated the groups,
-        # so an unplaced row only ever competes with its own neighbours.
+        # **The position inside the milestone, and no rating underneath
+        # it.** His capture of 2026-09-08: *"Convert the old priority to the
+        # ordered list so high is at the top and low is at the bottom."*
+        # `seed_seats` did that conversion once (Cycle 1400, every open row
+        # seated), and issue #202 says the rating never decides an order
+        # again after it, so the row's rating is not read here any more. An
+        # unplaced row -- one filed after the seeding -- sinks below every
+        # placed one **in its own milestone**, oldest first, which is the
+        # spec's *"anything a cycle files starts below everything he has
+        # placed"*; the tier above has already separated the groups, so an
+        # unplaced row only ever competes with its own neighbours.
         (0, r["order"]) if r.get("order") else (1, 0),
-        _RANK.get(r["priorityKey"], len(_RANK)),
         age_key(r["updated"]),
         0 if r["board"] == "issue" else 1,
         r["number"],
@@ -716,7 +716,7 @@ def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
 
     `projects_markdown` is `projects.md`, his own rating of the projects
     themselves, and it orders the board between the skip-to-top tier and
-    the row rating -- see `rank`. Passing nothing is the flat ranking this
+    the row's position -- see `rank`. Passing nothing is the flat ranking this
     function had before, so a caller that has not got the file still gets
     an answer rather than an exception; the tool that prints this for a
     cycle says out loud when it could not read it.

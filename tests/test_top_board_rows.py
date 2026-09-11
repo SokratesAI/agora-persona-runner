@@ -127,11 +127,23 @@ def test_a_row_with_no_usable_date_sorts_last_in_its_rating():
     assert [r["number"] for r in ranked] == [2, 1]
 
 
-def test_unrated_sorts_below_low_rather_than_above_everything():
+def test_the_rating_no_longer_orders_rows_below_immediately():
+    """Issue #202: once every row is seated the rating never orders again.
+
+    It used to sort an unrated row below a Low one whatever their age; now
+    the older row is first, and swapping every rating below Immediately
+    leaves the order identical, which is the property rather than one case.
+    Immediately still reads, as skip-to-top -- that is a separate tier.
+    """
     text = board((1, "unrated", BACKLOG, "2026-08-01", ""),
-                 (2, "rated low", BACKLOG, "2026-08-14", LOW))
-    ranked = top_board_rows.rank(open_rows(text, "issue"))
-    assert [r["number"] for r in ranked] == [2, 1]
+                 (2, "rated low", BACKLOG, "2026-08-14", LOW),
+                 (3, "rated high", BACKLOG, "2026-08-20", HIGH))
+    rows = open_rows(text, "issue")
+    ranked = top_board_rows.rank(rows)
+    assert [r["number"] for r in ranked] == [1, 2, 3]
+    swap = {"": "high", "low": "medium", "high": ""}
+    swapped = [dict(r, priorityKey=swap[r["priorityKey"]]) for r in rows]
+    assert [r["number"] for r in top_board_rows.rank(swapped)] == [1, 2, 3]
 
 
 @pytest.mark.parametrize("status", [STATUS_LABELS["done"], OUTDATED])

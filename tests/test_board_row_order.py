@@ -128,8 +128,9 @@ def _ranked(board):
 
 
 def test_rank_follows_the_hand_order_ahead_of_the_rating():
-    # Untouched, the rating decides and High leads its milestone.
-    assert _ranked(contents())[:3] == [8, 9, 7]
+    # Untouched, the rating no longer decides (issue #202): an unplaced row
+    # goes oldest first, so High #8 does not lead its milestone any more.
+    assert _ranked(contents())[:3] == [9, 8, 7]
     # Placed, his order decides -- Low first, against its own rating.
     assert _ranked(place(contents(), 7, 1))[:3] == [7, 8, 9]
 
