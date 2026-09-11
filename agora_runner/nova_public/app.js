@@ -9178,12 +9178,19 @@
     return li;
   }
 
-  /* The seat a task holds inside its milestone -- its Order cell. A row with
-   * none sorts after every seated one, the way `nova_next.rank` sinks an
-   * unplaced row. */
+  /* Where a task sits inside its milestone, on the server's own scale.
+   * A seated row is its Order cell. An unseated row falls in behind every
+   * seated one by rating -- immediate, high, medium, low, then unrated --
+   * which is exactly how `row_order_seats` seeds a group on its first
+   * placement. Most rows are still unseated, so an arrow counted against
+   * any other order would send a position the server reads differently. */
+  var TASK_SEED = { immediate: 0, high: 1, medium: 2, low: 3 };
+
   function taskSeat(row) {
     var seat = Number(row.item.order);
-    return seat > 0 ? seat : Infinity;
+    if (seat > 0) return seat;
+    var seed = TASK_SEED[row.item.priorityKey];
+    return 1e6 + (seed === undefined ? 4 : seed);
   }
 
   /* Open is the server's rule, not the column's look: `row_order_seats`
