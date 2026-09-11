@@ -424,9 +424,9 @@ def milestone_ranks(rows, pins=None, seats=None):
     "position" means when the pin and the list disagree.
 
     **`seats` is the order I set, and it sits between the formula and his
-    pins** -- issue #202, which retires the row rating this formula divides.
-    Dropping `_IMPORTANCE` on its own reorders six of eleven projects
-    (measured Cycle 1408 on 210 live rows), and writing today's order into
+    pins** -- issue #202, which retired the row rating this formula used to
+    divide. Dropping it on its own would have reordered six of eleven
+    projects (measured Cycle 1408 on 210 live rows), and writing that order into
     `milestones.md` as pins would put "pinned" and an Unpin button on every
     milestone he never touched. So a seat lives in its own file
     (`nova_boards.MILESTONE_SEATS_PATH`), is never reported as a pin, and

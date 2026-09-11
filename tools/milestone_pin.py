@@ -2,8 +2,9 @@
 
 Milestone M4 of idea #260's picking redesign, and the override half of it.
 `tools.board_milestone` puts a row into a named milestone and
-`nova_next.milestone_ranks` orders those milestones by importance over
-size; this is the one thing that outranks that formula. His words in the
+`nova_next.milestone_ranks` orders those milestones -- smallest first, then
+the seats in `milestone-seats.md` -- and this is the one thing that
+outranks that order. His words in the
 spec: *"I want the ability to reorder tasks and milestones but the default
 is that you do it"* -- so the formula is the default and a pin is him
 saying otherwise about one milestone.
