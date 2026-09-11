@@ -655,11 +655,9 @@ def seed_seats(rows):
     put an issue rated Low at seat 2 ahead of an idea rated Medium at seat 3.
     Seated this way, `rank` returns exactly the order it returned before,
     and the drawer, which sorts both boards on the seat, shows that order.
-    Each board's seats have gaps, and **an arrow press does not keep this
-    cross-board order**: `row_order_seats` renumbers one board's group
-    1..N, so that board's rows jump ahead of the other board's seats. That
-    gap predates this seed -- unseated, the other board sank below every
-    placed row outright, which is worse -- and it is the next slice of #202.
+    Each board's seats have gaps, and an arrow press keeps the one order:
+    `nova_boards.board_row_order_seats` counts the position across both
+    boards and renumbers the merged group.
 
     A group where some row already holds a seat other than the one this
     would give it has been ordered by hand and is skipped whole -- a seed
