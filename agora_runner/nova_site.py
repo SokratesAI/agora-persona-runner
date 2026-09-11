@@ -5126,7 +5126,10 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             output=self.headers.get("Tailscale-User-Login") or "(no tailscale identity header)",
             is_error=not ok,
         )
-        self._send_json(200 if ok else 502, {"ok": ok, "message": message})
+        # A missing row is the page's cue to re-read, as on every sibling row
+        # route; until #203 this one answered it with the generic 502.
+        stale = "is not a row" in message
+        self._send_json(200 if ok else (409 if stale else 502), {"ok": ok, "message": message})
 
     def _post_project_priority(self, payload):
         """`POST /api/project/priority` -- rating a project, not a row.

@@ -227,6 +227,16 @@ def test_a_failed_write_does_not_invalidate(monkeypatch):
     assert not any(c[0] == "invalidate" for c in calls if isinstance(c, tuple) and len(c) == 2)
 
 
+def test_a_missing_row_is_a_409_and_not_a_502(monkeypatch):
+    """The phrase `set_project` answers a missing row with is the page's cue
+    to re-read; every sibling row route answers it 409, and this one did not."""
+    (status, body), calls = _call(
+        {"target": "issues", "number": 999, "project": "Marcus"},
+        result=(False, "#999 is not a row on issues"), monkeypatch=monkeypatch)
+    assert status == 409 and body["ok"] is False
+    assert not any(c[0] == "invalidate" for c in calls if isinstance(c, tuple) and len(c) == 2)
+
+
 def test_the_route_refuses_before_it_writes(monkeypatch):
     """Each of these must be a 400 and must not reach the vault.
 
