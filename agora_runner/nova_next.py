@@ -551,8 +551,9 @@ def rank(rows, projects=None, milestones=None):
     """Best pick first. See the module docstring for why age is the tiebreak.
 
     **`projects` is `project_ranks(projects_markdown)`, and it sits directly
-    under the claimed, waiting and blocked flags.** That is the redesign
-    spec's picking order with the skip-to-top tier gone (issue #202): the
+    under the skip-to-top tier.** That is the redesign spec's picking order:
+    the claimed, waiting and blocked flags, then a row he rated Immediately
+    (removed by issue #202, restored on his capture of 2026-09-11), then the
     project order, then the milestone, then the row inside it. Passing
     nothing keeps the flat cross-project ranking every caller had before,
     which is what the site's own project page wants -- it has already
@@ -970,8 +971,9 @@ def reserve_maintenance(projects, rows, cycle, every=MAINTENANCE_EVERY):
     project rank map and nothing else**, which is exactly the tier the spec
     puts it in: an unanswered comment of his still wins, because that key
     sorts above the project one in `rank`, and the ordering *inside*
-    maintenance is untouched. A 🔴 Immediately row no longer does -- issue
-    #202 took the skip-to-top tier out of `rank`.
+    maintenance is untouched. A 🔴 Immediately row he rated wins too: the
+    skip-to-top key also sorts above the project one (restored 2026-09-11,
+    after issue #202 had taken it out).
 
     **Falling through when the queue is empty is the spec's rule, and it is
     reported rather than silent.** A reserved cycle that finds no

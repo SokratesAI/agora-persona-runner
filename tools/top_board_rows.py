@@ -30,8 +30,10 @@ the board, above the handoff and above everything else. They are printed
 first and unranked, because a capture has no rating cell to sort on and
 because there are never many; see `unboarded_captures`.
 
-Ranking is rating first (Immediately > High > Medium > Low > unrated),
-then oldest `Updated` first, then issues before ideas, then row number.
+Ranking puts a row he rated Immediately first, ahead of the project order;
+no other rating orders anything (issue #202). Below that it is project,
+milestone, the row's position, then oldest `Updated` first, then issues
+before ideas, then row number.
 Age is the tiebreak on purpose: two High rows are not equally urgent when one has sat
 since 08-04, and "it has been waiting longest" is the only signal left
 once the rating is spent.
