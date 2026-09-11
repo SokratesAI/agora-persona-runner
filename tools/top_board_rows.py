@@ -788,7 +788,7 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
         diagnoses_readable))
     # Milestone M6: every fifth cycle the project tier is forced onto
     # maintenance. It rewrites the project ranks and nothing else, so the
-    # captures above and the skip-to-top tier below are untouched -- and
+    # captures above and the milestone and row order below are untouched -- and
     # the note is printed whether it forced anything or fell through,
     # because a reservation nobody can see fired is one nobody can tell
     # apart from a broken one.

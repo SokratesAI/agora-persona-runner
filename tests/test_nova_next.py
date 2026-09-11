@@ -72,8 +72,9 @@ def test_the_ranked_list_is_the_order_a_cycle_would_take_them():
     issues = board((10, "a high issue", BACKLOG, "08-01", HIGH))
     ideas = board((64, "the immediate idea", BACKLOG, "08-12", IMMEDIATE))
     payload = next_payload(issues, ideas, ledger(), NOW)
+    # The older row first: no rating orders the list since issue #202.
     assert [(r["board"], r["number"]) for r in payload["next"]] == [
-        ("idea", 64), ("issue", 10)]
+        ("issue", 10), ("idea", 64)]
 
 
 def test_his_unfiled_captures_come_back_separately_from_the_board():
@@ -249,12 +250,13 @@ def test_a_medium_row_in_his_top_project_outranks_a_high_row_below_it():
     assert ranked["next"][1]["number"] == 10
 
 
-def test_immediately_skips_to_the_top_over_the_project_order():
-    """Tier 2 sits above tier 3, which is the spec's order and not a guess.
+def test_immediately_no_longer_jumps_the_project_order():
+    """Issue #202 closed the skip-to-top tier: a row's rating orders nothing.
 
-    Without the skip-to-top key an Immediately row in his bottom-rated
-    project would sort below every row in Marcus, and the one label he has
-    to say "this, next" would mean less than it did before the change.
+    The spec's correction of 2026-09-10 keeps the rating as his intent at
+    capture and says nothing downstream reads it again. So an Immediately
+    row in his bottom-rated project sorts behind a High row in Marcus, where
+    until this change it sorted first -- the jump idea #267 got.
     """
     issues = board((10, "immediate, in a low project", BACKLOG, "08-01",
                     IMMEDIATE, "Demos"), project=True)
@@ -262,7 +264,27 @@ def test_immediately_skips_to_the_top_over_the_project_order():
                    "Marcus"), project=True)
 
     ranked = next_payload(issues, ideas, ledger(), NOW, projects_markdown=PROJECTS)
-    assert ranked["next"][0]["number"] == 10
+    assert [r["number"] for r in ranked["next"]] == [64, 10]
+
+
+def test_a_project_missing_from_his_list_sorts_behind_an_unrated_listed_one():
+    """Unlisted used to rank 5, the same number an unrated listed project gets.
+
+    Cycle 1410 found Infra, Maintenance and Research level with Sokrates Docs
+    that way. The unlisted row here is the OLDER one, so on a tie the age key
+    puts it first and the assertion fails; only a separate last place for an
+    unlisted project passes.
+    """
+    projects = PROJECTS.replace(f"| Demos | {LOW} | 09-02 |",
+                                f"| Demos | {LOW} | 09-02 |\n| Docs |  | 09-03 |")
+    assert nova_next.project_ranks(projects)["docs"] == 5, "the tie this test is about"
+    issues = board((10, "a row in an unlisted project", BACKLOG, "08-01", LOW,
+                    "Infra"), project=True)
+    ideas = board((64, "a row in an unrated listed project", BACKLOG, "08-20",
+                   LOW, "Docs"), project=True)
+
+    ranked = next_payload(issues, ideas, ledger(), NOW, projects_markdown=projects)
+    assert [r["number"] for r in ranked["next"]] == [64, 10]
 
 
 def test_a_project_he_has_not_rated_sorts_below_every_rated_one():
