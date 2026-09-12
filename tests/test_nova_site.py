@@ -6430,3 +6430,48 @@ def test_a_prometheus_that_raises_leaves_the_landing_page_serving():
     payload = json.loads(body)
     assert payload["health"] is None
     assert payload["recap"]["bullets"] == ["a"]
+
+
+def test_a_raising_cost_ledger_leaves_the_health_line_standing():
+    """`_newest_quota`'s own swallow, which nothing reached.
+
+    The Prometheus test above cannot get here: `_health` calls
+    `health_block(status, alerts_payload(), _newest_quota(), ...)` and
+    Python evaluates arguments left to right, so `alerts_payload`
+    exploding means the ledger is never read at all. The stated goal
+    names both reads, and only one of them had a test.
+
+    The assertion is deliberately NOT `health is None`. A ledger that
+    cannot be read is a smaller failure than an alerts read that cannot
+    be read: the quota row is one of four facts on the line, and
+    `health_block` already has a sentence for a missing one. So the line
+    must still be BUILT, and say what it could not find out -- if the
+    outer catch in `_health` swallowed this instead, `health` would come
+    back `None` and this test would fail, which is what tells the two
+    swallows apart.
+    """
+    nova_site.reset_cache()
+
+    def explode():
+        raise RuntimeError("the cost ledger document is not there")
+
+    with patch.object(nova_site, "recap_payload", return_value={"bullets": ["a"]}), \
+            patch.object(nova_site, "next_up_payload",
+                         return_value={"next": [], "active": [], "claimsReadable": True}), \
+            patch.object(nova_site, "journal_payload",
+                         return_value={"status": {"asks": [], "cycle": 1458}}), \
+            patch.object(nova_site, "project_payload", return_value={"projects": []}), \
+            patch.object(nova_site, "alerts_payload", return_value={
+                "reachable": True, "blind": False, "firing": [], "rules": 6}), \
+            patch.object(nova_site, "cost_ledger_json", side_effect=explode), \
+            patch.object(nova_site, "cadence_minutes", return_value=40):
+        status, _head, body = _get("/api/home")
+
+    assert status == 200, "a raising cost ledger took the landing page down"
+    health = json.loads(body)["health"]
+    assert health is not None, "the ledger's swallow took the whole health line with it"
+    assert health["cycle"] == 1458
+    assert health["sevenDay"] is None
+    assert health["concerns"] == [
+        "the cost ledger carries no quota reading, so I cannot say what the week has spent"
+    ]

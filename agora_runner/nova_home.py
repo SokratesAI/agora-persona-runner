@@ -90,8 +90,16 @@ def _project_card(name, summary, priority, ranked_rows, group=None):
     }
 
 
-def home_payload(recap, projects, next_up, asks, health=None, top=TOP_PROJECTS):
+def home_payload(recap, projects, next_up, asks, *, health=None, top=TOP_PROJECTS):
     """The landing page, composed from payloads that already exist.
+
+    **`health` and `top` are keyword-only on purpose.** `health` was
+    inserted in front of `top` when the health line shipped, which is a
+    silent trap rather than a live bug: no caller passes `top`
+    positionally today, so nothing broke, and the next one that tries
+    binds its project count to `health` and gets a landing page with a
+    dict where its line should be and the default number of cards. A
+    `*` costs nothing and makes that a `TypeError` at the call site.
 
     `recap` is `/api/recap`, `projects` is `/api/project` with no name
     (its index build: the hand-ordered project list, the ratings and

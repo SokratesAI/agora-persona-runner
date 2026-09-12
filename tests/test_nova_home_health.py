@@ -173,3 +173,21 @@ def test_home_payload_carries_none_when_no_block_was_built():
     assert home_payload({}, {}, {}, [])["health"] is None
     built = home_payload({}, {}, {}, [], health=block())["health"]
     assert built["concerns"] == []
+
+
+def test_health_and_top_cannot_be_passed_positionally():
+    """The trap `health` set when it was inserted in front of `top`.
+
+    `home_payload(recap, projects, next_up, asks, health=None,
+    top=TOP_PROJECTS)` put the new argument BEFORE an existing defaulted
+    one. Nothing broke, because no caller passes `top` positionally --
+    which is exactly what makes it worth a guard rather than a note: the
+    next caller that does gets a dict bound to `health`, the default
+    number of project cards, and no error anywhere.
+
+    Asserted on the call rather than on `inspect.signature`, because a
+    signature check would pass on a function whose `*` had been moved to
+    a place that still reads right and behaves differently.
+    """
+    with pytest.raises(TypeError):
+        home_payload({}, {}, {}, [], block())
