@@ -481,11 +481,23 @@ def test_the_route_refuses_a_request_that_does_not_say_who_moved_it(monkeypatch)
 
 
 def test_the_app_sends_its_moves_as_his():
+    # The literal moved out of `sendRowOrder` into one `OWNER_RECORD`
+    # declaration (issue #98), so this now joins the two halves rather than
+    # reading the call site alone: the app must send that constant, and the
+    # constant must be a value this route accepts. The route is
+    # case-sensitive -- `"edvard"` is refused a few tests up -- so a check
+    # that only found the identifier would pass on a renamed constant that
+    # every move then 400s on.
     import pathlib
+    from agora_runner.nova_capture import ROW_ORDER_AUTHORS
     source = (pathlib.Path(nova_site.__file__).parent / "nova_public" / "app.js").read_text()
     start = source.index("function sendRowOrder(")
     body = source[start:source.index("\n  }\n", start)]
-    assert 'author: "Edvard"' in body
+    assert "author: OWNER_RECORD" in body
+    declaration = [ln.strip() for ln in source.splitlines()
+                   if ln.strip().startswith("var OWNER_RECORD")]
+    assert len(declaration) == 1, declaration
+    assert declaration[0] == 'var OWNER_RECORD = "%s";' % ROW_ORDER_AUTHORS[0]
 
 
 def test_a_row_he_placed_is_not_drift_against_his_markdown():

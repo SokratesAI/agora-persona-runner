@@ -10,6 +10,32 @@
 (function () {
   "use strict";
 
+  /* The owner's name, in the two forms this app actually needs (his
+   * issues.md #98: he does not want his own first name standing as a
+   * static string in a repo anyone can read).
+   *
+   * Before this there were eight literals of it in this file and they were
+   * doing two different jobs. `OWNER_RECORD` is a stored value: it is what
+   * `/api/board/comment` and `/api/board/order` write down as the author, and
+   * what an Agora message's `sender` carries back, so every row already in
+   * CouchDB and every line already in his markdown is keyed on this exact
+   * string -- renaming it would relabel history, not anonymise it.
+   * `OWNER_LABEL` is what a reader sees, and nothing about it has to match
+   * anything: the ask thread has drawn "You" over his own bubbles since it
+   * was built, so the rest of the app now says the same word.
+   *
+   * The point of the split is that his name appears once here instead of at
+   * every rendering site, and the one place it is left is labelled as data. */
+  var OWNER_RECORD = "Edvard";
+  var OWNER_LABEL = "You";
+
+  /* Record value -> what to print. Anyone else keeps their own name, which
+   * is why this is a mapping rather than a constant: a board note carries
+   * whichever author wrote it, and only his becomes "You". */
+  function ownerLabel(author) {
+    return author === OWNER_RECORD ? OWNER_LABEL : author;
+  }
+
   var feed = document.getElementById("feed");
   var statusEl = document.getElementById("status");
   var mailEl = document.getElementById("mail");
@@ -5083,7 +5109,7 @@
       var mine = message.author !== "Nova";
       var msg = el("article", "note-msg " + (mine ? "note-msg-mine" : "note-msg-nova"));
       var who = el("p", "note-msg-who");
-      who.appendChild(el("span", "note-msg-name", message.author || "Nova"));
+      who.appendChild(el("span", "note-msg-name", ownerLabel(message.author) || "Nova"));
       // The stamp as written -- `08-26`, or `08-26 (Cycle 462)` when a
       // cycle wrote it. Re-deriving the cycle here is the duplication this
       // repo keeps filing against itself; `append_detail_note` owns it.
@@ -5285,7 +5311,7 @@
           // The comment box on a board row is his, so it says so. The server
           // has no default author any more -- a caller that does not name
           // itself is refused rather than written down as him.
-          body: JSON.stringify({ target: board, number: item.number, text: body, author: "Edvard" }),
+          body: JSON.stringify({ target: board, number: item.number, text: body, author: OWNER_RECORD }),
         })
           .then(function (r) { return r.json().catch(function () { return {}; }); })
           .then(function (result) {
@@ -6118,7 +6144,7 @@
     return one;
   }
 
-  function renderBoardEdvard(board, payload) {
+  function renderBoardOwner(board, payload) {
     var wrap = el("div", "board");
     /* One section. A capture a cycle has closed carries a `DONE (Cycle N):`
      * prefix (`nova_boards.split_capture_done`); Cycle 251 gave those their
@@ -6742,7 +6768,7 @@
     var titles = boardTitles(board);
     var tabs = el("div", "tabs");
     [
-      { key: "edvard", label: "Edvard's " + titles.page.toLowerCase() },
+      { key: "edvard", label: "Your " + titles.page.toLowerCase() },
       { key: "nova", label: titles.mine },
     ].forEach(function (tab) {
       var button = el("button", "tab" + (boardState.tab === tab.key ? " on" : ""), tab.label);
@@ -6767,7 +6793,7 @@
     feed.appendChild(
       boardState.tab === "nova"
         ? renderBoardNova(board, payload)
-        : renderBoardEdvard(board, payload)
+        : renderBoardOwner(board, payload)
     );
   }
 
@@ -9186,7 +9212,7 @@
       // `author` is what records the placement as his: a cycle may not move
       // a task he placed (issue #202).
       body: JSON.stringify({ target: target, number: number, position: position,
-        author: "Edvard" })
+        author: OWNER_RECORD })
     })
       .then(json)
       .then(function (result) {
@@ -10451,7 +10477,7 @@
   function renderNoteMessage(note) {
     var msg = el("article", "note-msg note-msg-mine" + (note.waiting ? " note-msg-waiting" : ""));
     var who = el("p", "note-msg-who");
-    who.appendChild(el("span", "note-msg-name", "Edvard"));
+    who.appendChild(el("span", "note-msg-name", OWNER_LABEL));
     // "Waiting" is the one piece of state a note has that he cannot see
     // from the transcript itself: a note with no purple reply under it is
     // either unanswered or answered badly, and only the file knows which.
@@ -11016,7 +11042,7 @@
    * that something is coming. Without this the thread sits unchanged for up
    * to a poll interval and the tap reads as having done nothing. */
   function askPaintSent(container, text) {
-    container.appendChild(askMessage({ sender: "Edvard", text: text }));
+    container.appendChild(askMessage({ sender: OWNER_RECORD, text: text }));
     // The same loader the poll's own bubble draws, rather than a second way
     // of saying the same thing -- this is the one he sees first, in the
     // moment between the tap and the first poll.
@@ -11743,7 +11769,7 @@
       if (steps) working.appendChild(steps);
       return working;
     }
-    var mine = message.sender === "Edvard";
+    var mine = message.sender === OWNER_RECORD;
     var row = el("div", "ask-msg " + (mine ? "ask-mine" : "ask-theirs")
       + (message.partial ? " ask-partial" : ""));
     row.appendChild(el("div", "ask-who", mine ? "You" : message.sender || "Nova Answers"));
@@ -12420,7 +12446,7 @@
       // Only his lines become the question to re-ask, and the update happens
       // after the row is built: an answer re-asks what was said *above* it,
       // and two answers in a row both point at the same question.
-      if (message.sender === "Edvard" && message.text) asked = message.text;
+      if (message.sender === OWNER_RECORD && message.text) asked = message.text;
     });
     /* Held for `askLost`, which draws after this loop and needs the same
      * question the `⋯` menu's "Ask again" would send. One source, so the two
@@ -16837,7 +16863,7 @@
           // Paint his question straight away rather than waiting a poll for
           // the server to echo it, for `pollConv`'s reason: a box that has
           // gone blank with nothing to show for it reads as a lost message.
-          thread.appendChild(askMessage({ sender: "Edvard", text: body }));
+          thread.appendChild(askMessage({ sender: OWNER_RECORD, text: body }));
           // The dock's own optimistic bubble, and the third place this app
           // painted the word. Same loader as the other two -- missing this
           // one shipped "Thinking…" to the surface he actually uses while
