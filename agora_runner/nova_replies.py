@@ -89,6 +89,7 @@ from agora_runner.config import (
 from agora_runner.http_util import http_json
 from agora_runner.log import log
 from agora_runner.nova_comments import add_reply, comments_by_cycle, parse_comments
+from agora_runner import nova_push
 from agora_runner.nova_journal import parse_journal
 from agora_runner.nova_sources import (
     comments_markdown,
@@ -314,6 +315,57 @@ def _generate(system, prompt):
     return text
 
 
+# A banner is a preview and the card is the answer, so this is the length past
+# which nothing is lost: no phone shows more than two lines of body text, and
+# 200 characters is more than two lines on any of them. The whole reply is one
+# tap away either way.
+NOTIFICATION_CHARS = 200
+
+
+def notification(cycle, text):
+    """`(title, body, url)` for the push that says a reply has landed.
+
+    Pure, and separate from sending it, because the shape of the banner is the
+    part worth pinning: the title says what happened and which card, so he knows
+    whether to tap before he has read a word of the reply, and the url is the
+    single-card route rather than the feed. He reported the cost of getting that
+    second part wrong himself, 2026-08-30, about a conversation push that landed
+    on whatever page was open: *"I quickly red it, clicked it and it opened Nova
+    but to the issues page. I therefore lost the context of the message."*
+
+    Collapses whitespace because a reply is markdown with real newlines in it
+    and a notification body is one run of text.
+    """
+    flat = " ".join((text or "").split())
+    if len(flat) > NOTIFICATION_CHARS:
+        flat = flat[:NOTIFICATION_CHARS].rstrip() + "\u2026"
+    return f"Nova replied on cycle {cycle}", flat, f"/cycle/{cycle}"
+
+
+def notify_reply(cycle, text):
+    """Buzz his phone that the reply is on cycle `cycle`'s card. Never raises.
+
+    This is the last thing on a path whose useful work is already done -- the
+    reply is in the vault and on the card before this runs -- so a failed
+    notification must not turn a stored reply into a failed one. It is logged
+    instead, which is also the only place a withheld push (quiet hours) shows up.
+
+    No check for whether he is looking at the card, deliberately: the service
+    worker shows no banner while a Nova tab is visible, and that covers the case
+    this would -- he commented, so the card is on his screen. What it does not
+    cover is the reply that lands after he has walked away, which is the whole
+    reason this exists.
+    """
+    title, body, url = notification(cycle, text)
+    try:
+        ok, detail = nova_push.send(body, url=url, title=title)
+    except Exception as e:  # never fail a stored reply over a notification
+        log(f"nova-reply push cycle={cycle} raised: {e}")
+        return False
+    log(f"nova-reply push cycle={cycle} {'ok' if ok else 'failed'}: {detail}")
+    return ok
+
+
 def reply_to(cycle, stamp):
     """Generate and store one reply. Returns (ok, message). Blocking.
 
@@ -352,7 +404,10 @@ def reply_to(cycle, stamp):
         text = _generate(SYSTEM, build_prompt(entry, thread, stamp))
         at = _mark("bridge", at)
         result = add_reply(cycle, stamp, text)
-        _mark("store", at)
+        at = _mark("store", at)
+        if result[0]:
+            notify_reply(cycle, text)
+            _mark("push", at)
         return result
     finally:
         timings = " ".join(f"{k}={v:.2f}s" for k, v in phases.items())

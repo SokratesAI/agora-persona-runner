@@ -61,3 +61,64 @@ def test_store_subscription_reports_an_agora_failure():
         ok, body = nova_push.store_subscription({"endpoint": "https://example.invalid/x"})
     assert ok is False
     assert "500" in body["error"]
+
+
+def test_send_posts_title_body_and_url_to_agora():
+    seen = {}
+
+    def fake(method, path, payload=None):
+        seen.update({"method": method, "path": path, "payload": payload})
+        return 200, {"status": "sent"}
+
+    with patch.object(nova_push, "agora_internal", fake):
+        assert nova_push.send("answered your comment", url="/cycle/1446") == (True, "sent")
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/push"
+    assert seen["payload"] == {
+        "title": "Nova", "body": "answered your comment", "url": "/cycle/1446"}
+
+
+def test_send_leaves_url_out_when_there_is_none():
+    # An absent key is what an older service worker falls back to `/` on; a
+    # literal null would be a value it has to reject rather than a key it can
+    # miss. Both the empty string and no argument at all mean absent.
+    seen = {}
+
+    def fake(method, path, payload=None):
+        seen.update(payload or {})
+        return 200, {"status": "sent"}
+
+    with patch.object(nova_push, "agora_internal", fake):
+        nova_push.send("hi")
+        assert "url" not in seen
+        nova_push.send("hi", url="")
+        assert "url" not in seen
+
+
+def test_send_refuses_empty_text_without_calling_agora():
+    called = []
+
+    def fake(method, path, payload=None):
+        called.append(path)
+        return 200, {"status": "sent"}
+
+    with patch.object(nova_push, "agora_internal", fake):
+        assert nova_push.send("")[0] is False
+        assert nova_push.send("   ")[0] is False
+        assert nova_push.send(None)[0] is False
+    assert called == []
+
+
+def test_send_reports_a_withheld_push_as_a_success():
+    # Quiet hours. He asked not to be buzzed, so nothing failed -- and a caller
+    # that logged this as a failure would send someone looking for a bug.
+    with patch.object(nova_push, "agora_internal",
+                      return_value=(200, {"status": "withheld", "quietHours": True})):
+        assert nova_push.send("hi") == (True, "withheld")
+
+
+def test_send_reports_no_subscription_as_a_failure():
+    with patch.object(nova_push, "agora_internal", return_value=(404, {"error": "none"})):
+        ok, detail = nova_push.send("hi")
+    assert ok is False
+    assert "404" in detail

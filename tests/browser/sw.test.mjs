@@ -61,14 +61,25 @@ function loadWorker() {
     return stores.get(name);
   }
 
-  const client = { visibilityState: "hidden", postMessage(msg) { posted.push(msg); } };
+  const navigated = [];
+  const opened = [];
+  const client = {
+    visibilityState: "hidden",
+    postMessage(msg) { posted.push(msg); },
+    navigate(url) { navigated.push(url); return Promise.resolve(client); },
+    focus() { return Promise.resolve(client); },
+  };
   const shown = [];
 
   const self = {
     location: { origin: "https://nova.example" },
     addEventListener(name, fn) { handlers[name] = fn; },
     skipWaiting() { return Promise.resolve(); },
-    clients: { claim: () => Promise.resolve(), matchAll: () => Promise.resolve([client]) },
+    clients: {
+      claim: () => Promise.resolve(),
+      matchAll: () => Promise.resolve([client]),
+      openWindow(url) { opened.push(url); return Promise.resolve(client); },
+    },
     registration: {
       showNotification(title, options) { shown.push({ title, options }); return Promise.resolve(); },
     },
@@ -119,6 +130,8 @@ function loadWorker() {
     timers,
     posted,
     shown,
+    navigated,
+    opened,
     client,
     seedCacheNames(...names) { names.forEach((n) => store(n)); },
     // The worker's own URL builder, so a test can compare it with the
@@ -294,6 +307,16 @@ function pushEvent(worker, payload) {
   let held = null;
   worker.handlers.push({
     data: { json: () => payload, text: () => JSON.stringify(payload) },
+    waitUntil(p) { held = p; },
+  });
+  return held;
+}
+
+/* Fire the notificationclick handler with the data a push left on the banner. */
+function clickEvent(worker, data) {
+  let held = null;
+  worker.handlers.notificationclick({
+    notification: { data, close() {} },
     waitUntil(p) { held = p; },
   });
   return held;
@@ -806,5 +829,59 @@ describe("a reopen is answered from the cache and confirmed with an etag", () =>
     const response = await fetchEvent(worker, req("https://nova.example/app.js"));
     assert.equal(await response.text(), "live app.js",
       "network-first is what keeps a rebuilt shell from pinning itself");
+  });
+});
+
+describe("where the tap lands", () => {
+  /* Until `url` existed a notification could only name a conversation, so the
+   * only thing that could be notified about was a thread. A reply on a journal
+   * card is not one (ideas.md #182), and the cost of landing on the wrong page
+   * is his own report of 2026-08-30: *"I quickly red it, clicked it and it
+   * opened Nova but to the issues page. I therefore lost the context."* */
+
+  test("a url in the payload is where the tap goes", async () => {
+    const worker = loadWorker();
+    worker.network(() => Promise.resolve(new Response("{}", { status: 200 })));
+
+    await pushEvent(worker, { title: "Nova replied on cycle 1446", body: "hi", url: "/cycle/1446" });
+    assert.equal(worker.shown.length, 1);
+    await clickEvent(worker, worker.shown[0].options.data);
+
+    assert.deepEqual(worker.navigated, ["/cycle/1446"]);
+    assert.deepEqual(worker.opened, []);
+  });
+
+  test("a conversation push still lands on its thread", async () => {
+    /* The regression this guards: `url` is read first, and a payload from
+     * either conversation sender carries no `url` at all. */
+    const worker = loadWorker();
+    worker.network(() => Promise.resolve(new Response("{}", { status: 200 })));
+
+    await pushEvent(worker, { title: "Nova", body: "hi", conversationId: "c-1" });
+    await clickEvent(worker, worker.shown[0].options.data);
+
+    assert.deepEqual(worker.navigated, ["/conversation/c-1"]);
+  });
+
+  test("a payload with neither lands on the front page", async () => {
+    const worker = loadWorker();
+    worker.network(() => Promise.resolve(new Response("{}", { status: 200 })));
+
+    await pushEvent(worker, { title: "Nova", body: "hi" });
+    await clickEvent(worker, worker.shown[0].options.data);
+
+    assert.deepEqual(worker.navigated, ["/"]);
+  });
+
+  test("a url wins over a conversation id when both are set", async () => {
+    /* Nothing sends both today. The order is still pinned, because a payload
+     * that names a specific page is asking for that page. */
+    const worker = loadWorker();
+    worker.network(() => Promise.resolve(new Response("{}", { status: 200 })));
+
+    await pushEvent(worker, { title: "Nova", body: "hi", conversationId: "c-1", url: "/cycle/9" });
+    await clickEvent(worker, worker.shown[0].options.data);
+
+    assert.deepEqual(worker.navigated, ["/cycle/9"]);
   });
 });

@@ -15,7 +15,7 @@ a subscription belongs to the origin that created it and Nova's pages are
 served from a different host than Agora's.
 """
 
-from agora_runner.http_util import agora_get, agora_public
+from agora_runner.http_util import agora_get, agora_internal, agora_public
 
 
 def vapid_key():
@@ -43,3 +43,35 @@ def store_subscription(payload):
     if status not in (200, 201):
         return False, {"error": f"agora /subscribe answered {status}"}
     return True, {"ok": True}
+
+
+def send(body, url=None, title="Nova"):
+    """Buzz his phone about something that is not a conversation.
+
+    Every other notification this loop sends is a message in a thread, and
+    Agora's `/conversations/:id/notify` pushes it as a side effect of appending
+    it. A reply to a comment on a journal card has no thread: it is stored in
+    the vault and drawn on the card, so until now the only way to find out one
+    had arrived was to open the app and look. That is the half of `ideas.md`
+    #182 the chat-bubble dot did not cover -- *"I'm not able to read all the
+    'waiting on you' and all the answers for the journals."*
+
+    `url` is a path on this site that the tap should land on, e.g.
+    `/cycle/1446`. Agora's `POST /push` leaves it out of the payload entirely
+    when it is empty, and Nova's service worker falls back to `/`.
+
+    Returns `(ok, detail)` and never raises. A notification is the last thing
+    to happen on a path that has already done the useful work -- the reply is
+    stored either way -- so every way this can fail has to leave the caller
+    alone. `withheld` is a success: quiet hours mean he asked not to be buzzed.
+    """
+    if not isinstance(body, str) or not body.strip():
+        return False, "a push needs some text"
+    payload = {"title": title, "body": body.strip()}
+    if isinstance(url, str) and url:
+        payload["url"] = url
+    status, response = agora_internal("POST", "/push", payload)
+    if status != 200:
+        return False, f"agora /push answered {status}"
+    state = response.get("status") if isinstance(response, dict) else None
+    return True, state or "sent"

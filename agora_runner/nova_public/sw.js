@@ -620,7 +620,15 @@ self.addEventListener("push", function (event) {
         self.registration.showNotification(data.title || "Nova", {
           body: data.body || "",
           icon: "/icon.svg",
-          data: { conversationId: data.conversationId || null },
+          /* `url` is for a notification about something that is not a
+           * conversation -- a reply on a journal card (ideas.md #182). Agora's
+           * `POST /push` sets it and leaves it out entirely otherwise, so a
+           * payload from either of the two conversation senders still arrives
+           * with a `conversationId` and nothing else changes for it. */
+          data: {
+            conversationId: data.conversationId || null,
+            url: data.url || null,
+          },
         }),
         prefetchThread(data.conversationId),
       ]);
@@ -675,7 +683,12 @@ function prefetchThread(conversationId) {
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
   var data = event.notification.data || {};
-  var target = data.conversationId
+  /* An explicit url wins over a conversation id. Only one of the two is ever
+   * set by a sender; the order matters anyway, because a payload carrying both
+   * is asking for the specific page rather than the thread it may belong to. */
+  var target = data.url
+    ? data.url
+    : data.conversationId
     ? "/conversation/" + encodeURIComponent(data.conversationId)
     : "/";
   event.waitUntil(
