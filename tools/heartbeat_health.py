@@ -113,25 +113,31 @@ def apply_mute(rows, results, now, url=None, opener=None):
     named rather than assumed quiet --- the same rule as `_fetch`: "no
     replies" and "could not ask" are the two things worth keeping apart.
     """
-    by_name = {}
-    for row in rows:
-        name = row.get("name") or row.get("id") or "(unnamed)"
-        by_name.setdefault(name, row)
+    # Paired by POSITION, because `main` builds `results` as
+    # `[judge(row) for row in rows]` and a name is a display string. Two live
+    # heartbeats already share one --- both `Workflow trial ... (disabled,
+    # manual only)` rows --- so a name join hands one row's conversation to
+    # the other, and the silent one of the pair reads as the chatty one. This
+    # module's sibling `heartbeat_gaps` rejects name joins for the same
+    # reason and said so in writing; I wrote one anyway.
     out, unreadable = [], []
-    for result in results:
+    for result, source in zip(results, rows):
         if result.get("verdict") != "ok":
             out.append(result)
             continue
-        source = by_name.get(result["name"], {})
-        result = dict(result, lastResult=source.get("lastResult"))
+        record = source.get("lastResult")
+        result = dict(result, lastResult=record)
         conversation, error = fetch_conversation(
             source.get("conversationId"), url=url, opener=opener
         )
         if error:
+            # Not left in the `ok` list as well: a row printed as clean beside
+            # its own "could not verify" line is a report that contradicts
+            # itself, and the clean half is the one a reader believes.
             unreadable.append((result["name"], error))
-            out.append(result)
+            out.append(dict(result, verdict="unverified"))
             continue
-        out.append(judge_mute(result, conversation, now, source.get("lastResult")))
+        out.append(judge_mute(result, conversation, now, record))
     return out, unreadable
 
 
@@ -164,7 +170,7 @@ def format_report(results, error, unreadable=()):
     for row in mute:
         lines.append(f"MUTE — {row['name']}: {row['detail']}")
     for name, why in unreadable:
-        lines.append(f"CANNOT JUDGE MUTENESS — {name}: {why}")
+        lines.append(f"CANNOT JUDGE MUTENESS — {name}: {why} (it is firing; whether it is producing anything is unknown)")
     for row in unjudged:
         lines.append(f"NOT JUDGED — {row['name']}: {row['detail']}")
     for row in marked:

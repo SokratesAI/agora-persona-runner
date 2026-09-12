@@ -401,10 +401,38 @@ def last_reply_at(conversation):
 # nothing and a watcher that died are the same observation.
 #
 # So the conversation can only ever raise a verdict the run record does not
-# already account for. Measured across all ten heartbeats on 2026-09-12, the
-# whole vocabulary is: `replied N chars`, `checked, nothing to report (not
+# already account for. Measured across all ten live heartbeats on 2026-09-12,
+# the vocabulary there is `replied N chars`, `checked, nothing to report (not
 # posted to chat)`, `running`, and `workflow: ...`.
-_ACCOUNTED_FOR = ("replied", "nothing to report", "not posted", "running", "workflow")
+#
+# **That sample is not the vocabulary, and two things it misses were found by
+# review rather than by the measurement.** `heartbeats.py` writes a crashed
+# run as `failed: <file>:<line> in <func> > ...: <repr>` --- which no live
+# heartbeat was carrying on the day I looked, so it is absent from the sample
+# and present in the code. A substring match on `workflow` swallowed it whole:
+# a crash whose call path runs through `workflows.py` produces a record
+# containing that word, so a heartbeat failing on every single run read as
+# fully accounted for and its conversation was never even looked at. That is
+# the exact failure this module exists to end, re-created one layer up. So the
+# markers are anchored at the start of the record, where Agora writes the
+# outcome word, and never matched loose in the middle of a traceback.
+#
+# `running` is deliberately NOT here either. It does not describe an outcome,
+# and this codebase already documents at length (`nova_site._running_now`,
+# `agora_runner.vault`) that a killed run leaves `lastResult` stuck on it
+# forever, because a kill is not an exception and nothing clears it. A run
+# that started ten minutes ago explains ten minutes of silence; it explains
+# nothing about a conversation that has been quiet for a fortnight, and the
+# `createdAt` floor below is what keeps a genuinely in-flight cycle quiet.
+_ACCOUNTED_FOR = (
+    "replied",  # `replied 3205 chars`
+    "checked, nothing to report",  # the deliberate NO_ISSUES_FOUND shape
+    "workflow:",  # `workflow: 2 steps, 2 rounds, 2 replies posted`
+)
+
+# A record that names a failure is the opposite of accounted for, whatever
+# else it happens to contain.
+_FAILURE_PREFIX = "failed:"
 
 
 def run_accounted_for(last_result):
@@ -415,9 +443,9 @@ def run_accounted_for(last_result):
     anything.
     """
     text = str(last_result or "").strip().lower()
-    if not text:
+    if not text or text.startswith(_FAILURE_PREFIX):
         return False
-    return any(marker in text for marker in _ACCOUNTED_FOR)
+    return any(text.startswith(marker) for marker in _ACCOUNTED_FOR)
 
 
 def judge_mute(row, conversation, now, last_result=None):

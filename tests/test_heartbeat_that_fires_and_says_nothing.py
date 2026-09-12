@@ -46,9 +46,9 @@ def _reply(delta, text="Alt er stabilt!", activity=None):
     return message
 
 
-def _ok_row(schedule="daily@12:00"):
+def _ok_row(schedule="daily@12:00", name="K3s Sentinel"):
     return {
-        "name": "K3s Sentinel",
+        "name": name,
         "schedule": schedule,
         "verdict": "ok",
         "detail": "daily; last ran recently",
@@ -134,12 +134,11 @@ def test_the_sentinel_as_it_actually_was_is_NOT_mute():
     assert verdict["verdict"] == "ok"
 
 
-def test_the_whole_measured_vocabulary_of_run_records_is_accounted_for():
-    """Every `lastResult` across the ten live heartbeats, 2026-09-12."""
+def test_the_measured_vocabulary_of_run_records_is_accounted_for():
+    """The `lastResult` values the ten live heartbeats carried, 2026-09-12."""
     for record in (
         "checked, nothing to report (not posted to chat)",
         "replied 3205 chars",
-        "running",
         "workflow: 2 steps, 2 rounds, 2 replies posted",
     ):
         assert hl.run_accounted_for(record), record
@@ -150,7 +149,76 @@ def test_a_run_record_that_names_no_outcome_is_not_accounted_for():
     assert not hl.run_accounted_for(None)
     assert not hl.run_accounted_for("")
     assert not hl.run_accounted_for("   ")
-    assert not hl.run_accounted_for("error: tool call limit reached")
+
+
+def test_a_crash_whose_traceback_runs_through_workflows_py_is_not_accounted_for():
+    """The real failure string, not a placeholder for one.
+
+    `heartbeats.py` writes a crashed run as
+    `failed: <file>:<line> in <func> > ...: <repr>`. No live heartbeat was
+    carrying one on the day I sampled, so it was absent from my measurement
+    and present in the code --- and a loose substring match on `workflow`
+    swallowed it whole, because the call path runs through `workflows.py`.
+    A heartbeat failing on every run read as fully accounted for and its
+    conversation was never looked at: the exact failure this module exists
+    to end, re-created one layer up.
+    """
+    crash = (
+        "failed: heartbeats.py:501 in run_heartbeat > "
+        "workflows.py:208 in run_workflow_heartbeat: ValueError('bad step')"
+    )
+    assert not hl.run_accounted_for(crash)
+    # And it reaches the verdict, rather than only the predicate.
+    assert hl.judge_mute(_ok_row(), _fourteen_silent_days(), NOW, crash)["verdict"] == "mute"
+
+
+def test_a_failure_record_is_refused_even_if_a_marker_would_match_it(monkeypatch):
+    """The failure prefix outranks the marker list, not the other way round.
+
+    Anchoring alone already refuses today's `failed: ...` string, so this
+    guard is unfalsifiable against the current marker list --- which is the
+    shape of a check that reports itself working while guarding nothing. So
+    the test states what it is actually for: whatever the marker list grows
+    to, a record that names a failure is never accounted for.
+    """
+    monkeypatch.setattr(hl, "_ACCOUNTED_FOR", hl._ACCOUNTED_FOR + ("failed",))
+    assert not hl.run_accounted_for("failed: heartbeats.py:501: ValueError()")
+
+
+def test_a_marker_only_counts_where_agora_writes_the_outcome_word():
+    """Anchored at the start, never loose in the middle of a traceback."""
+    assert not hl.run_accounted_for("crashed after it replied to nobody")
+    assert not hl.run_accounted_for("timeout inside the workflow step")
+
+
+def test_a_run_stuck_on_running_forever_does_not_explain_a_silent_fortnight():
+    """A kill is not an exception, so nothing ever clears `running`.
+
+    `nova_site._running_now` and `agora_runner.vault` both document this.
+    A run that started ten minutes ago explains ten minutes of silence; it
+    explains nothing about a conversation that has been quiet for a
+    fortnight, so `running` is not an outcome and is not accounted for.
+    """
+    assert not hl.run_accounted_for("running")
+    assert (
+        hl.judge_mute(_ok_row(), _fourteen_silent_days(), NOW, "running")["verdict"]
+        == "mute"
+    )
+
+
+def test_a_cycle_in_flight_right_now_is_still_not_mute():
+    """The other half of dropping `running` --- my own hourly loop.
+
+    `Nova` rotates its conversation every run and its record reads `running`
+    for the whole cycle. What keeps it quiet is that the conversation is
+    minutes old and has already spoken, not the record.
+    """
+    live = {
+        "createdAt": _stamp(timedelta(minutes=4)),
+        "messages": [_reply(timedelta(minutes=1), "I'll start by reading.", "assistant_text")],
+    }
+    row = _ok_row(schedule="every@40m@16:00")
+    assert hl.judge_mute(row, live, NOW, "running")["verdict"] == "ok"
 
 
 def test_a_heartbeat_that_replied_inside_its_own_window_stays_ok():
@@ -300,6 +368,41 @@ def test_apply_mute_passes_the_run_record_through_and_it_spares_the_row(monkeypa
     out, _ = hh.apply_mute(rows, [_ok_row()], NOW)
     assert out[0]["verdict"] == "ok"
     assert out[0]["lastResult"] == "checked, nothing to report (not posted to chat)"
+
+
+def test_two_heartbeats_sharing_a_name_do_not_share_a_conversation(monkeypatch):
+    """Paired by position, because a name is a display string.
+
+    Two live heartbeats already share one --- both `Workflow trial ...
+    (disabled, manual only)` rows. A name join hands the first row's
+    conversation and run record to the second, so a genuinely silent
+    heartbeat reads as its chatty twin. `heartbeat_gaps` rejects name joins
+    in writing for this reason and I wrote one anyway.
+    """
+    rows = [
+        {"name": "Nightly Backup", "conversationId": "chatty", "lastResult": "replied 900 chars"},
+        {"name": "Nightly Backup", "conversationId": "silent"},
+    ]
+    results = [_ok_row(name="Nightly Backup"), _ok_row(name="Nightly Backup")]
+    bodies = {
+        "chatty": {"messages": [_reply(timedelta(hours=1))]},
+        "silent": {"messages": [_tool_call(timedelta(hours=1))], "createdAt": _stamp(timedelta(days=20))},
+    }
+    monkeypatch.setattr(hh, "fetch_conversation", lambda cid, **kw: (bodies[cid], None))
+    out, _ = hh.apply_mute(rows, results, NOW)
+    assert [r["verdict"] for r in out] == ["ok", "mute"]
+
+
+def test_a_row_whose_conversation_could_not_be_read_is_not_also_printed_as_ok(monkeypatch):
+    """A report that says both is one a reader resolves in the clean direction."""
+    rows = [{"name": "K3s Sentinel", "conversationId": "x"}]
+    monkeypatch.setattr(hh, "fetch_conversation", lambda cid, **kw: (None, "timed out"))
+    out, unreadable = hh.apply_mute(rows, [_ok_row()], NOW)
+    assert out[0]["verdict"] == "unverified"
+    report, status = hh.format_report(out, None, unreadable)
+    assert status == 1
+    assert "CANNOT JUDGE MUTENESS — K3s Sentinel" in report
+    assert "ok   K3s Sentinel" not in report
 
 
 def test_a_heartbeat_naming_no_conversation_is_reported_not_assumed_quiet():
