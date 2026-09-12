@@ -344,6 +344,11 @@ SW_BUILD_INPUTS = ("index.html", "app.js", "style.css", "sw.js")
 # anything walking the list.
 PAGE_ROUTES = (
     "/",
+    # The journal feed, which lived at `/` until idea #274 moved it here to
+    # make room for the landing page. Both are real URLs a bookmark and a
+    # cold load have to survive, which is why this is a page route and not
+    # a redirect.
+    "/journal",
     "/issues",
     "/ideas",
     "/notes",
@@ -2120,6 +2125,14 @@ WARM_PAYLOADS = (
     # landing page asks for -- a warm that spends its first seven seconds
     # here leaves the journal cold for anyone who arrives mid-warm.
     ("next", next_up_payload),
+    # After `next`, and it has to be: `home_payload` composes `recap`,
+    # `next` and `journal`, and reads all three out of this same cache, so
+    # warming it here costs one compose rather than three builds. It is in
+    # the list at all only now that `/` actually fetches it -- warming a
+    # payload nothing asks for spends a build at every process start that
+    # no request ever collects, which is why step 1 deliberately left it
+    # out. `/` is the one route that lands cold after every roll.
+    ("home", home_payload),
 )
 
 

@@ -48,7 +48,14 @@ SITE = ROOT / "agora_runner" / "nova_site.py"
 #: not name Journal, so Projects goes second and Journal keeps the top row.
 #: The ordering is the assertion — a `set` here would pass with Projects
 #: below Ideas, which is the one arrangement the capture rules out.
-PINNED = ["/", "/projects", "/issues", "/ideas"]
+#: `/journal` joined the pinned list on 2026-09-12, when idea #274 moved the
+#: feed off `/` to make room for the landing page. It is second because `/` is
+#: now Home and the journal is the page that used to be there -- the two of
+#: them are one split entry, and putting Projects between them would read as
+#: Home and the journal being unrelated destinations. Neither is grouped, for
+#: the reason the pinned list exists: a fold is for a page he visits
+#: occasionally, and these are the two he opens the app to.
+PINNED = ["/", "/journal", "/projects", "/issues", "/ideas"]
 
 #: Routes deliberately reachable without a menu link. A route added here
 #: needs a reason beside it.

@@ -179,3 +179,74 @@ def test_every_input_may_be_absent_without_raising(missing):
     assert payload["projects"] == []
     assert payload["needsYou"]["count"] == 0
     assert payload["claimsReadable"] is True
+
+
+def test_a_project_outside_the_top_five_ranked_rows_still_gets_its_next_task():
+    """The defect this shipped with, measured on the live endpoint 2026-09-12.
+
+    `/api/next` returns `ranked[:5]`. All five were Nova rows that morning, so
+    the 2nd and 3rd cards came back `next: null` with an empty milestone while
+    both projects had open rows. The composition was right and its input was
+    too narrow; the same payload's `projects` grouping walks *every* ranked
+    row, so the row those cards want was already in hand.
+    """
+    nxt = {
+        "next": [_row("Nova", n, "Nova row " + str(n)) for n in range(1, 6)],
+        "projects": [
+            {"name": "Nova", "open": 40, "top": "Nova row 1",
+             "topBoard": "ideas", "topNumber": 1, "topMilestone": "Reading"},
+            {"name": "Marcus", "open": 7, "top": "Draft a week ahead",
+             "topBoard": "issues", "topNumber": 214, "topMilestone": "Planning"},
+        ],
+    }
+    cards = home_payload({}, _projects(["Nova", "Marcus"]), nxt, [])["projects"]
+
+    assert cards[1]["next"] == {
+        "board": "issues", "number": 214, "title": "Draft a week ahead"}
+    assert cards[1]["milestone"] == "Planning"
+
+
+def test_the_narrow_list_wins_when_the_project_has_a_row_in_it():
+    """The group is a fallback, not a second ranking.
+
+    `next[:5]` is the terminal ranking and the group's `top` is built from the
+    same walk, so they agree today -- but only the first list is ordered
+    against every other project's rows. A card that preferred the group would
+    be reading a different answer to the same question.
+    """
+    nxt = {
+        "next": [_row("Nova", 274, "The landing page", milestone="Reading")],
+        "projects": [{"name": "Nova", "open": 2, "top": "Something else",
+                      "topBoard": "issues", "topNumber": 9,
+                      "topMilestone": "Elsewhere"}],
+    }
+    card = home_payload({}, _projects(["Nova"]), nxt, [])["projects"][0]
+
+    assert card["next"]["number"] == 274
+    assert card["milestone"] == "Reading"
+
+
+def test_a_group_with_no_open_row_leaves_the_card_saying_it_is_clear():
+    """`next: None` is "nothing open", and a blank title must not become a task.
+
+    A group is only built from open rows, so this shape should not occur --
+    but the card's whole contract is that `None` means clear and an object
+    means there is work, and a titleless object would draw a blank task line
+    that reads as "I do not know".
+    """
+    nxt = {"next": [], "projects": [{"name": "Nova", "open": 0, "top": "",
+                                     "topBoard": "", "topNumber": None,
+                                     "topMilestone": ""}]}
+    card = home_payload({}, _projects(["Nova"]), nxt, [])["projects"][0]
+
+    assert card["next"] is None
+    assert card["milestone"] == ""
+
+
+def test_a_project_with_no_group_at_all_is_still_a_card():
+    """A project he rated that has no open rows anywhere in the ranking."""
+    nxt = {"next": [], "projects": []}
+    card = home_payload({}, _projects(["Demos"]), nxt, [])["projects"][0]
+
+    assert card["name"] == "Demos"
+    assert card["next"] is None

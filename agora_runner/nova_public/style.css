@@ -5478,3 +5478,75 @@ X that summarizes the last 12
   font-size: 0.8rem;
   color: var(--dim);
 }
+
+/* ---- The landing page (`/`, idea #274) ----------------------------------
+ *
+ * Cards on the same `--card` surface as the recap above them, because they
+ * are the same kind of thing: a summary he reads rather than a control he
+ * drives. `--line` edges a divider and never a control, which is the rule
+ * the token's own comment states -- the only interactive things here are
+ * links, and they carry `--accent` rather than a border. */
+.home-section-title {
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin: 0 0 0.55rem;
+}
+.home-projects, .home-needs, .home-live { margin: 0 0 1.1rem; }
+.home-project {
+  background: var(--card);
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem 0.75rem;
+  margin: 0 0 0.55rem;
+}
+.home-project-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.home-project-name {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+.home-project-prio { font-size: 0.8rem; color: var(--dim); white-space: nowrap; }
+.home-project-count { margin: 0.3rem 0 0; font-size: 0.85rem; color: var(--dim); }
+/* 4px, not a full bar: the sentence above it already carries the number, so
+ * this is a shape to glance at and nothing a value has to be read off. */
+.home-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  margin: 0.4rem 0 0;
+  overflow: hidden;
+}
+.home-bar-fill { height: 100%; background: var(--accent); }
+.home-project-milestone { margin: 0.4rem 0 0; font-size: 0.85rem; }
+.home-project-next { margin: 0.3rem 0 0; font-size: 0.9rem; }
+.home-project-clear { color: var(--dim); }
+.home-project-task { color: var(--accent); text-decoration: none; }
+/* The one block on this page that is allowed to shout, and it only exists
+ * when it is non-empty -- so the colour is never background noise. */
+.home-needs {
+  background: var(--card);
+  border-left: 3px solid var(--warn);
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem 0.8rem;
+}
+.home-needs-title { margin: 0 0 0.45rem; font-size: 1rem; }
+.home-needs-list { list-style: none; margin: 0; padding: 0; }
+.home-needs-item { display: flex; gap: 0.55rem; align-items: baseline; padding: 0.15rem 0; }
+.home-needs-link { color: var(--accent); text-decoration: none; }
+.home-needs-when { font-size: 0.8rem; color: var(--dim); }
+.home-live-says { margin: 0; font-size: 0.9rem; color: var(--dim); }
+.home-live-list { list-style: none; margin: 0.35rem 0 0; padding: 0; font-size: 0.9rem; }
+.home-live-item { padding: 0.1rem 0; }
+.home-needs-all, .home-projects-all, .home-live-all, .home-journal-all {
+  display: inline-block;
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: var(--accent);
+  text-decoration: none;
+}

@@ -3573,7 +3573,13 @@ def test_a_warm_that_cannot_reach_the_vault_costs_only_the_warm():
     # list is the code under test, and a test that reads it back agrees
     # with whatever it says. A third payload added here should fail this
     # and be looked at.
-    assert attempted == ["journal", "digest", "board:issues", "board:ideas", "next"], \
+    # `home` joined the list on 2026-09-12, when `/` became the landing page
+    # and so acquired a caller -- step 1 deliberately left it out, because
+    # warming a payload nothing fetches spends a build at every process start
+    # that no request collects. It is last because it composes three of the
+    # four above it out of this same cache.
+    assert attempted == ["journal", "digest", "board:issues", "board:ideas",
+                         "next", "home"], \
         "the payload behind the failing one was skipped"
     assert "journal" not in nova_site._cache, "a failed build must not be cached"
 

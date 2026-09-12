@@ -82,6 +82,16 @@
     var path = (pathname || "/").replace(/\/+$/, "") || "/";
     var cycle = /^\/cycle\/(\d+)$/.exec(path);
     if (cycle) return { view: "journal", cycle: parseInt(cycle[1], 10), board: null };
+    /* `/` is the landing page and `/journal` is the feed, as of idea #274.
+     * The owner, 2026-09-08: *"Lets make a landing page instead!"* Both are
+     * real URLs -- the feed is bookmarked, linked from three "← all
+     * entries" links below, and is where `/cycle/<n>` belongs -- so this is
+     * two routes and not a redirect. `/cycle/<n>`, `/asks` and `/replies`
+     * stay `view: "journal"` above and below, because they are the feed
+     * filtered, and the default at the bottom of this function is still
+     * the feed: an unknown path lands on content rather than on a
+     * dashboard about content. */
+    if (path === "/journal") return { view: "journal", cycle: null, board: null };
     if (path === "/issues") return { view: "board", cycle: null, board: "issues" };
     if (path === "/ideas") return { view: "board", cycle: null, board: "ideas" };
     if (path === "/notes") return { view: "notes", cycle: null, board: null };
@@ -146,6 +156,7 @@
       try { name = decodeURIComponent(name); } catch (e) { /* leave it raw */ }
       return { view: "project", cycle: null, board: null, project: name };
     }
+    if (path === "/") return { view: "home", cycle: null, board: null };
     return { view: "journal", cycle: null, board: null };
   }
 
@@ -180,7 +191,9 @@
       // Both project views highlight the one nav tab there is. A tab per
       // project would be a nav that grows every time he files a row.
       : here.view === "project" || here.view === "projects" ? "/projects"
-      : here.view === "journal" ? "/" : "/" + here.view;
+      : here.view === "journal" ? "/journal"
+      // The landing page is the only view whose path is not its own name.
+      : here.view === "home" ? "/" : "/" + here.view;
     var tabs = navEl ? navEl.querySelectorAll(".nav-tab") : [];
     for (var i = 0; i < tabs.length; i++) {
       var on = tabs[i].getAttribute("href") === want;
@@ -3434,21 +3447,33 @@
    * once would put a screenful of summary back above the feed on the next
    * load, which is the thing he is asking to get rid of. Opening it is one
    * tap, and the heading says what is inside. */
-  var recapOpen = false;
+  var recapFold = { open: false };
 
-  function renderRecap(recap) {
+  /* The same card, open by default, on the landing page only.
+   *
+   * A deliberate reversal rather than an inconsistency: on the feed the
+   * recap sits *above* a screenful of entries, which is what he asked to
+   * get out of his way; on `/` it is the content, and a landing page whose
+   * summary is folded shut is a page that says nothing. Two fold objects
+   * rather than one flag, so each page also remembers what he last did to
+   * it *there* -- opening it on the landing page must not reopen it above
+   * the feed he folded it away from. */
+  var homeRecapFold = { open: true };
+
+  function renderRecap(recap, fold) {
     if (!recap || !recap.bullets || !recap.bullets.length) return null;
-    var card = el("section", "recap" + (recapOpen ? "" : " recap--shut"));
+    fold = fold || recapFold;
+    var card = el("section", "recap" + (fold.open ? "" : " recap--shut"));
     /* The whole head is the control, not a chevron beside it: on a phone
      * the title is the thing under his thumb, and a 44px target he has to
      * aim for beside it is a target he misses. */
     var head = el("button", "recap-head");
     head.type = "button";
-    head.setAttribute("aria-expanded", recapOpen ? "true" : "false");
+    head.setAttribute("aria-expanded", fold.open ? "true" : "false");
     head.addEventListener("click", function () {
-      recapOpen = !recapOpen;
-      card.classList.toggle("recap--shut", !recapOpen);
-      head.setAttribute("aria-expanded", recapOpen ? "true" : "false");
+      fold.open = !fold.open;
+      card.classList.toggle("recap--shut", !fold.open);
+      head.setAttribute("aria-expanded", fold.open ? "true" : "false");
     });
     head.appendChild(el("h2", "recap-title", "Last 12 hours"));
     var stampText = recap.writtenLabel
@@ -3661,7 +3686,7 @@
     }
     if (filtered) {
       var backAll = el("a", "back", "← all entries");
-      backAll.href = "/";
+      backAll.href = "/journal";
       feed.appendChild(backAll);
       feed.appendChild(el("p", "empty", entries.length === 0
         ? "Nothing is waiting on you."
@@ -3671,7 +3696,7 @@
     }
     if (repliesOnly) {
       var backFeed = el("a", "back", "← all entries");
-      backFeed.href = "/";
+      backFeed.href = "/journal";
       feed.appendChild(backFeed);
       /* Counted in cards, not in replies. The pill above counts replies,
        * because that is the number that arrived; this page is a list of
@@ -3693,7 +3718,7 @@
     }
     if (wanted !== null) {
       var back = el("a", "back", "← all cycles");
-      back.href = "/";
+      back.href = "/journal";
       feed.appendChild(back);
       if (!entries.length) feed.appendChild(el("p", "empty", "No entry for cycle " + wanted + "."));
     }
@@ -13130,6 +13155,195 @@
     }
   }
 
+  /* `/` -- the landing page (idea #274), step 2 of 3.
+   *
+   * The owner, 2026-09-08: *"Lets make a landing page instead! ... more
+   * status updates, the 12 hour summary of what has happened, project
+   * updates, links to journals than needs input and comments"*. The spec
+   * is `projects/sokrates/projects/nova/landing-page.md`.
+   *
+   * **One fetch, and that is the constraint this page exists under.**
+   * `/api/home` composes the recap, the project index, the ranking and the
+   * open asks server-side, because he reads this on a phone and sometimes
+   * roaming -- a dashboard that fans out to four endpoints re-creates the
+   * ten-second chat load that took most of 2026-09-08 to fix. So nothing
+   * below asks for a second payload, and nothing below re-derives a number
+   * the payload already carries.
+   *
+   * The galaxy strip and the health line are step 3 and are deliberately
+   * not here: the strip polls on its own clock, so it must never be what
+   * this page waits for.
+   */
+  function loadHome() {
+    markNav();
+    fetchPage("/api/home")
+      .then(function (payload) {
+        if (route(window.location.pathname).view !== "home") return;
+        renderHome(payload || {});
+      })
+      .catch(function (err) {
+        if (route(window.location.pathname).view !== "home") return;
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load the landing page: " + err));
+      });
+  }
+
+  /** One project card: where it stands, and the one thing that is next in it. */
+  function renderHomeProject(card) {
+    var section = el("section", "home-project");
+    var head = el("div", "home-project-head");
+    var link = el("a", "home-project-name", card.name);
+    link.setAttribute("href", "/project/" + encodeURIComponent(card.name));
+    head.appendChild(link);
+    if (card.priority) head.appendChild(el("span", "home-project-prio", card.priority));
+    section.appendChild(head);
+    /* "4 of 11 done" rather than a bare percentage: the percentage is in the
+     * payload and is drawn as the bar's width, and a number he can check
+     * against the project page is worth more than one he cannot. `dropped`
+     * is named beside it when there is any, because it is out of the
+     * denominator -- a project cannot reach 100% by abandoning rows, and
+     * this is the only place that says so. */
+    var total = (card.done || 0) + (card.open || 0);
+    var countText = total
+      ? card.done + " of " + total + " done"
+      : "nothing boarded yet";
+    if (card.dropped) countText += " · " + card.dropped + " dropped";
+    section.appendChild(el("p", "home-project-count", countText));
+    if (total) {
+      var bar = el("div", "home-bar");
+      var fill = el("div", "home-bar-fill");
+      fill.style.width = (card.percentDone || 0) + "%";
+      bar.appendChild(fill);
+      /* The bar is decoration over a sentence that already says the
+       * number, so it is hidden from a screen reader rather than given a
+       * role that would read the same fact twice. */
+      bar.setAttribute("aria-hidden", "true");
+      section.appendChild(bar);
+    }
+    if (card.milestone) {
+      section.appendChild(el("p", "home-project-milestone", card.milestone));
+    }
+    /* `next: null` is a project with no open row left, and it says so. An
+     * empty task line would read as "I do not know", which is a different
+     * thing and the card would be claiming it either way. */
+    if (!card.next) {
+      section.appendChild(el("p", "home-project-next home-project-clear",
+        "No open rows."));
+      return section;
+    }
+    var next = el("p", "home-project-next");
+    next.appendChild(document.createTextNode("Next: "));
+    /* Linked to the row itself, the same `/issues#<n>` target the project
+     * page learned to build on cycle 1449 -- `applyBoardHash` opens the
+     * named row expanded, so this lands on the row and not near it. */
+    var row = el("a", "home-project-task", card.next.title);
+    row.setAttribute("href", "/" + (card.next.board === "issue" ? "issues" : "ideas")
+      + "#" + card.next.number);
+    next.appendChild(row);
+    section.appendChild(next);
+    return section;
+  }
+
+  function renderHome(payload) {
+    /* Every view but the journal paints its own header, and one that did not
+     * would leave the page saying "loading…" for as long as he looked at it --
+     * `statusEl` is set once per render and nothing else clears it. The
+     * journal's header is the alive-and-running line built from its own
+     * payload; this one is deliberately just the page name, because the
+     * health line the spec asks for is step 3 and a header that guessed at it
+     * would be a number with no measurement under it. */
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    var line = el("p", "status-line");
+    line.appendChild(el("strong", "status-page", "Home"));
+    statusEl.appendChild(line);
+    feed.textContent = "";
+
+    /* The recap first and open, which is the reversal `renderRecap`'s
+     * `homeRecapFold` exists for. `renderRecap` returns null when there is
+     * nothing in it, which is a cold journal rather than an error, so the
+     * rest of the page still draws. */
+    var recap = renderRecap(payload.recap || {}, homeRecapFold);
+    if (recap) feed.appendChild(recap);
+
+    /* "Only when non-empty" is the spec's own rule and `count` is the one
+     * field that decides it -- the page does not count the list itself, so
+     * the rule lives in one place. The unread-replies half is in his
+     * browser rather than in the payload (`markRepliesRead`), so this block
+     * is the asks half and the header pill keeps the other. */
+    var needs = payload.needsYou || {};
+    if (needs.count) {
+      var block = el("section", "home-needs");
+      block.appendChild(el("h2", "home-needs-title",
+        needs.count === 1 ? "1 question is waiting on you"
+          : needs.count + " questions are waiting on you"));
+      var list = el("ul", "home-needs-list");
+      (needs.asks || []).forEach(function (ask) {
+        var item = el("li", "home-needs-item");
+        var card = el("a", "home-needs-link", "Cycle " + ask.cycle);
+        card.setAttribute("href", "/cycle/" + ask.cycle);
+        item.appendChild(card);
+        if (ask.date) {
+          item.appendChild(el("span", "home-needs-when",
+            ask.date + (ask.time ? " " + ask.time : "")));
+        }
+        list.appendChild(item);
+      });
+      block.appendChild(list);
+      var all = el("a", "home-needs-all", "All open asks →");
+      all.setAttribute("href", "/asks");
+      block.appendChild(all);
+      feed.appendChild(block);
+    }
+
+    var projects = payload.projects || [];
+    var section = el("section", "home-projects");
+    section.appendChild(el("h2", "home-section-title", "Projects"));
+    if (!projects.length) {
+      section.appendChild(el("p", "empty", "No projects on the boards yet."));
+    } else {
+      projects.forEach(function (card) {
+        section.appendChild(renderHomeProject(card));
+      });
+      var more = el("a", "home-projects-all", "All projects →");
+      more.setAttribute("href", "/projects");
+      section.appendChild(more);
+    }
+    feed.appendChild(section);
+
+    /* What is running right now, as the list the galaxy page already
+     * carries under its picture. The strip itself is step 3; this is the
+     * fallback the spec asks for, and it is the honest thing to show until
+     * the canvas exists. An unreadable ledger says so rather than drawing
+     * an empty galaxy -- empty and blind mean opposite things. */
+    var active = payload.active || [];
+    var live = el("section", "home-live");
+    if (payload.claimsReadable === false) {
+      live.appendChild(el("p", "home-live-says",
+        "I could not read the claims ledger, so this is not an idle loop — it is a blind one."));
+    } else if (!active.length) {
+      live.appendChild(el("p", "home-live-says", "No session is working right now."));
+    } else {
+      live.appendChild(el("p", "home-live-says", active.length === 1
+        ? "1 session is working right now:"
+        : active.length + " sessions are working right now:"));
+      var running = el("ul", "home-live-list");
+      active.forEach(function (entry) {
+        running.appendChild(el("li", "home-live-item",
+          "Cycle " + entry.cycle + (entry.title ? " — " + entry.title : "")));
+      });
+      live.appendChild(running);
+    }
+    var galaxy = el("a", "home-live-all", "The galaxy →");
+    galaxy.setAttribute("href", "/galaxy");
+    live.appendChild(galaxy);
+    feed.appendChild(live);
+
+    var toFeed = el("a", "home-journal-all", "The journal →");
+    toFeed.setAttribute("href", "/journal");
+    feed.appendChild(toFeed);
+  }
+
   function loadGalaxy() {
     markNav();
     fetchPage("/api/galaxy")
@@ -13849,6 +14063,10 @@
       loadBoard(here.board);
       return;
     }
+    if (here.view === "home") {
+      loadHome();
+      return;
+    }
     if (here.view === "notes") {
       loadNotes();
       return;
@@ -13881,10 +14099,15 @@
        * navigated to afterwards. */
       if (typeof window.novaOpenChat === "function") {
         window.novaOpenChat(here.conversationId);
-        try { history.replaceState(null, "", "/"); } catch (err) { /* no history */ }
-        // Deliberately no `return`: the address bar now says `/`, so this
-        // falls through to the journal below and the feed loads behind the
-        // open dock. Returning here would leave the page empty under it.
+        /* `/journal` and not `/`, since idea #274 moved the feed there. The
+         * address bar has to match what is actually drawn under the dock,
+         * and the fall-through below draws the feed -- pointing it at `/`
+         * would make the guard in that branch (`view !== "journal"`) true
+         * and leave the dock standing over an empty page. */
+        try { history.replaceState(null, "", "/journal"); } catch (err) { /* no history */ }
+        // Deliberately no `return`: the address bar now says `/journal`, so
+        // this falls through to the journal below and the feed loads behind
+        // the open dock. Returning here would leave the page empty under it.
       }
     }
     if (here.view === "heartbeats") {
