@@ -17923,8 +17923,15 @@ describe("the landing page", () => {
     window.Date.now = () => at;
   };
 
+  /* `lastWrittenAt` is relative to the clock this test runs on, not a wall
+   * time. `renderHealthLine` defaults its `now` to `Date.now()`, so a pinned
+   * timestamp is healthy only until real time passes `stallGrace` intervals
+   * past it -- this fixture said 16:00 Oslo and 40-minute intervals, so it
+   * was green when it merged at 17:04 and red for every run after 17:20,
+   * including on `main`. A fixture that ages into a different answer is the
+   * same defect as a test with two clocks and only one of them injected. */
   const HEALTHY = {
-    cycle: 1457, lastWrittenAt: "2026-09-12T16:00:00+02:00",
+    cycle: 1457, lastWrittenAt: new Date(Date.now() - 60000).toISOString(),
     cadenceMinutes: 40, stallGrace: 2, gaps: [], sevenDay: 39, sevenDayPace: 0.9,
     concerns: [],
   };
