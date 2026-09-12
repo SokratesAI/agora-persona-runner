@@ -5214,6 +5214,9 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   background: #05040d;
   margin: 0 0 0.9rem;
 }
+/* The strip on `/` sits directly above the sentence that says the same
+   thing in words, where the page's canvas sits above a whole list. */
+.home-strip-canvas { margin-bottom: 0.5rem; }
 .galaxy-list { display: flex; flex-direction: column; gap: 0.5rem; }
 .galaxy-subhead { margin: 0.8rem 0 0.1rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.6; }
 .galaxy-row { display: flex; gap: 0.6rem; align-items: flex-start; opacity: 0.62; }
