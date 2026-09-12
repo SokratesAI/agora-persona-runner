@@ -1923,3 +1923,52 @@ def test_unread_notes_never_reaches_the_board_parser(monkeypatch):
         board_migration_preflight.board_contents(text)
     assert [n["text"] for n in top_board_rows.unread_notes(text)] \
         == ["a note he left"]
+
+
+def test_the_project_tier_is_a_share_of_cycles_not_his_hand_order():
+    """Issue #214: Nova is first on his hand order and has taken every recent
+    cycle, so the picker must name the project that is furthest behind."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    projects = (
+        "| Project | Priority | Updated | Order | TRL | Satisfaction | "
+        "Lifecycle | Proposed |\n|---|---|---|---|---|---|---|---|\n"
+        "| Nova | 🟠 High | 09-01 | 1 |  |  | Active |  |\n"
+        "| Marcus | 🟠 High | 09-01 | 2 |  |  | Active |  |\n")
+    rows = [
+        {"board": "issue", "number": 1, "title": "a nova row", "priority": "",
+         "priorityKey": 9, "status": "🟡 In progress", "statusKey": 1,
+         "updated": "09-01", "project": "Nova", "milestone": "", "slug": "issue-1"},
+        {"board": "issue", "number": 2, "title": "a marcus row", "priority": "",
+         "priorityKey": 9, "status": "🟡 In progress", "statusKey": 1,
+         "updated": "09-01", "project": "Marcus", "milestone": "", "slug": "issue-2"},
+    ]
+    claims = [{"item": "issue-1", "cycle": n,
+               "at": (now - timedelta(hours=n)).isoformat()}
+              for n in range(1, 6)]
+    out = top_board_rows.render(rows, projects_markdown=projects, claims=claims)
+    assert "SHARES OF CYCLES" in out
+    top = [line for line in out.split("\n") if line.startswith("  -> ")][0]
+    assert "a marcus row" in top
+
+
+def test_with_no_attributable_claim_the_tier_falls_back_to_his_hand_order():
+    projects = (
+        "| Project | Priority | Updated | Order | TRL | Satisfaction | "
+        "Lifecycle | Proposed |\n|---|---|---|---|---|---|---|---|\n"
+        "| Nova | 🟠 High | 09-01 | 1 |  |  | Active |  |\n"
+        "| Marcus | 🟠 High | 09-01 | 2 |  |  | Active |  |\n")
+    rows = [
+        {"board": "issue", "number": 1, "title": "a nova row", "priority": "",
+         "priorityKey": 9, "status": "🟡 In progress", "statusKey": 1,
+         "updated": "09-01", "project": "Nova", "milestone": "", "slug": "issue-1"},
+        {"board": "issue", "number": 2, "title": "a marcus row", "priority": "",
+         "priorityKey": 9, "status": "🟡 In progress", "statusKey": 1,
+         "updated": "09-01", "project": "Marcus", "milestone": "", "slug": "issue-2"},
+    ]
+    out = top_board_rows.render(rows, projects_markdown=projects,
+                                claims=[{"item": "journal-seq-1", "cycle": 1,
+                                         "at": "2026-09-12T10:00:00+02:00"}])
+    assert "SHARES NOT APPLIED" in out
+    top = [line for line in out.split("\n") if line.startswith("  -> ")][0]
+    assert "a nova row" in top
