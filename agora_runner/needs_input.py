@@ -1,4 +1,4 @@
-"""Asking Edvard something, in a conversation of its own, instead of the digest.
+"""Asking the owner something, in a conversation of its own, instead of the digest.
 
 His standing instruction, `issues.md` #209, 2026-09-10: retire **Needs input**
 in `journal-digest.md` as the mechanism for surfacing a question to him.
@@ -32,11 +32,11 @@ is already looking at rather than opening a second one. It is idea #229's
 "cycles that hit the same problem comment on the existing card instead of
 creating a new one", and it costs no new state anywhere.
 
-The SENDER is `Nova`, never `Edvard`. `decide_turn` makes the curator speak
+The SENDER is `Nova`, never his own name. `decide_turn` makes the curator speak
 whenever the last visible message came from him, so posting the question under
 his name would have the persona answer my own question to itself -- and it
-would put words in his mouth in his own transcript. `nova_ask` posts as
-`Edvard` for exactly the opposite reason: there, he really did type it.
+would put words in his mouth in his own transcript. `nova_ask` posts under
+his name for exactly the opposite reason: there, he really did type it.
 
 This module lives in `agora_runner/` rather than `tools/` because it needs
 `AGORA_TOKEN`, which the bridge pod (the `Bash` shell) does not hold and the
@@ -173,7 +173,7 @@ def ask(question, context, cycle=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Ask Edvard something in a conversation of its own (issues.md #209).")
+        description="Ask the owner something in a conversation of its own (issues.md #209).")
     parser.add_argument("--question", required=True,
                         help="the ask itself, ending in a question mark")
     parser.add_argument("--context", required=True,

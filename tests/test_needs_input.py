@@ -1,4 +1,4 @@
-"""issues.md #209: a cycle asks Edvard in a conversation, not in the digest."""
+"""issues.md #209: a cycle asks the owner in a conversation, not in the digest."""
 
 import pytest
 
@@ -152,9 +152,9 @@ def test_the_question_is_the_first_line_of_the_message():
     assert "cycle 9" in body
 
 
-def test_the_message_is_posted_as_nova_not_as_edvard(agora):
-    """Posting as Edvard would have the curator answer my own question, and
-    would put words in his mouth in his own transcript."""
+def test_the_message_is_posted_as_nova_not_as_the_owner(agora):
+    """Posting under his own name would have the curator answer my own question,
+    and would put words in his mouth in his own transcript."""
     needs_input.ask("Yes or no, ship it?", "because X", cycle=1443)
     assert agora.notified()[0][2]["sender"] == "Nova"
 
