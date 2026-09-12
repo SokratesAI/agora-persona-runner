@@ -8742,6 +8742,31 @@
    * project list is drawn on both, so a project with nothing filed under
    * it is one tap from the one that has everything.
    */
+  /* One status column of a project's board.
+   *
+   * **The title is a link, and that is the whole of the crude operations
+   * on this page.** Idea #166 asks for *"the same features that exist on
+   * the ideas and issues board already related to crude operations,
+   * comments per idea/issue"* on the project page, and these rows have
+   * been plain text since they shipped. The version I did not build is a
+   * second copy of the editor here: `renderRowEditor` and
+   * `renderRowConversation` are wired to `loadBoard`, `boardState.open`
+   * and the `details` cache, so a copy on this page is a second place
+   * every future edit control has to be added -- and `prompt.md` step 2
+   * is explicit that duplicating a shape is the bug rather than the fix.
+   *
+   * `/issues#5` already opens exactly that row with its write-up, its
+   * conversation and its Edit button, and moves the filter out of the way
+   * if the row is filtered off screen (`applyBoardHash`). So the row
+   * reaches every crude operation in one tap, through the one
+   * implementation of them.
+   *
+   * `board` is the page name -- `issues` or `ideas` -- because that is the
+   * key `renderProject` loops over, so the address is built from it
+   * directly rather than from a per-item `board` field the way the
+   * backlog above does it. The backlog is one flat list of both boards and
+   * has to carry the board per row; a column belongs to one board by
+   * construction. */
   function renderProjectColumn(board, column) {
     var wrap = el("div", "project-column");
     wrap.appendChild(el("h3", "project-column-head",
@@ -8751,7 +8776,9 @@
       var item = column.items[i];
       var row = el("li", "project-row");
       row.appendChild(el("span", "project-row-num", "#" + item.number));
-      row.appendChild(el("span", "project-row-title", item.title));
+      var link = el("a", "project-row-title", item.title);
+      link.setAttribute("href", "/" + board + "#" + item.number);
+      row.appendChild(link);
       // No rating chip: a boarded row is placed by position (issue #202).
       list.appendChild(row);
     }
