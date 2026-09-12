@@ -5553,3 +5553,14 @@ X that summarizes the last 12
   color: var(--accent);
   text-decoration: none;
 }
+
+/* The health line on `/` -- idea #274, step 3b. It only exists in the DOM
+ * when something is wrong, so it can afford to be noticeable; `--warn`
+ * rather than `--danger` because none of what it reports is an outage he
+ * has to act on this minute, and spending the red here would make the red
+ * mean less where it does. One item per span, wrapping, because on a phone
+ * three concerns on one unbroken line is a line he scrolls sideways. */
+.home-health { margin: 0.45rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem 0.55rem; align-items: baseline; }
+.home-health-label { color: var(--warn); font-weight: 700; }
+.home-health-item { color: var(--dim); font-size: 0.85rem; }
+.home-health-item + .home-health-item::before { content: "· "; color: var(--dim); }

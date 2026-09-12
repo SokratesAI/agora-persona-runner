@@ -243,6 +243,7 @@ from agora_runner.nova_idea_pool import (
 from agora_runner.nova_alerts import alerts_payload
 from agora_runner.nova_catalog import catalog_page, parse_catalog
 from agora_runner.nova_recap import parse_recap, recap_page
+from agora_runner.nova_home import health_block
 from agora_runner.nova_home import home_payload as compose_home
 from agora_runner.heartbeat_liveness import liveness
 from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
@@ -1677,12 +1678,66 @@ def home_payload():
     recap, _body, _etag = cached_payload("recap", recap_payload)
     nxt, _body, _etag = cached_payload("next", next_up_payload)
     journal, _body, _etag = cached_payload("journal", journal_payload)
+    status = journal.get("status") or {}
     return compose_home(
         recap,
         project_payload(),
         nxt,
-        (journal.get("status") or {}).get("asks") or [],
+        status.get("asks") or [],
+        health=_health(status),
     )
+
+
+def _health(status):
+    """The health line's block, or `None` if the line could not be built.
+
+    **The one thing this must never do is take `/` down**, and the first
+    draft did: `alerts_payload` swallows `URLError`, `OSError` and
+    `ValueError`, which is every way Prometheus fails in production and
+    not every way it can fail -- the test harness's network block raises
+    something else, and the whole landing page answered 502. That is the
+    health line's own rule failing in the place it is written down. A
+    decoration on a page does not get to decide whether the page renders,
+    so every read behind it is caught here rather than trusted to be safe.
+
+    `None` rather than a block with a concern in it: "I could not build
+    the health line" is not a fact about the loop's health, and putting it
+    in `concerns` would print a sentence about this page's plumbing on the
+    line reserved for what he has to act on. It is logged instead.
+    """
+    try:
+        return health_block(status, alerts_payload(), _newest_quota(), cadence_minutes())
+    except Exception as problem:  # noqa: BLE001 -- deliberate, see above
+        log(f"nova-site health line unavailable, the landing page is unaffected: {problem}")
+        return None
+
+
+def _newest_quota():
+    """The newest row of the cost ledger's quota series, or `None`.
+
+    The health line's quota half needs a source, and the spec left it
+    open: *"Quota burn on the health line needs a source that is not the
+    costs page doing a full read."* This is that source. The ledger
+    already carries a `quota` series -- the same readings the costs page
+    charts -- and going through `shape_costs` rather than reading the raw
+    document is deliberate: the row shape is `nova_costs.QUOTA_COLUMNS`
+    and `nova_home._quota` reads it positionally, so a second parse here
+    would be a second spelling of one contract. It is not free -- that
+    call reshapes every cycle row too, and it is one vault fetch -- but it
+    is paid on the home build, which is cached and warmed, so it costs a
+    refresh rather than a request. What the spec ruled out was the costs
+    *page*, meaning a read per visit.
+
+    Swallowed for the same reason `journal_payload` swallows its runtimes
+    read, and it is the same document: the health line is a decoration on
+    a page, and no failure of it is worth `/` not rendering.
+    """
+    try:
+        readings = shape_costs(cost_ledger_json()).get("quota") or []
+    except Exception as problem:  # noqa: BLE001 -- see above
+        log(f"nova-site quota reading unavailable, health line says so: {problem}")
+        return None
+    return readings[-1] if readings else None
 
 
 def plans_payload():
