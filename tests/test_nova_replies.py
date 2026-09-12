@@ -103,6 +103,26 @@ def _sources(journal=ENTRY_MD, comments=THREAD_MD, single=_SAME, unreadable=()):
     )
 
 
+@pytest.fixture(autouse=True)
+def pushes():
+    """Every push this module would send, collected instead of sent.
+
+    Autouse and not optional. `reply_to` notifies his phone on success now, so
+    without this any test that lets a reply store reaches out of the suite to
+    Agora's real `/push` -- which either 404s on a cluster that has not rolled
+    yet or buzzes his actual phone from a test run. It yields the list so a test
+    can assert on what went out rather than only on what did not.
+    """
+    sent = []
+
+    def record(body, url=None, title="Nova"):
+        sent.append({"body": body, "url": url, "title": title})
+        return True, "sent"
+
+    with patch.object(nova_replies.nova_push, "send", record):
+        yield sent
+
+
 def _prompt_for(stamp="2026-08-10 13:54"):
     entry, journal, comments = _sources()
     with entry, journal, comments, \
@@ -738,3 +758,82 @@ def test_recovery_waits_out_the_pod_it_is_replacing_before_it_looks():
     assert order[1] == "read", order
     # The grace period it is covering, measured on the live deployment.
     assert nova_replies.RECOVER_DELAY_SECONDS > 30
+
+
+# ---- The push that says a reply has landed (ideas.md #182) ----------------
+#
+# Until this existed a stored reply was silent: he had to open the app and look.
+# The dot on the chat bubble covers a conversation with an answer waiting; a
+# reply on a journal card is not in a conversation at all.
+
+def test_notification_says_what_happened_and_which_card():
+    title, body, url = nova_replies.notification(1446, "I checked. The pod is fine.")
+    assert title == "Nova replied on cycle 1446"
+    assert body == "I checked. The pod is fine."
+    assert url == "/cycle/1446"
+
+
+def test_notification_collapses_the_markdown_newlines():
+    # A reply is markdown with real line breaks in it; a banner body is one run
+    # of text, and the raw newlines render as nothing useful.
+    _title, body, _url = nova_replies.notification(7, "First line.\n\nSecond   line.\n")
+    assert body == "First line. Second line."
+
+
+def test_notification_truncates_past_the_banner_length():
+    _title, body, _url = nova_replies.notification(7, "x" * 500)
+    assert len(body) == nova_replies.NOTIFICATION_CHARS + 1
+    assert body.endswith("…")
+
+
+def test_notification_leaves_a_short_reply_whole():
+    # The complement of the test above: the cap must not be reachable by an
+    # ordinary two-sentence answer, which is what a real reply is.
+    text = "Yes -- I moved it to the board as issue #200."
+    _title, body, _url = nova_replies.notification(7, text)
+    assert body == text
+
+
+def test_notify_reply_sends_the_notification_through_agora():
+    seen = {}
+
+    def fake(body, url=None, title="Nova"):
+        seen.update({"body": body, "url": url, "title": title})
+        return True, "sent"
+
+    with patch.object(nova_replies.nova_push, "send", fake):
+        assert nova_replies.notify_reply(1446, "All good.") is True
+    assert seen == {"body": "All good.", "url": "/cycle/1446",
+                    "title": "Nova replied on cycle 1446"}
+
+
+def test_notify_reply_swallows_a_raising_sender():
+    # The reply is already in the vault and on the card by the time this runs.
+    # A notification that blows up must not turn a stored reply into a failed
+    # one -- that would lose the answer over the banner announcing it.
+    def boom(*_a, **_k):
+        raise RuntimeError("agora is down")
+
+    with patch.object(nova_replies.nova_push, "send", boom):
+        assert nova_replies.notify_reply(1446, "All good.") is False
+
+
+def test_reply_to_notifies_his_phone_once_the_reply_is_stored(pushes):
+    entry, journal, comments = _sources()
+    with entry, journal, comments, \
+            patch.object(nova_replies, "http_json", return_value=(200, {"text": "sure"})), \
+            patch.object(nova_replies, "add_reply", return_value=(True, "replied")):
+        assert nova_replies.reply_to(80, "2026-08-10 13:54") == (True, "replied")
+    assert pushes == [{"body": "sure", "url": "/cycle/80",
+                       "title": "Nova replied on cycle 80"}]
+
+
+def test_reply_to_sends_nothing_when_the_store_refused(pushes):
+    # The banner announces a reply that is on the card. A store that failed put
+    # nothing on the card, so a notification would send him to an empty answer.
+    entry, journal, comments = _sources()
+    with entry, journal, comments, \
+            patch.object(nova_replies, "http_json", return_value=(200, {"text": "sure"})), \
+            patch.object(nova_replies, "add_reply", return_value=(False, "vault said 409")):
+        assert nova_replies.reply_to(80, "2026-08-10 13:54")[0] is False
+    assert pushes == []
