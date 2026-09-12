@@ -119,6 +119,10 @@ from agora_runner.nova_next import LOW_SATISFACTION_AT
 from tools.satisfaction_diagnosis import (
     DIAGNOSES_PATH as SAT_DIAGNOSES_PATH,
 )
+from agora_runner.nova_shares import (
+    FLOOR_DAYS, cycle_attribution, floor_is_measurable, last_worked,
+    ledger_horizon, project_shares, share_deficits, share_ranks, starved,
+)
 from agora_runner.nova_claims import (
     CLAIMS_PATH, ClaimError, container_started_at, finished_claims, held_by,
     load as load_claims,
@@ -776,10 +780,49 @@ def _claim_footer(rows, captures, claims_readable):
     return out
 
 
+def _share_block(shares, counts, counted, worked, project_meta, horizon=None):
+    """The share-vs-actual table, printed above the ranking it produced.
+
+    His issue #214 asks for this on the projects page. It is printed here as
+    well, and deliberately first: the project tier no longer follows his hand
+    order, so a cycle reading "take this" is owed the arithmetic that chose
+    it. A ranking whose reason is invisible is one nobody can tell apart from
+    a broken one -- the same argument `reserve_maintenance` makes for
+    printing its note even when it forced nothing.
+    """
+    deficits = share_deficits(shares, counts, counted)
+    live = [name for name, share in shares.items() if share > 0]
+    if not live:
+        return []
+    out = [f"SHARES OF CYCLES — measured over the last {counted} attributable "
+           "cycle(s) in the claims ledger (issue #214):"]
+    hungry = set(starved(shares, worked, horizon=horizon))
+    if not floor_is_measurable(horizon):
+        # Not silence, and not a floor applied anyway: `prune` collects
+        # finished claims, so the ledger is routinely younger than the floor
+        # and every project then reads as untouched. Saying the check did not
+        # run is the honest answer; running it would rescue the whole board.
+        out.append(f"  (the {FLOOR_DAYS}-day floor was not evaluated — the "
+                   "claims ledger does not reach back that far)")
+    for name in sorted(live, key=lambda n: -deficits[n][2]):
+        share, actual, deficit = deficits[name]
+        label = (project_meta.get(name) or {}).get("project") or name
+        mark = "  ⬅ 14-day floor, never mind the arithmetic" if name in hungry else ""
+        out.append(f"  {label}: owed {share:.0f}%, took {actual:.0f}% "
+                   f"({counts.get(name, 0)} of {counted}), deficit {deficit:+.0f}{mark}")
+    zero = sorted(name for name, share in shares.items() if share <= 0)
+    if zero:
+        out.append("  0% (Paused/Deprecated, ranked last): "
+                   + ", ".join((project_meta.get(n) or {}).get("project") or n
+                               for n in zero))
+    return out
+
+
 def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=True,
            projects_markdown="", projects_readable=True,
            milestone_pins_markdown="", milestone_seats_markdown="",
-           diagnoses_text="", diagnoses_readable=True, cycle=None):
+           diagnoses_text="", diagnoses_readable=True, cycle=None,
+           claims=()):
     """The captures first, then the ranked board. Never one without the other.
 
     The alternative the handoff offered was refusing to rank at all while
@@ -833,8 +876,29 @@ def render(rows, runners_up=3, captures=(), closed_waiting=(), claims_readable=T
     # the note is printed whether it forced anything or fell through,
     # because a reservation nobody can see fired is one nobody can tell
     # apart from a broken one.
-    project_rank_map, reservation = reserve_maintenance(
-        project_ranks(projects_markdown), rows, cycle)
+    # Issue #214: the project tier is a share of cycles now, not his hand
+    # order. `project_ranks` is still what orders the projects when the
+    # ledger is unreadable or empty -- a picker with no attribution to go on
+    # has nothing to compute a deficit from, and his order is the honest
+    # fallback rather than an arbitrary one.
+    project_of = {row_slug(row): (row.get("project") or "").strip().lower()
+                  for row in rows if (row.get("project") or "").strip()}
+    shares = project_shares(projects_markdown)
+    counts, counted = cycle_attribution(claims, project_of)
+    worked = last_worked(claims, project_of)
+    horizon = ledger_horizon(claims)
+    if shares and counted:
+        base_ranks = share_ranks(shares, counts, counted, worked,
+                                 horizon=horizon)
+        out.extend(_share_block(shares, counts, counted, worked, project_meta,
+                                horizon))
+    else:
+        base_ranks = project_ranks(projects_markdown)
+        if shares:
+            out.append("⚠ SHARES NOT APPLIED — no cycle in the claims ledger "
+                       "resolves to a project, so the project tier is his hand "
+                       "order, which is the behaviour issue #214 replaces.")
+    project_rank_map, reservation = reserve_maintenance(base_ranks, rows, cycle)
     if reservation:
         out.append(reservation)
     elif cycle is None:
@@ -1006,6 +1070,9 @@ def main(argv=None):
         # and carrying on beats refusing to print the board at all: the
         # ranking is still correct, it is only the 🔒 marks that are gone.
         print(f"claims ledger will not parse: {exc}", file=sys.stderr)
+        # `ledger` too: it feeds the share attribution below, and an
+        # unreadable ledger there means "no attribution", not a crash.
+        ledger = {"claims": []}
         live, finished, progressed, claims_readable = {}, {}, {}, False
 
     rows = []
@@ -1089,7 +1156,8 @@ def main(argv=None):
                  milestone_seats_markdown=milestone_seats_md,
                  diagnoses_text=diagnoses_text,
                  diagnoses_readable=diagnoses_readable,
-                 cycle=args.cycle))
+                 cycle=args.cycle,
+                 claims=(ledger or {}).get("claims", ())))
     if missing:
         print("COULD NOT READ: " + ", ".join(missing)
               + " — this ranking is incomplete, read the missing board yourself.")
