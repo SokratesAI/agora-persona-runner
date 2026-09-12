@@ -17994,6 +17994,32 @@ describe("the landing page", () => {
       "45 minutes at a 40-minute cadence was reported as a stall");
   });
 
+  test("exactly on the grace is already a stall, not one interval short of it", async () => {
+    /* The boundary the two tests above leave open, and the one piece of
+     * arithmetic the browser owns rather than the server. Four intervals
+     * is comfortably past the grace and forty-five minutes is comfortably
+     * inside it, so both of them pass whether the comparison is `>=` or
+     * `>`; only the interval that IS the grace tells the two apart.
+     *
+     * Eighty minutes at a forty-minute cadence is exactly 2, which is
+     * `stallGrace`. The Python side has the same boundary pinned for the
+     * quota pace (`test_the_pace_threshold_is_exclusive_so_exactly_on_it_is_quiet`)
+     * and this half did not.
+     *
+     * The direction is deliberate, not a coin toss: `STALL_GRACE_INTERVALS`
+     * is the number of intervals of silence the loop is ALLOWED before it
+     * counts as quiet, and the entry a cycle files at the end of its run
+     * lands inside interval 1. By interval 2 two cycles have woken and
+     * neither has written. */
+    const window = await loadSite("/", {
+      home: { ...HOME, health: { ...HEALTHY, lastWrittenAt: "2026-09-12T14:40:00+02:00" } },
+      install: frozenAt("2026-09-12T16:00:00+02:00"),
+    });
+    const line = window.document.querySelector(".home-health");
+    assert.ok(line, "exactly two intervals at a grace of two drew no health line");
+    assert.match(line.textContent, /nothing has been written for 2 intervals/);
+  });
+
   test("the nav highlights Home and not the journal", async () => {
     const window = await loadSite("/", { home: HOME });
     assert.ok(window.document.querySelector(".nav-tab[href='/']").classList.contains("on"));
