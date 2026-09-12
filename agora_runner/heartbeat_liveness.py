@@ -334,3 +334,127 @@ def liveness(url=None, opener=None, now=None, timeout=SITE_TIMEOUT_SECONDS):
         "error": None,
         "heartbeats": out,
     }
+
+
+# --- A heartbeat that fires and says nothing -------------------------------
+#
+# `judge` above answers "did it run". Cycle 1450 measured what that misses:
+# `K3s Sentinel` fired on all fourteen days from 2026-08-29 to 2026-09-11 and
+# wrote its last actual sentence on 2026-08-28. Every one of those runs is
+# three tool calls --- `get pods`, `get deployments`, `get nodes` --- and then
+# the turn ends. `heartbeat_health` printed `ok` for fifteen days, correctly
+# by its own question, which is the shape this loop keeps paying for: a
+# watcher that fires and produces nothing is indistinguishable from a watcher
+# whose cluster is healthy, and the second reading is the comfortable one.
+#
+# The discriminator is structural rather than a text heuristic. Agora records
+# every tool call as a message carrying an `activity` block; a real reply is
+# either a message with no `activity` at all (how Agora's own personas post)
+# or one whose capability is `assistant_text` (how the Claude bridge posts a
+# turn's prose). **My first version checked only for a missing `activity` and
+# would have called my own hourly loop mute** --- 103 messages, zero of them
+# without an activity block --- which is why both spellings are here.
+#
+# The window is `judge`'s own `interval x _MISSED_TURNS_BEFORE_STOPPED`, not
+# a second number. Measured against the ten live heartbeats, that separates
+# cleanly: the Sentinel is 15.0 days silent against an allowed 2 days, and
+# the next-quietest row is the Sunday architecture cycle at 6.2 days against
+# an allowed 14. A flat threshold anywhere near three days would have called
+# both weekly cycles dead.
+_ASSISTANT_ACTIVITY = "assistant_text"
+
+
+def is_reply(message):
+    """Did the persona actually say something, as opposed to call a tool?"""
+    if not isinstance(message, dict):
+        return False
+    if not str(message.get("text") or "").strip():
+        return False
+    activity = message.get("activity")
+    if not activity:
+        return True
+    if not isinstance(activity, dict):
+        return False
+    return activity.get("capability") == _ASSISTANT_ACTIVITY
+
+
+def last_reply_at(conversation):
+    """The newest real reply in a conversation, or `None` if it has none."""
+    messages = (conversation or {}).get("messages")
+    if not isinstance(messages, list):
+        return None
+    stamps = [
+        _parse_stamp(m.get("ts")) for m in messages if is_reply(m)
+    ]
+    stamps = [s for s in stamps if s is not None]
+    return max(stamps) if stamps else None
+
+
+# What Agora's own `lastResult` says a run produced. This field is the whole
+# correction, and it turned a finding into a false alarm inside one cycle.
+# I measured fourteen silent daily Sentinel runs, called it mute, and then
+# read its heartbeat: `lastResult` is `checked, nothing to report (not posted
+# to chat)`, and its task says *"If all checks come back clean, reply with
+# exactly: NO_ISSUES_FOUND --- nothing else."* It is working perfectly and
+# deliberately saying nothing, which is `agentic_health`'s noop-week problem
+# wearing a heartbeat: from the conversation alone, a watcher that found
+# nothing and a watcher that died are the same observation.
+#
+# So the conversation can only ever raise a verdict the run record does not
+# already account for. Measured across all ten heartbeats on 2026-09-12, the
+# whole vocabulary is: `replied N chars`, `checked, nothing to report (not
+# posted to chat)`, `running`, and `workflow: ...`.
+_ACCOUNTED_FOR = ("replied", "nothing to report", "not posted", "running", "workflow")
+
+
+def run_accounted_for(last_result):
+    """Does the run's own record say what it produced?
+
+    `False` means Agora recorded a turn whose outcome it cannot name --- which
+    is the only case where the conversation being silent is evidence of
+    anything.
+    """
+    text = str(last_result or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _ACCOUNTED_FOR)
+
+
+def judge_mute(row, conversation, now, last_result=None):
+    """`row` again, as `mute` if its conversation has gone silent.
+
+    Only a row already judged `ok` is considered. A heartbeat that is off or
+    overdue has its cause named; adding a second one to the same row is the
+    merged-cause failure `agentic_health` paid for one layer down.
+    """
+    if row.get("verdict") != "ok":
+        return row
+    if run_accounted_for(last_result):
+        return row
+    seconds, _ = interval_seconds(row.get("schedule"))
+    if seconds is None:
+        return row
+    allowed = seconds * _MISSED_TURNS_BEFORE_STOPPED
+
+    spoke = last_reply_at(conversation)
+    if spoke is None:
+        # No reply at all is only evidence once the conversation has been
+        # alive long enough to have owed one --- the hourly loop rotates its
+        # conversation every run, so a brand new one is normal, not silent.
+        born = _parse_stamp((conversation or {}).get("createdAt"))
+        if born is None:
+            return row
+        quiet = (now - born).total_seconds()
+        since = f"has never replied, and its conversation is {_duration(quiet)} old"
+    else:
+        quiet = (now - spoke).total_seconds()
+        stamp = spoke.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        since = f"last said something at {stamp}, {_duration(quiet)} ago"
+
+    if quiet <= allowed:
+        return row
+    return dict(
+        row,
+        verdict="mute",
+        detail=f"it is firing on schedule and producing nothing: {since}, allowed {_duration(allowed)}",
+    )

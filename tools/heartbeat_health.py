@@ -56,7 +56,9 @@ accepts only the runner's own bookkeeping fields, and `enabled` is not one
 of them. This module only reads.
 """
 
+import json
 import sys
+import urllib.request
 from datetime import datetime, timezone
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
@@ -78,10 +80,62 @@ from agora_runner.heartbeat_liveness import (  # noqa: F401  (re-exported)
     _parse_stamp,
     interval_seconds,
     judge,
+    judge_mute,
 )
 
 
-def format_report(results, error):
+def fetch_conversation(conversation_id, url=None, opener=None, timeout=20):
+    """`(conversation, error)` --- one conversation and its messages.
+
+    Deliberately not called from `agora_runner.heartbeat_liveness.liveness`:
+    that runs on every load of the site's `/api/health`, and this is one HTTP
+    fetch per heartbeat of a document that is 104KB for the Sentinel alone.
+    The muteness pass is a cycle's question, so it is paid for on the cycle's
+    side.
+    """
+    if not conversation_id:
+        return None, "the heartbeat names no conversation"
+    target = f"{(url or AGORA_PUBLIC).rstrip('/')}/conversations/{conversation_id}/messages"
+    try:
+        with (opener or urllib.request.urlopen)(target, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return None, f"could not read {target}: {e}"
+    if not isinstance(payload, dict):
+        return None, f"{target} returned no conversation"
+    return payload, None
+
+
+def apply_mute(rows, results, now, url=None, opener=None):
+    """Re-judge the `ok` rows on whether they have actually said anything.
+
+    Returns `(results, unreadable)`. A conversation this could not read is
+    named rather than assumed quiet --- the same rule as `_fetch`: "no
+    replies" and "could not ask" are the two things worth keeping apart.
+    """
+    by_name = {}
+    for row in rows:
+        name = row.get("name") or row.get("id") or "(unnamed)"
+        by_name.setdefault(name, row)
+    out, unreadable = [], []
+    for result in results:
+        if result.get("verdict") != "ok":
+            out.append(result)
+            continue
+        source = by_name.get(result["name"], {})
+        result = dict(result, lastResult=source.get("lastResult"))
+        conversation, error = fetch_conversation(
+            source.get("conversationId"), url=url, opener=opener
+        )
+        if error:
+            unreadable.append((result["name"], error))
+            out.append(result)
+            continue
+        out.append(judge_mute(result, conversation, now, source.get("lastResult")))
+    return out, unreadable
+
+
+def format_report(results, error, unreadable=()):
     """`(text, status)` --- the report and its exit code."""
     lines = []
     if error:
@@ -93,6 +147,7 @@ def format_report(results, error):
     overdue = [r for r in results if r["verdict"] == "overdue"]
     unjudged = [r for r in results if r["verdict"] == "unjudged"]
     marked = [r for r in results if r["verdict"] == "off_marked"]
+    mute = [r for r in results if r["verdict"] == "mute"]
     ok = [r for r in results if r["verdict"] == "ok"]
 
     for row in off:
@@ -106,12 +161,21 @@ def format_report(results, error):
         )
     for row in overdue:
         lines.append(f"OVERDUE — {row['name']}: {row['detail']}")
+    for row in mute:
+        lines.append(f"MUTE — {row['name']}: {row['detail']}")
+    for name, why in unreadable:
+        lines.append(f"CANNOT JUDGE MUTENESS — {name}: {why}")
     for row in unjudged:
         lines.append(f"NOT JUDGED — {row['name']}: {row['detail']}")
     for row in marked:
         lines.append(f"off  {row['name']} — {row['detail']}")
     for row in ok:
-        lines.append(f"ok   {row['name']} — {row['detail']}")
+        record = str(row.get("lastResult") or "").strip()
+        # What the run itself says it produced. `heartbeat_health` judged
+        # only whether a turn happened for its whole life, and this is the
+        # field that says what came out of it.
+        suffix = f" — last run: {record}" if record else ""
+        lines.append(f"ok   {row['name']} — {row['detail']}{suffix}")
 
     if not results:
         lines.append("Agora answered with no heartbeats at all.")
@@ -121,9 +185,15 @@ def format_report(results, error):
         "A heartbeat that is off on purpose carries "
         f"'{_DELIBERATE_MARKER}' in its own name; any other off row is reported."
     )
-    if off or overdue:
+    lines.append(
+        "MUTE means a heartbeat is firing, its conversation is silent, and its "
+        "own run record does not say what it produced. A watcher that "
+        "deliberately says nothing when it finds nothing is not mute — that is "
+        "what the 'last run' note beside each ok row is for."
+    )
+    if off or overdue or mute:
         return "\n".join(lines), 2
-    if unjudged or not results:
+    if unjudged or unreadable or not results:
         return "\n".join(lines), 1
     return "\n".join(lines), 0
 
@@ -132,7 +202,10 @@ def main(argv=None):
     rows, error = _fetch()
     now = datetime.now(timezone.utc)
     results = [judge(row, now) for row in rows]
-    report, status = format_report(results, error)
+    unreadable = ()
+    if not error:
+        results, unreadable = apply_mute(rows, results, now)
+    report, status = format_report(results, error, unreadable)
     print(report)
     return status
 
