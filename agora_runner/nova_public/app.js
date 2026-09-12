@@ -13245,6 +13245,13 @@
   }
 
   function renderHome(payload) {
+    /* The strip below schedules itself onto `livePolls`, so this render has
+     * to clear the pending one first -- otherwise a repaint of `/` leaves
+     * two timers polling the same endpoint, and they double on every
+     * repaint. It also clears whatever the view he arrived from left
+     * behind, which every other view already does on the way in. */
+    stopPolling();
+    stopGalaxy();
     /* Every view but the journal paints its own header, and one that did not
      * would leave the page saying "loading…" for as long as he looked at it --
      * `statusEl` is set once per render and nothing else clears it. The
@@ -13318,6 +13325,11 @@
      * an empty galaxy -- empty and blind mean opposite things. */
     var active = payload.active || [];
     var live = el("section", "home-live");
+    /* The strip's own slot, empty until `/api/galaxy` answers. Appended
+     * here so the words below keep their place on the page whether or not
+     * the canvas ever arrives -- a block that moved down when a second
+     * request landed would make the page jump under his thumb. */
+    live.appendChild(el("div", "home-strip"));
     if (payload.claimsReadable === false) {
       live.appendChild(el("p", "home-live-says",
         "I could not read the claims ledger, so this is not an idle loop — it is a blind one."));
@@ -13342,6 +13354,88 @@
     var toFeed = el("a", "home-journal-all", "The journal →");
     toFeed.setAttribute("href", "/journal");
     feed.appendChild(toFeed);
+
+    /* Last, and on its own request. See `loadHomeStrip`. */
+    loadHomeStrip();
+  }
+
+  /* The galaxy strip on `/` -- idea #274, step 3.
+   *
+   * The spec's single-payload rule has exactly one exception and this is
+   * it: *"live sessions are live by definition ... So it gets its own small
+   * poll, renders **after** the rest, and falls back to the plain list the
+   * galaxy page already carries under its picture. **It must never be what
+   * the page waits for.**"*
+   *
+   * Three things follow, and each is a line of code rather than an
+   * intention. It is called at the *end* of `renderHome`, so the recap, the
+   * projects and the needs-you block are already on screen before this
+   * asks for anything. Its canvas goes into a slot that is already in the
+   * document, so a strip that never arrives leaves the page exactly as it
+   * was. And a failed poll reschedules instead of drawing an error: the
+   * words underneath already say what is running, so a red line here would
+   * be the second thing on the page saying the same thing worse.
+   *
+   * **The words below the canvas are not repainted from this payload, and
+   * that is deliberate.** `/api/home` carries each live cycle's board
+   * *title* -- it joins the ledger against his board -- and `/api/galaxy`
+   * carries the slug and the note instead. So the list is the richer half
+   * and the canvas is the fresher one. A cycle that claimed a row since the
+   * home payload was cached appears as a body with no line under it, which
+   * is the right way round: the picture is the live thing, and the sentence
+   * he can read is never wrong about a cycle it names. */
+  function loadHomeStrip() {
+    function again() {
+      if (route(window.location.pathname).view !== "home") return;
+      livePolls.push(setTimeout(loadHomeStrip, POLL_MS));
+    }
+    fetchPage("/api/galaxy")
+      .then(function (payload) {
+        if (route(window.location.pathname).view !== "home") return;
+        renderHomeStrip(payload || {});
+        again();
+      })
+      .catch(again);
+  }
+
+  function renderHomeStrip(payload) {
+    var slot = document.querySelector(".home-strip");
+    if (!slot) return;
+    var active = payload.active || [];
+    var recent = payload.recent || [];
+    /* An unreadable ledger draws no picture at all. An empty canvas and a
+     * blind one look identical, and the sentence under it already tells him
+     * which he is looking at -- drawing a starfield over "I could not read
+     * the claims ledger" would contradict it in the one language he cannot
+     * check. */
+    if (payload.readable === false) {
+      slot.textContent = "";
+      stopGalaxy();
+      return;
+    }
+    /* One canvas, reused across polls rather than replaced: a new element
+     * every thirty seconds would restart the orbit from phase zero, so the
+     * bodies would jump. `drawGalaxy` cancels the previous frame loop
+     * itself and picks the new claim list up on the next frame. */
+    var canvas = slot.querySelector("canvas");
+    if (!canvas) {
+      canvas = document.createElement("canvas");
+      canvas.className = "galaxy-canvas home-strip-canvas";
+      canvas.setAttribute("role", "img");
+      slot.appendChild(canvas);
+    }
+    /* A canvas is opaque to a screen reader, so the label is the picture
+     * said in words -- and zero gets its own sentence rather than "0
+     * sessions", because the strip is the one block on this page that is
+     * normally empty and "0 sessions are working" reads like a fault. */
+    canvas.setAttribute("aria-label", (!active.length
+      ? "No session is working right now."
+      : active.length === 1
+        ? "1 session is working right now."
+        : active.length + " sessions are working right now.")
+      + " The same list is written out below.");
+    drawGalaxy(canvas, active, recent, payload.ttlMinutes || 45,
+               "home", galaxyStripHeight);
   }
 
   function loadGalaxy() {
@@ -13436,8 +13530,17 @@
     }
     feed.appendChild(list);
 
-    drawGalaxy(canvas, active, recent, ttl);
+    drawGalaxy(canvas, active, recent, ttl, "galaxy", galaxyPageHeight);
   }
+
+  /** The full page's canvas: most of a phone screen, which is what a page
+   *  whose whole job is the picture should be. */
+  function galaxyPageHeight(w) { return Math.max(240, Math.round(w * 0.72)); }
+
+  /** The strip's canvas on `/`. Half the page's ratio and a lower floor,
+   *  because on the landing page the picture is one block of six and the
+   *  capture box has to stay reachable without scrolling. */
+  function galaxyStripHeight(w) { return Math.max(132, Math.round(w * 0.34)); }
 
   /** A live body's hue, from its slug. Kept in one place because the dot
    *  in the list and the planet on the canvas have to agree -- two
@@ -13448,7 +13551,20 @@
     return "hsl(" + hue + ", 78%, 66%)";
   }
 
-  function drawGalaxy(canvas, active, recent, ttl) {
+  /* `view` and `height` are parameters because the same drawing serves two
+   * places now: the full page at `/galaxy` and the compact strip on `/`
+   * (idea #274, step 3). The frame loop has to know which route it belongs
+   * to -- a loop that checked for `"galaxy"` while drawing on the landing
+   * page would cancel itself on its first frame, and one that checked for
+   * nothing would keep animating a canvas he has navigated away from. */
+  function drawGalaxy(canvas, active, recent, ttl, view, height) {
+    /* Exactly one frame loop is ever alive. `renderGalaxy` clears the old
+     * one on its way in, but the strip on `/` calls this again on every
+     * poll, and a second `requestAnimationFrame` chain would overwrite
+     * `galaxyFrame` and leave the first one running for ever -- one more
+     * orbit of the same bodies every thirty seconds, on the page he leaves
+     * open. */
+    stopGalaxy();
     var ctx = canvas.getContext && canvas.getContext("2d");
     if (!ctx) return;
 
@@ -13470,13 +13586,13 @@
     var started = null;
 
     function frame(ts) {
-      if (route(window.location.pathname).view !== "galaxy") { stopGalaxy(); return; }
+      if (route(window.location.pathname).view !== view) { stopGalaxy(); return; }
       if (started === null) started = ts;
       var t = (ts - started) / 1000;
 
       var ratio = window.devicePixelRatio || 1;
       var w = canvas.clientWidth || 320;
-      var h = Math.max(240, Math.round(w * 0.72));
+      var h = height(w);
       if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) {
         canvas.width = Math.round(w * ratio);
         canvas.height = Math.round(h * ratio);

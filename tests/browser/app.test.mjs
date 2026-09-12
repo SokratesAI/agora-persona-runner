@@ -215,7 +215,11 @@ async function loadSite(path = "/journal", { failComments = false, commentsStatu
       // with nothing claimed really does answer this, and "nothing
       // supplied" must mean that rather than an unreadable ledger --
       // those are the two answers this payload exists to tell apart.
-      return res(galaxy || { readable: true, active: [], recent: [], ttlMinutes: 45 },
+      // Callable, like the journal stub: the landing page's strip must be
+      // requested *after* the rest of the page has drawn, and the only
+      // moment that is observable is while the request is being answered.
+      var galaxyBody = typeof galaxy === "function" ? galaxy(url) : galaxy;
+      return res(galaxyBody || { readable: true, active: [], recent: [], ttlMinutes: 45 },
                  galaxyStatus);
     }
     if (url.includes("/api/next")) {
@@ -17814,11 +17818,17 @@ describe("the landing page", () => {
 
   const homeText = (window) => window.document.querySelector(".feed").textContent;
 
-  test("/ asks for /api/home and for nothing else", async () => {
+  test("/ asks for /api/home and for nothing else it composes", async () => {
     /* The one rule the spec states as a constraint rather than a preference.
      * Asserted on the wire and not on the DOM: a page that fanned out to the
      * four endpoints `home_payload` composes would draw exactly the same
-     * cards, so the screen cannot tell the two apart. */
+     * cards, so the screen cannot tell the two apart.
+     *
+     * `/api/galaxy` joined the allowed list in step 3 and is the spec's own
+     * single exception -- live sessions are live by definition. Everything
+     * `home_payload` composes is still forbidden, which is what this test
+     * is for; it is not "one request" but "no request for data the cached
+     * payload already carries". */
     const asked = [];
     const window = await loadSite("/", {
       home: HOME,
@@ -17828,6 +17838,69 @@ describe("the landing page", () => {
     assert.deepEqual(apis.filter((u) => u.includes("/api/home")).length, 1);
     assert.equal(apis.filter((u) => /\/api\/(recap|next|project|journal)/.test(u)).length, 0,
       "the landing page fanned out to a payload /api/home already carries: " + apis.join(" "));
+  });
+
+  /* The galaxy strip -- step 3, and the spec's one exception to the rule
+   * above: *"It must never be what the page waits for."* */
+  test("the strip asks for /api/galaxy, and only after /api/home has drawn", async () => {
+    let drawnWhenAsked = null;
+    /* `install` hands the window over before `app.js` is evaluated, which is
+     * the only way the stub below can look at the document it is being
+     * asked from -- `loadSite`'s own return value does not exist yet. */
+    let live = null;
+    const window = await loadSite("/", {
+      install: (w) => { live = w; },
+      home: HOME,
+      galaxy: () => {
+        const doc = live.document;
+        drawnWhenAsked = {
+          recap: !!doc.querySelector(".recap"),
+          projects: doc.querySelectorAll(".home-project").length,
+        };
+        return { readable: true, ttlMinutes: 45, recent: [],
+                 active: [{ item: "idea-274", cycle: 1456, note: "the strip",
+                            outcome: "", state: "active", heldMinutes: 8 }] };
+      },
+    });
+    const apis = (window.fetched || []).filter((u) => u.includes("/api/"));
+    assert.ok(apis.some((u) => u.includes("/api/galaxy")),
+      "the strip never asked for the galaxy: " + apis.join(" "));
+    assert.ok(window.document.querySelector(".home-strip canvas"),
+      "the strip drew no canvas");
+    /* What "renders after the rest" actually means, and the assertion that
+     * can fail: the recap and the project cards were already on screen at
+     * the moment the galaxy request went out. Asserting the wire order
+     * instead would prove nothing -- `/api/home` is awaited before
+     * `renderHome` runs at all, so the galaxy request is second no matter
+     * where in the render it is issued. */
+    assert.deepEqual(drawnWhenAsked, { recap: true, projects: 2 },
+      "the strip was requested before the page it must not block had drawn");
+  });
+
+  test("a failed galaxy poll leaves the landing page whole", async () => {
+    /* The reason the canvas goes into a slot that is already in the
+     * document. Everything above it came from `/api/home`, so a galaxy that
+     * is down must cost him the picture and nothing else -- and the words
+     * under the empty slot still say what is running. */
+    const window = await loadSite("/", { home: HOME, galaxyStatus: 500 });
+    assert.ok(window.document.querySelector(".recap"), "the recap went with the strip");
+    assert.ok(window.document.querySelectorAll(".home-project").length >= 1,
+      "the project cards went with the strip");
+    assert.ok(!window.document.querySelector(".home-strip canvas"),
+      "a failed poll drew a canvas anyway");
+    assert.match(homeText(window), /1 session is working right now/);
+  });
+
+  test("an unreadable claims ledger draws no strip at all", async () => {
+    /* Empty and blind mean opposite things, and a starfield over "I could
+     * not read the claims ledger" contradicts that sentence in the one
+     * language he cannot check. */
+    const window = await loadSite("/", {
+      home: HOME,
+      galaxy: { readable: false, active: [], recent: [], ttlMinutes: 45 },
+    });
+    assert.ok(!window.document.querySelector(".home-strip canvas"),
+      "an unreadable ledger still drew a picture");
   });
 
   test("the nav highlights Home and not the journal", async () => {
