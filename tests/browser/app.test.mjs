@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convWaiting, convWaitingStatus = 200, convThread, convStep, convModel, convPrefs, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, alerts, alertsStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/journal", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convWaiting, convWaitingStatus = 200, convThread, convStep, convModel, convPrefs, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, alerts, alertsStatus = 200, recap, recapStatus = 200, home, homeStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -179,6 +179,16 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
      * ask the server for" assertion sees it as the last one. */
     if (url.includes("/api/recap")) {
       return res(recap || null, recapStatus);
+    }
+    /* `/api/home` -- the landing page's one payload (idea #274). Routed
+     * before the fall-through for the reason `/api/recap` is: anything this
+     * stub does not recognise is answered by the journal handler, so an
+     * unrouted `/api/home` reads as a journal request and every "what did
+     * the page ask for" assertion sees the wrong last call. No fixture
+     * default, deliberately -- what `/` draws when nobody supplied a body is
+     * itself a question a test should be able to ask. */
+    if (url.includes("/api/home")) {
+      return res(home || null, homeStatus);
     }
     if (url.includes("/api/comments")) {
       return failComments
@@ -383,7 +393,13 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
     headers: { get: (name) => (name === "X-Nova-Replayed" ? "1" : null) },
     json: r.json,
   }));
+  /* Every GET the page makes, in order. `window.posted` already records the
+   * writes; this is the reads, and it is the only way to assert a rule about
+   * what the page did *not* ask for -- the landing page's "one payload" rule
+   * draws the same cards either way, so the DOM cannot tell them apart. */
+  window.fetched = [];
   window.fetch = (url, init) => {
+    if (!(init && init.method === "POST")) window.fetched.push(String(url));
     if (init && init.method === "POST") {
       window.posted.push({ url, headers: init.headers, body: JSON.parse(init.body) });
       return res(window.postReply);
@@ -627,7 +643,7 @@ describe("a feed card carries one title, not two", () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
     journal.entries.find((e) => e.cycle === solo.cycle).title =
       "A second title saying what the digest line already says";
-    const window = await loadSite("/", { journal: () => journal });
+    const window = await loadSite("/journal", { journal: () => journal });
     const card = cardFor(window, solo.cycle);
     assert.equal(card.querySelector(".entry-title"), null);
     assert.equal(card.querySelector(".entry-brief").textContent,
@@ -645,7 +661,7 @@ describe("a feed card carries one title, not two", () => {
     const entry = journal.entries.find((e) => e.cycle === solo.cycle);
     entry.title = "A heading repeating the entry's own opening sentence";
     entry.briefSpans = [{ kind: "text", text: "The brief the entry wrote for itself." }];
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => journal,
       digest: withoutDigestLine(solo.cycle),
     });
@@ -668,7 +684,7 @@ describe("a feed card carries one title, not two", () => {
     entry.title = title;
     entry.briefSpans = [];
     entry.blocks = [];
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => journal,
       digest: withoutDigestLine(solo.cycle),
     });
@@ -690,7 +706,7 @@ describe("a feed card carries one title, not two", () => {
     const line = digest.lines.find((l) => l.cycle === solo.cycle);
     delete line.briefSpans;
     line.text = "The whole digest line, unsplit, because the payload is old.";
-    const window = await loadSite("/", { journal: () => journal, digest });
+    const window = await loadSite("/journal", { journal: () => journal, digest });
     const card = cardFor(window, solo.cycle);
     assert.equal(card.querySelector(".entry-title"), null);
     assert.equal(card.querySelector(".entry-brief.is-unsplit").textContent,
@@ -805,7 +821,7 @@ describe("two entries for one cycle are one card", () => {
     parts[0].pr = "#86";
     parts[0].prSpans = [{ kind: "text", text: "#86" }];
     parts[0].outcome = "merged";
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta");
     // The PR, not the outcome: the card stopped drawing the outcome pill
     // (see "the feed card carries no outcome pill" below), so the PR badge
@@ -849,7 +865,7 @@ describe("two entries for one cycle are one card", () => {
   test("a cycle's runtime shows when the server sent one, and not when it did not", async () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
     journal.entries.filter((e) => e.cycle === 57).forEach((e) => { e.runtimeSeconds = 962; });
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(meta.textContent, /ran 16 min/);
 
@@ -857,7 +873,7 @@ describe("two entries for one cycle are one card", () => {
     // all, and the card must print nothing rather than "ran 0 min".
     const quiet = JSON.parse(JSON.stringify(payload.journal));
     quiet.entries.forEach((e) => { delete e.runtimeSeconds; });
-    const w2 = await loadSite("/", { journal: () => quiet });
+    const w2 = await loadSite("/journal", { journal: () => quiet });
     const meta2 = cards(w2)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.equal(meta2.querySelector(".runtime"), null);
     assert.ok(!/\bran\b/.test(meta2.textContent), meta2.textContent);
@@ -876,7 +892,7 @@ describe("two entries for one cycle are one card", () => {
     parts[0].pr = "none";                      // the addendum: nothing to add
     parts[0].prSpans = [{ kind: "text", text: "none" }];
     parts[0].outcome = "no-op";
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(meta.textContent, /#89/);
     // The addendum's `none` is the thing that must not win. The card no
@@ -903,7 +919,7 @@ describe("two entries for one cycle are one card", () => {
     parts[0].pr = "none (status note)";
     parts[0].prSpans = [{ kind: "text", text: "none (status note)" }];
     parts[0].outcome = "no-op";
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(meta.textContent, /#32/);
     assert.ok(!/status note/.test(meta.textContent), meta.textContent);
@@ -918,7 +934,7 @@ describe("two entries for one cycle are one card", () => {
     parts[0].outcome = "merged";
     parts[0].pr = "#91";
     parts[0].prSpans = [{ kind: "text", text: "#91" }];
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const card = cards(w)[0];
     assert.match(card.querySelector(".entry-meta").textContent, /#91/);
     const own = card.querySelector(".entry-meta-part");
@@ -946,7 +962,7 @@ describe("two entries for one cycle are one card", () => {
       e.outcomeDetail = "";
     });
 
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.ok(!/backlog_brief/.test(meta.textContent), meta.textContent);
     assert.equal(meta.querySelector(".badge"), null);
@@ -973,7 +989,7 @@ describe("two entries for one cycle are one card", () => {
         e.outcome = word;
         e.outcomeDetail = "";
       });
-      const w = await loadSite("/", { journal: () => journal });
+      const w = await loadSite("/journal", { journal: () => journal });
       const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
       const badge = meta.querySelector(".badge");
       assert.ok(badge, `no pill for ${word}: ${meta.textContent}`);
@@ -999,7 +1015,7 @@ describe("two entries for one cycle are one card", () => {
       e.outcome = "none";
       e.outcomeDetail = "";
     });
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.equal(meta.querySelector(".badge"), null, meta.textContent);
     // The control: the same fixture with a real status word does draw one,
@@ -1009,7 +1025,7 @@ describe("two entries for one cycle are one card", () => {
       e.outcome = "research";
       e.outcomeDetail = "";
     });
-    const w2 = await loadSite("/", { journal: () => journal2 });
+    const w2 = await loadSite("/journal", { journal: () => journal2 });
     const meta2 = cards(w2)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.equal(meta2.querySelector(".badge").textContent, "research");
   });
@@ -1022,7 +1038,7 @@ describe("two entries for one cycle are one card", () => {
       e.outcome = "stuck";
       e.outcomeDetail = "CI outage, merged nothing";
     });
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.ok(meta.querySelector(".badge"), "the word is drawn");
     assert.equal(meta.querySelector(".outcome-detail"), null);
@@ -1041,7 +1057,7 @@ describe("two entries for one cycle are one card", () => {
       e.outcome = "no-op";
       e.outcomeDetail = "";
     });
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.equal(meta.querySelector(".pr"), null);
 
@@ -1060,7 +1076,7 @@ describe("two entries for one cycle are one card", () => {
       e.pr = "runner#300";
       e.prSpans = [{ kind: "text", text: "runner#300" }];
     });
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.match(meta.textContent, /runner#300/);
   });
@@ -1075,7 +1091,7 @@ describe("two entries for one cycle are one card", () => {
       e.outcome = "stuck";
       e.outcomeDetail = "CI outage, merged nothing";
     });
-    const w = await loadSite("/", { journal: () => journal });
+    const w = await loadSite("/journal", { journal: () => journal });
     const meta = cards(w)[0].querySelector(".entry-meta:not(.entry-meta-part)");
     assert.equal(meta.querySelector(".outcome-detail"), null);
 
@@ -1172,7 +1188,7 @@ describe("a journal card names the board item it worked on", () => {
   };
 
   test("the reference renders as a link into the app, not out to GitHub", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withBoard("idea #68", [
         { kind: "link", text: "idea #68", url: "/ideas#68" },
       ]),
@@ -1187,7 +1203,7 @@ describe("a journal card names the board item it worked on", () => {
   });
 
   test("the text around the references survives, and a card without the field shows nothing", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withBoard("issue #71 and idea #62", [
         { kind: "link", text: "issue #71", url: "/issues#71" },
         { kind: "text", text: " and " },
@@ -1490,7 +1506,7 @@ describe("an ask lives on the card that raised it", () => {
   });
 
   test("an ask renders as its own block on its own card", async () => {
-    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const window = await loadSite("/journal", { journal: () => asking("Decide about the node.") });
     const ask = window.document.querySelector(".entry-ask");
     assert.ok(ask, "the card should carry the ask");
     assert.match(ask.textContent, /Needs input/);
@@ -1498,7 +1514,7 @@ describe("an ask lives on the card that raised it", () => {
   });
 
   test("the ask sits above the brief, which is where he asked for it", async () => {
-    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const window = await loadSite("/journal", { journal: () => asking("Decide about the node.") });
     const card = window.document.querySelector(".entry-ask").closest(".entry");
     const kids = Array.from(card.children);
     const askAt = kids.findIndex((n) => n.classList.contains("entry-ask"));
@@ -1512,7 +1528,7 @@ describe("an ask lives on the card that raised it", () => {
      * cycles because the block asked a question and gave him nowhere to type.
      * A card's drawer is shut by default, so an ask that did not open it
      * would reintroduce exactly that. */
-    const window = await loadSite("/", { journal: () => asking("Decide about the node.") });
+    const window = await loadSite("/journal", { journal: () => asking("Decide about the node.") });
     const card = window.document.querySelector(".entry-ask").closest(".entry");
     assert.ok(card.classList.contains("is-commenting"));
   });
@@ -1530,7 +1546,7 @@ describe("an ask lives on the card that raised it", () => {
 
   test("the first load records that it opened the ask drawer", async () => {
     const journal = asking("Decide about the node.");
-    const window = await loadSite("/", { journal: () => journal });
+    const window = await loadSite("/journal", { journal: () => journal });
     const cycle = journal.entries[0].cycle;
     assert.ok(
       window.document.querySelector(".entry-ask").closest(".entry").classList.contains("is-commenting"),
@@ -1542,7 +1558,7 @@ describe("an ask lives on the card that raised it", () => {
   test("a reload leaves the ask drawer shut once it has opened once", async () => {
     const journal = asking("Decide about the node.");
     const cycle = journal.entries[0].cycle;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => journal,
       install: (w) => w.localStorage.setItem("nova.askOpened.v1", JSON.stringify({ [String(cycle)]: true })),
     });
@@ -1559,7 +1575,7 @@ describe("an ask lives on the card that raised it", () => {
     /* The mark is written where the drawer opens, not where a card renders.
      * Marking every card would spend the one auto-open each ask is owed
      * before the ask was ever written, and no test above would notice. */
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.equal(window.document.querySelector(".entry-ask"), null, "the plain fixture should carry no ask");
     assert.deepEqual(askMarks(window), null, "a feed with no ask in it wrote a mark");
   });
@@ -1577,7 +1593,7 @@ describe("an ask lives on the card that raised it", () => {
     journal.entries[0].askSpans = [{ kind: "text", text: "first ask" }];
     twin.cycle = cycle;
     journal.entries.splice(1, 0, twin);
-    const window = await loadSite("/", { journal: () => journal });
+    const window = await loadSite("/journal", { journal: () => journal });
     const ask = window.document.querySelector(".entry-ask");
     assert.match(ask.textContent, /first ask/);
     assert.match(ask.textContent, /second ask/);
@@ -1614,7 +1630,7 @@ describe("an ask lives on the card that raised it", () => {
   }
 
   test("an unanswered ask is open, with a control to minimize it", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => asking("Decide about the node."),
       comments: silentOnNewest(),
     });
@@ -1627,7 +1643,7 @@ describe("an ask lives on the card that raised it", () => {
   });
 
   test("an ask on a card he has replied to starts minimized", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => asking("Decide about the node."),
       comments: repliedOnNewest(),
     });
@@ -1649,7 +1665,7 @@ describe("an ask lives on the card that raised it", () => {
      * with the whole feature reverted. What it has to assert is the
      * *contrast* -- the prose is gone and the row is not -- because that is
      * the only thing that distinguishes minimised from deleted. */
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => asking("Decide about the node."),
       comments: repliedOnNewest(),
     });
@@ -1667,7 +1683,7 @@ describe("an ask lives on the card that raised it", () => {
   });
 
   test("he can minimize an unanswered ask himself, and open it again", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => asking("Decide about the node."),
       comments: silentOnNewest(),
     });
@@ -1683,7 +1699,7 @@ describe("an ask lives on the card that raised it", () => {
     /* The card toggles on any tap that is not claimed by a control, so a
      * missing branch in that one listener would expand the whole cycle
      * every time he folded its ask. */
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => asking("Decide about the node."),
       comments: silentOnNewest(),
     });
@@ -1701,7 +1717,7 @@ describe("an ask lives on the card that raised it", () => {
      * nothing. */
     let timers;
     const comments = repliedOnNewest();
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => asking("Decide about the node."),
       comments,
       install: (win) => { timers = captureTimers(win); },
@@ -1802,7 +1818,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
      * multi-part card holds several bodies and one of them cannot be what
      * opens and shuts. jsdom's `getComputedStyle` does not walk ancestors,
      * so this has to name the element the rule actually hides. */
-    const window = await loadSite("/", { install: withStyle });
+    const window = await loadSite("/journal", { install: withStyle });
     const drawer = cards(window)[0].querySelector(".entry-parts");
     assert.equal(window.getComputedStyle(drawer).display, "none");
   });
@@ -2190,7 +2206,7 @@ describe("a deep-linked cycle is one page, not a feed card", () => {
   });
 
   test("the feed draws the same cycle as one card, on the same rules", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const own = cards(window).filter((c) => c.querySelector("h2").textContent === "Cycle 57");
     assert.equal(own.length, 1);
     // Same subheadings, same order, same source function as the page above.
@@ -2212,7 +2228,7 @@ describe("the vault cannot inject markup", () => {
       },
     ];
     const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const { window } = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only" });
+    const { window } = openWindow(html, { url: "https://nova.example/journal", runScripts: "outside-only" });
     window.fetch = (url) =>
       res(url.includes("/api/digest") ? payload.digest : hostile);
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
@@ -2262,7 +2278,7 @@ describe("a drawer within a drawer", () => {
     /* Its own window: this test has to leave a card expanded to press a tab
      * inside it, and the rest of this suite shares one window and asserts on
      * a collapsed one. */
-    const own = await loadSite("/");
+    const own = await loadSite("/journal");
     const card = cards(own).find((c) => c.querySelectorAll(".entry-part-tab").length > 1);
     assert.ok(card, "the fixture must have a multi-part cycle in the feed");
     click(own, card.querySelector(".entry-toggle"));
@@ -2340,7 +2356,7 @@ describe("a payload cached before the brief existed", () => {
     for (const entry of stale.journal.entries) delete entry.briefSpans;
 
     const html = readFileSync(join(publicDir, "index.html"), "utf8");
-    const dom = openWindow(html, { url: "https://nova.example/", runScripts: "outside-only", pretendToBeVisual: true });
+    const dom = openWindow(html, { url: "https://nova.example/journal", runScripts: "outside-only", pretendToBeVisual: true });
     const { window } = dom;
     window.fetch = (url) =>
       res(url.includes("/api/digest") ? stale.digest : stale.journal);
@@ -2513,7 +2529,7 @@ describe("commenting on a cycle", () => {
   test("a relayed comment is marked as relayed and one he typed is not", async () => {
     const copy = JSON.parse(JSON.stringify(payload.comments));
     copy.byCycle["55"][0].relayed = true;
-    const w = await loadSite("/", { comments: copy });
+    const w = await loadSite("/journal", { comments: copy });
     const relayed = cardFor(w, 55).querySelector(".comment:not(.comment-reply)");
     const mark = relayed.querySelector(".comment-relay");
     assert.ok(mark, "a relayed comment carries no mark");
@@ -2532,7 +2548,7 @@ describe("commenting on a cycle", () => {
   test("a payload with no relayed field marks nothing", async () => {
     const copy = JSON.parse(JSON.stringify(payload.comments));
     Object.values(copy.byCycle).forEach((items) => items.forEach((c) => { delete c.relayed; }));
-    const w = await loadSite("/", { comments: copy });
+    const w = await loadSite("/journal", { comments: copy });
     assert.equal(w.document.querySelectorAll(".comment-relay").length, 0);
   });
 
@@ -2587,7 +2603,7 @@ describe("commenting on a cycle", () => {
       { author: "commentator", stamp: "2026-08-09 13:12", text: comment.replies[0].text },
       { author: "cycle", stamp: "2026-08-09 14:20", text: "Cycle 56: boarded it." },
     ];
-    const w = await loadSite("/", { comments: copy });
+    const w = await loadSite("/journal", { comments: copy });
     const card = cardFor(w, 55);
     const replies = [...card.querySelectorAll(".comment-reply")];
     assert.equal(replies.length, 2, "one bubble per block, not one bubble with a heading in it");
@@ -2627,7 +2643,7 @@ describe("commenting on a cycle", () => {
         replyWaitingSeconds: 0, replyFailed: false,
       },
     ];
-    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    const card = cardFor(await loadSite("/journal", { comments: copy }), 55);
     assert.deepEqual(
       [...card.querySelectorAll(".comment .comment-stamp")].map((s) => s.textContent),
       ["2026-08-23 13:31", "2026-08-23 13:40", "2026-08-23 14:01"],
@@ -2655,7 +2671,7 @@ describe("commenting on a cycle", () => {
         replyWaitingSeconds: 0, replyFailed: false,
       },
     ];
-    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    const card = cardFor(await loadSite("/journal", { comments: copy }), 55);
     assert.deepEqual(
       [...card.querySelectorAll(".comment .comment-body")].map((b) => b.textContent),
       ["Earlier question.", "Later question.", "An answer with no time on it."],
@@ -2683,7 +2699,7 @@ describe("commenting on a cycle", () => {
         replyWaitingSeconds: 0, replyFailed: false,
       },
     ];
-    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    const card = cardFor(await loadSite("/journal", { comments: copy }), 55);
     const waiting = card.querySelector(".comment-waiting");
     assert.ok(waiting, "the pending line is rendered");
     assert.equal(
@@ -2705,7 +2721,7 @@ describe("commenting on a cycle", () => {
     old.reply = old.replies[0].text;
     old.replyStamp = old.replies[0].stamp;
     delete old.replies;
-    const card = cardFor(await loadSite("/", { comments: copy }), 55);
+    const card = cardFor(await loadSite("/journal", { comments: copy }), 55);
     assert.equal(card.querySelectorAll(".comment-reply").length, 1);
     assert.equal(card.querySelector(".comment-waiting"), null);
   });
@@ -2724,7 +2740,7 @@ describe("commenting on a cycle", () => {
      * comment schedules a poll that reschedules itself, and a real one left
      * running in a window nobody closes keeps node's event loop alive after
      * the last assertion. */
-    const w = await loadSite("/", {
+    const w = await loadSite("/journal", {
       comments: withPending(57),
       install: captureTimers,
     });
@@ -2741,7 +2757,7 @@ describe("commenting on a cycle", () => {
     const waiting = withPending(57);
     waiting.byCycle["57"][0].replyWaiting = true;
     waiting.byCycle["57"][0].replyWaitingSeconds = 185;
-    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const w = await loadSite("/journal", { comments: waiting, install: captureTimers });
     const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
     assert.match(text, /Still working on this — 3 minutes so far\./);
     assert.doesNotMatch(text, /[Qq]ueued/);
@@ -2754,7 +2770,7 @@ describe("commenting on a cycle", () => {
     const waiting = withPending(57);
     waiting.byCycle["57"][0].replyWaiting = true;
     delete waiting.byCycle["57"][0].replyWaitingSeconds;
-    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const w = await loadSite("/journal", { comments: waiting, install: captureTimers });
     const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
     assert.match(text, /Still working on this — a moment so far\./);
     assert.doesNotMatch(text, /NaN|undefined/);
@@ -2767,7 +2783,7 @@ describe("commenting on a cycle", () => {
     const waiting = withPending(57);
     waiting.byCycle["57"][0].replyWaiting = true;
     waiting.byCycle["57"][0].replyWaitingSeconds = null;
-    const w = await loadSite("/", { comments: waiting, install: captureTimers });
+    const w = await loadSite("/journal", { comments: waiting, install: captureTimers });
     const text = cardFor(w, 57).querySelector(".comment-waiting").textContent;
     assert.match(text, /Still working on this — a moment so far\./);
     assert.doesNotMatch(text, /0 seconds/);
@@ -2779,7 +2795,7 @@ describe("commenting on a cycle", () => {
      * asserted here: a poll that never fired and a poll that never stopped
      * would each pass a test that only checked the other. */
     let timers;
-    const w = await loadSite("/", {
+    const w = await loadSite("/journal", {
       comments: withPending(57),
       install: (win) => { timers = captureTimers(win); },
     });
@@ -2819,7 +2835,7 @@ describe("commenting on a cycle", () => {
      * was not coming. He would have been left looking at a comment that
      * had quietly given up on itself. */
     let timers;
-    const w = await loadSite("/", {
+    const w = await loadSite("/journal", {
       comments: withPending(57),
       install: (win) => { timers = captureTimers(win); },
     });
@@ -2842,7 +2858,7 @@ describe("commenting on a cycle", () => {
      * -- `watch(false)`, poll cancelled, permanently. He is left on a drawer
      * that has quietly stopped asking, with no error and nothing to retry. */
     let timers;
-    const w = await loadSite("/", {
+    const w = await loadSite("/journal", {
       comments: withPending(57),
       install: (win) => { timers = captureTimers(win); },
     });
@@ -2871,7 +2887,7 @@ describe("commenting on a cycle", () => {
     answered.byCycle["57"][0].replyPending = true;
 
     let timers;
-    const w = await loadSite("/", {
+    const w = await loadSite("/journal", {
       comments: answered,
       install: (win) => { timers = captureTimers(win); },
     });
@@ -2900,7 +2916,7 @@ describe("commenting on a cycle", () => {
      * before it existed would repaint the drawer without it. A comment that
      * vanishes under the word "saved" is one he sends again. */
     let timers;
-    const w = await loadSite("/", {
+    const w = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
     });
     const card = cardFor(w, 57);
@@ -2938,7 +2954,7 @@ describe("commenting on a cycle", () => {
      * adds another poller hitting his own site for as long as the reply
      * takes -- and a reply can take the length of a cycle. */
     let timers;
-    const w = await loadSite("/", {
+    const w = await loadSite("/journal", {
       comments: withPending(57),
       install: (win) => { timers = captureTimers(win); },
     });
@@ -3024,7 +3040,7 @@ describe("commenting on a cycle", () => {
   });
 
   test("a comments endpoint that fails costs the bubbles, not the feed", async () => {
-    const w = await loadSite("/", { failComments: true });
+    const w = await loadSite("/journal", { failComments: true });
     assert.equal(cards(w).length, new Set(payload.journal.entries.map((e) => e.cycle)).size);
     assert.equal(bubble(cardFor(w, 57)).textContent, "💬");
   });
@@ -3042,7 +3058,7 @@ describe("the page notices new entries on its own", () => {
   /** The site, with its timers under the test's control. */
   async function pollable(options = {}) {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ...options,
       install: (win) => { timers = captureTimers(win); },
     });
@@ -3363,7 +3379,7 @@ describe("the page notices new entries on its own", () => {
 describe("a poll asks whether anything changed, not for the whole journal", () => {
   async function pollable() {
     let timers;
-    const window = await loadSite("/", { install: (win) => { timers = captureTimers(win); } });
+    const window = await loadSite("/journal", { install: (win) => { timers = captureTimers(win); } });
     return { window, timers };
   }
 
@@ -3587,20 +3603,20 @@ describe("the feed loads a window rather than the whole journal", () => {
 
   test("a cold load asks for twenty entries, not all of them", async () => {
     const server = paged(50);
-    await loadSite("/", { journal: server.serve });
+    await loadSite("/journal", { journal: server.serve });
     assert.match(server.asked[0], /\/api\/journal\?limit=20$/);
   });
 
   test("it renders the window it was given and offers the rest", async () => {
     const server = paged(50);
-    const window = await loadSite("/", { journal: server.serve });
+    const window = await loadSite("/journal", { journal: server.serve });
     assert.equal(cards(window).length, 20);
     assert.ok(window.document.querySelector("button.more"), "no way to reach the older entries");
   });
 
   test("showing older entries widens the window and adds cards", async () => {
     const server = paged(50);
-    const window = await loadSite("/", { journal: server.serve });
+    const window = await loadSite("/journal", { journal: server.serve });
     click(window, window.document.querySelector("button.more"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.match(server.asked[server.asked.length - 1], /limit=40$/);
@@ -3609,7 +3625,7 @@ describe("the feed loads a window rather than the whole journal", () => {
 
   test("the pager disappears once the whole journal is on screen", async () => {
     const server = paged(25);
-    const window = await loadSite("/", { journal: server.serve });
+    const window = await loadSite("/journal", { journal: server.serve });
     click(window, window.document.querySelector("button.more"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(cards(window).length, 25);
@@ -3620,7 +3636,7 @@ describe("the feed loads a window rather than the whole journal", () => {
     /* The fixture is the pre-pagination payload: entries and status, no
      * `total`. A page that guessed from `entries.length` would show a
      * pager that could never do anything. */
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.equal(window.document.querySelector("button.more"), null);
   });
 
@@ -3647,7 +3663,7 @@ describe("the feed loads a window rather than the whole journal", () => {
      * hands back all of them and the cold load is no smaller. */
     const server = paged(50);
     const spy = digestSpy();
-    await loadSite("/", { journal: server.serve, digest: spy.serve });
+    await loadSite("/journal", { journal: server.serve, digest: spy.serve });
     assert.match(spy.asked[0], /\/api\/digest\?limit=20$/);
   });
 
@@ -3657,7 +3673,7 @@ describe("the feed loads a window rather than the whole journal", () => {
      * boundary. */
     const server = paged(50);
     const spy = digestSpy();
-    const window = await loadSite("/", { journal: server.serve, digest: spy.serve });
+    const window = await loadSite("/journal", { journal: server.serve, digest: spy.serve });
     click(window, window.document.querySelector("button.more"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.match(spy.asked[spy.asked.length - 1], /\/api\/digest\?limit=40$/);
@@ -3673,7 +3689,7 @@ describe("the feed loads a window rather than the whole journal", () => {
   test("a poll asks for the window that is on screen, not the first page", async () => {
     const server = paged(50);
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: server.serve,
       install: (w) => { timers = captureTimers(w); },
     });
@@ -3765,7 +3781,7 @@ describe("the pager fires on scroll, not only on a press", () => {
   test("reaching the end of the feed widens the window with no press", async () => {
     const server = paged(50);
     let spy;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: server.serve,
       install: (w) => { spy = observed(w); },
     });
@@ -3790,7 +3806,7 @@ describe("the pager fires on scroll, not only on a press", () => {
      * jsdom with no layout and no scrolling can make it. */
     const server = paged(50);
     let spy;
-    await loadSite("/", { journal: server.serve, install: (w) => { spy = observed(w); } });
+    await loadSite("/journal", { journal: server.serve, install: (w) => { spy = observed(w); } });
     const margin = spy.watching[0].observer.options.rootMargin;
     assert.match(margin, /(\d+)px/);
     assert.ok(Number(margin.match(/(\d+)px/)[1]) > 0, "no margin, so it fires too late: " + margin);
@@ -3809,7 +3825,7 @@ describe("the pager fires on scroll, not only on a press", () => {
      * source. */
     const server = paged(90);
     let spy;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: server.serve,
       install: (w) => { spy = observed(w); },
     });
@@ -3823,7 +3839,7 @@ describe("the pager fires on scroll, not only on a press", () => {
   test("it ignores a report that the pager left the screen", async () => {
     const server = paged(50);
     let spy;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: server.serve,
       install: (w) => { spy = observed(w); },
     });
@@ -3840,7 +3856,7 @@ describe("the pager fires on scroll, not only on a press", () => {
      * node that can never intersect again. */
     const server = paged(90);
     let spy;
-    await loadSite("/", { journal: server.serve, install: (w) => { spy = observed(w); } });
+    await loadSite("/journal", { journal: server.serve, install: (w) => { spy = observed(w); } });
     spy.scrollTo();
     await new Promise((resolve) => setTimeout(resolve, 0));
     /* Two, not one, and the second is the point of the test above this one:
@@ -3857,7 +3873,7 @@ describe("the pager fires on scroll, not only on a press", () => {
      * `display: none` never intersects and the whole thing would silently
      * never fire. */
     const server = paged(50);
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: server.serve,
       install: (w) => { observed(w); },
     });
@@ -3870,7 +3886,7 @@ describe("the pager fires on scroll, not only on a press", () => {
   test("with no IntersectionObserver it is still the button it always was", async () => {
     /* Which is also what every other test in this file is relying on. */
     const server = paged(50);
-    const window = await loadSite("/", { journal: server.serve });
+    const window = await loadSite("/journal", { journal: server.serve });
     const pager = window.document.querySelector("button.more");
     assert.equal(pager.textContent, "Show older entries");
     assert.equal(pager.classList.contains("more-auto"), false);
@@ -3887,7 +3903,7 @@ describe("the pager fires on scroll, not only on a press", () => {
      * as visible, which is a viewport of infinite height. What must not
      * happen is a hang or a fetch that never ends. */
     const server = paged(50);
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: server.serve,
       install: (w) => { observed(w, { initial: true }); },
     });
@@ -3904,7 +3920,7 @@ describe("the pager fires on scroll, not only on a press", () => {
      * thrown away. Over a day on a phone that is hundreds of them. */
     const server = paged(50);
     let spy;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: server.serve,
       install: (w) => { spy = observed(w); },
     });
@@ -3956,7 +3972,7 @@ describe("an unsent comment survives a re-render", () => {
         version: 'W/"' + limit + '"',
       };
     };
-    const window = await loadSite("/", { journal: serve });
+    const window = await loadSite("/journal", { journal: serve });
 
     const box = window.document.querySelector(".entry .comment-text");
     box.value = "half a thought";
@@ -4440,11 +4456,16 @@ describe("the issues page", () => {
     assert.ok(!window.document.querySelector(".nav-tab[href='/issues']").classList.contains("on"));
   });
 
-  test("the journal still loads at / with the nav in place", async () => {
-    const window = await loadSite("/");
+  test("the journal still loads, at /journal now, with the nav in place", async () => {
+    /* Idea #274 moved the feed off `/` and onto its own path. The nav tab it
+     * highlights moved with it -- a feed that drew correctly while `markNav`
+     * still lit Home would be the two halves of one navigation disagreeing,
+     * and the highlight is the only thing on screen that says where you are. */
+    const window = await loadSite("/journal");
     assert.ok(cards(window).length > 0, "the feed stopped rendering");
     assert.equal(rows(window).length, 0);
-    assert.ok(window.document.querySelector(".nav-tab[href='/']").classList.contains("on"));
+    assert.ok(window.document.querySelector(".nav-tab[href='/journal']").classList.contains("on"));
+    assert.ok(!window.document.querySelector(".nav-tab[href='/']").classList.contains("on"));
   });
 });
 
@@ -4465,7 +4486,7 @@ describe("the sidebar", () => {
   const scrim = (window) => window.document.getElementById("scrim");
 
   test("the nav starts closed and hidden from the tab order", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.ok(!drawer(window).classList.contains("open"));
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     assert.equal(btn(window).getAttribute("aria-expanded"), "false");
@@ -4473,7 +4494,7 @@ describe("the sidebar", () => {
   });
 
   test("the hamburger opens it, and opens it again after closing", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     click(window, btn(window));
     assert.ok(drawer(window).classList.contains("open"));
     assert.ok(scrim(window).classList.contains("open"));
@@ -4493,7 +4514,7 @@ describe("the sidebar", () => {
   });
 
   test("tapping the scrim closes it", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     click(window, btn(window));
     click(window, scrim(window));
     assert.ok(!drawer(window).classList.contains("open"));
@@ -4502,7 +4523,7 @@ describe("the sidebar", () => {
   });
 
   test("Escape closes it", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     click(window, btn(window));
     window.document.dispatchEvent(
       new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
@@ -4514,7 +4535,7 @@ describe("the sidebar", () => {
    * is meant to be untouched -- but a drawer that stays open over the page
    * it just navigated to is the classic way to get this half right. */
   test("tapping a link routes and closes the drawer behind it", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     click(window, btn(window));
     click(window, window.document.querySelector(".nav-tab[href='/issues']"));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -4532,7 +4553,7 @@ describe("the sidebar", () => {
    * becomes unopenable -- on the journal from the first paint, and on a
    * board page from the moment the board's own header lands. */
   test("the hamburger survives a journal render", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.ok(window.document.querySelector(".status-line"), "the header never rendered");
     assert.ok(btn(window), "the render took the menu button with it");
     click(window, btn(window));
@@ -4555,7 +4576,7 @@ describe("the sidebar", () => {
    * between a drawer and the row of tabs it replaced. `aria-hidden` is the
    * half of that a DOM test can see; the `visibility` half is CSS. */
   test("every section lives in the drawer, and is exposed only with it", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const hrefs = [...drawer(window).querySelectorAll(".nav-tab")].map((a) => a.getAttribute("href"));
     // Grouped by category on 2026-08-26, on the owner's ask: the ones they
     // named first with no heading, then Steering / Talking / The loop. `/ask`
@@ -4577,7 +4598,7 @@ describe("the sidebar", () => {
     // `/alerts` joined The loop on 2026-09-12, on idea #122 -- "give the K3s
     // sentinel somewhere to report". It sits directly after Costs because
     // that is where the row asked for it: "a page beside the costs page".
-    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/galaxy", "/retro", "/costs", "/alerts", "/catalog", "/diag"]);
+    assert.deepEqual(hrefs, ["/", "/journal", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/galaxy", "/retro", "/costs", "/alerts", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -4591,7 +4612,7 @@ describe("the sidebar", () => {
    * except the one holding the current page, and on a pinned page -- which
    * is in no fold at all -- every single one is closed. */
   test("the group folds are closed, except the one holding the page you are on", async () => {
-    const journal = await loadSite("/");
+    const journal = await loadSite("/journal");
     const folds = (w) => [...drawer(w).querySelectorAll(".nav-fold")];
     assert.equal(folds(journal).length, 3, "three groups: Steering, Talking, The loop");
     assert.deepEqual(folds(journal).map((f) => f.open), [false, false, false],
@@ -4613,7 +4634,7 @@ describe("the sidebar", () => {
    * toggle passes the test above while shutting a group under the owner's
    * thumb the moment anything re-marks the nav. */
   test("a group the owner opens is never closed again by the nav marker", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const steering = drawer(window).querySelectorAll(".nav-fold")[0];
     steering.open = true;
     // Navigating to a pinned page: no fold is current, so a toggle would shut it.
@@ -4704,7 +4725,7 @@ describe("a nav tap answers before its payload arrives", () => {
   }
 
   test("the sidebar highlight moves while the board is still loading", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     hold(window, "/api/board");
 
     click(window, window.document.querySelector(".nav-tab[href='/issues']"));
@@ -4721,7 +4742,7 @@ describe("a nav tap answers before its payload arrives", () => {
   });
 
   test("the feed says what is loading while the board is still loading", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     // The journal he is leaving really is on screen, or the assertion below
     // passes on a page that was blank before the tap.
     assert.ok(cards(window).length > 0, "no journal to navigate away from");
@@ -4918,7 +4939,7 @@ describe("the costs page", () => {
   });
 
   test("a failed fetch says so rather than leaving the last page up", async () => {
-    const window = await loadSite("/", { install: (w) => { w.__x = 1; } });
+    const window = await loadSite("/journal", { install: (w) => { w.__x = 1; } });
     window.fetch = () => Promise.reject(new Error("costs are down"));
     window.history.pushState(null, "", "/costs");
     click(window, [...window.document.querySelectorAll(".nav-tab")].find(
@@ -5100,13 +5121,13 @@ describe("a hole in the record is visible in the feed", () => {
   const gaps = (window) => [...window.document.querySelectorAll(".cycle-gap")];
 
   test("the missing cycle is named between the two cards that bracket it", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.equal(gaps(window).length, 1);
     assert.match(gaps(window)[0].textContent, /Cycle 56 ran and wrote no entry/);
   });
 
   test("it sits between the cards, not at the top of the feed", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const feed = window.document.getElementById("feed");
     const kids = [...feed.children];
     const gap = kids.findIndex((n) => n.classList.contains("cycle-gap"));
@@ -5119,7 +5140,7 @@ describe("a hole in the record is visible in the feed", () => {
   test("a journal with no holes shows no marker at all", async () => {
     const clean = JSON.parse(JSON.stringify(payload.journal));
     clean.status.missingCycles = [];
-    const window = await loadSite("/", { journal: () => clean });
+    const window = await loadSite("/journal", { journal: () => clean });
     assert.equal(gaps(window).length, 0);
   });
 
@@ -5132,7 +5153,7 @@ describe("a hole in the record is visible in the feed", () => {
     const lying = JSON.parse(JSON.stringify(payload.journal));
     lying.status.missingCycles = [];
     lying.entries = lying.entries.filter((e) => e.cycle !== 56);
-    const window = await loadSite("/", { journal: () => lying });
+    const window = await loadSite("/journal", { journal: () => lying });
     assert.equal(gaps(window).length, 0);
   });
 
@@ -5159,7 +5180,7 @@ describe("a hole in the record is visible in the feed", () => {
   test("an addendum out of order does not strand the hole above a newer card",
     async () => {
       // Cycle 54 wrote an addendum during 57, so its card sits above 56's.
-      const window = await loadSite("/",
+      const window = await loadSite("/journal",
         { journal: () => reordered([57, 54, 56, 54], [55]) });
       assert.equal(gaps(window).length, 1);
       assert.match(gaps(window)[0].textContent, /Cycle 55 ran and wrote no entry/);
@@ -5173,7 +5194,7 @@ describe("a hole in the record is visible in the feed", () => {
 
   test("the hole is drawn once, under the oldest card newer than it",
     async () => {
-      const window = await loadSite("/",
+      const window = await loadSite("/journal",
         { journal: () => reordered([59, 55, 58, 55], [56, 57]) });
       assert.equal(gaps(window).length, 1);
       assert.match(gaps(window)[0].textContent,
@@ -5190,7 +5211,7 @@ describe("a hole in the record is visible in the feed", () => {
    * it; the last such card in the feed is the one that holds. */
   test("a hole never lands above a card newer than it, however scrambled",
     async () => {
-      const window = await loadSite("/",
+      const window = await loadSite("/journal",
         { journal: () => reordered([57, 62, 60, 50], [55]) });
       assert.equal(gaps(window).length, 1);
       const kids = positions(window);
@@ -5204,14 +5225,14 @@ describe("a hole in the record is visible in the feed", () => {
 
   test("a hole older than everything loaded is left for the older page",
     async () => {
-      const window = await loadSite("/",
+      const window = await loadSite("/journal",
         { journal: () => reordered([57, 56], [55]) });
       assert.equal(gaps(window).length, 0);
     });
 
   test("a hole newer than everything loaded is not pinned to the top",
     async () => {
-      const window = await loadSite("/",
+      const window = await loadSite("/journal",
         { journal: () => reordered([57, 56], [58]) });
       assert.equal(gaps(window).length, 0);
     });
@@ -5370,8 +5391,10 @@ describe("the conversation URL opens the dock, not a page of its own", () => {
     assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")]
       .map((n) => n.textContent), ["Two coats."]);
     // Put back, so a reload or a back-button does not reopen the panel over
-    // whatever he navigated to afterwards.
-    assert.equal(window.location.pathname, "/");
+    // whatever he navigated to afterwards. `/journal` and not `/` since idea
+    // #274: the feed is what is drawn under the dock, so that is what the
+    // address bar has to say.
+    assert.equal(window.location.pathname, "/journal");
   });
 
   test("the feed still loads behind it rather than an empty page", async () => {
@@ -5506,7 +5529,7 @@ describe("a cycle that is running says so in the header", () => {
   };
 
   test("a cycle in flight is named on the page", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withStatus({ running: true, stalled: false, silentIntervals: 0 }),
     });
     assert.deepEqual(live(window), ["cycle running"]);
@@ -5518,7 +5541,7 @@ describe("a cycle that is running says so in the header", () => {
    * nobody reads, which is the objection this whole header is built
    * around. */
   test("nothing is said between cycles", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withStatus({ running: false, stalled: false, silentIntervals: 1 }),
     });
     assert.deepEqual(live(window), []);
@@ -5541,12 +5564,12 @@ describe("a cycle that is running says so in the header", () => {
    * directions, and it fails if either the flag stops suppressing or the
    * badge stops rendering. */
   test("a stalled loop is never also reported as running", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withStatus({ running: true, stalled: true, silentIntervals: 4 }),
     });
     assert.deepEqual(live(window), []);
 
-    const healthy = await loadSite("/", {
+    const healthy = await loadSite("/journal", {
       journal: () => withStatus({ running: true, stalled: false, silentIntervals: 1 }),
     });
     assert.ok(live(healthy).some((t) => t === "cycle running"),
@@ -5560,7 +5583,7 @@ describe("a cycle that is running says so in the header", () => {
    * off the tailnet would otherwise be told a cycle was running for as
    * long as it stayed offline. */
   test("a saved copy does not claim a cycle is running", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withStatus({ running: true, stalled: false, replayed: true }),
     });
     assert.deepEqual(live(window), []);
@@ -5591,7 +5614,7 @@ describe("an ask nobody answered is named in the header", () => {
   };
 
   test("an unanswered ask draws a pill linking to the filtered view", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
       comments: { byCycle: {}, needs: [] },
     });
@@ -5605,7 +5628,7 @@ describe("an ask nobody answered is named in the header", () => {
    * than staying put. This is the assertion that makes the feature capable
    * of stopping. */
   test("a card he has replied to is no longer counted", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([
         { cycle: 260, date: "2026-08-17", time: "10:00" },
         { cycle: 247, date: "2026-08-16", time: "21:20" },
@@ -5619,7 +5642,7 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("nothing is said when every ask has an answer", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
       comments: {
         byCycle: { 247: [{ stamp: "2026-08-17 07:00", text: "answered" }] },
@@ -5630,7 +5653,7 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("a journal with no asks says nothing", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([]),
       comments: { byCycle: {}, needs: [] },
     });
@@ -5646,7 +5669,7 @@ describe("an ask nobody answered is named in the header", () => {
     window.document.querySelector("#status .status-asks-open");
 
   test("every open ask is counted, not just the oldest", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([
         { cycle: 260, date: "2026-08-17", time: "10:00" },
         { cycle: 247, date: "2026-08-16", time: "21:20" },
@@ -5665,7 +5688,7 @@ describe("an ask nobody answered is named in the header", () => {
    * Both halves are asserted, because only asserting the link would pass
    * against a page that still had the panel wired up beside it. */
   test("the count is a link to the filtered view and expands nothing", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([
         { cycle: 271, date: "2026-08-18", time: "09:00" },
         { cycle: 260, date: "2026-08-17", time: "10:00" },
@@ -5691,7 +5714,7 @@ describe("an ask nobody answered is named in the header", () => {
    * on a question he replied to, which is the complaint the `#mail` badge
    * already collected once (`issues.md` 2026-08-26). */
   test("a card he replied to is not counted", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([
         { cycle: 271, date: "2026-08-18", time: "09:00" },
         { cycle: 260, date: "2026-08-17", time: "10:00" },
@@ -5756,7 +5779,7 @@ describe("an ask nobody answered is named in the header", () => {
      * Still outside the feed, which is the part worth pinning: `render`
      * empties the feed on every paint, so a card inside it would flicker on
      * the thirty-second poll. */
-    const window = await loadSite("/", { recap: RECAP });
+    const window = await loadSite("/journal", { recap: RECAP });
     const card = window.document.querySelector(".recap");
     assert.ok(card, "no recap card on the journal feed");
     assert.equal(card.nextElementSibling, window.document.getElementById("feed"),
@@ -5778,7 +5801,7 @@ describe("an ask nobody answered is named in the header", () => {
      * it once would put the screenful back on the next load, which is the
      * thing being got rid of. The whole head is the control rather than a
      * chevron beside it -- on a phone the title is what is under his thumb. */
-    const window = await loadSite("/", { recap: RECAP });
+    const window = await loadSite("/journal", { recap: RECAP });
     const card = window.document.querySelector(".recap");
     const head = card.querySelector(".recap-head");
     assert.ok(card.classList.contains("recap--shut"), "the recap opened expanded");
@@ -5793,7 +5816,7 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("a stale recap says so rather than passing as current", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       recap: Object.assign({}, RECAP, { stale: true, ageHours: 9 }),
     });
     const card = window.document.querySelector(".recap");
@@ -5802,14 +5825,14 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("no recap, no card -- an empty box is a thing to read", async () => {
-    const window = await loadSite("/", { recap: { bullets: [], total: 0 } });
+    const window = await loadSite("/journal", { recap: { bullets: [], total: 0 } });
     assert.equal(window.document.querySelector(".recap"), null);
   });
 
   test("a bullet's link is a real tap target", async () => {
     /* His capture 2026-09-04 12:29: the card named the tailnet start page
      * and gave him nothing to tap, so he had to go and search for it. */
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       recap: Object.assign({}, RECAP, {
         bullets: [{
           lead: "", text: "Your start page is at hub now.",
@@ -5835,7 +5858,7 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("a link to this site navigates in place", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       recap: Object.assign({}, RECAP, {
         bullets: [{
           lead: "", text: "See the galaxy.",
@@ -5850,7 +5873,7 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("a lead can carry the link too", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       recap: Object.assign({}, RECAP, {
         bullets: [{
           lead: "Hub.", text: "Installable.",
@@ -5869,7 +5892,7 @@ describe("an ask nobody answered is named in the header", () => {
     /* The site and its payload roll separately, and a cached `/api/recap`
      * from before this shipped has `text` and no `parts`. Losing the links
      * for one page load is a small thing; losing the bullets is the card. */
-    const window = await loadSite("/", { recap: RECAP });
+    const window = await loadSite("/journal", { recap: RECAP });
     assert.match(window.document.querySelector(".recap").textContent,
       /You can write back to the bot now\./);
     assert.equal(window.document.querySelector(".recap .recap-link"), null);
@@ -5999,7 +6022,7 @@ describe("an ask nobody answered is named in the header", () => {
   /* Same guard the pill carries: a payload served out of the service
    * worker's cache cannot support "he has not replied to these". */
   test("a saved copy counts nothing", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([
         { cycle: 260, date: "2026-08-17", time: "10:00" },
         { cycle: 247, date: "2026-08-16", time: "21:20" },
@@ -6015,7 +6038,7 @@ describe("an ask nobody answered is named in the header", () => {
    * be a claim about what he has done, drawn from a payload that never
    * arrived, on the one screen he checks from his phone. */
   test("a comments fetch that failed is not read as no answers", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
       failComments: true,
     });
@@ -6042,7 +6065,7 @@ describe("an ask nobody answered is named in the header", () => {
    * the header. */
   test("coming back online does not put the pill back on an answered ask", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
       comments: {
         byCycle: { 247: [{ stamp: "2026-08-17 07:00", text: "answered" }] },
@@ -6070,7 +6093,7 @@ describe("an ask nobody answered is named in the header", () => {
    * an answer he gave an hour ago, on the one screen he checks from his
    * phone. */
   test("a saved copy does not claim he owes an answer", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }],
         { replayed: true }),
       comments: { byCycle: {}, needs: [] },
@@ -6107,7 +6130,7 @@ describe("a loop that has gone quiet says so in the header", () => {
     const quiet = JSON.parse(JSON.stringify(payload.journal));
     quiet.status.stalled = true;
     quiet.status.silentIntervals = 4;
-    const window = await loadSite("/", { journal: () => quiet, replayed: true });
+    const window = await loadSite("/journal", { journal: () => quiet, replayed: true });
     assert.deepEqual(warn(window).filter((t) => /no entry for/.test(t)), []);
   });
 
@@ -6115,7 +6138,7 @@ describe("a loop that has gone quiet says so in the header", () => {
     const quiet = JSON.parse(JSON.stringify(payload.journal));
     quiet.status.stalled = true;
     quiet.status.silentIntervals = 4;
-    const window = await loadSite("/", { journal: () => quiet, replayed: true });
+    const window = await loadSite("/journal", { journal: () => quiet, replayed: true });
     const header = window.document.querySelector("#status");
     assert.match(header.textContent, /showing a saved copy/);
     assert.match(header.textContent, /as of the last load/);
@@ -6145,7 +6168,7 @@ describe("a loop that has gone quiet says so in the header", () => {
     let replayNext = true;
     let polls = 0;
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (w) => {
         timers = captureTimers(w);
         w.fetch = (url, init) => {
@@ -6247,7 +6270,7 @@ describe("a loop that has gone quiet says so in the header", () => {
       bad.status.stalled = true;
       bad.status.silentIntervals = 4;
       bad.status.recentMissingCycles = [204, 205];
-      const window = await loadSite("/", { journal: () => bad });
+      const window = await loadSite("/journal", { journal: () => bad });
       assert.deepEqual(warn(window), []);
     });
 
@@ -6262,7 +6285,7 @@ describe("a loop that has gone quiet says so in the header", () => {
     frozen.status.silentIntervals = 9;
     frozen.status.recentMissingCycles = [];
     frozen.status.recordStale = true;
-    const window = await loadSite("/", { journal: () => frozen });
+    const window = await loadSite("/journal", { journal: () => frozen });
     const header = window.document.querySelector("#status");
     assert.deepEqual(warn(window), []);
     assert.ok([...header.querySelectorAll(".badge-error")]
@@ -6278,7 +6301,7 @@ describe("a loop that has gone quiet says so in the header", () => {
     live.status.silentIntervals = 1;
     live.status.recentMissingCycles = [];
     live.status.recordStale = false;
-    const window = await loadSite("/", { journal: () => live });
+    const window = await loadSite("/journal", { journal: () => live });
     assert.deepEqual([...window.document.querySelectorAll("#status .badge-error")]
       .map((n) => n.textContent), []);
   });
@@ -6305,13 +6328,13 @@ describe("a server error is shown, not rendered as emptiness", () => {
   const feedText = (window) => window.document.getElementById("feed").textContent;
 
   test("a 502 on the journal says so instead of drawing an empty page", async () => {
-    const window = await loadSite("/", { journalStatus: 502 });
+    const window = await loadSite("/journal", { journalStatus: 502 });
     assert.match(feedText(window), /Could not load the journal/);
     assert.equal(window.document.querySelectorAll(".entry").length, 0);
   });
 
   test("the server's own message is preferred over the bare status", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journalStatus: 500,
       journal: () => ({ error: "the journal folder is unreadable" }),
     });
@@ -6319,7 +6342,7 @@ describe("a server error is shown, not rendered as emptiness", () => {
   });
 
   test("a 502 on comments costs the bubbles, and says the bubbles are missing", async () => {
-    const window = await loadSite("/", { commentsStatus: 502 });
+    const window = await loadSite("/journal", { commentsStatus: 502 });
     // The feed is the page: it must survive a comments failure.
     assert.ok(window.document.querySelectorAll(".entry").length > 0);
     assert.equal(window.document.querySelectorAll(".comment").length, 0);
@@ -6327,7 +6350,7 @@ describe("a server error is shown, not rendered as emptiness", () => {
   });
 
   test("a healthy page says nothing about comments", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.doesNotMatch(feedText(window), /Could not load|could not be loaded/);
   });
 
@@ -6338,7 +6361,7 @@ describe("a server error is shown, not rendered as emptiness", () => {
     // A proxy in front of the server answers with an HTML error page, so
     // reading the body rejects too. There is no message to prefer, and the
     // page must still say something rather than fall through to a blank.
-    const window = await loadSite("/", { journalStatus: 502, unparsable: true });
+    const window = await loadSite("/journal", { journalStatus: 502, unparsable: true });
     assert.match(feedText(window), /Could not load the journal/);
     assert.match(feedText(window), /HTTP 502/);
   });
@@ -6348,7 +6371,7 @@ describe("a server error is shown, not rendered as emptiness", () => {
     // tolerated before this change too -- so this pins that the new throw
     // still lands in that existing catch rather than escaping to the
     // page-level one and taking the whole feed with it.
-    const window = await loadSite("/", { digestStatus: 502 });
+    const window = await loadSite("/journal", { digestStatus: 502 });
     assert.ok(window.document.querySelectorAll(".entry").length > 0);
     assert.doesNotMatch(feedText(window), /Could not load the journal/);
   });
@@ -6601,7 +6624,7 @@ describe("the retrospective page", () => {
  * is a thing a test can see. */
 describe("the attach button is on the page, not just in the source", () => {
   test("the capture box has a paperclip and a file input", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const group = window.document.querySelector(".capture-submit");
     const attach = group.querySelector(".attach-btn");
     assert.ok(attach, "no attach button in the capture row");
@@ -6694,7 +6717,7 @@ describe("the attach button is on the page, not just in the source", () => {
   }
 
   test("picking a picture puts a thumbnail in the tray, not text in the box", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const box = window.document.querySelector("#capture-form textarea");
     box.value = "look at this";
     const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
@@ -6715,7 +6738,7 @@ describe("the attach button is on the page, not just in the source", () => {
   });
 
   test("picking a file gets a named chip and a plain link, with no bang", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     window.document.querySelector("#capture-form textarea").value = "";
     const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
       [{ name: "runner.log", type: "", isImage: false }]);
@@ -6732,7 +6755,7 @@ describe("the attach button is on the page, not just in the source", () => {
   });
 
   test("several files can be picked at once, and each gets its own chip", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     window.document.querySelector("#capture-form textarea").value = "";
     const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY, [
       { name: "one.jpg", type: "image/jpeg", isImage: true },
@@ -6750,7 +6773,7 @@ describe("the attach button is on the page, not just in the source", () => {
   });
 
   test("crossing one out drops it from what gets sent, and keeps the rest", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     window.document.querySelector("#capture-form textarea").value = "";
     const tray = await pick(window, CAPTURE_INPUT, CAPTURE_TRAY, [
       { name: "keep.jpg", type: "image/jpeg", isImage: true },
@@ -6767,7 +6790,7 @@ describe("the attach button is on the page, not just in the source", () => {
   });
 
   test("an empty tray is hidden, and sending clears it", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const tray = window.document.querySelector(CAPTURE_TRAY);
     assert.ok(tray, "no tray on the capture form");
     assert.equal(tray.hidden, true, "an empty tray takes up room under the box");
@@ -6794,7 +6817,7 @@ describe("the attach button is on the page, not just in the source", () => {
    * Detaching the tray is the whole condition, so that is what this drives
    * directly rather than trying to reproduce a poll landing mid-batch. */
   test("an upload that lands after its composer is gone does not attach", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const tray = window.document.querySelector(CAPTURE_TRAY);
     window.document.querySelector("#capture-form textarea").value = "";
     await pick(window, CAPTURE_INPUT, CAPTURE_TRAY,
@@ -6822,7 +6845,7 @@ describe("the attach button is on the page, not just in the source", () => {
   });
 
   test("the comment drawer has one too", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const actions = window.document.querySelector(".comment-actions");
     assert.ok(actions, "no comment composer rendered at all");
     const attach = actions.querySelector(".attach-btn");
@@ -6871,7 +6894,7 @@ describe("an attachment renders as what it is", () => {
   }
 
   test("an image is a thumbnail you can open", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       comments: commentSaying(`look at this ![shot.jpg](/api/upload/${HASH}.jpg)`),
     });
     const body = window.document.querySelector(".comment-body");
@@ -6884,7 +6907,7 @@ describe("an attachment renders as what it is", () => {
   });
 
   test("a file is a named link, not a broken image", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       comments: commentSaying(`the log is [runner.log](/api/upload/${HASH}.log)`),
     });
     const body = window.document.querySelector(".comment-body");
@@ -6901,7 +6924,7 @@ describe("an attachment renders as what it is", () => {
     // The URL is required to start with `/api/upload/`, and dropping the
     // required `!` is the change that could have loosened that. A remote
     // link and a `javascript:` one must stay the characters he typed.
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       comments: commentSaying("[x](https://example.com/api/upload/a.png) [y](javascript:alert(1))"),
     });
     const body = window.document.querySelector(".comment-body");
@@ -6945,7 +6968,7 @@ const openProjectDrawer = (window) => openFieldDrawer(window, "project");
 
 describe("the capture row does not scramble", () => {
   test("the row runs type, attach, send -- and nothing else", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const group = window.document.querySelector(".capture-submit");
     assert.ok(group, "the buttons are no longer grouped");
     const kids = [...group.children];
@@ -6976,7 +6999,7 @@ describe("the capture row does not scramble", () => {
   });
 
   test("the picker keeps a label a screen reader and a reader can both find", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const picker = window.document.getElementById("capture-prio");
     const label = window.document.querySelector(".capture-prio-label");
     assert.ok(label, "the priority row lost its visible label");
@@ -7963,14 +7986,14 @@ describe("the header says so when it cannot reach the server", () => {
   const header = (window) => window.document.getElementById("status");
 
   test("a failed cold load replaces 'loading…' with an error, not silence", async () => {
-    const window = await loadSite("/", { journalStatus: 502 });
+    const window = await loadSite("/journal", { journalStatus: 502 });
     assert.match(header(window).textContent, /can't reach Nova/);
     assert.doesNotMatch(header(window).textContent, /loading…/);
     assert.ok(header(window).querySelector(".badge-error"));
   });
 
   test("the server's own message reaches the header, not just the feed", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journalStatus: 500,
       journal: () => ({ error: "the journal folder is unreadable" }),
     });
@@ -7978,7 +8001,7 @@ describe("the header says so when it cannot reach the server", () => {
   });
 
   test("a healthy load says nothing about reachability", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.doesNotMatch(header(window).textContent, /can't reach Nova/);
     assert.equal(header(window).querySelector(".badge-error"), null);
   });
@@ -7988,7 +8011,7 @@ describe("the header says so when it cannot reach the server", () => {
    * flash-and-retract that produced this complaint. */
   test("one failed poll is tolerated; the second is reported", async () => {
     let timers;
-    const window = await loadSite("/", { install: (w) => { timers = captureTimers(w); } });
+    const window = await loadSite("/journal", { install: (w) => { timers = captureTimers(w); } });
     const good = window.fetch;
     window.fetch = () => Promise.reject(new Error("network down"));
     await timers.firePagePoll();
@@ -8007,7 +8030,7 @@ describe("the header says so when it cannot reach the server", () => {
 
   test("the last known line is kept, marked as stale rather than current", async () => {
     let timers;
-    const window = await loadSite("/", { install: (w) => { timers = captureTimers(w); } });
+    const window = await loadSite("/journal", { install: (w) => { timers = captureTimers(w); } });
     const before = header(window).querySelector(".status-line").textContent;
     window.fetch = () => Promise.reject(new Error("network down"));
     await timers.firePagePoll();
@@ -9736,7 +9759,7 @@ describe("the plan page folds its prose", () => {
  * The behaviour under test did not move: `renderAskThread`, `askMessage`
  * and the mermaid drawing are the same functions either surface calls. */
 async function loadAskDock(options) {
-  const window = await loadSite("/", options);
+  const window = await loadSite("/journal", options);
   window.document.getElementById("chat-btn").dispatchEvent(new window.Event("click"));
   await new Promise((resolve) => setTimeout(resolve, 0));
   return window;
@@ -10428,7 +10451,7 @@ describe("the chat dock", () => {
   }
 
   test("the launcher is on a page that is not /ask, and the dock starts shut", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.ok(window.document.getElementById("chat-btn"), "no launcher");
     const dock = window.document.getElementById("chat-dock");
     assert.ok(dock, "no dock");
@@ -10443,7 +10466,7 @@ describe("the chat dock", () => {
    * light on a thread growing under his eyes, so an answer that arrived
    * while the app was shut reached a dark button. */
   test("an answer waiting from before this page load lights the launcher", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       convWaiting: { count: 2, blind: false, id: "x", name: "Nova needs you" },
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -10453,21 +10476,21 @@ describe("the chat dock", () => {
   });
 
   test("nothing waiting leaves the launcher dark", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(window.document.getElementById("chat-btn").classList.contains("chat-btn-unread"),
       false, "the launcher lit on an empty answer");
   });
 
   test("a waiting check that fails leaves the launcher alone rather than lighting it", async () => {
-    const window = await loadSite("/", { convWaitingStatus: 500 });
+    const window = await loadSite("/journal", { convWaitingStatus: 500 });
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(window.document.getElementById("chat-btn").classList.contains("chat-btn-unread"),
       false, "a failed check lit the dot");
   });
 
   test("the launcher and the dock survive a navigation, which is the whole point", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     window.history.pushState({}, "", "/");
@@ -10484,7 +10507,7 @@ describe("the chat dock", () => {
    * would all pass on a dock that is permanently open on his screen. This
    * is the one that looks at what the cascade actually resolves to. */
   test("the dock is really invisible when it is shut, not just marked hidden", async () => {
-    const window = await loadSite("/", { install: withStyle, ask: answered });
+    const window = await loadSite("/journal", { install: withStyle, ask: answered });
     const dock = window.document.getElementById("chat-dock");
     assert.equal(window.getComputedStyle(dock).display, "none",
       "the dock is on screen before he has opened it");
@@ -10499,7 +10522,7 @@ describe("the chat dock", () => {
    * `lastCount` still 0, so an old thread he has read a hundred times reads
    * as unread. The first-paint guard is back because of this test. */
   test("closing before the first read lands does not invent an unread answer", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     tap(window, "chat-btn");
     tap(window, "chat-close");
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -10508,7 +10531,7 @@ describe("the chat dock", () => {
   });
 
   test("tapping the launcher opens the thread and reads it", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual([...window.document.querySelectorAll("#chat-thread .ask-text")].map((n) => n.textContent),
@@ -10523,7 +10546,7 @@ describe("the chat dock", () => {
    * keyboard over the answer. The keyboard on a *tap* is right and stays;
    * this pins the one that happens without him asking. */
   test("opening the dock does not put the cursor in the box", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const box = window.document.getElementById("chat-box");
@@ -10573,7 +10596,7 @@ describe("the chat dock", () => {
 
   test("an answer arriving while he has scrolled up leaves him on the message he was rereading", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: growingThread(),
     });
@@ -10591,7 +10614,7 @@ describe("the chat dock", () => {
 
   test("an answer arriving while he is at the bottom still follows it down", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: growingThread(),
     });
@@ -10613,7 +10636,7 @@ describe("the chat dock", () => {
    * him to the *top* of the thread on every poll. */
   test("a poll does not throw him to the top of the thread either", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: growingThread(),
     });
@@ -10662,7 +10685,7 @@ describe("the chat dock", () => {
   test("reaching the top of a long thread fetches the page before it", async () => {
     let timers;
     const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: paged.ask,
     });
@@ -10681,7 +10704,7 @@ describe("the chat dock", () => {
   test("an older page leaves him on the message he was reading", async () => {
     let timers;
     const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: paged.ask,
     });
@@ -10702,7 +10725,7 @@ describe("the chat dock", () => {
   test("a thread with nothing older does not fetch when he reaches the top", async () => {
     let timers;
     const paged = pagedThread([threadOf(12, false)]);
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: paged.ask,
     });
@@ -10720,7 +10743,7 @@ describe("the chat dock", () => {
   test("a flick at the top does not send one fetch per scroll event", async () => {
     let timers;
     const paged = pagedThread([threadOf(40, true), threadOf(80, true)]);
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: paged.ask,
     });
@@ -10765,13 +10788,13 @@ describe("the chat dock", () => {
   }
 
   test("the composer starts at one line", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     assert.equal(window.document.getElementById("chat-box").getAttribute("rows"), "1",
       "the box opens taller than the one line he asked for");
   });
 
   test("the composer grows to fit what he typed", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const box = measurable(window.document.getElementById("chat-box"), 60);
@@ -10783,7 +10806,7 @@ describe("the chat dock", () => {
   });
 
   test("the composer stops growing at ten lines and scrolls after that", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const box = measurable(window.document.getElementById("chat-box"), 400);
@@ -10795,7 +10818,7 @@ describe("the chat dock", () => {
   });
 
   test("a sent question leaves a one-line box behind, not the tall one", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const box = measurable(window.document.getElementById("chat-box"), 400);
@@ -10834,7 +10857,7 @@ describe("the chat dock", () => {
    * hides it is inside the media query and no test can see it; the class it
    * keys off is JavaScript and this is it. */
   test("opening the dock marks the body, so the hamburger can get out of the way", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     assert.equal(window.document.body.classList.contains("chat-open"), false,
       "the body is marked before he opened anything");
     tap(window, "chat-btn");
@@ -10851,7 +10874,7 @@ describe("the chat dock", () => {
    * the primary branch is the one his phone takes and this branch is
    * otherwise never executed by anything. */
   test("the composer still caps at ten lines when the line height is a keyword", async () => {
-    const window = await loadSite("/", { ask: answered });
+    const window = await loadSite("/journal", { ask: answered });
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const box = measurable(window.document.getElementById("chat-box"), 900);
@@ -10865,7 +10888,7 @@ describe("the chat dock", () => {
   });
 
   test("the dock has a real height rather than shrinking to fit the thread", async () => {
-    const window = await loadSite("/", { install: withStyle, ask: answered });
+    const window = await loadSite("/journal", { install: withStyle, ask: answered });
     const dock = window.getComputedStyle(window.document.getElementById("chat-dock"));
     assert.notEqual(dock.height, "", "the dock has no height, so a short thread draws a short panel");
     assert.match(dock.height, /40rem/, "the dock's height is not the one the stylesheet means");
@@ -10877,7 +10900,7 @@ describe("the chat dock", () => {
   });
 
   test("asking from the dock posts the text and paints the question before any poll", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const box = window.document.getElementById("chat-box");
@@ -10893,7 +10916,7 @@ describe("the chat dock", () => {
   });
 
   test("a refused question keeps the text and says why", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     window.postReply = { ok: false, message: "that is longer than 4000 characters" };
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -10914,7 +10937,7 @@ describe("the chat dock", () => {
    * The ping rides the poll on purpose -- see `pingAskWatching` in app.js. */
   test("a dock waiting for an answer tells Agora the thread is on his screen", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: answersOnPoll(),
     });
@@ -10934,7 +10957,7 @@ describe("the chat dock", () => {
    * signal left is a dot on a page nobody is looking at. */
   test("a dock he has closed stops vouching, even though it keeps polling", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: answersOnPoll(),
     });
@@ -10950,7 +10973,7 @@ describe("the chat dock", () => {
 
   test("a backgrounded phone stops vouching, which is when the notification matters", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => {
         timers = captureTimers(win);
         Object.defineProperty(win.document, "hidden", { value: true, configurable: true });
@@ -10981,7 +11004,7 @@ describe("the chat dock", () => {
   test("a switched-to conversation vouches for itself, not for the ask thread", async () => {
     let timers;
     let turn = 0;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => {
         timers = captureTimers(win);
         win.localStorage.setItem("nova.chatSource.v1",
@@ -11006,7 +11029,7 @@ describe("the chat dock", () => {
   test("a shut dock on a conversation stops vouching too", async () => {
     let timers;
     let turn = 0;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => {
         timers = captureTimers(win);
         win.localStorage.setItem("nova.chatSource.v1",
@@ -11033,7 +11056,7 @@ describe("the chat dock", () => {
    * navigation and the answer never lands. */
   test("the dock keeps polling across a navigation, and the answer still arrives", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: answersOnPoll(),
     });
@@ -11063,7 +11086,7 @@ describe("the chat dock", () => {
 
   test("an answer that lands while the dock is shut lights the launcher, and opening clears it", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       ask: answersOnPoll(),
     });
@@ -11089,7 +11112,7 @@ describe("the chat dock", () => {
   test("sending from the dock and then closing it does not light the dot on his own message", async () => {
     let timers;
     let asked = false;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => { timers = captureTimers(win); },
       // Empty until he asks, then his own question comes back echoed --
       // which is the only shape in which this can go wrong.
@@ -11206,7 +11229,7 @@ describe("attachments in the ask thread and its dock", () => {
   });
 
   test("the dock has a paperclip, and what he picks goes with the question", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.ok(window.document.querySelector("#chat-form .attach-btn"), "no paperclip in the dock");
@@ -11233,7 +11256,7 @@ describe("attachments in the ask thread and its dock", () => {
   });
 
   test("a picture with nothing typed under it is still a message", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     await pickOne(window, DOCK_INPUT, DOCK_TRAY, { name: "shot.jpg", type: "image/jpeg", isImage: true });
@@ -11251,7 +11274,7 @@ describe("attachments in the ask thread and its dock", () => {
    * the upload owns the button, its completion re-enables a Send whose
    * question has not come back, and the next tap posts the same text twice. */
   test("an upload finishing does not re-enable Send while a question is still out", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     tap(window, "chat-btn");
     await new Promise((resolve) => setTimeout(resolve, 0));
     const send = window.document.getElementById("chat-send");
@@ -11269,7 +11292,7 @@ describe("attachments in the ask thread and its dock", () => {
   });
 
   test("the paperclip is a 44px target and does not sit stranded mid-row", async () => {
-    const window = await loadSite("/", { install: withStyle });
+    const window = await loadSite("/journal", { install: withStyle });
     const rules = [...window.document.styleSheets[0].cssRules];
     assert.ok(rules.some((r) => r.selectorText === ".attach-btn" && /44px/.test(r.style.cssText)),
       "the paperclip lost its touch target");
@@ -11481,7 +11504,7 @@ describe("mermaid diagrams in the chat", () => {
   });
 
   test("the diagram is capped to the width of the message, not the width mermaid measured", async () => {
-    const window = await loadSite("/", { install: withStyle });
+    const window = await loadSite("/journal", { install: withStyle });
     const rules = [...window.document.styleSheets[0].cssRules];
     // `cssText`, not the typed property -- this CSSOM leaves several of
     // those undefined, so a check on one passes for any rule at all.
@@ -11809,7 +11832,7 @@ describe("the status fields are one horizontal list, and they link down to the c
     [...window.document.querySelectorAll("#status .status-subs > .status-sub")];
 
   test("every status field sits in one row container, not loose in the header", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withStatus({
         running: true,
         stalled: false,
@@ -11838,7 +11861,7 @@ describe("the status fields are one horizontal list, and they link down to the c
   });
 
   test("a field that references no cycle is not a link", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withStatus({ running: true, stalled: false }),
       comments: { byCycle: {}, needs: [] },
     });
@@ -11855,7 +11878,7 @@ describe("the status fields are one horizontal list, and they link down to the c
    * pair is drawn. `shortOutcome` / `outcomeClass` keep their own tests
    * against the card's badge -- this header field no longer exists to test. */
   test("no outcome-and-PR field is drawn in the header, only on the card", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => withStatus({ cycle: 57, lastOutcome: "merged", lastPr: "#289" }),
       comments: { byCycle: {}, needs: [] },
     });
@@ -12026,7 +12049,7 @@ describe("searching the journal", () => {
      * the caret and the debounce timer, and the feed repaints under it every
      * thirty seconds. `--shut` is the class the slide hangs off, so the
      * state is what this asserts -- jsdom animates nothing. */
-    const window = await loadSite("/", { journal: searchable().serve });
+    const window = await loadSite("/journal", { journal: searchable().serve });
     const box = window.document.getElementById("journal-search");
     const toggle = window.document.querySelector(".journal-search-toggle");
     assert.ok(toggle, "there is no button to open the search with");
@@ -12045,7 +12068,7 @@ describe("searching the journal", () => {
     /* A filtered feed under a collapsed box is a page showing three of four
      * hundred entries with nothing on screen saying why. */
     const searches = searchable();
-    const window = await loadSite("/", { journal: searches.serve });
+    const window = await loadSite("/journal", { journal: searches.serve });
     const toggle = window.document.querySelector(".journal-search-toggle");
     toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await search(window, "ingress");
@@ -12060,7 +12083,7 @@ describe("searching the journal", () => {
   });
 
   test("the journal feed carries a search box", async () => {
-    const window = await loadSite("/", { journal: searchable().serve });
+    const window = await loadSite("/journal", { journal: searchable().serve });
     const box = window.document.querySelector(".journal-search-input");
     assert.ok(box, "no way to search the journal");
     assert.equal(box.getAttribute("aria-label"), "Search the journal");
@@ -12081,7 +12104,7 @@ describe("searching the journal", () => {
 
   test("typing asks the server and shows what came back", async () => {
     const server = searchable();
-    const window = await loadSite("/", { journal: server.serve });
+    const window = await loadSite("/journal", { journal: server.serve });
     assert.equal(cards(window).length, 20, "the plain feed should be one window");
 
     await search(window, "ingress");
@@ -12097,7 +12120,7 @@ describe("searching the journal", () => {
      * search tool on journals."* A summary of the last twelve hours
      * pinned above three hits for "ingress" is answering a question he
      * did not ask, and on a phone it is the first screenful. */
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: searchable().serve,
       recap: {
         bullets: [{ lead: "", text: "A plain bullet." }],
@@ -12120,7 +12143,7 @@ describe("searching the journal", () => {
   });
 
   test("the count names the query the answer was built from", async () => {
-    const window = await loadSite("/", { journal: searchable().serve });
+    const window = await loadSite("/journal", { journal: searchable().serve });
     await search(window, "ingress");
     const count = window.document.querySelector(".journal-search-count");
     assert.ok(!count.hidden);
@@ -12131,7 +12154,7 @@ describe("searching the journal", () => {
   test("a search nothing matches says so rather than looking empty", async () => {
     /* A feed that simply went blank is the one outcome that reads as a
      * broken page rather than as an answer. */
-    const window = await loadSite("/", { journal: searchable().serve });
+    const window = await loadSite("/journal", { journal: searchable().serve });
     await search(window, "kubernetes");
     assert.equal(cards(window).length, 0);
     const count = window.document.querySelector(".journal-search-count");
@@ -12145,7 +12168,7 @@ describe("searching the journal", () => {
      * field. Two ×s side by side -- one emptying, one closing -- is a choice
      * nobody wants to make on a phone. */
     const server = searchable();
-    const window = await loadSite("/", { journal: server.serve });
+    const window = await loadSite("/journal", { journal: server.serve });
     const toggle = window.document.querySelector(".journal-search-toggle");
     click(window, toggle);
     await search(window, "ingress");
@@ -12164,7 +12187,7 @@ describe("searching the journal", () => {
      * Asserting the node survives is not enough: it has to be the same
      * node, still holding what he typed. */
     const server = searchable();
-    const window = await loadSite("/", { journal: server.serve });
+    const window = await loadSite("/journal", { journal: server.serve });
     const box = await search(window, "ingress");
     assert.ok(window.document.contains(box), "the search box was rebuilt out from under the caret");
     assert.equal(box.value, "ingress");
@@ -12179,7 +12202,7 @@ describe("searching the journal", () => {
     const server = searchable();
     const digest = { asked: [], serve: null };
     digest.serve = (url) => { digest.asked.push(url); return payload.digest; };
-    const window = await loadSite("/", { journal: server.serve, digest: digest.serve });
+    const window = await loadSite("/journal", { journal: server.serve, digest: digest.serve });
     const before = digest.asked.length;
     await search(window, "ingress");
     assert.equal(digest.asked.length, before, "the digest was fetched for a window the search is not in");
@@ -12195,7 +12218,7 @@ describe("the journal search box sits between the composer and the feed", () => 
      * into has not moved from where it has always been. Pinned because
      * nothing else would notice the two swapping: both are above the
      * feed either way and both still work. */
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     const feed = window.document.getElementById("feed");
     const box = window.document.getElementById("journal-search");
     const capture = window.document.getElementById("capture");
@@ -12268,7 +12291,7 @@ describe("a journal search answer that arrived too late", () => {
      * server answers synchronously by construction.
      */
     const rows = corpus();
-    const window = await loadSite("/", { journal: (url) => answer(rows, null, 20) });
+    const window = await loadSite("/journal", { journal: (url) => answer(rows, null, 20) });
 
     const held = [];
     window.fetch = (url) => {
@@ -12318,7 +12341,7 @@ describe("a journal search answer that arrived too late", () => {
      */
     const rows = corpus();
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: (url) => {
         const params = new URL(String(url), "https://nova.example").searchParams;
         return answer(rows, params.get("q"), Number(params.get("limit")) || 20);
@@ -12344,7 +12367,7 @@ describe("a journal search answer that arrived too late", () => {
      * matched with. A line built from it tells him `TAILSCALE` found
      * "tailscale", which reads like the box corrected him. */
     const rows = corpus();
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: (url) => {
         const params = new URL(String(url), "https://nova.example").searchParams;
         return answer(rows, params.get("q"), Number(params.get("limit")) || 20);
@@ -12392,7 +12415,7 @@ describe("unread replies are counted on the card and in the header", () => {
      * so counting them all would print the absence of a measurement as a
      * measurement -- and a badge reading "300" on day one teaches him to
      * ignore the badge. */
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.equal(unreadBadge(window), null, "a fresh device claimed unread replies it cannot know about");
     assert.equal(bubble(cardFor(window, 55)).textContent, "💬 1");
     assert.equal(unreadChip(cardFor(window, 55)), null);
@@ -12401,7 +12424,7 @@ describe("unread replies are counted on the card and in the header", () => {
   });
 
   test("a reply written after his last read shows on the card and in the header", async () => {
-    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const window = await loadSite("/journal", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
     const card = cardFor(window, 55);
     assert.ok(bubble(card).classList.contains("has-unread"), "the 💬 button is not highlighted");
     // Not "1" a second time. Cycle 55 holds one comment and one unread reply,
@@ -12423,7 +12446,7 @@ describe("unread replies are counted on the card and in the header", () => {
   test("opening the drawer clears the card chip and the header badge together", async () => {
     /* Both, in one tap. The header clearing a poll later would insist on a
      * reply that is open on his screen. */
-    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const window = await loadSite("/journal", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
     const card = cardFor(window, 55);
     click(window, bubble(card));
     assert.equal(unreadChip(card), null, "the chip survived him reading the reply");
@@ -12441,7 +12464,7 @@ describe("unread replies are counted on the card and in the header", () => {
     comments.byCycle["57"][1].replies = [
       { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
     ];
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       comments,
       install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
     });
@@ -12456,7 +12479,7 @@ describe("unread replies are counted on the card and in the header", () => {
      * marked unread-from-the-beginning it must still draw no chip -- while
      * cycle 55, which holds one real reply, does. That pairing is the test:
      * an empty seed makes both cards eligible and only one of them counts. */
-    const window = await loadSite("/", { install: withRepliesRead({}) });
+    const window = await loadSite("/journal", { install: withRepliesRead({}) });
     assert.equal(unreadChip(cardFor(window, 57)), null, "his own comments were counted as unread");
     assert.equal(unreadChip(cardFor(window, 55)).textContent, "all new");
     assert.equal(unreadBadge(window).textContent, "1 new reply");
@@ -12473,7 +12496,7 @@ describe("unread replies are counted on the card and in the header", () => {
     delete quiet.replyStamp;
     delete quiet.replies;
     comments.byCycle["55"] = [only, quiet, JSON.parse(JSON.stringify(quiet))];
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       comments,
       install: withRepliesRead({ "55": "2026-08-09 13:00" }),
     });
@@ -12492,7 +12515,7 @@ describe("unread replies are counted on the card and in the header", () => {
       { author: "commentator", stamp: "2026-08-09 13:12", text: "one" },
       { author: "commentator", stamp: "2026-08-09 13:20", text: "two" },
     ];
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       comments,
       install: withRepliesRead({ "55": "2026-08-09 13:00" }),
     });
@@ -12527,7 +12550,7 @@ describe("unread replies are counted on the card and in the header", () => {
     }
     const marks = () =>
       withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" });
-    const load = () => loadSite("/", { comments: spread(), install: marks() });
+    const load = () => loadSite("/journal", { comments: spread(), install: marks() });
 
     test("it is an anchor to /replies, not a button", async () => {
       const window = await load();
@@ -12613,7 +12636,7 @@ describe("unread replies are counted on the card and in the header", () => {
       });
       const line = window.document.querySelector(".feed .empty");
       assert.match(line.textContent, /cards have replies you have not read/);
-      assert.equal(window.document.querySelector(".feed a.back").getAttribute("href"), "/");
+      assert.equal(window.document.querySelector(".feed a.back").getAttribute("href"), "/journal");
     });
 
     test("no pager, whatever the server says the total is", async () => {
@@ -12725,7 +12748,7 @@ describe("unread replies are counted on the card and in the header", () => {
       let timers;
       const waiting = JSON.parse(JSON.stringify(payload.comments));
       waiting.byCycle["55"][0].replyPending = true;
-      const window = await loadSite("/", {
+      const window = await loadSite("/journal", {
         comments: waiting,
         install: (win) => {
           withRepliesRead({ "55": "2026-08-09 13:12" })(win);
@@ -12775,7 +12798,7 @@ describe("unread replies are counted on the card and in the header", () => {
     /* The header already says it is showing a saved copy, and "you have
      * something new" is a claim about right now. Same rule, and the same
      * `status.replayed` flag, that the "waiting on you" pill follows. */
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       replayed: true,
       install: withRepliesRead({ "55": "2026-08-09 13:00" }),
     });
@@ -12786,7 +12809,7 @@ describe("unread replies are counted on the card and in the header", () => {
     /* Safari in private mode throws on the `localStorage` property itself,
      * not on the call, so the guard has to wrap the lookup. Without it this
      * page would not paint at all. */
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (w) => {
         Object.defineProperty(w, "localStorage", {
           configurable: true,
@@ -12808,7 +12831,7 @@ describe("unread replies are counted on the card and in the header", () => {
     const journal = JSON.parse(JSON.stringify(payload.journal));
     const entry = journal.entries.find((e) => e.cycle === 55);
     entry.askSpans = [{ kind: "text", text: "Yes or no, should this stay?" }];
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: () => journal,
       install: withRepliesRead({ "55": "2026-08-09 13:00" }),
     });
@@ -12825,7 +12848,7 @@ describe("unread replies are counted on the card and in the header", () => {
      * had arrived read. Expanding the card is the cheapest re-assertion to
      * reach from a test and runs the identical path. Open is a state, not a
      * sightline. */
-    const window = await loadSite("/", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    const window = await loadSite("/journal", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
     const card = cardFor(window, 55);
     click(window, card.querySelector("h2"));           // expand: re-asserts the drawer
     assert.equal(unreadChip(card).textContent, "all new", "expanding the card consumed the unread reply");
@@ -13186,7 +13209,7 @@ describe("the chat dock's conversation switcher", () => {
   };
 
   async function openSwitcher(opts = {}) {
-    const window = await loadSite("/", { ask: askThread, convList: LIST, ...opts });
+    const window = await loadSite("/journal", { ask: askThread, convList: LIST, ...opts });
     tap(window, "chat-btn");
     await tick();
     tap(window, "chat-menu");
@@ -13346,7 +13369,7 @@ describe("the chat dock's conversation switcher", () => {
   });
 
   test("the dock opens on the thread he last had open", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: askThread,
       convList: LIST,
       convThread: () => ({ conversationId: "c-1", waiting: false,
@@ -13362,7 +13385,7 @@ describe("the chat dock's conversation switcher", () => {
   });
 
   test("a remembered conversation with no id is ignored rather than fetched", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: askThread,
       convList: LIST,
       install: (w) => w.localStorage.setItem("nova.chatSource.v1",
@@ -13461,7 +13484,7 @@ describe("the chat dock folds the heartbeat threads away", () => {
     }));
 
   async function openSwitcher(opts = {}) {
-    const window = await loadSite("/", { ask: askThread, convList: MIXED, ...opts });
+    const window = await loadSite("/journal", { ask: askThread, convList: MIXED, ...opts });
     tap(window, "chat-btn");
     await tick();
     tap(window, "chat-menu");
@@ -13508,7 +13531,7 @@ describe("the chat dock folds the heartbeat threads away", () => {
   });
 
   test("the heartbeat fold opens itself when he is reading a thread inside it", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: askThread,
       convList: MIXED,
       convThread: () => ({ conversationId: "c-b1", waiting: false, messages: [] }),
@@ -13592,7 +13615,7 @@ describe("holding a conversation in the switcher opens edit options", () => {
   };
 
   async function openSwitcher(opts = {}) {
-    const window = await loadSite("/", { ask: ASK, convList: LIST, ...opts });
+    const window = await loadSite("/journal", { ask: ASK, convList: LIST, ...opts });
     tap(window, "chat-btn");
     await tick();
     tap(window, "chat-menu");
@@ -14099,7 +14122,7 @@ describe("the chat dock paints the thread it last read", () => {
   }
 
   test("opening onto a server that has not answered still shows him the thread", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: never,
       install: (w) => store(w, "ask", askThread),
     });
@@ -14118,7 +14141,7 @@ describe("the chat dock paints the thread it last read", () => {
         { id: "2", sender: "Edvard", text: "and the roof?" },
       ],
     };
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: fresh,
       install: (w) => store(w, "ask", askThread),
     });
@@ -14128,7 +14151,7 @@ describe("the chat dock paints the thread it last read", () => {
   });
 
   test("a read writes the cache, so the next page load has something to paint", async () => {
-    const window = await loadSite("/", { ask: askThread });
+    const window = await loadSite("/journal", { ask: askThread });
     tap(window, "chat-btn");
     await tick();
     assert.deepEqual(cached(window), { ask: askThread });
@@ -14142,7 +14165,7 @@ describe("the chat dock paints the thread it last read", () => {
    * network answer decides whether to poll. */
   test("a stale waiting flag in the cache does not start a poll", async () => {
     let timers;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: never,
       install: (w) => {
         store(w, "ask", { conversationId: "c-ask", waiting: true,
@@ -14158,7 +14181,7 @@ describe("the chat dock paints the thread it last read", () => {
   });
 
   test("a cache for another thread is not painted over the one he opened", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: never,
       install: (w) => store(w, "conv:c-1", {
         conversationId: "c-1", waiting: false,
@@ -14198,7 +14221,7 @@ describe("the chat dock paints the thread it last read", () => {
   }
 
   test("switching to a cached thread paints it instead of the loading line", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: askThread,
       convList: LIST,
       convThread: never,
@@ -14215,7 +14238,7 @@ describe("the chat dock paints the thread it last read", () => {
   test("reading a conversation caches it under that conversation, not under the ask thread", async () => {
     const roofing = { conversationId: "c-1", waiting: false,
       messages: [{ id: "9", sender: "Claude", text: "Two coats." }] };
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: askThread, convList: LIST, convThread: () => roofing,
     });
     await switchToRoofing(window);
@@ -14227,7 +14250,7 @@ describe("the chat dock paints the thread it last read", () => {
    * loaded, so painting it would take the "loading…" line down and leave him
    * looking at a blank panel with nothing saying a fetch was running. */
   test("a cached thread with nothing in it leaves the loading line up", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: askThread,
       convList: LIST,
       convThread: never,
@@ -14241,7 +14264,7 @@ describe("the chat dock paints the thread it last read", () => {
    * the one that matters: if it read as absent the write would be skipped too,
    * and one unparseable value would leave the dock uncached forever. */
   test("a corrupt cache reads as no cache and is overwritten by the next read", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: askThread,
       install: (w) => w.localStorage.setItem("nova.chatThreads.v1", "{not json"),
     });
@@ -16065,7 +16088,7 @@ describe("the thoughts-and-tools drawer", () => {
   };
 
   async function openDock(opts = {}) {
-    const window = await loadSite("/", { ask: WITH_STEPS, ...opts });
+    const window = await loadSite("/journal", { ask: WITH_STEPS, ...opts });
     window.document.getElementById("chat-btn")
       .dispatchEvent(new window.Event("click"));
     await tick();
@@ -16524,7 +16547,7 @@ describe("the drawer, after review", () => {
   const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   async function openDock(opts = {}) {
-    const window = await loadSite("/", opts);
+    const window = await loadSite("/journal", opts);
     window.document.getElementById("chat-btn")
       .dispatchEvent(new window.Event("click"));
     await tick();
@@ -16615,7 +16638,7 @@ describe("the drawer follows the poll", () => {
                                       output: "", status: "running" } };
     const asked = [];
     let timers = null;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: () => box.ask,
       convStep: (url) => { asked.push(url); return box.step; },
       install: (win) => { timers = captureTimers(win); },
@@ -16708,7 +16731,7 @@ describe("the drawer follows the poll", () => {
     const box = { ask: running([BASH_RUNNING]) };
     let timers = null;
     let calls = 0;
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       ask: () => box.ask,
       convStep: () => {
         calls += 1;
@@ -16932,14 +16955,14 @@ describe("commenting on a journal entry that has no cycle number", () => {
     cards(w).find((c) => c.querySelector("h2").textContent === title);
 
   test("the retrospective card gets a chat bubble", async () => {
-    const window = await loadSite("/", { journal: withEntry() });
+    const window = await loadSite("/journal", { journal: withEntry() });
     const card = cardFor(window, "Retrospective");
     assert.ok(card, "the retrospective is on the feed");
     assert.ok(card.querySelector(".comment-toggle"), "it has a chat bubble");
   });
 
   test("what it sends names the entry, not a cycle", async () => {
-    const window = await loadSite("/", { journal: withEntry() });
+    const window = await loadSite("/journal", { journal: withEntry() });
     const card = cardFor(window, "Retrospective");
     click(window, card.querySelector(".comment-toggle"));
     card.querySelector(".comment-text").value = "why did the box fall over";
@@ -16955,7 +16978,7 @@ describe("commenting on a journal entry that has no cycle number", () => {
   });
 
   test("an existing thread is painted on the card it belongs to", async () => {
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       journal: withEntry(),
       comments: Object.assign({}, payload.comments, {
         byEntry: {
@@ -16981,7 +17004,7 @@ describe("commenting on a journal entry that has no cycle number", () => {
   test("an entry with no time on its heading gets no box rather than a broken one", async () => {
     /* The key is the date and the time together. Half of one is not a key,
      * and a box with nowhere to file what he types is worse than no box. */
-    const window = await loadSite("/", { journal: withEntry({ time: "" }) });
+    const window = await loadSite("/journal", { journal: withEntry({ time: "" }) });
     const card = cardFor(window, "Retrospective");
     assert.ok(card, "the card is still drawn");
     assert.equal(card.querySelector(".comment-toggle"), null);
@@ -17014,7 +17037,7 @@ describe("the model picker on a thread", () => {
   const barIn = (window, root) => (root || window.document).querySelector(".model-pick-bar");
 
   async function openDock(convModel) {
-    const window = await loadSite("/", { ask: ASK, convModel });
+    const window = await loadSite("/journal", { ask: ASK, convModel });
     tap(window, "chat-btn");
     await tick();
     await tick();
@@ -17135,7 +17158,7 @@ describe("the model picker on a thread", () => {
        * instantly. So without a reset the previous thread's picker sits over
        * the new thread's messages, still closed over the previous thread's
        * id, and changing it repoints the thread he just left. */
-      const window = await loadSite("/", {
+      const window = await loadSite("/journal", {
         ask: ASK,
         convList: {
           folders: [], models: CATALOG,
@@ -17375,7 +17398,7 @@ describe("talking to Nova", () => {
   }
 
   test("a browser with no speech API shows no mic, and there is no speaker at all", async () => {
-    const window = await loadSite("/");
+    const window = await loadSite("/journal");
     assert.ok(window.document.getElementById("chat-mic").hasAttribute("hidden"),
       "a mic that cannot listen is worse than no mic");
     // Read-aloud was removed on 2026-09-11 -- his words, "I will never use it".
@@ -17385,7 +17408,7 @@ describe("talking to Nova", () => {
 
   test("dictation lands in the box he types in rather than sending on its own", async () => {
     const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
     });
     const mic = window.document.getElementById("chat-mic");
@@ -17406,7 +17429,7 @@ describe("talking to Nova", () => {
 
   test("dictating twice appends rather than replacing what he already said", async () => {
     const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
     });
     tap(window, "chat-btn");
@@ -17421,7 +17444,7 @@ describe("talking to Nova", () => {
 
   test("tapping the mic while it is listening stops it", async () => {
     const record = { made: [], started: 0, stopped: 0, live: null };
-    const window = await loadSite("/", {
+    const window = await loadSite("/journal", {
       install: (win) => withSpeech(win, { recognition: fakeRecognition(record) }),
     });
     tap(window, "chat-btn");
@@ -17555,7 +17578,7 @@ describe("a deploy announces itself to an app that is already open", () => {
 
   async function open(options) {
     const captured = {};
-    const window = await loadSite("/", { install: withWorker(captured, options) });
+    const window = await loadSite("/journal", { install: withWorker(captured, options) });
     await new Promise((resolve) => setTimeout(resolve, 0));
     return { window, captured };
   }
@@ -17755,5 +17778,169 @@ describe("the alerts page", () => {
     assert.match(empty, /could not reach Prometheus/);
     assert.match(empty, /connection refused/);
     assert.ok(!/Nothing is firing/.test(empty));
+  });
+});
+
+/* The landing page -- `/`, idea #274, step 2 of 3.
+ *
+ * The owner, 2026-09-08: *"Lets make a landing page instead!"* Step 1 built
+ * `/api/home` and left it with no caller; this is the render. The spec is
+ * `projects/sokrates/projects/nova/landing-page.md`, and its hardest rule is
+ * that the page may ask for exactly one payload -- he reads it on a phone and
+ * sometimes roaming.
+ */
+describe("the landing page", () => {
+  const HOME = {
+    recap: {
+      bullets: [{ text: "Shipped the reorder fix." }],
+      writtenLabel: "14:00",
+      cycles: "1453",
+    },
+    projects: [
+      {
+        name: "Nova", priority: "🟠 High", done: 40, open: 10, dropped: 2,
+        percentDone: 80, milestone: "Reading what needs him",
+        next: { board: "idea", number: 274, title: "Make / a landing page" },
+      },
+      {
+        name: "Marcus", priority: "🔵 Medium", done: 3, open: 0, dropped: 0,
+        percentDone: 100, milestone: "", next: null,
+      },
+    ],
+    needsYou: { asks: [{ cycle: 1447, date: "2026-09-12", time: "11:00" }], count: 1 },
+    active: [{ item: "idea-274", cycle: 1455, title: "Make / a landing page" }],
+    claimsReadable: true,
+  };
+
+  const homeText = (window) => window.document.querySelector(".feed").textContent;
+
+  test("/ asks for /api/home and for nothing else", async () => {
+    /* The one rule the spec states as a constraint rather than a preference.
+     * Asserted on the wire and not on the DOM: a page that fanned out to the
+     * four endpoints `home_payload` composes would draw exactly the same
+     * cards, so the screen cannot tell the two apart. */
+    const asked = [];
+    const window = await loadSite("/", {
+      home: HOME,
+      journal: (url) => { asked.push(url); return payload.journal; },
+    });
+    const apis = (window.fetched || []).filter((u) => u.includes("/api/"));
+    assert.deepEqual(apis.filter((u) => u.includes("/api/home")).length, 1);
+    assert.equal(apis.filter((u) => /\/api\/(recap|next|project|journal)/.test(u)).length, 0,
+      "the landing page fanned out to a payload /api/home already carries: " + apis.join(" "));
+  });
+
+  test("the nav highlights Home and not the journal", async () => {
+    const window = await loadSite("/", { home: HOME });
+    assert.ok(window.document.querySelector(".nav-tab[href='/']").classList.contains("on"));
+    assert.ok(!window.document.querySelector(".nav-tab[href='/journal']").classList.contains("on"));
+  });
+
+  test("the 12-hour recap is expanded here and collapsed on the feed", async () => {
+    /* The deliberate reversal. Above the feed the card is a screenful he asked
+     * to fold away; on `/` it is the content, and a landing page whose summary
+     * is shut says nothing. Both halves in one test, because the value is the
+     * difference and a test of either alone passes on a single hardcoded
+     * state. */
+    const home = await loadSite("/", { home: HOME });
+    const card = home.document.querySelector(".recap");
+    assert.ok(card, "the landing page drew no recap");
+    assert.ok(!card.classList.contains("recap--shut"), "the recap was folded shut on /");
+
+    const feed = await loadSite("/journal", { recap: HOME.recap });
+    assert.ok(feed.document.querySelector(".recap").classList.contains("recap--shut"),
+      "the recap stopped being collapsed above the feed");
+  });
+
+  test("a project card carries done-of-total, the milestone and a link to its next row", async () => {
+    const window = await loadSite("/", { home: HOME });
+    const card = window.document.querySelectorAll(".home-project")[0];
+    // 40 of 50, not 40 of 52: `dropped` is out of the denominator, so a
+    // project cannot reach 100% by abandoning rows. It is named beside the
+    // count rather than hidden, because this is the only place that says so.
+    assert.match(card.textContent, /40 of 50 done/);
+    assert.match(card.textContent, /2 dropped/);
+    assert.match(card.textContent, /Reading what needs him/);
+    const link = card.querySelector(".home-project-task");
+    assert.equal(link.getAttribute("href"), "/ideas#274");
+    assert.equal(link.textContent, "Make / a landing page");
+  });
+
+  test("a project with nothing open says so rather than drawing a blank task", async () => {
+    const window = await loadSite("/", { home: HOME });
+    const card = window.document.querySelectorAll(".home-project")[1];
+    assert.match(card.textContent, /No open rows/);
+    assert.equal(card.querySelector(".home-project-task"), null);
+  });
+
+  test("the needs-you block is drawn only when something is waiting", async () => {
+    /* "Only shows when non-empty" is his own wording, and `count` is the one
+     * field that decides it -- the page does not count the list itself. */
+    const waiting = await loadSite("/", { home: HOME });
+    assert.ok(waiting.document.querySelector(".home-needs"));
+    assert.match(waiting.document.querySelector(".home-needs").textContent,
+      /1 question is waiting on you/);
+    assert.equal(
+      waiting.document.querySelector(".home-needs-link").getAttribute("href"), "/cycle/1447");
+
+    const quiet = await loadSite("/", {
+      home: Object.assign({}, HOME, { needsYou: { asks: [], count: 0 } }),
+    });
+    assert.equal(quiet.document.querySelector(".home-needs"), null,
+      "an empty needs-you block was drawn anyway");
+  });
+
+  test("an unreadable claims ledger is said out loud, not drawn as an idle loop", async () => {
+    /* Empty and blind mean opposite things, and `top_board_rows`, `/api/next`
+     * and the galaxy page all already say which they got. */
+    const blind = await loadSite("/", {
+      home: Object.assign({}, HOME, { active: [], claimsReadable: false }),
+    });
+    assert.match(homeText(blind), /blind one/);
+
+    const idle = await loadSite("/", {
+      home: Object.assign({}, HOME, { active: [], claimsReadable: true }),
+    });
+    assert.match(homeText(idle), /No session is working right now/);
+  });
+
+  test("what is running right now is listed as the strip's fallback", async () => {
+    const window = await loadSite("/", { home: HOME });
+    assert.match(homeText(window), /1 session is working right now/);
+    assert.match(window.document.querySelector(".home-live-list").textContent, /Cycle 1455/);
+  });
+
+  test("the capture box is still above the feed here", async () => {
+    /* `captureHome()` moves the one composer in the document back above the
+     * feed on every navigation, and the spec asks for a capture box on this
+     * page. A renderer that appended into the feed instead would delete it. */
+    const window = await loadSite("/", { home: HOME });
+    assert.ok(window.document.getElementById("capture"),
+      "the landing page lost the capture box");
+  });
+
+  test("a failed payload says so instead of leaving the page blank", async () => {
+    /* `/` is the route a cold load and every push notification lands on, so a
+     * builder that 500s must not turn the front page into nothing at all. */
+    const window = await loadSite("/", { homeStatus: 500 });
+    assert.match(homeText(window), /Could not load the landing page/);
+  });
+});
+
+describe("the landing page paints its own header", () => {
+  /* `statusEl` is written once per render and nothing else clears it, so a view
+   * that does not paint a header leaves the cold-load "loading…" on screen for
+   * as long as he looks at the page. Every other view already does this; the
+   * landing page is the one he lands on, so it is the one where getting it
+   * wrong is permanent. The health line the spec asks for is step 3 -- this
+   * asserts the page is named, not that it is diagnosed. */
+  test("the header says Home rather than staying on loading", async () => {
+    const window = await loadSite("/", {
+      home: { recap: {}, projects: [], needsYou: { asks: [], count: 0 },
+              active: [], claimsReadable: true },
+    });
+    const header = window.document.getElementById("status");
+    assert.equal(header.querySelector(".status-page").textContent, "Home");
+    assert.ok(!/loading/i.test(header.textContent), header.textContent);
   });
 });

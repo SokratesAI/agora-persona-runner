@@ -793,8 +793,19 @@ def next_payload_from_contents(issues_contents, ideas_contents, claims_text,
         name = row["project"]
         key = name.lower()
         if key not in seen:
+            # The first four fields were here from the start; the three
+            # `top*` ones beside them exist because `next` above is
+            # `ranked[:top]` and the landing page needs a next task per
+            # project. On 2026-09-12 all five rows in `next` were Nova
+            # rows, so every other project's card drew a blank task line
+            # while the project had open rows -- measured on the live
+            # endpoint. Widening `top` would change what the Next page
+            # draws, and this loop already walks **every** ranked row, so
+            # the row a project's card wants is already in hand here.
             seen[key] = {"name": name, "open": 0, "top": row["title"],
-                         "topPriority": row["priority"]}
+                         "topPriority": row["priority"],
+                         "topBoard": row["board"], "topNumber": row["number"],
+                         "topMilestone": row.get("milestone") or ""}
             projects.append(seen[key])
         seen[key]["open"] += 1
 

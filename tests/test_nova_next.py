@@ -193,6 +193,45 @@ def test_projects_are_ordered_by_their_best_row_not_by_count():
     assert payload["projects"][0]["top"] == "one urgent thing"
 
 
+def test_a_group_carries_its_top_rows_address_and_not_only_its_title():
+    """So a caller outside `next[:5]` can still point at the row.
+
+    `next` is `ranked[:top]` -- five rows -- and on 2026-09-12 all five were
+    Nova rows, so the landing page drew a blank task line on every other
+    project that had open work. This grouping already walks every ranked row,
+    so the address was in hand and only the title was published. The board and
+    the number are what a link needs; the milestone is what the card prints
+    above it.
+    """
+    issues = board((10, "one urgent thing", BACKLOG, "08-01", IMMEDIATE, "NAS"),
+                   (11, "a small thing", BACKLOG, "08-02", LOW, "Site"),
+                   project=True)
+    groups = {p["name"]: p for p in next_payload(issues, board(), ledger(), NOW)["projects"]}
+
+    assert groups["Site"]["top"] == "a small thing"
+    assert groups["Site"]["topNumber"] == 11
+    assert groups["Site"]["topBoard"] == "issue"
+    # Same row, so the three `top*` fields and `top` can never disagree.
+    assert groups["NAS"]["topNumber"] == 10
+
+
+def test_a_group_keeps_the_best_rows_address_and_not_a_later_ones():
+    """The group is seeded on first sight and the ranking is best-first.
+
+    A grouping that overwrote on every row would publish the project's
+    *worst* open row as its next task, and `top` would still read correctly
+    because it was set in the same branch -- so this asserts the number
+    rather than the title.
+    """
+    issues = board((20, "the urgent one", BACKLOG, "08-01", IMMEDIATE, "NAS"),
+                   (21, "the quiet one", BACKLOG, "08-02", LOW, "NAS"),
+                   project=True)
+    groups = {p["name"]: p for p in next_payload(issues, board(), ledger(), NOW)["projects"]}
+
+    assert groups["NAS"]["open"] == 2
+    assert groups["NAS"]["topNumber"] == 20
+
+
 def test_an_empty_project_cell_is_nova_because_that_is_the_board_default():
     """`nova_boards.DEFAULT_PROJECT`, not a second opinion decided here."""
     issues = board((10, "unfiled", BACKLOG, "08-01", HIGH, ""), project=True)

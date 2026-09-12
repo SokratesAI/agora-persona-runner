@@ -27,7 +27,7 @@ a vault. The route in `nova_site` does the I/O and hands the results in.
 TOP_PROJECTS = 3
 
 
-def _project_card(name, summary, priority, ranked_rows):
+def _project_card(name, summary, priority, ranked_rows, group=None):
     """One project's card: where it stands, and what is next in it.
 
     `summary` is `nova_site._project_summary`'s dict, unchanged -- that is
@@ -46,6 +46,27 @@ def _project_card(name, summary, priority, ranked_rows):
     opinion about an ordering he can drag by hand.
     """
     top = ranked_rows[0] if ranked_rows else None
+    # `ranked_rows` is this project's slice of `/api/next`'s `next`, which
+    # is `ranked[:5]` -- so a project with open rows has none here
+    # whenever five higher-ranked rows belong to other projects. That is
+    # the common case and not an edge: on 2026-09-12 all five were Nova
+    # rows, and the 2nd and 3rd cards came back `next: null` with an empty
+    # milestone while both projects had open work. `group` is the same
+    # payload's `projects` entry, which `next_payload_from_contents`
+    # builds by walking *every* ranked row, so it already carries that
+    # project's own top row. Preferring the narrow list keeps the cards
+    # byte-identical whenever the row is in it.
+    if top is None and group:
+        top = {
+            "board": group.get("topBoard") or "",
+            "number": group.get("topNumber"),
+            "title": group.get("top") or "",
+            "milestone": group.get("topMilestone") or "",
+        }
+        # A group with no title is a project whose rows are all closed --
+        # the card should say it is clear rather than draw a blank task.
+        if not top["title"]:
+            top = None
     return {
         "name": name,
         "priority": priority.get("priority") or "",
@@ -94,6 +115,9 @@ def home_payload(recap, projects, next_up, asks, top=TOP_PROJECTS):
     ranked = {}
     for row in (next_up or {}).get("next") or []:
         ranked.setdefault((row.get("project") or "").strip().lower(), []).append(row)
+    groups = {}
+    for group in (next_up or {}).get("projects") or []:
+        groups.setdefault((group.get("name") or "").strip().lower(), group)
 
     summaries = (projects or {}).get("projectSummary") or {}
     priorities = (projects or {}).get("projectPriority") or {}
@@ -102,7 +126,7 @@ def home_payload(recap, projects, next_up, asks, top=TOP_PROJECTS):
         key = name.lower()
         cards.append(_project_card(
             name, summaries.get(key) or {}, priorities.get(key) or {},
-            ranked.get(key) or [],
+            ranked.get(key) or [], groups.get(key),
         ))
 
     open_asks = list(asks or [])
