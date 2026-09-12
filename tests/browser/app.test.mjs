@@ -16118,6 +16118,46 @@ describe("the thoughts-and-tools drawer", () => {
     // Named, because the block ran exactly one distinct capability -- which
     // is the rule Claude mobile's "Used ToolSearch" follows.
     assert.match(lines(window)[0].textContent, /Used Bash/);
+    // And it says there is prose behind it. His issue of 2026-09-12: the
+    // 1,429 characters explaining idea #106 were drawn behind a line reading
+    // only "Used nova_capture", so he never opened it and reported the text
+    // as dropped.
+    assert.match(lines(window)[0].textContent, /Wrote a passage/);
+  });
+
+  test("a block that wrote to him says so, even when it also ran a tool", async () => {
+    /* The regression this pins is the whole of his 2026-09-12 issue: a line
+     * whose only word is a tool name, above a one-sentence closing bubble,
+     * with a paragraph addressed to him folded inside it. */
+    const window = await openDock();
+    assert.equal(lines(window)[0].textContent.indexOf("Wrote a passage"), 0);
+    // Two passages count, and the tool half is unchanged beside them.
+    const two = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, limit: 80,
+             messages: [{ id: "1", sender: "Nova", text: "Saved.", steps: [
+               { kind: "thought", text: "What #106 is, in plain terms." },
+               { kind: "tool", capability: "nova_capture", input: "{}",
+                 id: "toolu_b", status: "done" },
+               { kind: "thought", text: "Filed." },
+             ] }] },
+    });
+    assert.equal(lines(two)[0].textContent.replace(/\u203a/g, "").trim(),
+      "Wrote 2 passages \u00b7 Used nova_capture");
+  });
+
+  test("a block with no prose still names only the tool", async () => {
+    /* The other side of the same rule, and the one that stops "Wrote a
+     * passage" from becoming a word on every line: a block that ran tools
+     * and wrote nothing must read exactly as it did before. */
+    const window = await openDock({
+      ask: { conversationId: "c-ask", waiting: false, limit: 80,
+             messages: [{ id: "1", sender: "Nova", text: "Seven.", steps: [
+               { kind: "tool", capability: "Bash", input: "a", id: "t1", status: "done" },
+               { kind: "tool", capability: "Read", input: "b", id: "t2", status: "done" },
+             ] }] },
+    });
+    assert.equal(lines(window)[0].textContent.replace(/\u203a/g, "").trim(),
+      "Used 2 tools");
   });
 
   test("the line sits above the prose it preceded, not under it", async () => {
@@ -16147,7 +16187,8 @@ describe("the thoughts-and-tools drawer", () => {
     assert.equal(sheet(window).hasAttribute("hidden"), false);
     assert.equal(
       window.document.querySelector(".step-backdrop").hasAttribute("hidden"), false);
-    assert.equal(window.document.querySelector(".step-title").textContent, "Used Bash");
+    assert.equal(window.document.querySelector(".step-title").textContent,
+      "Wrote a passage \u00b7 Used Bash");
   });
 
   test("the drawer holds the thoughts as text and the tools as rows", async () => {
@@ -16207,7 +16248,8 @@ describe("the thoughts-and-tools drawer", () => {
     assert.equal(back.hasAttribute("hidden"), false);
     click(window, back);
     assert.equal(back.hasAttribute("hidden"), true);
-    assert.equal(window.document.querySelector(".step-title").textContent, "Used Bash");
+    assert.equal(window.document.querySelector(".step-title").textContent,
+      "Wrote a passage \u00b7 Used Bash");
     assert.equal(toolRows(window).length, 1, "the list did not come back");
   });
 

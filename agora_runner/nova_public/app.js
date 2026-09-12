@@ -11138,7 +11138,26 @@
    * count otherwise, and fall back to the thinking when no tool ran at all.
    *
    * The count is of steps, not of the two halves of each call -- the server
-   * already folded those. */
+   * already folded those.
+   *
+   * **A block that holds prose says so, even when it also ran a tool**, and
+   * that half is his issue of 2026-09-12: *"when one assistant turn contains
+   * multiple text segments interleaved with tool calls (text, then a tool
+   * call, then more text), only the LAST text segment reaches [the owner's]
+   * client -- earlier segments are silently dropped."* They were not dropped.
+   * I read the live thread (conversation ee039370, 18:25 Oslo): the 1,429
+   * characters explaining idea #106 to him were posted, folded into this
+   * block, and drawn behind a line that read **"Used nova_capture"** -- a
+   * tool name, above the one-sentence closing bubble "Saved." Nothing on the
+   * screen said there was a paragraph written to him inside it, so he had no
+   * reason to tap, and from where he sat the answer had vanished.
+   *
+   * So the label leads with the writing when there is any. This does not move
+   * prose back into bubbles -- his capture of 2026-09-01 asked for exactly
+   * one collapsed line and I am not undoing it -- it makes the one line
+   * honest about what is behind it. Same principle as pairing a priority
+   * symbol with its word: if he has to open something to find out that I
+   * said anything, I have not said it. */
   function stepsLabel(steps) {
     var names = [];
     var thoughts = 0;
@@ -11151,8 +11170,10 @@
     });
     var tools = steps.length - thoughts;
     if (!tools) return thoughts === 1 ? "Thought about it" : "Thought it through";
-    if (names.length === 1) return "Used " + names[0];
-    return "Used " + tools + " tools";
+    var used = names.length === 1 ? "Used " + names[0] : "Used " + tools + " tools";
+    if (!thoughts) return used;
+    var wrote = thoughts === 1 ? "Wrote a passage" : "Wrote " + thoughts + " passages";
+    return wrote + " \u00b7 " + used;
   }
 
   /* The one sheet, appended to <body> and reused, the way `.prio-menu` is.
