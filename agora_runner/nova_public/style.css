@@ -5438,3 +5438,43 @@ X that summarizes the last 12
    bubble, which is how he takes one line out of an answer rather than the
    lot. Nothing intercepts a press here any more. */
 .ask-msg .ask-text { -webkit-user-select: text; user-select: text; }
+
+/* `/alerts` -- idea #122. The left edge carries the state, and the word
+ * beside the name carries it too: a reader who has to know a colour code
+ * to know what I said has not been told (personality.md). --danger and
+ * --warn are the existing outcome colours, so firing and pending do not
+ * collapse into one. */
+.alert-card {
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0 0 12px;
+  background: var(--card);
+}
+.alert-firing { border-left-color: var(--danger); }
+.alert-pending { border-left-color: var(--warn); }
+.alert-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.alert-word { font-size: 0.8rem; }
+.alert-word-firing { color: var(--danger); }
+.alert-word-pending { color: var(--warn); }
+.alert-name { font-weight: 600; }
+.alert-sev {
+  font-size: 0.75rem;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.alert-text { margin: 8px 0 0; }
+.alert-where,
+.alert-since {
+  margin: 6px 0 0;
+  font-size: 0.8rem;
+  color: var(--dim);
+}
