@@ -274,6 +274,31 @@ def claude_cli_generate(model_id, thinking, system, history, caps, persona, conv
         # all three of Agora's memory stores measured empty: not a missing
         # feature, a missing identity on this request.
         "persona_id": _bridge_persona_id(persona),
+        # The conversation so far, without this turn's own message. The
+        # bridge reads it ONLY when it has no stored CLI session to resume,
+        # and hands a resumed session none of it -- see its
+        # render_prior_turns(). Costs nothing on the common path and is the
+        # whole fix on the uncommon one.
+        #
+        # Filed 2026-09-12, live: `needs_input` opens a conversation and
+        # writes the question with Agora's notify API rather than through a
+        # turn here, so the bridge has never seen that conversation and
+        # `get_session_id` returns None. The owner replied eleven hours
+        # later and the session that woke up to answer him could see his
+        # one reply and nothing else -- not the seventeen messages above
+        # it, not even the question it was answering. Every provider but
+        # this one resends the full history every call, so the gap belonged
+        # to the one provider whose whole design is that it does not have
+        # to; it just had no answer for "there is no session to resume".
+        #
+        # Sent for an `ephemeral` turn too, and deliberately: that sets
+        # `stateless`, and the bridge exempts stateless from hydration on
+        # its own side, which keeps the decision in one place rather than
+        # in two that can drift.
+        "history": [
+            {"role": entry.get("role"), "content": entry.get("content") or ""}
+            for entry in history[:-1]
+        ],
     }
     if attachments:
         body["attachments"] = attachments
