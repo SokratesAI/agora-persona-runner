@@ -13244,6 +13244,59 @@
     return section;
   }
 
+  /* The health line on `/` -- idea #274, step 3b.
+   *
+   * His spec: *"One quiet line: cycle running, gaps in numbering, critical
+   * alerts, quota burn. Silent when fine."* Silent is the default and this
+   * returns `null` for it, so a healthy loop draws nothing at all rather
+   * than a green tick -- *"an empty queue should look like calm, not like a
+   * form"* is the same rule one block down, and it applies here too.
+   *
+   * `health_block` in `nova_home.py` has already judged everything that
+   * cannot go stale in a cache. The one concern this side adds is the
+   * clock-dependent one, and it is here rather than there on purpose:
+   * `/api/home` is served stale-while-revalidate, so the body can be hours
+   * old, and a `stalled` computed on the server would be frozen at "fine"
+   * for exactly those hours. `lastWrittenAt` is absolute, this clock is
+   * live, so the subtraction is correct however old the body is.
+   */
+  function healthConcerns(health, now) {
+    var concerns = (health.concerns || []).slice();
+    var written = health.lastWrittenAt ? Date.parse(health.lastWrittenAt) : NaN;
+    var minutes = Number(health.cadenceMinutes);
+    var grace = Number(health.stallGrace);
+    /* `stallGrace` -- `cycle_health.STALL_GRACE_INTERVALS`, carried in the
+     * payload rather than restated here -- is why this waits rather
+     * than asking whether this interval has an entry yet: a cycle writes
+     * its entry at the END of its run, so between waking and filing there
+     * is a real window where the newest entry is the previous cycle's. A
+     * check without the grace would cry stall every single interval. */
+    if (!isNaN(written) && minutes > 0) {
+      var intervals = Math.floor((now - written) / (minutes * 60000));
+      if (grace > 0 && intervals >= grace) {
+        concerns.push("nothing has been written for " + intervals
+          + (intervals === 1 ? " interval" : " intervals"));
+      }
+    }
+    return concerns;
+  }
+
+  function renderHealthLine(health, now) {
+    /* `null` and `{}` are different answers and only the second is
+     * reassurance: an absent block means nobody looked. Both draw nothing,
+     * so this returns early on the first rather than letting an empty
+     * object fall through the same path. */
+    if (!health) return null;
+    var concerns = healthConcerns(health, now === undefined ? Date.now() : now);
+    if (!concerns.length) return null;
+    var line = el("p", "status-line home-health");
+    line.appendChild(el("strong", "home-health-label", "Health"));
+    concerns.forEach(function (text) {
+      line.appendChild(el("span", "home-health-item", text));
+    });
+    return line;
+  }
+
   function renderHome(payload) {
     /* The strip below schedules itself onto `livePolls`, so this render has
      * to clear the pending one first -- otherwise a repaint of `/` leaves
@@ -13256,14 +13309,15 @@
      * would leave the page saying "loading…" for as long as he looked at it --
      * `statusEl` is set once per render and nothing else clears it. The
      * journal's header is the alive-and-running line built from its own
-     * payload; this one is deliberately just the page name, because the
-     * health line the spec asks for is step 3 and a header that guessed at it
-     * would be a number with no measurement under it. */
+     * payload; this one is the page name plus the health line, which draws
+     * nothing at all when there is nothing wrong. */
     statusEl.textContent = "";
     statusEl.appendChild(el("h1", "wordmark", "Nova"));
     var line = el("p", "status-line");
     line.appendChild(el("strong", "status-page", "Home"));
     statusEl.appendChild(line);
+    var health = renderHealthLine(payload.health);
+    if (health) statusEl.appendChild(health);
     feed.textContent = "";
 
     /* The recap first and open, which is the reversal `renderRecap`'s

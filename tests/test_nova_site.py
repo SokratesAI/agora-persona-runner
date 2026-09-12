@@ -6371,3 +6371,62 @@ def test_api_home_answers_one_composed_document():
     assert card["percentDone"] == 40
     assert card["next"]["number"] == 274
     assert card["milestone"] == "Reading what needs him"
+
+
+def test_api_home_carries_a_health_block_when_its_reads_answer():
+    """Idea #274 step 3b, and the reason it is a separate test.
+
+    `_health` swallows everything so the health line can never take `/`
+    down -- which means a broken read comes back as `health: None`, and
+    the route test above passes either way. Nothing else would notice the
+    block silently never being built.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_site, "recap_payload", return_value={}), \
+            patch.object(nova_site, "next_up_payload",
+                         return_value={"next": [], "active": [], "claimsReadable": True}), \
+            patch.object(nova_site, "journal_payload", return_value={
+                "status": {"asks": [], "cycle": 1457,
+                           "lastWrittenAt": "2026-09-12T16:00:00+02:00",
+                           "recentMissingCycles": [1440]}}), \
+            patch.object(nova_site, "project_payload", return_value={"projects": []}), \
+            patch.object(nova_site, "alerts_payload", return_value={
+                "reachable": True, "blind": False, "firing": [], "rules": 6}), \
+            patch.object(nova_site, "_newest_quota", return_value=[1, 3.0, 0.1, 39.0, 0.9]), \
+            patch.object(nova_site, "cadence_minutes", return_value=40):
+        status, _head, body = _get("/api/home")
+
+    assert status == 200
+    health = json.loads(body)["health"]
+    assert health is not None, "the health line was never built"
+    assert health["cycle"] == 1457
+    assert health["cadenceMinutes"] == 40
+    assert health["concerns"] == ["1 cycle wrote no entry: 1440"]
+
+
+def test_a_prometheus_that_raises_leaves_the_landing_page_serving():
+    """The failure the first draft of this shipped.
+
+    `alerts_payload` catches the three exceptions Prometheus fails with in
+    production and not every exception there is, so an unexpected one made
+    `/api/home` answer 502 -- the whole landing page, taken down by its
+    quietest line. The page must render with the line absent instead.
+    """
+    nova_site.reset_cache()
+
+    def explode():
+        raise RuntimeError("prometheus did something new")
+
+    with patch.object(nova_site, "recap_payload", return_value={"bullets": ["a"]}), \
+            patch.object(nova_site, "next_up_payload",
+                         return_value={"next": [], "active": [], "claimsReadable": True}), \
+            patch.object(nova_site, "journal_payload",
+                         return_value={"status": {"asks": []}}), \
+            patch.object(nova_site, "project_payload", return_value={"projects": []}), \
+            patch.object(nova_site, "alerts_payload", side_effect=explode):
+        status, _head, body = _get("/api/home")
+
+    assert status == 200, "a raising Prometheus took the landing page down"
+    payload = json.loads(body)
+    assert payload["health"] is None
+    assert payload["recap"]["bullets"] == ["a"]

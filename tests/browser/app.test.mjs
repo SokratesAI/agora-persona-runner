@@ -17903,6 +17903,97 @@ describe("the landing page", () => {
       "an unreadable ledger still drew a picture");
   });
 
+  /* The health line -- step 3b. *"One quiet line: cycle running, gaps in
+   * numbering, critical alerts, quota burn. Silent when fine."*
+   *
+   * The server side of it is `nova_home.health_block` and is tested in
+   * `tests/test_nova_home_health.py`. What is only testable here is the
+   * half the page owns: it draws nothing when the block is quiet, and it
+   * adds the one clock-dependent concern itself, because `/api/home` is
+   * served stale-while-revalidate and a `stalled` judged on the server
+   * would be frozen inside an hours-old body at "fine".
+   */
+  /* `install` runs against the window just before app.js is evaluated, so
+   * replacing `Date.now` here is what the page's own clock resolves to.
+   * Freezing it rather than passing a stamp in: the render reads the clock
+   * itself, and a test that handed it one would be pinning the arithmetic
+   * while leaving the call site free to read a different clock. */
+  const frozenAt = (iso) => (window) => {
+    const at = Date.parse(iso);
+    window.Date.now = () => at;
+  };
+
+  const HEALTHY = {
+    cycle: 1457, lastWrittenAt: "2026-09-12T16:00:00+02:00",
+    cadenceMinutes: 40, stallGrace: 2, gaps: [], sevenDay: 39, sevenDayPace: 0.9,
+    concerns: [],
+  };
+
+  test("a healthy loop draws no health line at all", async () => {
+    /* Silence is the whole feature. A green tick would be a form where he
+     * asked for calm -- the same rule the needs-you block is built on. */
+    const window = await loadSite("/", { home: { ...HOME, health: HEALTHY } });
+    assert.ok(!window.document.querySelector(".home-health"),
+      "a healthy loop drew a health line anyway");
+  });
+
+  test("no health block in the payload also draws nothing", async () => {
+    /* Both draw nothing and only one of them is reassurance. Asserted
+     * separately from the case above because the two reach the same screen
+     * down different branches, and a renderer that threw on the absent one
+     * would take the whole landing page with it. */
+    const window = await loadSite("/", { home: HOME });
+    assert.ok(!window.document.querySelector(".home-health"));
+    assert.ok(window.document.querySelector(".home-projects"),
+      "an absent health block broke the rest of the page");
+  });
+
+  test("the server's concerns are drawn, one item each", async () => {
+    const window = await loadSite("/", {
+      home: {
+        ...HOME,
+        health: { ...HEALTHY, concerns: ["2 cycles wrote no entry: 1440, 1441",
+                                        "1 alert is firing: KubePodCrashLooping"] },
+      },
+    });
+    const line = window.document.querySelector(".home-health");
+    assert.ok(line, "the health line did not draw with two concerns on it");
+    assert.equal(line.querySelectorAll(".home-health-item").length, 2);
+    assert.match(line.textContent, /1440, 1441/);
+    assert.match(line.textContent, /KubePodCrashLooping/);
+  });
+
+  test("the page adds the stalled concern itself, from its own clock", async () => {
+    /* The reason this half is not on the server. `lastWrittenAt` is
+     * absolute and the browser clock is live, so the subtraction is right
+     * however old the cached body is.
+     *
+     * Three hours at a 40-minute cadence is 4 intervals, well past the
+     * grace of 2. The assertion is on the NUMBER and not just on the
+     * presence of the line: a renderer that pushed the concern without
+     * dividing by the cadence would pass a presence check. */
+    const window = await loadSite("/", {
+      home: { ...HOME, health: { ...HEALTHY, lastWrittenAt: "2026-09-12T13:00:00+02:00" } },
+      install: frozenAt("2026-09-12T16:00:00+02:00"),
+    });
+    const line = window.document.querySelector(".home-health");
+    assert.ok(line, "three hours of silence drew no health line");
+    assert.match(line.textContent, /nothing has been written for 4 intervals/);
+  });
+
+  test("inside the grace, a cycle that has woken and not filed yet is not a stall", async () => {
+    /* A cycle writes its entry at the END of its run, so there is a real
+     * window every interval where the newest entry is the previous
+     * cycle's. Without the grace this line would cry stall every single
+     * time he opened the page, which is how a warning stops being read. */
+    const window = await loadSite("/", {
+      home: { ...HOME, health: { ...HEALTHY, lastWrittenAt: "2026-09-12T15:15:00+02:00" } },
+      install: frozenAt("2026-09-12T16:00:00+02:00"),
+    });
+    assert.ok(!window.document.querySelector(".home-health"),
+      "45 minutes at a 40-minute cadence was reported as a stall");
+  });
+
   test("the nav highlights Home and not the journal", async () => {
     const window = await loadSite("/", { home: HOME });
     assert.ok(window.document.querySelector(".nav-tab[href='/']").classList.contains("on"));
