@@ -1259,3 +1259,189 @@ def test_one_unreadable_pod_does_not_discard_the_node_that_did_report():
     lines = hmt.name_swap_holders(report)
     assert any(line.startswith("  UNREADABLE  host-process-memory-29803110-bbbbb")
                for line in lines)
+
+
+# The CPU half of the sweep (platform-config#749, live 2026-09-12). Copied from
+# a real report rather than invented: cycle 1461 built its fixture by counting
+# the kernel's `/proc/<pid>/stat` fields by hand, got one filler field wrong,
+# and seven tests passed green on a meter that halved every figure.
+SWEEP_LOG_WITH_CPU = """HOST PROCESS MEMORY on server1 -- 235 process(es) read, 1 exited mid-sweep
+  total    rss   3760Mi  swap    190Mi
+TOP 20 BY SWAP
+  1931584 k3s-server           rss   1859Mi  swap     90Mi  age   8.9d  /../../../../system.slice/k3s.service
+      859 tailscaled           rss     60Mi  swap     11Mi  age  10.5d  /../../../../system.slice/tailscaled.service
+TOP 20 BY RSS
+  1931584 k3s-server           rss   1859Mi  swap     90Mi  age   8.9d  /../../../../system.slice/k3s.service
+TOP 10 BY CPU -- one 1.0s window; 235 of 235 process(es) had a delta to read.
+  A process that burned a core for hours and is idle in that second reads 0.0% here; `since start` below is its whole-life average, which cannot miss it and cannot localise it. Percent is of ONE core: over 100 is threads.
+  all      now    108.1%  -- about 1.1 core(s) busy across every process read
+  1378239 python3              now   44.2%  since start  416.7%  age   0.0d  /../../kubepods-burstable-pod0bc3062d.slice
+  1931584 k3s-server           now   25.6%  since start   19.1%  age   8.9d  /../../../../system.slice/k3s.service
+  1378250 python3              now    2.9%  since start  ?%  age   0.0d  /
+TOP 10 BY CPU SINCE START -- 161 of 235 process(es) are older than a day.
+  1931584 k3s-server           since start   19.1%  now   25.6%  age   8.9d  /../../../../system.slice/k3s.service
+      859 tailscaled           since start    3.0%  now    1.0%  age  10.5d  /../../../../system.slice/tailscaled.service
+"""
+
+
+def test_the_cpu_section_is_read_with_both_figures_and_the_all_line():
+    parsed, why = hmt._parse_sweep(SWEEP_LOG_WITH_CPU)
+    assert why is None
+    assert parsed["cpu_busy_percent"] == 108.1
+    assert [(r["pid"], r["cpu_now_percent"], r["cpu_since_start_percent"])
+            for r in parsed["cpu_rows"]] == [
+        (1378239, 44.2, 416.7), (1931584, 25.6, 19.1), (1378250, 2.9, None)]
+    assert parsed["cpu_rows"][0]["comm"] == "python3"
+    assert parsed["cpu_rows"][1]["age_days"] == 8.9
+
+
+def test_the_since_start_section_is_not_read_twice():
+    """Its rows are the same processes with the columns swapped.
+
+    tailscaled appears only there, so if that section were parsed too it would
+    show up in `cpu_rows` -- and k3s-server would appear twice, which would
+    double its weight in any ranking built off this.
+    """
+    parsed, _ = hmt._parse_sweep(SWEEP_LOG_WITH_CPU)
+    assert [r["comm"] for r in parsed["cpu_rows"]] == ["python3", "k3s-server", "python3"]
+    assert "tailscaled" not in [r["comm"] for r in parsed["cpu_rows"]]
+
+
+def test_a_since_start_row_does_not_match_the_cpu_row_pattern():
+    """The mechanism that actually stops the double-count.
+
+    Deleting the `"SINCE START" not in line` clause leaves every test above
+    green, because a row of that section prints `since start` before `now` and
+    this pattern requires the other order. That is worth pinning directly: if
+    the columns are ever reordered upstream, the section flag is the only guard
+    left and this test is what says the other one went.
+    """
+    reversed_row = ("  1931584 k3s-server           since start   19.1%  "
+                    "now   25.6%  age   8.9d  /../../../../system.slice/k3s.service")
+    assert hmt.CPU_ROW.match(reversed_row) is None
+    live_row = ("  1931584 k3s-server           now   25.6%  "
+                "since start   19.1%  age   8.9d  /../../../../system.slice/k3s.service")
+    assert hmt.CPU_ROW.match(live_row) is not None
+
+
+def test_a_question_mark_is_unmeasured_not_idle():
+    """The sweep prints `?` rather than 0.0% exactly so these stay apart."""
+    parsed, _ = hmt._parse_sweep(SWEEP_LOG_WITH_CPU)
+    unmeasured = parsed["cpu_rows"][2]
+    assert unmeasured["cpu_since_start_percent"] is None
+    assert unmeasured["cpu_now_percent"] == 2.9
+
+
+def test_a_sweep_with_no_cpu_section_still_parses():
+    """The CronJob and this reader ship from two repos and roll independently.
+
+    A report from the image before platform-config#749 has no CPU section at
+    all, and reading that as a broken format would take the swap half down with
+    it -- which is exactly what the missing `age` column did in September.
+    """
+    parsed, why = hmt._parse_sweep(SWEEP_LOG)
+    assert why is None
+    assert parsed["cpu_rows"] == []
+    assert parsed["cpu_busy_percent"] is None
+    assert len(parsed["rows"]) == 6
+
+
+def test_the_cpu_rows_carry_the_node_the_scheduler_named(tmp_path):
+    run = sweep_runner(log=SWEEP_LOG_WITH_CPU, nodes=("server1",))
+    report, why = hmt.read_swap_holders(runner=run, now=NOW)
+    assert why is None
+    assert {row["node"] for row in report["cpu_rows"]} == {"server1"}
+    assert len(report["cpu_rows"]) == 3
+
+
+def test_the_cpu_rows_are_recorded_once_per_sweep(tmp_path):
+    """Read every 40 minutes against a sweep that fires every 30.
+
+    The same Pod's report is read two and three times, and counting one sweep
+    three times makes an idle box look busy in the exact shape a real spike has.
+    """
+    ledger = tmp_path / "cpu.jsonl"
+    run = sweep_runner(log=SWEEP_LOG_WITH_CPU)
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    written, held, why = hmt.record_cpu(report, str(ledger))
+    assert (written, held, why) == (1, 1, None)
+    again, held_again, why = hmt.record_cpu(report, str(ledger))
+    assert (again, held_again, why) == (0, 1, None)
+    row = json.loads(ledger.read_text().splitlines()[0])
+    assert row["node"] == "server1"
+    assert row["cpu_busy_percent"] == 108.1
+    assert row["_at"].startswith("2026-08-31T14:30")
+    assert len(row["rows"]) == 3
+
+
+def test_a_second_node_of_the_same_run_is_its_own_ledger_line(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    job = "host-process-memory-29803110"
+    run = sweep_runner(
+        pods=[(f"{job}-0-aaaaa", "Succeeded", "2026-08-31T14:30:00Z", "server1", job),
+              (f"{job}-1-bbbbb", "Succeeded", "2026-08-31T14:30:00Z", "server2", job)],
+        nodes=("server1", "server2"),
+        logs={f"{job}-0-aaaaa": SWEEP_LOG_WITH_CPU,
+              f"{job}-1-bbbbb": SWEEP_LOG_WITH_CPU})
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    written, held, why = hmt.record_cpu(report, str(ledger))
+    assert (written, held, why) == (2, 2, None)
+    assert sorted(json.loads(line)["node"]
+                  for line in ledger.read_text().splitlines()) == ["server1", "server2"]
+
+
+def test_recording_a_sweep_with_no_cpu_section_is_not_an_error(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    run = sweep_runner(log=SWEEP_LOG)
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    assert hmt.record_cpu(report, str(ledger)) == (0, None, None)
+    assert not ledger.exists()
+
+
+def test_an_unwritable_cpu_ledger_says_so_rather_than_failing_silently(tmp_path):
+    run = sweep_runner(log=SWEEP_LOG_WITH_CPU)
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    written, held, why = hmt.record_cpu(report, str(tmp_path / "no" / "cpu.jsonl"))
+    assert (written, held) == (0, None)
+    assert "cpu.jsonl" in why
+
+
+def test_the_cpu_burners_line_names_the_process_and_prints_both_figures():
+    run = sweep_runner(log=SWEEP_LOG_WITH_CPU)
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    out = "\n".join(hmt.name_cpu_burners(report))
+    assert "CPU BURNERS" in out
+    assert "server1 about 1.1 core(s) busy" in out
+    assert "now 44.2%, life 416.7% — python3 on server1" in out
+    assert "life unmeasured" in out
+
+
+def test_a_sweep_with_no_cpu_section_says_it_cannot_name_them():
+    """Absent has to read as absent, never as a quiet zero."""
+    run = sweep_runner(log=SWEEP_LOG)
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    out = "\n".join(hmt.name_cpu_burners(report))
+    assert "CANNOT NAME the CPU burners" in out
+    assert "CPU BURNERS" not in out
+
+
+def test_the_cpu_ledger_is_trimmed_to_its_cap(tmp_path):
+    """An append-only file on a 1Gi volume that nobody trims fills it."""
+    ledger = tmp_path / "cpu.jsonl"
+    ledger.write_text("".join(
+        json.dumps({"pod": f"old-{n}", "node": "server1", "rows": []}) + "\n"
+        for n in range(5)))
+    run = sweep_runner(log=SWEEP_LOG_WITH_CPU)
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    written, held, why = hmt.record_cpu(report, str(ledger), keep=3)
+    assert (written, held, why) == (1, 3, None)
+    pods = [json.loads(line)["pod"] for line in ledger.read_text().splitlines()]
+    assert pods == ["old-3", "old-4", report["pods"][0]["pod"]]
+
+
+def test_a_ledger_under_the_cap_is_left_alone(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    run = sweep_runner(log=SWEEP_LOG_WITH_CPU)
+    report, _ = hmt.read_swap_holders(runner=run, now=NOW)
+    assert hmt.record_cpu(report, str(ledger), keep=3)[:2] == (1, 1)
+    assert len(ledger.read_text().splitlines()) == 1
