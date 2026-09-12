@@ -182,6 +182,38 @@ SWAP_HOLDER_TOTAL = re.compile(
 #: rather than dropped, because that rollback must not blind this reader.
 SWAP_HOLDER_HEADER = re.compile(r"^HOST PROCESS MEMORY(?:\s+on\s+(\S+))?\s+--")
 
+#: A percentage the sweep prints, which is `?` when it could not be measured --
+#: a process seen in only one of the two samples has no delta, and the sweep
+#: prints `?` rather than `0.0%` precisely so an unmeasured process cannot be
+#: read as an idle one. Parsing `?` back to `None` keeps that distinction.
+_CPU_PCT = r"(\d+(?:\.\d+)?|\?)"
+
+#: A row of the sweep's `TOP n BY CPU` section: pid, comm, the one-second
+#: window, the whole-life average, age, cgroup path.
+#:
+#: Both figures are optional-valued rather than optional-present, and the age
+#: is optional-present for the same reason `SWAP_HOLDER_ROW`'s is: this reader
+#: and the CronJob that writes the report live in two different repos and
+#: deploy independently, so a reader that only takes today's shape goes blind
+#: the moment the older one is rolled back.
+CPU_ROW = re.compile(
+    r"^\s*(\d+)\s+(.+?)\s+now\s+" + _CPU_PCT + r"%?"
+    r"\s+since start\s+" + _CPU_PCT + r"%?"
+    r"(?:\s+age\s+([\d.]+)d)?\s*(\S*)\s*$")
+
+#: The `all` line of that section -- every process read, summed, in the same
+#: one-second window. Percent is of ONE core and is never clamped, so 108.1%
+#: means about 1.1 cores were busy on that box.
+CPU_TOTAL_ROW = re.compile(r"^\s*all\s+now\s+" + _CPU_PCT + r"%?")
+
+#: How many CPU rows to *print*, matching `SWAP_HOLDER_TOP`'s reasoning: the
+#: sweep already prints its own top 10 per node and repeating 20 of them would
+#: put a wall of text in front of every run. The ledger keeps every row the
+#: sweep printed -- that is what lets it answer "who was burning it at 03:00"
+#: once the Pod logs are reaped, and it is ten small objects per node per
+#: half hour.
+CPU_BURNER_TOP = 4
+
 #: The sweep's own words for "there is nothing to list". A `TOP n BY SWAP`
 #: section with no rows under it is two entirely different findings depending on
 #: whether this line is there, and reading them as one is what made a correct
@@ -198,6 +230,25 @@ SWAP_HOLDER_NONE = "none -- every process read reported zero swap"
 #: sample changes no slope, whereas a lock would make an instrument able to
 #: block a cycle.
 DEFAULT_LEDGER = os.environ.get("NOVA_HOST_MEMORY_LEDGER", "/data/nova-host-memory.jsonl")
+
+#: The CPU ledger, beside it and for the same reason. The cluster keeps eight
+#: hours of sweep Pods (platform-config#750); nothing keeps the rows after that,
+#: so the one instrument that can name a host process burning a core is blind to
+#: anything older than this morning. This file is the durable half.
+#:
+#: The boundary it does not cross, and it matters on issue #169: this runs on
+#: the box the sweep watches, so it is silent during exactly the incident it
+#: exists for. It is a supplement to the cluster's own retention, never a
+#: replacement -- the sweep Pod writes its log whether or not anything reads it.
+DEFAULT_CPU_LEDGER = os.environ.get("NOVA_HOST_CPU_LEDGER", "/data/nova-host-cpu.jsonl")
+
+#: How many CPU samples to keep, the same shape as `DEFAULT_KEEP` and for the
+#: same reason -- this writes to a 1Gi local-path volume and an append-only file
+#: nobody trims is a slow way to fill it. Two nodes swept twice an hour is 96
+#: lines a day at roughly 3KB each, so 4000 is about six weeks and 12MB. That is
+#: long enough to cover a spike somebody notices days later, which is the whole
+#: failure on issue #169.
+DEFAULT_CPU_KEEP = 4000
 
 #: How many readings to keep. At the 24-minute heartbeat this loop runs on
 #: that is about five weeks, and the file is ~150 bytes a line.
@@ -484,6 +535,19 @@ def holder_scope(cgroup):
     return "unowned"
 
 
+def _cpu_percent(text):
+    """One of the sweep's percentages as a float, or None when it printed `?`.
+
+    The sweep prints `?` for a process it could not measure -- one that appeared
+    in only one of its two samples -- rather than `0.0%`, because an unmeasured
+    process and an idle one are opposite findings. Keeping that as `None` is the
+    whole reason this is a function instead of a `float()` call.
+    """
+    if text is None or text == "?":
+        return None
+    return float(text)
+
+
 def _parse_sweep(text):
     """One sweep report -> `(parsed, why)`.
 
@@ -493,6 +557,7 @@ def _parse_sweep(text):
     this reader no longer understands, and the two are returned differently.
     """
     node, total_swap, rows, in_swap, said_none = None, None, [], False, False
+    cpu_rows, cpu_busy, in_cpu = [], None, False
     for line in text.splitlines():
         head = SWAP_HOLDER_HEADER.match(line)
         if head:
@@ -502,11 +567,40 @@ def _parse_sweep(text):
         if total:
             total_swap = float(total.group(2))
             continue
-        if line.startswith("TOP") and "BY SWAP" in line:
-            in_swap = True
+        if line.startswith("TOP"):
+            # One decision per section heading rather than two independent
+            # ones, so a section this reader does not know about (`BY RSS`)
+            # closes both rather than leaving the previous one open.
+            in_swap = "BY SWAP" in line
+            # `TOP n BY CPU SINCE START` is the same processes ranked by the
+            # other column, and every row of it already appears in the live
+            # section with both figures, so reading it too would double-count.
+            #
+            # This clause is the second guard and not the one doing the work:
+            # that section prints `since start` before `now`, and `CPU_ROW`
+            # requires them in the other order, so its rows already fail to
+            # match. Measured -- with this clause removed every test still
+            # passes. It stays because the two guards fail on different
+            # changes: a future report that reorders the columns would slip
+            # past the regex, and one that renames the heading would slip past
+            # this. Do not read the surviving mutation as a dead line.
+            in_cpu = "BY CPU" in line and "SINCE START" not in line
             continue
-        if line.startswith("TOP") and "BY SWAP" not in line:
-            in_swap = False
+        if in_cpu:
+            cpu_total = CPU_TOTAL_ROW.match(line)
+            if cpu_total:
+                cpu_busy = _cpu_percent(cpu_total.group(1))
+                continue
+            cpu_row = CPU_ROW.match(line)
+            if cpu_row:
+                cpu_rows.append({
+                    "pid": int(cpu_row.group(1)),
+                    "comm": cpu_row.group(2).strip(),
+                    "cpu_now_percent": _cpu_percent(cpu_row.group(3)),
+                    "cpu_since_start_percent": _cpu_percent(cpu_row.group(4)),
+                    "age_days": (float(cpu_row.group(5))
+                                 if cpu_row.group(5) is not None else None),
+                    "cgroup": cpu_row.group(6), "node": node})
             continue
         if not in_swap:
             continue
@@ -525,7 +619,15 @@ def _parse_sweep(text):
         return None, "carried no parseable 'TOP n BY SWAP' rows and did not say it found none"
     for row in rows:
         row["node"] = node
-    return {"node": node, "rows": rows, "total_swap_mib": total_swap}, None
+    for row in cpu_rows:
+        row["node"] = node
+    # A report with no CPU section is not a report this reader fails on. The
+    # sweep grew its CPU half on 2026-09-12 (platform-config#749) and this
+    # reader ships from another repo, so every version of that image has to
+    # parse here -- absent reads as "the sweep did not say", which is what
+    # `cpu_busy_percent: None` means, and never as "nothing was busy".
+    return {"node": node, "rows": rows, "total_swap_mib": total_swap,
+            "cpu_rows": cpu_rows, "cpu_busy_percent": cpu_busy}, None
 
 
 def read_node_names(runner=subprocess.run):
@@ -647,6 +749,8 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
         parsed["node"] = node
         for row in parsed["rows"]:
             row["node"] = node
+        for row in parsed.get("cpu_rows") or []:
+            row["node"] = node
         parsed["pod"] = pod["pod"]
         reports.append(parsed)
         rows.extend(parsed["rows"])
@@ -662,6 +766,8 @@ def read_swap_holders(runner=subprocess.run, namespace=SWAP_HOLDER_NAMESPACE,
               if report["total_swap_mib"] is not None]
     now = now or datetime.now(timezone.utc)
     return {"pods": reports, "at": newest["at"], "rows": rows,
+            "cpu_rows": [row for report in reports
+                         for row in report.get("cpu_rows") or []],
             "total_swap_mib": (sum(totals) if totals else None),
             "nodes": nodes, "unswept": unswept, "nodes_why": nodes_why,
             "unreadable": unreadable,
@@ -729,6 +835,112 @@ def name_swap_holders(report, top=SWAP_HOLDER_TOP):
         lines.append(f"  CANNOT SAY which nodes were missed — {report['nodes_why']}")
     for why in report["unreadable"]:
         lines.append(f"  UNREADABLE  {why}")
+    return lines
+
+
+def record_cpu(report, path, keep=DEFAULT_CPU_KEEP):
+    """Append this sweep's CPU rows to the CPU ledger. `(written, held, why)`.
+
+    One JSON line per node report, carrying the sweep's own stamp, the node, the
+    `all` figure and every row it printed. The cluster retains eight hours of
+    sweep Pods and nothing retained the rows at all, so on issue #169 -- which
+    asks which process pegged server1 overnight on 09-01/09-02 -- the honest
+    answer was that the meter could only catch the next spike and only if
+    somebody happened to read a Pod log inside its window. This removes the
+    second half of that.
+
+    **A sweep already in the ledger is not written again**, keyed on the Pod
+    name, because this runs roughly every 40 minutes against a sweep that fires
+    every 30 and the same report is read two and three times. Counting one
+    sweep three times would make an idle box look busy in exactly the shape a
+    real incident has.
+
+    A report with no CPU section writes nothing and is not an error: the sweep
+    grew its CPU half after this reader existed, so an older image is silence
+    rather than a failure.
+    """
+    fresh = [pod for pod in report["pods"] if pod.get("cpu_rows")]
+    if not fresh:
+        return 0, None, None
+    try:
+        seen = set()
+        held = 0
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    held += 1
+                    try:
+                        seen.add(json.loads(line).get("pod"))
+                    except json.JSONDecodeError:
+                        continue
+        new = [pod for pod in fresh if pod["pod"] not in seen]
+        if new:
+            at = report["at"].isoformat()
+            with open(path, "a", encoding="utf-8") as handle:
+                for pod in new:
+                    handle.write(json.dumps({
+                        "_at": at, "pod": pod["pod"], "node": pod["node"],
+                        "cpu_busy_percent": pod.get("cpu_busy_percent"),
+                        "rows": pod["cpu_rows"]}, sort_keys=True) + "\n")
+            # Trimmed after the append rather than before, so a write that
+            # fails leaves the history it could not add to intact. The oldest
+            # lines go first: the file is append-ordered, and the sweep's own
+            # stamps are what a reader sorts on afterwards.
+            total = held + len(new)
+            if total > keep:
+                with open(path, encoding="utf-8") as handle:
+                    lines = [line for line in handle if line.strip()]
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.writelines(lines[-keep:])
+                return len(new), min(total, keep), None
+    except OSError as exc:
+        return 0, None, f"{path}: {exc}"
+    return len(new), held + len(new), None
+
+
+def name_cpu_burners(report, top=CPU_BURNER_TOP):
+    """Who is burning the CPU, by name and by node, from the sweep's own rows.
+
+    The companion to `name_swap_holders` and deliberately the same shape. It
+    does not raise: a busy box is not a defect, and this loop has no measured
+    threshold for one. Both figures are printed side by side because they fail
+    in opposite directions -- the one-second window misses a process idle in
+    that second, and the whole-life average cannot localise a spike -- and
+    neither settles issue #169 alone.
+    """
+    rows = [row for row in report.get("cpu_rows") or []
+            if row.get("cpu_now_percent") is not None]
+    if not (report.get("cpu_rows") or []):
+        # Not a caveat on anything above: the sweep printed no CPU section, so
+        # nothing here measured CPU at all.
+        return ["  CANNOT NAME the CPU burners — the newest sweep printed no "
+                "`TOP n BY CPU` section, so that half of the instrument is "
+                "either older than the CPU meter or was not read."]
+    rows.sort(key=lambda row: row["cpu_now_percent"], reverse=True)
+    busy = [(pod["node"] or "an unnamed node", pod["cpu_busy_percent"])
+            for pod in report["pods"] if pod.get("cpu_busy_percent") is not None]
+    head = (f"CPU BURNERS  {len(report['cpu_rows'])} process(es) named across "
+            f"{len(report['pods'])} node(s), read {report['age_hours']:.1f}h ago")
+    if busy:
+        head += ", " + ", ".join(
+            f"{node} about {percent / 100.0:.1f} core(s) busy"
+            for node, percent in busy)
+    lines = [head + "."]
+    lines.append("  `now` is one 1.0s window and misses a process idle in it; "
+                 "`life` is the process's whole-life average and cannot say "
+                 "when. Percent is of ONE core, so over 100 is threads.")
+    for row in rows[:top]:
+        life = ("life unmeasured" if row.get("cpu_since_start_percent") is None
+                else f"life {row['cpu_since_start_percent']:.1f}%")
+        age = ("" if row.get("age_days") is None
+               else f", {row['age_days']:.1f}d old")
+        node = row.get("node") or "unnamed node"
+        lines.append(f"  now {row['cpu_now_percent']:.1f}%, {life} — "
+                     f"{row['comm']} on {node} (pid {row['pid']}, "
+                     f"{holder_scope(row['cgroup'])}{age})")
     return lines
 
 
@@ -1124,6 +1336,10 @@ def main(argv=None):
                         help="how far back the slope is measured over")
     parser.add_argument("--horizon-days", type=float, default=DEFAULT_HORIZON_DAYS,
                         help="project to zero no further out than this")
+    parser.add_argument("--cpu-ledger", default=DEFAULT_CPU_LEDGER,
+                        help="where the sweep's CPU rows are kept")
+    parser.add_argument("--cpu-keep", type=int, default=DEFAULT_CPU_KEEP,
+                        help="how many CPU samples to retain")
     parser.add_argument("--no-record", action="store_true",
                         help="judge the ledger without appending to it")
     args = parser.parse_args(argv)
@@ -1219,9 +1435,26 @@ def main(argv=None):
     holders, holders_why = read_swap_holders()
     if holders is None:
         print(f"  CANNOT NAME the swap holders — {holders_why}")
+        print(f"  CANNOT NAME the CPU burners — {holders_why}")
     else:
         for line in name_swap_holders(holders):
             print(line)
+        for line in name_cpu_burners(holders):
+            print(line)
+        if args.no_record:
+            print(f"  not recording the CPU rows (--no-record); "
+                  f"ledger {args.cpu_ledger}")
+        else:
+            written, held, cpu_why = record_cpu(holders, args.cpu_ledger,
+                                                keep=args.cpu_keep)
+            if cpu_why is not None:
+                print(f"  COULD NOT WRITE the CPU ledger — {cpu_why}. The Pod "
+                      "logs are the only copy and the cluster keeps 8h of them.")
+            elif held is None:
+                print("  nothing to record — this sweep printed no CPU rows.")
+            else:
+                print(f"  recorded {written} new CPU sample(s); "
+                      f"{args.cpu_ledger} holds {held}.")
 
     if harmed or actionable:
         print("This is tools.workload_health's blind spot on purpose: it judges the "
