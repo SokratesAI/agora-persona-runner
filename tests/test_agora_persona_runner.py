@@ -2117,7 +2117,9 @@ def test_gemini_fallback_note_prefixes_only_the_first_streamed_chunk(runner):
 # two providers: the bridge holds a persistent CLI session per
 # conversation_id, so only the LAST history entry is sent as this turn's
 # prompt, not the full history -- see providers/claude_cli.py's own
-# docstring.
+# docstring. 2026-09-12: the earlier turns now ride along in a separate
+# `history` field, which the bridge reads only when it has no session to
+# resume; the prompt itself is still the last entry and nothing else.
 # ---------------------------------------------------------------------------
 
 def test_claude_cli_generate_sends_only_the_last_history_entry(runner):
@@ -2143,6 +2145,81 @@ def test_claude_cli_generate_sends_only_the_last_history_entry(runner):
     assert captured["body"]["conversation_id"] == "conv-1"
     assert captured["body"]["model"] == "claude-haiku-4-5-20251001"
     assert captured["body"]["restricted"] is False
+
+
+def test_claude_cli_generate_sends_the_earlier_turns_as_history(runner):
+    """The prompt stays the last message; the rest goes in `history` for the
+    bridge to use only if it has no session to resume. Filed 2026-09-12: a
+    conversation opened by `needs_input` has never had a turn run through the
+    bridge, so the owner's reply eleven hours later woke a session that could
+    see his reply and nothing else -- not the seventeen messages above it,
+    not even the question it was answering."""
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "the answer", "thinking": ""}
+
+    history = [
+        {"role": "user", "content": "first message, long ago"},
+        {"role": "assistant", "content": "an old reply"},
+        {"role": "user", "content": "the actual new message"},
+    ]
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system prompt", history,
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+    assert captured["body"]["prompt"] == "the actual new message"
+    assert captured["body"]["history"] == [
+        {"role": "user", "content": "first message, long ago"},
+        {"role": "assistant", "content": "an old reply"},
+    ]
+
+
+def test_claude_cli_generate_sends_an_empty_history_on_a_first_turn(runner):
+    """A genuinely new conversation has nothing above its first message, and
+    the field has to be present and empty rather than absent -- an absent one
+    would make "no earlier turns" and "an old runner that never sends the
+    field" the same thing on the bridge's side."""
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "the answer", "thinking": ""}
+
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system prompt",
+            [{"role": "user", "content": "hello"}],
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+    assert captured["body"]["history"] == []
+
+
+def test_claude_cli_history_carries_no_attachment_bytes(runner):
+    """merge_history hangs base64 image data off every entry. The prompt's own
+    attachments are sent separately and on purpose; resending every earlier
+    image as text-shaped JSON would multiply the request by the size of the
+    conversation's whole image history for a transcript that is usually
+    thrown away unread."""
+    captured = {}
+
+    def fake_http_json(method, url, body=None, headers=None, timeout=300):
+        captured["body"] = body
+        return 200, {"text": "the answer", "thinking": ""}
+
+    history = [
+        {"role": "user", "content": "look at this",
+         "attachments": [{"filename": "a.png", "mimeType": "image/png", "url": "/api/upload/a"}]},
+        {"role": "user", "content": "and now answer"},
+    ]
+    with patch.object(runner.providers.claude_cli, "http_json", side_effect=fake_http_json):
+        runner.claude_cli_generate(
+            "claude-haiku-4-5-20251001", False, "system prompt", history,
+            dict(runner.NO_CAPS), {"name": "Test"}, "conv-1",
+        )
+    assert captured["body"]["history"] == [{"role": "user", "content": "look at this"}]
 
 
 def test_claude_cli_generate_defaults_unrestricted_when_persona_field_absent(runner):
