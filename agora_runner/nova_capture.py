@@ -1160,7 +1160,7 @@ def set_project_priority(project, priority, dated=None):
     return False, f"could not write project ratings: {result}"
 
 
-def set_project_order(project, position):
+def set_project_order(project, position, names=None):
     """Place a project at `position` in his hand-ranked list. Returns (ok, message).
 
     Milestone M3 of idea #260. Same read-modify-write and same 409 retry as
@@ -1172,14 +1172,22 @@ def set_project_order(project, position):
     the table because the first rating has to be able to land somewhere; a
     position is a statement about a list, and a list nobody has written has
     no positions in it. `set_project_order` in `nova_boards` answers `None`
-    for that, and for a project with no row, and for a position outside the
-    list -- none of the three is retried, because re-reading gives the same
-    answer.
+    for that, and for a project outside the list being ordered, and for a
+    position outside it -- none of the three is retried, because re-reading
+    gives the same answer.
+
+    `names` is the list he is looking at, in the order the page drew it, and
+    it is what `position` indexes. Passing it is how a project he has never
+    rated becomes orderable at all: this table holds a row per *rated*
+    project while the page lists every project his boards name, so without
+    it the bottom of his list is unreachable -- which is exactly what he
+    reported on 2026-09-12. It stays optional so a caller that really is
+    ordering this table alone keeps working unchanged.
     """
     result = ""
     for _ in range(WRITE_ATTEMPTS):
         current, rev = vault_read_path_rev(PROJECT_META_PATH)
-        updated = _set_project_order_md(current or "", project, position)
+        updated = _set_project_order_md(current or "", project, position, names=names)
         if updated is None:
             return False, f"cannot place {project!r} at {position!r}"
         result = vault_write_path(PROJECT_META_PATH, updated, if_rev=rev)

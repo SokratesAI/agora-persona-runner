@@ -5101,6 +5101,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
         end of the list, a file with no table -- is `set_project_order`'s to
         answer, because those are facts about the document rather than about
         the request.
+
+        **The list it is a position in comes from here, not from the file.**
+        `projects.md` holds one row per *rated* project; the page draws every
+        project his boards name, ranked. Those were the same list only by
+        luck, and on 2026-09-12 they were not: eleven projects on the page,
+        eight rows in the file, and the three at the bottom -- `Infra`,
+        `Maintenance` and `Research` -- could not be moved at all. So the
+        page's own order is what goes down, out of the same cached payload
+        the page itself was built from.
         """
         project = payload.get("project")
         position = payload.get("position")
@@ -5112,7 +5121,9 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            ok, message = set_project_order(project.strip(), position)
+            ok, message = set_project_order(
+                project.strip(), position,
+                names=project_payload().get("projects") or [])
         except Exception as e:
             log(f"nova-site project order failed: {e}")
             self._send_json(502, {"error": str(e)[:300]})
