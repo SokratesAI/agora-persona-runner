@@ -1143,3 +1143,52 @@ def test_the_echoed_limit_is_the_window_the_steps_actually_came_from():
     with patch.object(convs, "agora_get", side_effect=get):
         payload = convs.thread("c-1")
     assert payload["limit"] == convs.MAX_THREAD_CEILING
+
+
+# --- waiting(): the payload behind the floating chat button's dot ---
+
+
+def test_heartbeat_conversation_ids_reads_the_ids_agora_names():
+    with patch.object(convs, "agora_get",
+                      return_value=(200, {"heartbeats": [
+                          {"id": "h1", "conversationId": "c1"},
+                          {"id": "h2", "conversationId": ""},
+                          {"id": "h3", "conversationId": "c3"}]})):
+        assert convs.heartbeat_conversation_ids() == {"c1", "c3"}
+
+
+def test_heartbeat_conversation_ids_is_none_not_empty_when_agora_refuses():
+    """An empty set would mean "no heartbeat owns anything", which lights the
+    button on every cycle thread in the store. `None` is the honest answer
+    and `waiting` reports it as blind."""
+    with patch.object(convs, "agora_get", return_value=(500, {})):
+        assert convs.heartbeat_conversation_ids() is None
+    with patch.object(convs, "agora_get",
+                      side_effect=RuntimeError("no route")):
+        assert convs.heartbeat_conversation_ids() is None
+
+
+def _listing():
+    return {"conversations": [
+        {"id": "c1", "unread": True, "cycleThread": False, "name": "Nova — design"},
+        {"id": "mine", "unread": True, "cycleThread": False, "name": "Nova needs you"},
+        {"id": "cyc", "unread": True, "cycleThread": True, "name": "Nova — Cycle 1"},
+    ]}
+
+
+def test_waiting_counts_only_the_threads_no_heartbeat_runs():
+    with patch.object(convs, "conversations", return_value=_listing()), \
+            patch.object(convs, "heartbeat_conversation_ids",
+                         return_value={"c1"}):
+        assert convs.waiting() == {
+            "count": 1, "blind": False, "id": "mine", "name": "Nova needs you"}
+
+
+def test_waiting_is_blind_with_a_zero_count_when_the_heartbeats_cannot_be_read():
+    """Zero and blind together, never zero alone: a quiet button must not
+    stand for both "nothing is waiting" and "I could not tell"."""
+    with patch.object(convs, "conversations", return_value=_listing()), \
+            patch.object(convs, "heartbeat_conversation_ids",
+                         return_value=None):
+        answer = convs.waiting()
+        assert answer["count"] == 0 and answer["blind"] is True

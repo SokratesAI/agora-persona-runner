@@ -163,3 +163,42 @@ def test_an_unreadable_marker_store_costs_highlights_not_the_page(monkeypatch):
     out = nova_conversations.conversations()["conversations"]
     assert [r["id"] for r in out] == ["c1"]
     assert out[0]["unread"] is False
+
+
+# --- waiting_answers: what the floating chat button is allowed to light on ---
+#
+# The measurement this exists for, taken against the live listing on
+# 2026-09-12: 38 of 44 conversations read `unread`, and every one of the 38
+# was a thread one of my own heartbeats runs. A button lit on `unread` is
+# lit permanently.
+
+ROWS = [
+    {"id": "cycle", "unread": True, "cycleThread": True, "name": "Nova — Cycle 1445"},
+    {"id": "weekly", "unread": True, "cycleThread": False, "name": "Nova — design"},
+    {"id": "his", "unread": True, "cycleThread": False, "name": "Nova needs you — …"},
+    {"id": "read", "unread": False, "cycleThread": False, "name": "New chat"},
+]
+
+
+def test_waiting_answers_drops_a_heartbeats_own_thread():
+    """The weekly heartbeat threads are the 8 non-cycle rows that read unread."""
+    assert [r["id"] for r in reads.waiting_answers(ROWS, {"weekly"})] == ["his"]
+
+
+def test_waiting_answers_drops_a_cycle_thread_even_when_agora_does_not_name_it():
+    """30 of the 38 are hourly cycle threads, and `cycleThread` is the flag
+    the listing already sets for them -- so a heartbeat id map that is
+    missing one still cannot light the button."""
+    assert [r["id"] for r in reads.waiting_answers(ROWS, set())] \
+        == ["weekly", "his"]
+    assert "cycle" not in [r["id"] for r in reads.waiting_answers(ROWS, set())]
+
+
+def test_waiting_answers_keeps_a_read_thread_out():
+    assert "read" not in [r["id"] for r in reads.waiting_answers(ROWS, {"weekly"})]
+
+
+def test_waiting_answers_is_blind_rather_than_loud_when_heartbeats_are_unreadable():
+    """`None` is "I could not read the heartbeat listing". Treating that as
+    "no heartbeat owns anything" would light the button on all 38."""
+    assert reads.waiting_answers(ROWS, None) == []

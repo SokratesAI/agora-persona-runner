@@ -151,3 +151,37 @@ def mark_seen(conversation_id, newest_at, now_iso):
             return False
     log("nova_conversation_reads: lost the write race three times")
     return False
+
+
+def waiting_answers(rows, heartbeat_conversation_ids):
+    """The unread threads that are an answer *to him*, newest first.
+
+    `is_unread` above is the right rule for the conversations list, where
+    every row is on screen and a highlight is a hint. It is the wrong rule
+    for the floating chat button, and the difference is a measurement:
+    against the live listing on 2026-09-12, **38 of 44 conversations read
+    unread, and all 38 were threads one of my own heartbeats runs** -- 30
+    hourly cycle threads plus the weekly research, design, cost, retro,
+    architecture and reprioritise ones. A button that lights on any of them
+    is lit forever and says nothing, which is the same failure
+    `parse_reads` above avoids by treating an unmarked thread as read.
+
+    So a heartbeat's own thread never lights the button. That is his own
+    line in `ideas.md` #182: *"Nova will give me notifications on my phone
+    whenever i get a response or you send a message to me asking something
+    you need of me (actually, that makes it better ui if these message
+    conversations is separated from the regular heartbeats)"*.
+
+    `heartbeat_conversation_ids` is every thread Agora says a heartbeat
+    owns. Pass `None` when that could not be read -- the caller reports
+    that as blind rather than as a count, because "no heartbeats answered"
+    and "nothing is waiting" would otherwise produce the same quiet button
+    and mean opposite things.
+    """
+    if heartbeat_conversation_ids is None:
+        return []
+    owned = set(heartbeat_conversation_ids)
+    return [row for row in (rows or [])
+            if row.get("unread")
+            and not row.get("cycleThread")
+            and row.get("id") not in owned]

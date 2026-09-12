@@ -16619,6 +16619,32 @@
       if (!known) loadList();
     };
 
+    /* Is an answer waiting for him right now, from before this page load?
+     *
+     * `paint` above lights the dot when a thread he is looking at grows,
+     * which only works while the tab is open on that thread. His
+     * `ideas.md` #182: *"The floating chat bubble in the Nova app will
+     * then get highlighted whenever a response is in"* -- and the case
+     * that mattered was the one this could not see, opening the app on a
+     * phone hours later with an answer already sitting in a thread.
+     *
+     * One request per page load, not a poll: `/api/conversations/waiting`
+     * costs Agora a full conversation listing plus a heartbeat listing,
+     * and the thread he has open is already covered by `paint`.
+     *
+     * A failure leaves the dot alone. The dot means "there is something
+     * here"; a fetch that did not answer is not a reason to say that, and
+     * it is not a reason to clear one `paint` has already lit either. */
+    function checkWaiting() {
+      fetchPage("/api/conversations/waiting")
+        .then(function (payload) {
+          if (isOpen) return;
+          if (payload && payload.count > 0) setDot(true);
+        })
+        .catch(function () { /* the dot stays exactly as it was */ });
+    }
+    checkWaiting();
+
     /* The service worker's retract, landing in the dock instead of the page.
      *
      * `sw.js` hands back a parked thread on a notification tap, then
