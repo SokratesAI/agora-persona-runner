@@ -99,8 +99,11 @@ ARCHIVE_FRONTMATTER = (
 
 
 # The two spellings the section has ever had. The owner renamed it on
-# 2026-08-21 and `nova_needs.MARKER_ALIASES` keeps the old one readable for
-# the revisions written before that, so a stale digest is caught too.
+# 2026-08-21, so a digest revision written before that day still carries the
+# older heading and both have to be caught. `nova_needs.MARKER_ALIASES` used
+# to be where that pair was written down; that module was deleted in Cycle
+# 1447 once issue #209 closed the section, and this tuple is now the only
+# place either spelling is recognised.
 _NEEDS_HEADINGS = ("Needs input", "Needs Edvard")
 
 

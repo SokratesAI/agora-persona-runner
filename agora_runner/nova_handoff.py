@@ -1,7 +1,12 @@
 """Retire finished items out of `journal-digest.md`'s **Next cycle** block.
 
 Third roller in the same family as `roll_digest` and `roll_needs_edvard`,
-against the one section of that file nothing trims. Measured Cycle 672 on
+against the one section of that file nothing trims. **`roll_needs_edvard`
+and the `nova_needs` module under it were deleted in Cycle 1447** -- issue
+#209 moved an ask out of the digest and onto the entry that raises it, so
+the block above `## Next cycle` has nothing left to roll. Every reference
+to either of them below is history, kept because the reasoning it carries
+is what this module was built from; read them in git, not on disk. Measured Cycle 672 on
 the live digest: **84,015 of its 94,602 bytes are `## Next cycle`** -- 59
 items -- while `roll_digest` trims the `## Digest` section below it and
 `roll_needs_edvard` trims the block above it. So the roller that exists
