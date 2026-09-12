@@ -8386,7 +8386,7 @@ describe("commenting on a boarded row", () => {
     assert.equal(messages.length, 2, "the row's two notes did not become bubbles");
     assert.deepEqual(
       messages.map((m) => m.querySelector(".note-msg-name").textContent),
-      ["Edvard", "Nova"],
+      ["You", "Nova"],
     );
     // His green, mine purple -- the same two classes the notes page and the
     // capture box use, which is the whole of what he asked for.
@@ -8709,7 +8709,7 @@ describe("the notes page", () => {
     );
     assert.deepEqual(
       messages.map((m) => m.querySelector(".note-msg-name").textContent),
-      ["Edvard", "Nova", "Edvard"],
+      ["You", "Nova", "You"],
     );
     assert.match(messages[1].querySelector(".note-msg-body").textContent, /Recorded it/);
     assert.equal(messages[1].querySelector(".note-msg-cycle").getAttribute("href"), "/cycle/258");
@@ -15800,7 +15800,7 @@ describe("the project page", () => {
     // would flip it back on the second press.
     const said = [...window.document.querySelectorAll(".project-thread .note-msg-name")]
       .map((el) => el.textContent);
-    assert.deepEqual(said, ["Nova", "Edvard"]);
+    assert.deepEqual(said, ["Nova", "You"]);
   });
 
   test("a project with no rows at all draws no tab strip", async () => {
@@ -15860,7 +15860,7 @@ describe("the project page", () => {
     assert.ok(boxAt < msgsAt, "the box is still below the messages");
     const said = [...thread.querySelectorAll(".note-msg-name")]
       .map((el) => el.textContent);
-    assert.deepEqual(said, ["Nova", "Edvard"], "the oldest message is still first");
+    assert.deepEqual(said, ["Nova", "You"], "the oldest message is still first");
   });
 
   test("a project nobody has said anything about still puts the box first", async () => {
