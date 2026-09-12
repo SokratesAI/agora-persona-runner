@@ -198,6 +198,12 @@ class _Handler:
         self.sent.append((status, body))
 
 
+#: The list the page draws -- every project his boards name, ranked --
+#: which is longer than the table of rated rows and is what `position`
+#: counts. Three of these have no row in `projects.md`.
+PAGE_LIST = ["Marcus", "Nova", "Demos", "Infra", "Maintenance", "Research"]
+
+
 def _call(payload, result=(True, "Nova is now #1"), monkeypatch=None):
     import agora_runner.nova_site as nova_site
     from agora_runner.nova_site import NovaSiteHandler
@@ -205,12 +211,14 @@ def _call(payload, result=(True, "Nova is now #1"), monkeypatch=None):
     handler = _Handler()
     calls = []
 
-    def fake_set(project, position):
-        calls.append((project, position))
+    def fake_set(project, position, names=None):
+        calls.append((project, position, names))
         return result
 
     monkeypatch.setattr(nova_site, "set_project_order", fake_set)
     monkeypatch.setattr(nova_site, "audit", lambda *a, **k: None)
+    monkeypatch.setattr(nova_site, "project_payload",
+                        lambda *a, **k: {"projects": list(PAGE_LIST)})
     NovaSiteHandler._post_project_order(handler, payload)
     return handler.sent[-1], calls
 
@@ -219,7 +227,7 @@ def test_a_good_request_trims_the_name_and_passes_the_position(monkeypatch):
     (status, body), calls = _call({"project": "  Nova  ", "position": 1},
                                   monkeypatch=monkeypatch)
     assert status == 200 and body["ok"] is True
-    assert calls == [("Nova", 1)]
+    assert calls == [("Nova", 1, list(PAGE_LIST))]
 
 
 def test_a_position_that_is_not_a_positive_int_is_refused_before_any_write(monkeypatch):
@@ -270,3 +278,129 @@ def test_the_payload_carries_the_position_so_the_page_can_move_a_row():
     """
     source = open(__import__("agora_runner.nova_site", fromlist=["x"]).__file__).read()
     assert '"order": (meta.get(name.lower()) or {}).get("order") or 0,' in source
+
+
+# --- The list he is looking at, not the list the file holds -------------
+#
+# His capture, 2026-09-12 13:06, 🔴 Immediately: *"I can't reorder my
+# projects in Nova. They are stuck in place."* The screenshot carries the
+# exact refusals -- `cannot place 'Infra' at 8` and `cannot place
+# 'Maintenance' at 9`. Both came from `set_project_order` ordering the rows
+# of `projects.md` (eight rated projects) while the page counted positions
+# in its own list (eleven, every project his boards name). A project with
+# no row was refused outright, and every position past the eighth was past
+# the end of a list nobody was looking at.
+
+
+PAGE = ["Sokrates Docs", "Nova", "Marcus", "NAS", "Infra", "Maintenance"]
+
+PARTIAL = """---
+type: board
+---
+
+# Projects
+
+| Project | Priority | Updated | Order |
+|---|---|---|---|
+| Marcus | 🔴 Immediately | 09-01 | 3 |
+| Nova | 🟠 High | 09-01 | 2 |
+| NAS | 🔵 Medium | 09-01 | 4 |
+| Sokrates Docs | 🔵 Medium | 09-04 | 1 |
+"""
+
+
+def test_a_project_with_no_rating_row_can_be_moved():
+    """The reported bug: `Infra` has no row, so it could not be placed.
+
+    It gets one, unrated -- which is what it already was; the row is a seat
+    in the list, not a rating he never gave.
+    """
+    out = set_project_order(PARTIAL, "Infra", 1, names=PAGE)
+    assert out is not None
+    meta = parse_project_meta(out)
+    assert meta["infra"]["order"] == 1
+    # Unrated, not invented as Low: the row says where it sits and nothing
+    # about how much he cares.
+    assert meta["infra"]["priority"] == ""
+    assert [name for name, _seat in sorted(
+        ((m["project"], m["order"]) for m in meta.values()),
+        key=lambda pair: pair[1])] == [
+            "Infra", "Sokrates Docs", "Nova", "Marcus", "NAS", "Maintenance"]
+
+
+def test_a_position_past_the_table_but_inside_his_list_is_accepted():
+    """`cannot place 'Maintenance' at 9` -- the second half of the refusal.
+
+    The page had eleven rows and the file four, so the bottom of his list
+    was unreachable even for a project that did have a row.
+    """
+    out = set_project_order(PARTIAL, "Nova", len(PAGE), names=PAGE)
+    assert out is not None
+    meta = parse_project_meta(out)
+    assert meta["nova"]["order"] == len(PAGE)
+    assert meta["maintenance"]["order"] == len(PAGE) - 1
+
+
+def test_the_seed_is_the_order_he_was_shown_not_a_re_derived_ranking():
+    """`position` indexes the drawn list, so the drawn list is the seed.
+
+    `PAGE` is deliberately not the ratings order -- `Sokrates Docs` is
+    Medium and sits above `Marcus`, which is Immediately. Re-ranking here
+    would move a row he did not touch.
+    """
+    out = set_project_order(PARTIAL, "Maintenance", 1, names=PAGE)
+    meta = parse_project_meta(out)
+    assert [m["project"] for m in sorted(
+        meta.values(), key=lambda m: m["order"])] == [
+            "Maintenance"] + [name for name in PAGE if name != "Maintenance"]
+
+
+def test_a_project_outside_his_list_is_still_refused():
+    out = set_project_order(PARTIAL, "Ghost", 1, names=PAGE)
+    assert out is None
+
+
+def test_a_position_past_the_end_of_his_list_is_still_refused():
+    assert set_project_order(PARTIAL, "Nova", len(PAGE) + 1, names=PAGE) is None
+    assert set_project_order(PARTIAL, "Nova", 0, names=PAGE) is None
+
+
+def test_a_row_that_is_no_longer_on_his_board_loses_its_seat():
+    """An order is a seat in the list he is looking at.
+
+    A rated row for a project his boards no longer name is not on the page,
+    so leaving its number behind would put two projects on one seat.
+    """
+    out = set_project_order(PARTIAL, "Nova", 1,
+                            names=[n for n in PAGE if n != "NAS"])
+    meta = parse_project_meta(out)
+    assert meta["nas"]["order"] is None
+    assert sorted(m["order"] for m in meta.values()
+                  if m["order"]) == [1, 2, 3, 4, 5]
+
+
+def test_without_names_it_orders_the_table_exactly_as_before():
+    """The CLI path is untouched: no `names`, no new rows, same answer."""
+    before = set_project_order(ORDERED, "Nova", 1)
+    assert before is not None
+    assert parse_project_meta(before)["nova"]["order"] == 1
+    assert len(parse_project_meta(before)) == len(parse_project_meta(ORDERED))
+
+
+def test_the_capture_layer_passes_his_list_down(monkeypatch):
+    """`nova_capture.set_project_order` forwards `names`, or the route's
+    work is thrown away one layer below it."""
+    seen = {}
+
+    def fake_md(markdown, project, position, names=None):
+        seen["names"] = names
+        return markdown
+
+    monkeypatch.setattr(nova_capture, "_set_project_order_md", fake_md)
+    monkeypatch.setattr(nova_capture, "vault_read_path_rev",
+                        lambda path: (PARTIAL, "rev"))
+    monkeypatch.setattr(nova_capture, "vault_write_path",
+                        lambda *a, **k: "written")
+    ok, _message = nova_capture.set_project_order("Infra", 1, names=PAGE)
+    assert ok
+    assert seen["names"] == PAGE

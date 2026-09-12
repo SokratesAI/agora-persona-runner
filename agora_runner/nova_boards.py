@@ -2660,7 +2660,7 @@ def _write_project_cells(cells):
     return "| " + " | ".join(padded[:_PROJECT_META_WIDTH]) + " |"
 
 
-def set_project_order(markdown, project, position):
+def set_project_order(markdown, project, position, names=None):
     """Place one project at `position` in his hand-ranked list, 1-based.
 
     Milestone M3 of idea #260. His words in the spec: *"the list of
@@ -2677,9 +2677,23 @@ def set_project_order(markdown, project, position):
     project, the whole list gets an explicit order he can see, rather than
     a single numbered row and seven that still rank by something else.
 
-    Returns the new markdown, or `None` if refused: an unknown project (a
-    position is a statement about a row that exists, and inventing the row
-    would rate a project he never rated), a position outside `1..N`, or a
+    **`names` is the list he is looking at, and `position` is an index into
+    it.** Without it this function orders the rows of *this* table, which
+    is a different and smaller list than the page draws: the set of
+    projects that exist comes off the `Project` column of his two boards,
+    and a project he has never rated has no row here at all. On 2026-09-12
+    that was every reorder of the bottom three: the page listed eleven
+    projects, the table held eight rows, and `Infra`, `Maintenance` and
+    `Research` -- which no row named -- were refused outright, while
+    positions 9, 10 and 11 were past the end of a list nobody was looking
+    at. So the caller passes the page's own order, a project in it with no
+    row gets one (unrated -- which is what it already was, now with a seat
+    written down), and a row for a project that is *not* in it has its
+    `Order` cell cleared, because an order is a seat in his list.
+
+    Returns the new markdown, or `None` if refused: a project that is not
+    in the list being ordered (a position is a statement about a list, and
+    a name outside it has nowhere to go), a position outside `1..N`, or a
     file with no table to order.
     """
     name = (project or "").strip()
@@ -2695,8 +2709,6 @@ def set_project_order(markdown, project, position):
     if table is None:
         return None
     heading, rule, rows = table
-    if not rows:
-        return None
 
     parsed = []
     for index in rows:
@@ -2704,42 +2716,66 @@ def set_project_order(markdown, project, position):
         cells += [""] * (_PROJECT_META_WIDTH - len(cells))
         parsed.append((index, cells))
 
-    keys = [cells[0].lower() for _index, cells in parsed]
+    meta = parse_project_meta(markdown or "")
+
+    if names is None:
+        if not parsed:
+            return None
+        # Seed order: `rank_projects` already puts a placed project ahead of
+        # an unplaced one and falls back to the rating for the rest, which is
+        # exactly the order this list has to start from -- so there is no
+        # separate "has he ordered it yet" branch here. A file he has never
+        # ordered seeds from the ratings M1 shipped; a file he has seeds from
+        # what it says, with any unplaced row falling in behind.
+        seed = rank_projects([cells[0] for _index, cells in parsed], meta)
+    else:
+        # Taken as given rather than re-ranked: the caller hands over the
+        # order the page drew, and `position` counts rows on that page.
+        # Re-deriving it here would be a second opinion about a list he can
+        # see, and the two would drift the first time the ranking changed.
+        seed = []
+        seen = set()
+        for entry in names:
+            text = (entry or "").strip()
+            if text and text.lower() not in seen:
+                seen.add(text.lower())
+                seed.append(text)
+        if not seed:
+            return None
+
+    keys = [text.lower() for text in seed]
     if name.lower() not in keys:
         return None
-    if position < 1 or position > len(parsed):
+    if position < 1 or position > len(keys):
         return None
 
-    # Seed order: `rank_projects` already puts a placed project ahead of an
-    # unplaced one and falls back to the rating for the rest, which is
-    # exactly the order this list has to start from -- so there is no
-    # separate "has he ordered it yet" branch here. A file he has never
-    # ordered seeds from the ratings M1 shipped; a file he has seeds from
-    # what it says, with any unplaced row falling in behind.
-    placed = [cells for _index, cells in parsed]
-    names = [cells[0] for cells in placed]
-    meta = parse_project_meta(markdown or "")
-    ordered = []
-    taken = set()
-    for wanted in rank_projects(names, meta):
-        for i, n in enumerate(names):
-            if i not in taken and n == wanted:
-                taken.add(i)
-                ordered.append(i)
-                break
-    for i in range(len(placed)):
-        if i not in ordered:
-            ordered.append(i)
+    by_key = {}
+    for entry in parsed:
+        by_key.setdefault(entry[1][0].lower(), entry)
+    added = []
+    for text in seed:
+        if text.lower() not in by_key:
+            cells = [text] + [""] * (_PROJECT_META_WIDTH - 1)
+            entry = (None, cells)
+            by_key[text.lower()] = entry
+            added.append(entry)
 
-    moving = ordered.index(keys.index(name.lower()))
-    which = ordered.pop(moving)
-    ordered.insert(position - 1, which)
+    ordered = [key for key in keys if key != name.lower()]
+    ordered.insert(position - 1, name.lower())
 
-    for rank, i in enumerate(ordered, start=1):
-        placed[i][3] = str(rank)
+    for rank, key in enumerate(ordered, start=1):
+        by_key[key][1][3] = str(rank)
+
+    for _index, cells in parsed:
+        if cells[0].lower() not in set(keys):
+            cells[3] = ""
 
     for index, cells in parsed:
         lines[index] = _write_project_cells(cells)
+    if added:
+        after = rows[-1] if rows else rule
+        lines[after + 1:after + 1] = [
+            _write_project_cells(cells) for _index, cells in added]
 
     _name_project_headings(lines, heading, rule)
 
