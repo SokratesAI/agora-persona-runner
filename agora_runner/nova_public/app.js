@@ -11143,7 +11143,7 @@
    * **A block that holds prose says so, even when it also ran a tool**, and
    * that half is his issue of 2026-09-12: *"when one assistant turn contains
    * multiple text segments interleaved with tool calls (text, then a tool
-   * call, then more text), only the LAST text segment reaches Edvard's
+   * call, then more text), only the LAST text segment reaches [the owner's]
    * client -- earlier segments are silently dropped."* They were not dropped.
    * I read the live thread (conversation ee039370, 18:25 Oslo): the 1,429
    * characters explaining idea #106 to him were posted, folded into this
