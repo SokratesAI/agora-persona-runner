@@ -207,6 +207,7 @@ from agora_runner.nova_conversations import (
     set_mute as conversation_set_mute,
     set_style as conversation_set_style,
     conversations as conversation_list,
+    waiting as conversation_waiting,
     create as conversation_create,
     starting_name as conversation_starting_name,
     folder_create as conversation_folder_create,
@@ -3940,6 +3941,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 # CACHE_FRESH_SECONDS window would show him a thread that
                 # is still where it was before the reply landed.
                 self._send_json(200, conversation_list())
+                return
+            if path == "/api/conversations/waiting":
+                # What the floating chat button asks once per page
+                # load: is there an answer he has not seen, in a thread
+                # none of my own heartbeats runs. Uncached for
+                # `/api/conversations`' reason -- it is the freshness
+                # question itself, and a stale "nothing waiting" is the
+                # one answer this must never give.
+                self._send_json(200, conversation_waiting())
                 return
             if path == "/api/conversations/thread":
                 # `id` rather than a path segment so the route table stays a

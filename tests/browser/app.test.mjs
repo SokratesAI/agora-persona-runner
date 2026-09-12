@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convPrefs, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, alerts, alertsStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convWaiting, convWaitingStatus = 200, convThread, convStep, convModel, convPrefs, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, alerts, alertsStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -286,6 +286,17 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
     if (url.includes("/api/conversations/personas")) {
       window.askedForPersonas = true;
       return res({ error: "not found" }, 404);
+    }
+    /* Above the bare `/api/conversations` branch for that branch's own
+     * stated reason: the listing payload would answer this URL and the
+     * launcher would read `undefined > 0` as false, so a broken dot would
+     * pass. No fixture default -- a test that does not set `convWaiting`
+     * gets "nothing is waiting", which is the state every other dock test
+     * already assumes. */
+    if (url.includes("/api/conversations/waiting")) {
+      window.askedForWaiting = true;
+      return res(convWaiting || { count: 0, blind: false, id: "", name: "" },
+        convWaitingStatus);
     }
     if (url.includes("/api/conversations")) {
       // Its own status, defaulting to `convStatus`. The listing and the
@@ -10425,6 +10436,34 @@ describe("the chat dock", () => {
     assert.equal(dock.getAttribute("aria-hidden"), "true");
     assert.equal(window.document.querySelector("#chat-thread .ask-msg"), null,
       "the dock read the thread before he asked for it");
+  });
+
+  /* Idea #182: *"The floating chat bubble in the Nova app will then get
+   * highlighted whenever a response is in"*. Before this the dot could only
+   * light on a thread growing under his eyes, so an answer that arrived
+   * while the app was shut reached a dark button. */
+  test("an answer waiting from before this page load lights the launcher", async () => {
+    const window = await loadSite("/", {
+      convWaiting: { count: 2, blind: false, id: "x", name: "Nova needs you" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.askedForWaiting, true, "the launcher never asked");
+    assert.ok(window.document.getElementById("chat-btn").classList.contains("chat-btn-unread"),
+      "the dot stayed dark with an answer waiting");
+  });
+
+  test("nothing waiting leaves the launcher dark", async () => {
+    const window = await loadSite("/");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.getElementById("chat-btn").classList.contains("chat-btn-unread"),
+      false, "the launcher lit on an empty answer");
+  });
+
+  test("a waiting check that fails leaves the launcher alone rather than lighting it", async () => {
+    const window = await loadSite("/", { convWaitingStatus: 500 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(window.document.getElementById("chat-btn").classList.contains("chat-btn-unread"),
+      false, "a failed check lit the dot");
   });
 
   test("the launcher and the dock survive a navigation, which is the whole point", async () => {

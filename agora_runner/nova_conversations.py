@@ -37,7 +37,8 @@ from agora_runner.config import (
 )
 from agora_runner.http_util import agora_get, agora_internal, agora_public, http_json
 from agora_runner.log import log
-from agora_runner.nova_conversation_reads import is_unread, load_reads
+from agora_runner.nova_conversation_reads import (
+    is_unread, load_reads, waiting_answers)
 
 
 # Newest N messages rendered when a thread is opened. `nova_ask.MAX_THREAD`
@@ -447,6 +448,48 @@ def conversations():
     rows.sort(key=lambda r: (r["unread"], r["updatedAt"] or ""), reverse=True)
     return {"conversations": rows, "folders": _folder_rows(),
             "models": _model_rows()}
+
+
+def heartbeat_conversation_ids():
+    """Every conversation id a heartbeat owns, or `None` if Agora would not say.
+
+    Read straight off `/heartbeats` rather than through `nova_heartbeats`,
+    which imports this module -- and it is the cheap half of that page: no
+    persona names and no second conversation listing, just the ids.
+
+    `None` on any failure, never an empty set. An empty set means "no
+    heartbeat owns anything", which would make every cycle thread count as
+    an answer waiting for him; `waiting_answers` reads `None` as blind and
+    reports it rather than guessing in either direction.
+    """
+    try:
+        status, body = agora_get("/heartbeats")
+    except Exception as e:
+        log(f"nova_conversations: heartbeat listing raised {e}")
+        return None
+    if status != 200:
+        log(f"nova_conversations: heartbeat listing returned {status}")
+        return None
+    return {h["conversationId"] for h in body.get("heartbeats", [])
+            if h.get("conversationId")}
+
+
+def waiting():
+    """What the floating chat button asks: is an answer waiting for him?
+
+    `{"count": n, "blind": bool, "id": ..., "name": ...}` -- the count for
+    the dot, the newest thread's id and name so a future version can say
+    which one without a second call. `blind` is true when the heartbeat
+    listing could not be read, and the count is then 0: the button stays
+    dark and the payload says why, rather than a quiet button standing for
+    both "nothing waiting" and "I could not tell".
+    """
+    rows = conversations()["conversations"]
+    owned = heartbeat_conversation_ids()
+    waiting_rows = waiting_answers(rows, owned)
+    newest = waiting_rows[0] if waiting_rows else {}
+    return {"count": len(waiting_rows), "blind": owned is None,
+            "id": newest.get("id", ""), "name": newest.get("name", "")}
 
 
 def clamp_thread_limit(limit, ceiling=MAX_THREAD_CEILING):
