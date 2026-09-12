@@ -6324,3 +6324,44 @@ def test_next_ranks_each_board_from_its_own_records(monkeypatch):
     assert sorted(asked) == ["ideas", "issues"]
     assert sorted((r["board"], r["number"]) for r in payload["next"]) == [
         ("idea", 64), ("issue", 10)]
+
+
+def test_api_home_answers_one_composed_document():
+    """Idea #274's constraint is that the landing page is ONE request.
+
+    So this asserts the route through the real handler rather than only
+    `nova_home`'s composition: what the spec forbids is the page fanning
+    out, and the way that regresses is the endpoint quietly never being
+    reachable while the pure function stays green.
+    """
+    nova_site.reset_cache()
+    with patch.object(nova_site, "recap_payload",
+                      return_value={"bullets": ["a"]}), \
+            patch.object(nova_site, "next_up_payload", return_value={
+                "next": [{"project": "Nova", "board": "ideas", "number": 274,
+                          "title": "Make / a landing page",
+                          "milestone": "Reading what needs him"}],
+                "active": [], "claimsReadable": True}), \
+            patch.object(nova_site, "journal_payload", return_value={
+                "status": {"asks": [{"cycle": 1447}]}}), \
+            patch.object(nova_site, "project_payload", return_value={
+                "projects": ["Nova"],
+                "projectSummary": {"nova": {"done": 4, "open": 6,
+                                            "percentDone": 40}},
+                "projectPriority": {"nova": {"priority": "🟠 High",
+                                             "priorityKey": "high"}}}):
+        status, _head, body = _get("/api/home")
+
+    assert status == 200
+    payload = json.loads(body)
+    # `bullets` rather than the whole dict: `cached_payload` stamps a
+    # `version` onto every payload it hands back, so the recap arrives
+    # here with one and asserting equality would be asserting the cache's
+    # shape rather than that the card travelled.
+    assert payload["recap"]["bullets"] == ["a"]
+    assert payload["needsYou"]["count"] == 1
+    card = payload["projects"][0]
+    assert card["name"] == "Nova"
+    assert card["percentDone"] == 40
+    assert card["next"]["number"] == 274
+    assert card["milestone"] == "Reading what needs him"
