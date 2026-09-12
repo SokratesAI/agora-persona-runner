@@ -243,6 +243,7 @@ from agora_runner.nova_idea_pool import (
 from agora_runner.nova_alerts import alerts_payload
 from agora_runner.nova_catalog import catalog_page, parse_catalog
 from agora_runner.nova_recap import parse_recap, recap_page
+from agora_runner.nova_home import home_payload as compose_home
 from agora_runner.heartbeat_liveness import liveness
 from agora_runner.nova_demos import (DEMOS_PATH, OPENED_AT,
                                      dumps as dumps_demos, load as load_demos,
@@ -1653,6 +1654,29 @@ def next_up_payload():
         projects_markdown=project_meta_markdown(),
         milestones_markdown=milestone_pins_markdown(),
         seats_markdown=milestone_seats_markdown(),
+    )
+
+
+def home_payload():
+    """`/api/home` -- the landing page (idea #274), composed not measured.
+
+    `nova_home` holds the shape and the reasoning; this is the I/O around
+    it. Every one of the four reads below is a payload the site already
+    serves, and three of them answer out of `cached_payload`, so landing
+    on `/` warm costs a compose rather than four builds.
+
+    `project_payload()` with no name is deliberate -- that is its index
+    build, which fills `projects`, `projectPriority` and `projectSummary`
+    and skips the per-project row grouping the landing page does not draw.
+    """
+    recap, _body, _etag = cached_payload("recap", recap_payload)
+    nxt, _body, _etag = cached_payload("next", next_up_payload)
+    journal, _body, _etag = cached_payload("journal", journal_payload)
+    return compose_home(
+        recap,
+        project_payload(),
+        nxt,
+        (journal.get("status") or {}).get("asks") or [],
     )
 
 
@@ -3868,6 +3892,19 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/next":
                 self._send_cached_json("next", next_up_payload)
+                return
+            if path == "/api/home":
+                # The landing page, as one response. The whole point of
+                # this route is that it is one: the spec forbids the page
+                # fanning out to the five endpoints it composes, because
+                # he reads it on a phone and sometimes roaming.
+                #
+                # Cached like the payloads underneath it, at the same 15
+                # seconds. That is not a second cache over a cached thing
+                # -- `home_payload` calls four builders, three of which
+                # answer from their own cache, and the composition itself
+                # is the part that would otherwise be redone per request.
+                self._send_cached_json("home", home_payload)
                 return
             if path == "/api/galaxy":
                 self._send_cached_json("galaxy", galaxy_up_payload)
