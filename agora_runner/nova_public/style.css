@@ -4758,7 +4758,7 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
   border-top: 1px solid var(--line);
 }
 .project-row-num { color: var(--dim); font-size: 0.8rem; }
-.project-row-title { flex: 1 1 8rem; min-width: 0; }
+.project-row-title { flex: 1 1 8rem; min-width: 0; color: inherit; }
 
 
 /* The live "What happens next" card at the top of the plan page (idea #38).

@@ -15616,6 +15616,47 @@ describe("the project page", () => {
     assert.deepEqual(titles, ["One", "Two"]);
   });
 
+  /* Idea #166's crude-operations slice. A project row was plain text, so
+   * the only rows on this page he could reach were the four in the
+   * "What's next" list above -- everything under a status column was a
+   * dead end, and the editor, the conversation and the archive button all
+   * live one tap behind that address. */
+  test("a project row links to its own card on its own board", async () => {
+    const window = await loadSite("/project/Nova", { project: NOVA });
+    const links = [...window.document.querySelectorAll(".project-row-title")];
+    assert.deepEqual(links.map((a) => a.tagName), ["A", "A"],
+      "a project row title is not a link");
+    // The column's board decides the page, the item's number decides the
+    // row. Getting the second right and the first wrong lands on a real
+    // card that is the wrong card, which is why both are pinned here.
+    assert.deepEqual(links.map((a) => a.getAttribute("href")),
+      ["/issues#1", "/issues#2"]);
+  });
+
+  test("an ideas column links to /ideas, not to whichever board came first", async () => {
+    const IDEAS_ONLY = {
+      ...NOVA,
+      boards: {
+        issues: { total: 0, columns: [] },
+        ideas: {
+          total: 1,
+          columns: [
+            { key: "backlog", label: "⚪ Backlog", items: [
+              { number: 9, title: "Nine", priority: "", priorityKey: "" },
+            ] },
+          ],
+        },
+      },
+    };
+    const window = await loadSite("/project/Nova", { project: () => IDEAS_ONLY });
+    // A link built from a constant, or from the first key of `boards`,
+    // passes the test above and fails here.
+    assert.deepEqual(
+      [...window.document.querySelectorAll(".project-row-title")]
+        .map((a) => a.getAttribute("href")),
+      ["/ideas#9"]);
+  });
+
   test("a board with no rows for this project draws no section", async () => {
     const window = await loadSite("/project/Nova", { project: NOVA });
     const heads = [...window.document.querySelectorAll(".project-board-head")]
