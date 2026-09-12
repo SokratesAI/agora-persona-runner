@@ -149,7 +149,7 @@ function notModified() {
  * `journal` is a function of the requested URL rather than a fixed body,
  * which is what the pagination tests need: the whole point of a window is
  * that the answer depends on the query string. */
-async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convPrefs, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
+async function loadSite(path = "/", { failComments = false, commentsStatus = 200, journalStatus = 200, boardStatus = 200, costsStatus = 200, retroStatus = 200, planStatus = 200, next, nextStatus = 200, notesStatus = 200, digestStatus = 200, askStatus = 200, convList, convThread, convStep, convModel, convPrefs, convStepStatus = 200, convStatus = 200, convListStatus, hbList, hbStatus = 200, catalog, catalogStatus = 200, alerts, alertsStatus = 200, recap, recapStatus = 200, galaxy, galaxyStatus = 200, project, projectStatus = 200, pool, poolStatus = 200, poolHistory, askChat, askChatStatus = 200, unparsable = false, replayed = false, digest, comments, install, journal, board, costs, retro, plan, notes, ask } = {}) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const dom = openWindow(html, {
     url: "https://nova.example" + path,
@@ -187,6 +187,12 @@ async function loadSite(path = "/", { failComments = false, commentsStatus = 200
     }
     if (url.includes("/api/costs")) {
       return res(costs || payload.costs, costsStatus);
+    }
+    /* `/api/alerts` -- idea #122. No fixture default on purpose: what this
+     * page draws when nobody supplied a body is the question, and a
+     * convenient default would answer it with a shape no server sends. */
+    if (url.includes("/api/alerts")) {
+      return res(alerts || null, alertsStatus);
     }
     if (url.includes("/api/retro")) {
       // No fixture default: the retro ledger is empty until the first
@@ -4557,7 +4563,10 @@ describe("the sidebar", () => {
     // visualisation of what my Claude sessions are doing. It sits above
     // Retro because it is the one page on this site that is about right
     // now rather than about what already happened.
-    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/galaxy", "/retro", "/costs", "/catalog", "/diag"]);
+    // `/alerts` joined The loop on 2026-09-12, on idea #122 -- "give the K3s
+    // sentinel somewhere to report". It sits directly after Costs because
+    // that is where the row asked for it: "a page beside the costs page".
+    assert.deepEqual(hrefs, ["/", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/galaxy", "/retro", "/costs", "/alerts", "/catalog", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -17599,5 +17608,72 @@ describe("the notices pinned to the top of the screen", () => {
     const sheet = readFileSync(join(publicDir, "style.css"), "utf8");
     assert.match(ruleFor(sheet, ".toast"), /transform:\s*translateY\(-0\.6rem\)/);
     assert.match(ruleFor(sheet, ".toast--on"), /transform:\s*translateY\(0\)/);
+  });
+});
+
+/* `/alerts` -- idea #122, "give the K3s sentinel somewhere to report".
+ *
+ * The assertions here are about the three empty states, because they are the
+ * whole reason the payload is shaped the way it is: a healthy cluster, a
+ * Prometheus that never answered, and a rules file that silently failed to
+ * load all produce an empty alert list, and the page must say which one it
+ * is looking at. */
+describe("the alerts page", () => {
+  const firing = {
+    reachable: true, error: "", rules: 6, blind: false,
+    firing: [{ name: "PodCrashLooping", severity: "warning", text: "a pod is restarting",
+               where: ["namespace infra", "pod whatsapp-bridge-1"],
+               since: "2026-09-12T01:02:03Z", state: "firing" }],
+    pending: [],
+  };
+
+  test("a firing alert is drawn with its name, its reason and where it is", async () => {
+    const window = await loadSite("/alerts", { alerts: firing });
+    const cards = window.document.querySelectorAll(".alert-card");
+    assert.equal(cards.length, 1);
+    assert.ok(cards[0].classList.contains("alert-firing"));
+    const text = cards[0].textContent;
+    assert.match(text, /PodCrashLooping/);
+    assert.match(text, /a pod is restarting/);
+    assert.match(text, /namespace infra/);
+    // The word, not only the colour: personality.md.
+    assert.match(text, /Firing/);
+  });
+
+  test("a pending alert is not drawn as a firing one", async () => {
+    const window = await loadSite("/alerts", {
+      alerts: { ...firing, firing: [], pending: [{ ...firing.firing[0], state: "pending" }] },
+    });
+    const card = window.document.querySelector(".alert-card");
+    assert.ok(card.classList.contains("alert-pending"));
+    assert.ok(!card.classList.contains("alert-firing"));
+    assert.match(card.textContent, /Pending/);
+  });
+
+  test("quiet says how many rules answered, so it cannot be confused with blind", async () => {
+    const window = await loadSite("/alerts", {
+      alerts: { reachable: true, error: "", rules: 6, blind: false, firing: [], pending: [] },
+    });
+    assert.equal(window.document.querySelectorAll(".alert-card").length, 0);
+    assert.match(window.document.querySelector(".empty").textContent, /Nothing is firing.*6 rules/s);
+  });
+
+  test("zero rules loaded is reported as blind, never as quiet", async () => {
+    const window = await loadSite("/alerts", {
+      alerts: { reachable: true, error: "", rules: 0, blind: true, firing: [], pending: [] },
+    });
+    const empty = window.document.querySelector(".empty").textContent;
+    assert.match(empty, /no rules at all/);
+    assert.ok(!/Nothing is firing/.test(empty));
+  });
+
+  test("an unreachable Prometheus says so instead of drawing calm", async () => {
+    const window = await loadSite("/alerts", {
+      alerts: { reachable: false, error: "connection refused", rules: 0, blind: true, firing: [], pending: [] },
+    });
+    const empty = window.document.querySelector(".empty").textContent;
+    assert.match(empty, /could not reach Prometheus/);
+    assert.match(empty, /connection refused/);
+    assert.ok(!/Nothing is firing/.test(empty));
   });
 });

@@ -87,6 +87,11 @@
     if (path === "/replies") return { view: "journal", cycle: null, board: null, replies: true };
     if (path === "/pool") return { view: "pool", cycle: null, board: null };
     if (path === "/costs") return { view: "costs", cycle: null, board: null };
+    /* `/alerts` -- idea #122, "give the K3s sentinel somewhere to report".
+     * The Sentinel is gone and Prometheus rules replaced it, but its
+     * findings still only ever appeared inside a cycle's own preflight
+     * output. This is the page he can open instead. */
+    if (path === "/alerts") return { view: "alerts", cycle: null, board: null };
     if (path === "/retro") return { view: "retro", cycle: null, board: null };
     if (path === "/plan") return { view: "plan", cycle: null, board: null };
     // `/conversation/<id>` -- the URL a push notification opens, so the tap
@@ -12943,6 +12948,87 @@
     feed.appendChild(el("p", "cat-when", when));
   }
 
+  /* `/alerts` -- what Prometheus is complaining about right now.
+   *
+   * The card colour is the whole interface here, so it carries the word
+   * too: `personality.md` -- if a reader has to know a colour code to know
+   * what I said, I have not said it.
+   *
+   * The empty state is the part that needed thought. "Nothing is firing"
+   * and "I could not ask" produce the same empty list, so this never draws
+   * the calm sentence without the rule count beside it, and `blind` gets a
+   * warning of its own: Prometheus serves zero alerts just as happily when
+   * its rules file failed to load. */
+  function alertCard(alert, kind) {
+    var card = el("div", "alert-card alert-" + kind);
+    var head = el("div", "alert-head");
+    head.appendChild(el("span", "alert-word alert-word-" + kind,
+      kind === "firing" ? "\uD83D\uDD34 Firing" : "\uD83D\uDFE0 Pending"));
+    head.appendChild(el("span", "alert-name", alert.name));
+    if (alert.severity) head.appendChild(el("span", "alert-sev", alert.severity));
+    card.appendChild(head);
+    if (alert.text) card.appendChild(el("p", "alert-text", alert.text));
+    if ((alert.where || []).length) {
+      card.appendChild(el("p", "alert-where", alert.where.join(" \u00b7 ")));
+    }
+    if (alert.since) card.appendChild(el("p", "alert-since", "since " + alert.since));
+    return card;
+  }
+
+  function renderAlerts(payload) {
+    stopPolling();
+    markNav();
+    statusEl.textContent = "";
+    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    var firing = payload.firing || [];
+    var pending = payload.pending || [];
+    var parts = [firing.length + (firing.length === 1 ? " firing" : " firing")];
+    if (pending.length) parts.push(pending.length + " pending");
+    parts.push(payload.rules + (payload.rules === 1 ? " rule" : " rules"));
+    statusEl.appendChild(el("p", "status-line", parts.join(" \u00b7 ")));
+    feed.textContent = "";
+
+    if (!payload.reachable) {
+      feed.appendChild(el("p", "empty",
+        "I could not reach Prometheus, so this page knows nothing right now: "
+        + (payload.error || "no reason given")));
+      return;
+    }
+    if (payload.blind) {
+      feed.appendChild(el("p", "empty",
+        "Prometheus answered but is evaluating no rules at all. That is not"
+        + " quiet \u2014 an empty alert list looks exactly the same whether the"
+        + " rules file loaded or silently failed to."));
+      return;
+    }
+    if (!firing.length && !pending.length) {
+      feed.appendChild(el("p", "empty",
+        "Nothing is firing. Prometheus answered and is evaluating "
+        + payload.rules + " rule" + (payload.rules === 1 ? "" : "s") + "."));
+      return;
+    }
+    firing.forEach(function (a) { feed.appendChild(alertCard(a, "firing")); });
+    pending.forEach(function (a) { feed.appendChild(alertCard(a, "pending")); });
+  }
+
+  function loadAlerts() {
+    fetchPage("/api/alerts")
+      .then(function (payload) {
+        if (route(window.location.pathname).view !== "alerts") return;
+        renderAlerts(payload);
+      })
+      .catch(function (err) {
+        // Same route guard as the catalog page and for the same reason: a
+        // fetch still in flight when he taps away must not paint its
+        // failure over the page he actually opened.
+        if (route(window.location.pathname).view !== "alerts") return;
+        stopPolling();
+        markNav();
+        feed.textContent = "";
+        feed.appendChild(el("p", "empty", "Could not load alerts: " + err));
+      });
+  }
+
   function loadCatalog() {
     fetchPage("/api/catalog")
       .then(function (payload) {
@@ -13754,6 +13840,10 @@
     }
     if (here.view === "catalog") {
       loadCatalog();
+      return;
+    }
+    if (here.view === "alerts") {
+      loadAlerts();
       return;
     }
     // No `loadDiag` -- this is the one view with no payload behind it, so

@@ -239,6 +239,7 @@ from agora_runner.nova_idea_pool import (
     pool_payload,
     request_generate as pool_request_generate,
 )
+from agora_runner.nova_alerts import alerts_payload
 from agora_runner.nova_catalog import catalog_page, parse_catalog
 from agora_runner.nova_recap import parse_recap, recap_page
 from agora_runner.heartbeat_liveness import liveness
@@ -348,6 +349,7 @@ PAGE_ROUTES = (
     "/replies",
     "/pool",
     "/costs",
+    "/alerts",
     "/retro",
     "/plan",
     "/heartbeats",
@@ -3847,6 +3849,15 @@ class NovaSiteHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/costs":
                 self._send_cached_json("costs", costs_payload)
+                return
+            if path == "/api/alerts":
+                # Never cached, for the same reason `/api/health` is not:
+                # this is asked exactly when something is moving, and an
+                # answer CACHE_FRESH_SECONDS old is the wrong answer at the
+                # one moment it matters. The read is one in-cluster hop to
+                # Prometheus and returns counts and rule names, no content
+                # of his.
+                self._send_json(200, alerts_payload())
                 return
             if path == "/api/retro":
                 self._send_cached_json("retro", retros_payload)
