@@ -849,7 +849,7 @@ def measure_pm_deprecations(since, until):
 
     The reason this KPI carried no instrument was recorded as "there is no
     deprecation marker anywhere in these repos to count". That was wrong, and
-    the marker is one Edvard asked for himself: `nova_boards.OUTDATED_STATUS`
+    the marker is one the owner asked for himself: `nova_boards.OUTDATED_STATUS`
     is a first-class board status, `statusKey` is `outdated`, and the site
     serves it on every row of both boards. 93 rows carry it today.
 
