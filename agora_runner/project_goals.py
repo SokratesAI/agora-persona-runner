@@ -436,8 +436,9 @@ def set_field_in_kpi(markdown, kpi_id, field, value):
 
     The same setter as `set_field_in_key_result` above, pointed at the other
     fence, because a KPI's `now:` was typed by hand exactly the way a key
-    result's was -- `nova-kpi-cost-per-cycle` still carries a number copied out
-    of a paragraph in `prompt.md` describing a window that closed on 08-28.
+    result's was -- `nova-kpi-cost-per-cycle` carried a number copied out of a
+    paragraph in `prompt.md` describing a window that closed on 08-28, until
+    `tools.goal_measures` grew an instrument for it.
 
     What it deliberately does NOT do is touch `low:` or `high:`. Those are the
     bounds the guardrail is judged against, and rule 4 of issue #227 is that a
