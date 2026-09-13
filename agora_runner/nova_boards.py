@@ -3063,33 +3063,85 @@ _MILESTONE_SEATS_HEADER = """---
 type: board
 tags: [agora, milestones, board]
 status: built
-contract: Nova writes this. The order Nova keeps each project's milestones in, one row per milestone, position 1-based inside its project. Read by nova_next.milestone_ranks after the computed order and before the owner's pins in milestones.md, which always win. A milestone with no row here goes after every seated one in its project.
+contract: Nova writes this. The order Nova keeps each project's milestones in, one row per milestone, position 1-based inside its project. Read by nova_next.milestone_ranks after the computed order and before the owner's pins in milestones.md, which always win. A milestone with no row here goes after every seated one in its project. Serves names the key result ids in project-goals.md this milestone serves, comma-separated; empty means it serves no goal, which is either keep-the-lights-on work under a KPI or the pruning signal (issue #227).
 ---
 
 # Milestone seats
 
-| Project | Milestone | Position | Updated |
-|---|---|---|---|
+| Project | Milestone | Position | Updated | Serves |
+|---|---|---|---|---|
 """
 
 
-def render_milestone_seats(order, updated=""):
+def render_milestone_seats(order, updated="", serves=None):
     """`[(project, milestone), ...]` in rank order -> `milestone-seats.md`.
 
     Positions are counted per project in the order given, so the list
     `milestone_ranks` returns can be written straight back as seats and
     read back as the same order. Refuses (returns `None`) a name carrying
     a `|`, for `set_milestone_pin`'s reason.
+
+    `serves` is `{(project, milestone) lowercased: "id, id"}` -- which key
+    results in `project-goals.md` that milestone serves, issue #227's third
+    rule. It is optional and defaults to empty because the pointer is
+    written per milestone by a later step of that issue, and a seat with no
+    answer yet has to be distinguishable from one whose answer is "nothing":
+    both render as an empty cell here, so the orphan list is built by
+    `project_goals.serves_problems` over the seats that exist rather than
+    inferred from a blank. A cell carrying a `|` is refused like a name.
     """
     lines, seen = [_MILESTONE_SEATS_HEADER.rstrip("\n")], {}
+    pointers = {(str(a).strip().lower(), str(b).strip().lower()): value
+                for (a, b), value in (serves or {}).items()}
     for project, milestone in order:
         name, group = (project or "").strip(), (milestone or "").strip()
         if not name or not group or "|" in name or "|" in group:
             return None
+        served = str(pointers.get((name.lower(), group.lower()), "")).strip()
+        if "|" in served:
+            return None
         seen[name.lower()] = seen.get(name.lower(), 0) + 1
         lines.append(f"| {name} | {group} | {seen[name.lower()]} | "
-                     f"{(updated or '').strip()} |")
+                     f"{(updated or '').strip()} | {served} |")
     return "\n".join(lines) + "\n"
+
+
+def parse_milestone_serves(markdown):
+    """`milestone-seats.md` -> `{(project, milestone) lowercased: Serves cell}`.
+
+    Every seated milestone gets an entry, including one whose cell is empty
+    -- that is the orphan the issue asks for a list of, and dropping it here
+    would make an unanswered milestone and a well-linked one look the same
+    to `project_goals.serves_problems`.
+
+    Rows are recognised exactly as `parse_milestone_pins` recognises them,
+    so a row it reads as a seat is a row this reads as a pointer; the
+    position cell must still parse, because a broken row is not a milestone.
+    """
+    out = {}
+    for line in (markdown or "").split("\n"):
+        text = line.strip()
+        if not text.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in text.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        if all(set(cell) <= set("-: ") and cell for cell in cells):
+            continue
+        project, milestone = cells[0], cells[1]
+        if not project or not milestone:
+            continue
+        if project.lower() == "project" and milestone.lower() == "milestone":
+            continue
+        try:
+            position = int(cells[2])
+        except (TypeError, ValueError):
+            continue
+        if position < 1:
+            continue
+        out[(project.lower(), milestone.lower())] = (
+            cells[4] if len(cells) > 4 else "")
+    return out
 
 
 def parse_milestone_pins(markdown):
