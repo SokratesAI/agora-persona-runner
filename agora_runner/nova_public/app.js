@@ -144,6 +144,7 @@
     if (path === "/heartbeats") return { view: "heartbeats", cycle: null, board: null };
     if (path === "/catalog") return { view: "catalog", cycle: null, board: null };
     if (path === "/diag") return { view: "diag", cycle: null, board: null };
+    if (path === "/settings") return { view: "settings", cycle: null, board: null };
     if (path === "/galaxy") return { view: "galaxy", cycle: null, board: null };
     if (path === "/projects") return { view: "projects", cycle: null, board: null, project: null };
     // `/project/Nova` -- idea #92 phase 3. Decoded here rather than left
@@ -658,6 +659,23 @@
         mailEl.appendChild(mail);
       }
     }
+  }
+
+  /* The wordmark, which is also the way home.
+   *
+   * His capture, 2026-09-13: *"Make the Nova title navigate to the
+   * homepage."* Fifteen render functions build this heading, so it is a
+   * helper rather than fifteen edits -- and it is a real `<a>` rather than a
+   * click handler on the `<h1>`, because a heading that navigates is
+   * invisible to the keyboard and announces itself as a heading to a screen
+   * reader. The static copy in index.html carries the same markup, so the
+   * shell is a link before app.js has run. */
+  function wordmark() {
+    var heading = el("h1", "wordmark");
+    var home = el("a", "wordmark-home", "Nova");
+    home.setAttribute("href", "/");
+    heading.appendChild(home);
+    return heading;
   }
 
   function el(tag, className, text) {
@@ -1586,7 +1604,7 @@
       seedRepliesRead(commentsByCycle);
     }
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     /* Appended at the end, and only if anything went into it — an empty
      * flex row still eats its own top margin. */
     var subs = el("div", "status-subs");
@@ -1746,7 +1764,7 @@
    * having as long as it is not passed off as current. */
   function renderStatusUnreachable(detail) {
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     if (lastStatus) {
       var parts = statusParts(lastStatus);
       if (parts.length) {
@@ -4588,7 +4606,7 @@
     var done = items.filter(function (i) { return i.statusKey === "done"; }).length;
     var open = items.length - done - outdated;
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     /* The page name is bold and the counts are not -- the owner, issues.md #83:
      * "Make the header for issues and ideas bold". The whole line used to be
      * one dim string, so "Issues" read as part of the tally rather than as
@@ -7563,7 +7581,7 @@
     markNav();
     var summary = payload.summary || {};
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     statusEl.appendChild(el(
       "p", "status-line",
       "Costs — " + (summary.cycles || 0) + " cycles, "
@@ -7834,7 +7852,7 @@
     var rows = payload.retros || [];
     var latest = rows.length ? rows[rows.length - 1] : null;
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     statusEl.appendChild(el(
       "p", "status-line",
       rows.length
@@ -8378,7 +8396,7 @@
     markNav();
     var docs = payload.documents || [];
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     statusEl.appendChild(el("p", "status-line", "What I would do next, and what it is for"));
     if (payload.replayed) statusEl.appendChild(savedCopyLine());
     feed.textContent = "";
@@ -8597,7 +8615,7 @@
     markNav();
     var candidates = (payload && payload.candidates) || [];
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     statusEl.appendChild(el("p", "status-line",
       candidates.length
         ? "Ideas I came up with — " + candidates.length + " waiting on you"
@@ -10312,7 +10330,7 @@
     var name = (payload && payload.name) || "";
     var asked = (payload && payload.asked) || "";
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     statusEl.appendChild(el("p", "status-line",
       name ? name : "Projects"));
     feed.textContent = "";
@@ -10722,7 +10740,7 @@
     var notes = payload.notes || [];
     var waiting = payload.waitingTotal || 0;
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     statusEl.appendChild(el(
       "p",
       "status-line",
@@ -12781,7 +12799,7 @@
     stopPolling();
     markNav();
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     var rows = payload.heartbeats || [];
     var on = rows.filter(function (r) { return r.enabled; }).length;
     statusEl.appendChild(el("p", "status-line",
@@ -12989,7 +13007,7 @@
     stopPolling();
     markNav();
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     var rows = payload.services || [];
     var parts = [rows.length + (rows.length === 1 ? " service" : " services")];
     if (payload.down) parts.push(payload.down + " down");
@@ -13078,7 +13096,7 @@
     stopPolling();
     markNav();
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     var firing = payload.firing || [];
     var pending = payload.pending || [];
     var parts = [firing.length + (firing.length === 1 ? " firing" : " firing")];
@@ -13333,7 +13351,7 @@
      * payload; this one is the page name plus the health line, which draws
      * nothing at all when there is nothing wrong. */
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     var line = el("p", "status-line");
     line.appendChild(el("strong", "status-page", "Home"));
     statusEl.appendChild(line);
@@ -13341,63 +13359,15 @@
     if (health) statusEl.appendChild(health);
     feed.textContent = "";
 
-    /* The recap first and open, which is the reversal `renderRecap`'s
-     * `homeRecapFold` exists for. `renderRecap` returns null when there is
-     * nothing in it, which is a cold journal rather than an error, so the
-     * rest of the page still draws. */
-    var recap = renderRecap(payload.recap || {}, homeRecapFold);
-    if (recap) feed.appendChild(recap);
-
-    /* "Only when non-empty" is the spec's own rule and `count` is the one
-     * field that decides it -- the page does not count the list itself, so
-     * the rule lives in one place. The unread-replies half is in his
-     * browser rather than in the payload (`markRepliesRead`), so this block
-     * is the asks half and the header pill keeps the other. */
-    var needs = payload.needsYou || {};
-    if (needs.count) {
-      var block = el("section", "home-needs");
-      block.appendChild(el("h2", "home-needs-title",
-        needs.count === 1 ? "1 question is waiting on you"
-          : needs.count + " questions are waiting on you"));
-      var list = el("ul", "home-needs-list");
-      (needs.asks || []).forEach(function (ask) {
-        var item = el("li", "home-needs-item");
-        var card = el("a", "home-needs-link", "Cycle " + ask.cycle);
-        card.setAttribute("href", "/cycle/" + ask.cycle);
-        item.appendChild(card);
-        if (ask.date) {
-          item.appendChild(el("span", "home-needs-when",
-            ask.date + (ask.time ? " " + ask.time : "")));
-        }
-        list.appendChild(item);
-      });
-      block.appendChild(list);
-      var all = el("a", "home-needs-all", "All open asks →");
-      all.setAttribute("href", "/asks");
-      block.appendChild(all);
-      feed.appendChild(block);
-    }
-
-    var projects = payload.projects || [];
-    var section = el("section", "home-projects");
-    section.appendChild(el("h2", "home-section-title", "Projects"));
-    if (!projects.length) {
-      section.appendChild(el("p", "empty", "No projects on the boards yet."));
-    } else {
-      projects.forEach(function (card) {
-        section.appendChild(renderHomeProject(card));
-      });
-      var more = el("a", "home-projects-all", "All projects →");
-      more.setAttribute("href", "/projects");
-      section.appendChild(more);
-    }
-    feed.appendChild(section);
-
-    /* What is running right now, as the list the galaxy page already
-     * carries under its picture. The strip itself is step 3; this is the
-     * fallback the spec asks for, and it is the honest thing to show until
-     * the canvas exists. An unreadable ledger says so rather than drawing
-     * an empty galaxy -- empty and blind mean opposite things. */
+    /* What is running right now, at the top of the page.
+     *
+     * It sat under the projects until 2026-09-13, when he asked for it above
+     * the twelve-hour summary: the strip is the only block here about this
+     * minute, and everything below it is about a window that has already
+     * closed. The canvas still arrives on its own later request -- see
+     * `loadHomeStrip` -- so the slot is in the document from the first paint
+     * and nothing jumps when it lands.
+     */
     var active = payload.active || [];
     var live = el("section", "home-live");
     /* The strip's own slot, empty until `/api/galaxy` answers. Appended
@@ -13426,6 +13396,41 @@
     live.appendChild(galaxy);
     feed.appendChild(live);
 
+    /* The recap first and open, which is the reversal `renderRecap`'s
+     * `homeRecapFold` exists for. `renderRecap` returns null when there is
+     * nothing in it, which is a cold journal rather than an error, so the
+     * rest of the page still draws. */
+    var recap = renderRecap(payload.recap || {}, homeRecapFold);
+    if (recap) feed.appendChild(recap);
+
+    /* The "N questions are waiting on you" block used to be here.
+     *
+     * Removed 2026-09-13 on his report: *"remove 'questions waiting for you'
+     * on the homepage as it is listed that 83 questions are waiting for me,
+     * which is not true."* It counted every ask any cycle has ever written
+     * into a journal entry and never had answered, back to the first one, so
+     * it grew monotonically and said nothing about today. The count is still
+     * computed server-side (`payload.needsYou`) and still reachable at
+     * `/asks`; what is gone is the claim on the landing page. Fixing what the
+     * number means is its own job, and a wrong number is worse than none
+     * while that job waits. */
+
+    var projects = payload.projects || [];
+    var section = el("section", "home-projects");
+    section.appendChild(el("h2", "home-section-title", "Projects"));
+    if (!projects.length) {
+      section.appendChild(el("p", "empty", "No projects on the boards yet."));
+    } else {
+      projects.forEach(function (card) {
+        section.appendChild(renderHomeProject(card));
+      });
+      var more = el("a", "home-projects-all", "All projects →");
+      more.setAttribute("href", "/projects");
+      section.appendChild(more);
+    }
+    feed.appendChild(section);
+
+
     var toFeed = el("a", "home-journal-all", "The journal →");
     toFeed.setAttribute("href", "/journal");
     feed.appendChild(toFeed);
@@ -13443,9 +13448,9 @@
    * the page waits for.**"*
    *
    * Three things follow, and each is a line of code rather than an
-   * intention. It is called at the *end* of `renderHome`, so the recap, the
-   * projects and the needs-you block are already on screen before this
-   * asks for anything. Its canvas goes into a slot that is already in the
+   * intention. It is called at the *end* of `renderHome`, so every block on the page --
+   * the strip's own slot included -- is already on screen before this asks
+   * for anything. Its canvas goes into a slot that is already in the
    * document, so a strip that never arrives leaves the page exactly as it
    * was. And a failed poll reschedules instead of drawing an error: the
    * words underneath already say what is running, so a red line here would
@@ -14013,11 +14018,118 @@
     ];
   }
 
+  /* The theme preference this browser holds: "light", "dark" or "system".
+   * Stored per device rather than per account on purpose -- he reads Nova on
+   * a phone in bed and on a desktop in daylight, and those two want different
+   * answers. */
+  function themePreference() {
+    try {
+      var stored = localStorage.getItem("nova-theme");
+      if (stored === "light" || stored === "dark") return stored;
+    } catch (e) { /* private mode: fall through to the device */ }
+    return "system";
+  }
+
+  /** What "system" resolves to right now. */
+  function deviceTheme() {
+    var query = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+    return query && query.matches ? "light" : "dark";
+  }
+
+  /* Paint one preference. `data-theme` is only ever the effective palette --
+   * see the boot script in index.html for why the preference and the palette
+   * are two different values.
+   *
+   * The `theme-color` meta goes with it, because on Android the browser
+   * paints the status bar from it: leaving it at the dark value puts a black
+   * strip above a white page. */
+  function applyTheme(preference) {
+    var effective = preference === "system" ? deviceTheme() : preference;
+    document.documentElement.setAttribute("data-theme", effective);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", effective === "light" ? "#f4f6fb" : "#12131a");
+    return effective;
+  }
+
+  /* A phone that flips to dark at sunset has to flip the open tab with it,
+   * but only while he is letting the device decide. Registered once, at load,
+   * rather than on the settings page: the page he is on when the sun goes
+   * down is usually not this one. */
+  (function watchDeviceTheme() {
+    var query = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+    if (!query) return;
+    var onChange = function () {
+      if (themePreference() === "system") applyTheme("system");
+    };
+    if (query.addEventListener) query.addEventListener("change", onChange);
+    else if (query.addListener) query.addListener(onChange);
+  })();
+
+  /** `/settings` -- the app's own settings, as opposed to one conversation's.
+   *
+   * His capture, 2026-09-13: *"Add a new page for settings for Nova and place
+   * it in the sidebar. I want to be able to toggle between light and dark
+   * mode, but it should also just follow the device standard."*
+   *
+   * Three buttons rather than a two-way switch, because "follow the device"
+   * is a third state and not the off position of the toggle: a switch can
+   * say light or dark and has nowhere to put "whatever the phone says". */
+  function renderSettings() {
+    stopPolling();
+    markNav();
+    statusEl.textContent = "";
+    statusEl.appendChild(wordmark());
+    statusEl.appendChild(el("p", "status-line", "How this app looks on this device"));
+    feed.textContent = "";
+
+    var card = el("div", "plan-card");
+    card.appendChild(el("h2", "settings-heading", "Appearance"));
+    card.appendChild(el("p", "settings-note",
+      "Saved on this device only, so your phone and your desktop can disagree."));
+
+    var group = el("div", "settings-choice");
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-label", "Theme");
+    var current = themePreference();
+    var buttons = [];
+    [["system", "Device"], ["light", "Light"], ["dark", "Dark"]].forEach(function (choice) {
+      var button = el("button", "settings-option", choice[1]);
+      button.type = "button";
+      button.setAttribute("role", "radio");
+      button.dataset.theme = choice[0];
+      button.setAttribute("aria-checked", choice[0] === current ? "true" : "false");
+      button.addEventListener("click", function () {
+        try { localStorage.setItem("nova-theme", choice[0]); } catch (e) { /* private mode */ }
+        applyTheme(choice[0]);
+        buttons.forEach(function (other) {
+          other.setAttribute("aria-checked", other === button ? "true" : "false");
+        });
+        followsDevice.textContent = deviceLine(choice[0]);
+      });
+      buttons.push(button);
+      group.appendChild(button);
+    });
+    card.appendChild(group);
+
+    var followsDevice = el("p", "settings-note settings-device", deviceLine(current));
+    card.appendChild(followsDevice);
+    feed.appendChild(card);
+  }
+
+  /** The line under the buttons: what the choice means right now. */
+  function deviceLine(preference) {
+    if (preference !== "system") {
+      return "Always " + preference + ", whatever this device is set to.";
+    }
+    return "Following this device, which is currently "
+      + (deviceTheme() === "light" ? "light" : "dark") + ".";
+  }
+
   function renderDiag() {
     stopPolling();
     markNav();
     statusEl.textContent = "";
-    statusEl.appendChild(el("h1", "wordmark", "Nova"));
+    statusEl.appendChild(wordmark());
     statusEl.appendChild(el("p", "status-line", "What this device reports about itself"));
     feed.textContent = "";
 
@@ -14213,11 +14325,39 @@
     captureHome();
     stopScrollWatch();
     var here = route(window.location.pathname);
-    /* The journal view gets its comments from `fetchAll` and paints the badge
-     * out of `renderStatus`. Every other view has to ask for them, or the
-     * badge he asked for in the header is a journal-page feature wearing a
-     * header's clothes. */
-    if (here.view !== "journal") refreshMail();
+    /* The capture box belongs to the landing page now.
+     *
+     * His capture, 2026-09-13: *"remove the input components for ideas and
+     * issues on all other pages than the homepage."* It used to ride every
+     * page -- `captureHome()` above exists to put it back above the feed
+     * wherever a page had moved it -- which meant the board pages carried two
+     * ways in: the box at the top and the row editors below it.
+     *
+     * Hidden rather than removed from the document: `captureHome()` and the
+     * composer's own handlers hold references to `#capture`, and a node that
+     * exists and is hidden keeps every one of them true. */
+    var captureBox = document.getElementById("capture");
+    if (captureBox) {
+      if (here.view === "home") captureBox.removeAttribute("hidden");
+      else captureBox.setAttribute("hidden", "");
+    }
+    /* The unread-reply badge belongs to the journal and nowhere else.
+     *
+     * It used to be fetched and painted on every page -- cycle 474's reading
+     * of his 2026-08-25 capture, *"I want to have a status the Nova header if
+     * i have unread Journal comments"*. He reversed that on 2026-09-13:
+     * *"remove the status pills related to journals like '21 new replies' or
+     * other from all other pages than the Journal page."* So the badge is a
+     * journal-page feature again, and every other view clears the node on the
+     * way in rather than leaving whatever the last page painted standing over
+     * a page it says nothing about.
+     *
+     * The ask pill ("N waiting on you") needed no change: it is drawn inside
+     * `renderStatus`, which only the journal view calls. */
+    if (here.view !== "journal" && mailEl) {
+      mailEl.textContent = "";
+      mailEl.setAttribute("hidden", "");
+    }
     /* Answer the tap now, before anything is fetched.
      *
      * the owner, capture 2026-09-05, rated Immediately: *"The Nova app is
@@ -14317,6 +14457,12 @@
     // there is nothing to fetch and nothing that can fail on the way.
     if (here.view === "diag") {
       renderDiag();
+      return;
+    }
+    // Same shape as `/diag`: nothing on this page comes from the server, so
+    // there is no payload to fetch and nothing that can fail on the way.
+    if (here.view === "settings") {
+      renderSettings();
       return;
     }
     if (here.view === "galaxy") {

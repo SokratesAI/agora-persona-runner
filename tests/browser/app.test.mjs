@@ -2238,7 +2238,15 @@ describe("the vault cannot inject markup", () => {
     window.eval(readFileSync(join(publicDir, "app.js"), "utf8"));
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     assert.equal(window.pwned, undefined);
-    assert.equal(window.document.querySelectorAll("script:not([src])").length, 0);
+    /* Scoped to the feed rather than the document since 2026-09-13: the shell
+     * grew one inline script of its own, the theme boot in index.html that has
+     * to run before the first paint. The guard is the same one -- nothing an
+     * entry carries becomes a node -- and the line below keeps the shell's
+     * script from growing a second, unexamined sibling. */
+    assert.equal(window.document.querySelectorAll(".feed script").length, 0);
+    const inline = [...window.document.querySelectorAll("script:not([src])")];
+    assert.equal(inline.length, 1, "the shell grew an inline script nobody reviewed");
+    assert.match(inline[0].textContent, /nova-theme/);
     assert.equal(window.document.querySelectorAll("img").length, 0);
     assert.match(cards(window)[0].textContent, /<script>/);
   });
@@ -4602,7 +4610,11 @@ describe("the sidebar", () => {
     // `/alerts` joined The loop on 2026-09-12, on idea #122 -- "give the K3s
     // sentinel somewhere to report". It sits directly after Costs because
     // that is where the row asked for it: "a page beside the costs page".
-    assert.deepEqual(hrefs, ["/", "/journal", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/galaxy", "/retro", "/costs", "/alerts", "/catalog", "/diag"]);
+    // On 2026-09-13 he moved Beats under Steering and had the one-link
+    // "Talking" fold deleted with it, and `/settings` arrived in a new "This
+    // app" fold with `/diag` for company -- both are about this app on this
+    // phone rather than about the loop's work.
+    assert.deepEqual(hrefs, ["/", "/journal", "/projects", "/issues", "/ideas", "/notes", "/pool", "/plan", "/heartbeats", "/galaxy", "/retro", "/costs", "/alerts", "/catalog", "/settings", "/diag"]);
 
     assert.equal(drawer(window).getAttribute("aria-hidden"), "true");
     click(window, btn(window));
@@ -4618,7 +4630,7 @@ describe("the sidebar", () => {
   test("the group folds are closed, except the one holding the page you are on", async () => {
     const journal = await loadSite("/journal");
     const folds = (w) => [...drawer(w).querySelectorAll(".nav-fold")];
-    assert.equal(folds(journal).length, 3, "three groups: Steering, Talking, The loop");
+    assert.equal(folds(journal).length, 3, "three groups: Steering, The loop, This app");
     assert.deepEqual(folds(journal).map((f) => f.open), [false, false, false],
       "on a pinned page no group holds the current link, so none should be open");
 
@@ -4627,8 +4639,14 @@ describe("the sidebar", () => {
     assert.deepEqual(folds(plan).map((f) => f.open), [true, false, false]);
     assert.ok(plan.document.querySelector(".nav-tab[href='/plan']").classList.contains("on"));
 
+    // Catalog is in The loop, which is the second fold now that Talking is
+    // gone.
     const catalog = await loadSite("/catalog");
-    assert.deepEqual(folds(catalog).map((f) => f.open), [false, false, true]);
+    assert.deepEqual(folds(catalog).map((f) => f.open), [false, true, false]);
+
+    // And the new third fold opens on its own pages.
+    const settings = await loadSite("/settings");
+    assert.deepEqual(folds(settings).map((f) => f.open), [false, false, true]);
   });
 
   /* A `<details>` the owner opens themselves has to stay open while they read
@@ -11521,6 +11539,142 @@ describe("mermaid diagrams in the chat", () => {
   });
 });
 
+/* The three captures of 2026-09-13 whose code arrived without a test.
+ *
+ * The sidebar, the badge and the landing page were all pinned when they
+ * changed; the wordmark link, the settings page and the capture box were
+ * not, so half of what he asked for that morning was resting on nothing.
+ * Cycle 1506 wrote these against the code it inherited. */
+/* A landing-page payload with every list empty -- enough for `renderHome`
+ * to draw, and deliberately not the rich `HOME` fixture further down the
+ * file, which is scoped to its own describe block. */
+const BARE_HOME = { recap: {}, projects: [], active: [], needsYou: { asks: [], count: 0 } };
+
+describe("the wordmark is the way home", () => {
+  /* His capture, 2026-09-13: *"Make the Nova title navigate to the
+   * homepage."* Fifteen render functions build that heading, so the thing
+   * to pin is that they all go through one helper -- a test on the journal
+   * alone would pass while twelve pages kept a dead title. */
+  test("every page's title is a link to /", async () => {
+    for (const path of ["/journal", "/issues", "/heartbeats", "/settings"]) {
+      const window = await loadSite(path, { home: BARE_HOME });
+      const link = window.document.querySelector(".wordmark .wordmark-home");
+      assert.ok(link, `no link inside the wordmark on ${path}`);
+      assert.equal(link.getAttribute("href"), "/", `the wordmark on ${path} points elsewhere`);
+      assert.equal(link.textContent, "Nova");
+    }
+  });
+
+  test("the shell carries the link before app.js has run", async () => {
+    /* The static copy in index.html, which is what a cold load paints
+     * first. If only the JS built it, the title is dead for the length of
+     * the first fetch. */
+    const html = readFileSync(join(publicDir, "index.html"), "utf8");
+    assert.match(html, /<h1 class="wordmark"><a class="wordmark-home" href="\/">Nova<\/a><\/h1>/);
+  });
+});
+
+describe("the settings page", () => {
+  /* His capture, 2026-09-13: *"Add a new page for settings for Nova and
+   * place it in the sidebar. I want to be able to toggle between light and
+   * dark mode, but it should also just follow the device standard."*
+   *
+   * jsdom runs the shell with `runScripts: "outside-only"`, so the boot
+   * script in index.html never executes here and `data-theme` is unset on a
+   * cold load. That is why these assert on what a *tap* does rather than on
+   * the attribute at load: the tap is the half this file can honestly
+   * measure, and the boot script's own presence is pinned by the
+   * inline-script guard in "the vault cannot inject markup". */
+  test("it draws three choices and asks the server for nothing", async () => {
+    const window = await loadSite("/settings");
+    assert.equal(window.posted.length, 0, "the settings page posted something");
+    const options = [...window.document.querySelectorAll(".settings-option")];
+    assert.deepEqual(options.map((o) => o.textContent), ["Device", "Light", "Dark"]);
+    assert.deepEqual(options.map((o) => o.dataset.theme), ["system", "light", "dark"]);
+  });
+
+  test("the stored preference is the one marked, not the first one", async () => {
+    /* The mutation this catches: a page that always checks "Device" looks
+     * right on a fresh phone and forgets his choice on every later visit. */
+    const window = await loadSite("/settings", {
+      install: (w) => w.localStorage.setItem("nova-theme", "light"),
+    });
+    const checked = [...window.document.querySelectorAll(".settings-option")]
+      .filter((o) => o.getAttribute("aria-checked") === "true");
+    assert.equal(checked.length, 1, "more than one choice is marked");
+    assert.equal(checked[0].dataset.theme, "light");
+  });
+
+  test("a tap stores the choice and repaints the page", async () => {
+    const window = await loadSite("/settings");
+    const light = [...window.document.querySelectorAll(".settings-option")]
+      .find((o) => o.dataset.theme === "light");
+    click(window, light);
+    assert.equal(window.localStorage.getItem("nova-theme"), "light",
+      "the choice was painted but never saved");
+    assert.equal(window.document.documentElement.getAttribute("data-theme"), "light",
+      "the page kept the old palette");
+    assert.equal(light.getAttribute("aria-checked"), "true");
+    assert.equal([...window.document.querySelectorAll(".settings-option")]
+      .filter((o) => o.getAttribute("aria-checked") === "true").length, 1);
+  });
+
+  test("choosing Device hands the palette back to the phone", async () => {
+    /* `system` is a third state, not the off position of a two-way switch:
+     * `data-theme` must resolve to a real palette while the stored
+     * preference stays `system`, or a phone that flips at sunset has
+     * nothing to flip. */
+    const window = await loadSite("/settings", {
+      install: (w) => w.localStorage.setItem("nova-theme", "light"),
+    });
+    const device = [...window.document.querySelectorAll(".settings-option")]
+      .find((o) => o.dataset.theme === "system");
+    click(window, device);
+    assert.equal(window.localStorage.getItem("nova-theme"), "system");
+    const effective = window.document.documentElement.getAttribute("data-theme");
+    assert.ok(effective === "light" || effective === "dark",
+      `data-theme is the preference, not a palette: ${effective}`);
+    assert.match(window.document.querySelector(".settings-device").textContent,
+      /Following this device/);
+  });
+
+  test("light mode is a whole palette, not one repainted variable", async () => {
+    /* The stylesheet half. A `:root[data-theme="light"]` block that sets
+     * only `--bg` gives a white page with white text, which is the one
+     * failure a toggle cannot ship with. */
+    const css = readFileSync(join(publicDir, "style.css"), "utf8");
+    const block = css.slice(css.indexOf(':root[data-theme="light"]'));
+    assert.ok(block, "no light-mode block in the stylesheet");
+    const body = block.slice(0, block.indexOf("}"));
+    for (const name of ["--bg", "--card", "--line", "--text", "--dim", "--accent"]) {
+      assert.match(body, new RegExp(name + ":"), `light mode never redefines ${name}`);
+    }
+    assert.match(body, /color-scheme:\s*light/,
+      "without color-scheme the native controls stay dark on a light page");
+  });
+});
+
+describe("the capture box belongs to the landing page", () => {
+  /* His capture, 2026-09-13: *"remove the input components for ideas and
+   * issues on all other pages than the homepage."* Hidden rather than
+   * removed, because `captureHome()` and the composer's handlers hold
+   * references to the node. */
+  test("it is visible on / and hidden everywhere else", async () => {
+    const home = await loadSite("/", { home: BARE_HOME });
+    const onHome = home.document.getElementById("capture");
+    assert.ok(onHome, "#capture is gone from the shell");
+    assert.equal(onHome.hasAttribute("hidden"), false, "the capture box is hidden on its own page");
+
+    for (const path of ["/journal", "/issues", "/ideas"]) {
+      const window = await loadSite(path);
+      const box = window.document.getElementById("capture");
+      assert.ok(box, `#capture is gone from ${path}`);
+      assert.equal(box.hasAttribute("hidden"), true,
+        `the capture box still rides ${path}`);
+    }
+  });
+});
+
 describe("the device page", () => {
   /* `/diag` exists because three cycles in a row shipped a fix for a
    * rendering fault on a phone none of them could look at -- an iPhone
@@ -12675,16 +12829,22 @@ describe("unread replies are counted on the card and in the header", () => {
     });
   });
 
-  /* The half of that report cycle 474 did not reach.
+  /* Reversed on 2026-09-13, and worth keeping the history because the tests
+   * below used to assert the opposite.
    *
-   * His ask was for the *header* -- "I want to have a status the Nova header
-   * if i have unread Journal comments" -- and the header is one element that
-   * every page shares. The badge was built inside `renderStatus`, which only
-   * the journal view calls, and every other view opens by wiping the header
-   * and writing its own line. So on twelve of thirteen pages there was no
-   * badge, no panel and no way to find out a reply had landed. These pin the
-   * fix on a board page, which is where he spends most of his time. */
-  describe("the badge is on every page, not only the journal", () => {
+   * Cycle 474 read his 2026-08-25 capture -- *"I want to have a status the
+   * Nova header if i have unread Journal comments"* -- as "the header is one
+   * element every page shares, so the badge belongs on all of them", and
+   * built `#mail` outside `#status` so it would survive a page that wipes the
+   * header. He asked for the other half back in a live chat: *"remove the
+   * status pills related to journals like '21 new replies' or other from all
+   * other pages than the Journal page."*
+   *
+   * So `#mail` keeps its place outside the header -- that is what makes it
+   * paintable at all -- and every non-journal view now clears it on the way
+   * in. These pin the new rule on a board page, which is where he spends most
+   * of his time and where the old badge was most visible. */
+  describe("the unread-reply badge is on the journal and nowhere else", () => {
     function spread() {
       const comments = JSON.parse(JSON.stringify(payload.comments));
       comments.byCycle["57"][1].replies = [
@@ -12692,40 +12852,45 @@ describe("unread replies are counted on the card and in the header", () => {
       ];
       return comments;
     }
-    const onIssues = () =>
-      loadSite("/issues", {
-        comments: spread(),
-        install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
-      });
+    const read = () =>
+      withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" });
+    const onIssues = () => loadSite("/issues", { comments: spread(), install: read() });
 
-    test("a board page shows the same count the journal does", async () => {
-      const window = await onIssues();
+    test("the journal still shows the count", async () => {
+      const window = await loadSite("/journal", { comments: spread(), install: read() });
       const badge = unreadBadge(window);
-      assert.ok(badge, "no unread badge on the Issues page");
+      assert.ok(badge, "no unread badge on the journal itself");
       assert.match(badge.textContent, /2 new replies/);
     });
 
-    test("it lives outside the header, so drawing the page cannot destroy it", async () => {
-      /* The mechanism, not the symptom. A badge parked inside `#status` is
-       * removed by the `statusEl.textContent = ""` every view runs on entry,
-       * which is exactly how it went missing. */
+    test("a board page shows no journal pill at all", async () => {
+      const window = await onIssues();
+      assert.equal(unreadBadge(window), null, "the journal's badge followed him onto Issues");
+    });
+
+    test("the node is emptied and hidden, not merely covered", async () => {
+      /* Hiding it in CSS would leave the count in the accessibility tree, so
+       * a screen reader on the Issues page would still announce a journal
+       * status. Emptied and `hidden` is the whole removal. */
       const window = await onIssues();
       const mail = window.document.getElementById("mail");
       assert.ok(mail, "#mail is gone");
+      assert.equal(mail.textContent, "");
+      assert.equal(mail.hasAttribute("hidden"), true);
+    });
+
+    test("it is still outside the header, so the journal can paint it", async () => {
+      /* The mechanism the reversal must not take with it. A badge parked
+       * inside `#status` is removed by the `statusEl.textContent = ""` every
+       * view runs on entry, which is how it went missing in the first place. */
+      const window = await loadSite("/journal", { comments: spread(), install: read() });
+      const mail = window.document.getElementById("mail");
       assert.equal(unreadBadge(window).closest("#mail"), mail);
       assert.equal(window.document.querySelector("#status .badge-unread"), null);
     });
 
-    test("it links to /replies from a board page too", async () => {
-      /* The badge lives outside the header precisely so it survives a page
-       * that is not the journal; the link has to survive with it, or the
-       * count on Issues is a number pointing nowhere. */
-      const window = await onIssues();
-      assert.equal(unreadBadge(window).getAttribute("href"), "/replies");
-    });
-
     test("nothing unread leaves the node hidden rather than an empty gap", async () => {
-      const window = await loadSite("/issues", { comments: spread() });
+      const window = await loadSite("/journal", { comments: spread() });
       const mail = window.document.getElementById("mail");
       assert.equal(mail.hasAttribute("hidden"), true, "#mail took up space with nothing in it");
     });
@@ -18112,21 +18277,15 @@ describe("the landing page", () => {
     assert.equal(card.querySelector(".home-project-task"), null);
   });
 
-  test("the needs-you block is drawn only when something is waiting", async () => {
-    /* "Only shows when non-empty" is his own wording, and `count` is the one
-     * field that decides it -- the page does not count the list itself. */
-    const waiting = await loadSite("/", { home: HOME });
-    assert.ok(waiting.document.querySelector(".home-needs"));
-    assert.match(waiting.document.querySelector(".home-needs").textContent,
-      /1 question is waiting on you/);
-    assert.equal(
-      waiting.document.querySelector(".home-needs-link").getAttribute("href"), "/cycle/1447");
-
-    const quiet = await loadSite("/", {
-      home: Object.assign({}, HOME, { needsYou: { asks: [], count: 0 } }),
-    });
-    assert.equal(quiet.document.querySelector(".home-needs"), null,
-      "an empty needs-you block was drawn anyway");
+  test("the landing page makes no claim about questions waiting on him", async () => {
+    /* It used to draw "N questions are waiting on you" from `payload.needsYou`.
+     * He killed it on 2026-09-13: the number had reached 83, which counted
+     * every ask any cycle ever wrote and never had answered, back to the
+     * beginning. The payload field is still served and `/asks` still exists;
+     * the landing page just stops asserting it. */
+    const window = await loadSite("/", { home: HOME });
+    assert.equal(window.document.querySelector(".home-needs"), null);
+    assert.doesNotMatch(homeText(window), /waiting on you/);
   });
 
   test("an unreadable claims ledger is said out loud, not drawn as an idle loop", async () => {
