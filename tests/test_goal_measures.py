@@ -789,3 +789,222 @@ def test_main_hands_the_merge_list_to_the_key_results(tmp_path, monkeypatch, cap
                     "--write"]) == 0
     assert "not measured" not in capsys.readouterr().out
     assert "now: 25" in pg.read_text(encoding="utf-8")
+
+
+# --- KPIs ------------------------------------------------------------------
+#
+# Issue #227's rule 4: a KPI is a guardrail with a range, never a target. These
+# cover the half of `project-goals.md` that had no instrument at all -- every
+# `now:` under a ```kpi fence was typed by a cycle, and `nova-kpi-cost-per-cycle`
+# still carries a number copied out of a paragraph in `prompt.md` describing a
+# window that closed on 2026-08-28.
+
+KPI_DOC = """# Project goals
+
+## Nova
+
+```kpi
+id: nova-kpi-dropped-ticks
+name: Heartbeat slots that produce no run
+measure: Share of scheduled firings in 24h with no run
+now: 8
+low: 0
+high: 10
+unit: %
+```
+
+```kpi
+id: nova-kpi-cost-per-cycle
+name: What a cycle costs
+measure: Median weighted tokens per cycle
+now: 1.74
+low: 0.8
+high: 2.0
+```
+"""
+
+
+def _kpi_sections():
+    from agora_runner.project_goals import parse_project_goals
+    return parse_project_goals(KPI_DOC)
+
+
+def test_kpi_rows_measures_the_one_with_an_instrument(monkeypatch):
+    monkeypatch.setitem(goal_measures.KPI_MEASURERS, "nova-kpi-dropped-ticks",
+                        lambda since, until: (3, "1 of 33 slot(s)"))
+    out = goal_measures.kpi_rows(_kpi_sections(), "2026-09-07", "2026-09-13")
+    by_id = {row["id"]: row for row in out}
+    assert by_id["nova-kpi-dropped-ticks"]["value"] == 3
+    assert by_id["nova-kpi-dropped-ticks"]["detail"] == "1 of 33 slot(s)"
+
+
+def test_kpi_rows_names_why_an_uninstrumented_kpi_is_blank():
+    out = goal_measures.kpi_rows(_kpi_sections(), "2026-09-07", "2026-09-13")
+    by_id = {row["id"]: row for row in out}
+    row = by_id["nova-kpi-cost-per-cycle"]
+    assert row["value"] is None
+    # The reason is the point: a blank `now` says nothing about whether anyone
+    # tried, which is how three cycles come to re-derive the same gap.
+    assert "no instrument" in row["detail"]
+    assert "prompt.md" in row["detail"]
+
+
+def test_kpi_rows_separates_a_failed_reading_from_a_missing_instrument(monkeypatch):
+    monkeypatch.setitem(goal_measures.KPI_MEASURERS, "nova-kpi-dropped-ticks",
+                        lambda since, until: (None, "Agora did not answer"))
+    out = goal_measures.kpi_rows(_kpi_sections(), "2026-09-07", "2026-09-13")
+    row = {r["id"]: r for r in out}["nova-kpi-dropped-ticks"]
+    assert row["value"] is None
+    assert row["detail"].startswith("not measured —")
+    assert "no instrument" not in row["detail"]
+
+
+def test_write_back_kpis_moves_now_and_leaves_the_bounds_alone(tmp_path):
+    path = tmp_path / "project-goals.md"
+    path.write_text(KPI_DOC, encoding="utf-8")
+    rows = goal_measures.kpi_rows(_kpi_sections())
+    for row in rows:
+        if row["id"] == "nova-kpi-dropped-ticks":
+            row["value"], row["detail"] = 3, "1 of 33"
+    report = goal_measures.write_back_kpis(str(path), KPI_DOC, rows)
+    out = path.read_text(encoding="utf-8")
+    assert "now: 3" in out
+    assert "now: 8" not in out
+    # Rule 4: nothing here may move a guardrail's range to fit its reading.
+    assert "low: 0" in out and "high: 10" in out
+    # The uninstrumented KPI is untouched, not blanked.
+    assert "now: 1.74" in out
+    assert "nova-kpi-dropped-ticks  now: 8 -> 3" in report
+
+
+def test_write_back_kpis_writes_nothing_when_the_document_already_agrees(tmp_path):
+    path = tmp_path / "project-goals.md"
+    path.write_text(KPI_DOC, encoding="utf-8")
+    rows = goal_measures.kpi_rows(_kpi_sections())
+    for row in rows:
+        if row["id"] == "nova-kpi-dropped-ticks":
+            row["value"], row["detail"] = 8, "1 of 33"
+    report = goal_measures.write_back_kpis(str(path), KPI_DOC, rows)
+    assert report.startswith("WROTE NOTHING")
+    assert path.read_text(encoding="utf-8") == KPI_DOC
+
+
+def test_render_kpis_prints_the_range_and_flags_drift():
+    rows = goal_measures.kpi_rows(_kpi_sections())
+    for row in rows:
+        if row["id"] == "nova-kpi-dropped-ticks":
+            row["value"], row["detail"] = 3, "1 of 33"
+    text = goal_measures.render_kpis(rows, "project-goals.md")
+    assert "measured 3  [0..10]" in text
+    assert "the document says 8, drifted" in text
+
+
+def test_measure_nova_dropped_ticks_is_the_share_over_judged_heartbeats(monkeypatch):
+    from tools import heartbeat_gaps
+    monkeypatch.setattr(heartbeat_gaps, "_fetch", lambda: ([{"id": "a"}, {"id": "b"}], None))
+    monkeypatch.setattr(heartbeat_gaps, "fetch_conversations", lambda: ([], None))
+    judged = iter([
+        {"verdict": "judged", "expected": 72, "missed": [1, 2, 3, 4, 5, 6]},
+        {"verdict": "unjudged", "detail": "disabled"},
+    ])
+    monkeypatch.setattr(heartbeat_gaps, "judge",
+                        lambda h, c, now, hours: next(judged))
+    value, detail = goal_measures.measure_nova_dropped_ticks(None, None)
+    assert value == 8  # 6 of 72
+    # An unjudged heartbeat is in neither half of the share, and the report
+    # says so -- a share taken over one of two heartbeats is not a claim
+    # about the scheduler.
+    assert "6 of 72" in detail
+    assert "1 more could not be judged" in detail
+
+
+def test_measure_nova_dropped_ticks_reads_24h_not_the_goals_window(monkeypatch):
+    from tools import heartbeat_gaps
+    monkeypatch.setattr(heartbeat_gaps, "_fetch", lambda: ([{"id": "a"}], None))
+    monkeypatch.setattr(heartbeat_gaps, "fetch_conversations", lambda: ([], None))
+    seen = []
+
+    def _judge(heartbeat, conversations, now, hours):
+        seen.append(hours)
+        return {"verdict": "judged", "expected": 10, "missed": []}
+
+    monkeypatch.setattr(heartbeat_gaps, "judge", _judge)
+    # `since`/`until` are the goals' seven-day window and must not reach it: a
+    # guardrail averaged over a week hides the bad night it exists to catch.
+    goal_measures.measure_nova_dropped_ticks("2026-09-07", "2026-09-13")
+    assert seen == [24.0]
+
+
+def test_measure_nova_dropped_ticks_refuses_rather_than_reading_zero(monkeypatch):
+    from tools import heartbeat_gaps
+    monkeypatch.setattr(heartbeat_gaps, "_fetch", lambda: ([{"id": "a"}], None))
+    monkeypatch.setattr(heartbeat_gaps, "fetch_conversations", lambda: ([], None))
+    monkeypatch.setattr(heartbeat_gaps, "judge",
+                        lambda h, c, now, hours: {"verdict": "unjudged"})
+    value, detail = goal_measures.measure_nova_dropped_ticks(None, None)
+    # Nothing judged is not a perfect scheduler. A 0 here would be written into
+    # the document as a healthy guardrail off an instrument that saw nothing.
+    assert value is None
+    assert "no denominator" in detail
+
+
+def test_measure_nova_dropped_ticks_names_an_unread_route(monkeypatch):
+    from tools import heartbeat_gaps
+    monkeypatch.setattr(heartbeat_gaps, "_fetch", lambda: ([], "Agora returned 503"))
+    value, detail = goal_measures.measure_nova_dropped_ticks(None, None)
+    assert value is None
+    assert "503" in detail
+
+
+PG_BOTH_DOC = """# Project goals
+
+## Marcus
+
+```key-result
+id: marcus-kr-sessions-logged
+name: You log the training you did
+measure: Training sessions logged per week
+now: 0
+target: 3
+direction: up
+```
+
+```kpi
+id: nova-kpi-dropped-ticks
+name: Heartbeat slots that produce no run
+measure: Share of scheduled firings in 24h with no run
+now: 8
+low: 0
+high: 10
+```
+"""
+
+
+def test_main_keeps_both_writes_when_a_key_result_and_a_kpi_both_move(
+        tmp_path, monkeypatch):
+    """Two setters, one file, one run -- and the second must not undo the first.
+
+    `write_back_key_results` writes the file, then `write_back_kpis` edits text
+    of its own. If that text is the copy read before the first write, its edit
+    lands on a document that no longer exists on disk and the key result's new
+    number is silently reverted -- while the report happily says both wrote.
+    """
+    goals = tmp_path / "goals.md"
+    goals.write_text(GOALS_FOR_WRITE, encoding="utf-8")
+    pg = tmp_path / "project-goals.md"
+    pg.write_text(PG_BOTH_DOC, encoding="utf-8")
+    monkeypatch.setattr(gm, "today_oslo", lambda now=None: "2026-09-13")
+    monkeypatch.setattr(gm, "fetch_entries", lambda limit, site=None: ([], None))
+    monkeypatch.setattr(gm, "fetch_board", lambda name, site=None: ([], None))
+    monkeypatch.setattr(gm, "collect_merges", lambda repos, since, until: ({}, []))
+    monkeypatch.setattr(gm, "fetch_marcus_state", lambda site=None: (
+        {"sessions": [{"id": "a", "date": "2026-09-11"},
+                      {"id": "b", "date": "2026-09-12"}],
+         "plan": {"blockName": "No plan yet", "days": []}}, None))
+    monkeypatch.setitem(gm.KPI_MEASURERS, "nova-kpi-dropped-ticks",
+                        lambda since, until: (3, "1 of 33 slot(s)"))
+    assert gm.main(["--goals", str(goals), "--project-goals", str(pg),
+                    "--write"]) == 0
+    out = pg.read_text(encoding="utf-8")
+    assert "now: 2.0" in out, "the key-result write was undone by the KPI write"
+    assert "now: 3" in out, "the KPI write did not land"

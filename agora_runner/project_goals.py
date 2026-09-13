@@ -352,7 +352,7 @@ def serves_orphans(serves, sections):
             if not split_serves(serves[(project, milestone)])]
 
 
-def set_field_in_key_result(markdown, key_result_id, field, value):
+def _set_field_in_fence(markdown, fence, row_id, field, value):
     """Set one field inside one ```key-result fence, addressed by its `id`.
 
     The mirror of `nova_plan.set_field_in_goals`, and it exists for the same
@@ -379,7 +379,7 @@ def set_field_in_key_result(markdown, key_result_id, field, value):
     value = str("" if value is None else value).strip()
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", field) or "\n" in value:
         return None
-    wanted = (key_result_id or "").strip()
+    wanted = (row_id or "").strip()
     if not wanted:
         return None
 
@@ -392,7 +392,7 @@ def set_field_in_key_result(markdown, key_result_id, field, value):
     for index, line in enumerate(lines):
         if start is None:
             opened = _FENCE_OPEN_RE.match(line)
-            if opened and opened.group("name") == "key-result":
+            if opened and opened.group("name") == fence:
                 start = index
             continue
         closed = _FENCE_CLOSE_RE.match(line)
@@ -409,7 +409,7 @@ def set_field_in_key_result(markdown, key_result_id, field, value):
                 if not closed:
                     return None
                 hits.append((match, index, body))
-            start = index if (opened and opened.group("name") == "key-result") else None
+            start = index if (opened and opened.group("name") == fence) else None
     if len(hits) != 1:
         return None
 
@@ -424,3 +424,25 @@ def set_field_in_key_result(markdown, key_result_id, field, value):
         return "\n".join(lines)
     lines.insert(close, f"{indent}{field}: {value}")
     return "\n".join(lines)
+
+
+def set_field_in_key_result(markdown, key_result_id, field, value):
+    """Set one field inside the ```key-result fence carrying `key_result_id`."""
+    return _set_field_in_fence(markdown, "key-result", key_result_id, field, value)
+
+
+def set_field_in_kpi(markdown, kpi_id, field, value):
+    """Set one field inside the ```kpi fence carrying `kpi_id`.
+
+    The same setter as `set_field_in_key_result` above, pointed at the other
+    fence, because a KPI's `now:` was typed by hand exactly the way a key
+    result's was -- `nova-kpi-cost-per-cycle` still carries a number copied out
+    of a paragraph in `prompt.md` describing a window that closed on 08-28.
+
+    What it deliberately does NOT do is touch `low:` or `high:`. Those are the
+    bounds the guardrail is judged against, and rule 4 of issue #227 is that a
+    KPI never carries a target -- a tool that could move the bounds to fit the
+    reading is the dashboard optimising itself, which is the failure the whole
+    KPI/key-result split exists to prevent. The caller passes `now`.
+    """
+    return _set_field_in_fence(markdown, "kpi", kpi_id, field, value)
