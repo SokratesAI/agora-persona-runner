@@ -161,6 +161,13 @@ from agora_runner.nova_comments import (
     needs_comments,
     project_comments,
 )
+from agora_runner.nova_claims import (
+    CLAIMS_PATH, ClaimError, load as load_claims, slug_for_row,
+)
+from agora_runner.nova_shares import (
+    FLOOR_DAYS, WINDOW as SHARE_WINDOW, cycle_attribution, floor_is_measurable,
+    last_worked, ledger_horizon, share_deficits, shares_from_meta, starved,
+)
 from agora_runner.cycle_number import cycle_starts
 from agora_runner.nova_journal import (
     build_status,
@@ -1208,6 +1215,91 @@ def _project_summary(items):
     }
 
 
+def _project_shares(boards, meta):
+    """Share of cycles owed vs taken, per project -- issue #214's last half.
+
+    His issue asks for three things and the picker got two of them on
+    2026-09-12: the project tier is a share of cycles rather than his hand
+    order, and the 14-day floor is built. The third was *"Show share vs
+    actual on the projects page"*, and until this it existed only in
+    `tools.top_board_rows`, which prints it to a cycle and to nobody else.
+    A rule he cannot see the arithmetic for is one he cannot tell apart
+    from a broken one -- which is the same argument `_share_block` makes
+    for printing it above the ranking, one reader over.
+
+    **The same two inputs the picker uses, read the same way**, so the
+    number on his phone and the number the cycle ranked on are one number:
+    `projects.md` (already in hand here, as `meta`, for the ratings beside
+    it) and the claims ledger, which is the only record of what a cycle
+    actually worked on.
+
+    **A ledger that will not read answers `None`, not zeroes.** Every
+    project reading "took 0%" is what an unreadable ledger and a totally
+    idle loop look like, and they are opposite facts; the page draws
+    nothing at all rather than the wrong one. Same policy and same reason
+    as `project_priorities` one file over: this is an extra read on the
+    critical path of a page that worked without it, so a CouchDB blip
+    costs him the block and never the rows.
+    """
+    shares = shares_from_meta(meta)
+    if not shares:
+        return None
+    try:
+        claims_text, _rev = vault_read_path_rev(CLAIMS_PATH)
+    except Exception as e:
+        log(f"nova-site could not read the claims ledger for shares: {e}")
+        return None
+    try:
+        # The rows, not the ledger object: `cycle_attribution` iterates what
+        # it is handed, and a dict iterates its keys -- which is a list of
+        # strings that answers `.get` with an AttributeError.
+        claims = (load_claims(claims_text or "") or {}).get("claims") or []
+    except ClaimError as e:
+        log(f"nova-site could not parse the claims ledger for shares: {e}")
+        return None
+
+    # Slug -> project, off the rows the index already built. This is the
+    # only place the mapping exists: a claim records the slug and the
+    # cycle and nothing about which project the row was filed under.
+    project_of = {}
+    for board in ("issues", "ideas"):
+        single = "issue" if board == "issues" else "idea"
+        for item in (boards.get(board) or {}).get("items") or []:
+            key = (item.get("project") or "").strip().lower()
+            if not key or item.get("number") is None:
+                continue
+            project_of[slug_for_row(single, item["number"])] = key
+
+    counts, counted = cycle_attribution(claims, project_of)
+    worked = last_worked(claims, project_of)
+    horizon = ledger_horizon(claims)
+    hungry = set(starved(shares, worked, horizon=horizon))
+    deficits = share_deficits(shares, counts, counted)
+    return {
+        # `counted` is cycles this could attribute, not cycles that
+        # happened: roughly half the slugs in the ledger are free text and
+        # resolve to no project. The page says so rather than implying the
+        # window is every recent cycle.
+        "counted": counted,
+        "window": SHARE_WINDOW,
+        "floorDays": FLOOR_DAYS,
+        # False means the floor did not run, which is a third answer and
+        # not "nothing was starved" -- `prune` keeps the ledger young, so
+        # this is the normal state today and the page has to say it.
+        "floorMeasurable": floor_is_measurable(horizon),
+        "projects": {
+            name: {
+                "share": round(share, 1),
+                "actual": round(actual, 1),
+                "deficit": round(deficit, 1),
+                "cycles": counts.get(name, 0),
+                "starved": name in hungry,
+            }
+            for name, (share, actual, deficit) in deficits.items()
+        },
+    }
+
+
 def _project_summaries(boards):
     """Where every project stands, for the index -- idea #228's PM pass.
 
@@ -1485,6 +1577,13 @@ def project_payload(name=None):
         "boards": {},
     }
     if not wanted:
+        # What the picker owes each project and what it actually spent
+        # (issue #214), on the index and nowhere else. The block draws on
+        # the standing cards, and this is a live vault read -- computing it
+        # on `?name=` too would be one fetch per drawer tap for a number
+        # that tap does not show. `None` means the ledger would not read;
+        # see `_project_shares`.
+        result["projectShares"] = _project_shares(boards, meta)
         return result
     # The thread hangs off the name he asked for, not off `matched`, so a
     # project he has started talking about before filing a row under it

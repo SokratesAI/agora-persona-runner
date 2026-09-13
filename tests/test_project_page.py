@@ -88,6 +88,17 @@ def _boards(monkeypatch):
     # so an absent file means the computed order stands.
     monkeypatch.setattr(nova_site, "milestone_pins_markdown", lambda: "")
     monkeypatch.setattr(nova_site, "milestone_seats_markdown", lambda: "")
+    # The claims ledger is the sixth live vault read, added when the index
+    # grew the share-vs-actual block (issue #214). Refused by default:
+    # these tests are about the regrouping, and `_project_shares` answers
+    # `None` on a read it cannot make -- `test_project_shares.py` holds
+    # that half to its own behaviour. Stubbed rather than left to fail on
+    # its own, because a test that reaches the real vault passes or fails
+    # on what CouchDB is doing rather than on this code.
+    def _no_ledger(path):
+        raise AssertionError(f"no vault read in these tests: {path}")
+
+    monkeypatch.setattr(nova_site, "vault_read_path_rev", _no_ledger)
 
 
 def test_index_lists_every_project_both_boards_name():
