@@ -258,7 +258,7 @@ def gaps(samples, min_span_hours=DEFAULT_MIN_SPAN_HOURS):
     return found
 
 
-#: Every stamp Edvard reads is Oslo time (identity.md rule 7), and the offset
+#: Every stamp the owner reads is Oslo time (identity.md rule 7), and the offset
 #: is +1 for five months of the year. A hardcoded +2 prints every winter
 #: incident an hour off and no test would ever have noticed, because it
 #: changes no verdict -- the comparisons all run on the underlying UTC.
