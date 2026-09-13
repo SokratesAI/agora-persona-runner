@@ -127,3 +127,60 @@ def test_the_check_is_in_preflight():
 
     assert "recap_health" in preflight.CHECKS
     assert "recap_health" in preflight.SUBJECT
+
+
+# --- the journal marker: staleness as a fact rather than a 3-hour guess ---
+#
+# His issue #219. When the card names the journal entry it was built from,
+# that comparison decides the verdict outright and `STALE_AFTER_HOURS` is not
+# consulted. These tests are written so the age and the marker DISAGREE --
+# a test where both point the same way would pass on either implementation
+# and prove nothing about which one ran.
+
+def _stamped(journal, hours_old, cycles="900-901"):
+    written = datetime.datetime.now(OSLO) - datetime.timedelta(hours=hours_old)
+    return (
+        "# Last 12 hours\n\n"
+        f"<!-- generated: {written.isoformat(timespec='minutes')} | "
+        f"cycles {cycles} | journal {journal} -->\n\n"
+        "- **A thing** happened\n"
+    )
+
+
+def test_a_matching_marker_is_current_even_well_past_the_age_threshold(capsys):
+    body = _stamped("42-cycle-901.md", hours_old=STALE_AFTER_HOURS + 5)
+    code = recap_health.report(recap_health.parse_recap(body), since=0,
+                               newest="42-cycle-901.md")
+    assert code == 0
+    assert "CURRENT" in capsys.readouterr().out
+
+
+def test_a_stale_marker_is_behind_even_minutes_after_it_was_written(capsys):
+    body = _stamped("42-cycle-901.md", hours_old=0.1)
+    code = recap_health.report(recap_health.parse_recap(body), since=2,
+                               newest="43-cycle-902.md")
+    out = capsys.readouterr().out
+    assert code == 2
+    assert "BEHIND" in out
+    assert "43-cycle-902.md" in out
+
+
+def test_a_card_with_no_marker_falls_back_to_the_age_guess(capsys):
+    # Every card written before 2026-09-13 is this one. It must not read as
+    # behind just because it names no entry.
+    body = (
+        "# Last 12 hours\n\n"
+        f"<!-- generated: {datetime.datetime.now(OSLO).isoformat(timespec='minutes')}"
+        " | cycles 900-901 -->\n\n- **A thing** happened\n"
+    )
+    assert recap_health.report(recap_health.parse_recap(body), since=0,
+                               newest="43-cycle-902.md") == 0
+    assert "CURRENT" in capsys.readouterr().out
+
+
+def test_an_unreadable_journal_listing_never_declares_a_card_behind(capsys):
+    # `newest` is "" when the `ls` failed. Declaring the card behind an entry
+    # nobody read is the negative-result-guaranteed-in-advance failure.
+    body = _stamped("42-cycle-901.md", hours_old=0.1)
+    assert recap_health.report(recap_health.parse_recap(body), since=None,
+                               newest="") == 0

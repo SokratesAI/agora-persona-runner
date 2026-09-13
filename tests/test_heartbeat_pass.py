@@ -116,6 +116,10 @@ def test_main_starts_the_scheduler_with_its_own_shutdown_flag(monkeypatch):
     monkeypatch.setattr(main_mod, "init_tracing", lambda _n: None)
     monkeypatch.setattr(main_mod, "start_invoke_server", lambda: None)
     monkeypatch.setattr(main_mod, "start_catalog_refresh", lambda: None)
+    # And the recap refresher (Cycle 1508). Every test that calls `main()`
+    # has to stub each daemon thread it starts, or conftest fails it for a
+    # thread outliving its own patches.
+    monkeypatch.setattr(main_mod, "start_recap_refresh", lambda: None)
     monkeypatch.setattr(main_mod, "start_heartbeat_pass", lambda s: given.append(s))
     monkeypatch.setattr(main_mod, "poll_once", lambda: None)
     monkeypatch.setattr(main_mod, "_sleep_between_ticks", lambda _s: None)
@@ -305,6 +309,7 @@ def test_main_asks_for_the_scheduler_on_every_tick(monkeypatch):
     monkeypatch.setattr(main_mod, "init_tracing", lambda _n: None)
     monkeypatch.setattr(main_mod, "start_invoke_server", lambda: None)
     monkeypatch.setattr(main_mod, "start_catalog_refresh", lambda: None)
+    monkeypatch.setattr(main_mod, "start_recap_refresh", lambda: None)
     monkeypatch.setattr(main_mod, "start_heartbeat_pass", lambda s: given.append(s))
     monkeypatch.setattr(main_mod, "poll_once", lambda: ticks.append(1))
     monkeypatch.setattr(main_mod, "_sleep_between_ticks", lambda _s: None)

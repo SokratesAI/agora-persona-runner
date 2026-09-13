@@ -4,6 +4,7 @@ import datetime
 
 import pytest
 
+from agora_runner import nova_recap
 from agora_runner.nova_recap import (
     RECAP_PATH, STALE_AFTER_HOURS, parse_recap, recap_page,
 )
@@ -146,3 +147,53 @@ def test_a_bullet_with_no_link_has_one_plain_part():
         {"text": "Nothing to open here.", "href": ""},
     ]
     assert all(not part["href"] for part in payload["bullets"][0]["parts"])
+
+
+# --- the journal marker in the stamp (his issue #219) ---
+
+def test_the_stamp_carries_the_entry_the_card_was_built_from():
+    payload = nova_recap.parse_recap(
+        nova_recap.render(["**A thing** happened"], cycles="1500-1508",
+                          journal="1571-cycle-1508.md"))
+    assert payload["journal"] == "1571-cycle-1508.md"
+    assert payload["cycles"] == "1500-1508"
+
+
+def test_cycles_still_parse_when_a_journal_marker_follows_them():
+    # The `cycles` group used to be `[^>]*?`, which would have swallowed
+    # ` | journal ...` whole. This is the test that separates the two.
+    payload = nova_recap.parse_recap(
+        "<!-- generated: 2026-09-13T13:00+02:00 | cycles 1500-1508 | "
+        "journal 1571-cycle-1508.md -->\n\n- a bullet\n")
+    assert payload["cycles"] == "1500-1508"
+
+
+def test_a_card_written_before_the_marker_existed_still_parses():
+    payload = nova_recap.parse_recap(
+        "<!-- generated: 2026-09-13T13:00+02:00 | cycles 900-901 -->\n\n- a bullet\n")
+    assert payload["journal"] == ""
+    assert payload["cycles"] == "900-901"
+    assert len(payload["bullets"]) == 1
+
+
+def test_render_omits_the_marker_rather_than_writing_an_empty_one():
+    # `| journal ` with nothing after it would parse back as "" anyway, but
+    # it is a lie on the face of the document.
+    stamp = [l for l in nova_recap.render(["a bullet"]).splitlines()
+             if l.startswith("<!-- generated:")]
+    assert stamp and "journal" not in stamp[0]
+    assert nova_recap.stamp_journal("") == ""
+    assert nova_recap.stamp_journal("  x.md ") == " | journal x.md"
+
+
+def test_an_unknown_field_is_ignored_rather_than_losing_the_whole_stamp():
+    # The failure this guards is not cosmetic: an unmatched stamp gives back
+    # `written: ""`, and `parse_recap` reads an unknown age as stale on
+    # purpose -- so one field a future writer adds would take the card's date
+    # off his screen. Ignoring the field keeps everything else true.
+    payload = nova_recap.parse_recap(
+        "<!-- generated: 2026-09-13T13:00+02:00 | cycles 1500-1508 | "
+        "journal 1571-cycle-1508.md | built-by haiku -->\n\n- a bullet\n")
+    assert payload["cycles"] == "1500-1508"
+    assert payload["journal"] == "1571-cycle-1508.md"
+    assert payload["written"] == "2026-09-13T13:00+02:00"
