@@ -104,6 +104,8 @@ def differences(want, got):
                  if isinstance(item, dict) else item for item in side]
                 if isinstance(side, list) else side
                 for side in (left, right))
+            left, right = _done_last(left), _done_last(right)
+            left, right = _done_blind(left), _done_blind(right)
         if left == right:
             continue
         if isinstance(left, dict) and isinstance(right, dict):
@@ -140,6 +142,52 @@ def differences(want, got):
                     f"vs store {two!r}")
             break
     return problems
+
+
+def _done_last(items):
+    """`items` stably partitioned into open rows then done ones.
+
+    The store orders rows by `board_store.sort_key`, which knows nothing
+    about done-ness, while the document draws `## Board` and then `## Done`
+    -- so the same board read from the two sides comes back in two orders
+    the moment a done row is not already last in rank order. Comparing
+    positionally then reports every row after the first done one as
+    differing, which is what his `issues.md` did once 215 and 216 went done
+    inside the top five (Cycle 1507).
+
+    A stable partition is the renderer's own split applied to the expected
+    side as well, so it loses nothing: no row is dropped, no field is
+    touched, and a list that is already partitioned comes back unchanged.
+    Order *within* each group still has to match, which is where a real
+    reordering would show up.
+    """
+    if not isinstance(items, list):
+        return items
+    open_rows = [i for i in items
+                 if not (isinstance(i, dict) and i.get("done"))]
+    done_rows = [i for i in items if isinstance(i, dict) and i.get("done")]
+    return open_rows + done_rows
+
+
+#: Row fields the `## Done` table has no cell for. It is four columns --
+#: `board_view.DONE_COLUMNS` -- and the third is the date rather than the
+#: status, so a done row's rating is structurally unwritable and comes back
+#: empty however it was stored. Same carve-out as `OPTIONAL_FIELDS` above
+#: and for the same reason: the view can never carry it, so a difference
+#: here is not drift. Rows 215 and 216 both carry `🟠 High` (rated before
+#: #202 retired the picker's use of it) and that is what refused his
+#: `issues.md` after the `## Done` table started being drawn at all.
+DONE_ROW_UNWRITABLE = ("priority", "priorityKey")
+
+
+def _done_blind(items):
+    """`items` with the fields a `## Done` row cannot carry stripped."""
+    if not isinstance(items, list):
+        return items
+    return [{k: v for k, v in item.items()
+             if not (item.get("done") and k in DONE_ROW_UNWRITABLE)}
+            if isinstance(item, dict) else item
+            for item in items]
 
 
 def _head(block):
@@ -180,7 +228,11 @@ def layout_differences(markdown, board, stored):
     row boarded since (a `detail` block whose number the store never named,
     and only in the seat `_laid_out` gives it, after the last stored one),
     a write-up since deleted (a stored `detail` the markdown no longer
-    carries), a `## Done` table left out while no row is done, and a table
+    carries), a `## Done` table left out while no row is done, a `## Done`
+    table drawn while the stored layout names none (the layout was
+    captured before the board's first done row -- his `issues.md` layout
+    is exactly that, and rows 215 and 216 going done on 2026-09-12 made
+    every publish refuse), and a table
     widened by columns appended on the right (`board_width` adds `Order`
     the day a row carries a position). Until
     Cycle 1401 this compared the two lists for equality, so the first row
@@ -196,6 +248,7 @@ def layout_differences(markdown, board, stored):
             board_view.document_layout(markdown), board))
     named = {int(b["number"]) for b in stored if b.get("kind") == "detail"}
     drawn = {int(b["number"]) for b in wanted if b.get("kind") == "detail"}
+    done_stored = any(b.get("kind") == "done" for b in stored)
     # `_laid_out` writes a new write-up straight after the last stored one
     # (at the end when there is none), so that is the only seat it may take.
     seats = [i for i, b in enumerate(stored) if b.get("kind") == "detail"]
@@ -215,6 +268,11 @@ def layout_differences(markdown, board, stored):
         elif (isinstance(two, dict) and two.get("kind") == "done"
               and not done_drawn):
             two_at += 1  # `## Done` is left out while no row is done
+        elif (isinstance(one, dict) and one.get("kind") == "done"
+              and not done_stored):
+            one_at += 1  # `## Done` drawn for the first time: the layout
+            # was captured while no row was done, so it names no such
+            # block, and `_laid_out` adds one rather than dropping the row
         else:
             return [f"layout[{one_at}] differs: markdown {_head(one)} "
                     f"vs store {_head(two)}"]

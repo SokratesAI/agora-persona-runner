@@ -396,10 +396,20 @@ def _laid_out(items, details, titles, layout):
     **`## Done` is written only when a row is in it**, the same rule the
     fixed order follows. A stored layout that names the section outlives
     the last done row, and emitting an empty table would put a heading on
-    his page that nothing chose.
+    his page that nothing chose. **The mirror of that also holds**: a
+    layout captured while no row was done names no `## Done` block at all,
+    and until Cycle 1507 a row that went done afterwards was drawn
+    nowhere -- `## Board` excludes it and there was no section to receive
+    it, so it vanished from the view while keeping its write-up. That is
+    the same lossiness the detail rule above exists to close, and it is
+    what made every publish of his `issues.md` refuse from 2026-09-12 on
+    (rows 215 and 216). When the layout has no `done` block and a row is
+    done, the section is written straight after `## Board`, which is
+    where `_default_order` puts it.
     """
     written = set()
     parts = []
+    done_stored = any(block.get("kind") == "done" for block in layout)
     detail_positions = [
         index for index, block in enumerate(layout)
         if block.get("kind") == "detail"]
@@ -412,6 +422,10 @@ def _laid_out(items, details, titles, layout):
             parts.append("## Board\n\n" + render_table(
                 rows, columns,
                 width=board_width(rows)))
+            if not done_stored and any(item.get("done") for item in items):
+                parts.append("## Done\n\n" + render_table(
+                    [row for row in items if row.get("done")],
+                    DONE_COLUMNS, width=len(DONE_COLUMNS)))
         elif kind == "done":
             if any(item.get("done") for item in items):
                 parts.append("## Done\n\n" + render_table(
