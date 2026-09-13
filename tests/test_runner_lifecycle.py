@@ -186,6 +186,7 @@ def test_main_records_started_before_it_polls():
          patch.object(main, "init_tracing"), \
          patch.object(main, "start_invoke_server"), \
          patch.object(main, "start_catalog_refresh"), \
+         patch.object(main, "start_recap_refresh"), \
          patch.object(main, "start_heartbeat_pass"), \
          patch.object(main, "join_running_heartbeats"), \
          patch.object(main, "poll_once", side_effect=lambda: calls.append("poll")), \
@@ -206,6 +207,7 @@ def test_main_records_drained_blocking_after_the_drain():
          patch.object(main, "init_tracing"), \
          patch.object(main, "start_invoke_server"), \
          patch.object(main, "start_catalog_refresh"), \
+         patch.object(main, "start_recap_refresh"), \
          patch.object(main, "start_heartbeat_pass"), \
          patch.object(main, "join_running_heartbeats",
                       side_effect=lambda: order.append("join")), \
