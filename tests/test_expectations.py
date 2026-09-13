@@ -177,3 +177,11 @@ def test_without_the_document_it_reports_not_measured_not_no_instrument():
     assert out[0]["value"] is None
     assert out[0]["detail"].startswith("not measured")
     assert "no instrument" not in out[0]["detail"]
+
+
+def test_one_board_is_missing_rather_than_a_crash():
+    from tools.goal_measures import measure_pm_calibration
+    value, why = measure_pm_calibration([], [BOARDS["issue"]],
+                                        "2026-09-08", "2026-09-14")
+    assert value is None
+    assert "1 board(s) were read" in why

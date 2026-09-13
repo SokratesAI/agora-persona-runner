@@ -642,8 +642,11 @@ def measure_pm_calibration(expectations, boards, since, until):
     if expectations is None:
         return None, ("the expectations document was not read -- pass "
                       "--expectations with a copy of it")
-    boards_by_kind = {"issue": (boards or [[], []])[0],
-                      "idea": (boards or [[], []])[1]}
+    pair = list(boards or [])
+    if len(pair) != 2:
+        return None, ("both boards are needed for the denominator and "
+                      f"{len(pair)} board(s) were read")
+    boards_by_kind = {"issue": pair[0], "idea": pair[1]}
     return measure_calibration(expectations, boards_by_kind, since, until)
 
 
