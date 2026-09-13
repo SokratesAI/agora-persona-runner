@@ -658,6 +658,45 @@ KEY_RESULT_EXPECTATION_MEASURERS = {
     "pm-kr-calibration": measure_pm_calibration,
 }
 
+
+def measure_pm_reversals(decisions, since, until):
+    """Decisions reversed inside 30 days of being taken, over the last month.
+
+    The record itself is `agora_runner.decisions` -- before it existed nothing
+    on this box stored a decision, so there was nothing to count and this key
+    result's `now` was blank. `None` here means the document was not handed to
+    this run, which is not the same as "no instrument".
+
+    **The window is 30 days ending at `until`, not the seven-day goals
+    window**, because the measure's own unit is *per month*:
+    `measure_pm_deprecations` makes exactly the same call for the same reason.
+    """
+    from agora_runner.decisions import measure_reversals
+    del since
+    if decisions is None:
+        return None, ("the decisions document was not read -- pass "
+                      "--decisions with a copy of it")
+    until_date = date.fromisoformat(until)
+    window_start = until_date - timedelta(days=_REVERSAL_WINDOW_DAYS)
+    return measure_reversals(decisions, window_start.isoformat(), until)
+
+
+#: How far back this measure looks. Deliberately not shared with
+#: `decisions.HELD_DAYS`, which is also 30 and means something else entirely --
+#: this is the month the count is *reported over*, that is how long a decision
+#: must hold to stop counting. Folding them into one constant would make a
+#: change to either silently change both.
+_REVERSAL_WINDOW_DAYS = 30
+
+
+# A key result measured off the decisions document alone. Its own map, beside
+# the three above, for the same reason they are separate: what it is handed is
+# the decision record, and feeding that to a measurer registered under `PR`
+# would be a map whose name lies about its argument.
+KEY_RESULT_DECISION_MEASURERS = {
+    "pm-kr-reversals": measure_pm_reversals,
+}
+
 KEY_RESULT_NO_INSTRUMENT = {
     "nova-kr-in-the-app": "counts things the owner still has to leave the Nova "
                           "app to do -- a judgement about his experience, not a "
@@ -1105,7 +1144,7 @@ def _needs_marcus(sections):
 
 def key_result_rows(sections, rows, marcus=None, marcus_error=None,
                     since=None, until=None, prs=None, boards=None,
-                    expectations=None):
+                    expectations=None, decisions=None):
     """Pair every key result in `project-goals.md` with a measurement.
 
     Two sources, in this order. A key result in `KEY_RESULT_INSTRUMENTS` takes
@@ -1130,6 +1169,15 @@ def key_result_rows(sections, rows, marcus=None, marcus_error=None,
             exp_measurer = KEY_RESULT_EXPECTATION_MEASURERS.get(kr_id)
             if exp_measurer is not None:
                 value, detail = exp_measurer(expectations, boards, since, until)
+                if value is None:
+                    out.append({**row, "value": None,
+                                "detail": f"not measured — {detail}"})
+                    continue
+                out.append({**row, "value": value, "detail": detail})
+                continue
+            dec_measurer = KEY_RESULT_DECISION_MEASURERS.get(kr_id)
+            if dec_measurer is not None:
+                value, detail = dec_measurer(decisions, since, until)
                 if value is None:
                     out.append({**row, "value": None,
                                 "detail": f"not measured — {detail}"})
@@ -1246,6 +1294,10 @@ def main(argv=None):
                         help="path to a copy of expectations.md; without it "
                              "pm-kr-calibration reports as not measured rather "
                              "than as having no instrument")
+    parser.add_argument("--decisions", default=None,
+                        help="path to a copy of decisions.md; without it "
+                             "pm-kr-reversals reports as not measured rather "
+                             "than as having no instrument")
     parser.add_argument("--write", action="store_true",
                         help="write each measured value into the --goals file's "
                              "own `now:` field, in place (default: report only)")
@@ -1317,6 +1369,17 @@ def main(argv=None):
         expectations = parse_expectations(exp_text)
         problems.extend(_exp_problems(expectations))
 
+    decisions = None
+    if args.decisions:
+        from agora_runner.decisions import parse_decisions, problems as _dec_problems
+        try:
+            dec_text = open(args.decisions, encoding="utf-8").read()
+        except OSError as exc:
+            print(f"could not read {args.decisions}: {exc}", file=sys.stderr)
+            return 1
+        decisions = parse_decisions(dec_text)
+        problems.extend(_dec_problems(decisions))
+
     pg_text, sections, marcus, marcus_error = None, None, None, None
     if args.project_goals:
         from agora_runner.project_goals import parse_project_goals
@@ -1337,7 +1400,8 @@ def main(argv=None):
 
     if args.project_goals:
         kr_rows = key_result_rows(sections, rows, marcus, marcus_error,
-                                  since, until, prs, boards, expectations)
+                                  since, until, prs, boards, expectations,
+                                  decisions)
         report += "\n\n" + render_key_results(kr_rows, args.project_goals)
         kpis = kpi_rows(sections, since, until)
         report += "\n\n" + render_kpis(kpis, args.project_goals)
