@@ -3505,12 +3505,17 @@
 
     /* The comment filter. Applied here with the other feed filters so the
      * count under the search box and the cards below it always agree. */
-    if (journalFilter !== "all") {
+    var commentFiltered = journalFilter !== "all" && wanted === null;
+    if (commentFiltered) {
+      /* Against the held list, never against the live read marks. Expanding a
+       * card's comments writes its read mark and repaints; judging membership
+       * here would drop the card out from under his thumb, which is the
+       * second half of what he reported. `journalFilterCycles` carries the
+       * whole reason. */
+      var keep = journalFilterCycles();
       entries = entries.filter(function (entry) {
         if (entry.cycle === null || entry.cycle === undefined) return false;
-        return journalFilter === "unread"
-          ? cycleHasUnread(entry.cycle)
-          : cycleHasComments(entry.cycle);
+        return keep.indexOf(entry.cycle) !== -1;
       });
     }
 
@@ -3742,7 +3747,12 @@
      * `entries` is the ones he has not answered, so the two differ by
      * exactly the answered ones and the pager would otherwise be drawn
      * permanently, offering to load entries that are already here. */
-    if (wanted === null && !filtered && !repliesOnly
+    /* `!commentFiltered` for the reason `!filtered` is here, and it is the
+     * bug he reported: the server was handed the exact cycle numbers, so
+     * there is nothing older to fetch -- but `total` is the whole corpus, so
+     * the condition held forever, `loadWhenScrolledTo` clicked the pager the
+     * moment it intersected, and on a feed with no cards it always does. */
+    if (wanted === null && !filtered && !repliesOnly && !commentFiltered
         && typeof total === "number" && entries.length < total) {
       // A search is not a window onto the newest entries, so "older" is
       // the wrong word for what the next twenty are -- they are the next
@@ -4014,18 +4024,56 @@
    * behind it -- both were a count somewhere else pointing at the page you are
    * already on. */
 
-  /** Does this cycle carry any comment at all? */
-  function cycleHasComments(cycle) {
-    var items = lastCommentsByCycle[String(cycle)];
-    return !!(items && items.length);
-  }
+  /* The cycles the filter is asking the server for, and the reason this is
+   * held rather than recomputed on every paint.
+   *
+   * His report, 2026-09-13: *"The unread comments filter on the Journal is
+   * buggy. It takes a long time to load and also it shows a loading... Text
+   * all the time. Also, when i expand the comments of the unread comments it
+   * vanishes. I think when i open them they become read and therefore not
+   * part of the filter anymore so they vanishes."*
+   *
+   * Both halves are this list. It used to be no list at all: the filter ran
+   * client-side over whatever `?limit=windowSize` had returned, so it could
+   * only ever hide cards inside the newest twenty. Measured against the live
+   * pod on 2026-09-13, the newest cycle carrying any comment is 1415 and the
+   * newest written is 1522 -- so 107 cards in a row match nothing, the feed
+   * comes back empty, the pager is therefore the only node in the viewport,
+   * and `loadWhenScrolledTo` clicks it the moment it intersects. It grows the
+   * window by twenty, repaints empty, and intersects again. That is the
+   * "loading… all the time": an auto-pager walking the whole archive twenty
+   * at a time, 102KB at `limit=20` and 626KB by the time it reaches 1415.
+   *
+   * `/replies` never had that problem because it hands the server the cycle
+   * numbers (`?cycles=`) instead of a window. This filter replaced that route
+   * and did not inherit the mechanism; now it does.
+   *
+   * And holding the list is the second half. Recomputed live, opening a card
+   * writes its read mark, `unreadOn` goes empty, and the next paint -- which
+   * the tap itself triggers -- drops the card out from under his thumb. The
+   * set is frozen when he picks the filter and only ever grows after that, so
+   * a reply arriving while he reads still turns up and a card he has just
+   * opened stays where it was until he changes the filter or leaves. */
+  var journalFilterAsked = null;
 
-  /** ...and any reply on it he has not read? */
-  function cycleHasUnread(cycle) {
-    var key = String(cycle);
-    var items = lastCommentsByCycle[key];
-    if (!items || !items.length) return false;
-    return unreadOn(key, items).length > 0;
+  function journalFilterCycles() {
+    var live = [];
+    Object.keys(lastCommentsByCycle || {}).forEach(function (key) {
+      var items = lastCommentsByCycle[key];
+      if (!items || !items.length) return;
+      if (journalFilter === "unread" && !unreadOn(key, items).length) return;
+      var cycle = parseInt(key, 10);
+      if (!isNaN(cycle)) live.push(cycle);
+    });
+    if (journalFilterAsked === null) journalFilterAsked = [];
+    live.forEach(function (cycle) {
+      if (journalFilterAsked.indexOf(cycle) === -1) journalFilterAsked.push(cycle);
+    });
+    /* Newest first, so the URL is stable between two fetches that found the
+     * same cards rather than varying with `Object.keys` order -- the same
+     * reason `unreadSummary` sorts the list it sends to `/replies`. */
+    journalFilterAsked.sort(function (a, b) { return b - a; });
+    return journalFilterAsked;
   }
 
   /* The dot on the button. Drawn from the same read marks the card chips use,
@@ -4070,6 +4118,9 @@
       option.dataset.filter = spec[0];
       option.addEventListener("click", function () {
         journalFilter = spec[0];
+        /* A fresh pick asks the question again. Held only for as long as one
+         * filter is on -- see `journalFilterCycles`. */
+        journalFilterAsked = null;
         menu.hidden = true;
         button.setAttribute("aria-expanded", "false");
         paintFilterState();
@@ -4239,8 +4290,19 @@
       return "/api/journal?cycles="
         + unreadSummary(lastCommentsByCycle).cycles.join(",");
     }
-    var url = "/api/journal?limit=" + windowSize;
     var q = journalQuery.trim();
+    /* A comment filter asks for its cards by number, the same way `/replies`
+     * does and for the same reason: the matches are scattered across the
+     * whole archive, so a window onto the newest twenty cannot find them.
+     * See `journalFilterCycles` for what that cost him.
+     *
+     * A typed query wins, because a search is already a specific act and its
+     * result set is small enough for the filter below to narrow in the page.
+     * The server can do one or the other, not both. */
+    if (journalFilter !== "all" && !q) {
+      return "/api/journal?cycles=" + journalFilterCycles().join(",");
+    }
+    var url = "/api/journal?limit=" + windowSize;
     if (q) url += "&q=" + encodeURIComponent(q);
     return url;
   }
@@ -4264,6 +4326,9 @@
     // Same reason as `/asks` above: the cards here are scattered across the
     // archive, and `?limit=N` resolves its window out of the newest N.
     if (routedReplies(window.location.pathname)) return null;
+    // And a comment filter, which is now the same kind of request: the cards
+    // it asks for are picked by number, not off the top of the feed.
+    if (journalFilter !== "all" && !journalQuery.trim()) return null;
     return "/api/digest?limit=" + windowSize;
   }
 
@@ -4280,16 +4345,20 @@
      * for the one-line version of it. */
     var searching = (!!journalQuery.trim() && routedCycle(window.location.pathname) === null)
       || digestUrl() === null;
-    /* `/replies` is the one route whose journal request depends on another
-     * payload, so it is the one route where the two are serial. The comments
-     * read is tolerated everywhere else on this page -- it costs the bubbles,
-     * never the feed -- and here it costs the feed too, because without it
-     * there is no set of cycles to ask for. A failure therefore has to draw
-     * the "comments could not be loaded" line rather than an empty page
-     * claiming he has read everything, which is why it resolves to `null`
-     * here as well and `render` treats a `/replies` page with no comments as
-     * unknown rather than as none. */
-    if (routedReplies(window.location.pathname) && !haveComments) {
+    /* `/replies` and a comment filter are the two requests whose journal URL
+     * is built out of another payload, so they are the two where the reads
+     * are serial. The comments read is tolerated everywhere else on this
+     * page -- it costs the bubbles, never the feed -- and here it costs the
+     * feed too, because without it there is no set of cycles to ask for. A
+     * failure therefore has to draw the "comments could not be loaded" line
+     * rather than an empty page claiming he has read everything, which is why
+     * it resolves to `null` here as well and `render` treats such a page with
+     * no comments as unknown rather than as none.
+     *
+     * Asked from `journalUrl` itself rather than by re-deriving which routes
+     * those are: `?cycles=` is exactly the shape that needs the list, and a
+     * deep link or `/asks` returns before either branch can reach it. */
+    if (journalUrl().indexOf("?cycles=") !== -1 && !haveComments) {
       return fetchVersioned("/api/comments", "comments")
         .catch(function () { return null; })
         .then(function (comments) {
