@@ -628,6 +628,33 @@ KEY_RESULT_PR_MEASURERS = {
     "pm-kr-written-why": measure_pm_written_why,
 }
 
+
+def measure_pm_calibration(expectations, boards, since, until):
+    """Share of shipped items that carried a written, checked expectation.
+
+    The record itself is `agora_runner.expectations` -- before it existed
+    there was nothing on this box that stored a prediction, which is why this
+    key result's `now` was blank rather than zero. `None` here means the
+    document was not handed to this run, or nothing shipped in the window;
+    neither is the same as "no instrument", and the detail says which.
+    """
+    from agora_runner.expectations import measure_calibration
+    if expectations is None:
+        return None, ("the expectations document was not read -- pass "
+                      "--expectations with a copy of it")
+    boards_by_kind = {"issue": (boards or [[], []])[0],
+                      "idea": (boards or [[], []])[1]}
+    return measure_calibration(expectations, boards_by_kind, since, until)
+
+
+# A key result measured off the expectations document plus the two boards.
+# Its own map for `KEY_RESULT_PR_MEASURERS`' reason: the arguments differ, and
+# collapsing three shapes into one signature would mean every measurer taking
+# arguments it never reads.
+KEY_RESULT_EXPECTATION_MEASURERS = {
+    "pm-kr-calibration": measure_pm_calibration,
+}
+
 KEY_RESULT_NO_INSTRUMENT = {
     "nova-kr-in-the-app": "counts things the owner still has to leave the Nova "
                           "app to do -- a judgement about his experience, not a "
@@ -1074,7 +1101,8 @@ def _needs_marcus(sections):
 
 
 def key_result_rows(sections, rows, marcus=None, marcus_error=None,
-                    since=None, until=None, prs=None):
+                    since=None, until=None, prs=None, boards=None,
+                    expectations=None):
     """Pair every key result in `project-goals.md` with a measurement.
 
     Two sources, in this order. A key result in `KEY_RESULT_INSTRUMENTS` takes
@@ -1096,6 +1124,15 @@ def key_result_rows(sections, rows, marcus=None, marcus_error=None,
         for kr in section.get("keyResults") or []:
             kr_id = (kr.get("id") or "").strip()
             row = {"project": name, "id": kr_id, "kr": kr}
+            exp_measurer = KEY_RESULT_EXPECTATION_MEASURERS.get(kr_id)
+            if exp_measurer is not None:
+                value, detail = exp_measurer(expectations, boards, since, until)
+                if value is None:
+                    out.append({**row, "value": None,
+                                "detail": f"not measured — {detail}"})
+                    continue
+                out.append({**row, "value": value, "detail": detail})
+                continue
             pr_measurer = KEY_RESULT_PR_MEASURERS.get(kr_id)
             if pr_measurer is not None:
                 value, detail = pr_measurer(prs, since, until)
@@ -1202,6 +1239,10 @@ def main(argv=None):
                              "are reported too, and written by --write -- the ones "
                              "that share a measure with a goal from that goal, and "
                              "Marcus's from Marcus's own /api/state")
+    parser.add_argument("--expectations", default=None,
+                        help="path to a copy of expectations.md; without it "
+                             "pm-kr-calibration reports as not measured rather "
+                             "than as having no instrument")
     parser.add_argument("--write", action="store_true",
                         help="write each measured value into the --goals file's "
                              "own `now:` field, in place (default: report only)")
@@ -1262,6 +1303,17 @@ def main(argv=None):
     # answer belongs in that report's `WHAT THIS CANNOT SEE` list -- and a
     # `render` called twice would print the second one over the first, taking
     # the `--write` block with it.
+    expectations = None
+    if args.expectations:
+        from agora_runner.expectations import parse_expectations, problems as _exp_problems
+        try:
+            exp_text = open(args.expectations, encoding="utf-8").read()
+        except OSError as exc:
+            print(f"could not read {args.expectations}: {exc}", file=sys.stderr)
+            return 1
+        expectations = parse_expectations(exp_text)
+        problems.extend(_exp_problems(expectations))
+
     pg_text, sections, marcus, marcus_error = None, None, None, None
     if args.project_goals:
         from agora_runner.project_goals import parse_project_goals
@@ -1282,7 +1334,7 @@ def main(argv=None):
 
     if args.project_goals:
         kr_rows = key_result_rows(sections, rows, marcus, marcus_error,
-                                  since, until, prs)
+                                  since, until, prs, boards, expectations)
         report += "\n\n" + render_key_results(kr_rows, args.project_goals)
         kpis = kpi_rows(sections, since, until)
         report += "\n\n" + render_kpis(kpis, args.project_goals)
