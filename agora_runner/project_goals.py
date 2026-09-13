@@ -326,3 +326,77 @@ def serves_problems(serves, sections):
                     f"{project} / {milestone}: serves {identifier!r}, which "
                     "is not a key result id")
     return found
+
+
+def set_field_in_key_result(markdown, key_result_id, field, value):
+    """Set one field inside one ```key-result fence, addressed by its `id`.
+
+    The mirror of `nova_plan.set_field_in_goals`, and it exists for the same
+    reason one level up: a key result's `now:` was typed by whichever cycle
+    wrote the block, so `project-goals.md` carries numbers nobody can
+    recompute. Three of the nine were copied out of `goals.md` by hand, and
+    `goals.md`'s own numbers had drifted from its instrument because the
+    weekly review that retypes them has never run.
+
+    Addressed by `id` rather than by `name`, which is the one difference from
+    the goals version: a key result's name is a sentence I rewrite while the
+    conversation about it is still open, and its id is the string
+    `milestone-seats.md`'s `Serves` column points at, so the id is the stable
+    address and the name is not.
+
+    Returns `None` — the address moved, nothing failed — when no fence carries
+    that id, when two do (there is no way to tell them apart, so editing
+    whichever came first would report success on the wrong one), or when the
+    fence never closed. `problems()` already refuses a duplicate id, so a
+    document that passes the checker cannot hit the second case; this refuses
+    it anyway rather than trusting a check that runs somewhere else.
+    """
+    field = (field or "").strip()
+    value = str("" if value is None else value).strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", field) or "\n" in value:
+        return None
+    wanted = (key_result_id or "").strip()
+    if not wanted:
+        return None
+
+    lines = (markdown or "").split("\n")
+    id_re = re.compile(r"^(?P<indent>[ \t]*)id:[ \t]*(?P<value>.*?)[ \t]*$")
+    field_re = re.compile(r"^(?P<indent>[ \t]*)" + re.escape(field) + r":[ \t]*.*$")
+
+    hits = []
+    start = None
+    for index, line in enumerate(lines):
+        if start is None:
+            opened = _FENCE_OPEN_RE.match(line)
+            if opened and opened.group("name") == "key-result":
+                start = index
+            continue
+        closed = _FENCE_CLOSE_RE.match(line)
+        opened = _FENCE_OPEN_RE.match(line)
+        if closed or opened:
+            body = range(start + 1, index)
+            match = None
+            for i in body:
+                found = id_re.match(lines[i])
+                if found and found.group("value") == wanted:
+                    match = i
+                    break
+            if match is not None:
+                if not closed:
+                    return None
+                hits.append((match, index, body))
+            start = index if (opened and opened.group("name") == "key-result") else None
+    if len(hits) != 1:
+        return None
+
+    match, close, body = hits[0]
+    indent = id_re.match(lines[match]).group("indent")
+    written = [i for i in body if field_re.match(lines[i])]
+    if written:
+        for i in written:
+            lines[i] = f"{indent}{field}: {value}"
+        for i in reversed(written[1:]):
+            del lines[i]
+        return "\n".join(lines)
+    lines.insert(close, f"{indent}{field}: {value}")
+    return "\n".join(lines)

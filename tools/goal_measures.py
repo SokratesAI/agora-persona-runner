@@ -435,6 +435,113 @@ def write_back(path, text, rows):
     return "\n".join([f"WROTE {changed} value(s) into {path}"] + lines)
 
 
+# A key result in `project-goals.md` whose number is the SAME measurement a
+# goal in `goals.md` already has an instrument for. Keyed on the key result's
+# `id`, which is the stable address -- its `name` is a sentence rewritten
+# while the conversation about it is open, and `milestone-seats.md`'s `Serves`
+# column points at the id.
+#
+# This map exists because three of `project-goals.md`'s nine `now:` values
+# were copied out of `goals.md` by hand when Cycle 1529 wrote the document,
+# and `goals.md`'s own numbers had themselves drifted from this instrument --
+# so the key result carried a retype of a stale number, two removes from
+# anything measured. A key result NOT in this map prints as having no
+# instrument and is never written, the same contract `NO_INSTRUMENT` gives a
+# goal: inventing a number for it is the drift this tool exists to end.
+KEY_RESULT_INSTRUMENTS = {
+    "nova-kr-your-rows": "G1",
+    "nova-kr-true-first-time": "G3",
+}
+
+KEY_RESULT_NO_INSTRUMENT = {
+    "nova-kr-in-the-app": "counts things the owner still has to leave the Nova "
+                          "app to do -- a judgement about his experience, not a "
+                          "fact on this box; same reason as G2, which is the "
+                          "same measure",
+}
+
+
+def key_result_rows(sections, rows):
+    """Pair every key result in `project-goals.md` with a measured goal row.
+
+    `rows` is what `main` already built for `goals.md`, so a key result and
+    the goal it shares a measure with can never disagree: there is one
+    measurement and two places that print it.
+    """
+    by_key = {row["key"]: row for row in rows}
+    out = []
+    for name, section in (sections or {}).items():
+        for kr in section.get("keyResults") or []:
+            kr_id = (kr.get("id") or "").strip()
+            goal_key_name = KEY_RESULT_INSTRUMENTS.get(kr_id)
+            source = by_key.get(goal_key_name) if goal_key_name else None
+            if source is None or source.get("value") is None:
+                why = KEY_RESULT_NO_INSTRUMENT.get(
+                    kr_id, "nothing here computes this measure")
+                if goal_key_name and source is not None:
+                    why = f"{goal_key_name} could not be measured: {source['detail']}"
+                out.append({"project": name, "id": kr_id, "kr": kr,
+                            "value": None, "detail": f"no instrument — {why}"})
+                continue
+            out.append({"project": name, "id": kr_id, "kr": kr,
+                        "value": source["value"],
+                        "detail": f"from {goal_key_name}: {source['detail']}"})
+    return out
+
+
+def render_key_results(kr_rows, path):
+    lines = [f"KEY RESULTS — {path}"]
+    for row in kr_rows:
+        written = str(row["kr"].get("now", "")).strip()
+        lines.append(f"  {row['project']} / {row['id']}")
+        if row["value"] is None:
+            lines.append(f"      {path} says now: {written or '(blank)'} — {row['detail']}")
+            continue
+        drift = "" if _as_number(written) == _as_number(row["value"]) else \
+            f"  <- the document says {written or '(blank)'}, drifted"
+        lines.append(f"      measured {row['value']}{drift}")
+        lines.append(f"      {row['detail']}")
+    return "\n".join(lines)
+
+
+def write_back_key_results(path, text, kr_rows):
+    """Put each measured value into its key result's `now:`, in place.
+
+    Same contract as `write_back` one function up, and it is the same contract
+    for the same reason: only a key result with an instrument and a different
+    written number is touched, so a run that changes nothing writes nothing --
+    the caller wraps this in a compare-and-swap against a document the owner
+    can edit. A fence the setter refuses is named in the report rather than
+    skipped, because a number silently not what it says it is is the whole
+    failure here.
+    """
+    from agora_runner.project_goals import set_field_in_key_result
+
+    lines, changed = [], 0
+    for row in kr_rows:
+        if row["value"] is None:
+            continue
+        written = str(row["kr"].get("now", "")).strip()
+        if _as_number(written) == _as_number(row["value"]):
+            continue
+        amended = set_field_in_key_result(text, row["id"], "now", row["value"])
+        if amended is None:
+            lines.append(f"  ! {row['id']}: could not edit that key-result fence, "
+                         f"left at {written or '(blank)'}")
+            continue
+        text, changed = amended, changed + 1
+        lines.append(f"  {row['id']}  now: {written or '(blank)'} -> {row['value']}")
+    if not changed:
+        head = ("WROTE NOTHING — every instrumented key result already carries its "
+                "measured number" if not lines else "WROTE NOTHING")
+        return "\n".join([head] + lines)
+    try:
+        open(path, "w", encoding="utf-8").write(text)
+    except OSError as exc:
+        return f"COULD NOT WRITE {path}: {exc}"
+    return "\n".join([f"WROTE {changed} value(s) into {path}"] + lines)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=" ".join(__doc__.split("\n\n")[0].split()))
@@ -446,6 +553,10 @@ def main(argv=None):
     parser.add_argument("--entries", type=int, default=400,
                         help="how many journal entries to read (default 400)")
     parser.add_argument("--site", default=SITE)
+    parser.add_argument("--project-goals", default=None,
+                        help="path to a copy of project-goals.md; its key results "
+                             "that share a measure with a goal are reported too, "
+                             "and written by --write")
     parser.add_argument("--write", action="store_true",
                         help="write each measured value into the --goals file's "
                              "own `now:` field, in place (default: report only)")
@@ -504,6 +615,20 @@ def main(argv=None):
     report = render(rows, since, until, problems)
     if args.write:
         report += "\n\n" + write_back(args.goals, text, rows)
+
+    if args.project_goals:
+        from agora_runner.project_goals import parse_project_goals
+        try:
+            pg_text = open(args.project_goals, encoding="utf-8").read()
+        except OSError as exc:
+            print(f"could not read {args.project_goals}: {exc}", file=sys.stderr)
+            return 1
+        kr_rows = key_result_rows(parse_project_goals(pg_text), rows)
+        report += "\n\n" + render_key_results(kr_rows, args.project_goals)
+        if args.write:
+            report += "\n\n" + write_back_key_results(
+                args.project_goals, pg_text, kr_rows)
+
     print(report)
     return 0
 

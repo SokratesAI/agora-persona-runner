@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import pytest
 
 from tools import goal_measures as gm
+from tools import goal_measures
 
 
 def _entry(date, board="", title="", blocks=None, kind="cycle"):
@@ -387,3 +388,107 @@ class TestTodayInOslo:
         monkeypatch.setattr(gm, "collect_merges", lambda repos, since, until: ({}, []))
         assert gm.main(["--goals", str(path)]) == 0
         assert "2026-01-09 to 2026-01-15" in capsys.readouterr().out
+
+
+PG_DOC = """# Project goals
+
+## Nova
+
+```key-result
+id: nova-kr-your-rows
+name: The work closes your rows
+measure: Merged pull requests per board row closed
+now: 6.8
+target: 2.0
+direction: down
+```
+
+```key-result
+id: nova-kr-in-the-app
+name: Everything reaches your phone
+measure: Things you still have to leave the Nova app to do
+now: 3
+target: 0
+direction: down
+```
+"""
+
+
+def _pg_sections():
+    from agora_runner.project_goals import parse_project_goals
+    return parse_project_goals(PG_DOC)
+
+
+def test_key_result_rows_reuses_the_goal_measurement_rather_than_recomputing():
+    rows = [{"key": "G1", "goal": {}, "value": 3.9, "detail": "254 PRs / 65 rows"}]
+    out = goal_measures.key_result_rows(_pg_sections(), rows)
+    by_id = {row["id"]: row for row in out}
+    assert by_id["nova-kr-your-rows"]["value"] == 3.9
+    assert "G1" in by_id["nova-kr-your-rows"]["detail"]
+    assert by_id["nova-kr-your-rows"]["project"] == "nova"
+
+
+def test_key_result_with_no_instrument_is_never_given_a_number():
+    rows = [{"key": "G1", "goal": {}, "value": 3.9, "detail": "x"}]
+    out = goal_measures.key_result_rows(_pg_sections(), rows)
+    by_id = {row["id"]: row for row in out}
+    assert by_id["nova-kr-in-the-app"]["value"] is None
+    assert "no instrument" in by_id["nova-kr-in-the-app"]["detail"]
+
+
+def test_key_result_whose_goal_could_not_be_measured_says_so_and_stays_none():
+    # A failed measurement must not read as "this has no instrument" -- those
+    # have opposite fixes, and only one of them is a missing map entry.
+    rows = [{"key": "G1", "goal": {}, "value": None, "detail": "a repo could not be read"}]
+    out = goal_measures.key_result_rows(_pg_sections(), rows)
+    row = {r["id"]: r for r in out}["nova-kr-your-rows"]
+    assert row["value"] is None
+    assert "G1 could not be measured" in row["detail"]
+    assert "a repo could not be read" in row["detail"]
+
+
+def test_write_back_key_results_writes_only_the_drifted_instrumented_one(tmp_path):
+    path = tmp_path / "project-goals.md"
+    path.write_text(PG_DOC, encoding="utf-8")
+    rows = [{"key": "G1", "goal": {}, "value": 3.9, "detail": "x"}]
+    kr_rows = goal_measures.key_result_rows(_pg_sections(), rows)
+    report = goal_measures.write_back_key_results(str(path), PG_DOC, kr_rows)
+    assert "WROTE 1 value(s)" in report
+    written = path.read_text(encoding="utf-8")
+    assert "now: 3.9" in written
+    # The uninstrumented key result keeps the number the document carried.
+    assert "now: 3\n" in written
+
+
+def test_write_back_key_results_writes_nothing_when_the_number_already_agrees(tmp_path):
+    path = tmp_path / "project-goals.md"
+    path.write_text("untouched", encoding="utf-8")
+    rows = [{"key": "G1", "goal": {}, "value": 6.8, "detail": "x"}]
+    kr_rows = goal_measures.key_result_rows(_pg_sections(), rows)
+    report = goal_measures.write_back_key_results(str(path), PG_DOC, kr_rows)
+    assert "WROTE NOTHING" in report
+    assert path.read_text(encoding="utf-8") == "untouched"
+
+
+def test_write_back_key_results_names_a_fence_it_could_not_edit(tmp_path):
+    path = tmp_path / "project-goals.md"
+    path.write_text("untouched", encoding="utf-8")
+    rows = [{"key": "G1", "goal": {}, "value": 3.9, "detail": "x"}]
+    kr_rows = goal_measures.key_result_rows(_pg_sections(), rows)
+    # The id moved between the read and the write.
+    report = goal_measures.write_back_key_results(
+        str(path), PG_DOC.replace("nova-kr-your-rows", "nova-kr-renamed"), kr_rows)
+    assert "could not edit that key-result fence" in report
+    assert "nova-kr-your-rows" in report
+    # And it must not read as a clean run.
+    assert "every instrumented key result already carries" not in report
+    assert path.read_text(encoding="utf-8") == "untouched"
+
+
+def test_render_key_results_marks_drift_and_prints_the_written_number():
+    rows = [{"key": "G1", "goal": {}, "value": 3.9, "detail": "254 PRs / 65 rows"}]
+    out = goal_measures.render_key_results(
+        goal_measures.key_result_rows(_pg_sections(), rows), "project-goals.md")
+    assert "measured 3.9" in out
+    assert "the document says 6.8, drifted" in out
+    assert "254 PRs / 65 rows" in out

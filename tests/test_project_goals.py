@@ -4,6 +4,7 @@ and KPIs, plus the `Serves` pointer from a milestone to a key result.
 Every rule the issue calls "the whole point" that can be checked by reading
 gets a test with a document that violates exactly it.
 """
+from agora_runner import project_goals
 
 from agora_runner.nova_boards import (
     parse_milestone_pins, parse_milestone_serves, render_milestone_seats,
@@ -236,3 +237,91 @@ def test_discussing_and_struck_need_no_conversation():
     for word in ("discussing", "struck"):
         doc = _doc(f"## Nova\n\n```objective\nstatement: s\nstatus: {word}\n```\n")
         assert not any("links no conversation" in line for line in problems(doc)), word
+
+
+DOC_FOR_SETTER = """# Project goals
+
+## Nova
+
+```key-result
+id: nova-kr-your-rows
+name: The work closes your rows
+measure: Merged pull requests per board row closed
+now: 6.8
+target: 2.0
+direction: down
+```
+Prose under the block that must not move.
+
+```key-result
+id: nova-kr-in-the-app
+name: Everything reaches your phone
+measure: Things you still have to leave the Nova app to do
+target: 0
+direction: down
+```
+"""
+
+
+def test_set_field_in_key_result_replaces_in_place_and_touches_nothing_else():
+    out = project_goals.set_field_in_key_result(
+        DOC_FOR_SETTER, "nova-kr-your-rows", "now", "3.9")
+    assert "now: 3.9" in out
+    assert "now: 6.8" not in out
+    # The block keeps its field order and the prose around it is untouched.
+    assert out.index("now: 3.9") < out.index("target: 2.0")
+    assert "Prose under the block that must not move." in out
+    # The other key result is not given a `now` it never had.
+    assert out.count("now:") == 1
+
+
+def test_set_field_in_key_result_appends_when_the_field_is_absent():
+    out = project_goals.set_field_in_key_result(
+        DOC_FOR_SETTER, "nova-kr-in-the-app", "now", "3")
+    parsed = project_goals.parse_project_goals(out)
+    by_id = {kr["id"]: kr for kr in parsed["nova"]["keyResults"]}
+    assert by_id["nova-kr-in-the-app"]["now"] == "3"
+    assert by_id["nova-kr-your-rows"]["now"] == "6.8"
+
+
+def test_set_field_in_key_result_refuses_an_id_that_is_not_there():
+    assert project_goals.set_field_in_key_result(
+        DOC_FOR_SETTER, "nova-kr-moved", "now", "1") is None
+    assert project_goals.set_field_in_key_result(DOC_FOR_SETTER, "", "now", "1") is None
+
+
+def test_set_field_in_key_result_refuses_two_blocks_claiming_one_id():
+    # No way to tell them apart, so editing whichever comes first would
+    # report success on the one the caller did not mean.
+    doubled = DOC_FOR_SETTER + DOC_FOR_SETTER.split("## Nova", 1)[1]
+    assert project_goals.set_field_in_key_result(
+        doubled, "nova-kr-your-rows", "now", "3.9") is None
+
+
+def test_set_field_in_key_result_refuses_an_unterminated_fence():
+    half = "```key-result\nid: nova-kr-your-rows\nnow: 6.8\n"
+    assert project_goals.set_field_in_key_result(
+        half, "nova-kr-your-rows", "now", "3.9") is None
+
+
+def test_set_field_in_key_result_refuses_a_value_it_could_not_parse_back():
+    assert project_goals.set_field_in_key_result(
+        DOC_FOR_SETTER, "nova-kr-your-rows", "now", "3.9\nname: hijacked") is None
+    assert project_goals.set_field_in_key_result(
+        DOC_FOR_SETTER, "nova-kr-your-rows", "no thanks", "3.9") is None
+
+
+def test_set_field_in_key_result_does_not_edit_an_objective_or_kpi_fence():
+    doc = DOC_FOR_SETTER + """
+```kpi
+id: nova-kr-your-rows
+name: a kpi wearing the same id
+measure: something else
+now: 99
+low: 0
+high: 1
+```
+"""
+    out = project_goals.set_field_in_key_result(doc, "nova-kr-your-rows", "now", "3.9")
+    assert out is not None
+    assert "now: 99" in out
