@@ -164,6 +164,7 @@ CHECKS = (
     "telegram_inbox",
     "login_handshake",
     "host_memory_trend",
+    "host_cpu_ingest",
     "host_cpu_history",
     "memory_headroom",
     "memory_index_health",
@@ -301,6 +302,7 @@ SUBJECT = {
     #: ledger the sweep writes, read back. Its subject is every node the
     #: sweep reached, over days, which is the one thing the two above
     #: cannot answer -- they are spot readings of one box.
+    "host_cpu_ingest":   ("on-box",  "the sweep's CPU rows, into the durable ledger"),
     "host_cpu_history":  ("on-box",  "every swept node's CPU, over days"),
     "memory_headroom":   ("on-box",  "the bridge pod's own node's memory"),
     #: Not the node's memory and not a persona's: MY OWN memory index, the
@@ -471,6 +473,15 @@ CADENCE_HOURS = {
     # the reader reported 3.5h and 5.0h windows it was blind to. Six leaves room
     # for a sweep that is late and for a cycle that does not run on the hour.
     "host_memory_trend": 6.0,
+
+    # Every sweep, and this is the one that keeps the CPU ledger level with the
+    # cluster. `host_memory_trend` above ingests too, but it is the expensive
+    # half of the pair and has five ways to return before it gets there; a
+    # 6h cadence against 8h of Pod retention leaves two hours of margin and
+    # nothing to spend it on. Measured live 2026-09-13: the steady state is one
+    # `kubectl get pods` and no log read at all, 0.27s, because the skip happens
+    # on the Pod name before `kubectl logs`.
+    "host_cpu_ingest": 0.0,
 
     # Weekly -- a release train, a chart source, an annotation on a workload or
     # a listening port on a box nobody reinstalls between Tuesdays.
