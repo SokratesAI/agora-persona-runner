@@ -23,7 +23,8 @@ NOVA = _doc(
     "\n"
     "```objective\n"
     "statement: Nova ships the work he would have picked himself\n"
-    "status: approved\n"
+    "status: agreed\n"
+    "conversation: 18bdb05e-2ad0-479d-9a7d-d9b8bab3fd5e\n"
     "```\n"
     "\n"
     "Prose about the objective that nothing parses.\n"
@@ -53,7 +54,7 @@ def test_a_section_carries_its_objective_key_results_and_kpis():
     assert list(sections) == ["nova"]
     nova = sections["nova"]
     assert nova["project"] == "Nova"
-    assert nova["objective"]["status"] == "approved"
+    assert nova["objective"]["status"] == "agreed"
     assert nova["objective"]["statement"].startswith("Nova ships")
     assert [row["id"] for row in nova["keyResults"]] == ["nova-kr1"]
     assert [row["id"] for row in nova["kpis"]] == ["nova-cost"]
@@ -118,7 +119,7 @@ def test_a_block_with_no_id_is_named_rather_than_silently_kept():
 
 
 def test_an_objective_with_no_statement_or_a_bad_status_is_refused():
-    doc = _doc("## Nova\n\n```objective\nstatus: approved\n```\n")
+    doc = _doc("## Nova\n\n```objective\nstatus: struck\n```\n")
     assert any("no statement" in line for line in problems(doc))
     bad = _doc("## Nova\n\n```objective\nstatement: s\nstatus: maybe\n```\n")
     assert any("is not one of" in line for line in problems(bad))
@@ -198,3 +199,40 @@ def test_a_seats_file_written_before_the_column_existed_reads_as_orphans():
 def test_a_serves_cell_carrying_a_pipe_is_refused_like_a_name():
     assert render_milestone_seats(
         [("Nova", "Picking")], serves={("nova", "picking"): "a | b"}) is None
+
+
+def test_the_old_approval_vocabulary_is_refused_rather_than_aliased():
+    """His 2026-09-13 21:02 correction: goals are agreed in a conversation,
+    never approved on a page. A document still saying `approved` is a
+    document written under the old rule, and reading it as `agreed` would
+    erase the only difference the correction is about."""
+    for word in ("proposed", "approved"):
+        doc = _doc(f"## Nova\n\n```objective\nstatement: s\nstatus: {word}\n```\n")
+        assert any("is not one of" in line for line in problems(doc)), word
+
+
+def test_an_agreed_objective_that_links_no_conversation_is_refused():
+    """`agreed` names a second party. Without a thread to point at, the word
+    is set by whoever wrote the file -- which is Nova, which is the gate he
+    just deleted."""
+    doc = _doc("## Nova\n\n```objective\nstatement: s\nstatus: agreed\n```\n")
+    assert any("links no conversation" in line for line in problems(doc))
+
+    blank = _doc(
+        "## Nova\n\n```objective\nstatement: s\nstatus: agreed\n"
+        "conversation:   \n```\n")
+    assert any("links no conversation" in line for line in problems(blank))
+
+    linked = _doc(
+        "## Nova\n\n```objective\nstatement: s\nstatus: agreed\n"
+        "conversation: 18bdb05e-2ad0-479d-9a7d-d9b8bab3fd5e\n```\n")
+    assert not any("links no conversation" in line for line in problems(linked))
+
+
+def test_discussing_and_struck_need_no_conversation():
+    """Only an agreement names where it was reached. An objective still being
+    argued about may well have a thread, and a struck one may predate the
+    rule; neither is a defect."""
+    for word in ("discussing", "struck"):
+        doc = _doc(f"## Nova\n\n```objective\nstatement: s\nstatus: {word}\n```\n")
+        assert not any("links no conversation" in line for line in problems(doc)), word
