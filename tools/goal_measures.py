@@ -57,6 +57,7 @@ import os
 import re
 import subprocess
 import sys
+import statistics
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -674,6 +675,101 @@ def measure_nova_dropped_ticks(since, until):
     return share, detail
 
 
+def fetch_cost_ledger(site=SITE):
+    """The published cost ledger, as the site already shapes it.
+
+    `publish_costs` in the bridge rebuilds this from the transcripts at the
+    end of every cycle and the site serves it at `/api/costs`, so this is a
+    read of the same document the cost page draws -- not a second pass over
+    the transcripts. Rows come back as arrays and `cycleColumns` names the
+    positions; the caller indexes by name off that list rather than by a
+    number of its own, because `nova_costs` says in as many words that
+    reordering either tuple silently swaps what is being read.
+    """
+    payload, error = _get_json(f"{site}/api/costs")
+    if error:
+        return None, error
+    rows = (payload or {}).get("cycles")
+    columns = (payload or {}).get("cycleColumns")
+    if not isinstance(rows, list) or not isinstance(columns, list):
+        return None, f"{site}/api/costs answered without `cycles` and `cycleColumns`"
+    return {"rows": rows, "columns": columns}, None
+
+
+def measure_nova_cost_per_cycle(since, until, ledger=None):
+    """Median weighted tokens per cycle over the last 24 hours, in millions.
+
+    The `now:` on this KPI was carried out of a paragraph in `prompt.md`
+    describing the 08-24..08-28 window -- a number typed from prose about a
+    window that closed weeks ago. The ledger it came from is republished
+    after every cycle and has been readable the whole time.
+
+    **What is counted is the `weighted` column alone, which is the KPI's own
+    `measure:` field read literally, and it understates a delegating cycle.**
+    `nova_costs._subagent` is explicit that a parent's `weightedTokens`
+    deliberately does not absorb its children's, so a cycle that fans out to
+    subagents costs more than this number says. I did not fold them in, and
+    the reason is that `low`/`high` on this fence were set against the
+    narrower definition: widening the measure while leaving the bounds alone
+    would push the reading toward a breach for a definitional reason rather
+    than a cost one, and moving the bounds to fit is the one thing rule 4 of
+    issue #227 forbids. So the delegation on top is measured and printed in
+    the detail instead, where it is his call rather than mine.
+
+    The window is 24 hours and not the goals' `--days`, the same call
+    `measure_nova_dropped_ticks` makes: a guardrail averaged over a week
+    hides the expensive night it exists to catch.
+    """
+    del since, until
+    if ledger is None:
+        ledger, error = fetch_cost_ledger()
+        if error:
+            return None, f"the cost ledger could not be read: {error}"
+    columns = ledger["columns"]
+    try:
+        at = columns.index("at")
+        weighted = columns.index("weighted")
+    except ValueError:
+        return None, ("the cost ledger's `cycleColumns` names no `at`/`weighted` "
+                      f"column: {columns}")
+    sub = columns.index("subagentWeighted") if "subagentWeighted" in columns else None
+
+    now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    floor_ms = now_ms - _KPI_WINDOW_HOURS * 3600 * 1000
+    values, delegated, unattributed = [], [], 0
+    for row in ledger["rows"]:
+        if not isinstance(row, list) or len(row) <= max(at, weighted):
+            continue
+        stamp, cost = row[at], row[weighted]
+        if not isinstance(stamp, (int, float)) or not isinstance(cost, (int, float)):
+            continue
+        if stamp < floor_ms or stamp > now_ms:
+            continue
+        values.append(cost)
+        if sub is None or len(row) <= sub or row[sub] is None:
+            # Subagent attribution landed 2026-08-19 and every row older than
+            # it carries no such key. A hole is not a zero, so it is counted
+            # as one rather than folded into the delegation figure.
+            unattributed += 1
+        elif row[sub]:
+            delegated.append(row[sub])
+    if not values:
+        return None, (f"no cycle in the ledger ran inside the last "
+                      f"{_KPI_WINDOW_HOURS:g}h, so there is no median to take")
+    median = statistics.median(values)
+    detail = (f"median of {len(values)} cycle(s) in the last {_KPI_WINDOW_HOURS:g}h, "
+              f"from the cost ledger the site publishes")
+    if delegated:
+        extra = statistics.median(delegated) / 1_000_000
+        detail += (f"; {len(delegated)} of them delegated and their median "
+                   f"subagent cost is {extra:.2f}M on top, which this number "
+                   "does NOT include -- the measure is the `weighted` column")
+    if unattributed:
+        detail += (f"; {unattributed} row(s) carry no subagent attribution at "
+                   "all, so their delegation is unknown rather than zero")
+    return round(median / 1_000_000, 2), detail
+
+
 #: A KPI whose number is measured here. Each measurer takes `(since, until)`
 #: -- the goals' window, which a KPI is free to ignore and this one does -- and
 #: returns `(value, detail)`, or `(None, why)` when it could not read what it
@@ -681,6 +777,7 @@ def measure_nova_dropped_ticks(since, until):
 #: failure it protects against is the same one: a number nobody can recompute.
 KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
+    "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
@@ -694,11 +791,6 @@ KPI_NO_INSTRUMENT = {
                               "second answer to the question tools.cycle_health "
                               "already answers and belongs there rather than "
                               "here",
-    "nova-kpi-cost-per-cycle": "the weighted-token ledger is in the vault and "
-                               "is not read from this module; the number in the "
-                               "document is carried from the 08-24..08-28 "
-                               "window quoted in prompt.md and is stale by "
-                               "construction",
     "marcus-kpi-coach-latency": "timing it means driving the live coach, which "
                                 "is a sampling run against a production LLM "
                                 "route rather than a fact readable off the box "

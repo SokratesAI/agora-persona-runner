@@ -814,11 +814,11 @@ unit: %
 ```
 
 ```kpi
-id: nova-kpi-cost-per-cycle
-name: What a cycle costs
-measure: Median weighted tokens per cycle
+id: nova-kpi-silent-cycles
+name: Cycles that wrote nothing
+measure: Cycles in the window with no journal entry
 now: 1.74
-low: 0.8
+low: 0
 high: 2.0
 ```
 """
@@ -841,12 +841,12 @@ def test_kpi_rows_measures_the_one_with_an_instrument(monkeypatch):
 def test_kpi_rows_names_why_an_uninstrumented_kpi_is_blank():
     out = goal_measures.kpi_rows(_kpi_sections(), "2026-09-07", "2026-09-13")
     by_id = {row["id"]: row for row in out}
-    row = by_id["nova-kpi-cost-per-cycle"]
+    row = by_id["nova-kpi-silent-cycles"]
     assert row["value"] is None
     # The reason is the point: a blank `now` says nothing about whether anyone
     # tried, which is how three cycles come to re-derive the same gap.
     assert "no instrument" in row["detail"]
-    assert "prompt.md" in row["detail"]
+    assert "cycle_health" in row["detail"]
 
 
 def test_kpi_rows_separates_a_failed_reading_from_a_missing_instrument(monkeypatch):
@@ -1008,3 +1008,131 @@ def test_main_keeps_both_writes_when_a_key_result_and_a_kpi_both_move(
     out = pg.read_text(encoding="utf-8")
     assert "now: 2.0" in out, "the key-result write was undone by the KPI write"
     assert "now: 3" in out, "the KPI write did not land"
+
+
+# --- nova-kpi-cost-per-cycle -----------------------------------------------
+#
+# The one KPI whose written number said out loud where it came from: a
+# paragraph in `prompt.md` about the 08-24..08-28 window. The ledger behind it
+# is republished after every cycle and served at `/api/costs`.
+
+COST_COLUMNS = ["at", "minutes", "turns", "toolCalls", "weighted",
+                "subagentTurns", "subagentWeighted"]
+
+
+def _ms_ago(hours):
+    from datetime import datetime, timezone
+    return (datetime.now(timezone.utc).timestamp() - hours * 3600) * 1000
+
+
+def _ledger(rows, columns=None):
+    return {"rows": rows, "columns": list(columns or COST_COLUMNS)}
+
+
+def test_cost_per_cycle_is_the_median_of_the_window_in_millions():
+    # 1.0/2.0/4.0 medians to 2.0 and means to 2.33, so a mean slipped in here
+    # is a different number rather than the same one.
+    rows = [
+        [_ms_ago(1), 11.0, 60, 60, 1_000_000, 0, 0],
+        [_ms_ago(5), 11.0, 60, 60, 4_000_000, 0, 0],
+        [_ms_ago(20), 11.0, 60, 60, 2_000_000, 0, 0],
+    ]
+    value, detail = goal_measures.measure_nova_cost_per_cycle(
+        None, None, ledger=_ledger(rows))
+    assert value == 2.0
+    assert "median of 3 cycle(s) in the last 24h" in detail
+
+
+def test_cost_per_cycle_leaves_out_a_cycle_older_than_the_window():
+    """The window is the measure. A cheap week does not make tonight cheap.
+
+    Every row here is inside the ledger and only two are inside 24h, so a
+    measurer that medians the whole document reads 0.4 instead of 2.0 -- and
+    0.4 is a healthy guardrail reading taken over cycles that ran days ago.
+    """
+    rows = [
+        [_ms_ago(2), 11.0, 60, 60, 2_000_000, 0, 0],
+        [_ms_ago(23), 11.0, 60, 60, 2_000_000, 0, 0],
+        [_ms_ago(30), 11.0, 60, 60, 400_000, 0, 0],
+        [_ms_ago(100), 11.0, 60, 60, 400_000, 0, 0],
+        [_ms_ago(200), 11.0, 60, 60, 400_000, 0, 0],
+    ]
+    value, _ = goal_measures.measure_nova_cost_per_cycle(
+        None, None, ledger=_ledger(rows))
+    assert value == 2.0
+
+
+def test_cost_per_cycle_reads_the_columns_by_name_not_by_position():
+    """`nova_costs` warns that reordering the column tuple swaps what is read.
+
+    So the order comes off the payload's own `cycleColumns`. With `weighted`
+    moved to the front, a measurer indexing position 4 would read `toolCalls`.
+    """
+    columns = ["weighted", "at", "minutes", "turns", "toolCalls",
+               "subagentTurns", "subagentWeighted"]
+    rows = [[3_000_000, _ms_ago(1), 11.0, 60, 60, 0, 0]]
+    value, _ = goal_measures.measure_nova_cost_per_cycle(
+        None, None, ledger=_ledger(rows, columns))
+    assert value == 3.0
+
+
+def test_cost_per_cycle_refuses_rather_than_reading_zero_on_an_empty_window():
+    rows = [[_ms_ago(48), 11.0, 60, 60, 1_000_000, 0, 0]]
+    value, detail = goal_measures.measure_nova_cost_per_cycle(
+        None, None, ledger=_ledger(rows))
+    # A 0 here would be written into the document as the cheapest cycles ever
+    # run, off an instrument that saw no cycle at all.
+    assert value is None
+    assert "no median to take" in detail
+
+
+def test_cost_per_cycle_names_a_ledger_it_could_not_read(monkeypatch):
+    monkeypatch.setattr(goal_measures, "fetch_cost_ledger",
+                        lambda *a, **k: (None, "could not read /api/costs: 503"))
+    value, detail = goal_measures.measure_nova_cost_per_cycle(None, None)
+    assert value is None
+    assert "503" in detail
+
+
+def test_cost_per_cycle_reports_delegation_without_adding_it():
+    """A parent's `weighted` does not absorb its subagents' -- so say so.
+
+    Folding them in would push the reading toward `high` for a definitional
+    reason, against bounds set on the narrower measure, and rule 4 forbids
+    moving the bounds to fit. The gap is printed instead.
+    """
+    rows = [
+        [_ms_ago(1), 11.0, 60, 60, 1_000_000, 3, 500_000],
+        [_ms_ago(2), 11.0, 60, 60, 1_000_000, 0, 0],
+    ]
+    value, detail = goal_measures.measure_nova_cost_per_cycle(
+        None, None, ledger=_ledger(rows))
+    assert value == 1.0
+    assert "0.50M on top" in detail
+    assert "does NOT include" in detail
+
+
+def test_cost_per_cycle_calls_a_missing_attribution_unknown_not_zero():
+    """Rows written before 2026-08-19 carry no subagent cost key at all.
+
+    `nova_costs._subagent` is explicit that those are the absence of an
+    instrument rather than a measurement of nothing, so they are counted
+    separately instead of joining the "delegated nothing" pile.
+    """
+    rows = [[_ms_ago(1), 11.0, 60, 60, 1_000_000, 0, None]]
+    value, detail = goal_measures.measure_nova_cost_per_cycle(
+        None, None, ledger=_ledger(rows))
+    assert value == 1.0
+    assert "unknown rather than zero" in detail
+
+
+def test_cost_per_cycle_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument.
+
+    `kpi_rows` reads `KPI_MEASURERS`, so deleting this entry leaves every test
+    above green while the document goes back to a hand-typed number.
+    """
+    assert goal_measures.KPI_MEASURERS["nova-kpi-cost-per-cycle"] is \
+        goal_measures.measure_nova_cost_per_cycle
+    # And it must no longer claim to have no instrument.
+    assert "nova-kpi-cost-per-cycle" not in goal_measures.KPI_NO_INSTRUMENT
