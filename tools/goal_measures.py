@@ -75,8 +75,8 @@ SITE = os.environ.get(
 )
 
 # Marcus's own app, which serves its whole persisted state at `/api/state` with
-# no token. That endpoint is the only instrument this loop has for what Edvard
-# has actually done in that app, and the numbers Cycle 1529 typed into
+# no token. That endpoint is the only instrument this loop has for what the
+# owner has actually done in that app, and the numbers Cycle 1529 typed into
 # `project-goals.md` by hand came from a `curl` at it.
 MARCUS = os.environ.get(
     "MARCUS_SELF_URL", "http://marcus.agents.svc.cluster.local:8080"
