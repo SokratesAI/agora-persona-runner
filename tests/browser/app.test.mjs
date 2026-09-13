@@ -6487,18 +6487,63 @@ describe("an attachment renders as what it is", () => {
       "the link must carry his filename -- the URL is a 32-hex hash and says nothing");
   });
 
-  test("a link he typed himself is still text, not an element", async () => {
-    // The URL is required to start with `/api/upload/`, and dropping the
-    // required `!` is the change that could have loosened that. A remote
-    // link and a `javascript:` one must stay the characters he typed.
+  test("a table in a message is drawn as a table", async () => {
+    /* His ask, 2026-09-13: *"Please implement that Nova can render markdown in
+     * the chat, because i can not see that table properly, just lines and
+     * dashes."* The table is the case he hit, so it is the case pinned. */
+    const window = await loadSite("/journal", {
+      comments: commentSaying("| Today | I think |\n|---|---|\n| Maintenance | lights-on |\n| Research | bets |"),
+    });
+    const body = window.document.querySelector(".comment-item") || window.document.querySelector(".comment");
+    const table = body.querySelector("table.md-table");
+    assert.ok(table, "the table arrived as pipes and dashes");
+    assert.deepEqual([...table.querySelectorAll("th")].map((th) => th.textContent),
+      ["Today", "I think"]);
+    assert.equal(table.querySelectorAll("tbody tr").length, 2);
+    assert.ok(body.querySelector(".md-table-scroll"), "a wide table must scroll itself, not the page");
+  });
+
+  test("lists, headings, quotes, code and the inline marks", async () => {
+    const window = await loadSite("/journal", {
+      comments: commentSaying("## Heading\n\n- one **bold**\n- two `code`\n\n> quoted\n\n1. first\n2. second"),
+    });
+    const body = window.document.querySelector(".comment-item") || window.document.querySelector(".comment");
+    assert.equal(body.querySelectorAll(".md-list li").length, 4);
+    assert.ok(body.querySelector(".md-heading"));
+    assert.ok(body.querySelector("blockquote.md-quote"));
+    assert.equal(body.querySelector("strong").textContent, "bold");
+    assert.equal(body.querySelector("code").textContent, "code");
+    assert.equal(body.querySelectorAll("ol.md-list li").length, 2);
+  });
+
+  test("markdown cannot smuggle markup in", async () => {
+    /* The guard that matters: every string lands as a text node, so a message
+     * carrying tags is still characters rather than elements. */
+    const window = await loadSite("/journal", {
+      comments: commentSaying("| a |\n|---|\n| <img src=x onerror=1> |\n\n**<script>bad()</script>**"),
+    });
+    const body = window.document.querySelector(".comment-item") || window.document.querySelector(".comment");
+    assert.equal(body.querySelector("img"), null);
+    assert.equal(body.querySelector("script"), null);
+    assert.ok(body.textContent.includes("<img src=x onerror=1>"));
+  });
+
+  test("a markdown link is a link, but never a picture and never a script", async () => {
+    /* Rewritten 2026-09-13, when messages learned markdown: `[x](https://…)`
+     * is now a real anchor, which is the feature. What must not change is the
+     * pair either side of it -- the attachment syntax still requires its `!`
+     * and its `/api/upload/` path, so a bare link never becomes an `<img>`;
+     * and a `javascript:` href is refused and stays the characters he typed,
+     * which is the one way a message could otherwise run something. */
     const window = await loadSite("/journal", {
       comments: commentSaying("[x](https://example.com/api/upload/a.png) [y](javascript:alert(1))"),
     });
     const body = window.document.querySelector(".comment-body");
-    assert.equal(body.querySelector("a"), null, "no anchor should be built");
-    assert.equal(body.querySelector("img"), null);
+    assert.equal(body.querySelector("img"), null, "a link became a picture");
+    const links = [...body.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    assert.deepEqual(links, ["https://example.com/api/upload/a.png"]);
     assert.ok(body.textContent.includes("javascript:alert(1)"),
-      "it stays the text he typed");
+      "a javascript: href must stay the text he typed");
   });
 });
 
