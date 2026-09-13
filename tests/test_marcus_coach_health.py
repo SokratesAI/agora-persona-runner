@@ -108,6 +108,15 @@ def test_an_unreadable_deployment_is_none_not_an_empty_config(result):
     assert read_coach_config(run=_runner(result)) is None
 
 
+def test_a_nonzero_exit_is_none_even_when_stdout_parses():
+    # The discriminating case for the exit-code guard: kubectl can exit
+    # non-zero having still printed something JSON-shaped, and a partial
+    # answer is not an answer. Without this, every "unreadable" case above is
+    # carried by `json.loads` raising instead, and the guard is untested.
+    result = _Run(_deployment({BASE_URL_VAR: BASE, CONVERSATION_VAR: CONV}), returncode=1)
+    assert read_coach_config(run=_runner(result)) is None
+
+
 def test_a_deployment_without_the_vars_reads_as_empty_strings():
     assert read_coach_config(run=_runner(_Run(_deployment({"PORT": "8080"})))) == ("", "")
 
