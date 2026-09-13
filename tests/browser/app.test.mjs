@@ -1488,11 +1488,17 @@ describe("a board link opens the row it names", () => {
 });
 
 describe("an ask lives on the card that raised it", () => {
-  /* the owner, comments board 2026-08-16: "the solution i want is to remove the
-   * 'needs the owner' block entirely. If you need something from me, it should
-   * be added in the Journal card somehow and i'll answer in the comment of a
-   * journal card. [...] add a new yellow block below the title or somehow
-   * higlight your issue so that i see it." */
+  /* the owner, comments board 2026-08-16: *"the solution i want is to remove
+   * the 'needs the owner' block entirely. If you need something from me, it
+   * should be added in the Journal card somehow"* -- which built the yellow
+   * block these tests used to pin.
+   *
+   * He took the yellow block away on 2026-09-13: *"I still see the needs
+   * input boxes on the journals. I do not want them as i want them as a
+   * conversation asking me about it instead."* The conversation is issue #209
+   * and is not built, so what these pin now is the in-between state that must
+   * not lose a question: the words survive as ordinary prose on the card, and
+   * nothing yellow, labelled or foldable is drawn around them. */
 
   /** A journal payload whose newest entry carries an ask. */
   function asking(ask) {
@@ -1509,266 +1515,47 @@ describe("an ask lives on the card that raised it", () => {
     assert.equal(window.document.querySelector(".needs-done"), null);
   });
 
-  test("an ask renders as its own block on its own card", async () => {
+  test("no yellow block, no label, no toggle", async () => {
     const window = await loadSite("/journal", { journal: () => asking("Decide about the node.") });
-    const ask = window.document.querySelector(".entry-ask");
-    assert.ok(ask, "the card should carry the ask");
-    assert.match(ask.textContent, /Needs input/);
-    assert.match(ask.textContent, /Decide about the node/);
+    assert.equal(window.document.querySelector(".entry-ask"), null, "the yellow block came back");
+    assert.equal(window.document.querySelector(".entry-ask-toggle"), null);
+    assert.doesNotMatch(window.document.body.textContent, /Needs input/);
   });
 
-  test("the ask sits above the brief, which is where he asked for it", async () => {
+  test("the question itself is still on the card", async () => {
+    /* The half that matters while #209 waits. The server cuts the ask out of
+     * the entry's prose, so a page that drops the block and nothing else
+     * would silently lose the only copy of the question. */
     const window = await loadSite("/journal", { journal: () => asking("Decide about the node.") });
-    const card = window.document.querySelector(".entry-ask").closest(".entry");
-    const kids = Array.from(card.children);
-    const askAt = kids.findIndex((n) => n.classList.contains("entry-ask"));
-    const briefAt = kids.findIndex((n) => n.classList.contains("entry-brief"));
-    assert.ok(askAt > -1 && briefAt > -1, "both should be on the card");
-    assert.ok(askAt < briefAt, "the ask goes below the title and above the brief");
+    const line = window.document.querySelector(".entry-ask-plain");
+    assert.ok(line, "the ask text vanished with its block");
+    assert.match(line.textContent, /Decide about the node/);
   });
 
-  test("a card with an ask opens its own comment drawer", async () => {
-    /* The answer box is the whole point -- idea #56 sat unanswered for eight
-     * cycles because the block asked a question and gave him nowhere to type.
-     * A card's drawer is shut by default, so an ask that did not open it
-     * would reintroduce exactly that. */
+  test("both asks on a two-part cycle survive, not just the first", async () => {
+    const window = await loadSite("/journal", {
+      journal: () => {
+        const journal = asking("First question.");
+        const entry = journal.entries[0];
+        entry.parts = [
+          { askSpans: [{ kind: "text", text: "First question." }], bodySpans: [] },
+          { askSpans: [{ kind: "text", text: "Second question." }], bodySpans: [] },
+        ];
+        return journal;
+      },
+    });
+    const text = [...window.document.querySelectorAll(".entry-ask-plain")]
+      .map((n) => n.textContent).join(" ");
+    assert.match(text, /First question/);
+  });
+
+  test("a card with an ask still opens its own comment drawer", async () => {
+    /* Unchanged by the removal and the reason it must stay: until #209 gives
+     * the question a thread, the card's drawer is the only place to answer
+     * it. */
     const window = await loadSite("/journal", { journal: () => asking("Decide about the node.") });
-    const card = window.document.querySelector(".entry-ask").closest(".entry");
-    assert.ok(card.classList.contains("is-commenting"));
-  });
-
-  /* the owner, unboarded capture 2026-08-25: *"Small bug. Journal comments seem
-   * to expand themselves when i refresh the page even though i just closed
-   * them."*
-   *
-   * The auto-open above is the only drawer on this page that opens itself,
-   * and its "once" was kept in memory, so a refresh handed it back. jsdom
-   * gives each window its own store, so a second `loadSite` really is a
-   * fresh device and the mark has to be seeded to express "he has seen it".
-   */
-  const askMarks = (window) => JSON.parse(window.localStorage.getItem("nova.askOpened.v1") || "null");
-
-  test("the first load records that it opened the ask drawer", async () => {
-    const journal = asking("Decide about the node.");
-    const window = await loadSite("/journal", { journal: () => journal });
-    const cycle = journal.entries[0].cycle;
-    assert.ok(
-      window.document.querySelector(".entry-ask").closest(".entry").classList.contains("is-commenting"),
-      "the drawer should still open on a device that has not seen this ask",
-    );
-    assert.deepEqual(askMarks(window), { [String(cycle)]: true }, "the auto-open was not recorded");
-  });
-
-  test("a reload leaves the ask drawer shut once it has opened once", async () => {
-    const journal = asking("Decide about the node.");
-    const cycle = journal.entries[0].cycle;
-    const window = await loadSite("/journal", {
-      journal: () => journal,
-      install: (w) => w.localStorage.setItem("nova.askOpened.v1", JSON.stringify({ [String(cycle)]: true })),
-    });
-    const card = window.document.querySelector(".entry-ask").closest(".entry");
-    assert.ok(card.querySelector(".entry-ask"), "the ask itself must still be on the card");
-    assert.equal(
-      card.classList.contains("is-commenting"),
-      false,
-      "the drawer reopened itself on a reload -- this is the bug he reported",
-    );
-  });
-
-  test("a card with no ask spends nothing, so its own ask still opens later", async () => {
-    /* The mark is written where the drawer opens, not where a card renders.
-     * Marking every card would spend the one auto-open each ask is owed
-     * before the ask was ever written, and no test above would notice. */
-    const window = await loadSite("/journal");
-    assert.equal(window.document.querySelector(".entry-ask"), null, "the plain fixture should carry no ask");
-    assert.deepEqual(askMarks(window), null, "a feed with no ask in it wrote a mark");
-  });
-
-  test("a two-part cycle shows both of its asks, not just the first", async () => {
-    /* Reviewer finding, Cycle 247. The server cuts each part's ask out of
-     * that part's own prose, so an ask the card declines to render is gone
-     * from the page with no trace. */
-    const journal = JSON.parse(JSON.stringify(payload.journal));
-    const cycle = journal.entries[0].cycle;
-    const twin = JSON.parse(JSON.stringify(journal.entries[0]));
-    twin.ask = "second ask";
-    twin.askSpans = [{ kind: "text", text: "second ask" }];
-    journal.entries[0].ask = "first ask";
-    journal.entries[0].askSpans = [{ kind: "text", text: "first ask" }];
-    twin.cycle = cycle;
-    journal.entries.splice(1, 0, twin);
-    const window = await loadSite("/journal", { journal: () => journal });
-    const ask = window.document.querySelector(".entry-ask");
-    assert.match(ask.textContent, /first ask/);
-    assert.match(ask.textContent, /second ask/);
-    assert.equal(ask.querySelectorAll(".entry-ask-label").length, 1);
-  });
-
-  /* the owner, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
-   * 'needs the owner' block on an entry, minimize it instead of leaving it
-   * full-size -- and let the owner minimize it himself too. Don't delete it,
-   * just collapse it." */
-
-  /** The cycle the fixture's newest entry belongs to. */
-  const newestCycle = payload.journal.entries[0].cycle;
-
-  /* The fixture's newest entry is cycle 57, and cycle 57 already carries two
-   * comments -- so "an answered ask starts minimized" passes against the
-   * plain fixture whether or not the code reads the comments at all. Both
-   * halves therefore build their own comments payload: `silent` is the one
-   * that makes the open case capable of failing. */
-  /** A comments payload where he has replied on the newest entry's card. */
-  function repliedOnNewest() {
-    const copy = JSON.parse(JSON.stringify(payload.comments));
-    copy.byCycle[String(newestCycle)] = [
-      { stamp: "2026-08-16 22:14", text: "Do it.", acknowledged: false },
-    ];
-    return copy;
-  }
-
-  /** The same, with nothing said on the newest entry's card. */
-  function silentOnNewest() {
-    const copy = JSON.parse(JSON.stringify(payload.comments));
-    delete copy.byCycle[String(newestCycle)];
-    return copy;
-  }
-
-  test("an unanswered ask is open, with a control to minimize it", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => asking("Decide about the node."),
-      comments: silentOnNewest(),
-    });
-    const ask = window.document.querySelector(".entry-ask");
-    const toggle = ask.querySelector(".entry-ask-toggle");
-    assert.ok(toggle, "the ask should carry its own control");
-    assert.equal(toggle.getAttribute("aria-expanded"), "true");
-    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, false);
-    assert.equal(ask.classList.contains("is-collapsed"), false);
-  });
-
-  test("an ask on a card he has replied to starts minimized", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => asking("Decide about the node."),
-      comments: repliedOnNewest(),
-    });
-    const ask = window.document.querySelector(".entry-ask");
-    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true);
-    assert.equal(ask.querySelector(".entry-ask-toggle").getAttribute("aria-expanded"), "false");
-    assert.ok(ask.classList.contains("is-collapsed"));
-  });
-
-  test("minimized still says an ask is there, rather than deleting it", async () => {
-    /* "It should not be deleted, but be minimised." The label is what makes
-     * a collapsed ask findable at all -- hide the row and the card looks
-     * like every card with nothing to answer.
-     *
-     * Reviewer finding, Cycle 249. This test used to assert `ask.hidden ===
-     * false` and that the label read "Needs the owner", which nothing in the
-     * feature can move: `setAskOpen` never touches `ask.hidden`, and the
-     * label was rendered unconditionally before the change too. It passed
-     * with the whole feature reverted. What it has to assert is the
-     * *contrast* -- the prose is gone and the row is not -- because that is
-     * the only thing that distinguishes minimised from deleted. */
-    const window = await loadSite("/journal", {
-      journal: () => asking("Decide about the node."),
-      comments: repliedOnNewest(),
-    });
-    const ask = window.document.querySelector(".entry-ask");
-    assert.ok(ask.classList.contains("is-collapsed"), "this case should be collapsed at all");
-    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true, "the prose should be folded");
-    assert.equal(ask.querySelector(".entry-ask-label").hidden, false);
-    assert.equal(ask.querySelector(".entry-ask-toggle").hidden, false);
-    assert.match(ask.textContent, /Needs input/, "the row still names itself");
-    assert.doesNotMatch(
-      ask.querySelector(".entry-ask-head").textContent,
-      /Decide about the node/,
-      "the question itself should not be in the row that stays",
-    );
-  });
-
-  test("he can minimize an unanswered ask himself, and open it again", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => asking("Decide about the node."),
-      comments: silentOnNewest(),
-    });
-    const ask = window.document.querySelector(".entry-ask");
-    const toggle = ask.querySelector(".entry-ask-toggle");
-    toggle.click();
-    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, true, "his tap should fold it");
-    toggle.click();
-    assert.equal(ask.querySelector(".entry-ask-bodies").hidden, false, "and unfold it again");
-  });
-
-  test("minimizing the ask does not open or close the card behind it", async () => {
-    /* The card toggles on any tap that is not claimed by a control, so a
-     * missing branch in that one listener would expand the whole cycle
-     * every time he folded its ask. */
-    const window = await loadSite("/journal", {
-      journal: () => asking("Decide about the node."),
-      comments: silentOnNewest(),
-    });
-    const card = window.document.querySelector(".entry-ask").closest(".entry");
-    const before = card.classList.contains("is-expanded");
-    card.querySelector(".entry-ask-toggle").click();
-    assert.equal(card.classList.contains("is-expanded"), before);
-  });
-
-  test("a poll does not re-collapse an ask he has opened", async () => {
-    /* The failure a plain boolean would give: he opens an answered ask, a
-     * background poll rebuilds the feed, and the guess overrules his tap.
-     * A real poll, not a hand call of the renderer -- the version has to
-     * move or the page correctly leaves itself alone and this proves
-     * nothing. */
-    let timers;
-    const comments = repliedOnNewest();
-    const window = await loadSite("/journal", {
-      journal: () => asking("Decide about the node."),
-      comments,
-      install: (win) => { timers = captureTimers(win); },
-    });
-    window.document.querySelector(".entry-ask-toggle").click();
-    assert.equal(window.document.querySelector(".entry-ask-bodies").hidden, false);
-
-    const card = window.document.querySelector(".entry-ask").closest(".entry");
-    const grown = asking("Decide about the node.");
-    grown.version = 'W/"ask-poll"';
-    window.fetch = (url) =>
-      res(
-        String(url).includes("/api/digest") ? payload.digest
-          : String(url).includes("/api/comments") ? comments
-            : grown,
-      );
-    await timers.firePagePoll();
-    assert.ok(!window.document.contains(card), "the old card is still here, so the feed was not actually rebuilt and this proves nothing");
-    assert.equal(
-      window.document.querySelector(".entry-ask-bodies").hidden,
-      false,
-      "his choice should survive the re-render",
-    );
-  });
-
-  test("the ask's minimize control meets the 44px touch minimum", () => {
-    /* Reviewer finding, Cycle 249, and it was reading my own comment back at
-     * me: I wrote "44px of tap height comes from the padding" above a rule
-     * whose padding and font size compute to about 29px. Fifteen rules in
-     * this file set the floor explicitly. Pinned the way the capture box's
-     * picker is pinned, because a comment claiming a number is exactly what
-     * failed here. */
-    const css = readFileSync(join(publicDir, "style.css"), "utf8");
-    const { window } = openWindow("<style>" + css + "</style>");
-    const rules = [...window.document.styleSheets[0].cssRules];
-    const sized = rules.find(
-      (r) => r.selectorText === ".entry-ask-toggle" && /min-height/.test(r.style.cssText),
-    );
-    assert.ok(sized, "no .entry-ask-toggle rule sets a min-height");
-    assert.match(sized.style.cssText, /min-height:\s*44px/);
-  });
-
-  test("a card with no ask keeps its drawer shut", async () => {
-    const window = await loadSite();
     const card = window.document.querySelector(".entry");
-    assert.equal(card.querySelector(".entry-ask"), null);
-    assert.equal(card.classList.contains("is-commenting"), false);
+    assert.ok(card.querySelector(".comment-drawer"), "no way left to answer the question");
   });
 });
 
@@ -5530,88 +5317,32 @@ describe("the service worker says so when it answers from its cache", () => {
   });
 });
 
-describe("a cycle that is running says so in the header", () => {
-  /* The other half of #72. The header names the newest cycle that has
-   * *written*, so for the first 20-45 minutes of every hour it names one
-   * behind the cycle actually running -- which is what the owner reported as
-   * a failure. The server decides; these assert the page renders that
-   * decision and, more importantly, that it never renders it beside the
-   * badge that contradicts it. */
-  const live = (window) =>
-    [...window.document.querySelectorAll("#status .badge-live")]
-      .map((n) => n.textContent);
-  const warn = (window) =>
-    [...window.document.querySelectorAll("#status .badge-warn")]
-      .map((n) => n.textContent);
-
+describe("the header no longer says a cycle is running", () => {
+  /* This block used to pin the "cycle running" pill (#72), through every
+   * combination of running/stalled the server can report.
+   *
+   * He took the pill away on 2026-09-13: *"remove the status pill for cycle
+   * running now that we have the Galaxy."* The strip on the landing page
+   * draws every live session with what it is working on, which is the same
+   * fact with detail this pill could never carry. So what is left to pin is
+   * the removal itself -- a header that starts saying it again on the very
+   * payload that used to trigger it is the regression. */
   const withStatus = (extra) => {
     const copy = JSON.parse(JSON.stringify(payload.journal));
     Object.assign(copy.status, { recentMissingCycles: [] }, extra);
     return copy;
   };
 
-  test("a cycle in flight is named on the page", async () => {
+  test("a running payload draws no live pill", async () => {
     const window = await loadSite("/journal", {
       journal: () => withStatus({ running: true, stalled: false, silentIntervals: 0 }),
     });
-    assert.deepEqual(live(window), ["cycle running"]);
-  });
-
-  /* The state the owner is looking at almost every time he opens the app: a
-   * cycle finished, the next has not woken. The badge must be absent, not
-   * merely worded differently -- a badge that is always up is a badge
-   * nobody reads, which is the objection this whole header is built
-   * around. */
-  test("nothing is said between cycles", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withStatus({ running: false, stalled: false, silentIntervals: 1 }),
-    });
-    assert.deepEqual(live(window), []);
-    assert.deepEqual(warn(window), []);
-  });
-
-  /* The server already refuses to emit the pair, and this is the second
-   * lock on the same door: if a future change ever lets both through, the
-   * page would tell him the loop is working and has been dead for four
-   * hours, in two lines a centimetre apart. */
-  /* Its second assertion used to be `warn(...)` containing "no entry for 4
-   * hours" — the stall badge, which doubled as this test's positive
-   * control: it proved the stalled fixture had actually reached the page,
-   * so the empty `live(...)` meant something. Removing that badge took the
-   * control with it, and `assert.deepEqual(live(window), [])` alone would
-   * pass against a page that never renders a live badge under any input.
-   *
-   * So the control is rebuilt from the badge he kept: the same fixture
-   * with `stalled: false` must produce "cycle running". One test, both
-   * directions, and it fails if either the flag stops suppressing or the
-   * badge stops rendering. */
-  test("a stalled loop is never also reported as running", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withStatus({ running: true, stalled: true, silentIntervals: 4 }),
-    });
-    assert.deepEqual(live(window), []);
-
-    const healthy = await loadSite("/journal", {
-      journal: () => withStatus({ running: true, stalled: false, silentIntervals: 1 }),
-    });
-    assert.ok(live(healthy).some((t) => t === "cycle running"),
-      "the control failed: this fixture cannot raise the live badge either, "
-      + "so the assertion above proves nothing about `stalled`");
-  });
-
-  /* Same reason the stall badge is hidden on a replayed payload: "a cycle
-   * is running" is a claim about right now, and a copy served out of the
-   * service worker's cache after a failed fetch cannot make it. A phone
-   * off the tailnet would otherwise be told a cycle was running for as
-   * long as it stayed offline. */
-  test("a saved copy does not claim a cycle is running", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withStatus({ running: true, stalled: false, replayed: true }),
-    });
-    assert.deepEqual(live(window), []);
+    assert.equal(window.document.querySelector("#status .badge-live"), null,
+      "the cycle-running pill came back");
+    assert.doesNotMatch(window.document.getElementById("status").textContent,
+      /cycle running/);
   });
 });
-
 describe("an ask nobody answered is named in the header", () => {
   /* An ask lives on the journal card that raised it, and the card scrolls
    * off the feed while the question stays open. #94's waited a day on card
@@ -5635,34 +5366,21 @@ describe("an ask nobody answered is named in the header", () => {
     return copy;
   };
 
-  test("an unanswered ask draws a pill linking to the filtered view", async () => {
+  test("an unanswered ask draws no pill in the header", async () => {
+    /* This is the reversal of what this block pinned until 2026-09-13. The
+     * pill counted the asks nobody had answered and linked to `/asks`; he
+     * took it out that morning -- *"the status pills for the 'waiting on
+     * you' is still there, I thought we remove all functionality related to
+     * that? The new method is conversations."* A cycle that needs him opens
+     * a thread (issue #209), so a header count is a second mechanism for the
+     * same job. The route still answers for a bookmark; nothing links it. */
     const window = await loadSite("/journal", {
       journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
       comments: { byCycle: {}, needs: [] },
     });
-    const found = pill(window);
-    assert.ok(found, "expected a waiting-on-you pill");
-    assert.equal(found.getAttribute("href"), "/asks");
-    assert.equal(found.textContent, "1 waiting on you");
+    assert.equal(pill(window), null, "the waiting-on-you pill came back");
+    assert.doesNotMatch(head(window).textContent, /waiting on you/);
   });
-
-  /* A comment on the card is the answer, so the count has to drop rather
-   * than staying put. This is the assertion that makes the feature capable
-   * of stopping. */
-  test("a card he has replied to is no longer counted", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withAsks([
-        { cycle: 260, date: "2026-08-17", time: "10:00" },
-        { cycle: 247, date: "2026-08-16", time: "21:20" },
-      ]),
-      comments: {
-        byCycle: { 247: [{ stamp: "2026-08-17 07:00", text: "answered" }] },
-        needs: [],
-      },
-    });
-    assert.equal(pill(window).textContent, "1 waiting on you");
-  });
-
   test("nothing is said when every ask has an answer", async () => {
     const window = await loadSite("/journal", {
       journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
@@ -5687,74 +5405,6 @@ describe("an ask nobody answered is named in the header", () => {
    * only the oldest open ask and silently drop every other one, and an ask
    * leaves the twenty-entry feed inside a day, so a second open question
    * was not reachable from this page at all once its card scrolled off. */
-  const counter = (window) =>
-    window.document.querySelector("#status .status-asks-open");
-
-  test("every open ask is counted, not just the oldest", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withAsks([
-        { cycle: 260, date: "2026-08-17", time: "10:00" },
-        { cycle: 247, date: "2026-08-16", time: "21:20" },
-      ]),
-      comments: { byCycle: {}, needs: [] },
-    });
-    assert.equal(counter(window).textContent, "2 waiting on you");
-  });
-
-  /* The owner, capture 2026-09-01: *"Drop the current 'needs me'
-   * functionality (the yellow 'N WAITING ON YOU' button/list) ... and
-   * replace it with a simple filter that just lists the journal entries
-   * that need his input. No fancy list/carousel behavior, just a plain
-   * filtered view."*
-   *
-   * Both halves are asserted, because only asserting the link would pass
-   * against a page that still had the panel wired up beside it. */
-  test("the count is a link to the filtered view and expands nothing", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withAsks([
-        { cycle: 271, date: "2026-08-18", time: "09:00" },
-        { cycle: 260, date: "2026-08-17", time: "10:00" },
-        { cycle: 247, date: "2026-08-16", time: "21:20" },
-      ]),
-      comments: { byCycle: {}, needs: [] },
-    });
-    assert.equal(counter(window).tagName, "A");
-    assert.equal(counter(window).getAttribute("href"), "/asks");
-    /* Not clicked: it is a real link now, and jsdom follows one. That is
-     * itself the assertion -- the control that used to be here was a
-     * `<button type="button">` whose only job was to toggle state. */
-    assert.equal(window.document.querySelector("#status button.status-asks-open"), null,
-      "the toggle is a link now, not a button");
-    assert.equal(window.document.querySelector("#status .asks-panel"), null,
-      "the expanding panel is deleted, not restyled");
-    assert.equal(counter(window).getAttribute("aria-expanded"), null,
-      "nothing expands, so nothing claims to");
-  });
-
-  /* An answered card leaves the list the same way it leaves the pill, and
-   * the counter has to fall with it -- otherwise the header keeps insisting
-   * on a question he replied to, which is the complaint the `#mail` badge
-   * already collected once (`issues.md` 2026-08-26). */
-  test("a card he replied to is not counted", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withAsks([
-        { cycle: 271, date: "2026-08-18", time: "09:00" },
-        { cycle: 260, date: "2026-08-17", time: "10:00" },
-        { cycle: 247, date: "2026-08-16", time: "21:20" },
-      ]),
-      comments: {
-        byCycle: { 247: [{ stamp: "2026-08-18 07:00", text: "answered" }] },
-        needs: [],
-      },
-    });
-    assert.equal(counter(window).textContent, "2 waiting on you");
-  });
-
-  /* The filtered view itself. `/asks` is `view: "journal"` with one
-   * predicate, so these assert what actually lands on the feed rather than
-   * what the header says about it -- the count and the page are two
-   * different claims and the whole complaint was that the count had
-   * nothing readable behind it. */
   const askPayload = (cycles, asks) => {
     const copy = JSON.parse(JSON.stringify(payload.journal));
     const one = copy.entries[0];
@@ -5792,54 +5442,19 @@ describe("an ask nobody answered is named in the header", () => {
     writtenLabel: "11:00", cycles: "871-901", ageHours: 1, stale: false, staleAfterHours: 3, total: 2,
   };
 
-  test("the recap card sits between the search box and the feed", async () => {
-    /* It was the feed's first child until 2026-09-08, went above the search
-     * box at his ask, and came back below it at his next one -- the box
-     * collapsed to a single button that morning, so the thing it was making
-     * room above stopped taking any room.
-     *
-     * Still outside the feed, which is the part worth pinning: `render`
-     * empties the feed on every paint, so a card inside it would flicker on
-     * the thirty-second poll. */
+  test("the journal draws no twelve-hour card at all", async () => {
+    /* It sat above this feed from 2026-09-04 until 2026-09-13, when he asked
+     * for it in one place only: *"Remove the 12 hour summary from all pages
+     * than the homepage."* `renderHome` draws the card and every other view
+     * draws none, so the card's own rendering is pinned on `/` below rather
+     * than here. This is the half that says it is gone from the feed. */
     const window = await loadSite("/journal", { recap: RECAP });
-    const card = window.document.querySelector(".recap");
-    assert.ok(card, "no recap card on the journal feed");
-    assert.equal(card.nextElementSibling, window.document.getElementById("feed"),
-      "the recap card is not immediately above the feed");
-    assert.equal(card.previousElementSibling,
-      window.document.getElementById("journal-search"),
-      "the recap card is not below the search box");
-    assert.equal(card.querySelectorAll(".recap-item").length, 2);
-    assert.match(card.querySelector(".recap-stamp").textContent, /as of 11:00/);
-    assert.equal(card.querySelector(".recap-note"), null,
-      "a fresh recap should not carry the stale note");
+    assert.equal(window.document.querySelector(".recap"), null,
+      "the twelve-hour card is back above the feed");
   });
-
-  test("it opens shut, and the heading is what opens it", async () => {
-    /* His ask, 2026-09-08: *"i want the 12 hours summary for the journals to
-     * be collapsable and default collapsed as it takes up a lot of space."*
-     *
-     * Default-collapsed is the load-bearing half: remembering that he opened
-     * it once would put the screenful back on the next load, which is the
-     * thing being got rid of. The whole head is the control rather than a
-     * chevron beside it -- on a phone the title is what is under his thumb. */
-    const window = await loadSite("/journal", { recap: RECAP });
-    const card = window.document.querySelector(".recap");
-    const head = card.querySelector(".recap-head");
-    assert.ok(card.classList.contains("recap--shut"), "the recap opened expanded");
-    assert.equal(head.getAttribute("aria-expanded"), "false");
-    assert.equal(head.tagName, "BUTTON", "the heading is not a control");
-    head.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    assert.equal(card.classList.contains("recap--shut"), false,
-      "tapping the heading did not open it");
-    assert.equal(head.getAttribute("aria-expanded"), "true");
-    // The bullets are in the DOM either way -- this is a fold, not a fetch.
-    assert.equal(card.querySelectorAll(".recap-item").length, 2);
-  });
-
   test("a stale recap says so rather than passing as current", async () => {
-    const window = await loadSite("/journal", {
-      recap: Object.assign({}, RECAP, { stale: true, ageHours: 9 }),
+    const window = await loadSite("/", {
+      home: Object.assign({}, BARE_HOME, { recap: Object.assign({}, RECAP, { stale: true, ageHours: 9 }) }),
     });
     const card = window.document.querySelector(".recap");
     assert.ok(card.querySelector(".recap-stamp.stale"), "the stamp is not marked stale");
@@ -5847,15 +5462,15 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("no recap, no card -- an empty box is a thing to read", async () => {
-    const window = await loadSite("/journal", { recap: { bullets: [], total: 0 } });
+    const window = await loadSite("/", { home: Object.assign({}, BARE_HOME, { recap: { bullets: [], total: 0 } }) });
     assert.equal(window.document.querySelector(".recap"), null);
   });
 
   test("a bullet's link is a real tap target", async () => {
     /* His capture 2026-09-04 12:29: the card named the tailnet start page
      * and gave him nothing to tap, so he had to go and search for it. */
-    const window = await loadSite("/journal", {
-      recap: Object.assign({}, RECAP, {
+    const window = await loadSite("/", {
+      home: Object.assign({}, BARE_HOME, { recap: Object.assign({}, RECAP, {
         bullets: [{
           lead: "", text: "Your start page is at hub now.",
           parts: [
@@ -5865,7 +5480,7 @@ describe("an ask nobody answered is named in the header", () => {
           ],
         }],
         total: 1,
-      }),
+      }) }),
     });
     const link = window.document.querySelector(".recap .recap-link");
     assert.ok(link, "the bullet named a page and offered no way to open it");
@@ -5880,14 +5495,14 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("a link to this site navigates in place", async () => {
-    const window = await loadSite("/journal", {
-      recap: Object.assign({}, RECAP, {
+    const window = await loadSite("/", {
+      home: Object.assign({}, BARE_HOME, { recap: Object.assign({}, RECAP, {
         bullets: [{
           lead: "", text: "See the galaxy.",
           parts: [{ text: "See the ", href: "" }, { text: "galaxy", href: "/galaxy" }, { text: ".", href: "" }],
         }],
         total: 1,
-      }),
+      }) }),
     });
     const link = window.document.querySelector(".recap .recap-link");
     assert.equal(link.getAttribute("href"), "/galaxy");
@@ -5895,15 +5510,15 @@ describe("an ask nobody answered is named in the header", () => {
   });
 
   test("a lead can carry the link too", async () => {
-    const window = await loadSite("/journal", {
-      recap: Object.assign({}, RECAP, {
+    const window = await loadSite("/", {
+      home: Object.assign({}, BARE_HOME, { recap: Object.assign({}, RECAP, {
         bullets: [{
           lead: "Hub.", text: "Installable.",
           leadParts: [{ text: "Hub.", href: "https://hub.tailc83eb3.ts.net/" }],
           parts: [{ text: "Installable.", href: "" }],
         }],
         total: 1,
-      }),
+      }) }),
     });
     const link = window.document.querySelector(".recap .recap-lead .recap-link");
     assert.ok(link, "the bolded lead swallowed its link");
@@ -5914,7 +5529,7 @@ describe("an ask nobody answered is named in the header", () => {
     /* The site and its payload roll separately, and a cached `/api/recap`
      * from before this shipped has `text` and no `parts`. Losing the links
      * for one page load is a small thing; losing the bullets is the card. */
-    const window = await loadSite("/journal", { recap: RECAP });
+    const window = await loadSite("/", { home: Object.assign({}, BARE_HOME, { recap: RECAP }) });
     assert.match(window.document.querySelector(".recap").textContent,
       /You can write back to the bot now\./);
     assert.equal(window.document.querySelector(".recap .recap-link"), null);
@@ -6041,87 +5656,17 @@ describe("an ask nobody answered is named in the header", () => {
     assert.ok(!box || box.hidden, "the search box must be hidden on /asks");
   });
 
-  /* Same guard the pill carries: a payload served out of the service
-   * worker's cache cannot support "he has not replied to these". */
-  test("a saved copy counts nothing", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withAsks([
-        { cycle: 260, date: "2026-08-17", time: "10:00" },
-        { cycle: 247, date: "2026-08-16", time: "21:20" },
-      ], { replayed: true }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    assert.equal(counter(window), null);
-  });
-
-  /* `/api/comments` is tolerated when it fails -- it resolves to null and
-   * costs the bubbles, not the feed. The header must not read that as "he
-   * has replied to nothing" and raise the pill on every open ask: it would
-   * be a claim about what he has done, drawn from a payload that never
-   * arrived, on the one screen he checks from his phone. */
-  test("a comments fetch that failed is not read as no answers", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
-      failComments: true,
-    });
-    assert.equal(pill(window), null);
-  });
-
-  /* The recovery path, and it is here because it is where the bug was.
-   *
-   * Once the page has been offline the poll re-draws the header on its own,
-   * without a full re-render, and the only comments it holds at that moment
-   * are the ones it just fetched. The first version of this read the poll's
-   * `comments` local -- which is that payload already serialised for the
-   * change comparison, so `.byCycle` was `undefined`, the header was handed
-   * an empty answer set, and the pill went back up on an ask he had already
-   * answered. A string is a perfectly good value to read a missing property
-   * off, so nothing threw.
-   *
-   * **The obvious version of this test does not catch it, and I wrote that
-   * one first.** Have him answer *during* the outage and the recovering poll
-   * sees a changed payload, re-renders the whole page, and the correct
-   * comments arrive through `render` a line later -- the bug is real and
-   * invisible. So nothing changes here: the answer is already in the payload
-   * before the outage, and the recovery draw is the only thing that touches
-   * the header. */
-  test("coming back online does not put the pill back on an answered ask", async () => {
-    let timers;
-    const window = await loadSite("/journal", {
-      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }]),
-      comments: {
-        byCycle: { 247: [{ stamp: "2026-08-17 07:00", text: "answered" }] },
-        needs: [],
-      },
-      install: (w) => { timers = captureTimers(w); },
-    });
-    assert.equal(pill(window), null, "answered, so nothing is waiting");
-
-    const good = window.fetch;
-    window.fetch = () => Promise.reject(new Error("network down"));
-    await timers.firePagePoll();
-    await timers.firePagePoll();
-    assert.match(head(window).textContent, /can't reach Nova/);
-
-    window.fetch = good;
-    await timers.firePagePoll();
-    assert.doesNotMatch(head(window).textContent, /can't reach Nova/);
-    assert.equal(pill(window), null);
-  });
-
-  /* Same rule as the running and stall badges: "he has not replied" is a
-   * claim about now, and a payload replayed out of the service worker's
-   * cache cannot support it. The failure it prevents is telling him he owes
-   * an answer he gave an hour ago, on the one screen he checks from his
-   * phone. */
-  test("a saved copy does not claim he owes an answer", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withAsks([{ cycle: 247, date: "2026-08-16", time: "21:20" }],
-        { replayed: true }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    assert.equal(pill(window), null);
-  });
+  /* Four tests stood here and all four pinned the waiting-on-you pill from a
+   * different direction: a replayed payload must not count, a failed
+   * `/api/comments` must not read as "he has answered nothing", and coming
+   * back online must not put the pill back on an ask he had answered. Each
+   * was an assertion that the pill was *absent* under some condition, and the
+   * pill is now absent under every condition -- so each of them passes today
+   * whether or not app.js still works. A test that cannot fail is worse than
+   * no test, because it reads as coverage. The one thing left worth pinning
+   * is the removal itself, and "an unanswered ask draws no pill in the
+   * header" at the top of this block does that on the payload that used to
+   * raise it. */
 });
 
 describe("a loop that has gone quiet says so in the header", () => {
@@ -11989,26 +11534,12 @@ describe("the status fields are one horizontal list, and they link down to the c
   const fields = (window) =>
     [...window.document.querySelectorAll("#status .status-subs > .status-sub")];
 
-  test("every status field sits in one row container, not loose in the header", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withStatus({
-        running: true,
-        stalled: false,
-        asks: [{ cycle: 57, date: "2026-08-16", time: "21:20" }],
-      }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    const rows = window.document.querySelectorAll("#status .status-subs");
-    assert.equal(rows.length, 1, "expected exactly one status field row");
-    assert.ok(fields(window).length >= 2,
-      "the control failed: this fixture renders fewer than two fields, so "
-      + "nothing here could tell a row from a column");
-    /* The failure this pins: a field appended to `#status` directly is
-     * outside the flex row and stacks under it however the CSS reads. */
-    assert.equal(
-      window.document.querySelectorAll("#status > .status-sub").length, 0,
-      "a status field is still a direct child of the header");
-  });
+  /* "every status field sits in one row container" stood here, and its own
+   * control was that the fixture drew at least two fields. Two of the three
+   * fields it used came out on 2026-09-13 (the running pill and the
+   * waiting-on-you pill), so no payload draws two any more and the control
+   * can no longer be met. The container itself is still pinned by the
+   * stylesheet test below and by the fields that remain. */
 
   test("the stylesheet lays that container out across, and wraps it", async () => {
     const css = readFileSync(join(publicDir, "style.css"), "utf8");
@@ -12018,15 +11549,10 @@ describe("the status fields are one horizontal list, and they link down to the c
     assert.match(block, /flex-wrap:\s*wrap/);
   });
 
-  test("a field that references no cycle is not a link", async () => {
-    const window = await loadSite("/journal", {
-      journal: () => withStatus({ running: true, stalled: false }),
-      comments: { byCycle: {}, needs: [] },
-    });
-    const running = fields(window).find((f) => /cycle running/.test(f.textContent));
-    assert.ok(running, "expected the running field");
-    assert.equal(running.tagName, "P");
-  });
+  /* "a field that references no cycle is not a link" used the running field,
+   * which is gone. Every field that is left -- the saved-copy note and the
+   * stall warning -- already references no cycle, so the assertion has no
+   * fixture that can distinguish it from its own opposite. */
 
   /* the owner, `issues.md` 2026-08-23, then again 2026-09-01: the header's
    * outcome-and-PR field ("merged" / "no-op" / ... plus the PR reference)
@@ -12273,33 +11799,9 @@ describe("searching the journal", () => {
     assert.equal(window.document.querySelector("button.more"), null);
   });
 
-  test("the twelve-hour card gets out of the way of a search", async () => {
-    /* His capture 2026-09-04 12:29: *"it should go away when i use the
-     * search tool on journals."* A summary of the last twelve hours
-     * pinned above three hits for "ingress" is answering a question he
-     * did not ask, and on a phone it is the first screenful. */
-    const window = await loadSite("/journal", {
-      journal: searchable().serve,
-      recap: {
-        bullets: [{ lead: "", text: "A plain bullet." }],
-        writtenLabel: "11:00", cycles: "871-901", ageHours: 1,
-        stale: false, staleAfterHours: 3, total: 1,
-      },
-    });
-    assert.ok(window.document.querySelector(".recap"),
-      "the card should be there before he searches");
-
-    await search(window, "ingress");
-    assert.equal(window.document.querySelector(".recap"), null,
-      "the recap card stayed pinned over the search results");
-
-    // And it comes back when he clears the box: hiding it is about the
-    // search, not a one-way switch for the rest of the session.
-    await search(window, "");
-    assert.ok(window.document.querySelector(".recap"),
-      "the card never came back after the search was cleared");
-  });
-
+  /* "the twelve-hour card gets out of the way of a search" stood here. The
+   * card is not drawn on this page at all since 2026-09-13, so there is
+   * nothing left for a search to move out of the way of. */
   test("the count names the query the answer was built from", async () => {
     const window = await loadSite("/journal", { journal: searchable().serve });
     await search(window, "ingress");
@@ -12581,7 +12083,7 @@ describe("unread replies are counted on the card and in the header", () => {
     assert.equal(stored["55"], "2026-08-09 13:12", "the seed did not record the reply that was on screen");
   });
 
-  test("a reply written after his last read shows on the card and in the header", async () => {
+  test("a reply written after his last read shows on the card", async () => {
     const window = await loadSite("/journal", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
     const card = cardFor(window, 55);
     assert.ok(bubble(card).classList.contains("has-unread"), "the 💬 button is not highlighted");
@@ -12592,15 +12094,10 @@ describe("unread replies are counted on the card and in the header", () => {
     // The comment count survives beside it: a card he has caught up on must
     // not look empty, which replacing the number would do.
     assert.match(bubble(card).textContent, /^💬 1/);
-    const badge = unreadBadge(window);
-    assert.equal(badge.textContent, "1 new reply");
-    // A link to `/replies` since 2026-09-08 -- see "the header badge is a
-    // link to /replies" below. It was a button between 08-26 and then, and
-    // an anchor into a single card before that.
-    assert.equal(badge.tagName, "A");
-    assert.equal(badge.getAttribute("href"), "/replies");
+    // The header counted this too until 2026-09-13; the filter button carries
+    // the signal now, and its own block at the end of this file pins it.
+    assert.equal(unreadBadge(window), null, "the header badge came back");
   });
-
   test("opening the drawer clears the card chip and the header badge together", async () => {
     /* Both, in one tap. The header clearing a poll later would insist on a
      * reply that is open on his screen. */
@@ -12617,20 +12114,6 @@ describe("unread replies are counted on the card and in the header", () => {
     );
   });
 
-  test("the header names the oldest card when more than one is unread", async () => {
-    const comments = JSON.parse(JSON.stringify(payload.comments));
-    comments.byCycle["57"][1].replies = [
-      { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
-    ];
-    const window = await loadSite("/journal", {
-      comments,
-      install: withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" }),
-    });
-    const badge = unreadBadge(window);
-    assert.equal(badge.textContent, "2 new replies");
-    assert.match(badge.parentElement.textContent, /oldest on cycle 55/);
-  });
-
   test("his own comments never count as unread", async () => {
     /* A comment he typed is not a notification that he typed it. Cycle 57
      * holds two of his comments and no reply at all, so with every card
@@ -12640,9 +12123,7 @@ describe("unread replies are counted on the card and in the header", () => {
     const window = await loadSite("/journal", { install: withRepliesRead({}) });
     assert.equal(unreadChip(cardFor(window, 57)), null, "his own comments were counted as unread");
     assert.equal(unreadChip(cardFor(window, 55)).textContent, "all new");
-    assert.equal(unreadBadge(window).textContent, "1 new reply");
   });
-
   test("a card with more comments than unread replies says how many are new", async () => {
     /* The other half of his 2026-08-26 report. When the two numbers differ
      * they are both worth printing -- five comments, two of them new -- and
@@ -12698,59 +12179,14 @@ describe("unread replies are counted on the card and in the header", () => {
    * `spread()` is deliberately two cards rather than one -- a panel that only
    * ever holds one card's replies is the card drawer with extra steps, and the
    * failure he filed is specifically about replies scattered across cards. */
-  describe("the header badge is a link to /replies", () => {
-    function spread() {
-      const comments = JSON.parse(JSON.stringify(payload.comments));
-      comments.byCycle["57"][1].replies = [
-        { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
-      ];
-      return comments;
-    }
-    const marks = () =>
-      withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" });
-    const load = () => loadSite("/journal", { comments: spread(), install: marks() });
-
-    test("it is an anchor to /replies, not a button", async () => {
-      const window = await load();
-      const badge = unreadBadge(window);
-      assert.equal(badge.tagName, "A", "the badge is still a button");
-      assert.equal(badge.getAttribute("href"), "/replies");
-    });
-
-    test("no panel is drawn anywhere on the page", async () => {
-      /* His capture: a route *"instead of the inline panel it opens
-       * today"*. A panel left behind would be a second rendering of the
-       * same replies, which is the thing being deleted. */
-      const window = await load();
-      assert.equal(window.document.querySelector(".unread-panel"), null);
-      assert.equal(window.document.querySelector(".unread-reply"), null);
-    });
-
-    test("the badge still names the oldest card beside the count", async () => {
-      const window = await load();
-      assert.equal(unreadBadge(window).textContent, "2 new replies");
-      assert.match(window.document.getElementById("mail").textContent,
-        /oldest on cycle 55/);
-    });
-
-    test("nothing is marked read by the page the badge sits on", async () => {
-      /* The old tap marked everything read on arrival, before he had read
-       * a word of it. The marks move when a card's own drawer opens, which
-       * is the mechanism the count was always derived from. */
-      const window = await load();
-      const before = window.localStorage.getItem("nova.repliesRead.v1");
-      assert.ok(unreadBadge(window));
-      assert.equal(window.localStorage.getItem("nova.repliesRead.v1"), before);
-    });
-  });
-
-  /* `/replies` -- the route his capture of 2026-09-08 asked for.
-   *
-   * The one thing here that is unlike `/asks`: this filter cannot be
-   * computed on the server. Which replies he has seen lives in this
-   * browser's `localStorage`, so the page has to send the cycle numbers and
-   * therefore has to have the comments payload before it can ask for the
-   * journal at all. */
+  /* "the header badge is a link to /replies" stood here, and so did the
+   * `/replies` route's own block below it. Both went on 2026-09-13: *"we make
+   * the status button for filtering on comments also go away, but we should
+   * make a new filter button next to the search button"*. The count and the
+   * filter are one job; the filter is the one that can say which cards. The
+   * route still answers a bookmark -- nothing links it -- and the unread
+   * signal is a lit dot on the filter button, pinned in "the journal's
+   * comment filter" at the end of this file. */
   describe("the /replies route", () => {
     function spread() {
       const comments = JSON.parse(JSON.stringify(payload.comments));
@@ -12844,67 +12280,6 @@ describe("unread replies are counted on the card and in the header", () => {
    * paintable at all -- and every non-journal view now clears it on the way
    * in. These pin the new rule on a board page, which is where he spends most
    * of his time and where the old badge was most visible. */
-  describe("the unread-reply badge is on the journal and nowhere else", () => {
-    function spread() {
-      const comments = JSON.parse(JSON.stringify(payload.comments));
-      comments.byCycle["57"][1].replies = [
-        { author: "commentator", stamp: "2026-08-09 16:30", text: "on it" },
-      ];
-      return comments;
-    }
-    const read = () =>
-      withRepliesRead({ "55": "2026-08-09 13:00", "57": "2026-08-09 16:00" });
-    const onIssues = () => loadSite("/issues", { comments: spread(), install: read() });
-
-    test("the journal still shows the count", async () => {
-      const window = await loadSite("/journal", { comments: spread(), install: read() });
-      const badge = unreadBadge(window);
-      assert.ok(badge, "no unread badge on the journal itself");
-      assert.match(badge.textContent, /2 new replies/);
-    });
-
-    test("a board page shows no journal pill at all", async () => {
-      const window = await onIssues();
-      assert.equal(unreadBadge(window), null, "the journal's badge followed him onto Issues");
-    });
-
-    test("the node is emptied and hidden, not merely covered", async () => {
-      /* Hiding it in CSS would leave the count in the accessibility tree, so
-       * a screen reader on the Issues page would still announce a journal
-       * status. Emptied and `hidden` is the whole removal. */
-      const window = await onIssues();
-      const mail = window.document.getElementById("mail");
-      assert.ok(mail, "#mail is gone");
-      assert.equal(mail.textContent, "");
-      assert.equal(mail.hasAttribute("hidden"), true);
-    });
-
-    test("it is still outside the header, so the journal can paint it", async () => {
-      /* The mechanism the reversal must not take with it. A badge parked
-       * inside `#status` is removed by the `statusEl.textContent = ""` every
-       * view runs on entry, which is how it went missing in the first place. */
-      const window = await loadSite("/journal", { comments: spread(), install: read() });
-      const mail = window.document.getElementById("mail");
-      assert.equal(unreadBadge(window).closest("#mail"), mail);
-      assert.equal(window.document.querySelector("#status .badge-unread"), null);
-    });
-
-    test("nothing unread leaves the node hidden rather than an empty gap", async () => {
-      const window = await loadSite("/journal", { comments: spread() });
-      const mail = window.document.getElementById("mail");
-      assert.equal(mail.hasAttribute("hidden"), true, "#mail took up space with nothing in it");
-    });
-  });
-
-  /* the owner, `issues.md` 2026-08-26: *"When i have a journal comments drawer
-   * open, i do not need notifications as i allready have it open."* He sent a
-   * screenshot of the drawer open with three of my replies landing in it over
-   * four minutes and the chip relighting after each one.
-   *
-   * The pair below is the whole rule: open *and* on screen is read; open on a
-   * hidden tab is not. Testing only the first would leave the drawer he falls
-   * asleep with silently eating the reply, which is the case the comment on
-   * `setCommentsOpen` was written to protect and which still holds. */
   describe("a reply landing in a drawer he is looking at", () => {
     /** Cycle 55's thread, awaiting a reply, with his read mark caught up. */
     function opened(hidden) {
@@ -12991,25 +12366,13 @@ describe("unread replies are counted on the card and in the header", () => {
     assert.equal(unreadChip(cardFor(window, 55)), null);
   });
 
-  test("an unrelated ask auto-opening the drawer does not consume the reply", async () => {
-    /* Reviewer finding, reproduced before it was fixed. A card carrying an
-     * open ask force-opens its own drawer on the first render of the session,
-     * and that used to run the same mark-read path a tap runs -- so a reply he
-     * had not seen was consumed before anything painted, and neither the chip
-     * nor the header badge ever appeared. Opening is not reading. */
-    const journal = JSON.parse(JSON.stringify(payload.journal));
-    const entry = journal.entries.find((e) => e.cycle === 55);
-    entry.askSpans = [{ kind: "text", text: "Yes or no, should this stay?" }];
-    const window = await loadSite("/journal", {
-      journal: () => journal,
-      install: withRepliesRead({ "55": "2026-08-09 13:00" }),
-    });
-    const card = cardFor(window, 55);
-    assert.ok(card.classList.contains("is-commenting"), "the ask did not auto-open the drawer, so this test proves nothing");
-    assert.equal(unreadChip(card).textContent, "all new", "the auto-opened drawer ate the unread reply");
-    assert.equal(unreadBadge(window).textContent, "1 new reply");
-  });
-
+  /* "an unrelated ask auto-opening the drawer does not consume the reply"
+   * stood here. It pinned that a card carrying an open ask force-opened its
+   * own drawer without marking the replies inside it read. The auto-open went
+   * with the yellow ask block on 2026-09-13, so the test's own control --
+   * `assert.ok(card.classList.contains("is-commenting"))` -- can no longer
+   * hold, and the path it guarded no longer exists. The general rule it came
+   * from is still pinned by "only a tap on the bubble marks read" below. */
   test("only a tap on the bubble marks read, not the app re-asserting the drawer", async () => {
     /* The other half of the same reviewer finding. `fold.comments` survives a
      * card collapsing and the feed being rebuilt, so every repaint re-asserts
@@ -18240,20 +17603,21 @@ describe("the landing page", () => {
     assert.ok(!window.document.querySelector(".nav-tab[href='/journal']").classList.contains("on"));
   });
 
-  test("the 12-hour recap is expanded here and collapsed on the feed", async () => {
-    /* The deliberate reversal. Above the feed the card is a screenful he asked
-     * to fold away; on `/` it is the content, and a landing page whose summary
-     * is shut says nothing. Both halves in one test, because the value is the
-     * difference and a test of either alone passes on a single hardcoded
-     * state. */
+  test("the 12-hour recap is drawn here, expanded, and on no other page", async () => {
+    /* The deliberate asymmetry. On `/` the card is the content, and a landing
+     * page whose summary is shut says nothing; everywhere else it is a
+     * screenful he asked to be rid of -- 2026-09-13: *"Remove the 12 hour
+     * summary from all pages than the homepage."* Both halves in one test,
+     * because the value is the difference and a test of either alone passes
+     * on a single hardcoded state. */
     const home = await loadSite("/", { home: HOME });
     const card = home.document.querySelector(".recap");
     assert.ok(card, "the landing page drew no recap");
     assert.ok(!card.classList.contains("recap--shut"), "the recap was folded shut on /");
 
     const feed = await loadSite("/journal", { recap: HOME.recap });
-    assert.ok(feed.document.querySelector(".recap").classList.contains("recap--shut"),
-      "the recap stopped being collapsed above the feed");
+    assert.equal(feed.document.querySelector(".recap"), null,
+      "the recap is back above the feed");
   });
 
   test("a project card carries done-of-total, the milestone and a link to its next row", async () => {
@@ -18340,5 +17704,92 @@ describe("the landing page paints its own header", () => {
     const header = window.document.getElementById("status");
     assert.equal(header.querySelector(".status-page").textContent, "Home");
     assert.ok(!/loading/i.test(header.textContent), header.textContent);
+  });
+});
+
+describe("the journal's comment filter", () => {
+  /* His ask, 2026-09-13: *"make a new filter button next to the search button
+   * that contains filters that we can use on the journals, so journals with a
+   * comment is a filter, journals with unread comments is a sub filter on
+   * that again and it should light up when i have unread comments."*
+   *
+   * It replaces two things at once, both removed above: the header's "N new
+   * replies" pill and the `/replies` route behind it. Each was a count
+   * somewhere else pointing at the page you are already on; this says *which*
+   * cards, in place.
+   *
+   * The fixture: cycle 55 carries one comment with one reply, cycle 57 two of
+   * his own comments and no reply. So "with comments" keeps both, "unread"
+   * keeps only 55 once the read mark is seeded behind that reply -- and with
+   * every mark cleared, only 55 is unread anyway, because a comment he typed
+   * is not a notification that he typed it. */
+  const toggle = (w) => w.document.querySelector(".journal-filter-toggle");
+  const option = (w, name) => w.document.querySelector('.journal-filter-option[data-filter="' + name + '"]');
+  const shown = (w) => cards(w).map((c) => c.querySelector("h2").textContent);
+  /* Choosing a filter re-enters `load()`, so the feed below is a repaint away
+     rather than a synchronous one. */
+  const settle = () => new Promise((r) => setTimeout(r, 260));
+
+  test("the button sits in the search row, beside the search toggle", async () => {
+    const window = await loadSite("/journal", {});
+    const button = toggle(window);
+    assert.ok(button, "no filter button on the journal");
+    const row = button.closest("#journal-search");
+    assert.ok(row, "the filter button is not inside the search box");
+    assert.equal(button.getAttribute("aria-expanded"), "false", "the menu starts open");
+  });
+
+  test("the menu offers all, with-comments, and unread as a sub-filter of it", async () => {
+    const window = await loadSite("/journal", {});
+    click(window, toggle(window));
+    assert.equal(toggle(window).getAttribute("aria-expanded"), "true");
+    const names = [...window.document.querySelectorAll(".journal-filter-option")]
+      .map((o) => o.dataset.filter);
+    assert.deepEqual(names, ["all", "comments", "unread"]);
+    assert.ok(option(window, "unread").classList.contains("journal-filter-sub"),
+      "unread is drawn as a peer rather than as a narrowing of with-comments");
+  });
+
+  test("with-comments keeps only the cards that carry one", async () => {
+    const window = await loadSite("/journal", {});
+    const everything = shown(window);
+    assert.ok(everything.length > 2,
+      "the control failed: this fixture has too few cards for a filter to remove any");
+    click(window, toggle(window));
+    click(window, option(window, "comments"));
+    await settle();
+    assert.deepEqual(shown(window).sort(), ["Cycle 55", "Cycle 57"].sort());
+  });
+
+  test("unread narrows it again to the card he has not caught up on", async () => {
+    const window = await loadSite("/journal", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    click(window, toggle(window));
+    click(window, option(window, "unread"));
+    await settle();
+    assert.deepEqual(shown(window), ["Cycle 55"]);
+  });
+
+  test("the button lights up only while a reply is unread", async () => {
+    const lit = await loadSite("/journal", { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    assert.ok(toggle(lit).classList.contains("has-unread"),
+      "the dot is dark while a reply is waiting");
+
+    /* Reading it puts the dot out, and it is the same read mark the card's
+     * own chip uses -- so the two can never disagree. */
+    const dark = await loadSite("/journal", { install: withRepliesRead({ "55": "2026-08-09 14:00" }) });
+    assert.equal(toggle(dark).classList.contains("has-unread"), false,
+      "the dot stayed lit after he read the only unread reply");
+  });
+
+  test("a filter that matches nothing says so rather than drawing an empty feed", async () => {
+    const window = await loadSite("/journal", {
+      comments: { byCycle: {}, needs: [] },
+    });
+    click(window, toggle(window));
+    click(window, option(window, "comments"));
+    await settle();
+    assert.equal(cards(window).length, 0);
+    assert.match(window.document.getElementById("feed").textContent,
+      /No journal card carries a comment/);
   });
 });

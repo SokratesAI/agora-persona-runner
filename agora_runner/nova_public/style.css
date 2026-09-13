@@ -31,6 +31,21 @@
   --report: #c9a2f7;
   --report-bg: #1e1a29;
 
+  /* Surfaces and hairlines that were written as literals until the light
+     theme arrived on 2026-09-13. Each one is a colour some component needs
+     to state itself -- a code span's tint, an ask block's amber, the ring on
+     a badge -- and a literal is a rule that can only ever be dark. Named
+     here, and answered again in the light block further down. */
+  --code-bg: #23263180;
+  --pre-bg: #0d0e13;
+  --good-line: #2f6b42;
+  --live-line: #3a5488;
+  --warn-line: #6b552f;
+  --error-line: #6b3535;
+  --scrim: #000;
+  --panel-shadow: #0008;
+  --spark: #cfd6ff;
+
   /* Where the top of the shell starts: the wordmark's line, the
    * hamburger's line, and the first link in the drawer.
    *
@@ -92,6 +107,20 @@
   --nova: #6b3fc4;
   --report: #6b3fc4;
   --report-bg: #f1ecfb;
+
+  /* The same set, answered for a white page. Tints rather than the dark
+     values lightened: a badge ring at 3:1 against white is a different colour
+     from one at 3:1 against #12131a, and WCAG 2.2 SC 1.4.11 asks for the
+     ratio against the background it is actually drawn on. */
+  --code-bg: #eceff7;
+  --pre-bg: #f7f8fc;
+  --good-line: #7cc4a0;
+  --live-line: #9fb7e8;
+  --warn-line: #d9b878;
+  --error-line: #e7a3ac;
+  --scrim: #1b2033;
+  --panel-shadow: #1a1f2e26;
+  --spark: #2f5fd0;
 }
 
 * { box-sizing: border-box; }
@@ -121,14 +150,14 @@ code, pre {
 }
 
 code {
-  background: #23263180;
+  background: var(--code-bg);
   border-radius: 4px;
   padding: 0.08em 0.32em;
   overflow-wrap: anywhere;
 }
 
 pre {
-  background: #0d0e13;
+  background: var(--pre-bg);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.8rem;
@@ -394,75 +423,13 @@ a.status-sub:hover .status-pr { color: var(--text); }
   cursor: default;
 }
 
-/* The ask, on the card that raised it -- the owner, comments board 2026-08-16:
- * "add a new yellow block below the title or somehow higlight your issue so
- * that i see it."
- *
- * It keeps the old block's colours on purpose: the same warning yellow he
- * already reads as "this one is for you", moved onto the card that owns it
- * rather than floating above the feed as a list nobody owned. */
-.entry-ask {
-  background: #2a2418;
-  border: 1px solid #5c4a1e;
-  border-radius: 10px;
-  padding: 0.6rem 0.9rem 0.7rem;
-  margin: 0.2rem 0 0.9rem;
-}
 
-/* Collapsed, the block is the label row and nothing else -- the owner,
- * ideas.md 2026-08-16: "Don't delete it, just collapse it." The yellow
- * stays, so a card carrying an unanswered question still reads as one from
- * a scroll; only the prose folds. The padding tightens rather than
- * disappearing, because a row with no bottom padding reads as a broken
- * block rather than a shut one. */
-.entry-ask.is-collapsed { padding-bottom: 0.55rem; }
 
-.entry-ask-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-}
 
-.entry-ask-label {
-  font-size: 0.72rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--warn);
-  margin: 0 0 0.35rem;
-}
 
-.entry-ask.is-collapsed .entry-ask-label { margin-bottom: 0; }
 
-/* A quiet control on purpose: the yellow is doing the attention work and a
- * second bright thing inside the same block competes with it.
- *
- * `min-height: 44px` explicitly, and the reviewer is why. I wrote this
- * comment claiming "44px of tap height comes from the padding" and then set
- * 0.6rem of padding around 0.75rem text, which computes to about 29px --
- * two thirds of the floor, on the one control the owner's whole ask depends on,
- * on a page he opens from a phone. Fifteen other rules in this file set
- * `min-height: 44px` and say why. The negative block margin keeps the label
- * row from growing by the difference: the target is 44px, the row is not. */
-.entry-ask-toggle {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  background: none;
-  border: none;
-  padding: 0 0 0 0.6rem;
-  margin: -0.7rem 0;
-  font: inherit;
-  font-size: 0.75rem;
-  color: var(--dim);
-  cursor: pointer;
-}
 
-.entry-ask-toggle:hover { color: var(--warn); }
 
-.entry-ask-body { margin: 0; }
-.entry-ask-body + .entry-ask-body { margin-top: 0.4rem; }
 
 /* Journal timeline (item 1) */
 .entry {
@@ -748,74 +715,14 @@ a.status-sub:hover .status-pr { color: var(--text); }
   color: var(--dim);
 }
 
-.badge-good { color: var(--good); border-color: #2f6b42; }
-/* "cycle running" (#72). `--accent` rather than `--good`: this is not
- * an outcome and must not read as one -- the cycle it describes has not
- * finished, so borrowing the colour the merged pills use would say it went
- * well before anything knows. Blue is this page's "information" colour and
- * sits in no other badge, so it cannot be mistaken for the amber stall or
- * the red unreachable directly below it. */
-.badge-live { color: var(--accent); border-color: #3a5488; }
-.badge-warn { color: var(--warn); border-color: #6b552f; }
+.badge-good { color: var(--good); border-color: var(--good-line); }
+.badge-warn { color: var(--warn); border-color: var(--warn-line); }
 /* "can't reach Nova". Deliberately not --warn: an amber badge here would
  * read as the stall badge directly above it, and "the loop is quiet" and
  * "this page cannot see the loop at all" are different enough answers that
  * they must not look the same at a glance. */
-.badge-error { color: var(--danger); border-color: #6b3535; }
-/* "waiting on you" -- the header's pointer at the oldest ask nobody has
- * answered. Deliberately the *same* amber as `.entry-ask`, filled the same
- * way, because it is a pointer at one of those blocks rather than a badge in
- * its own right: he should recognise where it lands before he taps it.
- *
- * That does put it in the same colour family as `.badge-warn` two lines up,
- * which the comment there argues against for the unreachable badge. The
- * cases differ: this one names the block it links to, and the two only ever
- * appear together when the loop has stalled *and* owes him an answer -- in
- * which case they are two true things rather than one ambiguous one.
- *
- * It is an anchor, so the underline has to go; without this it renders as an
- * underlined pill, which nothing else on the page does. */
-.badge-ask {
-  color: var(--warn);
-  border-color: #5c4a1e;
-  background: #2a2418;
-  text-decoration: none;
-  /* 44px is the iOS touch-target minimum; this is opened on a phone. Every
-   * other tappable link in the header and card chrome carries it, and a
-   * `.badge` on its own computes to well under half that -- it was written
-   * for the outcome pills, which are labels nobody taps. Reviewer finding,
-   * and a fair one: this is the one badge that is a link. `inline-flex`
-   * with it, or the height would apply to a box that does not lay out. */
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-}
+.badge-error { color: var(--danger); border-color: var(--error-line); }
 
-/* "2 new replies" -- the header's pointer at journal cards holding an answer
- * he has not opened. Purple, and that is the deliberate part: this page has a
- * colour code for *whose text is whose*, which the owner set himself -- his
- * own comments green (`--good`), the instant commentator blue (`--accent`),
- * a Nova cycle's reply purple (`--nova`, see `.comment-reply-cycle`). An
- * unread reply is a cycle's reply, so it is purple, and the badge is the same
- * colour as the bubble it points at.
- *
- * It was green for one merge and the reviewer caught it: green on this page
- * already means "the owner wrote this", so a green pill announcing my answer
- * said the opposite of what it meant. It must not be amber either --
- * `.badge-ask` directly above is amber and means the other obligation, that I
- * am waiting on *him*, and the two can be on screen at once.
- *
- * Link-shaped for `.badge-ask`'s reason: it is an anchor into a card, tapped
- * on a phone, so it carries the 44px target and loses the underline. */
-.badge-unread {
-  color: var(--nova);
-  border-color: #5b3f7d;
-  background: #221a2e;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-}
 
 /* The unread count on a card's 💬 button, and the highlight behind it.
  *
@@ -869,7 +776,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
 .cycle-gap {
   margin: 0 0 1rem;
   padding-left: 0.9rem;
-  border-left: 2px solid #6b552f;
+  border-left: 2px solid var(--warn-line);
   color: var(--dim);
   font-size: 0.85rem;
 }
@@ -1174,7 +1081,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   overscroll-behavior: contain;
   background: var(--card);
   border-left: 1px solid var(--line);
-  box-shadow: -12px 0 28px #0008;
+  box-shadow: -12px 0 28px var(--panel-shadow);
   transform: translateX(100%);
   visibility: hidden;
   transition: transform 220ms ease, visibility 0s linear 220ms;
@@ -1305,7 +1212,7 @@ a.status-sub:hover .status-pr { color: var(--text); }
   position: fixed;
   inset: 0;
   z-index: 15;
-  background: #000;
+  background: var(--scrim);
   opacity: 0;
   visibility: hidden;
   transition: opacity 220ms ease, visibility 0s linear 220ms;
@@ -2467,7 +2374,7 @@ body.has-full-chart { overflow: hidden; }
 }
 
 .share-label { width: 8rem; flex: none; color: var(--dim); }
-.share-track { flex: 1; height: 8px; background: #23263180; border-radius: 4px; }
+.share-track { flex: 1; height: 8px; background: var(--code-bg); border-radius: 4px; }
 .share-fill { display: block; height: 100%; border-radius: 4px; }
 .share-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; }
 .share-note { margin: 0.4rem 0 0; color: var(--dim); font-size: 0.78rem; }
@@ -3119,7 +3026,7 @@ body.has-full-chart { overflow: hidden; }
   height: 4px;
   margin-left: -2px;
   border-radius: 50%;
-  background: #cfd6ff;
+  background: var(--spark);
 }
 /* The second one is further in, slower, and half a turn behind, so the two
    are never on top of each other. */
@@ -4607,16 +4514,6 @@ a.cat-docs { display: block; color: var(--accent); text-decoration: none; }
 .cat-detail { color: var(--dim); font-size: 0.82rem; margin: 0.4rem 0 0; }
 .cat-when { color: var(--dim); font-size: 0.78rem; margin-top: 1rem; }
 
-/* The unread-replies badge in the header.
- *
- * A link to `/replies` since 2026-09-08, on his capture asking for a route
- * rather than the panel it used to open -- so it wears the same shape as the
- * `waiting on you` badge two lines above, which is what he compared it to. */
-.status-unread-open {
-  font: inherit;
-  font-size: 0.72rem;
-  text-decoration: none;
-}
 
 .mail {
   /* The header above already carries the 1.5rem gap, so this only owns the
@@ -5318,7 +5215,7 @@ X that summarizes the last 12
 
 /* Amber rather than red: a recap that is a few hours old is still true
  * about what it describes, it just stops being the whole answer. */
-.recap-stamp.stale { color: #d7a45c; }
+.recap-stamp.stale { color: var(--warn); }
 
 .recap-list {
   margin: 0;
@@ -5658,3 +5555,89 @@ X that summarizes the last 12
 .wordmark-home:hover {
   text-decoration: underline;
 }
+
+/* An ask, drawn as prose. The yellow block it used to live in came out on
+ * 2026-09-13 (see `app.js`); the words stay until issue #209 gives them a
+ * conversation to live in, and they read as part of the card rather than as
+ * a control. */
+.entry-ask-plain {
+  margin: 0.4rem 0 0.6rem;
+  color: var(--text);
+}
+
+/* The journal's comment filter, beside the search button. Same 44px target
+ * and same square shape as the search toggle, because the two are one control
+ * strip to the thumb. */
+.journal-filter { position: relative; flex: none; }
+
+.journal-filter-toggle {
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--outline);
+  border-radius: 0.6rem;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.journal-filter-toggle.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The lit dot: unread replies exist. It rides the button rather than living
+ * in the header, which is where the pill it replaces used to sit. */
+.journal-filter-toggle.has-unread::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--nova);
+}
+
+.journal-filter-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 12;
+  min-width: 12.5rem;
+  padding: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: var(--card);
+  box-shadow: 0 10px 30px var(--panel-shadow);
+}
+
+.journal-filter-option {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.55rem 0.7rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Indented, because unread is a narrowing of "with comments" and not a third
+ * peer -- "a sub filter on that again", his words. */
+.journal-filter-sub { padding-left: 1.5rem; }
+
+.journal-filter-option[aria-checked="true"] {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.journal-filter-option.has-unread::after {
+  content: " •";
+  color: var(--nova);
+}
+
+.journal-filter-option[aria-checked="true"].has-unread::after { color: var(--bg); }

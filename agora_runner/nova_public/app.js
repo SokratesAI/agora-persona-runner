@@ -39,6 +39,13 @@
   var feed = document.getElementById("feed");
   var statusEl = document.getElementById("status");
   var mailEl = document.getElementById("mail");
+  /* The journal's comment filter, declared up here with the other page state:
+     `render` reads it and runs long before `buildJournalFilter` is reached, so
+     a `var` beside the builder would be `undefined` on the first paint and
+     filter every card off the feed. */
+  var journalFilter = "all";
+  var journalFilterNode = null;
+  var journalFilterButton = null;
 
   var navEl = document.getElementById("nav");
   var menuBtn = document.getElementById("menu-btn");
@@ -561,6 +568,10 @@
    * place. Painting into a node nobody else clears is the fix; hooking twelve
    * header builders would be twelve places to forget. */
   function paintMail(replayed) {
+    /* The badge is gone; the unread signal it carried is a dot on the filter
+     * button now, and this is the call that keeps it in step with the read
+     * marks. */
+    paintFilterState();
     if (!mailEl) return;
     mailEl.textContent = "";
     paintMailInto(replayed);
@@ -607,58 +618,16 @@
      * under-reports for no badge at all, which is the same thing from the
      * reader's side and costs a real notification when only that one route
      * was stale. */
-    if (!replayed && haveComments) {
-      var unread = unreadSummary(lastCommentsByCycle);
-      if (unread.count) {
-        /* The badge is a button now, not a link to a card.
-         *
-         * the owner, `issues.md` 2026-08-26: *"The reply status that tells me
-         * that i have missed replies does not work as designed. Maybe it works
-         * technically, but its not user friendly. We need a better way to show
-         * me the message or drop it as it just noise now. I have read the
-         * replies, but the status still shows that i have not read them."* He
-         * screenshotted it reading **7 new replies · oldest on cycle 456**.
-         *
-         * Both halves of that are the same defect: the only thing that marks a
-         * reply read is tapping open that one card's drawer, so a badge over
-         * seven cards was seven separate errands, and cycle 456 was seventeen
-         * cards down a twenty-card feed. Tapping the badge scrolled the feed to
-         * a *collapsed* card and marked nothing. So he did read the replies --
-         * in the drawers, in the chat dock, wherever -- and the count stood,
-         * exactly as he says, because none of those paths is the one tap the
-         * mark is wired to.
-         *
-         * He offered two fixes and I took the first: show him the message. The
-         * badge opened the replies themselves, in a panel in the header.
-         *
-         * That panel is gone as of 2026-09-08, on his capture: *"Make the 'N
-         * new replies' pill on the Journal page a filter like the 'waiting on
-         * you' pill -- a route (/replies) showing the journal cards that have
-         * comment replies I have not seen yet -- instead of the inline panel
-         * it opens today."* Same call `/asks` made when it replaced the
-         * yellow waiting-on-you list: a second, differently-shaped rendering
-         * of content the feed already knows how to draw is a second thing to
-         * maintain and a second place for the two to disagree. The badge is a
-         * link now and the cards are the cards.
-         *
-         * What it costs, said out loud rather than discovered later: the tap
-         * no longer marks everything read. It cannot -- he has not read
-         * anything yet at the moment of the tap, and marking on arrival is
-         * how the old feature got its complaint. Each card's own drawer marks
-         * its own replies, which is the mechanism that was already there and
-         * the one the count is derived from. So the pill empties as he reads,
-         * one card at a time, instead of all at once on a tap. */
-        var mail = el("p", "status-sub");
-        var open = el("a", "badge badge-unread status-unread-open",
-          unread.count + (unread.count === 1 ? " new reply" : " new replies"));
-        open.href = "/replies";
-        mail.appendChild(open);
-        mail.appendChild(el("span", "status-pr", unread.cards === 1
-          ? "cycle " + unread.cycle
-          : "oldest on cycle " + unread.cycle));
-        mailEl.appendChild(mail);
-      }
-    }
+    /* The "N new replies" pill used to be built here.
+     *
+     * Gone on 2026-09-13: *"we make the status button for filtering on
+     * comments also go away, but we should make a new filter button next to
+     * the search button"*. The count and the filter are the same job, and the
+     * filter is the one that can say *which* cards -- so `#mail` is empty on
+     * every page now and `buildJournalFilter` carries the unread signal as a
+     * lit dot on the button. `paintMail` and the node stay: the journal calls
+     * it, and a node nobody paints into costs nothing while the filter owns
+     * the state. */
   }
 
   /* The wordmark, which is also the way home.
@@ -1629,32 +1598,13 @@
       subs.appendChild(saved);
     }
 
-    /* Every open ask, linking to the feed filtered down to just the cards
-     * he owes a reply on.
+    /* The "N waiting on you" pill used to be here.
      *
-     * Used to also draw the oldest ask as its own pill here, pointing
-     * straight at that one card, with this field only appearing once a
-     * second ask piled up. The owner, 2026-09-01: "2 is redundant from 3"
-     * -- drop the single-ask pill, since a link to the same feed already
-     * says "you have something to answer" for any count including one.
-     * So this now fires on one open ask exactly as it does on ten, and it
-     * is the only ask pill left in the header.
-     *
-     * Suppressed on a replayed payload for the same reason the badges
-     * below are: "he has not replied" is a claim about now, and a cached
-     * comments payload cannot support it -- the failure mode is telling
-     * him he owes an answer he gave an hour ago. */
-    if (!replayed && haveComments) {
-      var stillOpen = openAsks(status, lastCommentsByCycle);
-      if (stillOpen.length) {
-        var asksField = statusField(null);
-        var asksLink = el("a", "badge badge-ask status-asks-open",
-          stillOpen.length + " waiting on you");
-        asksLink.href = "/asks";
-        asksField.appendChild(asksLink);
-        subs.appendChild(asksField);
-      }
-    }
+     * Gone on 2026-09-13: *"the status pills for the 'waiting on you' is
+     * still there, I thought we remove all functionality related to that?
+     * The new method is conversations."* A cycle that needs him will open a
+     * thread (issue #209); a header count of unanswered asks is the
+     * mechanism that replaces. `/asks` is no longer linked from anywhere. */
 
     /* The outcome pill used to live here too (`merged` / `no-op` / ...),
      * restored 2026-08-24 after the owner missed it, then dropped again
@@ -1690,12 +1640,10 @@
      * Not shown on a replayed payload, for the same reason the stall badge
      * is not: "a cycle is running" is a claim about right now, and a saved
      * copy cannot make it. */
-    if (status.running && !status.stalled && !replayed) {
-      var live = statusField(null);
-      live.appendChild(el("span", "badge badge-live", "cycle running"));
-      live.appendChild(el("span", "status-pr", "its entry arrives when it finishes"));
-      subs.appendChild(live);
-    }
+    /* The "cycle running" pill came out on 2026-09-13: *"remove the status
+     * pill for cycle running now that we have the Galaxy."* The strip on the
+     * landing page draws every live session with what it is working on, which
+     * is the same fact with the detail this pill could never carry. */
 
     /* The stall badge ("no entry for N hours") and the gap badge ("cycle
      * 265 wrote no entry") both used to render here, and the owner asked for
@@ -2543,70 +2491,24 @@
      * `fold` above its assignment gets `undefined` silently and disables
      * the memory while every test still passes. */
     var fold = foldFor(entry.cycle);
-    var askToggle = null;
-    var setAskOpen = null;
-    if (asked.length) {
-      /* the owner, ideas.md 2026-08-16 22:14: "When my reply answers the yellow
-       * 'needs the owner' block on an entry, minimize it instead of leaving it
-       * full-size -- and let the owner minimize it himself too. Don't delete it,
-       * just collapse it."
-       *
-       * Two halves, and the second is what makes the first safe to guess at.
-       *
-       * "My reply answers it" is not something this page can read. What it
-       * can read is whether he has said anything on this card at all, and
-       * that is the whole mechanism the ask relies on -- the ask is raised
-       * on the card, the card's drawer is opened for it, and his answer goes
-       * in that drawer. So: a card he has commented on has been answered.
-       * That proxy is wrong sometimes (a comment can be about something
-       * else), which is exactly why he also asked for the manual control --
-       * a wrong guess costs one tap, not an unread question.
-       *
-       * Collapsed keeps the label and the control. "It should not be
-       * deleted, but be minimised" -- so the yellow row stays on the card
-       * saying an ask lives here, and only its prose folds away. Hiding the
-       * row itself would be the deletion he ruled out, and would put this
-       * back where idea #56 was: a question with nowhere visible to answer. */
-      var answered = !!(comments && comments.length);
-      var ask = el("div", "entry-ask");
-      var askHead = el("div", "entry-ask-head");
-      /* the owner, unboarded capture 2026-08-21: "Change the 'needs the owner' to
-       * 'needs input'." The label is what he reads; the marker inside the
-       * entry text still parses both spellings, because the archive's asks
-       * are written and never edited. */
-      askHead.appendChild(el("p", "entry-ask-label", "Needs input"));
-      askToggle = el("button", "entry-ask-toggle");
-      askToggle.type = "button";
-      askHead.appendChild(askToggle);
-      ask.appendChild(askHead);
-      var askBodies = el("div", "entry-ask-bodies");
-      askBodies.id = "ask-" + (entry.cycle === null || entry.cycle === undefined
-        ? Math.random().toString(36).slice(2) : entry.cycle);
-      asked.forEach(function (part) {
-        var askBody = el("p", "entry-ask-body");
-        renderSpans(askBody, part.askSpans);
-        askBodies.appendChild(askBody);
-      });
-      ask.appendChild(askBodies);
-      askToggle.setAttribute("aria-controls", askBodies.id);
-
-      setAskOpen = function (open) {
-        askBodies.hidden = !open;
-        ask.classList.toggle("is-collapsed", !open);
-        askToggle.setAttribute("aria-expanded", open ? "true" : "false");
-        askToggle.textContent = open ? "Minimize" : "Show";
-        askToggle.setAttribute("aria-label",
-          (open ? "Minimize" : "Show") + " what this cycle needs from you");
-      };
-      /* Tri-state on purpose. `null` means he has not touched this card's
-       * ask, so the answered-guess decides; once he has, his choice wins and
-       * a background poll rebuilding the card does not overrule it. Storing
-       * a plain boolean would make "he opened it" and "it was never
-       * collapsed" the same value, and the next poll would re-collapse it
-       * under him. */
-      setAskOpen(fold.ask === null || fold.ask === undefined ? !answered : !fold.ask);
-      card.appendChild(ask);
-    }
+    /* The yellow "Needs input" block used to be built here.
+     *
+     * He killed it on 2026-09-13: *"I still see the needs input boxes on the
+     * journals. I do not want them as i want them as a conversation asking me
+     * about it instead."* That conversation is issue #209 and it is not built
+     * yet, so the question must not vanish with the box: the server cuts an
+     * ask out of the entry's prose, and this was the only place it was drawn.
+     * The words are kept as ordinary paragraphs -- no yellow, no label, no
+     * toggle -- and go for good once #209 asks them in a thread instead.
+     *
+     * Held in a list rather than appended here, because `card` is built
+     * further down; `var` hoisting would make an append here silently target
+     * `undefined`. */
+    var askLines = asked.map(function (part) {
+      var line = el("p", "entry-ask-plain");
+      renderSpans(line, part.askSpans);
+      return line;
+    });
 
     /* the owner, issues.md 2026-08-09: "a 2-3 line short precise Digest for
      * each cycle as a title for each journey card ... Then, when a journey
@@ -2653,6 +2555,8 @@
       renderSpans(rest, restSpans);
       card.appendChild(rest);
     }
+
+    askLines.forEach(function (line) { card.appendChild(line); });
 
     /* Drawer two. A cycle that wrote more than once says so on the button,
      * because that is where you decide whether to open it -- and because
@@ -2836,17 +2740,6 @@
       // tap on the card. Without this, focusing the textarea would collapse
       // the card out from under it.
       if (event.target.closest(".comment-drawer")) return;
-      /* His own minimize, and it does not touch the card. Same reason the
-       * chat bubble returns early: folding the ask is a decision about the
-       * ask, not a request to read or close the cycle behind it. `fold.ask`
-       * is written here rather than inside `setAskOpen`, so the first paint
-       * -- which is a guess, not his choice -- leaves the tri-state alone. */
-      if (setAskOpen && event.target.closest(".entry-ask-toggle")) {
-        var wantOpen = askToggle.getAttribute("aria-expanded") !== "true";
-        fold.ask = !wantOpen;
-        setAskOpen(wantOpen);
-        return;
-      }
       if (event.target.closest(".journal-toggle")) {
         setJournalOpen(journalToggle.getAttribute("aria-expanded") !== "true");
         return;
@@ -3610,6 +3503,17 @@
       });
     }
 
+    /* The comment filter. Applied here with the other feed filters so the
+     * count under the search box and the cards below it always agree. */
+    if (journalFilter !== "all") {
+      entries = entries.filter(function (entry) {
+        if (entry.cycle === null || entry.cycle === undefined) return false;
+        return journalFilter === "unread"
+          ? cycleHasUnread(entry.cycle)
+          : cycleHasComments(entry.cycle);
+      });
+    }
+
     /* `/asks`: the cards that asked him something and have not been
      * answered.
      *
@@ -3677,7 +3581,12 @@
      * keystroke. His capture 2026-09-04 12:29: *"it should go away when i
      * use the search tool on journals."* A twelve-hour summary pinned over
      * three search hits is answering a question he did not ask. */
-    recapWanted = !filtered && !repliesOnly && wanted === null && !answered;
+    /* The twelve-hour summary belongs to the landing page alone, his ask
+     * 2026-09-13: *"Remove the 12 hour summary from all pages than the
+     * homepage."* `renderHome` draws its own copy; this page draws none, so
+     * the flag is false rather than conditional and the block below takes
+     * down any card a previous paint left standing. */
+    recapWanted = false;
     if (recapWanted) {
       ensureRecap();
       placeRecap();
@@ -3699,6 +3608,11 @@
      *
      * `null` is reachable only from that catch: the endpoint answers with
      * an object, and a 304 is never asked for on this one. */
+    if (journalFilter !== "all" && !groups.length) {
+      feed.appendChild(el("p", "empty", journalFilter === "unread"
+        ? "No journal card has a reply you have not read."
+        : "No journal card carries a comment."));
+    }
     if (comments === null) {
       feed.appendChild(el("p", "empty", "Comments could not be loaded — the entries below are complete, the replies are not."));
     }
@@ -4089,6 +4003,104 @@
   var journalSearchInput = null;
   var journalSearchCount = null;
 
+  /* The journal's comment filter -- his ask, 2026-09-13: *"make a new filter
+   * button next to the search button that contains filters that we can use on
+   * the journals, so journals with a comment is a filter, journals with unread
+   * comments is a sub filter on that again and it should light up when i have
+   * unread comments."*
+   *
+   * "all" | "comments" | "unread", in this browser only. It replaces two
+   * things at once: the header's unread-reply pill, and the `/replies` route
+   * behind it -- both were a count somewhere else pointing at the page you are
+   * already on. */
+
+  /** Does this cycle carry any comment at all? */
+  function cycleHasComments(cycle) {
+    var items = lastCommentsByCycle[String(cycle)];
+    return !!(items && items.length);
+  }
+
+  /** ...and any reply on it he has not read? */
+  function cycleHasUnread(cycle) {
+    var key = String(cycle);
+    var items = lastCommentsByCycle[key];
+    if (!items || !items.length) return false;
+    return unreadOn(key, items).length > 0;
+  }
+
+  /* The dot on the button. Drawn from the same read marks the card chips use,
+   * so it goes out as he reads rather than on a tap. */
+  function paintFilterState() {
+    if (!journalFilterButton) return;
+    var unread = unreadSummary(lastCommentsByCycle);
+    journalFilterButton.classList.toggle("has-unread", !!unread.count);
+    journalFilterButton.classList.toggle("is-on", journalFilter !== "all");
+    journalFilterButton.setAttribute("aria-label", journalFilter === "all"
+      ? (unread.count ? "Filter the journal — " + unread.count + " unread replies" : "Filter the journal")
+      : "Filter the journal — " + (journalFilter === "unread" ? "unread replies only" : "cards with comments"));
+    if (!journalFilterNode) return;
+    [].forEach.call(journalFilterNode.querySelectorAll(".journal-filter-option"), function (option) {
+      var on = option.dataset.filter === journalFilter;
+      option.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    var unreadOption = journalFilterNode.querySelector('[data-filter="unread"]');
+    if (unreadOption) unreadOption.classList.toggle("has-unread", !!unread.count);
+  }
+
+  function buildJournalFilter() {
+    var wrap = el("div", "journal-filter");
+    var button = el("button", "journal-filter-toggle", "\u2630");
+    button.type = "button";
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-haspopup", "true");
+
+    var menu = el("div", "journal-filter-menu");
+    menu.hidden = true;
+    menu.setAttribute("role", "radiogroup");
+    menu.setAttribute("aria-label", "Filter the journal");
+    /* Three rows and the third is indented, because "unread" is a narrowing
+     * of "with comments" rather than a third peer -- his words: "a sub filter
+     * on that again". */
+    [["all", "All journals", ""],
+     ["comments", "With comments", ""],
+     ["unread", "Unread comments", "journal-filter-sub"]].forEach(function (spec) {
+      var option = el("button", "journal-filter-option " + spec[2], spec[1]);
+      option.type = "button";
+      option.setAttribute("role", "radio");
+      option.dataset.filter = spec[0];
+      option.addEventListener("click", function () {
+        journalFilter = spec[0];
+        menu.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+        paintFilterState();
+        windowSize = PAGE;
+        load();
+      });
+      menu.appendChild(option);
+    });
+
+    button.addEventListener("click", function () {
+      var opening = menu.hidden;
+      menu.hidden = !opening;
+      button.setAttribute("aria-expanded", opening ? "true" : "false");
+    });
+    /* A tap anywhere else shuts it, the same way every other popover on this
+     * page behaves. */
+    document.addEventListener("click", function (event) {
+      if (menu.hidden) return;
+      if (wrap.contains(event.target)) return;
+      menu.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+    });
+
+    wrap.appendChild(button);
+    wrap.appendChild(menu);
+    journalFilterNode = menu;
+    journalFilterButton = button;
+    paintFilterState();
+    return wrap;
+  }
+
   function buildJournalSearch() {
     var box = el("section", "journal-search");
     box.id = "journal-search";
@@ -4122,6 +4134,8 @@
      * hand that reaches for Send in the composer, and the field grows away
      * from it towards the left edge rather than pushing it across the row. */
     row.appendChild(toggle);
+    /* Next to the search button, his ask. */
+    row.appendChild(buildJournalFilter());
 
     // Built whether or not there is anything to clear and hidden rather
     // than absent, for the reason the board's clear button carries:
