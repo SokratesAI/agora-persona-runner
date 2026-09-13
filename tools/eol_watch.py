@@ -46,6 +46,22 @@ file and therefore is not a pin this can read. Judging the leading
 version and staying quiet about the rest would report a partial answer as
 a whole one.
 
+**A `FROM` line that names no release at all raises, and that is the one
+verdict here that needs no catalogue.** Idea #174, filed against
+`nginx:alpine` in `platform-axiology`: *"`alpine` names no version.
+There is nothing to look up, so `eol_watch` correctly declines to judge
+it -- and `pin_drift`, which asks whether a pin has fallen behind, has no
+pin to compare. Both checks pass on this image forever."* The reference
+that is least pinned of all was the one every instrument here excused.
+`floating` therefore runs before the product lookup, because a mutable
+tag on an image the catalogue has never heard of fell out one step
+earlier and printed a reason about support windows instead. It judges
+`FROM` lines only: a mutable image on a running workload is
+`tools.running_images`' finding and has been since Cycle 612, and a
+digest or a build argument is not floating. Measured on the first run:
+two across the whole org, both fixed in the same cycle, so this is not a
+check that is red on day one and forever.
+
 **An image `endoflife.date` has no product for prints under NOT JUDGED
 and does not raise.** That is the same call `pin_drift` makes on a commit
 SHA and `security_alerts` makes on an already-fixed advisory: a check
@@ -299,8 +315,67 @@ def _release_for(product, version):
     return best
 
 
+def floating(image):
+    """Why one `FROM` line names no release at all, or `None` if it does.
+
+    This is the one judgement here that needs no catalogue, and that is
+    the whole point of it. `judge` below resolves the image to an
+    `endoflife.date` product first, so a mutable tag on an image the
+    catalogue has never heard of -- `gcr.io/distroless/static:nonroot` --
+    falls out at the product lookup and its tag is never looked at. Both
+    of those images then print one NOT JUDGED line each, for two
+    different reasons, and neither says the thing that is actually true
+    of them: the bytes behind this line change when the tag is
+    repointed upstream, with no commit here to show it.
+
+    That is the owner's idea #174, filed against `nginx:alpine` in
+    `platform-axiology`: *"Both checks pass on this image forever."*
+    `pin_drift` has no version to find a gap in, and this module declines
+    to judge a support window it cannot look up -- so the reference that
+    is least pinned of all is the one both instruments excuse.
+
+    **Only a `FROM` line is judged, and the two exclusions are owners,
+    not oversights.** A mutable image on a running workload is
+    `tools.running_images`' finding and has been since Cycle 612;
+    repeating it here would be a second detector for one defect. A
+    `setup-*` workflow pin carries a version by construction -- the regex
+    that reads it requires a leading digit -- so there is no floating
+    form of one to find.
+
+    **A digest and a build argument are not floating.** A digest is the
+    hardened form and names bytes that cannot change; a `FROM
+    node:${NODE_VERSION}` resolves from an `ARG` that `pin_drift` already
+    reads, so the line it lands on is not written here and calling it
+    mutable would be a claim about a file this did not open.
+    """
+    if image.get("kind") in ("toolchain", "running"):
+        return None
+    tag = image["tag"]
+    if not tag:
+        if image.get("digest") or image.get("templated"):
+            return None
+        return ("no tag at all, so it follows `latest` and the bytes behind "
+                "it change with no commit here to show it")
+    if LEADING_VERSION_RE.match(tag):
+        return None
+    return (f"tag `{tag}` names no release, so the bytes behind it change "
+            "when the tag is repointed upstream with no commit here to "
+            "show it")
+
+
 def judge(image, products, mapping, today, within_days, ambiguous=None):
-    """Fill one image dict with a verdict, or a reason it was not judged."""
+    """Fill one image dict with a verdict, or a reason it was not judged.
+
+    The floating check runs first and deliberately before the catalogue
+    lookup: a tag that names no release is mutable whether or not
+    `endoflife.date` has heard of the image, and asking the catalogue
+    first is exactly how `distroless/static:nonroot` came to print a
+    reason about support windows instead of the one true thing about it.
+    """
+    loose = floating(image)
+    if loose is not None:
+        image["floating"], image["reason"] = True, loose
+        return "not-judged"
     short = image["image"].rsplit("/", 1)[-1].lower()
     product_name = mapping.get(short)
     if product_name is None:
@@ -524,7 +599,20 @@ def format_report(judged, not_judged, problems, notes, within_days):
                        % (_pin(image), image["product"], image["eol"],
                           image["days"], _variant(image)))
             out.append("      %s" % ", ".join(_places(members)))
-    for members in sorted(group(not_judged).values(),
+    loose = group([i for i in not_judged if i.get("floating")])
+    if loose:
+        out.append("FLOATING — %d `FROM` line(s) name no release at all, so "
+                   "neither this nor `pin_drift` has anything to judge and "
+                   "both pass forever. Pin a version, or a digest where the "
+                   "image publishes no versioned tag." % len(loose))
+        for members in sorted(loose.values(),
+                              key=lambda m: (m[0]["image"], m[0]["tag"] or "")):
+            image = members[0]
+            out.append("  %s — %s" % (_pin(image), image["reason"]))
+            for place in _places(members):
+                out.append("      %s" % place)
+    for members in sorted(group([i for i in not_judged
+                                 if not i.get("floating")]).values(),
                           key=lambda m: (m[0].get("kind", "image"),
                                          m[0]["image"], m[0]["tag"] or "")):
         image = members[0]
@@ -543,6 +631,8 @@ def format_report(judged, not_judged, problems, notes, within_days):
                "second line this cannot read and is never judged."
                % (len(group(judged)), froms, steps, running, within_days,
                   len(group(not_judged))))
+    out.append("Of those, %d distinct `FROM` line(s) name no release at all."
+               % len(group([i for i in not_judged if i.get("floating")])))
     return "\n".join(out)
 
 
@@ -598,6 +688,12 @@ def main(argv=None):
     # `pin_drift` makes: both are true, only one is actionable, and the
     # sibling contract is that 2 means "go and do something".
     if any(i["verdict"] in ("eol", "soon") for i in judged):
+        return 2
+    # A floating `FROM` line outranks an incomplete sweep for the same
+    # reason a support finding does: both are true, only one is a thing
+    # to go and do. It sorts below a dead runtime because a line that has
+    # stopped getting security fixes is a worse fact than one that might.
+    if any(i.get("floating") for i in not_judged):
         return 2
     if unreadable:
         return 1
