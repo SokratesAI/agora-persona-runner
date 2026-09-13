@@ -101,7 +101,7 @@ OBJECTIVE_FIELDS = ("statement", "status", "conversation")
 #: declined goal does -- a decision is worth being able to read back.
 #:
 #: `proposed`/`approved` were the first two words here and they are gone on
-#: purpose, refused rather than aliased. Edvard, 2026-09-13 21:02: *"I should
+#: purpose, refused rather than aliased. The owner, 2026-09-13 21:02: *"I should
 #: not have to approve goals. Goals, milestones, kpis and okrs should be
 #: derived based on a conversation between you and me where we challenge each
 #: other and then agree on something. Not where you guess something and i just
