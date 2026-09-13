@@ -299,24 +299,26 @@ def split_serves(cell):
 
 
 def serves_problems(serves, sections):
-    """`{(project, milestone): serves cell}` + parsed sections -> problems.
+    """`{(project, milestone): serves cell}` + parsed sections -> broken pointers.
 
-    Three findings, and the orphan is one of them because *"the orphan list
-    is a deliverable of this job, not a side effect"*: a milestone serving
-    nothing is either keep-the-lights-on work that belongs under a KPI, or
-    work nobody can justify.
+    Two findings, both of them defects a pull request can close: a `Serves`
+    cell naming an id that no key result carries, and one naming a KPI --
+    *"a KPI may never be used as a key result"*, issue #227's own rule.
+
+    **The orphan is deliberately not here; it is `serves_orphans`.** It used
+    to be, and folding the two together is what kept this whole check out of
+    `tools.preflight`: today 43 of the seated milestones serve nothing and 32
+    of those sit in the eight projects the owner scoped out until step 4, so a
+    single list makes a document with no defect in it indistinguishable from
+    one that is broken, forever. An orphan is also not a thing I can fix --
+    it is either legitimate keep-the-lights-on work or a pruning signal for
+    him -- and a finding no pull request can close is the shape
+    `security_alerts` and `argocd_health` already refuse to raise on.
     """
     results, guardrails = key_result_ids(sections), kpi_ids(sections)
     found = []
     for (project, milestone) in sorted(serves):
-        ids = split_serves(serves[(project, milestone)])
-        if not ids:
-            found.append(
-                f"{project} / {milestone}: serves nothing -- either "
-                "keep-the-lights-on work that belongs under a KPI, or work "
-                "nobody can justify")
-            continue
-        for identifier in ids:
+        for identifier in split_serves(serves[(project, milestone)]):
             if identifier in guardrails:
                 found.append(
                     f"{project} / {milestone}: serves {identifier!r}, which "
@@ -326,6 +328,28 @@ def serves_problems(serves, sections):
                     f"{project} / {milestone}: serves {identifier!r}, which "
                     "is not a key result id")
     return found
+
+
+def serves_orphans(serves, sections):
+    """The milestones that serve no key result -- issue #227's fourth rule.
+
+    *"A milestone that serves nothing is one of exactly two things -- keep-
+    the-lights-on work, which is legitimate and sits under a KPI rather than
+    a goal, or work nobody can justify, which is the pruning signal. The
+    orphan list is a deliverable of this job, not a side effect."*
+
+    So it is an inventory rather than a defect, which is why it is a
+    separate function from `serves_problems` and why its caller does not
+    raise on it. `sections` is taken and unused on purpose: an orphan is
+    decided by the seat's own empty cell, and reading the goals document to
+    decide it would make a milestone stop being an orphan when some other
+    project gained a key result.
+    """
+    return [f"{project} / {milestone}: serves nothing -- either "
+            "keep-the-lights-on work that belongs under a KPI, or work "
+            "nobody can justify"
+            for (project, milestone) in sorted(serves)
+            if not split_serves(serves[(project, milestone)])]
 
 
 def set_field_in_key_result(markdown, key_result_id, field, value):

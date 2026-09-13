@@ -15,17 +15,26 @@ With no arguments it fetches both documents from the vault with
 take paths on disk instead, which is how the tests drive it and how a cycle
 checks a draft before writing it back.
 
-**Exit codes, and the middle one is the point.** `0` clean, `1` something
-in the model is broken (a fourth key result, a KPI with a target, a `Serves`
-pointing at nothing), `2` a document could not be read. Unreadable is not
-folded into clean: *"a check that never ran must not read as a check that
-came back clean"*, which is `preflight`'s contract one level up. An
-**absent** `project-goals.md` is neither -- it is the state before step 2
-has written any content, so it prints that and exits 0.
+**Exit codes are its siblings' contract, not its own.** `2` something in
+the model is broken (a fourth key result, a KPI with a target, a `Serves`
+pointing at nothing), `1` a document could not be read, `0` nothing to act
+on. It said `1` for broken and `2` for unreadable until cycle 1536, exactly
+inverted, which is `preflight`'s `{0: ok, 1: UNREADABLE, 2: ACT}` read
+backwards -- a real defect would have printed as UNREADABLE and a vault it
+could not reach as ACT. An **absent** `project-goals.md` is neither broken
+nor unreadable: it is the state before step 2 has written any content, so it
+prints that and exits 0.
 
-Not registered in `tools.preflight` yet, deliberately: it would report the
-same "nothing written yet" every cycle until step 2 lands, and a check that
-always says the same thing teaches a cycle to skip reading it.
+**The orphan list prints and does not raise**, which is what let this into
+`tools.preflight` at all. Both used to be one list and exit `1` together;
+today 43 seated milestones serve nothing, 32 of them in the eight projects
+the owner scoped out until step 4 of issue #227, so a permanently non-clean
+check would have been a permanently unread one. It is also not a finding a
+pull request can close -- an orphan is either legitimate keep-the-lights-on
+work or a pruning signal for him -- which is the same call `security_alerts`
+makes on an already-fixed advisory and `argocd_health` on a stale Job
+failure. `--orphans` prints the list on its own for when it is the thing you
+came for.
 """
 
 import argparse
@@ -40,7 +49,7 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.project_goals import (
     PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, parse_project_goals, problems,
-    serves_problems,
+    serves_orphans, serves_problems,
 )
 
 
@@ -52,18 +61,28 @@ def report(goals_markdown, seats_markdown):
     project page, when step 4 draws this) does not fetch them twice.
     """
     sections = parse_project_goals(goals_markdown)
-    lines = []
     if not sections:
         return ["project-goals.md holds no project section yet "
                 "(issue #227 step 2 writes the content)"], 0
     found = problems(sections)
     serves = parse_milestone_serves(seats_markdown)
-    orphans = serves_problems(serves, sections)
-    lines.append(f"{len(sections)} project section(s), "
-                 f"{len(serves)} seated milestone(s)")
-    for line in found + orphans:
+    broken = serves_problems(serves, sections)
+    orphans = serves_orphans(serves, sections)
+    defects = found + broken
+    lines = ["BROKEN" if defects else "MODEL HOLDS"]
+    for line in defects:
         lines.append(f"  {line}")
-    return lines, 1 if (found or orphans) else 0
+    if orphans:
+        lines.append(
+            f"ORPHANS ({len(orphans)}) -- issue #227's fourth rule, an "
+            "inventory rather than a defect, so it does not raise:")
+        for line in orphans:
+            lines.append(f"  {line}")
+    lines.append(f"{len(sections)} project section(s), "
+                 f"{len(serves)} seated milestone(s), "
+                 f"{len(defects)} model problem(s), "
+                 f"{len(orphans)} orphan(s)")
+    return lines, 2 if defects else 0
 
 
 def _read(path):
@@ -94,6 +113,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--goals", help="local project-goals.md instead of a fetch")
     ap.add_argument("--seats", help="local milestone-seats.md instead of a fetch")
+    ap.add_argument("--orphans", action="store_true",
+                    help="print only the milestones that serve no key "
+                         "result, one per line, and exit 0")
     ap.add_argument("--scaffold", action="store_true",
                     help="print an empty project-goals.md and exit -- the "
                          "frontmatter contract, no content")
@@ -114,7 +136,12 @@ def main(argv=None):
     for ok, name in ((ok_goals, "project-goals.md"), (ok_seats, "milestone-seats.md")):
         if not ok:
             print(f"UNREADABLE: {name}")
-            return 2
+            return 1
+    if args.orphans:
+        for line in serves_orphans(parse_milestone_serves(seats),
+                                   parse_project_goals(goals)):
+            print(line)
+        return 0
     lines, code = report(goals, seats)
     for line in lines:
         print(line)

@@ -157,6 +157,7 @@ CHECKS = (
     "claim_schema",
     "roll_health",
     "board_done_drift",
+    "project_goals_check",
     "running_images",
     "workload_health",
     "alerts",
@@ -282,6 +283,7 @@ SUBJECT = {
     "claim_schema":      ("on-box",  "live claims in this cluster"),
     "roll_health":       ("on-box",  "my own digest and handoff files"),
     "board_done_drift":  ("on-box",  "the board records against my own claim ledger"),
+    "project_goals_check": ("on-box",  "project-goals.md and milestone-seats.md in the vault"),
     #: It reads GitHub too, for the mutable images `platform-config` declares
     #: that nothing runs -- but the cluster is still the subject it cannot
     #: survive the failure of, so the label stays `on-box`.
@@ -426,6 +428,11 @@ CADENCE_HOURS = {
     # Every sweep -- the ledger window is about a day, so a drift this
     # collapses is one that ages out of the evidence before it is read.
     "board_done_drift": 0.0,
+    # Every sweep -- two vault documents I rewrite by hand while a
+    # conversation about them is open, so the cycle that could have broken
+    # the model is the previous one and a daily cadence would hide it for a
+    # day. Both fetches together run in about four seconds.
+    "project_goals_check": 0.0,
     # Every sweep -- a pull request I open or merge in this cycle moves both.
     "open_prs": 0.0,
     "main_build": 0.0,
