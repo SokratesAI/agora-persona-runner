@@ -129,3 +129,38 @@ def test_a_new_write_up_anywhere_but_after_the_last_one_is_drift():
     assert layout_of(markdown)[0] == {"kind": "detail", "number": 3}
 
     assert layout_differences(markdown, "issue", old)
+
+
+def test_the_done_table_drawn_for_the_first_time_is_not_drift():
+    """The mirror of the test above, and the one that was missing.
+
+    A layout captured while no row was done names no `## Done` block. The
+    day a row goes done the renderer has to add the section -- `## Board`
+    excludes done rows, so without it the row is drawn nowhere at all --
+    and the check has to accept a block the store never named. His
+    `issues.md` layout is exactly this shape and rows 215 and 216 going
+    done on 2026-09-12 refused every publish of that board until Cycle 1507.
+    """
+    old = stored()
+    assert "done" not in [b["kind"] for b in old]
+    markdown = draw([item(1), dict(item(2), done=True)],
+                    {1: "one", 2: "two"}, layout=old)
+    assert "done" in [b["kind"] for b in layout_of(markdown)]
+
+    assert layout_differences(markdown, "issue", old) == []
+
+
+def test_a_done_row_is_drawn_into_a_layout_that_names_no_done_block():
+    """The row itself, not just the check: it must reach the document.
+
+    Before Cycle 1507 `_laid_out` wrote `## Done` only from a stored block,
+    so a row that went done after the layout was captured left the view
+    entirely -- and the count, not the row, was what a publish reported.
+    """
+    old = stored()
+    markdown = draw([item(1), dict(item(2), done=True)],
+                    {1: "one", 2: "two"}, layout=old)
+
+    assert "## Done" in markdown
+    assert "Row 2" in markdown.split("## Done", 1)[1]
+    assert "Row 2" not in markdown.split("## Board", 1)[1].split("## Done", 1)[0]
