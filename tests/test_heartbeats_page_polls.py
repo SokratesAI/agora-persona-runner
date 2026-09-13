@@ -125,7 +125,12 @@ __CONSTANTS__
     )
     functions = "\n".join(
         extract_function(source, name)
-        for name in ("hbStateLine", "scheduleHeartbeatsPoll", "renderHeartbeats", "loadHeartbeats")
+        # `wordmark` is pulled from the source rather than stubbed here: every
+        # render function went through it on 2026-09-13, so a stub would be a
+        # second copy of the page's title that stays green after the real one
+        # breaks. It only needs `el`, which the harness above already has.
+        for name in ("wordmark", "hbStateLine", "scheduleHeartbeatsPoll",
+                     "renderHeartbeats", "loadHeartbeats")
     )
     if fail_fetch:
         call = 'var FETCH = Promise.reject("boom"); loadHeartbeats();'
