@@ -177,6 +177,7 @@ CHECKS = (
     "rollback_watch",
     "backup_health",
     "marcus_capacity",
+    "marcus_coach_health",
     "nas_health",
     "nas_watch",
     "nas_egress",
@@ -320,6 +321,7 @@ SUBJECT = {
     "recap_health":      ("on-box",  "the recap card's own file in the vault"),
     "browser_env_health": ("on-box",  "the browser environment on this pod's own volume"),
     "marcus_capacity":   ("on-box",  "Marcus's state document, read over the cluster network"),
+    "marcus_coach_health": ("on-box",  "the Marcus Deployment in this cluster, and Agora's conversation listing"),
     "marcus_reminder":   ("on-box",  "the Marcus reminder Job's own log, in this cluster"),
 }
 
@@ -437,6 +439,7 @@ CADENCE_HOURS = {
     "memory_headroom": 24.0,
     "oom_rank": 24.0,
     "marcus_capacity": 24.0,
+    "marcus_coach_health": 24.0,
     "backup_health": 24.0,
     "rollback_watch": 24.0,
     "trace_health": 24.0,
