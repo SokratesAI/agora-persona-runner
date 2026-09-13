@@ -82,18 +82,21 @@ def test_a_live_line_is_supported_and_still_prints_its_days():
 @pytest.mark.parametrize(
     "image,tag,fragment",
     [
-        # A tag naming no version pins no line to look up.
-        ("node", "alpine", "names no version"),
-        ("node", "latest", "names no version"),
-        # No tag at all follows `latest`.
-        ("node", None, "no tag"),
+        # `node:alpine`, `node:latest`, `gcr.io/distroless/static:nonroot`
+        # and an untagged `FROM` all used to be listed here. Idea #174
+        # moved them: a tag that names no release is a finding rather
+        # than something this cannot judge, and they are pinned by the
+        # floating tests at the bottom of this file. What is left here is
+        # the honest unjudgeable -- the cases where a version really is
+        # written down and the catalogue still cannot answer.
+        #
         # A product with no release line by that name -- `node:19` -- is
         # not the same as a product that has no support window.
         ("node", "19", "publishes no release line"),
         # A release with no published end-of-life date is unknown, not safe.
         ("node", "26", "no end-of-life date"),
-        # An image endoflife.date has never heard of.
-        ("gcr.io/distroless/static", "nonroot", "publishes no product"),
+        # An image endoflife.date has never heard of, pinned to a version.
+        ("totally-made-up", "1.2", "publishes no product"),
     ],
 )
 def test_unjudgeable_images_say_why_and_never_read_as_supported(image, tag,
@@ -527,3 +530,84 @@ def test_an_unreadable_cluster_is_a_problem_and_never_reads_as_clean(
     assert _run_main(monkeypatch, [supported],
                      cluster_problems=["could not read deployments: nope"]) == 1
     assert "could not read deployments: nope" in capsys.readouterr().out
+
+
+# --- idea #174: a `FROM` line that names no release at all.
+#
+# The row's own proof case is `nginx:alpine`. `pin_drift` has no version
+# to find a gap in and this module declined to judge a support window it
+# could not look up, so the least-pinned reference in the org was the one
+# both instruments excused. These pin the judgement, not the wording.
+
+def test_a_tag_naming_no_release_is_floating_not_merely_unjudgeable():
+    where, entry = judged("nginx", "alpine")
+    assert where == "not-judged"
+    assert entry["floating"] is True
+    assert "repointed upstream" in entry["reason"]
+
+
+def test_floating_is_decided_before_the_catalogue_is_consulted():
+    # The one that carries the row. `gcr.io/distroless/static:nonroot`
+    # resolves to no endoflife.date product, so asking the catalogue
+    # first drops it out one step early and prints a reason about
+    # support windows instead of the true thing about the tag.
+    where, entry = judged("gcr.io/distroless/static", "nonroot")
+    assert where == "not-judged"
+    assert entry.get("floating") is True
+    assert "no product" not in entry["reason"]
+
+
+def test_a_versioned_tag_is_not_floating_however_it_is_written():
+    for image, tag in (("node", "24-alpine"), ("node", "24"),
+                       ("argocd", "v3.3.2")):
+        assert eol_watch.floating(
+            {"repo": "o/r", "path": "Dockerfile", "image": image,
+             "tag": tag}) is None
+
+
+def test_an_untagged_from_line_floats_but_a_digest_or_an_arg_does_not():
+    base = {"repo": "o/r", "path": "Dockerfile", "image": "nginx", "tag": None}
+    assert "follows `latest`" in eol_watch.floating(dict(base))
+    # A digest is the hardened form and an ARG is read by pin_drift; a
+    # claim about either would be a claim about a file this did not open.
+    assert eol_watch.floating(dict(base, digest=True)) is None
+    assert eol_watch.floating(dict(base, templated=True)) is None
+
+
+def test_a_mutable_running_image_stays_running_images_finding():
+    # Cycle 612 owns that verdict. Two detectors for one defect is the
+    # shape prompt.md's step 2 says is itself the bug.
+    assert eol_watch.floating(
+        {"repo": "live cluster", "path": "agents/deployment x",
+         "image": "headlamp", "tag": "latest", "kind": "running"}) is None
+    assert eol_watch.floating(
+        {"repo": "o/r", "path": ".github/workflows/build.yaml",
+         "image": "go", "tag": "1.27", "kind": "toolchain"}) is None
+
+
+def test_a_floating_line_prints_in_its_own_section_not_under_not_judged():
+    _, loose = judged("nginx", "alpine")
+    _, other = judged("totally-made-up", "1.2")
+    report = eol_watch.format_report([], [loose, other], [], [], 180)
+    assert "FLOATING — 1 `FROM` line(s)" in report
+    assert "  nginx:alpine — tag `alpine` names no release" in report
+    # The honest unjudgeable still prints, and not in the new section.
+    assert "NOT JUDGED  totally-made-up:1.2" in report
+    assert "Of those, 1 distinct `FROM` line(s) name no release at all." in report
+
+
+def test_main_exits_2_on_a_floating_line_and_says_so(monkeypatch, capsys):
+    _, live = judged("node", "24")
+    _, loose = judged("nginx", "alpine")
+    assert _run_main(monkeypatch, [live], not_judged_out=[loose]) == 2
+    assert "FLOATING" in capsys.readouterr().out
+    # And an unjudgeable that is not floating still does not raise.
+    _, other = judged("totally-made-up", "1.2")
+    assert _run_main(monkeypatch, [live], not_judged_out=[other]) == 0
+
+
+def test_a_floating_line_outranks_an_incomplete_sweep(monkeypatch):
+    _, live = judged("node", "24")
+    _, loose = judged("nginx", "alpine")
+    assert _run_main(monkeypatch, [live], not_judged_out=[loose],
+                     problems=["o/s: could not list"]) == 2
