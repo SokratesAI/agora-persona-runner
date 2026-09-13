@@ -1155,7 +1155,11 @@ def _conv(minutes_ago):
 
 def test_measure_nova_silent_cycles_counts_only_cycles_inside_the_window(monkeypatch):
     """A silent cycle from last week is history, not today's guardrail."""
-    conversations = {10: _conv(60 * 40), 11: _conv(30), 12: _conv(20), 13: _conv(10)}
+    # 10 is five minutes the wrong side of the 24h cutoff and 11 is an hour
+    # the right side of it, so the boundary itself is what separates them --
+    # a cutoff nudged by an hour in either direction changes the answer.
+    conversations = {10: _conv(60 * 24 + 5), 11: _conv(60 * 23), 12: _conv(20),
+                     13: _conv(10)}
     results = [
         {"number": 10, "verdict": "silent"},   # outside the 24h window
         {"number": 11, "verdict": "silent"},
