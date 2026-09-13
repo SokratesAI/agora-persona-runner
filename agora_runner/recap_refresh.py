@@ -50,7 +50,7 @@ import threading
 from agora_runner.config import CLAUDE_BRIDGE_TOKEN, CLAUDE_BRIDGE_URL
 from agora_runner.http_util import http_json
 from agora_runner.log import log
-from agora_runner.nova_journal import JOURNAL_DIR, entry_seq
+from agora_runner.nova_journal import JOURNAL_DIR, entry_seq, file_cycle
 from agora_runner.nova_recap import MAX_BULLETS, RECAP_PATH, parse_recap, render
 
 # Every few minutes, because the cost of a tick that finds nothing is one
@@ -204,6 +204,29 @@ def pr_links(text):
         text or "")
 
 
+def cycle_range(names):
+    """`1497-1508` for the window, or "" when no name carries a cycle.
+
+    The card's stamp says `as of <time> · cycles <range>` and a hand-written
+    one has always filled that in. The first live run of this refresher left
+    it empty -- the renderer omits the clause rather than drawing a blank, so
+    nothing looked broken, which is exactly why it would have stayed empty.
+
+    A silence entry (`<seq>a-silence.md`) and the weekly research entry carry
+    no cycle number, so `file_cycle` returns None for them and they are not
+    counted -- the same exclusion `recap_health` makes, for the same reason:
+    a number that never appears in any recap must not become one end of a
+    range.
+    """
+    numbers = sorted(n for n in (file_cycle(name) for name in names or [])
+                     if n is not None)
+    if not numbers:
+        return ""
+    if numbers[0] == numbers[-1]:
+        return str(numbers[0])
+    return f"{numbers[0]}-{numbers[-1]}"
+
+
 def prompt_for(rows):
     """The user turn. The instruction is here, not only in `system`.
 
@@ -301,6 +324,7 @@ def refresh_once(now=None):
         if current.get("journal") == newest:
             return False
         names = [p.rsplit("/", 1)[-1] for p in paths if p.endswith(".md")]
+        window = sorted(names, key=lambda n: (entry_seq(n), n))[-WINDOW_ENTRIES:]
         rows = raw_material(names, vault_read_path)
         if not rows:
             log("recap refresh: no readable entries in the window")
@@ -311,7 +335,8 @@ def refresh_once(now=None):
             log(f"recap refresh: no bullets from {MODEL}, keeping the card "
                 f"written at {current.get('written') or 'an unknown time'}")
             return False
-        vault_write_path(RECAP_PATH, render(bullets, now=now, journal=newest))
+        vault_write_path(RECAP_PATH, render(bullets, now=now, journal=newest,
+                                            cycles=cycle_range(window)))
         log(f"recap refreshed from {newest}: {len(bullets)} bullet(s)")
         return True
     except Exception as exc:
@@ -346,5 +371,5 @@ def start_recap_refresh(stop=None):
     return _thread
 
 
-__all__ = ["newest_entry", "raw_material", "prompt_for", "bullets_from",
-           "ask_haiku", "refresh_once", "start_recap_refresh"]
+__all__ = ["newest_entry", "raw_material", "cycle_range", "prompt_for",
+           "bullets_from", "ask_haiku", "refresh_once", "start_recap_refresh"]

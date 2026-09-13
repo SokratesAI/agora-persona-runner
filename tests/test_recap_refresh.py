@@ -269,6 +269,48 @@ def test_the_refresher_can_be_switched_off_by_the_interval(monkeypatch):
     assert recap_refresh.start_recap_refresh() is None
 
 
+# --- the cycle range on the stamp ---
+
+def test_the_range_spans_the_window_and_skips_entries_with_no_cycle():
+    # `1564a-silence.md` is a dropped-tick record, not a cycle. Counting it
+    # would put a number in the range that appears in no journal entry.
+    assert recap_refresh.cycle_range(
+        ["1560-cycle-1504.md", "1564a-silence.md", "1564-cycle-1508.md"]
+    ) == "1504-1508"
+
+
+def test_a_single_cycle_is_not_written_as_a_range():
+    assert recap_refresh.cycle_range(["1564-cycle-1508.md"]) == "1508"
+
+
+def test_a_window_with_no_cycle_in_it_names_no_range():
+    assert recap_refresh.cycle_range(["1564a-silence.md"]) == ""
+    assert recap_refresh.cycle_range([]) == ""
+
+
+def test_the_written_card_names_the_range_it_covers(wired):
+    # The first live run (2026-09-13 14:13) left `cycles` empty. Nothing
+    # looked broken -- the renderer omits the clause rather than drawing a
+    # blank -- which is why this is a test and not a glance.
+    entries = [entry(seq, 1500 + seq) for seq in range(1, 5)]
+    vault = wired(entries, bullets=["**A thing** happened"])
+
+    assert recap_refresh.refresh_once() is True
+    (_path, text), = vault.written
+    assert parse_recap(text)["cycles"] == "1501-1504"
+
+
+def test_the_range_is_the_window_not_the_whole_folder(wired):
+    # 40 entries, a 30-entry window: the range must open at the oldest entry
+    # Haiku was actually shown, not at the oldest one in the vault.
+    entries = [entry(seq, 1500 + seq) for seq in range(1, 41)]
+    vault = wired(entries, bullets=["**A thing** happened"])
+
+    assert recap_refresh.refresh_once() is True
+    (_path, text), = vault.written
+    assert parse_recap(text)["cycles"] == "1511-1540"
+
+
 def test_raw_material_carries_the_opening_prose():
     """Titles alone got bullets like "Merged 18+ improvements to Marcus" --
     the counting he cannot act on. Measured against the real bridge on
