@@ -6373,9 +6373,15 @@ def drainable_main():
     # tests/test_heartbeat_pass.py.
     previous_pass = main_module.start_heartbeat_pass
     main_module.start_heartbeat_pass = lambda _should_stop: None
+    # Same reason again, for the recap refresher (issues.md #219): `main()`
+    # starts a daemon thread that polls the journal for a new entry. The wire
+    # is asserted in tests/test_recap_refresh.py.
+    previous_recap = main_module.start_recap_refresh
+    main_module.start_recap_refresh = lambda: None
     try:
         yield main_module
     finally:
+        main_module.start_recap_refresh = previous_recap
         main_module.start_heartbeat_pass = previous_pass
         main_module.start_catalog_refresh = previous_refresh
         main_module.POLL_INTERVAL_SECONDS = previous_interval

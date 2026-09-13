@@ -45,9 +45,20 @@ RECAP_PATH = "projects/sokrates/projects/agora/nova/resources/recap.md"
 # card; nothing is hidden by it.
 STALE_AFTER_HOURS = 3.0
 
-_STAMP = re.compile(
-    r"<!--\s*generated:\s*(?P<when>\S+?)\s*(?:\|\s*cycles\s*(?P<cycles>[^>]*?)\s*)?-->"
-)
+#: He asked for "max 5-6". Six is the ceiling and it is his number, not one
+#: I chose -- so both writers refuse a seventh rather than silently cutting,
+#: because a summary quietly missing its last bullet is worse than a refusal
+#: a cycle can see and fix. It lived in `tools/recap.py` until the runner
+#: grew a second writer (issue #219).
+MAX_BULLETS = 6
+
+#: `<!-- generated: <iso> | cycles 871-901 | journal 1234-cycle-1200.md -->`.
+#: Both trailing fields are optional and order-independent, because the
+#: stamps written before issue #219 carry only `cycles` and they must keep
+#: parsing -- a card that stops rendering is a worse regression than a card
+#: with no journal marker on it.
+_STAMP = re.compile(r"<!--\s*generated:\s*(?P<when>\S+?)\s*(?P<rest>\|[^>]*?)?\s*-->")
+_STAMP_FIELD = re.compile(r"\|\s*(?P<key>cycles|journal)\s+(?P<value>[^|>]*)")
 _BULLET = re.compile(r"^-\s+(?P<text>\S.*)$")
 _LEAD = re.compile(r"^\*\*(?P<lead>[^*]+?)\*\*\s*(?P<rest>.*)$")
 #: `[the hub](https://hub.tailc83eb3.ts.net/)` and a bare `https://...`.
@@ -77,10 +88,13 @@ def parse_recap(markdown, now=None):
     stamp = _STAMP.search(body)
     written = ""
     cycles = ""
+    journal = ""
     age_hours = None
     if stamp:
         written = stamp.group("when") or ""
-        cycles = (stamp.group("cycles") or "").strip()
+        fields = stamp_fields(stamp.group("rest") or "")
+        cycles = fields.get("cycles", "")
+        journal = fields.get("journal", "")
     bullets = []
     for line in body.splitlines():
         match = _BULLET.match(line.strip())
@@ -113,6 +127,12 @@ def parse_recap(markdown, now=None):
         "written": written,
         "writtenLabel": _oslo_label(when),
         "cycles": cycles,
+        # The newest journal entry the recap was built from. `""` on every
+        # card written before issue #219, which reads as "I cannot tell" --
+        # `recap_refresh` regenerates in that case rather than assuming the
+        # card is current, because an unstamped card is exactly the one a
+        # cycle wrote by hand and then forgot.
+        "journal": journal,
         "ageHours": age_hours,
         # Unknown age reads as stale on purpose. A card with no readable
         # stamp is the one case where the reader cannot judge for himself,
@@ -179,6 +199,52 @@ def _append_plain(parts, chunk):
     tail = (chunk or "")[cursor:]
     if tail:
         parts.append({"text": tail, "href": ""})
+
+
+def stamp_fields(rest):
+    """The `| cycles ... | journal ...` tail of a stamp as a dict.
+
+    Split out so `render` below and this parser cannot spell the stamp two
+    different ways -- the failure this repo keeps paying for is a writer and
+    a reader that each know the format.
+    """
+    return {m.group("key"): m.group("value").strip()
+            for m in _STAMP_FIELD.finditer(rest or "")}
+
+
+def render(bullets, now, cycles="", journal=""):
+    """`recap.md` for these bullets. The one writer of the stamp.
+
+    Lived in `tools/recap.py` until issue #219 gave the runner a second
+    writer (`recap_refresh`). `agora_runner/` importing `tools/` is
+    backwards, and a copy of this in both would put the stamp's format in
+    two places, which is the drift `stamp_fields` exists to prevent. `now`
+    is required rather than defaulted for the reason `parse_recap` takes
+    it: the clock is the caller's.
+    """
+    trailer = ""
+    if cycles:
+        trailer += f" | cycles {cycles}"
+    if journal:
+        trailer += f" | journal {journal}"
+    lines = [
+        "---",
+        "type: log",
+        "tags: [agora, recap]",
+        "status: capture",
+        f"updated: {now:%Y-%m-%d}",
+        "maintenance: Written by the runner's recap refresher when a new journal "
+        "entry lands (issue #219), or by `python3 -m tools.recap --put`. One line "
+        "per bullet, never hard-wrapped. Do not hand-edit the generated comment.",
+        "---",
+        "",
+        "# Last 12 hours",
+        "",
+        f"<!-- generated: {now.isoformat(timespec='minutes')}{trailer} -->",
+        "",
+    ]
+    lines += [f"- {b}" for b in bullets]
+    return "\n".join(lines) + "\n"
 
 
 def _plain(text):

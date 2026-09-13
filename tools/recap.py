@@ -52,19 +52,15 @@ import sys as _sys
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_journal import entry_seq  # noqa: E402
-from agora_runner.nova_recap import RECAP_PATH  # noqa: E402
+from agora_runner.nova_recap import (  # noqa: E402
+    MAX_BULLETS, RECAP_PATH, render as _render,
+)
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 JOURNAL_DIR = "projects/sokrates/projects/agora/nova/journal/"
 OSLO = ZoneInfo("Europe/Oslo")
 
 DEFAULT_HOURS = 12
-#: He asked for "max 5-6". Six is the ceiling and it is his number, not
-#: one I chose -- so this refuses a seventh rather than silently cutting,
-#: because a summary quietly missing its last bullet is worse than a
-#: refusal a cycle can see and fix.
-MAX_BULLETS = 6
-
 _STAMP_LINE = re.compile(r"^\s*(?:PR|Board|Outcome)\b", re.I)
 
 
@@ -147,26 +143,9 @@ def _entry_when(heading):
         return None
 
 
-def render(bullets, now=None, cycles=""):
-    now = now or datetime.now(OSLO)
-    lines = [
-        "---",
-        "type: log",
-        "tags: [agora, recap]",
-        "status: capture",
-        f"updated: {now:%Y-%m-%d}",
-        "maintenance: Written by a cycle, read by the Journal page's top card. "
-        "One line per bullet, never hard-wrapped. `python3 -m tools.recap --put` "
-        "writes it and stamps it; do not hand-edit the generated comment.",
-        "---",
-        "",
-        "# Last 12 hours",
-        "",
-        f"<!-- generated: {now.isoformat(timespec='minutes')} | cycles {cycles} -->",
-        "",
-    ]
-    lines += [f"- {b}" for b in bullets]
-    return "\n".join(lines) + "\n"
+def render(bullets, now=None, cycles="", journal=""):
+    """`nova_recap.render` with this tool's clock. One renderer, one stamp."""
+    return _render(bullets, now or datetime.now(OSLO), cycles=cycles, journal=journal)
 
 
 def link_report(bullets):

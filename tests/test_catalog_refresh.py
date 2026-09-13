@@ -96,6 +96,7 @@ def test_main_starts_the_refresher(monkeypatch, lifecycle_events):
 
     started = []
     monkeypatch.setattr(runner_main, "start_catalog_refresh", lambda: started.append(1))
+    monkeypatch.setattr(runner_main, "start_recap_refresh", lambda: None)
     monkeypatch.setattr(runner_main, "start_invoke_server", lambda: None)
     monkeypatch.setattr(runner_main, "poll_once", lambda: None)
     monkeypatch.setattr(runner_main, "join_running_heartbeats", lambda *a, **k: None)
