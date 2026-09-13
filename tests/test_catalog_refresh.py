@@ -97,6 +97,10 @@ def test_main_starts_the_refresher(monkeypatch, lifecycle_events):
     started = []
     monkeypatch.setattr(runner_main, "start_catalog_refresh", lambda: started.append(1))
     monkeypatch.setattr(runner_main, "start_invoke_server", lambda: None)
+    # main() also starts the recap refresher (Cycle 1508). Same reason the
+    # fixture below gives for this test's own thread: leaving it running
+    # outlives these patches. Its wire is asserted in test_recap_refresh.py.
+    monkeypatch.setattr(runner_main, "start_recap_refresh", lambda: None)
     monkeypatch.setattr(runner_main, "poll_once", lambda: None)
     monkeypatch.setattr(runner_main, "join_running_heartbeats", lambda *a, **k: None)
     # The poll loop runs until shutdown is requested; ask for it immediately.

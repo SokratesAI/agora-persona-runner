@@ -59,7 +59,12 @@ STALE_AFTER_HOURS = 3.0
 _STAMP = re.compile(
     r"<!--\s*generated:\s*(?P<when>\S+?)\s*"
     r"(?:\|\s*cycles\s*(?P<cycles>[^|>]*?)\s*)?"
-    r"(?:\|\s*journal\s*(?P<journal>[^|>]*?)\s*)?-->"
+    r"(?:\|\s*journal\s*(?P<journal>[^|>]*?)\s*)?"
+    # A field this pattern does not know must not destroy the stamp. Without
+    # this the whole match fails, `written` comes back "" and the card reads
+    # as stale -- a worse outcome than ignoring one field, and one a future
+    # writer adding a fourth would hit with no warning.
+    r"(?:\|[^>]*?)?-->"
 )
 _BULLET = re.compile(r"^-\s+(?P<text>\S.*)$")
 _LEAD = re.compile(r"^\*\*(?P<lead>[^*]+?)\*\*\s*(?P<rest>.*)$")
