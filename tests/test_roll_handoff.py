@@ -362,6 +362,37 @@ def test_selection_by_age_skips_only_what_it_cannot_date():
     # an item 295 cycles behind sit in the live section forever.
 
 
+def test_a_lowercase_citation_dates_an_item_like_a_capital_one():
+    # The loop writes "CONFIRMED LIVE by cycle 1428" as readily as
+    # "Cycle 1428 did x" and means one thing by both. Measured on the
+    # live digest 2026-09-13: of 43 items the capital-C pattern dated 8,
+    # and the 15 it missed were 17,095 of the section's 64,698 bytes --
+    # 26% of a block every turn carries, held open by a letter.
+    assert newest_cycle("**[x]** Confirmed live by cycle 640.") == 640
+    assert newest_cycle("**[x]** CYCLE 640 did it.") == 640
+    # "cycles" is not a citation: the number has to follow the word.
+    assert newest_cycle("**[x]** Three cycles later, 640 things.") is None
+    lowered = AGED.replace(
+        "**[stale-thing]** Cycle 640, long finished.",
+        "**[stale-thing]** Finished off by cycle 640.",
+    )
+    items = live_items(lowered)
+    assert roll_handoff.select_older_than(items, 669) == [3, 5]
+    assert item_slug(items[3]) == "stale-thing"
+
+
+def test_a_lowercase_amendment_keeps_an_old_item_the_way_a_capital_one_does():
+    # `newest_cycle` takes the maximum, so a looser pattern can only make
+    # an item look newer -- and newer means kept, which is the direction
+    # this section wants to fail in.
+    amended = AGED.replace(
+        "**[stale-thing]** Cycle 640, long finished.",
+        "**[stale-thing]** Cycle 640, reopened by cycle 670.",
+    )
+    items = live_items(amended)
+    assert roll_handoff.select_older_than(items, 669) == [5]
+
+
 def test_an_unslugged_item_is_the_one_the_slug_rule_used_to_strand():
     # The regression this test exists for: the same item, dated 600 and
     # older than every cutoff, must be selectable. If a future change

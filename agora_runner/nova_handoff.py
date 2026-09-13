@@ -77,9 +77,29 @@ ARCHIVE_TITLE = "# Next cycle — Retired"
 # quoting for this line is five, against the pair.
 _SLUG_RE = re.compile(r"\A\*\*\[(?P<slug>[a-z0-9][a-z0-9-]*)\]")
 
-# `Cycle 671` anywhere in the body. Used only to print how old an item is;
-# an item citing no cycle prints as undated rather than as new.
-_CYCLE_RE = re.compile(r"\bCycle (?P<n>\d+)\b")
+# `Cycle 671` anywhere in the body -- and `cycle 671`, which is the same
+# citation and was invisible here until 2026-09-13. Used to print how old
+# an item is and, through `select_older_than`, to decide whether age can
+# retire it; an item citing no cycle prints as undated rather than as new.
+#
+# Case-insensitive because the loop writes the citation both ways and
+# means the same thing by both: "CONFIRMED LIVE by cycle 1428" and "Cycle
+# 1428 did x" are one convention, not two. Measured on the live digest
+# that morning: 43 items, of which the capital-C pattern dated 8 and this
+# one dates 23, and the 15 it newly dates are 17,095 of the section's
+# 64,698 bytes -- 26% of a block every turn of every cycle carries, held
+# open by a letter. `nova_journal._CYCLE_RE` has been `re.IGNORECASE`
+# since it was written, so this aligns two regexes in one repo rather
+# than inventing a rule.
+#
+# `newest_cycle` takes the maximum of every match, so a looser pattern
+# can only ever make an item look *newer* than before -- which is the
+# safe direction, because newer means kept. The one hazard it opens is an
+# item whose *only* citation is prose like "the cycle 12 minutes later":
+# that dates it 12 and age retires it. Bounded on purpose -- retirement
+# moves an item to `handoff-archive.md` whole with the reason stamped on
+# it, and never deletes one.
+_CYCLE_RE = re.compile(r"\bcycle[ \t]+(?P<n>\d+)\b", re.IGNORECASE)
 
 ARCHIVE_FRONTMATTER = (
     "---\n"
