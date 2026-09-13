@@ -267,3 +267,29 @@ def test_the_refresher_can_be_switched_off_by_the_interval(monkeypatch):
     monkeypatch.setattr(recap_refresh, "REFRESH_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(recap_refresh, "_thread", None)
     assert recap_refresh.start_recap_refresh() is None
+
+
+def test_raw_material_carries_the_opening_prose():
+    """Titles alone got bullets like "Merged 18+ improvements to Marcus" --
+    the counting he cannot act on. Measured against the real bridge on
+    2026-09-13; see `opening_prose`. The paragraph has to reach the model."""
+    body = ("### Cycle 3 — a title (2026-09-13 13:40)\n\n"
+            "> a quote he did not write\n\n"
+            "The board file stopped syncing and is published again.\n"
+            "Second line of the same paragraph.\n\n"
+            "A later paragraph that is not the lead.\n\n---\nPR: none\n")
+    rows = recap_refresh.raw_material(["3-cycle-3.md"], lambda path: body)
+    assert rows[0].endswith("The board file stopped syncing and is published "
+                            "again. Second line of the same paragraph.")
+    assert "A later paragraph" not in rows[0]
+
+
+def test_opening_prose_skips_an_entry_that_is_only_furniture():
+    # The PR/Outcome footer is the one non-prose line with no markdown
+    # punctuation on it, so it has to be named or it becomes the summary.
+    assert recap_refresh.opening_prose("### t\n\n---\nPR: none | Outcome: no-op\n") == ""
+
+
+def test_opening_prose_is_capped():
+    assert len(recap_refresh.opening_prose("### t\n\n" + "x" * 2000)) \
+        == recap_refresh.LEAD_CHARS
