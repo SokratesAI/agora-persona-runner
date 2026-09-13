@@ -5,7 +5,7 @@ where an objective, its key results and a project's KPIs live, and the
 `Serves` column"* -- and nothing else. No content for any project: that is
 step 2, and it is proposed for his approval rather than written by me.
 
-Edvard approved the model in live chat on 2026-09-13: *"Yes! I want to work
+The owner approved the model in live chat on 2026-09-13: *"Yes! I want to work
 like this! ... I trust you to do this correctly!"* The shape is
 
     Project -> Objective (his words, he approves or strikes it)
