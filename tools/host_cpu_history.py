@@ -52,6 +52,14 @@ DEFAULT_LEDGER = os.environ.get("NOVA_HOST_CPU_LEDGER",
 #: that a check does not keep re-reporting one incident forever.
 DEFAULT_WINDOW_HOURS = 72.0
 
+#: Percent of one core of node-minus-processes below which the gap is not
+#: worth a clause. The two figures are read over the same window but not the
+#: same instants, and every sweep carries the sampler's own few milliseconds,
+#: so a small positive gap is arithmetic rather than a finding. A quarter of
+#: a core is well under the smallest reading either node has produced here
+#: (0.42 cores) and far under the threshold a run has to cross to be hot.
+UNOWNED_FLOOR = 25.0
+
 #: Fraction of a node's cores that counts as hot. Derived from this cluster
 #: rather than picked: over the 12 distinct samples in the ledger today
 #: server1 ranges 0.95 to 2.29 of its 4 cores (24%-57%) and server2 0.42 to
@@ -102,8 +110,22 @@ def read_samples(path):
             repeats += 1
             continue
         seen.add(pod)
+        # Two figures over the same second, and which one is judged matters
+        # more than anything else this reader does. `owned` is CPU charged to
+        # a pid; `node` is /proc/stat, the whole box. A machine that has run
+        # out of memory and swap burns its cores in reclaim, iowait and
+        # softirq, which belong to no pid -- so it can sit at 3.8 of 4 cores
+        # while `owned` reads a tenth of one. Judging on `owned` would have
+        # called the night of 2026-09-01 quiet, which is the night issue #169
+        # is about. So the node figure is preferred whenever the sweep gave
+        # one, and `owned` is the fallback for a sample written before
+        # platform-config#752 rolled out.
+        owned = row["cpu_busy_percent"]
+        node = row.get("cpu_node_percent")
         samples.append({"at": at, "node": row.get("node") or "an unnamed node",
-                        "pod": pod, "busy_percent": row["cpu_busy_percent"],
+                        "pod": pod,
+                        "busy_percent": node if node is not None else owned,
+                        "owned_percent": owned, "node_percent": node,
                         "rows": row.get("rows") or []})
     if not samples:
         return None, malformed, (
@@ -265,6 +287,25 @@ def gaps(samples, min_span_hours=DEFAULT_MIN_SPAN_HOURS):
 OSLO = ZoneInfo("Europe/Oslo")
 
 
+def _unowned(sample):
+    """The clause naming cores the node is busy that no process accounts for.
+
+    Empty when the sweep gave no node figure, and empty when the gap is small
+    -- the two readings are taken over the same second but not over identical
+    instants, and a tenth of a core of drift is not a finding. Printed as a
+    difference rather than stored as one: two records of the same arithmetic
+    is how two records drift apart.
+    """
+    node, owned = sample.get("node_percent"), sample.get("owned_percent")
+    if node is None or owned is None:
+        return ""
+    gap = node - owned
+    if gap < UNOWNED_FLOOR:
+        return ""
+    return (f" -- {gap / 100.0:.2f} core(s) charged to no process "
+            "(kernel: reclaim, iowait, interrupts)")
+
+
 def _oslo(at):
     return at.astimezone(OSLO).strftime("%Y-%m-%d %H:%M")
 
@@ -338,7 +379,13 @@ def report(ledger=DEFAULT_LEDGER, window_hours=DEFAULT_WINDOW_HOURS,
                 else f"{limit:.0f} core(s), hot at {limit * busy_fraction:.1f}")
         print(f"  {node}  {len(series)} sample(s), {seen}; busiest "
               f"{peak['busy_percent'] / 100.0:.2f} core(s) at "
-              f"{_oslo(peak['at'])} Oslo", file=out)
+              f"{_oslo(peak['at'])} Oslo{_unowned(peak)}", file=out)
+        stale = [s for s in series if s["node_percent"] is None]
+        if stale:
+            print(f"    OWNED ONLY  {len(stale)} of {len(series)} sample(s) "
+                  "carry no /proc/stat figure, so for those this judged the "
+                  "sum over pids alone and cannot see kernel time "
+                  "(platform-config#752 is what supplies it).", file=out)
         if limit is None:
             print(f"    CANNOT SEE  {node} is in the ledger and not in the "
                   "cluster's node list, so its samples were not judged. "
@@ -367,6 +414,13 @@ def report(ledger=DEFAULT_LEDGER, window_hours=DEFAULT_WINDOW_HOURS,
                   f"{_oslo(last['at'])} Oslo ({run['span_hours']:.1f}h, "
                   f"{len(run['samples'])} sample(s), peak "
                   f"{top / 100.0:.2f} core(s))", file=out)
+            hottest = max(run["samples"], key=lambda s: s["busy_percent"])
+            unowned = _unowned(hottest)
+            if unowned:
+                print(f"    AT ITS PEAK {unowned.lstrip(' -')}. The process "
+                      "list below cannot name that part, because nothing "
+                      "owns it -- look at memory and swap on that node "
+                      "first.", file=out)
             for comm, mean, peak_pct, count in burners(run):
                 print(f"    {comm}  mean {mean / 100.0:.2f} core(s), peak "
                       f"{peak_pct / 100.0:.2f}, in {count} of "
