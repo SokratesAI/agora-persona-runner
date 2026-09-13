@@ -9,6 +9,29 @@
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon.svg">
 <link rel="stylesheet" href="/style.css">
+<!-- The theme, applied before the stylesheet paints. Anything later than this
+     shows a dark flash on a light phone, which is the one bug a theme toggle
+     cannot have.
+
+     Two different values, deliberately: `nova-theme` in storage is the
+     *preference* and may be `system`; the `data-theme` attribute is the
+     *effective* palette and is only ever `light` or `dark`. Resolving here
+     means style.css carries one light block instead of the same declarations
+     twice, and `renderSettings` in app.js keeps the attribute in step when
+     the phone flips at sunset. -->
+<script>
+  (function () {
+    var pref = "system";
+    try { pref = localStorage.getItem("nova-theme") || "system"; } catch (e) { /* private mode */ }
+    if (pref !== "light" && pref !== "dark") pref = "system";
+    var effective = pref;
+    if (pref === "system") {
+      var query = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)");
+      effective = query && query.matches ? "light" : "dark";
+    }
+    document.documentElement.setAttribute("data-theme", effective);
+  })();
+</script>
 </head>
 <body>
 <!-- Outside <header>, deliberately. `renderStatus` empties that element and
@@ -24,7 +47,11 @@
 </button>
 
 <header id="status" class="status" aria-live="polite">
-  <h1 class="wordmark">Nova</h1>
+  <!-- The wordmark is the way home (his capture, 2026-09-13). A real anchor
+       rather than a click handler, so the keyboard and a screen reader get
+       the same affordance the thumb does. `wordmark()` in app.js rebuilds
+       this exact shape on every page. -->
+  <h1 class="wordmark"><a class="wordmark-home" href="/">Nova</a></h1>
   <p class="status-line">loading…</p>
 </header>
 
@@ -98,12 +125,9 @@
       <a class="nav-tab" href="/notes">Notes</a>
       <a class="nav-tab" href="/pool">Pool</a>
       <a class="nav-tab" href="/plan">Plan</a>
-    </div>
-  </details>
-
-  <details class="nav-fold">
-    <summary class="nav-group">Talking</summary>
-    <div class="nav-fold-body">
+      <!-- Beats moved here on 2026-09-13, and the one-link "Talking" fold it
+           used to sit in was deleted with it: a fold holding a single page is
+           a tap he has to spend to reach one link. -->
       <a class="nav-tab" href="/heartbeats">Beats</a>
     </div>
   </details>
@@ -116,6 +140,13 @@
       <a class="nav-tab" href="/costs">Costs</a>
       <a class="nav-tab" href="/alerts">Alerts</a>
       <a class="nav-tab" href="/catalog">Catalog</a>
+    </div>
+  </details>
+
+  <details class="nav-fold">
+    <summary class="nav-group">This app</summary>
+    <div class="nav-fold-body">
+      <a class="nav-tab" href="/settings">Settings</a>
       <a class="nav-tab" href="/diag">Device</a>
     </div>
   </details>

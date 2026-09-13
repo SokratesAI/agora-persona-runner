@@ -365,6 +365,9 @@ PAGE_ROUTES = (
     "/diag",
     "/projects",
     "/galaxy",
+    # The app's own settings -- the theme, for now. Distinct from the chat's
+    # per-conversation settings drawer, which is not a page and has no URL.
+    "/settings",
 )
 # `/project/Nova` is a real URL for the same reason `/cycle/49` is: the
 # project page has to survive a bookmark and a cold load, not only a tap
