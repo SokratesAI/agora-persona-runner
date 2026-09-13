@@ -18,6 +18,25 @@ import pytest
 from tools import host_memory_trend as hmt
 
 
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_cpu_ledger(tmp_path_factory, monkeypatch):
+    """No test in this file writes the production CPU ledger.
+
+    Eight `main()` tests here pass `--ledger` and not `--cpu-ledger`, so the CPU
+    ledger defaulted to `/data/nova-host-cpu.jsonl` -- the live one on the pod's
+    volume. `record_cpu` has always written it from those tests; `backfill_cpu`
+    made them read every retained sweep Pod off the live cluster too, and on
+    2026-09-13 a `-k backfill` run appended 22 real samples to production. The
+    data was correct, which is what makes this worth a fixture rather than a
+    note: a unit test that reaches the cluster passes either way and nothing
+    about its result says it did.
+    """
+    monkeypatch.setattr(hmt, "DEFAULT_CPU_LEDGER",
+                        str(tmp_path_factory.mktemp("cpu") / "ledger.jsonl"))
+    monkeypatch.setattr(hmt, "DEFAULT_RUNNER", lambda *a, **k: FakeProc(
+        stdout=json.dumps({"items": []})))
+
+
 # The default start for a fabricated ledger, and it has to move with the clock.
 # `main` windows the ledger to the last 72h **measured from the reading it takes
 # right now**, so a fixed calendar date is a fixture with an expiry: this was
@@ -1445,3 +1464,112 @@ def test_a_ledger_under_the_cap_is_left_alone(tmp_path):
     report, _ = hmt.read_swap_holders(runner=run, now=NOW)
     assert hmt.record_cpu(report, str(ledger), keep=3)[:2] == (1, 1)
     assert len(ledger.read_text().splitlines()) == 1
+
+
+# --- backfill: every retained sweep, not just the newest -------------------
+
+
+def _backfill_pods():
+    """Three retained sweeps, two Pods each, the way the CronJob leaves them."""
+    return [(f"host-process-memory-2980{run}110-{idx}-aaaa{idx}", "Succeeded",
+             f"2026-08-31T1{run}:30:00Z", node,
+             f"host-process-memory-2980{run}110")
+            for run, (idx, node) in ((1, ("0", "server1")), (1, ("1", "server2")),
+                                     (2, ("0", "server1")), (2, ("1", "server2")),
+                                     (3, ("0", "server1")), (3, ("1", "server2")))]
+
+
+def test_backfill_records_every_retained_sweep_not_only_the_newest(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    run = sweep_runner(pods=_backfill_pods(), log=SWEEP_LOG_WITH_CPU,
+                       nodes=("server1", "server2"))
+    written, runs, why = hmt.backfill_cpu(str(ledger), runner=run)
+    assert why is None
+    assert (written, runs) == (6, 3)
+    stamps = sorted({json.loads(line)["_at"] for line in ledger.read_text().splitlines()})
+    assert stamps == ["2026-08-31T11:30:00+00:00", "2026-08-31T12:30:00+00:00",
+                      "2026-08-31T13:30:00+00:00"]
+
+
+def test_backfill_carries_each_runs_own_stamp_rather_than_one_moment(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    run = sweep_runner(pods=_backfill_pods(), log=SWEEP_LOG_WITH_CPU,
+                       nodes=("server1", "server2"))
+    hmt.backfill_cpu(str(ledger), runner=run)
+    by_stamp = {}
+    for line in ledger.read_text().splitlines():
+        row = json.loads(line)
+        by_stamp.setdefault(row["_at"], set()).add(row["node"])
+    assert all(nodes == {"server1", "server2"} for nodes in by_stamp.values())
+
+
+def test_backfill_does_not_read_the_log_of_a_pod_already_in_the_ledger(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    pods = _backfill_pods()
+    ledger.write_text(json.dumps({"_at": "2026-08-31T11:30:00+00:00",
+                                  "pod": pods[0][0], "node": "server1",
+                                  "cpu_busy_percent": 12.0, "rows": []}) + "\n")
+    run = sweep_runner(pods=pods, log=SWEEP_LOG_WITH_CPU,
+                       nodes=("server1", "server2"))
+    written, runs, why = hmt.backfill_cpu(str(ledger), runner=run)
+    assert (written, runs, why) == (5, 3, None)
+    read = [argv[-1] for argv in run.seen if argv[1] == "logs"]
+    assert pods[0][0] not in read
+    assert len(read) == 5
+
+
+def test_backfill_writes_nothing_when_the_ledger_already_holds_every_sweep(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    run = sweep_runner(pods=_backfill_pods(), log=SWEEP_LOG_WITH_CPU,
+                       nodes=("server1", "server2"))
+    hmt.backfill_cpu(str(ledger), runner=run)
+    before = ledger.read_text()
+    again = sweep_runner(pods=_backfill_pods(), log=SWEEP_LOG_WITH_CPU,
+                         nodes=("server1", "server2"))
+    assert hmt.backfill_cpu(str(ledger), runner=again) == (0, 0, None)
+    assert [argv for argv in again.seen if argv[1] == "logs"] == []
+    assert ledger.read_text() == before
+
+
+def test_backfill_skips_a_pod_that_has_not_finished(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    pods = list(_backfill_pods())
+    pods[-1] = (pods[-1][0], "Running") + pods[-1][2:]
+    run = sweep_runner(pods=pods, log=SWEEP_LOG_WITH_CPU,
+                       nodes=("server1", "server2"))
+    written, runs, why = hmt.backfill_cpu(str(ledger), runner=run)
+    assert (written, runs, why) == (5, 3, None)
+
+
+def test_backfill_reports_a_kubectl_failure_rather_than_reading_as_clean(tmp_path):
+    def run(argv, **kwargs):
+        return FakeProc(stdout="", returncode=1, stderr="forbidden")
+
+    written, runs, why = hmt.backfill_cpu(str(tmp_path / "cpu.jsonl"), runner=run)
+    assert (written, runs) == (0, 0)
+    assert "forbidden" in why
+
+
+def test_backfill_on_an_absent_ledger_treats_it_as_empty_not_as_an_error(tmp_path):
+    run = sweep_runner(pods=_backfill_pods(), log=SWEEP_LOG_WITH_CPU,
+                       nodes=("server1", "server2"))
+    written, runs, why = hmt.backfill_cpu(str(tmp_path / "first-ever.jsonl"),
+                                          runner=run)
+    assert (written, runs, why) == (6, 3, None)
+
+
+def test_backfill_says_so_when_the_ledger_cannot_be_written(tmp_path):
+    run = sweep_runner(pods=_backfill_pods(), log=SWEEP_LOG_WITH_CPU,
+                       nodes=("server1", "server2"))
+    written, _runs, why = hmt.backfill_cpu(str(tmp_path / "no" / "cpu.jsonl"),
+                                           runner=run)
+    assert written == 0 and why is not None and "cpu.jsonl" in why
+
+
+def test_ledger_pods_reads_the_names_a_backfill_must_skip(tmp_path):
+    ledger = tmp_path / "cpu.jsonl"
+    ledger.write_text("\n".join([
+        json.dumps({"pod": "a"}), "", "not json",
+        json.dumps({"pod": "b"})]) + "\n")
+    assert hmt.ledger_pods(str(ledger)) == ({"a", "b"}, None)
+    assert hmt.ledger_pods(str(tmp_path / "absent.jsonl")) == (set(), None)

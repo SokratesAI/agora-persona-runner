@@ -901,6 +901,137 @@ def record_cpu(report, path, keep=DEFAULT_CPU_KEEP):
     return len(new), held + len(new), None
 
 
+def ledger_pods(path):
+    """The Pod names already in the CPU ledger, or `(None, why)` if unreadable.
+
+    An absent ledger is an empty set rather than a failure -- the first run on a
+    fresh volume has nothing to skip, and treating that as an error would stop
+    the backfill on exactly the run that has the most to do.
+    """
+    if not os.path.exists(path):
+        return set(), None
+    try:
+        seen = set()
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    seen.add(json.loads(line).get("pod"))
+                except json.JSONDecodeError:
+                    continue
+        return seen, None
+    except OSError as exc:
+        return None, f"{path}: {exc}"
+
+
+#: What `backfill_cpu` shells out with when its caller names nothing. A module
+#: global rather than a default argument so a test of `main()` can replace it:
+#: `main` injects no runner, so without this the eight `main()` tests in this
+#: repo would each read every retained sweep Pod off the live cluster.
+DEFAULT_RUNNER = subprocess.run
+
+
+def backfill_cpu(path, runner=None, namespace=SWAP_HOLDER_NAMESPACE,
+                 job=SWAP_HOLDER_JOB, keep=DEFAULT_CPU_KEEP):
+    """Record every retained sweep the ledger has never seen. `(written, runs, why)`.
+
+    `record_cpu` above writes the sweep `read_swap_holders` returned, and that
+    is deliberately **the newest one only** -- the memory half of this tool wants
+    the current reading, not a history. The CPU half wants the opposite and got
+    the same thing, so the ledger only ever gained a sample when a cycle happened
+    to run this check. Measured 2026-09-13: the CronJob fires every 30 minutes
+    and the cluster was holding all 16 retained sweeps, back to 23:30Z, while the
+    ledger held 9 samples per node across 12 hours and `tools.host_cpu_history`
+    reported 3.5h and 5.0h windows it was blind to. Every one of those missing
+    sweeps was still on the cluster and readable at the moment it said so.
+
+    So this reads the ones the ledger is missing. The skip happens **before**
+    `kubectl logs`, on the Pod name the ledger already keys on, so the steady
+    state is two log reads rather than thirty-two and only a real gap costs
+    anything.
+
+    It does not change what the cluster keeps: a sweep reaped before any run of
+    this is gone, and that is the cluster's retention rather than a hole this can
+    close. What it does close is the gap between what the cluster still has and
+    what the ledger took from it.
+    """
+    runner = runner or DEFAULT_RUNNER
+    seen, why = ledger_pods(path)
+    if seen is None:
+        return 0, 0, why
+    try:
+        proc = runner(["kubectl", "get", "pods", "-n", namespace, "-o", "json"],
+                      capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 0, 0, f"kubectl get pods -n {namespace} failed: {exc}"
+    if proc.returncode != 0:
+        return 0, 0, (f"kubectl get pods -n {namespace} failed: "
+                      f"{proc.stderr.strip() or proc.stdout.strip()}")
+    try:
+        body = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return 0, 0, f"kubectl get pods -n {namespace} returned no JSON: {exc}"
+
+    # Grouped by the owning Job for the same reason `read_swap_holders` does it:
+    # one run is several Pods, and the ledger line carries the run's stamp so a
+    # reader can put the two nodes of one firing at one moment.
+    runs = {}
+    for item in body.get("items") or []:
+        meta = item.get("metadata") or {}
+        name = meta.get("name") or ""
+        if not name.startswith(job + "-"):
+            continue
+        if ((item.get("status") or {}).get("phase")) != "Succeeded":
+            continue
+        if name in seen:
+            continue
+        at = _parse_at(meta.get("creationTimestamp"))
+        if at is None:
+            continue
+        labels = meta.get("labels") or {}
+        owner = (labels.get("batch.kubernetes.io/job-name")
+                 or labels.get("job-name")
+                 or name.rsplit("-", 1)[0])
+        entry = runs.setdefault(owner, {"at": at, "pods": []})
+        entry["at"] = max(entry["at"], at)
+        entry["pods"].append({"pod": name,
+                              "node": (item.get("spec") or {}).get("nodeName")})
+    if not runs:
+        return 0, 0, None
+
+    written = 0
+    for owner in sorted(runs, key=lambda key: runs[key]["at"]):
+        run = runs[owner]
+        reports = []
+        for pod in sorted(run["pods"], key=lambda pod: pod["pod"]):
+            try:
+                proc = runner(["kubectl", "logs", "-n", namespace, pod["pod"]],
+                              capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if proc.returncode != 0:
+                continue
+            parsed, _why = _parse_sweep(proc.stdout)
+            if parsed is None:
+                continue
+            node = pod["node"] or parsed["node"]
+            parsed["node"] = node
+            for row in parsed.get("cpu_rows") or []:
+                row["node"] = node
+            parsed["pod"] = pod["pod"]
+            reports.append(parsed)
+        if not reports:
+            continue
+        count, _held, write_why = record_cpu({"pods": reports, "at": run["at"]},
+                                             path, keep=keep)
+        if write_why is not None:
+            return written, len(runs), write_why
+        written += count
+    return written, len(runs), None
+
+
 def name_cpu_burners(report, top=CPU_BURNER_TOP):
     """Who is burning the CPU, by name and by node, from the sweep's own rows.
 
@@ -1455,6 +1586,25 @@ def main(argv=None):
             else:
                 print(f"  recorded {written} new CPU sample(s); "
                       f"{args.cpu_ledger} holds {held}.")
+            filled, runs, back_why = backfill_cpu(args.cpu_ledger,
+                                                  keep=args.cpu_keep)
+            if back_why is not None:
+                print(f"  COULD NOT BACKFILL the CPU ledger — {back_why}. Only "
+                      "the newest sweep was recorded, so the ledger keeps the "
+                      "gaps tools.host_cpu_history reports as BLIND.")
+            elif filled:
+                print(f"  backfilled {filled} older CPU sample(s) from {runs} "
+                      "retained sweep(s) the ledger had never read.")
+            elif runs:
+                # Reached only when every log read of an unrecorded sweep
+                # failed. Saying "nothing to backfill" here would report a
+                # blind instrument as a complete one, which is the failure
+                # `tools.host_cpu_history` exists to stop.
+                print(f"  BACKFILLED NOTHING — {runs} retained sweep(s) are not "
+                      "in the ledger and none of their Pod logs could be read.")
+            else:
+                print("  nothing to backfill — the ledger already holds every "
+                      "retained sweep.")
 
     if harmed or actionable:
         print("This is tools.workload_health's blind spot on purpose: it judges the "
