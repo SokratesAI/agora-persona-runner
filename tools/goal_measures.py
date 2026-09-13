@@ -617,6 +617,188 @@ KEY_RESULT_NO_INSTRUMENT = {
 }
 
 
+#: The window every KPI here is read over. A guardrail says what is happening
+#: now, so it is 24 hours regardless of `--days`, which sets the goals' window.
+_KPI_WINDOW_HOURS = 24.0
+
+def measure_nova_dropped_ticks(since, until):
+    """Share of scheduled heartbeat firings in the last 24h that produced no run.
+
+    Reads `tools.heartbeat_gaps` rather than re-deriving it: that module already
+    fetches every heartbeat and every conversation, works out each schedule's
+    period, and decides which slots a run covered -- including the part that is
+    genuinely hard, which is that a run still in flight covers the slot it
+    overran into. A second implementation here would be a second answer to one
+    question, and the two would drift the way `goals.md` and `project-goals.md`
+    did before the key results were wired to one measurement.
+
+    The window is 24 hours and is NOT the `--days` window the goals use. This
+    KPI's own `measure:` field says "in 24h", and a guardrail read over seven
+    days would average a bad night away -- which is the one thing a guardrail
+    must not do.
+
+    A row `heartbeat_gaps` could not judge contributes nothing to either side
+    of the share, and the count of those is in the detail, because a share
+    taken over two of ten heartbeats is not a claim about the scheduler.
+    """
+    del since, until
+    from datetime import datetime, timezone
+    from tools import heartbeat_gaps
+
+    heartbeats, error = heartbeat_gaps._fetch()
+    if error:
+        return None, f"heartbeat_gaps could not read the heartbeats: {error}"
+    conversations, error = heartbeat_gaps.fetch_conversations()
+    if error:
+        return None, f"heartbeat_gaps could not read the conversations: {error}"
+    now = datetime.now(timezone.utc)
+    rows = [heartbeat_gaps.judge(h, conversations, now, _KPI_WINDOW_HOURS)
+            for h in heartbeats]
+    judged = [r for r in rows if r.get("verdict") == "judged"]
+    if not judged:
+        return None, (f"none of the {len(rows)} heartbeat(s) could be judged, so "
+                      "a share has no denominator")
+    expected = sum(r["expected"] for r in judged)
+    if not expected:
+        return None, (f"the {len(judged)} judged heartbeat(s) had no scheduled "
+                      f"firing in the last {_KPI_WINDOW_HOURS:g}h")
+    missed = sum(len(r["missed"]) for r in judged)
+    share = round(100 * missed / expected)
+    unjudged = len(rows) - len(judged)
+    detail = (f"{missed} of {expected} scheduled firing(s) in the last "
+              f"{_KPI_WINDOW_HOURS:g}h produced no run, across {len(judged)} "
+              f"judged heartbeat(s)")
+    if unjudged:
+        detail += (f"; {unjudged} more could not be judged and are in neither "
+                   "half of the share")
+    return share, detail
+
+
+#: A KPI whose number is measured here. Each measurer takes `(since, until)`
+#: -- the goals' window, which a KPI is free to ignore and this one does -- and
+#: returns `(value, detail)`, or `(None, why)` when it could not read what it
+#: needed. Same contract as `KEY_RESULT_MEASURERS`, deliberately, because the
+#: failure it protects against is the same one: a number nobody can recompute.
+KPI_MEASURERS = {
+    "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
+}
+
+#: A KPI with no instrument, and why. Written down here rather than left as a
+#: silent gap, for the reason `KEY_RESULT_NO_INSTRUMENT` exists: a blank `now`
+#: says nothing about whether anyone tried, and three cycles re-deriving the
+#: same "there is no endpoint for this" is three cycles spent twice.
+KPI_NO_INSTRUMENT = {
+    "nova-kpi-silent-cycles": "counts cycles that produced no journal entry, "
+                              "which needs the heartbeat's firing list joined "
+                              "to the entry list -- readable, but it is a "
+                              "second answer to the question tools.cycle_health "
+                              "already answers and belongs there rather than "
+                              "here",
+    "nova-kpi-cost-per-cycle": "the weighted-token ledger is in the vault and "
+                               "is not read from this module; the number in the "
+                               "document is carried from the 08-24..08-28 "
+                               "window quoted in prompt.md and is stale by "
+                               "construction",
+    "marcus-kpi-coach-latency": "timing it means driving the live coach, which "
+                                "is a sampling run against a production LLM "
+                                "route rather than a fact readable off the box "
+                                "-- same reason as marcus-kr-coach-first-try",
+    "pm-kpi-deprecations": "counts the features taken away again, which is "
+                           "read off his own judgement of what was a mistake "
+                           "rather than off any record on this box -- there is "
+                           "no deprecation marker anywhere in these repos to "
+                           "count",
+    "marcus-kpi-push-subscribers": "nothing on the Marcus pod exposes a "
+                                   "subscriber count: /api/push/subscriptions, "
+                                   "/api/subscriptions and /api/push/status all "
+                                   "404, so the reading has to be built before "
+                                   "it can be taken",
+}
+
+
+def kpi_rows(sections, since=None, until=None):
+    """Pair every KPI in `project-goals.md` with a measurement, or with a why.
+
+    The mirror of `key_result_rows`, and it is deliberately a separate function
+    rather than a flag on that one: a KPI has `low`/`high` where a key result
+    has `target`, it is read over its own 24h window, and rule 4 of issue #227
+    says a KPI may never be used as a key result. One function serving both
+    would be the first place that distinction quietly stops being enforced.
+    """
+    out = []
+    for name, section in (sections or {}).items():
+        for kpi in section.get("kpis") or []:
+            kpi_id = (kpi.get("id") or "").strip()
+            row = {"project": name, "id": kpi_id, "kpi": kpi}
+            measurer = KPI_MEASURERS.get(kpi_id)
+            if measurer is None:
+                why = KPI_NO_INSTRUMENT.get(
+                    kpi_id, "nothing here computes this measure")
+                out.append({**row, "value": None, "detail": f"no instrument — {why}"})
+                continue
+            value, detail = measurer(since, until)
+            if value is None:
+                out.append({**row, "value": None,
+                            "detail": f"not measured — {detail}"})
+                continue
+            out.append({**row, "value": value, "detail": detail})
+    return out
+
+
+def render_kpis(rows, path):
+    lines = [f"KPIs — {path}"]
+    for row in rows:
+        written = str(row["kpi"].get("now", "")).strip()
+        lines.append(f"  {row['project']} / {row['id']}")
+        if row["value"] is None:
+            lines.append(f"      {path} says now: {written or '(blank)'} — {row['detail']}")
+            continue
+        low = str(row["kpi"].get("low", "")).strip()
+        high = str(row["kpi"].get("high", "")).strip()
+        bounds = f"  [{low or '-'}..{high or '-'}]"
+        drift = "" if _as_number(written) == _as_number(row["value"]) else \
+            f"  <- the document says {written or '(blank)'}, drifted"
+        lines.append(f"      measured {row['value']}{bounds}{drift}")
+        lines.append(f"      {row['detail']}")
+    return "\n".join(lines)
+
+
+def write_back_kpis(path, text, rows):
+    """Put each measured value into its KPI's `now:`, in place.
+
+    Same contract as `write_back_key_results`, including the part that matters:
+    only a KPI with an instrument and a different written number is touched, so
+    a run that changes nothing writes nothing. `low:` and `high:` are never
+    written -- see `set_field_in_kpi` for why moving a guardrail's bounds to fit
+    its reading is the failure the KPI/key-result split exists to prevent.
+    """
+    from agora_runner.project_goals import set_field_in_kpi
+
+    lines, changed = [], 0
+    for row in rows:
+        if row["value"] is None:
+            continue
+        written = str(row["kpi"].get("now", "")).strip()
+        if _as_number(written) == _as_number(row["value"]):
+            continue
+        amended = set_field_in_kpi(text, row["id"], "now", row["value"])
+        if amended is None:
+            lines.append(f"  ! {row['id']}: could not edit that kpi fence, "
+                         f"left at {written or '(blank)'}")
+            continue
+        text, changed = amended, changed + 1
+        lines.append(f"  {row['id']}  now: {written or '(blank)'} -> {row['value']}")
+    if not changed:
+        head = ("WROTE NOTHING — every instrumented KPI already carries its "
+                "measured number" if not lines else "WROTE NOTHING")
+        return "\n".join([head] + lines)
+    try:
+        open(path, "w", encoding="utf-8").write(text)
+    except OSError as exc:
+        return f"COULD NOT WRITE {path}: {exc}"
+    return "\n".join([f"WROTE {changed} value(s) into {path}"] + lines)
+
+
 def _needs_marcus(sections):
     """True when any key result in the document is measured off Marcus.
 
@@ -841,9 +1023,23 @@ def main(argv=None):
         kr_rows = key_result_rows(sections, rows, marcus, marcus_error,
                                   since, until, prs)
         report += "\n\n" + render_key_results(kr_rows, args.project_goals)
+        kpis = kpi_rows(sections, since, until)
+        report += "\n\n" + render_kpis(kpis, args.project_goals)
         if args.write:
             report += "\n\n" + write_back_key_results(
                 args.project_goals, pg_text, kr_rows)
+            # The write above may have just rewritten the file. Re-read it
+            # before the second setter runs: handing `write_back_kpis` the text
+            # as it was BEFORE that write makes its own edit undo it, and the
+            # report would say both wrote.
+            try:
+                pg_text = open(args.project_goals, encoding="utf-8").read()
+            except OSError as exc:
+                report += (f"\n\nDID NOT WRITE KPIs — could not re-read "
+                           f"{args.project_goals} after the key-result write: {exc}")
+            else:
+                report += "\n\n" + write_back_kpis(
+                    args.project_goals, pg_text, kpis)
 
     print(report)
     return 0
