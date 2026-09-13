@@ -1,11 +1,11 @@
 """Is Marcus's chat still a real conversation, or has it gone quiet on the fallback?
 
-Edvard's issue #157 says Marcus's chat is *"rule-based/keyword-matched, not a
+The owner's issue #157 says Marcus's chat is *"rule-based/keyword-matched, not a
 real conversation"*. That stopped being true when the app started asking an
 Agora conversation for every turn -- but only while that conversation keeps
 answering. `askCoach` in `SokratesAI/marcus`'s `src/coach.ts` refuses to send
 on two conditions, and on either one the browser falls back to the built-in
-keyword reply. So the exact state Edvard filed comes back, silently, and the
+keyword reply. So the exact state the owner filed comes back, silently, and the
 only symptom on his phone is a small "built-in reply" note under each bubble.
 
 **That is not hypothetical: it ran for an unknown length of time.** Cycle 1468
@@ -21,13 +21,13 @@ reason, and that cycle wrote down the open question this module answers:
 - *Not in the active listing.* Agora has no `GET /conversations/<id>`, so the
   app reads the filtered listing, and an archived or deleted conversation is
   absent from it. Absent means refused.
-- *Not pinned to a `claude-cli:` model.* `identity.md` rule 9 is Edvard's hard
+- *Not pinned to a `claude-cli:` model.* `identity.md` rule 9 is the owner's hard
   rule -- production never spends the metered API -- so `askCoach` refuses any
   model that is not the subscription provider, including a conversation with
   no model at all, which would silently fall through to Agora's default. That
   refusal is correct and must stay; what is wrong is nobody noticing it fired.
 
-The `claude-cli:` prefix is checked here because it is Edvard's pricing rule,
+The `claude-cli:` prefix is checked here because it is the owner's pricing rule,
 not because `coach.ts` spells it that way. If the app's refusal ever loosens,
 this check should not follow it -- a chat that answers by spending the metered
 balance is a worse outcome than a chat on the fallback.
@@ -39,7 +39,7 @@ ArgoCD has not synced names a conversation nothing is asking. Same call
 
 **What it deliberately does not do: ask the coach a question.** A real turn is
 a model call against the subscription and it writes a message into the
-conversation Edvard reads, so a check on every sweep would put a trail of
+conversation the owner reads, so a check on every sweep would put a trail of
 Nova's own probes into his chat history. The two refusals above are both
 readable without sending anything, and they are the two that produce silence.
 What that costs is honest and printed: a conversation that is listed and
@@ -73,7 +73,7 @@ TIMEOUT = 15
 BASE_URL_VAR = "AGORA_BASE_URL"
 CONVERSATION_VAR = "MARCUS_COACH_CONVERSATION_ID"
 
-#: Edvard's hard rule, `identity.md` rule 9: the subscription provider, never
+#: The owner's hard rule, `identity.md` rule 9: the subscription provider, never
 #: the metered one. Every `anthropic:` model has an identical `claude-cli:`
 #: twin, so a conversation on the wrong side of this is a config mistake with
 #: a one-word fix, not a model that had to be given up.
@@ -151,7 +151,7 @@ def report(config, rows, out=print):
                                   (CONVERSATION_VAR, conversation_id)) if not v]
         out(f"ON THE FALLBACK  the Marcus Deployment sets no {' and no '.join(missing)}, "
             "so askCoach returns `unconfigured` and every chat turn is answered "
-            "by the built-in keyword reply — which is the state Edvard filed as "
+            "by the built-in keyword reply — which is the state the owner filed as "
             "issue #157.")
         return 2
 
@@ -190,7 +190,7 @@ def report(config, rows, out=print):
         "than the built-in keyword reply.")
     out("         NOT JUDGED: whether the runner answers. This reads the two "
         "conditions askCoach refuses on without sending anything, because a real "
-        "turn writes a message into the chat history Edvard reads.")
+        "turn writes a message into the chat history the owner reads.")
     return 0
 
 
