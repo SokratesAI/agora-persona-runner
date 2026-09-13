@@ -11,7 +11,7 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.project_goals import (
     MAX_KEY_RESULTS, key_result_ids, kpi_ids, parse_project_goals, problems,
-    serves_problems, split_serves,
+    serves_orphans, serves_problems, split_serves,
 )
 
 
@@ -165,10 +165,30 @@ def test_a_milestone_serving_an_unknown_id_is_refused():
     assert found and "not a key result id" in found[0]
 
 
-def test_a_milestone_serving_nothing_is_the_orphan_list():
+def test_a_milestone_serving_nothing_is_the_orphan_list_and_not_a_problem():
+    """Issue #227's fourth rule is an inventory, so it comes out of
+    `serves_orphans` and never out of `serves_problems` -- the two are
+    separate because only one of them is a thing a pull request can fix."""
     sections = parse_project_goals(NOVA)
-    found = serves_problems({("Nova", "Runner engineering"): ""}, sections)
-    assert found and "serves nothing" in found[0]
+    seats = {("Nova", "Runner engineering"): ""}
+    assert serves_problems(seats, sections) == []
+    orphans = serves_orphans(seats, sections)
+    assert orphans and "serves nothing" in orphans[0]
+
+
+def test_a_well_linked_milestone_is_not_an_orphan():
+    sections = parse_project_goals(NOVA)
+    assert serves_orphans({("Nova", "Picking"): "nova-kr1"}, sections) == []
+
+
+def test_a_milestone_pointing_at_a_kpi_is_a_defect_and_not_an_orphan():
+    """The near miss: it has a `Serves` cell, so it is not an orphan, and
+    the cell names a guardrail, so it is broken. Reading a broken pointer as
+    an orphan would quietly stop it raising."""
+    sections = parse_project_goals(NOVA)
+    seats = {("Nova", "M"): "nova-cost"}
+    assert serves_orphans(seats, sections) == []
+    assert any("is a KPI" in line for line in serves_problems(seats, sections))
 
 
 def test_a_milestone_serving_a_real_key_result_is_clean():

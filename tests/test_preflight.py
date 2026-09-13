@@ -1139,3 +1139,18 @@ def test_every_solo_check_is_on_the_roster():
     # A name in SOLO that is not in CHECKS is a check held out of the pool and
     # then never run at all -- `main` only ever iterates `names`.
     assert set(preflight.SOLO) <= set(preflight.CHECKS)
+
+
+def test_project_goals_check_is_on_the_roster():
+    # Cycle 1536. Nothing read `project-goals.md` or `milestone-seats.md`
+    # unprompted -- the model those two documents carry was enforced only by
+    # a tool a cycle had to remember to run, and issue #227 is the standing
+    # instruction, so a broken pointer would have sat there. It could only be
+    # registered once the orphan list stopped raising: 43 of 58 seated
+    # milestones serve nothing today and 32 of those sit in projects the owner
+    # scoped out until step 4, so the merged verdict was red forever on work
+    # nobody is allowed to do.
+    from tools import preflight as pf
+
+    assert "project_goals_check" in pf.CHECKS
+    assert pf.CADENCE_HOURS["project_goals_check"] == 0.0
