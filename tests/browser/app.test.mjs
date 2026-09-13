@@ -17781,6 +17781,109 @@ describe("the journal's comment filter", () => {
       "the dot stayed lit after he read the only unread reply");
   });
 
+  /* His report, 2026-09-13: *"The unread comments filter on the Journal is
+   * buggy. It takes a long time to load and also it shows a loading... Text
+   * all the time. Also, when i expand the comments of the unread comments it
+   * vanishes."*
+   *
+   * Two failures, one cause: the filter ran client-side over `?limit=20`.
+   * Measured against the live pod that afternoon -- newest commented cycle
+   * 1415, newest written 1522 -- so 107 cards in a row matched nothing, the
+   * feed came back empty, the pager was the only node left in the viewport,
+   * and `loadWhenScrolledTo` clicked it on sight. */
+  async function withFilter(name, opts = {}) {
+    const asked = [];
+    const window = await loadSite("/journal", {
+      ...opts,
+      journal: (url) => {
+        asked.push(String(url));
+        return opts.journal ? opts.journal(url) : payload.journal;
+      },
+    });
+    click(window, toggle(window));
+    click(window, option(window, name));
+    await settle();
+    return { window, asked };
+  }
+
+  test("it asks the server for the matching cycles instead of paging a window", async () => {
+    const { window, asked } = await withFilter("unread",
+      { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    assert.deepEqual(shown(window), ["Cycle 55"]);
+    const last = asked[asked.length - 1];
+    assert.match(last, /\/api\/journal\?cycles=55$/,
+      "the filter asked for a window instead of naming its cycles: " + asked.join(", "));
+  });
+
+  /* `total` is what the fixture does not carry and the live server always
+   * does: 1,522 cycles against a window of twenty. Without it `entries.length
+   * < total` is never true, the pager cannot draw at all, and a test asserting
+   * it is absent would pass on the broken code too. */
+  const paged = (n) => (() => ({ ...payload.journal, total: n }));
+
+  test("no pager under a filtered feed, so nothing auto-pages the archive", async () => {
+    const { window } = await withFilter("unread",
+      { install: withRepliesRead({ "55": "2026-08-09 13:00" }), journal: paged(400) });
+    assert.deepEqual(shown(window), ["Cycle 55"]);
+    assert.equal(window.document.querySelector("#feed button.more"), null,
+      "the pager is still drawn, and `loadWhenScrolledTo` clicks it on sight");
+  });
+
+  test("an empty filtered feed draws no pager either -- this is the loading… loop", async () => {
+    const { window } = await withFilter("unread",
+      { comments: { byCycle: {}, needs: [] }, journal: paged(400) });
+    assert.equal(cards(window).length, 0);
+    assert.equal(window.document.querySelector("#feed button.more"), null,
+      "an empty feed left the pager alone in the viewport, which auto-clicks forever");
+  });
+
+  test("the control: an unfiltered feed still offers the pager", async () => {
+    const window = await loadSite("/journal", { journal: paged(400) });
+    assert.ok(window.document.querySelector("#feed button.more"),
+      "the pager never draws in this fixture, so its absence above proves nothing");
+  });
+
+  test("opening a card's comments does not make it vanish out from under him", async () => {
+    const { window } = await withFilter("unread",
+      { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    assert.deepEqual(shown(window), ["Cycle 55"]);
+    /* His own tap, not a localStorage write: the page caches the read marks
+     * in memory (`repliesReadLoaded`), so a store written from outside is
+     * invisible to it and a test that did that would pass on the broken code
+     * too. Expanding the bubbles is what calls `markRepliesRead`. */
+    const bubble = cards(window)[0].querySelector(".comment-toggle");
+    assert.ok(bubble, "the card carries no comment toggle to open");
+    click(window, bubble);
+    await settle();
+    assert.equal(
+      JSON.parse(window.localStorage.getItem("nova.repliesRead.v1"))["55"],
+      "2026-08-09 13:12",
+      "the control failed: opening the drawer did not mark the reply read");
+    /* The tap itself repaints only the chip and the header. What drops the
+     * card is the next full paint -- the 30-second poll on his phone, a
+     * `popstate` here -- which is why it vanishes a moment after he opens it
+     * rather than under the finger. */
+    window.dispatchEvent(new window.Event("popstate"));
+    await settle();
+    assert.deepEqual(shown(window), ["Cycle 55"],
+      "the card left the list the moment its replies were marked read");
+  });
+
+  test("but a fresh pick of the filter asks the question again", async () => {
+    const { window } = await withFilter("unread",
+      { install: withRepliesRead({ "55": "2026-08-09 13:00" }) });
+    click(window, cards(window)[0].querySelector(".comment-toggle"));
+    await settle();
+    click(window, toggle(window));
+    click(window, option(window, "all"));
+    await settle();
+    click(window, toggle(window));
+    click(window, option(window, "unread"));
+    await settle();
+    assert.deepEqual(shown(window), [],
+      "the held list outlived the filter it belonged to");
+  });
+
   test("a filter that matches nothing says so rather than drawing an empty feed", async () => {
     const window = await loadSite("/journal", {
       comments: { byCycle: {}, needs: [] },
