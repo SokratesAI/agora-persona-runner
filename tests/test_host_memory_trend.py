@@ -1573,3 +1573,58 @@ def test_ledger_pods_reads_the_names_a_backfill_must_skip(tmp_path):
         json.dumps({"pod": "b"})]) + "\n")
     assert hmt.ledger_pods(str(ledger)) == ({"a", "b"}, None)
     assert hmt.ledger_pods(str(tmp_path / "absent.jsonl")) == (set(), None)
+
+
+# The same sweep with the node's own /proc/stat line (platform-config#752).
+# Kept as a second literal rather than an f-string over the first, because the
+# older shape has to keep parsing for as long as an older image can run -- and
+# a fixture that derives one from the other cannot fail on only one of them.
+SWEEP_LOG_WITH_NODE_CPU = SWEEP_LOG_WITH_CPU.replace(
+    "  all      now    108.1%  -- about 1.1 core(s) busy across every process read\n",
+    "  all      now    108.1%  -- about 1.1 core(s) busy across every process read\n"
+    "  node     now    382.4%  -- about 3.8 of 4 core(s) busy on the node itself,"
+    " idle excluded (user 41.0%, system 210.2%, iowait 128.3%, irq 0.2%,"
+    " softirq 2.7%, steal 0.0%)\n")
+
+
+def test_the_node_line_is_read_alongside_the_all_line():
+    parsed, why = hmt._parse_sweep(SWEEP_LOG_WITH_NODE_CPU)
+    assert why is None
+    # Both, not either: the point of the pair is the difference between them,
+    # so a reader that took the node figure by overwriting `all` would lose
+    # exactly the fact it was added for.
+    assert parsed["cpu_busy_percent"] == 108.1
+    assert parsed["cpu_node_percent"] == 382.4
+    # The node line sits inside the CPU section and must not be mistaken for
+    # a process row -- 382.4 is not a pid.
+    assert [row["pid"] for row in parsed["cpu_rows"]] == [1378239, 1931584,
+                                                          1378250]
+
+
+def test_a_sweep_without_the_node_line_reports_it_absent_not_zero():
+    parsed, why = hmt._parse_sweep(SWEEP_LOG_WITH_CPU)
+    assert why is None
+    assert parsed["cpu_node_percent"] is None
+
+
+def test_an_unmeasured_node_line_is_none_rather_than_a_number():
+    # The sweep prints `?` when /proc/stat was unreadable on both sides of
+    # the window. A blind instrument and a quiet node are opposite findings.
+    log = SWEEP_LOG_WITH_NODE_CPU.replace(
+        "  node     now    382.4%", "  node     now        ?")
+    parsed, why = hmt._parse_sweep(log)
+    assert why is None
+    assert parsed["cpu_node_percent"] is None
+
+
+def test_the_ledger_carries_the_node_figure(tmp_path):
+    parsed, _ = hmt._parse_sweep(SWEEP_LOG_WITH_NODE_CPU)
+    parsed["pod"] = "sweep-0-abc"
+    report = {"at": datetime(2026, 9, 13, 5, 0, tzinfo=timezone.utc),
+              "pods": [parsed]}
+    path = str(tmp_path / "cpu.jsonl")
+    written, _, why = hmt.record_cpu(report, path)
+    assert (written, why) == (1, None)
+    row = json.loads(open(path, encoding="utf-8").read().strip())
+    assert row["cpu_busy_percent"] == 108.1
+    assert row["cpu_node_percent"] == 382.4

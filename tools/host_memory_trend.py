@@ -206,6 +206,18 @@ CPU_ROW = re.compile(
 #: means about 1.1 cores were busy on that box.
 CPU_TOTAL_ROW = re.compile(r"^\s*all\s+now\s+" + _CPU_PCT + r"%?")
 
+#: The `node` line of that section -- the node's own /proc/stat, over the same
+#: window, in the same percent-of-one-core units so the two subtract
+#: (platform-config#752). It is the answer `all` cannot give: time the kernel
+#: burns reclaiming memory, waiting on IO or servicing interrupts is charged
+#: to no pid at all, so a box thrashing itself to a standstill sums to almost
+#: nothing across its processes. That is the shape issue #169 describes and it
+#: is the one shape the per-process total is blind to.
+#:
+#: Absent on every sweep image older than that PR, and absent reads as "the
+#: sweep did not say" -- never as zero.
+CPU_NODE_ROW = re.compile(r"^\s*node\s+now\s+" + _CPU_PCT + r"%?")
+
 #: How many CPU rows to *print*, matching `SWAP_HOLDER_TOP`'s reasoning: the
 #: sweep already prints its own top 10 per node and repeating 20 of them would
 #: put a wall of text in front of every run. The ledger keeps every row the
@@ -557,7 +569,7 @@ def _parse_sweep(text):
     this reader no longer understands, and the two are returned differently.
     """
     node, total_swap, rows, in_swap, said_none = None, None, [], False, False
-    cpu_rows, cpu_busy, in_cpu = [], None, False
+    cpu_rows, cpu_busy, cpu_node, in_cpu = [], None, None, False
     for line in text.splitlines():
         head = SWAP_HOLDER_HEADER.match(line)
         if head:
@@ -590,6 +602,10 @@ def _parse_sweep(text):
             cpu_total = CPU_TOTAL_ROW.match(line)
             if cpu_total:
                 cpu_busy = _cpu_percent(cpu_total.group(1))
+                continue
+            cpu_node_line = CPU_NODE_ROW.match(line)
+            if cpu_node_line:
+                cpu_node = _cpu_percent(cpu_node_line.group(1))
                 continue
             cpu_row = CPU_ROW.match(line)
             if cpu_row:
@@ -627,7 +643,8 @@ def _parse_sweep(text):
     # parse here -- absent reads as "the sweep did not say", which is what
     # `cpu_busy_percent: None` means, and never as "nothing was busy".
     return {"node": node, "rows": rows, "total_swap_mib": total_swap,
-            "cpu_rows": cpu_rows, "cpu_busy_percent": cpu_busy}, None
+            "cpu_rows": cpu_rows, "cpu_busy_percent": cpu_busy,
+            "cpu_node_percent": cpu_node}, None
 
 
 def read_node_names(runner=subprocess.run):
@@ -884,6 +901,11 @@ def record_cpu(report, path, keep=DEFAULT_CPU_KEEP):
                     handle.write(json.dumps({
                         "_at": at, "pod": pod["pod"], "node": pod["node"],
                         "cpu_busy_percent": pod.get("cpu_busy_percent"),
+                        # Written even when None, so a sample taken before
+                        # platform-config#752 rolled out is distinguishable
+                        # from one where /proc/stat was unreadable only by
+                        # reading the Pod log, not by the key being missing.
+                        "cpu_node_percent": pod.get("cpu_node_percent"),
                         "rows": pod["cpu_rows"]}, sort_keys=True) + "\n")
             # Trimmed after the append rather than before, so a write that
             # fails leaves the history it could not add to intact. The oldest

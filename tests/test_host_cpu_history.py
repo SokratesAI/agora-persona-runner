@@ -346,3 +346,82 @@ def test_the_oslo_stamp_follows_daylight_saving(tmp_path):
     winter = datetime(2026, 12, 1, 12, 0, tzinfo=timezone.utc)
     assert hch._oslo(summer).endswith("14:00")
     assert hch._oslo(winter).endswith("13:00")
+
+
+def thrashing(at, node="server1", owned=12.0, node_busy=382.4, pod=None):
+    """A sample in the shape issue #169 describes.
+
+    Almost nothing is charged to a pid and the box is nearly pegged: 3.8 of 4
+    cores busy, 0.12 of a core of it owned by processes. That is what a node
+    out of memory and swap looks like -- the cores are in reclaim, iowait and
+    softirq, which belong to no process -- and it is the case the reader was
+    blind to while it judged the per-process sum alone.
+    """
+    row = sample(at, node=node, busy=owned, pod=pod)
+    row["cpu_node_percent"] = node_busy
+    return row
+
+
+def test_a_thrashing_node_is_hot_even_though_no_process_is(tmp_path, capsys):
+    # The separating test. Every sample here has owned CPU far below the
+    # threshold, so a reader judging `cpu_busy_percent` calls this quiet.
+    rows = [thrashing(NOW - timedelta(hours=6) + timedelta(minutes=30 * i))
+            for i in range(8)]
+    code = hch.report(ledger=ledger(tmp_path, rows), now=NOW,
+                      runner=fake_nodes(), out=io.StringIO())
+    assert code == 2
+
+
+def test_the_same_samples_without_the_node_figure_read_quiet(tmp_path):
+    # The other half of the pair: this is what the reader saw before, and it
+    # is still what it sees for a sample an older sweep image wrote. Without
+    # this the test above could pass on a threshold change rather than on the
+    # node figure being used.
+    rows = []
+    for row in [thrashing(NOW - timedelta(hours=6) + timedelta(minutes=30 * i))
+                for i in range(8)]:
+        row.pop("cpu_node_percent")
+        rows.append(row)
+    out = io.StringIO()
+    code = hch.report(ledger=ledger(tmp_path, rows), now=NOW,
+                      runner=fake_nodes(), out=out)
+    assert code == 0
+    assert "OWNED ONLY  8 of 8 sample(s)" in out.getvalue()
+
+
+def test_the_run_names_the_cores_no_process_owns(tmp_path):
+    rows = [thrashing(NOW - timedelta(hours=6) + timedelta(minutes=30 * i))
+            for i in range(8)]
+    out = io.StringIO()
+    assert hch.report(ledger=ledger(tmp_path, rows), now=NOW,
+                      runner=fake_nodes(), out=out) == 2
+    text = out.getvalue()
+    # 382.4 - 12.0 = 370.4% of one core, so 3.70 cores belong to nobody.
+    assert "3.70 core(s) charged to no process" in text
+    assert "look at memory and swap on that node first" in text
+
+
+def test_a_node_busier_than_its_processes_by_a_hair_says_nothing(tmp_path):
+    # The two figures are read over the same window, not the same instants,
+    # so a small positive gap is arithmetic. Naming it on every clean run
+    # would make the clause meaningless by the time it mattered.
+    rows = [thrashing(NOW - timedelta(minutes=30 * i), owned=100.0,
+                      node_busy=100.0 + hch.UNOWNED_FLOOR - 0.1)
+            for i in range(4)]
+    out = io.StringIO()
+    hch.report(ledger=ledger(tmp_path, rows), now=NOW,
+               runner=fake_nodes(), out=out)
+    assert "charged to no process" not in out.getvalue()
+
+
+def test_a_node_busy_in_processes_is_still_judged_on_the_node_figure(tmp_path):
+    # The node figure is preferred in BOTH directions. A sweep whose process
+    # sum double-counts threads could exceed the node's own reading, and the
+    # node is the box's own answer about itself.
+    rows = [thrashing(NOW - timedelta(hours=6) + timedelta(minutes=30 * i),
+                      owned=390.0, node_busy=80.0)
+            for i in range(8)]
+    out = io.StringIO()
+    assert hch.report(ledger=ledger(tmp_path, rows), now=NOW,
+                      runner=fake_nodes(), out=out) == 0
+    assert "busiest 0.80 core(s)" in out.getvalue()
