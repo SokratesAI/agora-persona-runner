@@ -164,6 +164,7 @@ CHECKS = (
     "telegram_inbox",
     "login_handshake",
     "host_memory_trend",
+    "host_cpu_history",
     "memory_headroom",
     "memory_index_health",
     "node_memory",
@@ -296,6 +297,11 @@ SUBJECT = {
     #: node argument, and that is my own issue rather than a thing to paper
     #: over by renaming the label.
     "host_memory_trend": ("on-box",  "the bridge pod's own node's memory"),
+    #: Not this pod's /proc and not a live reading at all: the durable CPU
+    #: ledger the sweep writes, read back. Its subject is every node the
+    #: sweep reached, over days, which is the one thing the two above
+    #: cannot answer -- they are spot readings of one box.
+    "host_cpu_history":  ("on-box",  "every swept node's CPU, over days"),
     "memory_headroom":   ("on-box",  "the bridge pod's own node's memory"),
     #: Not the node's memory and not a persona's: MY OWN memory index, the
     #: MEMORY.md loaded into every session this loop runs. It sits beside the
@@ -444,6 +450,7 @@ CADENCE_HOURS = {
     "log_secret_scan": 24.0,
     "disk_health": 24.0,
     "host_memory_trend": 24.0,
+    "host_cpu_history": 24.0,
     "memory_headroom": 24.0,
     "memory_index_health": 24.0,
     "oom_rank": 24.0,
