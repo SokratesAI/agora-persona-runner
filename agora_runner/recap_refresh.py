@@ -82,6 +82,13 @@ SYSTEM = (
 _HEADING = re.compile(r"^###\s+(?P<text>\S.*)$")
 _PR_LINE = re.compile(r"^PR:\s*(?P<text>\S.*)$")
 _BULLET = re.compile(r"^[-*•]\s+(?P<text>\S.*)$")
+#: `SokratesAI/agora-persona-runner#1046` in an entry's PR footer. Expanded
+#: to a full URL before Haiku sees it, because of his capture 2026-09-04:
+#: *"the bullet that mentions the tailnet start page has been created, i
+#: immediately want to check it out but I'm left without a url or any
+#: clickable link."* A model cannot invent a link that was not in front of
+#: it, and `#1046` is not one.
+_PR_REF = re.compile(r"\b(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)#(?P<number>\d+)\b")
 
 _lock = threading.Lock()
 _thread = None
@@ -132,8 +139,16 @@ def raw_material(names, read):
                     pr = match.group("text").strip()
         if not heading:
             continue
-        rows.append(f"- {heading}" + (f"\n    PR: {pr}" if pr else ""))
+        rows.append(f"- {heading}" + (f"\n    PR: {pr_links(pr)}" if pr else ""))
     return rows
+
+
+def pr_links(text):
+    """`owner/repo#N` expanded to the URL it names, in place."""
+    return _PR_REF.sub(
+        lambda m: f"https://github.com/{m.group('owner')}/{m.group('repo')}"
+                  f"/pull/{m.group('number')}",
+        text or "")
 
 
 def prompt_for(rows):

@@ -181,7 +181,7 @@ def test_the_material_carries_the_pr_line_so_a_bullet_can_link():
     name, body = entry(1, 900, pr="SokratesAI/marcus#142")
     rows = recap_refresh.raw_material(
         [name], {recap_refresh.JOURNAL_DIR + name: body}.get)
-    assert "PR: SokratesAI/marcus#142" in rows[0]
+    assert "PR: https://github.com/SokratesAI/marcus/pull/142" in rows[0]
 
 
 def test_the_prompt_fences_the_entries_and_forbids_replying():
@@ -224,3 +224,46 @@ def test_a_tick_arriving_mid_generation_is_dropped(wired):
         assert vault.written == []
     finally:
         recap_refresh._lock.release()
+
+
+def test_a_pr_reference_reaches_haiku_as_a_url_it_can_copy():
+    # His 2026-09-04 capture: a bullet naming something he cannot tap is a
+    # bullet that makes him go and search. `#1046` is not a link and no model
+    # can invent the one it stands for, so the expansion happens here.
+    name, body = entry(1, 900, pr="SokratesAI/agora-persona-runner#1046")
+    rows = recap_refresh.raw_material(
+        [name], {recap_refresh.JOURNAL_DIR + name: body}.get)
+    assert "https://github.com/SokratesAI/agora-persona-runner/pull/1046" in rows[0]
+
+
+def test_prose_around_a_pr_reference_survives_the_expansion():
+    assert recap_refresh.pr_links("marcus#142, merged 08:22") == (
+        "marcus#142, merged 08:22")
+    assert recap_refresh.pr_links("two: a/b#1 and c/d#2") == (
+        "two: https://github.com/a/b/pull/1 and https://github.com/c/d/pull/2")
+
+
+def test_main_starts_the_refresher(monkeypatch):
+    # The wire. Without it every branch above is dead code in production --
+    # this repo has filed that failure before, a feature complete and green
+    # and reachable from nothing.
+    import importlib
+    import inspect
+    import sys
+
+    # `sys.modules`, not `agora_runner.main`: the package rebinds that name
+    # to the `main` FUNCTION, so the attribute lookup returns a callable and
+    # every assertion below would fail on the wrong object.
+    importlib.import_module("agora_runner.main")
+    main_module = sys.modules["agora_runner.main"]
+
+    assert main_module.start_recap_refresh is recap_refresh.start_recap_refresh
+    assert "start_recap_refresh()" in inspect.getsource(main_module)
+
+
+def test_the_refresher_can_be_switched_off_by_the_interval(monkeypatch):
+    # A daemon thread in the runner needs an off switch that does not need a
+    # code change -- `RECAP_REFRESH_SECONDS=0` on the Deployment.
+    monkeypatch.setattr(recap_refresh, "REFRESH_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(recap_refresh, "_thread", None)
+    assert recap_refresh.start_recap_refresh() is None

@@ -184,3 +184,15 @@ def test_render_omits_the_marker_rather_than_writing_an_empty_one():
     assert stamp and "journal" not in stamp[0]
     assert nova_recap.stamp_journal("") == ""
     assert nova_recap.stamp_journal("  x.md ") == " | journal x.md"
+
+
+def test_an_unknown_third_field_does_not_get_swallowed_into_cycles():
+    # `cycles` stops at a `|`, not at the closing `>`. With `[^>]*?` the lazy
+    # quantifier happens to give the right answer for a `journal` field --
+    # the named group after it absorbs the rest -- so only a field the
+    # pattern does NOT know separates the two spellings. A future writer
+    # adding one must not silently corrupt the cycle range on his card.
+    payload = nova_recap.parse_recap(
+        "<!-- generated: 2026-09-13T13:00+02:00 | cycles 1500-1508 | "
+        "built-by haiku -->\n\n- a bullet\n")
+    assert payload["cycles"] == "1500-1508"
