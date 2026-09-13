@@ -139,8 +139,61 @@ def raw_material(names, read):
                     pr = match.group("text").strip()
         if not heading:
             continue
-        rows.append(f"- {heading}" + (f"\n    PR: {pr_links(pr)}" if pr else ""))
+        row = f"- {heading}"
+        if pr:
+            row += f"\n    PR: {pr_links(pr)}"
+        lead = opening_prose(body)
+        if lead:
+            row += f"\n    {lead}"
+        rows.append(row)
     return rows
+
+
+#: How much of an entry's opening prose to hand the model. One paragraph is
+#: usually 400-900 characters and thirty of them is a prompt Haiku reads in a
+#: couple of seconds; the cap is here so one unusually long paragraph cannot
+#: crowd out the twenty-nine entries after it.
+LEAD_CHARS = 700
+
+#: The fixed `PR: ... | Outcome: ...` line every entry ends with. It is the
+#: one non-prose line that does not announce itself with markdown punctuation,
+#: and an entry whose body is all tables and quotes would otherwise hand the
+#: model its own footer as the summary.
+_FOOTER = re.compile(r"^(PR|Board|Outcome):", re.I)
+
+
+def opening_prose(body):
+    """The entry's first real paragraph, flattened to one line.
+
+    **Titles alone are not enough material, and this is a measurement rather
+    than a preference.** Run live against the real bridge on 2026-09-13 with
+    headings and PR footers only, Haiku wrote *"Merged 18+ improvements to
+    Marcus covering proactivity, goal handling, memory, data clarity, and
+    session safety"* and *"Completed work from a previous incomplete cycle"*.
+    Both are true and neither is something he can act on -- counting is what
+    a summariser reaches for when all it has is headlines. The same window
+    with each entry's opening paragraph attached produced *"Marcus now
+    coaches proactively, opening with what it thinks you should do today
+    instead of waiting for you to ask"*, which is the card he asked for.
+
+    Skips the heading, quotes, rules, fences, tables, list items and the
+    entry's own `PR:`/`Outcome:` footer -- everything that is furniture
+    rather than the sentence saying what happened.
+    """
+    paragraph = []
+    for line in (body or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if paragraph:
+                break
+            continue
+        if (stripped.startswith(("#", ">", "---", "```", "|", "- ", "* "))
+                or _FOOTER.match(stripped)):
+            if paragraph:
+                break
+            continue
+        paragraph.append(stripped)
+    return " ".join(paragraph)[:LEAD_CHARS]
 
 
 def pr_links(text):
