@@ -74,6 +74,15 @@ SITE = os.environ.get(
     "NOVA_SITE_SELF_URL", "http://nova-site.agents.svc.cluster.local:8083"
 )
 
+# Marcus's own app, which serves its whole persisted state at `/api/state` with
+# no token. That endpoint is the only instrument this loop has for what the
+# owner has actually done in that app, and the numbers Cycle 1529 typed into
+# `project-goals.md` by hand came from a `curl` at it.
+MARCUS = os.environ.get(
+    "MARCUS_SELF_URL", "http://marcus.agents.svc.cluster.local:8080"
+)
+
+
 def today_oslo(now=None):
     """Today's date in Oslo, as `YYYY-MM-DD`.
 
@@ -185,6 +194,21 @@ def fetch_board(name, site=SITE):
     if error:
         return [], error
     return payload.get("items") or [], None
+
+
+def fetch_marcus_state(site=MARCUS):
+    """Marcus's persisted `data` object, or `(None, why)`.
+
+    Returns the inner `data` rather than the envelope: `rev` and `updatedAt`
+    describe the store, and every measure here is about what is in it.
+    """
+    payload, error = _get_json(f"{site}/api/state")
+    if error:
+        return None, error
+    data = (payload or {}).get("data")
+    if not isinstance(data, dict):
+        return None, f"{site}/api/state answered without a `data` object"
+    return data, None
 
 
 def fetch_merged(repo, since, until, limit=1000):
@@ -453,26 +477,140 @@ KEY_RESULT_INSTRUMENTS = {
     "nova-kr-true-first-time": "G3",
 }
 
+
+def measure_marcus_sessions_logged(state, since, until):
+    """Training sessions per week, counted in Marcus's own store.
+
+    A session record is `{id, date: "YYYY-MM-DD", kind, ...}` -- the date is
+    the day the log is *for*, which is the day he picks in the form, not the
+    day the row was written. That is the right day for "the training you did".
+
+    The window is the same one the goals use, so a `--days` other than 7 still
+    reports a per-week rate rather than a raw count that silently means
+    something else.
+    """
+    sessions = state.get("sessions")
+    if not isinstance(sessions, list):
+        return None, "Marcus's state carries no `sessions` list"
+    inside, undated = 0, 0
+    for session in sessions:
+        day = _iso((session or {}).get("date") if isinstance(session, dict) else None)
+        if day is None:
+            undated += 1
+            continue
+        if since <= day <= until:
+            inside += 1
+    days = (date.fromisoformat(until) - date.fromisoformat(since)).days + 1
+    rate = round(inside * 7 / days, 1) if days else 0
+    detail = (f"{inside} session(s) dated inside {since}..{until} out of "
+              f"{len(sessions)} in the store, over a {days}-day window")
+    if undated:
+        detail += (f"; {undated} carry no YYYY-MM-DD date and are not counted, "
+                   "so this is a floor")
+    return rate, detail
+
+
+def measure_marcus_own_plan(state, since, until):
+    """1 when the active plan has any exercise in it, 0 when it is empty.
+
+    **This is a ceiling and the reason is worth carrying.** The key result
+    wants to separate his own plan from the app's seeded demo block, and
+    `/api/state` cannot: the demo marker is `demoSeeded` in the *browser's*
+    localStorage, so the store holds a demo plan and his own plan in exactly
+    the same shape. What the store does answer exactly is the empty case --
+    `blockName: "No plan yet"` with no exercises on any day -- which is what
+    it reads today. So a 0 here is exact and a 1 would need his word.
+    """
+    plan = state.get("plan")
+    if not isinstance(plan, dict):
+        return None, "Marcus's state carries no `plan` object"
+    days = plan.get("days") if isinstance(plan.get("days"), list) else []
+    filled = [d for d in days
+              if isinstance(d, dict) and (d.get("exercises") or [])]
+    name = str(plan.get("blockName") or "").strip() or "(unnamed)"
+    if not filled:
+        return 0, f"the active plan is {name!r} with no exercises on any of its {len(days)} day(s)"
+    return 1, (f"the active plan is {name!r} with exercises on {len(filled)} of "
+               f"{len(days)} day(s) -- a ceiling, because /api/state carries no "
+               "marker separating the seeded demo block from a plan you drafted")
+
+
+# A key result whose number is measured HERE rather than borrowed from a goal
+# in `goals.md`. `KEY_RESULT_INSTRUMENTS` above covers the other direction --
+# a key result that is the same measurement a goal already has -- and the two
+# are deliberately separate maps: borrowing a goal row guarantees the two
+# documents cannot disagree, while these have no goal to borrow from because
+# `goals.md` is this loop's slate and Marcus is a different project.
+#
+# Each measurer takes `(state, since, until)` and returns `(value, detail)`,
+# or `(None, why)` when the state it needed was not in the shape it expects.
+KEY_RESULT_MEASURERS = {
+    "marcus-kr-sessions-logged": measure_marcus_sessions_logged,
+    "marcus-kr-a-plan-of-his-own": measure_marcus_own_plan,
+}
+
 KEY_RESULT_NO_INSTRUMENT = {
     "nova-kr-in-the-app": "counts things the owner still has to leave the Nova "
                           "app to do -- a judgement about his experience, not a "
                           "fact on this box; same reason as G2, which is the "
                           "same measure",
+    "marcus-kr-coach-first-try": "Marcus keeps no record of coach taps or "
+                                 "retries -- /api/state holds the chat but not "
+                                 "whether a tap needed a second one -- so the "
+                                 "only way to read this is to drive the live "
+                                 "coach a number of times and count, which is a "
+                                 "sampling run against a production LLM route "
+                                 "rather than a fact readable off the box",
 }
 
 
-def key_result_rows(sections, rows):
-    """Pair every key result in `project-goals.md` with a measured goal row.
+def _needs_marcus(sections):
+    """True when any key result in the document is measured off Marcus.
 
-    `rows` is what `main` already built for `goals.md`, so a key result and
-    the goal it shares a measure with can never disagree: there is one
-    measurement and two places that print it.
+    The fetch is skipped otherwise, so a document with no Marcus section costs
+    no call and cannot fail on a route it does not use.
+    """
+    for section in (sections or {}).values():
+        for kr in section.get("keyResults") or []:
+            if (kr.get("id") or "").strip() in KEY_RESULT_MEASURERS:
+                return True
+    return False
+
+
+def key_result_rows(sections, rows, marcus=None, marcus_error=None,
+                    since=None, until=None):
+    """Pair every key result in `project-goals.md` with a measurement.
+
+    Two sources, in this order. A key result in `KEY_RESULT_INSTRUMENTS` takes
+    its number from the goal row `main` already built for `goals.md`, so the
+    two documents cannot disagree: there is one measurement and two places that
+    print it. A key result in `KEY_RESULT_MEASURERS` is measured here, from
+    `marcus` -- the `data` object off Marcus's `/api/state`.
+
+    `marcus` being `None` is not the same as a key result having no instrument,
+    and the detail says which: an unread state names why it could not be read,
+    so a cycle never reads "no instrument" over a route that was simply down.
     """
     by_key = {row["key"]: row for row in rows}
     out = []
     for name, section in (sections or {}).items():
         for kr in section.get("keyResults") or []:
             kr_id = (kr.get("id") or "").strip()
+            row = {"project": name, "id": kr_id, "kr": kr}
+            measurer = KEY_RESULT_MEASURERS.get(kr_id)
+            if measurer is not None:
+                if marcus is None:
+                    why = marcus_error or "Marcus's state was not read"
+                    out.append({**row, "value": None,
+                                "detail": f"not measured — {why}"})
+                    continue
+                value, detail = measurer(marcus, since, until)
+                if value is None:
+                    out.append({**row, "value": None,
+                                "detail": f"not measured — {detail}"})
+                    continue
+                out.append({**row, "value": value, "detail": detail})
+                continue
             goal_key_name = KEY_RESULT_INSTRUMENTS.get(kr_id)
             source = by_key.get(goal_key_name) if goal_key_name else None
             if source is None or source.get("value") is None:
@@ -480,11 +618,9 @@ def key_result_rows(sections, rows):
                     kr_id, "nothing here computes this measure")
                 if goal_key_name and source is not None:
                     why = f"{goal_key_name} could not be measured: {source['detail']}"
-                out.append({"project": name, "id": kr_id, "kr": kr,
-                            "value": None, "detail": f"no instrument — {why}"})
+                out.append({**row, "value": None, "detail": f"no instrument — {why}"})
                 continue
-            out.append({"project": name, "id": kr_id, "kr": kr,
-                        "value": source["value"],
+            out.append({**row, "value": source["value"],
                         "detail": f"from {goal_key_name}: {source['detail']}"})
     return out
 
@@ -555,8 +691,9 @@ def main(argv=None):
     parser.add_argument("--site", default=SITE)
     parser.add_argument("--project-goals", default=None,
                         help="path to a copy of project-goals.md; its key results "
-                             "that share a measure with a goal are reported too, "
-                             "and written by --write")
+                             "are reported too, and written by --write -- the ones "
+                             "that share a measure with a goal from that goal, and "
+                             "Marcus's from Marcus's own /api/state")
     parser.add_argument("--write", action="store_true",
                         help="write each measured value into the --goals file's "
                              "own `now:` field, in place (default: report only)")
@@ -612,10 +749,12 @@ def main(argv=None):
         value, detail = measurer(window, boards, since, until, prs)
         rows.append({"key": key, "goal": goal, "value": value, "detail": detail})
 
-    report = render(rows, since, until, problems)
-    if args.write:
-        report += "\n\n" + write_back(args.goals, text, rows)
-
+    # The project-goals document is read and its instruments are gathered
+    # BEFORE the goals report is rendered, because a Marcus route that did not
+    # answer belongs in that report's `WHAT THIS CANNOT SEE` list -- and a
+    # `render` called twice would print the second one over the first, taking
+    # the `--write` block with it.
+    pg_text, sections, marcus, marcus_error = None, None, None, None
     if args.project_goals:
         from agora_runner.project_goals import parse_project_goals
         try:
@@ -623,7 +762,19 @@ def main(argv=None):
         except OSError as exc:
             print(f"could not read {args.project_goals}: {exc}", file=sys.stderr)
             return 1
-        kr_rows = key_result_rows(parse_project_goals(pg_text), rows)
+        sections = parse_project_goals(pg_text)
+        if _needs_marcus(sections):
+            marcus, marcus_error = fetch_marcus_state()
+            if marcus_error:
+                problems.append(marcus_error)
+
+    report = render(rows, since, until, problems)
+    if args.write:
+        report += "\n\n" + write_back(args.goals, text, rows)
+
+    if args.project_goals:
+        kr_rows = key_result_rows(sections, rows, marcus, marcus_error,
+                                  since, until)
         report += "\n\n" + render_key_results(kr_rows, args.project_goals)
         if args.write:
             report += "\n\n" + write_back_key_results(
