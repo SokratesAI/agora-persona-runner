@@ -52,18 +52,20 @@ import sys as _sys
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_journal import entry_seq  # noqa: E402
-from agora_runner.nova_recap import RECAP_PATH  # noqa: E402
+from agora_runner.nova_recap import (  # noqa: E402
+    MAX_BULLETS,
+    RECAP_PATH,
+    render,
+)
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 JOURNAL_DIR = "projects/sokrates/projects/agora/nova/journal/"
 OSLO = ZoneInfo("Europe/Oslo")
 
 DEFAULT_HOURS = 12
-#: He asked for "max 5-6". Six is the ceiling and it is his number, not
-#: one I chose -- so this refuses a seventh rather than silently cutting,
-#: because a summary quietly missing its last bullet is worse than a
-#: refusal a cycle can see and fix.
-MAX_BULLETS = 6
+#: `MAX_BULLETS` and `render` are imported from `nova_recap` -- the runner's
+#: timer writes the same document (his issue #219) and two spellings of the
+#: stamp would be two definitions of "is this card stale".
 
 _STAMP_LINE = re.compile(r"^\s*(?:PR|Board|Outcome)\b", re.I)
 
@@ -147,28 +149,6 @@ def _entry_when(heading):
         return None
 
 
-def render(bullets, now=None, cycles=""):
-    now = now or datetime.now(OSLO)
-    lines = [
-        "---",
-        "type: log",
-        "tags: [agora, recap]",
-        "status: capture",
-        f"updated: {now:%Y-%m-%d}",
-        "maintenance: Written by a cycle, read by the Journal page's top card. "
-        "One line per bullet, never hard-wrapped. `python3 -m tools.recap --put` "
-        "writes it and stamps it; do not hand-edit the generated comment.",
-        "---",
-        "",
-        "# Last 12 hours",
-        "",
-        f"<!-- generated: {now.isoformat(timespec='minutes')} | cycles {cycles} -->",
-        "",
-    ]
-    lines += [f"- {b}" for b in bullets]
-    return "\n".join(lines) + "\n"
-
-
 def link_report(bullets):
     """One line per bullet with nothing to tap, plus the count.
 
@@ -212,13 +192,19 @@ def main(argv=None):
     parser.add_argument("--hours", type=int, default=DEFAULT_HOURS)
     parser.add_argument("--put", metavar="FILE", help="write these bullets to the vault")
     parser.add_argument("--cycles", default="", help="the cycle range the recap covers")
+    parser.add_argument(
+        "--journal", default="",
+        help="the newest journal entry this recap was built from; read off "
+             "the folder when omitted. It is what makes staleness a fact "
+             "rather than a three-hour guess -- see nova_recap.render.")
     args = parser.parse_args(argv)
 
     if args.put:
         bullets = read_bullets(args.put)
         for line in link_report(bullets):
             print(line)
-        body = render(bullets, cycles=args.cycles)
+        body = render(bullets, cycles=args.cycles,
+                      journal=args.journal or (_entry_names() or [""])[-1])
         tmp = "/tmp/recap.md"
         with open(tmp, "w", encoding="utf-8") as handle:
             handle.write(body)

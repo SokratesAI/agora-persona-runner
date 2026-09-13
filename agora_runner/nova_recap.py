@@ -32,6 +32,9 @@ markdown in, payload out.
 
 import datetime
 import re
+from zoneinfo import ZoneInfo
+
+_OSLO = ZoneInfo("Europe/Oslo")
 
 
 RECAP_PATH = "projects/sokrates/projects/agora/nova/resources/recap.md"
@@ -45,8 +48,18 @@ RECAP_PATH = "projects/sokrates/projects/agora/nova/resources/recap.md"
 # card; nothing is hidden by it.
 STALE_AFTER_HOURS = 3.0
 
+# `<!-- generated: <iso> | cycles 1500-1508 | journal 1571-cycle-1508.md -->`.
+# `journal` is the newest journal entry the card was built from, and it is
+# the load-bearing half of his issue #219: *"Stamp the recap with the journal
+# revision it was built from, so 'is this stale' is a fact instead of a
+# 3-hour guess and a regeneration on an unchanged revision costs nothing."*
+# It is optional in the pattern because every card written before 2026-09-13
+# carries no marker, and those must keep parsing rather than reading as
+# damaged -- an absent marker falls back to the age guess below.
 _STAMP = re.compile(
-    r"<!--\s*generated:\s*(?P<when>\S+?)\s*(?:\|\s*cycles\s*(?P<cycles>[^>]*?)\s*)?-->"
+    r"<!--\s*generated:\s*(?P<when>\S+?)\s*"
+    r"(?:\|\s*cycles\s*(?P<cycles>[^|>]*?)\s*)?"
+    r"(?:\|\s*journal\s*(?P<journal>[^|>]*?)\s*)?-->"
 )
 _BULLET = re.compile(r"^-\s+(?P<text>\S.*)$")
 _LEAD = re.compile(r"^\*\*(?P<lead>[^*]+?)\*\*\s*(?P<rest>.*)$")
@@ -77,10 +90,12 @@ def parse_recap(markdown, now=None):
     stamp = _STAMP.search(body)
     written = ""
     cycles = ""
+    journal = ""
     age_hours = None
     if stamp:
         written = stamp.group("when") or ""
         cycles = (stamp.group("cycles") or "").strip()
+        journal = (stamp.group("journal") or "").strip()
     bullets = []
     for line in body.splitlines():
         match = _BULLET.match(line.strip())
@@ -113,6 +128,7 @@ def parse_recap(markdown, now=None):
         "written": written,
         "writtenLabel": _oslo_label(when),
         "cycles": cycles,
+        "journal": journal,
         "ageHours": age_hours,
         # Unknown age reads as stale on purpose. A card with no readable
         # stamp is the one case where the reader cannot judge for himself,
@@ -120,6 +136,58 @@ def parse_recap(markdown, now=None):
         "stale": age_hours is None or age_hours > STALE_AFTER_HOURS,
         "staleAfterHours": STALE_AFTER_HOURS,
     }
+
+
+#: He asked for "max 5-6". Six is the ceiling and it is his number, not one
+#: I chose. `tools.recap` refuses a seventh rather than cutting, because a
+#: cycle is standing by to fix it; `recap_refresh` cuts, because there the
+#: alternative is no card update at all.
+MAX_BULLETS = 6
+
+
+def stamp_journal(journal):
+    """The ` | journal <name>` half of the stamp, or "" when there is none.
+
+    Written here rather than in the two callers so the marker `parse_recap`
+    reads and the marker the writers emit cannot drift into two spellings.
+    """
+    journal = (journal or "").strip()
+    return f" | journal {journal}" if journal else ""
+
+
+def render(bullets, now=None, cycles="", journal=""):
+    """The whole `recap.md` document. Markdown out, no I/O -- as above.
+
+    It lived in `tools.recap` until 2026-09-13 and moved here when the
+    runner started writing the card on a timer (his issue #219): a module
+    under `tools/` is a command a cycle types, and `agora_runner` importing
+    one to write a document every four minutes inverts that. Both writers
+    call this, so the card a cycle writes by hand and the card the timer
+    writes are byte-identical in everything but the bullets.
+    """
+    import datetime as _dt
+    now = now or _dt.datetime.now(_OSLO)
+    lines = [
+        "---",
+        "type: log",
+        "tags: [agora, recap]",
+        "status: capture",
+        f"updated: {now:%Y-%m-%d}",
+        "maintenance: Written by `agora_runner.recap_refresh` whenever the "
+        "journal changes, or by `python3 -m tools.recap --put` by hand; read "
+        "by the Journal page's top card. One line per bullet, never "
+        "hard-wrapped. Do not hand-edit the generated comment -- the "
+        "`journal` marker in it is what decides whether the card is stale.",
+        "---",
+        "",
+        "# Last 12 hours",
+        "",
+        f"<!-- generated: {now.isoformat(timespec='minutes')} | cycles {cycles}"
+        f"{stamp_journal(journal)} -->",
+        "",
+    ]
+    lines += [f"- {b}" for b in bullets]
+    return "\n".join(lines) + "\n"
 
 
 def link_parts(text):

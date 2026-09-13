@@ -17,6 +17,7 @@ from agora_runner.poll import poll_once
 from agora_runner.invoke_server import start_invoke_server
 from agora_runner.otel import init_tracing
 from agora_runner.catalog_refresh import start_catalog_refresh
+from agora_runner.recap_refresh import start_recap_refresh
 from agora_runner.heartbeat_pass import start_heartbeat_pass
 from agora_runner import runner_lifecycle
 
@@ -139,6 +140,11 @@ def main():
     # cycle's prompt because a cycle has to choose to run it, and a
     # catalog nobody regenerates is a screenshot -- see the module.
     start_catalog_refresh()
+    # Rewrites the twelve-hour recap card whenever a cycle files a journal
+    # entry, with Haiku on the subscription -- his issue #219. Beside the
+    # catalog refresher and for the same reason: the card was only ever as
+    # fresh as the last cycle that chose to rewrite it.
+    start_recap_refresh()
     # The scheduler runs beside the conversation loop rather than at the end
     # of it. `conversations.speak` generates a reply on its caller's thread,
     # which for a claude-cli persona is minutes, and while that was the same

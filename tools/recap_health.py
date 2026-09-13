@@ -43,6 +43,7 @@ from agora_runner.nova_recap import (  # noqa: E402
     STALE_AFTER_HOURS,
     parse_recap,
 )
+from agora_runner.recap_refresh import newest_entry  # noqa: E402
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
 JOURNAL_DIR = "projects/sokrates/projects/agora/nova/journal/"
@@ -110,12 +111,46 @@ def cycles_since(covered, filed):
     return len([n for n in filed if n > newest_covered])
 
 
-def report(payload, since, out=print):
-    """One skimmable block, and the exit code. Never writes anything."""
+def report(payload, since, out=print, newest=""):
+    """One skimmable block, and the exit code. Never writes anything.
+
+    `newest` is the newest journal entry's filename. When the card carries a
+    `journal` marker, that comparison is the whole verdict and the three-hour
+    age threshold is not consulted at all -- his issue #219: *"so 'is this
+    stale' is a fact instead of a 3-hour guess."* A card built from the entry
+    that is still the newest one describes the current window however many
+    hours ago it was written, and a card built from an older entry is behind
+    however few.
+
+    Both fall back to the age guess when either side is missing: every card
+    written before 2026-09-13 carries no marker, and a journal listing that
+    did not answer is not evidence that the card is fine.
+    """
     age = payload.get("ageHours")
     label = payload.get("writtenLabel") or "?"
     covered = payload.get("cycles") or "unstated"
     count = len(payload.get("bullets", []))
+    marker = (payload.get("journal") or "").strip()
+
+    if marker and newest:
+        if marker == newest:
+            out(f"CURRENT  the recap card was built from {marker}, which is "
+                f"still the newest journal entry — {count} bullet(s), cycles "
+                f"{covered}, written at {label} Oslo.")
+            out("         `agora_runner.recap_refresh` rewrites it in the "
+                "runner pod when that stops being true; no cycle time on it.")
+            return 0
+        out(f"BEHIND   the recap card was built from {marker}, and the newest "
+            f"journal entry is now {newest}.")
+        out(f"         it covers cycles {covered}, carries {count} bullet(s), "
+            f"and was written at {label} Oslo.")
+        if since:
+            out(f"         {since} cycle(s) have filed a journal entry since.")
+        out("         the runner rewrites this on a timer; if it has not, "
+            "check the runner's log for `recap refresh`:")
+        out("           python3 -m tools.recap")
+        out("           python3 -m tools.recap --put bullets.txt --cycles <A>-<B>")
+        return 2
 
     if not payload.get("stale"):
         out(f"CURRENT  the recap card was written at {label} Oslo, "
@@ -159,13 +194,18 @@ def main(argv=None):
         return 1
 
     payload = parse_recap(body)
+    newest = ""
     try:
-        since = cycles_since(payload.get("cycles"), entry_cycles(_vault("ls", JOURNAL_DIR)))
+        listing = _vault("ls", JOURNAL_DIR)
+        since = cycles_since(payload.get("cycles"), entry_cycles(listing))
+        newest = newest_entry([l.strip() for l in listing.splitlines() if l.strip()])
     except (subprocess.CalledProcessError, OSError, FileNotFoundError):
         # The journal listing is colour on the finding, never the finding.
-        # Losing it must not turn a stale card into an unreadable one.
+        # Losing it must not turn a stale card into an unreadable one -- and
+        # `newest` stays "" so the marker path falls back to the age guess
+        # rather than declaring a card behind an entry it never read.
         since = None
-    return report(payload, since)
+    return report(payload, since, newest=newest)
 
 
 if __name__ == "__main__":
