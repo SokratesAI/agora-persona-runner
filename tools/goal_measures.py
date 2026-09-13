@@ -212,6 +212,31 @@ def fetch_marcus_state(site=MARCUS):
     return data, None
 
 
+def fetch_marcus_subscriber_count(site=MARCUS):
+    """How many devices Marcus's push list holds, or `(None, why)`.
+
+    `GET /api/push/subscribers` answers `{"count": N}` and nothing else --
+    never an endpoint, never a key. It exists because this measure asked for
+    it: until SokratesAI/marcus#160 the only routes that disclosed the count
+    were the two halves of `/api/push/subscribe`, so reading it meant adding
+    or removing a subscription first, and a measurement that mutates what it
+    measures is not one.
+
+    `None` is returned for an unreachable or malformed answer and never
+    coerced to 0. Zero subscribers is the reading this KPI most expects to
+    take -- it is the state the pod has been in all along -- so "I could not
+    ask" must never be written into the document as "nobody is subscribed".
+    """
+    payload, error = _get_json(f"{site}/api/push/subscribers")
+    if error:
+        return None, error
+    count = (payload or {}).get("count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        return None, (f"{site}/api/push/subscribers answered without a "
+                      "non-negative integer `count`")
+    return count, None
+
+
 def fetch_merged(repo, since, until, limit=1000):
     """Pull requests on `repo` merged inside the window, as numbers.
 
@@ -905,11 +930,39 @@ def measure_pm_deprecations(since, until):
 #: returns `(value, detail)`, or `(None, why)` when it could not read what it
 #: needed. Same contract as `KEY_RESULT_MEASURERS`, deliberately, because the
 #: failure it protects against is the same one: a number nobody can recompute.
+def measure_marcus_push_subscribers(since, until):
+    """Devices the 20:00 reminder can actually reach, right now.
+
+    A level and not a rate, so it has no window at all -- the subscription
+    list is the state of the world at the moment it is read, and averaging it
+    over 24h would answer a question nobody asked. `since` and `until` are
+    taken and dropped for the same reason every other KPI measurer takes
+    them: `kpi_rows` calls them all the same way.
+
+    The reading this most expects to take is **0**, and that is the whole
+    point of the guardrail: Marcus sends a reminder at 20:00 to whoever is on
+    this list, and an empty list means the job runs nightly and delivers to
+    nobody. A 0 here is a real measurement and gets written; an unreadable
+    pod is not, and returns `None` so the document keeps saying it does not
+    know.
+    """
+    del since, until
+    count, error = fetch_marcus_subscriber_count()
+    if error:
+        return None, error
+    if count == 0:
+        return 0, ("Marcus's push list is empty, so the 20:00 reminder "
+                   "delivers to nobody -- the job still runs")
+    return count, (f"{count} device(s) on Marcus's push list, read live from "
+                   "/api/push/subscribers")
+
+
 KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
     "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
     "nova-kpi-silent-cycles": measure_nova_silent_cycles,
     "pm-kpi-deprecations": measure_pm_deprecations,
+    "marcus-kpi-push-subscribers": measure_marcus_push_subscribers,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
@@ -921,11 +974,6 @@ KPI_NO_INSTRUMENT = {
                                 "is a sampling run against a production LLM "
                                 "route rather than a fact readable off the box "
                                 "-- same reason as marcus-kr-coach-first-try",
-    "marcus-kpi-push-subscribers": "nothing on the Marcus pod exposes a "
-                                   "subscriber count: /api/push/subscriptions, "
-                                   "/api/subscriptions and /api/push/status all "
-                                   "404, so the reading has to be built before "
-                                   "it can be taken",
 }
 
 

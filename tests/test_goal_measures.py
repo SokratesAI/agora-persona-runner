@@ -1315,3 +1315,67 @@ def test_deprecations_is_wired_into_the_kpi_map():
     assert goal_measures.KPI_MEASURERS["pm-kpi-deprecations"] is \
         goal_measures.measure_pm_deprecations
     assert "pm-kpi-deprecations" not in goal_measures.KPI_NO_INSTRUMENT
+
+
+# --- marcus-kpi-push-subscribers -------------------------------------------
+#
+# The guardrail under Marcus's Notifications and nudges milestone: how many
+# devices the 20:00 reminder can actually reach. It had no instrument until
+# `GET /api/push/subscribers` was added to Marcus (SokratesAI/marcus#160),
+# because the only routes that disclosed the count were the two halves of
+# `/api/push/subscribe` and reading it there means mutating the list first.
+
+
+def _subscribers_stub(monkeypatch, payload, error=None):
+    """Stand in for the live pod at `/api/push/subscribers`.
+
+    Patches `_get_json` rather than the fetch helper, so the helper's own
+    validation of the payload is the thing under test.
+    """
+    def fake(url, timeout=60):
+        assert url.endswith("/api/push/subscribers"), url
+        return (None, error) if error else (payload, None)
+    monkeypatch.setattr(goal_measures, "_get_json", fake)
+
+
+def test_measure_push_subscribers_counts_the_devices(monkeypatch):
+    _subscribers_stub(monkeypatch, {"count": 3})
+    value, detail = goal_measures.measure_marcus_push_subscribers(None, None)
+    assert value == 3
+    assert "3 device(s)" in detail
+
+
+def test_measure_push_subscribers_reads_an_empty_list_as_a_real_zero(monkeypatch):
+    """Zero is the reading this most expects to take, and it is a measurement:
+    the nightly job runs and delivers to nobody."""
+    _subscribers_stub(monkeypatch, {"count": 0})
+    value, detail = goal_measures.measure_marcus_push_subscribers(None, None)
+    assert value == 0
+    assert "nobody" in detail
+
+
+def test_measure_push_subscribers_never_turns_an_unreachable_pod_into_zero(monkeypatch):
+    """The failure that would matter: a pod that will not answer written into
+    the document as `now: 0`, which is exactly what a real empty list says."""
+    _subscribers_stub(monkeypatch, None, error="could not read ...: HTTP 503")
+    value, detail = goal_measures.measure_marcus_push_subscribers(None, None)
+    assert value is None
+    assert "503" in detail
+
+
+def test_measure_push_subscribers_refuses_an_answer_that_is_not_a_count(monkeypatch):
+    """A route that answers `{"count": "many"}` -- or a boolean, which Python
+    would otherwise accept as an int -- is not a reading."""
+    for bad in ({}, {"count": "many"}, {"count": None}, {"count": True},
+                {"count": -1}, {"count": 2.5}):
+        _subscribers_stub(monkeypatch, bad)
+        value, detail = goal_measures.measure_marcus_push_subscribers(None, None)
+        assert value is None, bad
+        assert "non-negative integer" in detail, bad
+
+
+def test_push_subscribers_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument."""
+    assert goal_measures.KPI_MEASURERS["marcus-kpi-push-subscribers"] is \
+        goal_measures.measure_marcus_push_subscribers
+    assert "marcus-kpi-push-subscribers" not in goal_measures.KPI_NO_INSTRUMENT
