@@ -683,8 +683,8 @@ def measure_pm_reversals(decisions, since, until):
 
 #: How far back this measure looks. Deliberately not shared with
 #: `decisions.HELD_DAYS`, which is also 30 and means something else entirely --
-#: this is the month the count is *reported over*, that is how long a decision
-#: must hold to stop counting. Folding them into one constant would make a
+#: this is the month the count is *reported over*, while that one is how long a
+#: decision must hold before a reversal stops counting against it. Folding them into one constant would make a
 #: change to either silently change both.
 _REVERSAL_WINDOW_DAYS = 30
 
