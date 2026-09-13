@@ -838,6 +838,68 @@ def measure_nova_silent_cycles(since, until):
     return len(counted), detail
 
 
+#: The window `measure_pm_deprecations` reads over. Its `measure:` field says
+#: "per month", so the window IS the unit -- 30 days, not the `--days` window
+#: the goals and key results share.
+_DEPRECATION_WINDOW_DAYS = 30
+
+
+def measure_pm_deprecations(since, until):
+    """Rows closed as `outdated` on either board in the last 30 days.
+
+    The reason this KPI carried no instrument was recorded as "there is no
+    deprecation marker anywhere in these repos to count". That was wrong, and
+    the marker is one Edvard asked for himself: `nova_boards.OUTDATED_STATUS`
+    is a first-class board status, `statusKey` is `outdated`, and the site
+    serves it on every row of both boards. 93 rows carry it today.
+
+    **`updated` is a last-touch date, not a status-change date, and that is
+    the whole caveat.** Nothing on a row records when its status moved, so a
+    row retired in July and edited in September reads as September. In
+    practice a closed row is not edited again -- closing it is the last thing
+    that happens to it -- so this is the retirement date for almost every row
+    and it is the only date on the record. It is stated here rather than left
+    for a later cycle to rediscover, the same way `measure_pm_written_why`
+    states that its number is a floor.
+
+    A bare `MM-DD` is read against the year of the window it is tested in,
+    which is `_iso_in_year`'s existing rule and the only year it can mean on
+    a board that rolls forward. A row whose `updated` will not parse is not
+    counted and is not an error: an undated row is not evidence of a
+    retirement inside the window.
+    """
+    del since
+    until_date = date.fromisoformat(until)
+    window_start = until_date - timedelta(days=_DEPRECATION_WINDOW_DAYS)
+    counted = []
+    for name in ("issues", "ideas"):
+        items, error = fetch_board(name)
+        if error:
+            return None, error
+        for row in items:
+            if (row.get("statusKey") or "") != "outdated":
+                continue
+            stamp = _iso_in_year(row.get("updated"), until_date.year)
+            if not stamp:
+                continue
+            try:
+                when = date.fromisoformat(stamp)
+            except ValueError:
+                continue
+            if window_start < when <= until_date:
+                counted.append((name, row.get("number"), stamp))
+    detail = (f"{len(counted)} row(s) closed as Outdated across both boards in "
+              f"the {_DEPRECATION_WINDOW_DAYS}d window "
+              f"{window_start.isoformat()}..{until}")
+    if counted:
+        shown = ", ".join(f"{n} #{num} {stamp}" for n, num, stamp in counted[:8])
+        detail += f" ({shown}" + (", ..." if len(counted) > 8 else "") + ")"
+    detail += ("; dated by the row's `updated` cell, which is the last touch "
+               "rather than the status change -- there is no status-change "
+               "date on a record")
+    return len(counted), detail
+
+
 #: A KPI whose number is measured here. Each measurer takes `(since, until)`
 #: -- the goals' window, which a KPI is free to ignore and this one does -- and
 #: returns `(value, detail)`, or `(None, why)` when it could not read what it
@@ -847,6 +909,7 @@ KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
     "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
     "nova-kpi-silent-cycles": measure_nova_silent_cycles,
+    "pm-kpi-deprecations": measure_pm_deprecations,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
@@ -858,11 +921,6 @@ KPI_NO_INSTRUMENT = {
                                 "is a sampling run against a production LLM "
                                 "route rather than a fact readable off the box "
                                 "-- same reason as marcus-kr-coach-first-try",
-    "pm-kpi-deprecations": "counts the features taken away again, which is "
-                           "read off his own judgement of what was a mistake "
-                           "rather than off any record on this box -- there is "
-                           "no deprecation marker anywhere in these repos to "
-                           "count",
     "marcus-kpi-push-subscribers": "nothing on the Marcus pod exposes a "
                                    "subscriber count: /api/push/subscriptions, "
                                    "/api/subscriptions and /api/push/status all "
