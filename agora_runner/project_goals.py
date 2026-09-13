@@ -3,12 +3,13 @@
 Step 1 of issue #227's own sequencing -- *"the model and the storage --
 where an objective, its key results and a project's KPIs live, and the
 `Serves` column"* -- and nothing else. No content for any project: that is
-step 2, and it is proposed for his approval rather than written by me.
+step 2, and it is settled with him in a conversation rather than written
+by me alone.
 
 The owner approved the model in live chat on 2026-09-13: *"Yes! I want to work
 like this! ... I trust you to do this correctly!"* The shape is
 
-    Project -> Objective (his words, he approves or strikes it)
+    Project -> Objective (agreed with him in a conversation, or struck)
             +- Key result (an outcome with a measure; 2-3 per project)
             +- Milestone (a group of work that SERVES a key result)
             +- Task (one cycle, one checkable definition of done)
@@ -49,8 +50,9 @@ mechanical here.** `problems()` refuses what can be checked by reading:
 
 What is **not** mechanical, and deliberately is not faked here: whether a
 key result is really an outcome rather than a task list. *"Ship the landing
-page"* passes every check above and is still wrong. That judgement is mine
-when I propose and his when he approves, and a regex pretending to make it
+page"* passes every check above and is still wrong. That judgement is
+argued out between us in the objective's own conversation -- which is why
+`agreed` has to link one -- and a regex pretending to make it mechanical
 would only teach a cycle to phrase tasks past the regex.
 
 **`serves_problems` is the other half of the link and it is where the
@@ -73,7 +75,7 @@ PROJECT_GOALS_TEMPLATE = """\
 type: board
 tags: [agora, goals, board]
 status: built
-contract: Nova writes this. One `## <Project>` section per project, holding one ```objective fence (his words, status proposed/approved/struck), 2-3 ```key-result fences (an outcome with a measure, now and target) and any number of ```kpi fences (a health number with a range, never a target). A KPI is never a key result. Milestones point at a key result by id in the Serves column of milestone-seats.md. The set of projects that exist is read off the Project column on the boards, never from here.
+contract: Nova writes this. One `## <Project>` section per project, holding one ```objective fence (his words, status discussing/agreed/struck, with the Agora conversation it was agreed in), 2-3 ```key-result fences (an outcome with a measure, now and target) and any number of ```kpi fences (a health number with a range, never a target). A KPI is never a key result. Milestones point at a key result by id in the Serves column of milestone-seats.md. The set of projects that exist is read off the Project column on the boards, never from here.
 ---
 
 # Project goals
@@ -92,13 +94,24 @@ KEY_RESULT_FIELDS = (
 #: read in so it can be rejected.
 KPI_FIELDS = ("id", "name", "measure", "now", "low", "high", "unit", "target")
 
-OBJECTIVE_FIELDS = ("statement", "status")
+OBJECTIVE_FIELDS = ("statement", "status", "conversation")
 
 #: `struck` rather than `/plan`'s `declined`: he strikes an objective, and
 #: the word is his. A struck objective keeps its block, the same way a
 #: declined goal does -- a decision is worth being able to read back.
-OBJECTIVE_STATUSES = ("proposed", "approved", "struck")
-DEFAULT_OBJECTIVE_STATUS = "proposed"
+#:
+#: `proposed`/`approved` were the first two words here and they are gone on
+#: purpose, refused rather than aliased. Edvard, 2026-09-13 21:02: *"I should
+#: not have to approve goals. Goals, milestones, kpis and okrs should be
+#: derived based on a conversation between you and me where we challenge each
+#: other and then agree on something. Not where you guess something and i just
+#: approve or decline."* That deletes the approval gate, so an objective is
+#: either still being argued about (`discussing`) or settled between us
+#: (`agreed`). A document still carrying the old words does not quietly parse
+#: as the new ones: the whole correction is that an approval is not an
+#: agreement, and a silent alias would say they are the same.
+OBJECTIVE_STATUSES = ("discussing", "agreed", "struck")
+DEFAULT_OBJECTIVE_STATUS = "discussing"
 
 #: *"Two or three key results per project. Fifteen is a backlog wearing a
 #: hat."* The floor is not checked: a project mid-proposal legitimately has
@@ -211,6 +224,15 @@ def problems(markdown_or_sections):
                 found.append(
                     f"{name}: objective status {status!r} is not one of "
                     + "/".join(OBJECTIVE_STATUSES))
+            # `agreed` names a second party, so it has to be able to point at
+            # where the agreeing happened. Without this the word is just
+            # `approved` again with a nicer spelling, set by whoever wrote the
+            # file -- which is me.
+            if status == "agreed" and not objective.get(
+                    "conversation", "").strip():
+                found.append(
+                    f"{name}: objective is agreed but links no conversation "
+                    "-- an agreement names where it was reached")
         results = section.get("keyResults", [])
         if len(results) > MAX_KEY_RESULTS:
             found.append(
