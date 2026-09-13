@@ -652,3 +652,140 @@ def test_main_writes_the_marcus_numbers_and_names_a_dead_state_in_the_report(
     out = capsys.readouterr().out
     assert "! could not read /api/state: refused" in out
     assert pg.read_text(encoding="utf-8") == MARCUS_PG_DOC
+
+
+PG_PM_DOC = """---
+type: board
+---
+
+# Project goals
+
+## Product management
+
+```key-result
+id: pm-kr-written-why
+name: Shipped work traces back to a written why
+measure: Share of merged pull requests that name a board row or a capture
+target: 80
+unit: %
+direction: up
+```
+"""
+
+
+def _pm_sections():
+    from agora_runner.project_goals import parse_project_goals
+    return parse_project_goals(PG_PM_DOC)
+
+
+def test_written_why_counts_a_labelled_board_reference_in_the_title():
+    value, detail = goal_measures.measure_pm_written_why(
+        [{"number": 1, "title": "Fix the picker (issue #227) (#1062)", "body": ""},
+         {"number": 2, "title": "Tidy the worktree sweeper (#1063)", "body": ""}],
+        "2026-09-07", "2026-09-13")
+    assert value == 50
+    assert "1 of 2 merged PR(s)" in detail
+
+
+def test_written_why_ignores_the_pull_requests_own_number():
+    # Every squash title GitHub writes carries a bare `(#N)`. If that counted,
+    # the share would read 100% forever and measure nothing at all.
+    value, _ = goal_measures.measure_pm_written_why(
+        [{"number": 9, "title": "Something entirely untraceable (#1062)", "body": "Closes #77"}],
+        "2026-09-07", "2026-09-13")
+    assert value == 0
+
+
+def test_written_why_reads_the_body_as_well_as_the_title():
+    value, _ = goal_measures.measure_pm_written_why(
+        [{"number": 3, "title": "no row here (#4)", "body": "Serves idea #38 on his board."}],
+        "2026-09-07", "2026-09-13")
+    assert value == 100
+
+
+def test_written_why_accepts_the_plural_and_the_spacing_he_actually_writes():
+    for title in ("closes issues #12", "see Idea # 38", "ISSUE #7 again"):
+        value, _ = goal_measures.measure_pm_written_why(
+            [{"number": 1, "title": title, "body": ""}], "2026-09-07", "2026-09-13")
+        assert value == 100, title
+
+
+def test_written_why_is_not_measured_when_a_repo_could_not_be_read():
+    # Same contract as G1: a share missing part of its denominator is wrong,
+    # not low, so the honest answer is no answer rather than a bigger number.
+    value, detail = goal_measures.measure_pm_written_why(None, "2026-09-07", "2026-09-13")
+    assert value is None
+    assert "could not be read" in detail
+
+
+def test_written_why_has_no_denominator_when_nothing_merged():
+    value, detail = goal_measures.measure_pm_written_why([], "2026-09-07", "2026-09-13")
+    assert value is None
+    assert "no denominator" in detail
+
+
+def test_written_why_is_measured_from_the_merge_list_not_from_a_goal():
+    out = goal_measures.key_result_rows(
+        _pm_sections(), [], since="2026-09-07", until="2026-09-13",
+        prs=[{"number": 1, "title": "a (issue #227)", "body": ""},
+             {"number": 2, "title": "b", "body": ""},
+             {"number": 3, "title": "c", "body": ""},
+             {"number": 4, "title": "d", "body": ""}])
+    row = {r["id"]: r for r in out}["pm-kr-written-why"]
+    assert row["value"] == 25
+    assert "no instrument" not in row["detail"]
+
+
+def test_an_unreadable_merge_list_never_reads_as_having_no_instrument():
+    out = goal_measures.key_result_rows(
+        _pm_sections(), [], since="2026-09-07", until="2026-09-13", prs=None)
+    row = {r["id"]: r for r in out}["pm-kr-written-why"]
+    assert row["value"] is None
+    assert row["detail"].startswith("not measured")
+    assert "no instrument" not in row["detail"]
+
+
+def test_written_why_is_written_into_a_key_result_that_carries_no_now_yet(tmp_path):
+    # Its fence has never had a `now:` line -- the number was blank rather than
+    # zero because nobody had measured it -- so the setter has to insert one.
+    kr_rows = goal_measures.key_result_rows(
+        _pm_sections(), [], since="2026-09-07", until="2026-09-13",
+        prs=[{"number": 1, "title": "a (issue #227)", "body": ""},
+             {"number": 2, "title": "b", "body": ""}])
+    target = tmp_path / "project-goals.md"
+    target.write_text(PG_PM_DOC, encoding="utf-8")
+    report = goal_measures.write_back_key_results(str(target), PG_PM_DOC, kr_rows)
+    assert "WROTE 1 value(s)" in report
+    assert "now: (blank) -> 50" in report
+    assert "now: 50" in target.read_text(encoding="utf-8")
+
+
+def test_gh_pr_list_asks_for_the_title_and_body_the_share_is_read_from():
+    # The measure is a substring search over text this call is the only source
+    # of; dropping either field from --json leaves every PR looking untraceable.
+    import inspect
+    source = inspect.getsource(goal_measures.fetch_merged)
+    assert "number,mergedAt,title,body" in source
+
+
+def test_main_hands_the_merge_list_to_the_key_results(tmp_path, monkeypatch, capsys):
+    # The wiring, not the measurer. `key_result_rows` defaults `prs` to None,
+    # so dropping the argument from main's call leaves every run reporting
+    # "not measured" while every unit test above still passes -- the whole
+    # instrument would be dead and nothing would say so.
+    goals = tmp_path / "goals.md"
+    goals.write_text(GOALS_FOR_WRITE, encoding="utf-8")
+    pg = tmp_path / "project-goals.md"
+    pg.write_text(PG_PM_DOC, encoding="utf-8")
+    monkeypatch.setattr(gm, "today_oslo", lambda now=None: "2026-09-13")
+    monkeypatch.setattr(gm, "fetch_entries", lambda limit, site=None: ([], None))
+    monkeypatch.setattr(gm, "fetch_board", lambda name, site=None: ([], None))
+    monkeypatch.setattr(gm, "collect_merges", lambda repos, since, until: (
+        [{"number": 1, "title": "a (issue #227)", "body": ""},
+         {"number": 2, "title": "b (#2)", "body": ""},
+         {"number": 3, "title": "c (#3)", "body": ""},
+         {"number": 4, "title": "d (#4)", "body": ""}], []))
+    assert gm.main(["--goals", str(goals), "--project-goals", str(pg),
+                    "--write"]) == 0
+    assert "not measured" not in capsys.readouterr().out
+    assert "now: 25" in pg.read_text(encoding="utf-8")
