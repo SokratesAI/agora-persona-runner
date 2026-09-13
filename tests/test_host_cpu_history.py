@@ -27,11 +27,17 @@ def ledger(tmp_path, rows, name="cpu.jsonl"):
     return str(path)
 
 
+BOTH = {"server1": 4, "server2": 4}
+
+
 def fake_nodes(cores=None):
+    """A cluster. The default is server1 alone, because a node in the cluster
+    with no sample in the window is now a finding -- so a fixture that hands
+    back both nodes and only ever writes server1 rows would exit 1 on every
+    test that is about something else."""
     body = {"items": [{"metadata": {"name": name},
                        "status": {"allocatable": {"cpu": str(value)}}}
-                      for name, value in (cores or {"server1": 4,
-                                                    "server2": 4}).items()]}
+                      for name, value in (cores or {"server1": 4}).items()]}
 
     class Proc:
         returncode = 0
@@ -112,6 +118,10 @@ def test_a_repeated_sweep_is_one_measurement(tmp_path):
     code, text = run(ledger(tmp_path, [dict(one) for _ in range(7)]))
     assert code == 0
     assert "6 repeat(s)" in text
+    # The count is the assertion that can fail. Both of the two above still
+    # passed with the dedupe's `continue` deleted, because seven copies of one
+    # stamp collapse to a zero-length run either way.
+    assert "1 sample(s) across 1 node(s)" in text
 
 
 def test_a_repeat_is_dropped_by_pod_and_not_by_stamp(tmp_path):
@@ -119,7 +129,7 @@ def test_a_repeat_is_dropped_by_pod_and_not_by_stamp(tmp_path):
     at = NOW - timedelta(hours=1)
     rows = [sample(at, node="server1", pod="a"),
             sample(at, node="server2", pod="b")]
-    code, text = run(ledger(tmp_path, rows))
+    code, text = run(ledger(tmp_path, rows), runner=fake_nodes(BOTH))
     assert code == 0
     assert "2 sample(s) across 2 node(s)" in text
     assert "repeat(s)" not in text
@@ -171,8 +181,11 @@ def test_without_a_core_count_nothing_is_judged(tmp_path):
 
 
 def test_a_node_missing_from_the_cluster_is_named_not_judged(tmp_path):
-    code, text = run(ledger(tmp_path, hot_series(node="ghost")),
-                     runner=fake_nodes({"server1": 4}))
+    """It is writing samples right now and the cluster does not list it, so
+    there is no core count to judge 380% against. Named, never guessed at."""
+    rows = hot_series(node="ghost") + [
+        sample(NOW - timedelta(hours=1), node="server1", busy=50.0, pod="s1")]
+    code, text = run(ledger(tmp_path, rows), runner=fake_nodes({"server1": 4}))
     assert code == 0
     assert "CANNOT SEE  ghost" in text
 
@@ -280,3 +293,56 @@ def test_the_normal_stride_between_sweeps_is_not_a_blind_window(tmp_path):
     code, text = run(ledger(tmp_path, rows))
     assert code == 0
     assert "  BLIND  " not in text
+
+
+def test_a_node_that_stopped_reporting_is_not_a_quiet_node(tmp_path):
+    """The reviewer's finding: a node whose sweep died and whose last reading
+    aged out of the window vanished from the report entirely -- no line, no
+    caveat, verdict `ok` -- while the other node kept the window non-empty."""
+    rows = [sample(NOW - timedelta(hours=1), node="server1", busy=50.0,
+                   pod="s1-a"),
+            sample(NOW - timedelta(minutes=30), node="server1", busy=50.0,
+                   pod="s1-b"),
+            sample(NOW - timedelta(hours=100), node="server2", busy=380.0,
+                   pod="s2-a")]
+    code, text = run(ledger(tmp_path, rows), runner=fake_nodes(BOTH))
+    assert code == 1
+    assert "server2  STOPPED REPORTING" in text
+    assert "CANNOT JUDGE  1 node(s)" in text
+
+
+def test_a_cluster_node_that_never_wrote_a_sample_is_named(tmp_path):
+    rows = [sample(NOW - timedelta(hours=1), node="server1", busy=50.0,
+                   pod="s1-a")]
+    code, text = run(ledger(tmp_path, rows), runner=fake_nodes(BOTH))
+    assert code == 1
+    assert "never in this ledger" in text
+
+
+def test_a_node_that_left_the_cluster_does_not_raise(tmp_path):
+    """Its old samples would otherwise keep this red forever."""
+    rows = [sample(NOW - timedelta(hours=1), node="server1", busy=50.0,
+                   pod="s1-a"),
+            sample(NOW - timedelta(hours=100), node="gone", busy=380.0,
+                   pod="g-a")]
+    code, text = run(ledger(tmp_path, rows), runner=fake_nodes({"server1": 4}))
+    assert code == 0
+    assert "a node that has left" in text
+
+
+def test_a_hot_run_outranks_a_silent_node(tmp_path):
+    """One is a finding a cycle can act on; the other is a missing meter."""
+    rows = hot_series() + [sample(NOW - timedelta(hours=100), node="server2",
+                                  busy=50.0, pod="s2-old")]
+    code, text = run(ledger(tmp_path, rows), runner=fake_nodes(BOTH))
+    assert code == 2
+    assert "server2  STOPPED REPORTING" in text
+
+
+def test_the_oslo_stamp_follows_daylight_saving(tmp_path):
+    """A hardcoded +2 prints every winter incident an hour off, and changes
+    no verdict, so nothing would ever have failed on it."""
+    summer = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
+    winter = datetime(2026, 12, 1, 12, 0, tzinfo=timezone.utc)
+    assert hch._oslo(summer).endswith("14:00")
+    assert hch._oslo(winter).endswith("13:00")

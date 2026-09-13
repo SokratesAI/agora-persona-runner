@@ -37,6 +37,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 
 #: The ledger `tools.host_memory_trend.record_cpu` writes. Same default and
@@ -257,9 +258,15 @@ def gaps(samples, min_span_hours=DEFAULT_MIN_SPAN_HOURS):
     return found
 
 
+#: Every stamp Edvard reads is Oslo time (identity.md rule 7), and the offset
+#: is +1 for five months of the year. A hardcoded +2 prints every winter
+#: incident an hour off and no test would ever have noticed, because it
+#: changes no verdict -- the comparisons all run on the underlying UTC.
+OSLO = ZoneInfo("Europe/Oslo")
+
+
 def _oslo(at):
-    return at.astimezone(timezone(timedelta(hours=2))).strftime(
-        "%Y-%m-%d %H:%M")
+    return at.astimezone(OSLO).strftime("%Y-%m-%d %H:%M")
 
 
 def report(ledger=DEFAULT_LEDGER, window_hours=DEFAULT_WINDOW_HOURS,
@@ -287,7 +294,13 @@ def report(ledger=DEFAULT_LEDGER, window_hours=DEFAULT_WINDOW_HOURS,
               "or the ledger has stopped being read.", file=out)
         return 1
 
-    nodes = sorted({s["node"] for s in windowed})
+    # Every node the ledger or the cluster knows about, not only the ones
+    # that answered inside the window. A node whose sweep died and whose last
+    # reading is older than the window used to vanish from this report
+    # entirely -- no line, no caveat, verdict `ok` -- which is the exact
+    # failure issue #169 is about: a box going dark while it may be on fire.
+    nodes = sorted({s["node"] for s in windowed}
+                   | {s["node"] for s in samples} | set(cores))
     span = (max(s["at"] for s in windowed) - min(s["at"] for s in windowed))
     print(f"CPU HISTORY  {len(windowed)} sample(s) across {len(nodes)} "
           f"node(s) over {span.total_seconds() / 3600.0:.1f}h of a "
@@ -299,10 +312,28 @@ def report(ledger=DEFAULT_LEDGER, window_hours=DEFAULT_WINDOW_HOURS,
     if counts["malformed"]:
         print(f"             {counts['malformed']} line(s) could not be used.",
               file=out)
+    silent = []
     for node in nodes:
         series = [s for s in windowed if s["node"] == node]
-        peak = max(series, key=lambda s: s["busy_percent"])
         limit = cores.get(node)
+        if not series:
+            older = [s for s in samples if s["node"] == node]
+            last = (f"last seen {_oslo(max(s['at'] for s in older))} Oslo"
+                    if older else "never in this ledger")
+            if limit is None:
+                # In neither the window nor the cluster: a node that has left.
+                # Nothing raises on that; there is no pull request for it.
+                print(f"  {node}  no sample in this window and not in the "
+                      f"cluster's node list ({last}) — a node that has left.",
+                      file=out)
+                continue
+            silent.append(node)
+            print(f"  {node}  STOPPED REPORTING  in the cluster with "
+                  f"{limit:.0f} core(s) and no sample inside the "
+                  f"{window_hours:.0f}h window ({last}). Nothing here knows "
+                  "what that node has been doing.", file=out)
+            continue
+        peak = max(series, key=lambda s: s["busy_percent"])
         seen = ("unknown cores" if limit is None
                 else f"{limit:.0f} core(s), hot at {limit * busy_fraction:.1f}")
         print(f"  {node}  {len(series)} sample(s), {seen}; busiest "
@@ -324,6 +355,8 @@ def report(ledger=DEFAULT_LEDGER, window_hours=DEFAULT_WINDOW_HOURS,
 
     runs = hot_runs(windowed, cores, busy_fraction=busy_fraction,
                     min_span_hours=min_span_hours)
+    # A hot run outranks a silent node: one is a finding a cycle can act on,
+    # the other is a missing instrument, and the loud one goes first.
     if runs:
         for run in runs:
             first, last = run["samples"][0], run["samples"][-1]
@@ -339,6 +372,12 @@ def report(ledger=DEFAULT_LEDGER, window_hours=DEFAULT_WINDOW_HOURS,
                       f"{peak_pct / 100.0:.2f}, in {count} of "
                       f"{len(run['samples'])} sample(s)", file=out)
         return 2
+    if silent:
+        print(f"CANNOT JUDGE  {len(silent)} node(s) in the cluster wrote no "
+              f"sample inside the window: {', '.join(silent)}. A node that "
+              "has stopped reporting is an unread meter, never a quiet box.",
+              file=out)
+        return 1
     print(f"ok  no node held {busy_fraction * 100:.0f}% of its cores for "
           f"{min_span_hours:.1f}h or more in this window.", file=out)
     print("    NOT JUDGED  a spike shorter than that, and anything inside a "
