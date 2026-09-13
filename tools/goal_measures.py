@@ -223,12 +223,16 @@ def fetch_merged(repo, since, until, limit=1000):
     `--search merged:<since>..<until>` makes GitHub do the filtering, so
     the page holds only what is being counted and a full page means "there
     may be more", not "the window is bigger than the page".
+
+    `title` and `body` come back alongside the number because
+    `measure_pm_written_why` reads them; every other caller counts rows and
+    is untouched by their presence.
     """
     try:
         done = subprocess.run(
             ["gh", "pr", "list", "--repo", repo, "--state", "merged",
              "--search", f"merged:{since}..{until}",
-             "--limit", str(limit), "--json", "number,mergedAt"],
+             "--limit", str(limit), "--json", "number,mergedAt,title,body"],
             capture_output=True, text=True, timeout=120,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -535,6 +539,47 @@ def measure_marcus_own_plan(state, since, until):
                "marker separating the seeded demo block from a plan you drafted")
 
 
+# A merged pull request names a board row when it says so in words: `issue #227`
+# or `idea #38`, in the title or the body. The label is required and a bare
+# `#1062` is deliberately NOT a match -- that is the pull request's own number,
+# which GitHub writes into every squash title, so a bare-number pattern would
+# score every merge as traceable and the measure would read 100% forever.
+BOARD_REFERENCE = re.compile(r"\b(?:issue|idea)s?\s*#\s*(\d+)", re.IGNORECASE)
+
+
+def measure_pm_written_why(prs, since, until):
+    """Share of merged pull requests that name the board row they serve.
+
+    **A floor, and the reason is the same one G3 carries.** This can only see
+    a reference written in words -- `issue #227`, `idea #38` -- so a pull
+    request that closes one of his unnumbered captures, or that names its row
+    only in a commit message this never reads, counts against the share while
+    being perfectly traceable in fact. A phrase match undercounts and can
+    never overcount, so a number here is the least this loop is doing, not
+    the most.
+
+    The denominator is every merge in the window across `REPOS`, which is the
+    same set `measure_g1` divides by rows closed -- deliberately, because the
+    key result is that measure read from the other end.
+    """
+    del since, until
+    if prs is None:
+        return None, ("a repo in the count could not be read, and a share "
+                      "missing part of its denominator is wrong rather than low")
+    if not prs:
+        return None, "no pull request merged in the window, so a share has no denominator"
+    named = [pr for pr in prs
+             if BOARD_REFERENCE.search(
+                 f"{(pr or {}).get('title') or ''}\n{(pr or {}).get('body') or ''}")]
+    share = round(100 * len(named) / len(prs))
+    return share, (
+        f"{len(named)} of {len(prs)} merged PR(s) across {len(REPOS)} repo(s) "
+        "name a board row in the title or body as `issue #N` or `idea #N`; a "
+        "bare `#N` is not counted because that is the PR's own number, and a "
+        "reference only in a commit message is not read, so this is a floor"
+    )
+
+
 # A key result whose number is measured HERE rather than borrowed from a goal
 # in `goals.md`. `KEY_RESULT_INSTRUMENTS` above covers the other direction --
 # a key result that is the same measurement a goal already has -- and the two
@@ -547,6 +592,14 @@ def measure_marcus_own_plan(state, since, until):
 KEY_RESULT_MEASURERS = {
     "marcus-kr-sessions-logged": measure_marcus_sessions_logged,
     "marcus-kr-a-plan-of-his-own": measure_marcus_own_plan,
+}
+
+# A key result measured off the merged-pull-request list rather than off
+# Marcus's state. Kept as its own map because the argument is different: these
+# take `(prs, since, until)`, where `prs` is what `collect_merges` returned --
+# `None` when a repo could not be read, which is not the same as no instrument.
+KEY_RESULT_PR_MEASURERS = {
+    "pm-kr-written-why": measure_pm_written_why,
 }
 
 KEY_RESULT_NO_INSTRUMENT = {
@@ -578,14 +631,17 @@ def _needs_marcus(sections):
 
 
 def key_result_rows(sections, rows, marcus=None, marcus_error=None,
-                    since=None, until=None):
+                    since=None, until=None, prs=None):
     """Pair every key result in `project-goals.md` with a measurement.
 
     Two sources, in this order. A key result in `KEY_RESULT_INSTRUMENTS` takes
     its number from the goal row `main` already built for `goals.md`, so the
     two documents cannot disagree: there is one measurement and two places that
     print it. A key result in `KEY_RESULT_MEASURERS` is measured here, from
-    `marcus` -- the `data` object off Marcus's `/api/state`.
+    `marcus` -- the `data` object off Marcus's `/api/state`. A key result in
+    `KEY_RESULT_PR_MEASURERS` is measured from `prs`, the merge list
+    `collect_merges` built for the goals above, so it divides by exactly the
+    same set G1 does.
 
     `marcus` being `None` is not the same as a key result having no instrument,
     and the detail says which: an unread state names why it could not be read,
@@ -597,6 +653,15 @@ def key_result_rows(sections, rows, marcus=None, marcus_error=None,
         for kr in section.get("keyResults") or []:
             kr_id = (kr.get("id") or "").strip()
             row = {"project": name, "id": kr_id, "kr": kr}
+            pr_measurer = KEY_RESULT_PR_MEASURERS.get(kr_id)
+            if pr_measurer is not None:
+                value, detail = pr_measurer(prs, since, until)
+                if value is None:
+                    out.append({**row, "value": None,
+                                "detail": f"not measured — {detail}"})
+                    continue
+                out.append({**row, "value": value, "detail": detail})
+                continue
             measurer = KEY_RESULT_MEASURERS.get(kr_id)
             if measurer is not None:
                 if marcus is None:
@@ -774,7 +839,7 @@ def main(argv=None):
 
     if args.project_goals:
         kr_rows = key_result_rows(sections, rows, marcus, marcus_error,
-                                  since, until)
+                                  since, until, prs)
         report += "\n\n" + render_key_results(kr_rows, args.project_goals)
         if args.write:
             report += "\n\n" + write_back_key_results(
