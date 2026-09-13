@@ -449,7 +449,6 @@ CADENCE_HOURS = {
     "cronjob_health": 24.0,
     "log_secret_scan": 24.0,
     "disk_health": 24.0,
-    "host_memory_trend": 24.0,
     "host_cpu_history": 24.0,
     "memory_headroom": 24.0,
     "memory_index_health": 24.0,
@@ -462,6 +461,17 @@ CADENCE_HOURS = {
     "roadmap_drift": 24.0,
     "survey": 24.0,
     "nas_health": 24.0,
+    # Six-hourly, and the number comes from the cluster rather than from taste:
+    # this is the only thing that copies the host sweep's CPU rows into the
+    # durable ledger `tools.host_cpu_history` reads, and the cluster keeps 16
+    # sweeps -- 8 hours at one every 30 minutes. A cadence longer than that
+    # retention loses the difference permanently, which is what a daily cadence
+    # was doing: measured 2026-09-13, all 16 retained sweeps were on the cluster
+    # and readable while the ledger held 9 samples per node across 12 hours and
+    # the reader reported 3.5h and 5.0h windows it was blind to. Six leaves room
+    # for a sweep that is late and for a cycle that does not run on the hour.
+    "host_memory_trend": 6.0,
+
     # Weekly -- a release train, a chart source, an annotation on a workload or
     # a listening port on a box nobody reinstalls between Tuesdays.
     "eol_watch": 168.0,
