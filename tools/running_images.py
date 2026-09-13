@@ -54,26 +54,40 @@ is the one thing a manifest cannot tell you and the cluster can. A
 workload with no Pod -- scaled to zero, or a CronJob between firings --
 prints that it has none instead, which is a true and useful difference.
 
-**The boundary that follows from reading the cluster: a manifest with no
-live object is invisible here.** Idea #178 names a `curlimages/curl:latest`
-in the CouchDB init job, and this does not report it, because that Job has
-run and been collected -- there is no API object left to read. Reading the
-live cluster buys the truth about what runs and costs the ability to see
-what would run. `tools.pin_drift` and `tools.eol_watch` read git and have
-the opposite trade; neither of the three replaces another.
+**A manifest with no live object used to be invisible here, and now it is
+a section of its own.** Idea #178 names a `curlimages/curl:latest` in the
+CouchDB init job that this could not report, because that Job had run and
+been collected -- there was no API object left to read. Reading the live
+cluster buys the truth about what runs and costs the ability to see what
+*would* run, and describing that trade is not the same as measuring it.
+So `--no-manifests` aside, this now also reads `platform-config` off
+GitHub and prints, under **DECLARED BUT NOT RUNNING**, every mutable
+reference in it that no live object uses.
+
+Only the git-to-cluster direction is reported. The other one is almost
+entirely noise: `argocd`, `kube-system` and `tailscale` are installed by
+Helm and by k3s, declare nothing in that repo, and would print twenty
+rows that are all fine. `tools.pin_drift` and `tools.eol_watch` read git
+for a different question -- whether a pinned version is old -- and
+neither of the three replaces another.
 
 Exit status, matching `tools.eol_watch` and `tools.argocd_health`: 2 when
-a running workload uses a mutable image reference, 1 when kubectl could
-not be read -- which includes finding no workloads at all, since this
-cluster demonstrably runs some, and never reads as clean -- and 0 when
-every image swept is pinned to a digest or to a version tag.
+a running workload uses a mutable image reference **or a manifest
+declares one nothing runs**, 1 when kubectl or GitHub could not be read
+-- which includes finding no workloads at all, since this cluster
+demonstrably runs some, and never reads as clean -- and 0 when every
+image swept is pinned to a digest or to a version tag.
 """
 
 import argparse
+import io
 import json
 import re
 import subprocess
 import sys
+import tarfile
+
+import yaml
 
 #: Workload kinds that carry a pod template. `Pod` is handled separately
 #: because it is the only one that can be owned by another of these.
@@ -84,6 +98,11 @@ TEMPLATED = (
     ("jobs", ("spec", "template", "spec")),
     ("cronjobs", ("spec", "jobTemplate", "spec", "template", "spec")),
 )
+
+#: The one repo that declares workloads by hand rather than through a
+#: `-config` repo ArgoCD pins by digest. It is the half of idea #178 that
+#: the live sweep below structurally cannot see.
+MANIFEST_REPO = "SokratesAI/platform-config"
 
 #: `v1.2.3`, `3.3`, `20-alpine` -- a leading digit, or a `v` and then one.
 #: Everything else (`latest`, `main`, `stable`, `alpine`) names no release.
@@ -243,6 +262,110 @@ def read_pods(runner=subprocess.run):
     return free, resolved, []
 
 
+def fetch_manifests(repo=MANIFEST_REPO, runner=subprocess.run):
+    """`(files, why)` -- every YAML file on a repo's default branch.
+
+    One `gh api .../tarball` call rather than a tree walk plus a
+    `contents` read per file: `platform-config` is 461KB and answers in
+    about a second, where a per-file sweep would be a hundred calls.
+
+    It reads GitHub, never a local clone. A checkout in `/data/workspace`
+    can be days behind without saying so, and "what does git declare" is
+    only worth asking of the branch ArgoCD actually syncs.
+    """
+    try:
+        proc = runner(["gh", "api", "repos/%s/tarball" % repo],
+                      capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, "could not fetch %s: %s" % (repo, exc)
+    if proc.returncode != 0:
+        blob = (proc.stderr or b"").decode("utf-8", "replace").strip()
+        return None, "could not fetch %s: %s" % (
+            repo, blob.splitlines()[0] if blob else "gh exited %d" % proc.returncode)
+    files = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                if not member.name.endswith((".yaml", ".yml")):
+                    continue
+                handle = tar.extractfile(member)
+                if handle is None:
+                    continue
+                # The tarball wraps everything in `<owner>-<repo>-<sha>/`.
+                path = member.name.split("/", 1)[-1]
+                files[path] = handle.read().decode("utf-8", "replace")
+    except (tarfile.TarError, EOFError, OSError) as exc:
+        return None, "could not read the %s tarball: %s" % (repo, exc)
+    return files, None
+
+
+def _container_refs(node, out):
+    """Every `{name, image}` pair anywhere in a parsed document.
+
+    Keyed on the shape rather than on a path, because the same pair sits
+    under `spec.template.spec.containers`, under a CronJob's `jobTemplate`,
+    and under a Crossplane composition's own resource template. A dict that
+    carries both a string `name` and a string `image` is a container in
+    every one of those, and a path list would have to be extended for each.
+    """
+    if isinstance(node, dict):
+        if isinstance(node.get("image"), str) and isinstance(node.get("name"), str):
+            out.append(node["image"])
+        for value in node.values():
+            _container_refs(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _container_refs(value, out)
+    return out
+
+
+def images_in_manifests(files):
+    """`(images, problems)` -- every container image a manifest declares.
+
+    Each entry carries the file that declares it, which is the thing the
+    live sweep cannot report and the thing you need in order to fix one.
+    """
+    images, problems = [], []
+    for path in sorted(files):
+        try:
+            docs = list(yaml.safe_load_all(files[path]))
+        except yaml.YAMLError as exc:
+            problems.append("could not parse %s: %s"
+                            % (path, str(exc).splitlines()[0]))
+            continue
+        for ref in _container_refs(docs, []):
+            images.append({"ref": ref, "path": path})
+    return images, problems
+
+
+def declared_not_running(manifest_images, live_images):
+    """Mutable references git declares that no live object uses.
+
+    This is the tool's own documented blind spot, measured instead of
+    described. Reading the cluster buys the truth about what runs and
+    costs the ability to see what *would* run -- a Job that has run and
+    been collected, a workload scaled out of existence, a manifest ArgoCD
+    has not synced. Idea #178 names one of those directly.
+
+    Only the git-to-cluster direction is reported, and only for mutable
+    references. The other direction is almost entirely noise: `argocd`,
+    `kube-system` and `tailscale` are installed by Helm and by k3s and
+    declare nothing in this repo, so "running and undeclared" would print
+    twenty rows that are all fine.
+    """
+    live = {normalise(image["ref"]) for image in live_images}
+    groups = {}
+    for image in manifest_images:
+        if classify(image["ref"]) != "mutable":
+            continue
+        if normalise(image["ref"]) in live:
+            continue
+        groups.setdefault(image["ref"], []).append(image["path"])
+    return {ref: sorted(set(paths)) for ref, paths in groups.items()}
+
+
 def group(images):
     """Collapse one image reference used in many places into one entry.
 
@@ -288,7 +411,8 @@ def _short_digest(ref, keep=12):
     return "%s@%s:%s%s" % (name, algorithm, hexits[:keep], tail)
 
 
-def format_report(images, resolved, problems):
+def format_report(images, resolved, problems, undeployed=None,
+                  manifest_count=None):
     out = []
     by_verdict = {"mutable": [], "version": [], "digest": []}
     for image in images:
@@ -326,8 +450,23 @@ def format_report(images, resolved, problems):
             out.append("  %s — %s" % (_short_digest(ref),
                                       ", ".join(_places(members))))
 
+    if undeployed:
+        out.append("DECLARED BUT NOT RUNNING — %d mutable reference(s) in %s "
+                   "that no live object uses, so the live sweep above is "
+                   "blind to them:" % (len(undeployed), MANIFEST_REPO))
+        for ref, paths in sorted(undeployed.items()):
+            out.append("  %s — %s" % (ref, ", ".join(paths)))
+
     for problem in problems:
         out.append("PROBLEM  %s" % problem)
+
+    if manifest_count is not None:
+        out.append("Read %d container image reference(s) from %s on GitHub, "
+                   "and reported the mutable ones the cluster has no live "
+                   "object for. The other direction is not reported: "
+                   "argocd, kube-system and tailscale are installed by Helm "
+                   "and by k3s and declare nothing in that repo."
+                   % (manifest_count, MANIFEST_REPO))
 
     out.append("Read %d container image reference(s) across %d distinct "
                "reference(s) from the live cluster, not from git. A tag is "
@@ -339,16 +478,31 @@ def format_report(images, resolved, problems):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--no-manifests", action="store_true",
+        help="skip the %s read and answer from the live cluster alone"
+             % MANIFEST_REPO)
+    args = parser.parse_args(argv)
 
     images, problems = read_workloads()
     free, resolved, pod_problems = read_pods()
     images += free
     problems += pod_problems
 
-    print(format_report(images, resolved, problems))
+    undeployed, manifest_count = {}, None
+    if not args.no_manifests:
+        files, why = fetch_manifests()
+        if why:
+            problems.append(why)
+        else:
+            manifest_images, manifest_problems = images_in_manifests(files)
+            problems += manifest_problems
+            manifest_count = len(manifest_images)
+            undeployed = declared_not_running(manifest_images, images)
 
-    if any(classify(i["ref"]) == "mutable" for i in images):
+    print(format_report(images, resolved, problems, undeployed, manifest_count))
+
+    if undeployed or any(classify(i["ref"]) == "mutable" for i in images):
         # A finding outranks an incomplete sweep, the same call
         # `eol_watch` makes: both are true and only one is actionable.
         return 2
