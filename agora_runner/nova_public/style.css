@@ -5671,12 +5671,13 @@ X that summarizes the last 12
   white-space: normal;
 }
 
+/* No fill behind the header row: a tinted header would put body text on a
+ * surface the palette does not guarantee contrast against, and the weight and
+ * the rule under it already say "header". */
 .md-table th {
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text);
-  background: var(--code-bg);
-  position: sticky;
-  top: 0;
+  border-bottom: 2px solid var(--outline);
 }
 
 .md-table tr:last-child td { border-bottom: 0; }

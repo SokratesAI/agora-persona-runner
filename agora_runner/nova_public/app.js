@@ -1397,11 +1397,11 @@
     while (rest) {
       var hit = INLINE_RE.exec(rest);
       if (!hit) { node.appendChild(document.createTextNode(rest)); return; }
-      if (hit.index) node.appendChild(document.createTextNode(rest.slice(0, hit.index)));
+      if (hit.index) node.appendChild(document.createTextNode(rest.slice(0, hit.index)));  // not-prose: the run before a mark, not a clamp
       var token = hit[0];
       if (token.charAt(0) === "`") {
         node.appendChild(el("code", null, token.slice(1, -1)));
-      } else if (token.slice(0, 2) === "**") {
+      } else if (token.slice(0, 2) === "**") {  // not-prose: reading the mark
         node.appendChild(el("strong", null, token.slice(2, -2)));
       } else if (token.charAt(0) === "*" || token.charAt(0) === "_") {
         node.appendChild(el("em", null, token.slice(1, -1)));
