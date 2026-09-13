@@ -1229,3 +1229,89 @@ def test_silent_cycles_is_wired_into_the_kpi_map():
     assert goal_measures.KPI_MEASURERS["nova-kpi-silent-cycles"] is \
         goal_measures.measure_nova_silent_cycles
     assert "nova-kpi-silent-cycles" not in goal_measures.KPI_NO_INSTRUMENT
+
+
+def _board_stub(monkeypatch, boards, error=None):
+    def fake(name, site=None):
+        if error:
+            return [], error
+        return boards.get(name, []), None
+    monkeypatch.setattr(goal_measures, "fetch_board", fake)
+
+
+def test_measure_pm_deprecations_counts_both_boards_inside_the_window(monkeypatch):
+    """Both boards retire rows, and the KPI is one number over the pair."""
+    _board_stub(monkeypatch, {
+        "issues": [{"number": 7, "statusKey": "outdated", "updated": "09-12"}],
+        "ideas": [{"number": 295, "statusKey": "outdated", "updated": "2026-08-20"}],
+    })
+    value, detail = goal_measures.measure_pm_deprecations(None, "2026-09-14")
+    assert value == 2
+    assert "issues #7" in detail and "ideas #295" in detail
+
+
+def test_measure_pm_deprecations_ignores_a_row_that_is_not_outdated(monkeypatch):
+    """`done` closes a row too and is not a retirement -- issue #225 counts
+    what was taken away, not what was delivered."""
+    _board_stub(monkeypatch, {
+        "issues": [
+            {"number": 1, "statusKey": "done", "updated": "09-12"},
+            {"number": 2, "statusKey": "backlog", "updated": "09-12"},
+            {"number": 3, "statusKey": "outdated", "updated": "09-12"},
+        ],
+    })
+    value, _detail = goal_measures.measure_pm_deprecations(None, "2026-09-14")
+    assert value == 1
+
+
+def test_measure_pm_deprecations_drops_a_row_outside_the_window(monkeypatch):
+    """The window IS the unit: `per month` is 30 days, not every row ever
+    retired. A row dated on the boundary itself is outside it."""
+    _board_stub(monkeypatch, {
+        "issues": [
+            {"number": 9, "statusKey": "outdated", "updated": "08-15"},
+            {"number": 10, "statusKey": "outdated", "updated": "08-16"},
+            {"number": 11, "statusKey": "outdated", "updated": "09-14"},
+        ],
+    })
+    value, _detail = goal_measures.measure_pm_deprecations(None, "2026-09-14")
+    assert value == 2
+
+
+def test_measure_pm_deprecations_skips_an_undated_row(monkeypatch):
+    """An undated row is not evidence of a retirement inside the window, and
+    an unparseable cell must not read as today."""
+    _board_stub(monkeypatch, {
+        "issues": [
+            {"number": 4, "statusKey": "outdated", "updated": ""},
+            {"number": 5, "statusKey": "outdated", "updated": "soon"},
+            {"number": 6, "statusKey": "outdated", "updated": "09-99"},
+        ],
+    })
+    value, _detail = goal_measures.measure_pm_deprecations(None, "2026-09-14")
+    assert value == 0
+
+
+def test_measure_pm_deprecations_names_an_unread_board(monkeypatch):
+    """A board that would not answer is not a month that retired nothing."""
+    _board_stub(monkeypatch, {}, error="could not read the board: HTTP 503")
+    value, detail = goal_measures.measure_pm_deprecations(None, "2026-09-14")
+    assert value is None
+    assert "503" in detail
+
+
+def test_measure_pm_deprecations_says_the_date_is_a_last_touch(monkeypatch):
+    """The one thing a reader has to know about this number: nothing records
+    when a status moved, so the date is the row's last edit."""
+    _board_stub(monkeypatch, {
+        "issues": [{"number": 7, "statusKey": "outdated", "updated": "09-12"}],
+    })
+    _value, detail = goal_measures.measure_pm_deprecations(None, "2026-09-14")
+    assert "last touch" in detail
+
+
+def test_deprecations_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument."""
+    assert goal_measures.KPI_MEASURERS["pm-kpi-deprecations"] is \
+        goal_measures.measure_pm_deprecations
+    assert "pm-kpi-deprecations" not in goal_measures.KPI_NO_INSTRUMENT
