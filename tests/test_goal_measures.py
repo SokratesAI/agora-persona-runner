@@ -814,9 +814,9 @@ unit: %
 ```
 
 ```kpi
-id: nova-kpi-silent-cycles
-name: Cycles that wrote nothing
-measure: Cycles in the window with no journal entry
+id: marcus-kpi-coach-latency
+name: How long the coach takes
+measure: Median seconds for a plan draft
 now: 1.74
 low: 0
 high: 2.0
@@ -841,12 +841,12 @@ def test_kpi_rows_measures_the_one_with_an_instrument(monkeypatch):
 def test_kpi_rows_names_why_an_uninstrumented_kpi_is_blank():
     out = goal_measures.kpi_rows(_kpi_sections(), "2026-09-07", "2026-09-13")
     by_id = {row["id"]: row for row in out}
-    row = by_id["nova-kpi-silent-cycles"]
+    row = by_id["marcus-kpi-coach-latency"]
     assert row["value"] is None
     # The reason is the point: a blank `now` says nothing about whether anyone
     # tried, which is how three cycles come to re-derive the same gap.
     assert "no instrument" in row["detail"]
-    assert "cycle_health" in row["detail"]
+    assert "production LLM route" in row["detail"]
 
 
 def test_kpi_rows_separates_a_failed_reading_from_a_missing_instrument(monkeypatch):
@@ -1136,3 +1136,96 @@ def test_cost_per_cycle_is_wired_into_the_kpi_map():
         goal_measures.measure_nova_cost_per_cycle
     # And it must no longer claim to have no instrument.
     assert "nova-kpi-cost-per-cycle" not in goal_measures.KPI_NO_INSTRUMENT
+
+
+def _pm_stub(monkeypatch, results, conversations, error=None):
+    from tools import cycle_postmortem
+    monkeypatch.setattr(
+        cycle_postmortem, "collect",
+        lambda *a, **k: (results, max(conversations or [0]), error,
+                         conversations, []))
+    return cycle_postmortem
+
+
+def _conv(minutes_ago):
+    from datetime import datetime, timedelta, timezone
+    when = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    return {"createdAt": when.isoformat().replace("+00:00", "Z")}
+
+
+def test_measure_nova_silent_cycles_counts_only_cycles_inside_the_window(monkeypatch):
+    """A silent cycle from last week is history, not today's guardrail."""
+    # 10 is five minutes the wrong side of the 24h cutoff and 11 is an hour
+    # the right side of it, so the boundary itself is what separates them --
+    # a cutoff nudged by an hour in either direction changes the answer.
+    conversations = {10: _conv(60 * 24 + 5), 11: _conv(60 * 23), 12: _conv(20),
+                     13: _conv(10)}
+    results = [
+        {"number": 10, "verdict": "silent"},   # outside the 24h window
+        {"number": 11, "verdict": "silent"},
+        {"number": 12, "verdict": "lost"},
+    ]
+    _pm_stub(monkeypatch, results, conversations)
+    value, detail = goal_measures.measure_nova_silent_cycles(None, None)
+    assert value == 2
+    assert "2 of 3 cycle(s)" in detail
+    assert "11 silent" in detail and "12 lost" in detail
+    assert "10 silent" not in detail
+
+
+def test_measure_nova_silent_cycles_does_not_count_an_entry_that_exists(monkeypatch):
+    """`misfiled` and `unnumbered` mean the work IS in the journal.
+
+    They are `lost` downgraded after the search found the entry under another
+    number or another name, so counting them counts a cycle that wrote. Same
+    for `still running`, which is the newest few overlapping cycles.
+    """
+    conversations = {20: _conv(40), 21: _conv(30), 22: _conv(20), 23: _conv(5)}
+    results = [
+        {"number": 20, "verdict": "misfiled"},
+        {"number": 21, "verdict": "unnumbered"},
+        {"number": 22, "verdict": "still running"},
+        {"number": 23, "verdict": "silent"},
+    ]
+    _pm_stub(monkeypatch, results, conversations)
+    value, detail = goal_measures.measure_nova_silent_cycles(None, None)
+    assert value == 1
+    assert "3 more entryless number(s) are not counted" in detail
+
+
+def test_measure_nova_silent_cycles_places_an_absent_cycle_by_its_number(monkeypatch):
+    """An `absent` cycle has no conversation, so it has no stamp to filter on.
+
+    Cycle numbers are handed out in order, so a number above the lowest one
+    that started inside the window started inside it too. Dropping the ones
+    with no stamp would silently exclude the single verdict that means no run
+    happened at all.
+    """
+    conversations = {30: _conv(60 * 40), 32: _conv(20)}
+    results = [{"number": 31, "verdict": "absent"}, {"number": 33, "verdict": "absent"}]
+    _pm_stub(monkeypatch, results, conversations)
+    value, _detail = goal_measures.measure_nova_silent_cycles(None, None)
+    # 31 sits below the first in-window number (32) and is history; 33 is above.
+    assert value == 1
+
+
+def test_measure_nova_silent_cycles_refuses_rather_than_reading_zero(monkeypatch):
+    """No cycle ran at all is a dead loop, not a perfect one."""
+    _pm_stub(monkeypatch, [], {40: _conv(60 * 40)})
+    value, detail = goal_measures.measure_nova_silent_cycles(None, None)
+    assert value is None
+    assert "not a clean zero" in detail
+
+
+def test_measure_nova_silent_cycles_names_an_unread_source(monkeypatch):
+    _pm_stub(monkeypatch, [], {}, error="Agora returned 503")
+    value, detail = goal_measures.measure_nova_silent_cycles(None, None)
+    assert value is None
+    assert "503" in detail
+
+
+def test_silent_cycles_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument."""
+    assert goal_measures.KPI_MEASURERS["nova-kpi-silent-cycles"] is \
+        goal_measures.measure_nova_silent_cycles
+    assert "nova-kpi-silent-cycles" not in goal_measures.KPI_NO_INSTRUMENT

@@ -770,6 +770,74 @@ def measure_nova_cost_per_cycle(since, until, ledger=None):
     return round(median / 1_000_000, 2), detail
 
 
+#: A verdict on an entryless cycle that does NOT mean the record is missing.
+#: `misfiled` and `unnumbered` are `lost` downgraded *after* the search found
+#: the work -- the entry exists, under a number or a name this could not
+#: predict -- so counting them would count a cycle that wrote. `still running`
+#: is the newest few, which legitimately have no entry yet; three cycles
+#: overlap, so counting those would read the cadence as a fault every hour.
+SILENT_VERDICTS_NOT_COUNTED = ("misfiled", "unnumbered", "still running")
+
+
+def measure_nova_silent_cycles(since, until):
+    """Cycles in the last 24h that ran and produced no journal entry.
+
+    Reads `tools.cycle_postmortem` rather than re-deriving it, the same call
+    `measure_nova_dropped_ticks` makes against `heartbeat_gaps`: that module
+    already lists the journal, parses Agora's conversation names into cycle
+    numbers, and -- the part that is genuinely hard -- tells a cycle that
+    wrote nothing from one whose entry landed under another number. A second
+    implementation here would be a second answer to one question, which is
+    exactly the drift the whole split exists to stop.
+
+    The window is 24 hours and is NOT the `--days` window the goals use, for
+    the reason in `measure_nova_dropped_ticks`: a guardrail averaged over a
+    week hides the bad night it exists to catch.
+
+    **A cycle with no conversation is placed by its number, not by a stamp it
+    does not have.** An `absent` cycle is a number Agora handed out with no
+    record of a run, so `_created` returns nothing for it -- but numbers are
+    handed out in order, so any entryless number at or above the lowest
+    number whose conversation started inside the window started inside the
+    window too. Dropping those instead would silently exclude the one verdict
+    that means no run happened at all.
+    """
+    del since, until
+    from datetime import datetime, timedelta, timezone
+    from tools import cycle_postmortem
+
+    results, _newest, error, conversations, _paths = cycle_postmortem.collect()
+    if error:
+        return None, f"cycle_postmortem could not read the loop's history: {error}"
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=_KPI_WINDOW_HOURS)
+    started = {number: cycle_postmortem._created(conversation)
+               for number, conversation in (conversations or {}).items()}
+    in_window = [number for number, opened in started.items()
+                 if opened is not None and opened >= cutoff]
+    if not in_window:
+        return None, (f"no cycle conversation was opened in the last "
+                      f"{_KPI_WINDOW_HOURS:g}h, so there is no window to count "
+                      "over -- that is a loop that stopped, not a clean zero")
+    first = min(in_window)
+    counted = [row for row in results
+               if row["number"] >= first
+               and row.get("verdict") not in SILENT_VERDICTS_NOT_COUNTED]
+    excused = [row for row in results
+               if row["number"] >= first
+               and row.get("verdict") in SILENT_VERDICTS_NOT_COUNTED]
+    detail = (f"{len(counted)} of {len(in_window)} cycle(s) that ran in the last "
+              f"{_KPI_WINDOW_HOURS:g}h wrote no journal entry")
+    if counted:
+        detail += " (" + ", ".join(
+            f"{row['number']} {row.get('verdict')}"
+            for row in sorted(counted, key=lambda r: r["number"])) + ")"
+    if excused:
+        detail += (f"; {len(excused)} more entryless number(s) are not counted "
+                   "-- their record exists, or they have not finished")
+    return len(counted), detail
+
+
 #: A KPI whose number is measured here. Each measurer takes `(since, until)`
 #: -- the goals' window, which a KPI is free to ignore and this one does -- and
 #: returns `(value, detail)`, or `(None, why)` when it could not read what it
@@ -778,6 +846,7 @@ def measure_nova_cost_per_cycle(since, until, ledger=None):
 KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
     "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
+    "nova-kpi-silent-cycles": measure_nova_silent_cycles,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
@@ -785,12 +854,6 @@ KPI_MEASURERS = {
 #: says nothing about whether anyone tried, and three cycles re-deriving the
 #: same "there is no endpoint for this" is three cycles spent twice.
 KPI_NO_INSTRUMENT = {
-    "nova-kpi-silent-cycles": "counts cycles that produced no journal entry, "
-                              "which needs the heartbeat's firing list joined "
-                              "to the entry list -- readable, but it is a "
-                              "second answer to the question tools.cycle_health "
-                              "already answers and belongs there rather than "
-                              "here",
     "marcus-kpi-coach-latency": "timing it means driving the live coach, which "
                                 "is a sampling run against a production LLM "
                                 "route rather than a fact readable off the box "
