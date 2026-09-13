@@ -165,6 +165,7 @@ CHECKS = (
     "login_handshake",
     "host_memory_trend",
     "memory_headroom",
+    "memory_index_health",
     "node_memory",
     "limit_headroom",
     "cpu_throttle",
@@ -296,6 +297,10 @@ SUBJECT = {
     #: over by renaming the label.
     "host_memory_trend": ("on-box",  "the bridge pod's own node's memory"),
     "memory_headroom":   ("on-box",  "the bridge pod's own node's memory"),
+    #: Not the node's memory and not a persona's: MY OWN memory index, the
+    #: MEMORY.md loaded into every session this loop runs. It sits beside the
+    #: two above because the word is the same; the subject is not.
+    "memory_index_health": ("on-box", "my own memory index reaching the session"),
     #: The different mechanism the comment above asks for: the kubelet's own
     #: stats, over nodes/proxy, so every node is judged and not just this one's.
     "node_memory":       ("on-box",  "every node's own free memory and swap"),
@@ -440,6 +445,7 @@ CADENCE_HOURS = {
     "disk_health": 24.0,
     "host_memory_trend": 24.0,
     "memory_headroom": 24.0,
+    "memory_index_health": 24.0,
     "oom_rank": 24.0,
     "marcus_capacity": 24.0,
     "marcus_coach_health": 24.0,
