@@ -1,0 +1,306 @@
+"""Where a project's objective, its key results and its KPIs live.
+
+Step 1 of issue #227's own sequencing -- *"the model and the storage --
+where an objective, its key results and a project's KPIs live, and the
+`Serves` column"* -- and nothing else. No content for any project: that is
+step 2, and it is proposed for his approval rather than written by me.
+
+The owner approved the model in live chat on 2026-09-13: *"Yes! I want to work
+like this! ... I trust you to do this correctly!"* The shape is
+
+    Project -> Objective (his words, he approves or strikes it)
+            +- Key result (an outcome with a measure; 2-3 per project)
+            +- Milestone (a group of work that SERVES a key result)
+            +- Task (one cycle, one checkable definition of done)
+
+and, beside the objective and never inside it, **KPIs** -- health numbers
+with a range rather than a target, for the things that must stay in bounds
+while the work happens.
+
+**Why a new document and not a column on `projects.md`.** That file is one
+row per project and this is two-to-three key results plus a handful of KPIs
+per project, each with its own measure and numbers. The row would have to
+carry a list, and a list in a markdown cell is the thing `board_records`
+was built to stop. So: one document, one `## Project` section per project,
+and fenced blocks inside it.
+
+**Why fences, and why these field names.** `/plan` already renders
+`goals.md`'s ```goal blocks into a scoreboard off `measure`/`now`/`target`
+/`unit`/`direction`, and the issue says in as many words to reuse that
+machinery rather than invent a second one. A key result is the same kind of
+object with an `id` and an owner project, so it carries the same field
+names and `nova_plan`'s reader would recognise it. Everything outside a
+fence in this document is prose that nothing parses -- the same rule
+`/plan`'s two documents hold.
+
+**The rules the issue says are the whole point, and which of them are
+mechanical here.** `problems()` refuses what can be checked by reading:
+
+* more than three key results in one project (*"Fifteen is a backlog
+  wearing a hat"*),
+* a key result with no `measure` -- an outcome with no measure is a task
+  with a nicer name, which is rule 1,
+* a KPI carrying a `target:` -- *"the moment a guardrail carries a target,
+  the dashboard gets optimised instead of the work"*,
+* a KPI with no range at all (`low`/`high`, either bound is enough),
+* an id used twice anywhere in the document, because `Serves` points at ids
+  and an ambiguous pointer is worse than no pointer,
+* an objective with no `statement`, or a status outside the three.
+
+What is **not** mechanical, and deliberately is not faked here: whether a
+key result is really an outcome rather than a task list. *"Ship the landing
+page"* passes every check above and is still wrong. That judgement is mine
+when I propose and his when he approves, and a regex pretending to make it
+would only teach a cycle to phrase tasks past the regex.
+
+**`serves_problems` is the other half of the link and it is where the
+KPI/key-result boundary is actually enforced.** A milestone's `Serves` cell
+names key-result ids. Pointing one at a KPI id is refused by name rather
+than falling through the unknown-id branch, because that is exactly the
+mistake the issue says must be impossible: a guardrail used as a goal.
+"""
+
+import re
+
+#: One document rather than a column, for the reason in the module docstring.
+#: It sits beside `projects.md`, `milestones.md` and `milestone-seats.md` in
+#: his own folder, which is where every other board-shaped document I write
+#: for him already lives.
+PROJECT_GOALS_PATH = "projects/sokrates/projects/nova/project-goals.md"
+
+PROJECT_GOALS_TEMPLATE = """\
+---
+type: board
+tags: [agora, goals, board]
+status: built
+contract: Nova writes this. One `## <Project>` section per project, holding one ```objective fence (his words, status proposed/approved/struck), 2-3 ```key-result fences (an outcome with a measure, now and target) and any number of ```kpi fences (a health number with a range, never a target). A KPI is never a key result. Milestones point at a key result by id in the Serves column of milestone-seats.md. The set of projects that exist is read off the Project column on the boards, never from here.
+---
+
+# Project goals
+"""
+
+#: Deliberately the same vocabulary as `nova_plan`'s ```goal fence, so the
+#: scoreboard machinery on `/plan` reads a key result without a second
+#: dialect. `id` is the one addition and it is what `Serves` points at.
+KEY_RESULT_FIELDS = (
+    "id", "name", "measure", "now", "target", "unit", "direction", "status")
+
+#: A KPI has a range, not a target. `target` is **kept** here rather than
+#: dropped as an unknown key, and that is the whole point: `_fields` drops
+#: what it does not recognise, so leaving `target` out would make a KPI with
+#: a target parse clean and `problems()` would have nothing to refuse. It is
+#: read in so it can be rejected.
+KPI_FIELDS = ("id", "name", "measure", "now", "low", "high", "unit", "target")
+
+OBJECTIVE_FIELDS = ("statement", "status")
+
+#: `struck` rather than `/plan`'s `declined`: he strikes an objective, and
+#: the word is his. A struck objective keeps its block, the same way a
+#: declined goal does -- a decision is worth being able to read back.
+OBJECTIVE_STATUSES = ("proposed", "approved", "struck")
+DEFAULT_OBJECTIVE_STATUS = "proposed"
+
+#: *"Two or three key results per project. Fifteen is a backlog wearing a
+#: hat."* The floor is not checked: a project mid-proposal legitimately has
+#: one, and refusing that would block the step that writes the second.
+MAX_KEY_RESULTS = 3
+
+_HEADING_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
+_FENCE_OPEN_RE = re.compile(r"^[ \t]*```[ \t]*(?P<name>[a-z-]+)[ \t]*$")
+_FENCE_CLOSE_RE = re.compile(r"^[ \t]*```[ \t]*$")
+_FIELD_RE = re.compile(r"^(?P<key>[a-z-]+):[ \t]*(?P<value>.*?)[ \t]*$")
+
+_FENCES = {"objective": "objective", "key-result": "keyResults", "kpi": "kpis"}
+
+
+def _fields(lines, allowed):
+    """Body lines of one fence -> `{field: value}`, unknown keys dropped.
+
+    Dropping rather than keeping is the same call `nova_plan._goal` makes:
+    an unknown key is a typo far more often than it is a field somebody
+    added, and carrying it forward would let `target` survive on a KPI
+    under a misspelling that `problems()` never looks at.
+    """
+    out = {}
+    for line in lines:
+        match = _FIELD_RE.match(line.strip())
+        if match and match.group("key") in allowed:
+            out[match.group("key")] = match.group("value")
+    return out
+
+
+def parse_project_goals(markdown):
+    """`project-goals.md` -> `{lowercased project: section}`.
+
+    A section is `{"project", "objective", "keyResults", "kpis"}`. Keyed
+    lowercase for `parse_project_meta`'s reason -- the name is free text he
+    types on a phone and `nova` and `Nova` are one project -- and `project`
+    carries the spelling actually written so a heading reads his way.
+
+    Fences outside any `##` heading are dropped rather than filed under a
+    blank project: a key result belongs to exactly one project and a
+    guessed owner is worse than a missing one.
+    """
+    out, current, fence, body = {}, None, None, []
+    for line in (markdown or "").split("\n"):
+        if fence is not None:
+            if _FENCE_CLOSE_RE.match(line):
+                if current is not None and fence in _FENCES:
+                    if fence == "objective":
+                        out[current]["objective"] = _fields(
+                            body, OBJECTIVE_FIELDS)
+                    elif fence == "key-result":
+                        out[current]["keyResults"].append(
+                            _fields(body, KEY_RESULT_FIELDS))
+                    else:
+                        out[current]["kpis"].append(_fields(body, KPI_FIELDS))
+                fence, body = None, []
+            else:
+                body.append(line)
+            continue
+        opened = _FENCE_OPEN_RE.match(line)
+        if opened and opened.group("name") in _FENCES:
+            fence, body = opened.group("name"), []
+            continue
+        if opened:
+            # A fence this module does not own -- a code sample in the prose.
+            # Skip to its close so its contents can never be read as fields.
+            # `_FENCES` gates the write above, so `""` here files nothing;
+            # before that gate existed it fell through to the `kpis` branch
+            # and a ```python sample became a KPI.
+            fence, body = "", []
+            continue
+        heading = _HEADING_RE.match(line)
+        if heading:
+            name = heading.group("name")
+            current = name.lower()
+            out.setdefault(
+                current,
+                {"project": name, "objective": {}, "keyResults": [], "kpis": []})
+    return out
+
+
+def _ids(section):
+    for row in section.get("keyResults", ()):
+        yield row.get("id", "").strip().lower(), "key result"
+    for row in section.get("kpis", ()):
+        yield row.get("id", "").strip().lower(), "KPI"
+
+
+def problems(markdown_or_sections):
+    """Every rule in issue #227 that can be checked by reading, as strings.
+
+    Empty list means the document holds nothing this module can prove
+    wrong -- which is **not** the same as the objectives being good ones.
+    See the module docstring for the judgement this deliberately does not
+    attempt.
+    """
+    sections = (parse_project_goals(markdown_or_sections)
+                if isinstance(markdown_or_sections, str)
+                else markdown_or_sections)
+    found, seen = [], {}
+    for key in sorted(sections):
+        section = sections[key]
+        name = section.get("project", key)
+        objective = section.get("objective") or {}
+        if objective:
+            if not objective.get("statement", "").strip():
+                found.append(f"{name}: objective has no statement")
+            status = objective.get("status", "").strip().lower()
+            if status and status not in OBJECTIVE_STATUSES:
+                found.append(
+                    f"{name}: objective status {status!r} is not one of "
+                    + "/".join(OBJECTIVE_STATUSES))
+        results = section.get("keyResults", [])
+        if len(results) > MAX_KEY_RESULTS:
+            found.append(
+                f"{name}: {len(results)} key results, the limit is "
+                f"{MAX_KEY_RESULTS}")
+        for row in results:
+            label = row.get("id", "").strip() or row.get("name", "").strip()
+            if not row.get("measure", "").strip():
+                found.append(
+                    f"{name}: key result {label!r} has no measure -- an "
+                    "outcome without one is a task with a nicer name")
+        for row in section.get("kpis", []):
+            label = row.get("id", "").strip() or row.get("name", "").strip()
+            if "target" in row:
+                found.append(
+                    f"{name}: KPI {label!r} carries a target -- a KPI has a "
+                    "range, and a guardrail with a target gets optimised")
+            if not (row.get("low", "").strip() or row.get("high", "").strip()):
+                found.append(f"{name}: KPI {label!r} has no range")
+        for identifier, kind in _ids(section):
+            if not identifier:
+                found.append(f"{name}: a {kind} has no id")
+                continue
+            if identifier in seen:
+                found.append(
+                    f"id {identifier!r} is used twice: {seen[identifier]} "
+                    f"and {name}'s {kind}")
+            else:
+                seen[identifier] = f"{name}'s {kind}"
+    return found
+
+
+def key_result_ids(sections):
+    """`{lowercased id: project}` over every key result. `Serves` resolves here."""
+    out = {}
+    for section in sections.values():
+        for row in section.get("keyResults", ()):
+            identifier = row.get("id", "").strip().lower()
+            if identifier:
+                out[identifier] = section.get("project", "")
+    return out
+
+
+def kpi_ids(sections):
+    """`{lowercased id: project}` over every KPI -- so `Serves` can refuse one
+    by name rather than calling it unknown."""
+    out = {}
+    for section in sections.values():
+        for row in section.get("kpis", ()):
+            identifier = row.get("id", "").strip().lower()
+            if identifier:
+                out[identifier] = section.get("project", "")
+    return out
+
+
+def split_serves(cell):
+    """A `Serves` cell -> `[id, ...]`, lowercased, comma-separated, empty dropped.
+
+    *"Many milestones may serve one key result; a milestone may serve two."*
+    """
+    return [part.strip().lower()
+            for part in (cell or "").replace(";", ",").split(",")
+            if part.strip()]
+
+
+def serves_problems(serves, sections):
+    """`{(project, milestone): serves cell}` + parsed sections -> problems.
+
+    Three findings, and the orphan is one of them because *"the orphan list
+    is a deliverable of this job, not a side effect"*: a milestone serving
+    nothing is either keep-the-lights-on work that belongs under a KPI, or
+    work nobody can justify.
+    """
+    results, guardrails = key_result_ids(sections), kpi_ids(sections)
+    found = []
+    for (project, milestone) in sorted(serves):
+        ids = split_serves(serves[(project, milestone)])
+        if not ids:
+            found.append(
+                f"{project} / {milestone}: serves nothing -- either "
+                "keep-the-lights-on work that belongs under a KPI, or work "
+                "nobody can justify")
+            continue
+        for identifier in ids:
+            if identifier in guardrails:
+                found.append(
+                    f"{project} / {milestone}: serves {identifier!r}, which "
+                    "is a KPI -- a guardrail may never be a key result")
+            elif identifier not in results:
+                found.append(
+                    f"{project} / {milestone}: serves {identifier!r}, which "
+                    "is not a key result id")
+    return found
