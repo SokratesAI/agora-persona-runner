@@ -8972,15 +8972,65 @@
       if (!summary || !summary.total) continue;
       shown.push({ name: name, summary: summary, rating: rated[key] });
     }
+    var shares = (payload && payload.projectShares) || null;
     for (var s = 0; s < shown.length; s++) {
       list.appendChild(projectStandingRow(
-        shown[s].name, shown[s].summary, shown[s].rating, s, shown.length));
+        shown[s].name, shown[s].summary, shown[s].rating, s, shown.length,
+        shares));
     }
     if (!list.childNodes.length) return null;
     attachProjectDrag(list);
     var box = el("section", "project-standings");
     box.appendChild(list);
     return box;
+  }
+
+  /* What the picker owes this project, and what it actually spent.
+   *
+   * Issue #214's last third: *"Show share vs actual on the projects
+   * page."* The picker stopped using his hand order on 2026-09-12 and
+   * started ranking on whichever project is furthest below its share, and
+   * the arithmetic that decides it was printed to a cycle and to nobody
+   * else. A ranking whose reason is invisible is one he cannot tell apart
+   * from a broken one -- which is the complaint that opened this issue.
+   *
+   * Three states and they are three different facts, so none of them
+   * collapses into another. `shares` is `null` when the claims ledger
+   * would not read: nothing is drawn, because every project showing 0%
+   * taken is also what a totally idle loop looks like. `counted` is 0 when
+   * no recent cycle resolved to a project at all -- the ledger keeps the
+   * slug and never the project, so about half of them are free text --
+   * and then the percentages have no denominator and the line says so.
+   * Otherwise it is the two numbers and the window they were taken over.
+   *
+   * The 14-day floor gets a clause only when it is actually rescuing this
+   * project. When the ledger cannot see 14 days back it did not run at
+   * all, which is the normal state today, and a card is the wrong place
+   * to say that eleven times over.
+   */
+  function shareSentence(name, shares) {
+    if (!shares) return "";
+    var mine = (shares.projects || {})[name.toLowerCase()];
+    if (!mine) return "";
+    if (!shares.counted) {
+      return "Share of cycles: owed " + fmtShare(mine.share)
+        + "% — nothing in the claims ledger says which project recent cycles worked on";
+    }
+    var line = "Share of cycles: owed " + fmtShare(mine.share) + "%, took "
+      + fmtShare(mine.actual) + "% (" + mine.cycles + " of the last "
+      + shares.counted + ")";
+    if (mine.starved) {
+      line += " — " + shares.floorDays + "-day floor: next, whatever the arithmetic says";
+    }
+    return line;
+  }
+
+  /* A whole number unless the fraction changes the answer. 30.0 reads as
+   * 30; 3.75 stays 3.8, because three projects splitting the tail of his
+   * list all round to 4 and then the card says they are owed the same. */
+  function fmtShare(value) {
+    var n = Number(value) || 0;
+    return Math.abs(n - Math.round(n)) < 0.05 ? String(Math.round(n)) : n.toFixed(1);
   }
 
   /* One project's standing, plus the two buttons that move it.
@@ -8998,7 +9048,7 @@
    * a project hidden here because it has no rows cannot be silently
    * reordered by a button press on another one.
    */
-  function projectStandingRow(name, summary, rating, index, total) {
+  function projectStandingRow(name, summary, rating, index, total, shares) {
     var li = el("li", "project-standing");
     /* The whole standing opens the project -- his ask, 2026-09-08, in the
      * same breath as deleting the pills above this list: *"make the
@@ -9084,6 +9134,10 @@
     var standingPace = paceSentence(summary.pace);
     if (standingPace) {
       link.appendChild(el("div", "project-standing-pace", standingPace));
+    }
+    var shareLine = shareSentence(name, shares);
+    if (shareLine) {
+      link.appendChild(el("div", "project-standing-share", shareLine));
     }
     /* No rating chip on the card. It carried the worst rating among the
      * project's open rows until issue #202, whose spec says no rating

@@ -85,7 +85,19 @@ def project_shares(projects_markdown, seed=SHARE_SEED):
     the whole placed list -- the same rule `project_ranks` already applies,
     reached the same way.
     """
-    meta = parse_project_meta(projects_markdown or "")
+    return shares_from_meta(parse_project_meta(projects_markdown or ""), seed)
+
+
+def shares_from_meta(meta, seed=SHARE_SEED):
+    """The same arithmetic, on `projects.md` already parsed.
+
+    `parse_project_meta` is a vault read away in every CLI caller and
+    already in hand in the site, which reads the same file for the ratings
+    it draws beside the share. Splitting the parse off the arithmetic is
+    what lets the projects page answer issue #214's *"show share vs actual
+    on the projects page"* without fetching `projects.md` a second time on
+    the same request.
+    """
     shares = {name: 0.0 for name in meta}
     live = {name: row for name, row in meta.items() if not _dormant(row)}
     if not live:

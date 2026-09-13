@@ -14190,6 +14190,106 @@ describe("the project page", () => {
   const standings = (window) =>
     [...window.document.querySelectorAll(".project-standing")];
 
+  /* Share vs actual on the standing card -- the last third of issue #214.
+   *
+   * The picker stopped following his hand order on 2026-09-12 and started
+   * ranking on whichever project is furthest below its share of cycles.
+   * The arithmetic behind that was printed by `tools.top_board_rows`, to a
+   * cycle, and nowhere he could see it -- so the new ranking was
+   * indistinguishable from the broken one his issue reports.
+   *
+   * These hold the line to the server's numbers for the same reason the
+   * standing above is held to `projectSummary`: a page that divided
+   * `cycles` by `counted` itself would agree with its own arithmetic
+   * rather than with the picker's.
+   */
+  const SHARED = {
+    ...STANDING,
+    projectShares: {
+      counted: 6, window: 30, floorDays: 14, floorMeasurable: false,
+      projects: {
+        marcus: { share: 35, actual: 33.3, deficit: 1.7, cycles: 2, starved: false },
+        nova: { share: 30, actual: 16.7, deficit: 13.3, cycles: 1, starved: false },
+      },
+    },
+  };
+
+  const shareText = (window, index) => {
+    const line = standings(window)[index].querySelector(".project-standing-share");
+    return line ? line.textContent : null;
+  };
+
+  test("a standing says what the picker owes it and what it spent", async () => {
+    const window = await loadSite("/projects", { project: () => SHARED });
+    const text = shareText(window, 0);
+    assert.ok(text, "no share line on the first standing");
+    assert.match(text, /owed 35%/, text);
+    assert.match(text, /took 33.3%/, text);
+    // The count and its window, so "took 33%" is readable as two cycles out
+    // of six rather than as a third of everything this loop has ever done.
+    assert.match(text, /2 of the last 6/, text);
+    // The second card carries its own numbers, not the first card's.
+    assert.match(shareText(window, 1), /owed 30%, took 16.7% \(1 of the last 6\)/);
+  });
+
+  test("no share line at all when the ledger would not read", async () => {
+    /* `projectShares: null` is a read that failed, and every project at 0%
+     * taken is also exactly what an idle loop looks like. Drawing nothing
+     * is the only honest answer. */
+    const window = await loadSite("/projects",
+      { project: () => ({ ...STANDING, projectShares: null }) });
+    assert.equal(shareText(window, 0), null);
+  });
+
+  test("a project the shares do not mention gets no line", async () => {
+    /* Agora is on the board and has never been rated in `projects.md`, so
+     * it has no share. A card that printed "owed 0%" would be claiming he
+     * has decided that, and he has not. */
+    const window = await loadSite("/projects", { project: () => SHARED });
+    const named = standings(window).map((row) =>
+      row.querySelector(".project-standing-name").textContent);
+    const agora = named.indexOf("Agora");
+    if (agora >= 0) assert.equal(shareText(window, agora), null);
+  });
+
+  test("nothing attributable says so instead of showing a confident 0%", async () => {
+    /* About half the slugs in the live ledger are free text and resolve to
+     * no project. When none of them resolves there is no denominator, and
+     * "took 0%" would be a measurement nobody took. */
+    const window = await loadSite("/projects", {
+      project: () => ({
+        ...STANDING,
+        projectShares: {
+          counted: 0, window: 30, floorDays: 14, floorMeasurable: false,
+          projects: { marcus: { share: 35, actual: 0, deficit: 35, cycles: 0, starved: false } },
+        },
+      }),
+    });
+    const text = shareText(window, 0);
+    assert.match(text, /owed 35%/, text);
+    assert.doesNotMatch(text, /took/, text);
+  });
+
+  test("the 14-day floor says so on the card it is rescuing", async () => {
+    const window = await loadSite("/projects", {
+      project: () => ({
+        ...SHARED,
+        projectShares: {
+          ...SHARED.projectShares,
+          floorMeasurable: true,
+          projects: {
+            ...SHARED.projectShares.projects,
+            marcus: { share: 35, actual: 0, deficit: 35, cycles: 0, starved: true },
+          },
+        },
+      }),
+    });
+    assert.match(shareText(window, 0), /14-day floor/);
+    // ...and only on that card. The floor is a reason this one jumps the
+    // queue, not a caption on the page.
+    assert.doesNotMatch(shareText(window, 1), /floor/);
+  });
+
   test("the standing opens a drawer instead of navigating away", async () => {
     /* His ask, 2026-09-08: *"Instead of being navigated to another page when
      * i click on a project, i want a drawer system where projects contains
