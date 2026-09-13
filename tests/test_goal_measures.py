@@ -492,3 +492,163 @@ def test_render_key_results_marks_drift_and_prints_the_written_number():
     assert "measured 3.9" in out
     assert "the document says 6.8, drifted" in out
     assert "254 PRs / 65 rows" in out
+
+
+MARCUS_PG_DOC = """# Project goals
+
+## Marcus
+
+```key-result
+id: marcus-kr-sessions-logged
+name: You log the training you did
+measure: Training sessions logged per week
+now: 0
+target: 3
+direction: up
+```
+
+```key-result
+id: marcus-kr-a-plan-of-his-own
+name: The plan on the screen is one you made
+measure: The active plan is one you drafted with the coach
+now: 0
+target: 1
+direction: up
+```
+
+```key-result
+id: marcus-kr-coach-first-try
+name: The coach answers on the first tap
+measure: Share of coach taps that return a usable answer without a retry
+now: 83
+target: 99
+direction: up
+```
+"""
+
+
+def _marcus_sections():
+    from agora_runner.project_goals import parse_project_goals
+    return parse_project_goals(MARCUS_PG_DOC)
+
+
+def test_marcus_sessions_are_counted_by_the_day_they_are_logged_for():
+    # Two inside the window, one before it, one after it. The out-of-window
+    # pair is what separates a real window filter from `len(sessions)`.
+    state = {"sessions": [
+        {"id": "a", "date": "2026-09-08"},
+        {"id": "b", "date": "2026-09-11"},
+        {"id": "c", "date": "2026-09-06"},
+        {"id": "d", "date": "2026-09-14"},
+    ]}
+    value, detail = goal_measures.measure_marcus_sessions_logged(
+        state, "2026-09-07", "2026-09-13")
+    assert value == 2.0
+    assert "2 session(s)" in detail and "out of 4" in detail
+
+
+def test_marcus_sessions_report_a_weekly_rate_not_a_raw_count():
+    # A 14-day window holding 4 sessions is 2 per week, not 4.
+    state = {"sessions": [{"id": str(n), "date": "2026-09-08"} for n in range(4)]}
+    value, _ = goal_measures.measure_marcus_sessions_logged(
+        state, "2026-08-31", "2026-09-13")
+    assert value == 2.0
+
+
+def test_marcus_sessions_with_no_usable_date_are_named_as_a_floor():
+    state = {"sessions": [{"id": "a", "date": "2026-09-08"}, {"id": "b"}]}
+    value, detail = goal_measures.measure_marcus_sessions_logged(
+        state, "2026-09-07", "2026-09-13")
+    assert value == 1.0
+    assert "1 carry no YYYY-MM-DD date" in detail and "floor" in detail
+
+
+def test_marcus_sessions_missing_entirely_is_not_measured_as_zero():
+    # A store that answered without the list is a broken read, and reporting
+    # it as "0 sessions per week" would write a lie into the document.
+    value, detail = goal_measures.measure_marcus_sessions_logged(
+        {}, "2026-09-07", "2026-09-13")
+    assert value is None
+    assert "no `sessions` list" in detail
+
+
+def test_marcus_empty_plan_reads_zero_and_names_the_block():
+    state = {"plan": {"blockName": "No plan yet",
+                      "days": [{"day": "Monday", "focus": "Open", "exercises": []}]}}
+    value, detail = goal_measures.measure_marcus_own_plan(state, None, None)
+    assert value == 0
+    assert "No plan yet" in detail
+
+
+def test_marcus_filled_plan_reads_one_and_says_it_is_a_ceiling():
+    state = {"plan": {"blockName": "Hypertrophy Block", "days": [
+        {"day": "Monday", "exercises": [{"name": "Squat"}]},
+        {"day": "Tuesday", "exercises": []},
+    ]}}
+    value, detail = goal_measures.measure_marcus_own_plan(state, None, None)
+    assert value == 1
+    assert "ceiling" in detail and "demo" in detail
+
+
+def test_marcus_key_results_are_measured_from_the_state_not_from_a_goal():
+    state = {"sessions": [{"id": "a", "date": "2026-09-11"}],
+             "plan": {"blockName": "No plan yet", "days": []}}
+    out = goal_measures.key_result_rows(
+        _marcus_sections(), [], marcus=state,
+        since="2026-09-07", until="2026-09-13")
+    by_id = {row["id"]: row for row in out}
+    assert by_id["marcus-kr-sessions-logged"]["value"] == 1.0
+    assert by_id["marcus-kr-a-plan-of-his-own"]["value"] == 0
+    # The third has no instrument at all, and that is a different sentence
+    # from "the state could not be read".
+    third = by_id["marcus-kr-coach-first-try"]
+    assert third["value"] is None
+    assert "no instrument" in third["detail"]
+    assert "production LLM route" in third["detail"]
+
+
+def test_an_unread_marcus_state_never_reads_as_having_no_instrument():
+    # These have opposite fixes: one is a map entry, the other is a pod.
+    out = goal_measures.key_result_rows(
+        _marcus_sections(), [], marcus=None,
+        marcus_error="could not read http://marcus/api/state: timed out",
+        since="2026-09-07", until="2026-09-13")
+    row = {r["id"]: r for r in out}["marcus-kr-sessions-logged"]
+    assert row["value"] is None
+    assert "not measured" in row["detail"] and "timed out" in row["detail"]
+    assert "no instrument" not in row["detail"]
+
+
+def test_a_document_with_no_marcus_key_result_never_calls_marcus():
+    assert goal_measures._needs_marcus(_pg_sections()) is False
+    assert goal_measures._needs_marcus(_marcus_sections()) is True
+
+
+def test_main_writes_the_marcus_numbers_and_names_a_dead_state_in_the_report(
+        tmp_path, monkeypatch, capsys):
+    goals = tmp_path / "goals.md"
+    goals.write_text(GOALS_FOR_WRITE, encoding="utf-8")
+    pg = tmp_path / "project-goals.md"
+    pg.write_text(MARCUS_PG_DOC, encoding="utf-8")
+    monkeypatch.setattr(gm, "today_oslo", lambda now=None: "2026-09-13")
+    monkeypatch.setattr(gm, "fetch_entries", lambda limit, site=None: ([], None))
+    monkeypatch.setattr(gm, "fetch_board", lambda name, site=None: ([], None))
+    monkeypatch.setattr(gm, "collect_merges", lambda repos, since, until: ({}, []))
+    monkeypatch.setattr(gm, "fetch_marcus_state", lambda site=None: (
+        {"sessions": [{"id": "a", "date": "2026-09-11"},
+                      {"id": "b", "date": "2026-09-12"}],
+         "plan": {"blockName": "No plan yet", "days": []}}, None))
+    assert gm.main(["--goals", str(goals), "--project-goals", str(pg),
+                    "--write"]) == 0
+    assert "now: 2.0" in pg.read_text(encoding="utf-8")
+
+    # And a state that did not answer lands in the goals report's own
+    # cannot-see list rather than vanishing.
+    pg.write_text(MARCUS_PG_DOC, encoding="utf-8")
+    monkeypatch.setattr(gm, "fetch_marcus_state",
+                        lambda site=None: (None, "could not read /api/state: refused"))
+    capsys.readouterr()
+    assert gm.main(["--goals", str(goals), "--project-goals", str(pg)]) == 0
+    out = capsys.readouterr().out
+    assert "! could not read /api/state: refused" in out
+    assert pg.read_text(encoding="utf-8") == MARCUS_PG_DOC
