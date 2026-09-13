@@ -82,6 +82,7 @@ MARCUS = os.environ.get(
     "MARCUS_SELF_URL", "http://marcus.agents.svc.cluster.local:8080"
 )
 
+
 def today_oslo(now=None):
     """Today's date in Oslo, as `YYYY-MM-DD`.
 
