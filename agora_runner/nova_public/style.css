@@ -5642,3 +5642,62 @@ X that summarizes the last 12
 }
 
 .journal-filter-option[aria-checked="true"].has-unread::after { color: var(--bg); }
+
+/* Markdown inside a message. His ask, 2026-09-13: a table in a chat message
+ * was arriving as pipes and dashes. */
+.md-table-scroll {
+  /* A five-column table does not fit a phone, and a table that widens the
+   * page breaks every other block on it -- so the table scrolls, not the
+   * thread. */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0.5rem 0;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}
+
+.md-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.88rem;
+}
+
+.md-table th,
+.md-table td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+  white-space: normal;
+}
+
+/* No fill behind the header row: a tinted header would put body text on a
+ * surface the palette does not guarantee contrast against, and the weight and
+ * the rule under it already say "header". */
+.md-table th {
+  font-weight: 700;
+  color: var(--text);
+  border-bottom: 2px solid var(--outline);
+}
+
+.md-table tr:last-child td { border-bottom: 0; }
+
+.md-heading {
+  margin: 0.7rem 0 0.3rem;
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.md-list { margin: 0.35rem 0; padding-left: 1.2rem; }
+.md-list li { margin: 0.15rem 0; }
+
+.md-quote {
+  margin: 0.5rem 0;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--outline);
+  color: var(--dim);
+}
+
+.md-rule { border: 0; border-top: 1px solid var(--line); margin: 0.8rem 0; }
+
+.md-link { color: var(--accent); }

@@ -1204,23 +1204,224 @@
     });
   }
 
+  /* Markdown in a message, his ask 2026-09-13: *"Please implement that Nova
+   * can render markdown in the chat, because i can not see that table
+   * properly, just lines and dashes."*
+   *
+   * A small renderer rather than a library: the shell is three static files
+   * served off a phone connection, and the subset that actually appears in
+   * these threads is tables, lists, headings, code, quotes and the four inline
+   * marks. Nothing here ever touches `innerHTML` -- every node is built and
+   * every string lands as a text node, so a message is still incapable of
+   * injecting markup (`tests/browser/app.test.mjs` pins that).
+   *
+   * Attachments keep their old path: `ATTACH_RE` runs on the text of every
+   * inline run, so a picture inside a list item or a table cell still draws. */
   function appendPlainText(container, paraClass, text) {
-    String(text || "").split(/\n{2,}/).forEach(function (para) {
-      if (!para.trim()) return;
-      var node = el("p", paraClass);
-      var last = 0;
-      var match;
-      ATTACH_RE.lastIndex = 0;
-      while ((match = ATTACH_RE.exec(para)) !== null) {
-        var before = para.slice(last, match.index);
-        if (before) node.appendChild(document.createTextNode(before));
-        node.appendChild(attachNode(match[3], match[2], !!match[1]));
-        last = match.index + match[0].length;
+    var lines = String(text || "").split("\n");
+    var i = 0;
+
+    function isTableRule(line) {
+      return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line);
+    }
+    function cellsOf(line) {
+      var row = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+      return row.split("|").map(function (cell) { return cell.trim(); });
+    }
+
+    while (i < lines.length) {
+      var line = lines[i];
+
+      if (!line.trim()) { i += 1; continue; }
+
+      // Fenced code. The fence language is kept out of the text on purpose:
+      // mermaid is handled one layer up, in `appendRichText`.
+      var fence = /^\s*```(.*)$/.exec(line);
+      if (fence) {
+        var code = [];
+        var closed = false;
+        var scan = i + 1;
+        while (scan < lines.length) {
+          if (/^\s*```/.test(lines[scan])) { closed = true; break; }
+          code.push(lines[scan]);
+          scan += 1;
+        }
+        /* An unfinished fence is a message still being typed, not a code
+         * block: `splitMermaidBlocks` already declines to draw one as a
+         * diagram, and drawing it as code here would be the same guess in a
+         * different coat. It stays the characters he typed. */
+        if (!closed) {
+          var typed = el("p", paraClass);
+          appendInlineText(typed, lines.slice(i).join("\n"));
+          container.appendChild(typed);
+          i = lines.length;
+          continue;
+        }
+        i = scan + 1;
+        var pre = el("pre");
+        pre.appendChild(el("code", null, code.join("\n")));
+        container.appendChild(pre);
+        continue;
       }
-      var rest = para.slice(last);
-      if (rest) node.appendChild(document.createTextNode(rest));
+
+      // A table: a pipe row followed by a dashes row. Wrapped in a scroller,
+      // because a five-column table does not fit a phone and a table that
+      // widens the page breaks every other block on it.
+      if (line.indexOf("|") !== -1 && i + 1 < lines.length && isTableRule(lines[i + 1])) {
+        var head = cellsOf(line);
+        i += 2;
+        var table = el("table", "md-table");
+        var thead = el("thead");
+        var headRow = el("tr");
+        head.forEach(function (cell) {
+          var th = el("th");
+          appendInlineText(th, cell);
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        var tbody = el("tbody");
+        while (i < lines.length && lines[i].indexOf("|") !== -1 && lines[i].trim()) {
+          var tr = el("tr");
+          cellsOf(lines[i]).forEach(function (cell) {
+            var td = el("td");
+            appendInlineText(td, cell);
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+          i += 1;
+        }
+        table.appendChild(tbody);
+        var scroller = el("div", "md-table-scroll");
+        scroller.appendChild(table);
+        container.appendChild(scroller);
+        continue;
+      }
+
+      var heading = /^(#{1,4})\s+(.*)$/.exec(line);
+      if (heading) {
+        // h4 at the shallowest: these sit inside a bubble under the page's own
+        // h1, and a message must not outrank the page it is drawn on.
+        var level = Math.min(6, 3 + heading[1].length);
+        var h = el("h" + level, "md-heading");
+        appendInlineText(h, heading[2]);
+        container.appendChild(h);
+        i += 1;
+        continue;
+      }
+
+      if (/^\s*([-*_])\s*\1\s*\1[\s-*_]*$/.test(line)) {
+        container.appendChild(el("hr", "md-rule"));
+        i += 1;
+        continue;
+      }
+
+      if (/^\s*>\s?/.test(line)) {
+        var quoted = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+          quoted.push(lines[i].replace(/^\s*>\s?/, ""));
+          i += 1;
+        }
+        var quote = el("blockquote", "md-quote");
+        appendPlainText(quote, paraClass, quoted.join("\n"));
+        container.appendChild(quote);
+        continue;
+      }
+
+      var bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+      var numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (bullet || numbered) {
+        var ordered = !!numbered;
+        var list = el(ordered ? "ol" : "ul", "md-list");
+        while (i < lines.length) {
+          var item = ordered
+            ? /^\s*\d+[.)]\s+(.*)$/.exec(lines[i])
+            : /^\s*[-*+]\s+(.*)$/.exec(lines[i]);
+          if (!item) break;
+          var li = el("li");
+          appendInlineText(li, item[1]);
+          i += 1;
+          // A wrapped line belongs to the item above it, not to a new one.
+          while (i < lines.length && lines[i].trim()
+                 && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i])
+                 && !/^\s*(#{1,4}\s|>|```)/.test(lines[i])) {
+            li.appendChild(document.createTextNode(" "));
+            appendInlineText(li, lines[i].trim());
+            i += 1;
+          }
+          list.appendChild(li);
+        }
+        container.appendChild(list);
+        continue;
+      }
+
+      // A paragraph runs until a blank line or the start of another block.
+      var para = [];
+      while (i < lines.length && lines[i].trim()
+             && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i])
+             && !/^\s*(#{1,4}\s|>|```)/.test(lines[i])
+             && !(lines[i].indexOf("|") !== -1 && i + 1 < lines.length && isTableRule(lines[i + 1]))) {
+        para.push(lines[i]);
+        i += 1;
+      }
+      var node = el("p", paraClass);
+      appendInlineText(node, para.join("\n"));
       container.appendChild(node);
-    });
+    }
+  }
+
+  /* One run of inline text: attachments first (they were here before
+   * markdown and their syntax is ours, not CommonMark's), then the four
+   * marks that actually appear -- code, bold, italic and links. */
+  function appendInlineText(node, text) {
+    var body = String(text || "");
+    var last = 0;
+    var match;
+    ATTACH_RE.lastIndex = 0;
+    while ((match = ATTACH_RE.exec(body)) !== null) {
+      var before = body.slice(last, match.index);
+      if (before) appendInlineMarks(node, before);
+      node.appendChild(attachNode(match[3], match[2], !!match[1]));
+      last = match.index + match[0].length;
+    }
+    var rest = body.slice(last);
+    if (rest) appendInlineMarks(node, rest);
+  }
+
+  //: `code`, **bold**, *italic*, _italic_ and [label](href), in one pass so
+  //: the first match wins rather than the first rule.
+  var INLINE_RE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(_[^_\n]+_)|(\[[^\]\n]+\]\([^)\s]+\))/;
+
+  function appendInlineMarks(node, text) {
+    var rest = String(text || "");
+    while (rest) {
+      var hit = INLINE_RE.exec(rest);
+      if (!hit) { node.appendChild(document.createTextNode(rest)); return; }
+      if (hit.index) node.appendChild(document.createTextNode(rest.slice(0, hit.index)));  // not-prose: the run before a mark, not a clamp
+      var token = hit[0];
+      if (token.charAt(0) === "`") {
+        node.appendChild(el("code", null, token.slice(1, -1)));
+      } else if (token.slice(0, 2) === "**") {  // not-prose: reading the mark
+        node.appendChild(el("strong", null, token.slice(2, -2)));
+      } else if (token.charAt(0) === "*" || token.charAt(0) === "_") {
+        node.appendChild(el("em", null, token.slice(1, -1)));
+      } else {
+        var split = token.indexOf("](");
+        var link = el("a", "md-link", token.slice(1, split));
+        var href = token.slice(split + 2, -1);
+        /* Only http(s) and same-site paths become links. A `javascript:` href
+         * is the one way a message could still run something, and it is
+         * refused here rather than anywhere downstream. */
+        if (/^https?:\/\//.test(href) || href.charAt(0) === "/") {
+          link.setAttribute("href", href);
+          if (href.charAt(0) !== "/") link.setAttribute("rel", "noopener noreferrer");
+          node.appendChild(link);
+        } else {
+          node.appendChild(document.createTextNode(token));
+        }
+      }
+      rest = rest.slice(hit.index + token.length);
+    }
   }
 
   /* Make a pager fire when it is scrolled to, instead of when it is tapped.
@@ -1988,14 +2189,12 @@
           head.appendChild(el("span", "comment-relay", "↩ relayed by Sokrates"));
         }
         item.appendChild(head);
-        // The text is the owner's own prose and the server sends it as plain
-        // text, so each blank-line-separated paragraph becomes its own <p>.
-        // Nothing here interprets it as markdown *except* the two things
-        // `appendRichText` knows about: the attach line this site writes on
-        // his behalf, and a fenced ```mermaid block. The second one arrived
-        // for the chat and reaches here because the reader is shared, which
-        // is deliberate -- a diagram that drew in one thread and printed as
-        // source in another would read as a bug in whichever he saw second.
+        // Markdown since 2026-09-13: `appendRichText` renders tables, lists,
+        // headings, quotes, code and the four inline marks, plus the two
+        // things it already knew -- the attach line this site writes on his
+        // behalf, and a fenced ```mermaid block. The reader is shared with the
+        // chat on purpose: a table that drew in one thread and printed as
+        // pipes in another would read as a bug in whichever he saw second.
         appendRichText(item, "comment-body", comment.text);
         /* Nova's answer to this comment, or the fact that one is coming.
          * The bridge serialises every CLI call, so a reply posted while a
