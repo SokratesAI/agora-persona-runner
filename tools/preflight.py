@@ -251,7 +251,7 @@ SUBJECT = {
     "redact_coverage":   ("on-box",  "workloads in this cluster"),
     "reloader_coverage": ("on-box",  "Reloader and workloads in this cluster"),
     "cli_pin":           ("off-box", "published Claude CLI releases"),
-    "rollback_watch":    ("off-box", "the -config repo's history on GitHub"),
+    "rollback_watch":    ("off-box", "every -config repo's history on GitHub"),
     "backup_health":     ("off-box", "the backup repos on GitHub"),
     "pin_drift":         ("off-box", "upstream action and image versions"),
     "ci_minutes":        ("off-box", "this org's GitHub Actions billing"),

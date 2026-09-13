@@ -6,7 +6,10 @@ a Nova cycle can investigate why the deploy failed -- otherwise we have no
 record of how often this fallback fires."*
 
 `platform-config`'s `deploy-rollback` CronJob undoes a digest whose deploy never
-came up, with no human in the loop. It is the layer that catches what CI's
+came up, with no human in the loop. Since platform-config#754 it can do that to
+five `-config` repos rather than one (idea #242), so this reads all five: a
+revert that fires on a repo nothing reads here is the same silence this tool was
+built to end. It is the layer that catches what CI's
 smoke test cannot reproduce, and when it fires, something upstream of it is
 wrong. Nothing here read that. The evidence lived in the Job pod's log, and
 `successfulJobsHistoryLimit` is 3 at a five-minute cadence, so the crash
@@ -38,7 +41,21 @@ import subprocess
 import sys
 import zoneinfo
 
-CONFIG_REPO = "SokratesAI/agora-persona-runner-config"
+#: Every repo the deploy-rollback CronJob can revert. platform-config's
+#: `cronjobs/deploy-rollback.yaml` is the source of truth for that list -- its
+#: `TARGETS` -- and this is the reading half, so the two have to move together.
+#: They cannot import each other: the job runs a public python image with no
+#: checkout, and this runs here. So the duplication is deliberate and named
+#: rather than hidden. A repo missing from here is a revert that fires and that
+#: no cycle ever reports, which is the exact blindness this tool was built to
+#: end (issues.md 2026-09-03), just one repo over.
+CONFIG_REPOS = (
+    "SokratesAI/agora-persona-runner-config",
+    "SokratesAI/agora-config",
+    "SokratesAI/agora-claude-bridge-config",
+    "SokratesAI/marcus-config",
+    "SokratesAI/sokrates-docs-config",
+)
 BRANCH = "main"
 
 #: The line platform-config's `revert_message()` writes into every automatic
@@ -108,14 +125,14 @@ def oslo(stamp):
     return parsed.astimezone(OSLO).strftime("%Y-%m-%d %H:%M Oslo")
 
 
-def read_commits(run=None):
-    """`(commits, error)` — the newest `MAX_COMMITS` on `-config`, newest first."""
+def read_commits(repo, run=None):
+    """`(commits, error)` — the newest `MAX_COMMITS` on `repo`, newest first."""
     commits = []
     caller = run or _gh
     for page in range(1, (MAX_COMMITS // PER_PAGE) + 1):
         code, out, err = caller([
             "api",
-            f"repos/{CONFIG_REPO}/commits?sha={BRANCH}&per_page={PER_PAGE}&page={page}",
+            f"repos/{repo}/commits?sha={BRANCH}&per_page={PER_PAGE}&page={page}",
         ])
         if code != 0:
             blob = (err or out or "").strip()
@@ -152,10 +169,10 @@ def judge(commits):
     return reverts, pending
 
 
-def format_report(commits, reverts, pending, error):
+def format_report(repo, commits, reverts, pending, error):
     lines = []
     if error:
-        lines.append(f"CANNOT SEE — {CONFIG_REPO} could not be read: {error}")
+        lines.append(f"CANNOT SEE — {repo} could not be read: {error}")
         lines.append(
             "That is not the same as no reverts. Nothing below is a claim about "
             "what the watchdog did."
@@ -167,8 +184,8 @@ def format_report(commits, reverts, pending, error):
         head = reverts[0]
         lines.append(
             "REVERT STANDING — the newest commit on %s is an automatic rollback, so "
-            "this loop is running the previous image and no fix has shipped yet."
-            % CONFIG_REPO
+            "that service is running the previous image and no fix has shipped yet."
+            % repo
         )
         lines.append(f"  {head['sha'][:12]} at {oslo(head['date'])}")
         subject = (head["message"].splitlines() or [""])[0]
@@ -178,7 +195,7 @@ def format_report(commits, reverts, pending, error):
                      else "  no reason recorded — this revert predates platform-config#601")
         lines.append(
             "  Investigate why that digest died before shipping anything on top of it; "
-            "the next merge to the runner buries this line."
+            "the next merge to that service buries this line."
         )
 
     older = reverts[1:] if pending else reverts
@@ -193,17 +210,15 @@ def format_report(commits, reverts, pending, error):
             if reason:
                 lines.append(f"    {reason}")
 
-    if not reverts:
-        lines.append(
-            "The watchdog has not fired in the window below. It is a CronJob in `agents`, "
-            "every 5 minutes; that it did nothing is what a healthy week looks like."
-        )
+    # Deliberately no "the watchdog has not fired" sentence per repo. It was one line
+    # when this read one repo; with five it is the same paragraph five times, and the
+    # count line below already says it, per repo, with the window it covers.
     # Last, because `preflight` shows the final line as this check's one-line
     # summary, and the count with its window is the answer to the question that
     # put this tool here: how often does this fire, and over what.
     lines.append(
         "%d automatic revert(s) in the newest %d commit(s) of %s, back to %s."
-        % (len(reverts), len(commits), CONFIG_REPO, oldest)
+        % (len(reverts), len(commits), repo, oldest)
     )
     return "\n".join(lines)
 
@@ -212,15 +227,40 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.parse_args(argv)
 
-    commits, error = read_commits()
-    reverts, pending = judge(commits)
-    print(format_report(commits, reverts, pending, error))
-    if error:
+    standing, blind, total = [], [], 0
+    for repo in CONFIG_REPOS:
+        commits, error = read_commits(repo)
+        reverts, pending = judge(commits)
+        print(format_report(repo, commits, reverts, pending, error))
+        if error:
+            blind.append(repo)
+        elif not commits:
+            # A -config repo with no commits is not a state any of these can be in,
+            # so this is the instrument failing rather than a clean window.
+            print("No commits were read at all, which is not a state %s can be in." % repo)
+            blind.append(repo)
+        else:
+            total += len(reverts)
+            if pending:
+                standing.append(repo)
+        print("")
+
+    # Last, because `preflight` shows the final line as this check's one-line summary,
+    # and with five repos the per-repo lines above are no longer a summary of anything.
+    if blind:
+        print("%d of %d -config repo(s) could not be read: %s. That is not the same as "
+              "no reverts." % (len(blind), len(CONFIG_REPOS), ", ".join(blind)))
         return 1
-    if not commits:
-        print("No commits were read at all, which is not a state this repo can be in.")
-        return 1
-    return 2 if pending else 0
+    if standing:
+        print("REVERT STANDING on %d of %d -config repo(s): %s. %d automatic revert(s) "
+              "read in total." % (len(standing), len(CONFIG_REPOS),
+                                  ", ".join(standing), total))
+        return 2
+    print("No automatic revert stands on any of the %d -config repo(s) the watchdog can "
+          "revert; %d fired in the windows read. It is a CronJob in `agents` every 5 "
+          "minutes, so doing nothing is what a healthy week looks like."
+          % (len(CONFIG_REPOS), total))
+    return 0
 
 
 if __name__ == "__main__":

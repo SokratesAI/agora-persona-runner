@@ -90,7 +90,7 @@ def test_a_revert_a_later_deploy_has_superseded_is_history():
 def test_the_report_names_the_pod_and_the_time_when_a_revert_stands():
     commits = [_commit(REVERT_BODY)]
     reverts, pending = rw.judge(commits)
-    report = rw.format_report(commits, reverts, pending, None)
+    report = rw.format_report(rw.CONFIG_REPOS[0], commits, reverts, pending, None)
     assert "REVERT STANDING" in report
     assert "agora-persona-runner-abc/runner" in report
     assert "2026-09-03 12:00 Oslo" in report, "GitHub answers UTC and this loop writes Oslo"
@@ -99,40 +99,77 @@ def test_the_report_names_the_pod_and_the_time_when_a_revert_stands():
 def test_a_clean_window_says_how_far_back_it_looked():
     commits = [_commit(DIGEST_BODY, date="2026-09-01T08:00:00Z")]
     reverts, pending = rw.judge(commits)
-    report = rw.format_report(commits, reverts, pending, None)
+    report = rw.format_report("SokratesAI/marcus-config", commits, reverts, pending, None)
     assert "0 automatic revert(s)" in report
+    assert "SokratesAI/marcus-config" in report, "the window belongs to a named repo"
     assert "2026-09-01 10:00 Oslo" in report
 
 
 def test_an_unreadable_repo_is_not_a_clean_window():
-    report = rw.format_report([], [], False, "HTTP 404")
+    report = rw.format_report("SokratesAI/agora-config", [], [], False, "HTTP 404")
     assert "CANNOT SEE" in report
+    assert "SokratesAI/agora-config" in report
     assert "not the same as no reverts" in report
 
 
-def test_main_exits_2_only_when_a_revert_stands(monkeypatch, capsys):
-    page = json.dumps([
-        {"sha": "a" * 40,
-         "commit": {"message": REVERT_BODY, "committer": {"date": "2026-09-03T12:00:00Z"}}},
-    ])
+def _page(body, sha="a" * 40, date="2026-09-03T12:00:00Z"):
+    return json.dumps([{"sha": sha, "commit": {"message": body, "committer": {"date": date}}}])
 
-    monkeypatch.setattr(rw, "_gh", lambda args: (0, page, ""))
+
+def _by_repo(bodies, failures=()):
+    """A fake `gh` that answers each repo with its own single-commit page."""
+    def fake(args):
+        repo = args[1].split("repos/")[1].rsplit("/commits", 1)[0]
+        if repo in failures:
+            return 1, "", "gh: HTTP 404"
+        return 0, _page(bodies.get(repo, DIGEST_BODY)), ""
+    return fake
+
+
+def test_main_exits_2_only_when_a_revert_stands(monkeypatch, capsys):
+    monkeypatch.setattr(rw, "_gh", _by_repo({r: REVERT_BODY for r in rw.CONFIG_REPOS}))
     assert rw.main([]) == 2
 
-    clean = json.dumps([
-        {"sha": "b" * 40,
-         "commit": {"message": DIGEST_BODY, "committer": {"date": "2026-09-03T12:00:00Z"}}},
-    ])
-    monkeypatch.setattr(rw, "_gh", lambda args: (0, clean, ""))
+    monkeypatch.setattr(rw, "_gh", _by_repo({}))
     assert rw.main([]) == 0
 
 
-def test_a_failing_gh_exits_1_rather_than_0(monkeypatch):
+def test_a_revert_on_any_one_repo_raises(monkeypatch, capsys):
+    """The reason this tool had to change with the watchdog: four of the five repos
+    are new, and a revert on one of them used to be invisible here."""
+    for repo in rw.CONFIG_REPOS[1:]:
+        monkeypatch.setattr(rw, "_gh", _by_repo({repo: REVERT_BODY}))
+        assert rw.main([]) == 2, repo
+        out = capsys.readouterr().out
+        assert "REVERT STANDING on 1 of %d" % len(rw.CONFIG_REPOS) in out
+        assert repo in out
+
+
+def test_every_repo_is_read_and_named_even_when_all_are_clean(monkeypatch, capsys):
+    monkeypatch.setattr(rw, "_gh", _by_repo({}))
+    assert rw.main([]) == 0
+    out = capsys.readouterr().out
+    for repo in rw.CONFIG_REPOS:
+        assert repo in out, repo
+
+
+def test_a_failing_gh_exits_1_rather_than_0(monkeypatch, capsys):
     monkeypatch.setattr(rw, "_gh", lambda args: (1, "", "gh: HTTP 403"))
     assert rw.main([]) == 1
 
 
-def test_an_empty_commit_list_exits_1(monkeypatch):
+def test_one_unreadable_repo_outranks_four_clean_ones(monkeypatch, capsys):
+    """Blind beats clean. Four green windows and one repo it could not open is not a
+    report that ends `no automatic revert stands` -- that would be the exact claim the
+    CANNOT SEE line exists to refuse, made by the summary line instead."""
+    monkeypatch.setattr(rw, "_gh", _by_repo({}, failures={"SokratesAI/marcus-config"}))
+    assert rw.main([]) == 1
+    out = capsys.readouterr().out
+    assert "1 of 5 -config repo(s) could not be read" in out
+    assert "not the same as no reverts" in out.splitlines()[-1] or "not the same as" in out
+
+
+def test_an_empty_commit_list_exits_1(monkeypatch, capsys):
     """No commits at all is no instrument, not a clean repo."""
     monkeypatch.setattr(rw, "_gh", lambda args: (0, "[]", ""))
     assert rw.main([]) == 1
@@ -149,7 +186,8 @@ def test_it_stops_paging_once_a_short_page_comes_back(monkeypatch):
         ]), ""
 
     monkeypatch.setattr(rw, "_gh", fake)
-    commits, error = rw.read_commits()
+    commits, error = rw.read_commits("SokratesAI/marcus-config")
+    assert "SokratesAI/marcus-config" in calls[0][1], "it must ask for the repo it was given"
     assert error is None
     assert len(calls) == 1, "a page shorter than per_page is the end of the history"
     assert len(commits) == 1
