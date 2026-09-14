@@ -570,3 +570,101 @@ def test_a_thirteenth_month_is_refused_rather_than_read_as_a_year():
     assert problems("## Nova\n\n```objective\nstatement: s\nperiod: 2026-13\n```\n")
     assert not problems(
         "## Nova\n\n```objective\nstatement: s\nperiod: 2026-12\n```\n")
+
+
+def _key_result(measure, unit="", name="A real outcome"):
+    return _doc(
+        "## Nova\n"
+        "\n"
+        "```key-result\n"
+        "id: nova-kr-attr\n"
+        f"name: {name}\n"
+        f"measure: {measure}\n"
+        f"unit: {unit}\n"
+        "now: 6\n"
+        "target: 8\n"
+        "```\n")
+
+
+def _attribute_complaints(markdown):
+    return [p for p in problems(markdown) if "rule 8" in p]
+
+
+def test_a_key_result_measuring_trl_is_refused():
+    """Rule 8: TRL is an attribute, and a hardened project can be pointless.
+
+    It passes every other rule in `problems()` -- it has a measure, a `now`
+    and a `target` -- which is exactly why this one has to exist.
+    """
+    found = _attribute_complaints(_key_result("TRL of the runner"))
+    assert len(found) == 1, found
+    assert "measures trl" in found[0]
+    assert "nova-kr-attr" in found[0]
+
+
+def test_the_spelled_out_attribute_is_refused_too():
+    found = _attribute_complaints(
+        _key_result("technology readiness of the bridge image"))
+    assert len(found) == 1, found
+    assert "measures trl" in found[0]
+
+
+def test_a_key_result_measuring_satisfaction_is_refused():
+    found = _attribute_complaints(
+        _key_result("his satisfaction score for the project"))
+    assert len(found) == 1, found
+    assert "measures satisfaction" in found[0]
+
+
+def test_a_key_result_measuring_lifecycle_is_refused():
+    found = _attribute_complaints(_key_result("lifecycle stage reached"))
+    assert len(found) == 1, found
+    assert "measures lifecycle" in found[0]
+
+
+def test_the_unit_is_read_as_well_as_the_measure():
+    """`measure: maturity of the artefact` / `unit: TRL` is the same score
+    wearing a different field, and only the unit names it."""
+    found = _attribute_complaints(
+        _key_result("maturity of the artefact", unit="TRL"))
+    assert len(found) == 1, found
+    assert "measures trl" in found[0]
+
+
+def test_a_key_result_naming_two_attributes_complains_once():
+    """One key result, one defect -- or the count of problems stops being a
+    count of key results and the same row is reported twice."""
+    found = _attribute_complaints(
+        _key_result("TRL reached, weighted by his satisfaction"))
+    assert len(found) == 1, found
+
+
+def test_the_word_inside_another_word_is_not_an_attribute():
+    """`\\b` rather than `in`: the substring version refuses a measure that
+    says nothing about maturity at all."""
+    assert _attribute_complaints(_key_result("controls he still misses")) == []
+    assert _attribute_complaints(_key_result("dissatisfactions logged")) == []
+
+
+def test_a_kpi_may_still_watch_an_attribute():
+    """Rule 8's sentence is about what says a goal was *reached*, which is a
+    key result. A guardrail watching an attribute stay in bounds is a
+    different claim and the issue does not forbid it."""
+    markdown = _doc(
+        "## Nova\n"
+        "\n"
+        "```kpi\n"
+        "id: nova-kpi-attr\n"
+        "name: Projects stuck below TRL 4\n"
+        "measure: projects whose TRL has not moved in 90 days\n"
+        "now: 2\n"
+        "low: 0\n"
+        "high: 3\n"
+        "```\n")
+    assert _attribute_complaints(markdown) == []
+
+
+def test_an_ordinary_key_result_document_is_untouched():
+    """The rule has to start green on documents that were already fine, or
+    it is a permanently red check nobody reads."""
+    assert _attribute_complaints(NOVA) == []

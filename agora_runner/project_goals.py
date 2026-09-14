@@ -46,7 +46,11 @@ mechanical here.** `problems()` refuses what can be checked by reading:
 * a KPI with no range at all (`low`/`high`, either bound is enough),
 * an id used twice anywhere in the document, because `Serves` points at ids
   and an ambiguous pointer is worse than no pointer,
-* an objective with no `statement`, or a status outside the three.
+* an objective with no `statement`, or a status outside the three,
+* a key result whose `measure` or `unit` is TRL, lifecycle or satisfaction
+  -- rule 8, *"none of them measures whether a goal was reached"*. Those
+  three are project attributes that already carry a number, which is what
+  makes them so easy to promote into a key result by accident.
 
 What is **not** mechanical, and deliberately is not faked here: whether a
 key result is really an outcome rather than a task list. *"Ship the landing
@@ -144,6 +148,31 @@ def month_name(period):
 #: hat."* The floor is not checked: a project mid-proposal legitimately has
 #: one, and refusing that would block the step that writes the second.
 MAX_KEY_RESULTS = 3
+
+#: Issue #227's eighth rule: *"TRL, lifecycle and satisfaction stay as
+#: attributes, not scores. TRL says how mature the artefact is and a
+#: hardened project can still be pointless; lifecycle decides whether a
+#: project earns capacity at all; satisfaction is his own reading. None of
+#: them measures whether a goal was reached."*
+#:
+#: All three already exist, as frontmatter on a project row, and all three
+#: carry a number or a stage -- which is exactly what makes them look like
+#: ready-made key results. *"Raise Nova from TRL 6 to TRL 8"* has a measure,
+#: a `now` and a `target`, so every other rule in `problems()` passes it.
+#: This is the one that does not.
+#:
+#: It is checked on key results only, and not on KPIs, because rule 8's own
+#: sentence is about what measures *whether a goal was reached* -- a key
+#: result is that thing. A guardrail watching an attribute stay in bounds is
+#: a different claim and the issue does not forbid it.
+ATTRIBUTE_MEASURES = (
+    ("trl", r"\btrls?\b|\btechnology readiness\b"),
+    ("lifecycle", r"\blifecycles?\b"),
+    ("satisfaction", r"\bsatisfaction\b"),
+)
+
+_ATTRIBUTE_RES = tuple(
+    (word, re.compile(pattern, re.I)) for word, pattern in ATTRIBUTE_MEASURES)
 
 _HEADING_RE = re.compile(r"^##[ \t]+(?P<name>.+?)[ \t]*$")
 _FENCE_OPEN_RE = re.compile(r"^[ \t]*```[ \t]*(?P<name>[a-z-]+)[ \t]*$")
@@ -273,10 +302,25 @@ def problems(markdown_or_sections):
                 f"{MAX_KEY_RESULTS}")
         for row in results:
             label = row.get("id", "").strip() or row.get("name", "").strip()
-            if not row.get("measure", "").strip():
+            measure = row.get("measure", "").strip()
+            if not measure:
                 found.append(
                     f"{name}: key result {label!r} has no measure -- an "
                     "outcome without one is a task with a nicer name")
+            # Rule 8. Read the `measure` and the `unit`, which are the two
+            # fields that say what is being counted; `name` is deliberately
+            # left out, because a key result may legitimately be *about* the
+            # work that earns a lifecycle stage without the stage being the
+            # number.
+            for word, pattern in _ATTRIBUTE_RES:
+                if pattern.search(measure) or pattern.search(
+                        row.get("unit", "")):
+                    found.append(
+                        f"{name}: key result {label!r} measures {word} -- "
+                        "rule 8 keeps TRL, lifecycle and satisfaction as "
+                        "project attributes, and none of them says whether "
+                        "a goal was reached")
+                    break
         for row in section.get("kpis", []):
             label = row.get("id", "").strip() or row.get("name", "").strip()
             if "target" in row:
