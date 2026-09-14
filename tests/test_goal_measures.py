@@ -9,7 +9,7 @@ import types
 import json
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 import yaml
@@ -3548,6 +3548,231 @@ class TestAgoraChatBasics:
     def test_chat_basics_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["agora-kr-chat-basics"] is \
             gm.measure_agora_chat_basics
+
+
+class TestAgoraNothingUnused:
+    """`agora-kr-nothing-unused` -- Agora subsystems nothing uses.
+
+    The target is 0 and the direction is down, so a low count is the good
+    reading and every test here is a way of arriving at one without having
+    looked: a row nothing can probe, an Agora that did not answer, a board
+    half-read, a milestone renamed away.
+    """
+
+    MILESTONE = "Retire what nothing uses"
+    SINCE = date(2026, 8, 16)
+    UNTIL = date(2026, 9, 14)
+
+    def _boards(self, monkeypatch, issues, ideas=(), errors=None):
+        errors = errors or {}
+        boards = {"issues": list(issues), "ideas": list(ideas)}
+
+        def fetch_board(name, site=None):
+            if name in errors:
+                return [], errors[name]
+            return boards[name], None
+
+        monkeypatch.setattr(gm, "fetch_board", fetch_board)
+
+    def _row(self, number, milestone=None, status_key="backlog"):
+        return {"number": number,
+                "milestone": self.MILESTONE if milestone is None else milestone,
+                "statusKey": status_key, "done": False}
+
+    def _probes(self, monkeypatch, verdicts):
+        probes = {n: (lambda since, until, v=v: (v, "because")) 
+                  for n, v in verdicts.items()}
+        monkeypatch.setattr(gm, "_UNUSED_PROBES", probes)
+
+    def _run(self):
+        return gm.measure_agora_nothing_unused(self.SINCE, self.UNTIL)
+
+    def test_it_counts_the_subsystems_whose_probe_says_unused(self, monkeypatch):
+        self._boards(monkeypatch, [], [self._row(94), self._row(95)])
+        self._probes(monkeypatch, {94: False, 95: False})
+        value, detail = self._run()
+        assert value == 2, detail
+        assert "2 of 2" in detail
+        assert "#94" in detail and "#95" in detail
+
+    def test_a_subsystem_that_is_used_drops_out_of_the_count(self, monkeypatch):
+        # The whole point of an instrument here: the number falls because
+        # Agora changed, not because I edited a list.
+        self._boards(monkeypatch, [], [self._row(94), self._row(95)])
+        self._probes(monkeypatch, {94: True, 95: False})
+        value, detail = self._run()
+        assert value == 1, detail
+        assert "1 of 2" in detail
+        assert "#94 used" in detail
+
+    def test_a_row_with_no_probe_is_no_reading_at_all(self, monkeypatch):
+        # Counting it as unused is the positive guaranteed before it is
+        # taken; dropping it shrinks a count trying to reach 0. Both flatter.
+        self._boards(monkeypatch, [], [self._row(94), self._row(999)])
+        self._probes(monkeypatch, {94: False})
+        value, detail = self._run()
+        assert value is None
+        assert "#999" in detail
+
+    def test_a_probe_that_could_not_read_agora_is_no_reading(self, monkeypatch):
+        self._boards(monkeypatch, [], [self._row(94)])
+        monkeypatch.setattr(gm, "_UNUSED_PROBES",
+                            {94: lambda since, until: (None, "agora was down")})
+        value, detail = self._run()
+        assert value is None
+        assert "agora was down" in detail
+
+    def test_the_duplication_complaint_is_not_a_disused_subsystem(self,
+                                                                  monkeypatch):
+        # Idea #155 asks whether the Nova chat and Agora should be one
+        # product, about a chat he says he uses. The hand count that stood
+        # here counted it and read 3.
+        self._boards(monkeypatch, [], [self._row(155), self._row(94)])
+        self._probes(monkeypatch, {94: False})
+        value, detail = self._run()
+        assert value == 1, detail
+        assert "#155" in detail and "not counted" in detail
+
+    def test_a_closed_row_is_in_neither_half(self, monkeypatch):
+        self._boards(monkeypatch, [],
+                     [self._row(94), self._row(95, status_key="done")])
+        self._probes(monkeypatch, {94: False, 95: False})
+        value, detail = self._run()
+        assert value == 1, detail
+        assert "1 more row(s) are done or outdated" in detail
+
+    def test_a_milestone_naming_no_row_is_a_rename_not_a_zero(self, monkeypatch):
+        self._boards(monkeypatch, [], [self._row(94, milestone="Something else")])
+        self._probes(monkeypatch, {94: False})
+        value, detail = self._run()
+        assert value is None
+        assert "renamed" in detail
+
+    def test_an_unreadable_board_is_no_reading(self, monkeypatch):
+        self._boards(monkeypatch, [], [self._row(94)],
+                     errors={"ideas": "boom"})
+        self._probes(monkeypatch, {94: False})
+        value, detail = self._run()
+        assert value is None
+        assert "boom" in detail
+
+    def test_it_reads_the_issues_board_as_well_as_the_ideas_board(self,
+                                                                  monkeypatch):
+        self._boards(monkeypatch, [self._row(94)], [self._row(95)])
+        self._probes(monkeypatch, {94: False, 95: False})
+        value, detail = self._run()
+        assert value == 2, detail
+
+    def test_nothing_unused_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["agora-kr-nothing-unused"] is \
+            gm.measure_agora_nothing_unused
+
+    def test_it_is_no_longer_recorded_as_having_no_instrument(self):
+        assert "agora-kr-nothing-unused" not in gm.KEY_RESULT_NO_INSTRUMENT
+
+
+class TestAgoraUnusedProbes:
+    """The two live probes, against fixtures shaped like Agora's answers."""
+
+    SINCE = date(2026, 8, 16)
+    UNTIL = date(2026, 9, 14)
+
+    def _json(self, monkeypatch, payload, error=None):
+        monkeypatch.setattr(gm, "_get_json",
+                            lambda url, timeout=60: (payload, error))
+
+    def test_a_disabled_workflow_heartbeat_is_not_a_live_path(self, monkeypatch):
+        # Both heartbeats naming a workflow today are my own trials from
+        # 2026-08-25, switched off the same minute. Their lastRunAt is inside
+        # a 30-day window, so counting them reports the subsystem as used on
+        # the strength of my own test of it.
+        self._json(monkeypatch, {"heartbeats": [
+            {"name": "trial", "workflowId": "w1", "enabled": False,
+             "lastRunAt": "2026-08-25T03:09:24.754160+00:00"}]})
+        used, why = gm._probe_agora_workflows(self.SINCE, self.UNTIL)
+        assert used is False
+        assert "disabled" in why
+
+    def test_an_enabled_heartbeat_that_fired_reads_as_used(self, monkeypatch):
+        self._json(monkeypatch, {"heartbeats": [
+            {"name": "nightly", "workflowId": "w1", "enabled": True,
+             "lastRunAt": "2026-09-13T22:00:00+00:00"}]})
+        used, why = gm._probe_agora_workflows(self.SINCE, self.UNTIL)
+        assert used is True
+        assert "nightly" in why
+
+    def test_an_enabled_heartbeat_outside_the_window_is_not_use(self, monkeypatch):
+        self._json(monkeypatch, {"heartbeats": [
+            {"name": "nightly", "workflowId": "w1", "enabled": True,
+             "lastRunAt": "2026-05-01T22:00:00+00:00"}]})
+        used, _ = gm._probe_agora_workflows(self.SINCE, self.UNTIL)
+        assert used is False
+
+    def test_a_heartbeat_naming_no_workflow_is_not_a_workflow_run(self,
+                                                                  monkeypatch):
+        self._json(monkeypatch, {"heartbeats": [
+            {"name": "nova", "workflowId": None, "enabled": True,
+             "lastRunAt": "2026-09-13T22:00:00+00:00"}]})
+        used, _ = gm._probe_agora_workflows(self.SINCE, self.UNTIL)
+        assert used is False
+
+    def test_an_unreadable_heartbeat_list_is_no_verdict(self, monkeypatch):
+        self._json(monkeypatch, None, error="agora was down")
+        used, why = gm._probe_agora_workflows(self.SINCE, self.UNTIL)
+        assert used is None and "down" in why
+
+    def test_a_malformed_heartbeat_answer_is_no_verdict(self, monkeypatch):
+        self._json(monkeypatch, {"nope": []})
+        used, _ = gm._probe_agora_workflows(self.SINCE, self.UNTIL)
+        assert used is None
+
+    def test_two_personas_and_a_message_in_the_window_is_use(self, monkeypatch):
+        self._json(monkeypatch, {"conversations": [
+            {"name": "pair", "personas": [{"id": "a"}, {"id": "b"}],
+             "lastMessageAt": "2026-09-10T10:00:00+00:00", "archived": False}]})
+        used, why = gm._probe_agora_multi_persona(self.SINCE, self.UNTIL)
+        assert used is True and "pair" in why
+
+    def test_two_personas_and_no_recent_message_is_not_use(self, monkeypatch):
+        # A two-persona thread nobody has written in since July exists; it is
+        # not something anybody uses.
+        self._json(monkeypatch, {"conversations": [
+            {"name": "pair", "personas": [{"id": "a"}, {"id": "b"}],
+             "lastMessageAt": "2026-07-01T10:00:00+00:00", "archived": False}]})
+        used, why = gm._probe_agora_multi_persona(self.SINCE, self.UNTIL)
+        assert used is False
+        assert "1 carry more than one persona at all" in why
+
+    def test_an_archived_multi_persona_thread_cannot_be_spoken_in(self,
+                                                                  monkeypatch):
+        self._json(monkeypatch, {"conversations": [
+            {"name": "pair", "personas": [{"id": "a"}, {"id": "b"}],
+             "lastMessageAt": "2026-09-10T10:00:00+00:00", "archived": True}]})
+        used, _ = gm._probe_agora_multi_persona(self.SINCE, self.UNTIL)
+        assert used is False
+
+    def test_one_persona_is_not_a_multi_persona_conversation(self, monkeypatch):
+        self._json(monkeypatch, {"conversations": [
+            {"name": "solo", "personas": [{"id": "a"}],
+             "lastMessageAt": "2026-09-10T10:00:00+00:00", "archived": False}]})
+        used, _ = gm._probe_agora_multi_persona(self.SINCE, self.UNTIL)
+        assert used is False
+
+    def test_an_empty_conversation_store_is_no_verdict(self, monkeypatch):
+        # Every conversation this system has ever had is in that store, so an
+        # empty list is an unreadable store rather than an idle one.
+        self._json(monkeypatch, {"conversations": []})
+        used, why = gm._probe_agora_multi_persona(self.SINCE, self.UNTIL)
+        assert used is None and "unreadable" in why
+
+    def test_an_unreadable_conversation_list_is_no_verdict(self, monkeypatch):
+        self._json(monkeypatch, None, error="agora was down")
+        used, _ = gm._probe_agora_multi_persona(self.SINCE, self.UNTIL)
+        assert used is None
+
+    def test_an_unparseable_timestamp_is_not_evidence_of_use(self):
+        assert gm._within("not a date", self.SINCE, self.UNTIL) is False
+        assert gm._within(None, self.SINCE, self.UNTIL) is False
 
 
 class TestMaintSelfDocumenting:

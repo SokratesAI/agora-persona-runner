@@ -2501,6 +2501,203 @@ def measure_agora_chat_basics(since, until):
     return len(missing), detail
 
 
+#: The milestone `agora-kr-nothing-unused` counts rows under, exactly as both
+#: boards spell it. Same shape and same reason as `_CHAT_BASICS_MILESTONE`: a
+#: row names its milestone in prose and carries no stable milestone key.
+_UNUSED_MILESTONE = "Retire what nothing uses"
+
+#: Rows under that milestone that do not name a subsystem whose *use* can be
+#: asked about, by number, with the reason each is here. Idea #155 is the one:
+#: it asks whether the Nova app's chat and Agora should be one product, and his
+#: own words in it -- *"now when i use the new chat i get alerted by agora"* --
+#: say he uses the thing it is about. Counting it as a subsystem nothing uses
+#: was wrong in the hand count that stood here, and folding a duplication
+#: complaint into a disuse count lets merging two live products read as
+#: retiring a dead one.
+_UNUSED_NOT_A_SUBSYSTEM = {
+    155: "a duplication complaint about a chat he uses, not a disused subsystem",
+}
+
+
+def _probe_agora_workflows(since, until, site=AGORA):
+    """Has an Agora workflow actually run inside the window?
+
+    Returns `(used, why)` -- `used` True, False, or `None` when Agora could
+    not be read at all.
+
+    **A workflow object records nothing about running.** `/workflows` carries
+    `createdAt` and `updatedAt` and no run history, and there is no
+    `/workflows/<id>/runs` route to ask -- so reading the workflow list and
+    finding no run is the negative that was guaranteed before it was taken. The
+    record that does exist is one level up: a heartbeat carries a `workflowId`
+    and a `lastRunAt`, and a workflow in this system runs because a heartbeat
+    fires it. That is the invocation trace, and it is what this reads.
+
+    **A disabled heartbeat is not a live path.** Both heartbeats that name a
+    workflow today are disabled and say so in their own names -- they are the
+    two trials I ran on 2026-08-25 and switched off the same minute. Their
+    `lastRunAt` falls inside a 30-day window, so counting a run off a heartbeat
+    that can no longer fire would report the subsystem as used on the strength
+    of my own test of it. `fetch_agora_metered_places` leaves disabled
+    heartbeats out for the same reason and states it the same way: they cannot
+    spend, and these cannot run.
+    """
+    payload, error = _get_json(f"{site}/heartbeats")
+    if error:
+        return None, error
+    beats = (payload or {}).get("heartbeats")
+    if not isinstance(beats, list):
+        return None, f"{site}/heartbeats answered without a heartbeat list"
+    bound = [h for h in beats if str((h or {}).get("workflowId") or "").strip()]
+    live = [h for h in bound if h.get("enabled")]
+    ran = [h for h in live if _within(h.get("lastRunAt"), since, until)]
+    if ran:
+        names = ", ".join(str(h.get("name")) for h in ran[:4])
+        return True, (f"{len(ran)} enabled heartbeat(s) bound to a workflow "
+                      f"fired inside the window: {names}")
+    disabled = len(bound) - len(live)
+    return False, (f"{len(bound)} heartbeat(s) name a workflow and {disabled} "
+                   "of them are disabled, so no enabled heartbeat has fired "
+                   "one inside the window; a workflow object records no run of "
+                   "its own, so the heartbeat is the only invocation trace")
+
+
+def _probe_agora_multi_persona(since, until, site=AGORA):
+    """Has a conversation with more than one persona been spoken in?
+
+    Returns `(used, why)`, or `(None, why)` when the conversation list could
+    not be read.
+
+    Two conditions, and the second is the one that makes this a use count
+    rather than a configuration count: **more than one persona linked**, and
+    **a message inside the window**. A two-persona conversation nobody has
+    written in since July is a thing that exists, not a thing anybody uses.
+    Archived conversations are left out -- an archived thread cannot be spoken
+    in, the same call `fetch_agora_metered_places` makes about archived
+    conversations for the same reason.
+    """
+    payload, error = _get_json(f"{site}/conversations", timeout=120)
+    if error:
+        return None, error
+    threads = (payload or {}).get("conversations")
+    if not isinstance(threads, list):
+        return None, f"{site}/conversations answered without a conversation list"
+    if not threads:
+        return None, (f"{site}/conversations returned no conversation at all, "
+                      "which is an unreadable store rather than an idle one")
+    multi = [c for c in threads
+             if not c.get("archived") and len(c.get("personas") or []) > 1]
+    spoken = [c for c in multi if _within(c.get("lastMessageAt"), since, until)]
+    if spoken:
+        names = ", ".join(str(c.get("name"))[:40] for c in spoken[:4])
+        return True, (f"{len(spoken)} multi-persona conversation(s) carried a "
+                      f"message inside the window: {names}")
+    return False, (f"0 of {len(threads)} conversation(s) in the store carry "
+                   f"more than one persona and a message inside the window; "
+                   f"{len(multi)} carry more than one persona at all")
+
+
+#: Which live probe answers "is this one used" for each row under
+#: `_UNUSED_MILESTONE`, by row number. A row with no probe here is why the
+#: measure refuses to report at all -- see `measure_agora_nothing_unused`.
+_UNUSED_PROBES = {
+    94: _probe_agora_workflows,
+    95: _probe_agora_multi_persona,
+}
+
+
+def _within(stamp, since, until):
+    """Is a UTC timestamp inside the Oslo window `since..until`, inclusive?
+
+    `False` for anything unparseable or absent, which is the safe direction
+    here: a row whose only evidence of use is a timestamp nothing can read has
+    not been shown to be used.
+    """
+    day = _oslo_day(str(stamp or ""))
+    if day is None:
+        return False
+    return str(since) <= day <= str(until)
+
+
+def measure_agora_nothing_unused(since, until):
+    """Agora subsystems with no recorded use inside the window.
+
+    A count with a target of 0 and a downward direction, so the low reading is
+    the good one and the fake to guard against is a small number.
+
+    **The list of subsystems is his, not mine.** The reading this replaces was
+    a hand count, and `project-goals.md` said so in the sentence that mattered
+    most: *"The denominator is mine: I chose which three subsystems count as
+    subsystems, so this moves when I change my mind about the list rather than
+    when Agora changes."* The rows under the *Retire what nothing uses*
+    milestone are the same three and they are on his board, so the list now
+    moves when the board does. Same construction as
+    `measure_agora_chat_basics`, and it inherits that measure's two rules for
+    the same reasons: a milestone naming no row is a rename rather than a
+    success, and half a sweep of the boards undercounts a count whose best
+    value is zero.
+
+    **A row with no probe means no reading at all, for the whole measure.**
+    This is the rule the shape turns on. Each counted row is a subsystem whose
+    use is read live off Agora, and a row I have not written a probe for cannot
+    be shown to be used -- so counting it as unused would be the positive
+    result that was guaranteed before it was taken, and dropping it from the
+    denominator would shrink a count that is trying to reach 0. Both flatter.
+    So a probe that is missing, or that cannot reach Agora, returns `None` and
+    names the row.
+
+    **What is deliberately excluded is one row and it is written down.**
+    `_UNUSED_NOT_A_SUBSYSTEM` holds idea #155 with its reason; the same
+    judgement in `measure_agora_chat_basics` is a named constant for the same
+    reason, so that it is arguable rather than re-taken in silence each time.
+    """
+    rows = []
+    for name in ("issues", "ideas"):
+        items, error = fetch_board(name)
+        if error:
+            return None, (f"the {name} board could not be read, and half a "
+                          f"sweep undercounts a count whose target is 0: {error}")
+        rows.extend(items)
+    under = [r for r in rows
+             if (r.get("milestone") or "").strip() == _UNUSED_MILESTONE]
+    if not under:
+        return None, (f"no row on either board names the milestone "
+                      f"{_UNUSED_MILESTONE!r}, which is a renamed milestone far "
+                      "more often than it is an empty one")
+    open_rows = [r for r in under
+                 if (r.get("statusKey") or "").strip() not in _CLOSED_STATUS_KEYS]
+    excluded = [r for r in open_rows if r.get("number") in _UNUSED_NOT_A_SUBSYSTEM]
+    judged = [r for r in open_rows
+              if r.get("number") not in _UNUSED_NOT_A_SUBSYSTEM]
+    unused, used, notes = [], [], []
+    for row in judged:
+        number = row.get("number")
+        probe = _UNUSED_PROBES.get(number)
+        if probe is None:
+            return None, (f"idea/issue #{number} is under {_UNUSED_MILESTONE!r} "
+                          "and nothing here reads whether it is used, so this "
+                          "count would be a guess at that row either way")
+        verdict, why = probe(since, until)
+        if verdict is None:
+            return None, (f"#{number} could not be read off Agora, and a "
+                          f"subsystem this cannot ask about is not an unused "
+                          f"one: {why}")
+        (used if verdict else unused).append(number)
+        notes.append(f"#{number} {'used' if verdict else 'unused'} -- {why}")
+    numbers = ", ".join(f"#{n}" for n in unused) or "none"
+    detail = (f"{len(unused)} of {len(judged)} subsystem(s) named by an open "
+              f"row under {_UNUSED_MILESTONE!r} have no recorded use in "
+              f"{since}..{until} ({numbers}), read live off Agora; "
+              f"{len(under) - len(open_rows)} more row(s) are done or outdated")
+    if excluded:
+        named = ", ".join(f"#{r.get('number')} ({_UNUSED_NOT_A_SUBSYSTEM[r['number']]})"
+                          for r in excluded)
+        detail += f"; {named} is under the milestone and deliberately not counted"
+    if notes:
+        detail += "; " + "; ".join(notes)
+    return len(unused), detail
+
+
 def measure_nas_services_down(since, until):
     """NAS services that did not answer over the SSH hop. A level, no window.
 
@@ -3186,6 +3383,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "nas-kr-unattended": measure_nas_unattended,
     "maint-kr-self-documenting": measure_maint_self_documenting,
     "agora-kr-chat-basics": measure_agora_chat_basics,
+    "agora-kr-nothing-unused": measure_agora_nothing_unused,
     "post-kr-editor": measure_post_editor,
     "post-kr-readership": measure_post_readership,
     "wa-kr-reaches-you": measure_wa_reaches_you,
