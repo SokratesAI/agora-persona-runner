@@ -262,3 +262,79 @@ def test_no_hop_says_all_four_went_unjudged():
     body = out.getvalue()
     assert "none of the 4 service(s)" in body
     assert "0 service(s) of 4" in body
+
+
+# --- the count `tools.goal_measures` reads ----------------------------------
+
+FULL_ENV = {
+    "SONARR_URL": "http://127.0.0.1:8989",
+    "SONARR_API_KEY": "a",
+    "RADARR_URL": "http://127.0.0.1:7878",
+    "RADARR_API_KEY": "b",
+}
+
+
+def _up(_name, _conf, _path, **_kw):
+    return {"version": "4.0.19.2979"}
+
+
+def test_services_down_counts_zero_when_every_service_answers():
+    down, judged, error = nas_health.services_down(
+        env=FULL_ENV, connect=_answers(), ssh=HOP, get=_up,
+        nzbget=_locked, plex=_plex)
+    assert error is None
+    assert down == 0
+    assert judged == 4
+
+
+def test_services_down_counts_a_dead_arr_app():
+    def get(name, conf, path, **kw):
+        if name == "radarr":
+            raise nas.Unreachable("connection refused")
+        return {"version": "4.0.19.2979"}
+
+    down, judged, error = nas_health.services_down(
+        env=FULL_ENV, connect=_answers(), ssh=HOP, get=get,
+        nzbget=_locked, plex=_plex)
+    assert error is None
+    assert (down, judged) == (1, 4)
+
+
+def test_services_down_counts_a_dead_credential_free_service():
+    """nzbget and Plex are judged over the hop rather than by API key, so a
+    count built only on `nas.status` would miss half the four."""
+    def dead(_hop):
+        raise nas.Unreachable("no route")
+
+    down, judged, error = nas_health.services_down(
+        env=FULL_ENV, connect=_answers(), ssh=HOP, get=_up,
+        nzbget=dead, plex=_plex)
+    assert error is None
+    assert (down, judged) == (1, 4)
+
+
+def test_services_down_reports_an_unreachable_box_rather_than_counting_zero():
+    down, judged, error = nas_health.services_down(
+        env=FULL_ENV, connect=_refuses(), ssh=HOP, get=_up,
+        nzbget=_locked, plex=_plex)
+    assert down is None and judged == 0
+    assert "SSH port" in error
+
+
+def test_services_down_reports_a_pod_with_no_hop_rather_than_counting_zero():
+    down, judged, error = nas_health.services_down(
+        env={}, connect=_answers(), ssh=None)
+    assert down is None and judged == 0
+    assert "cannot make the SSH hop" in error
+
+
+def test_services_down_refuses_a_partial_sweep_rather_than_undercounting():
+    """`nas.config` drops a service whose API key could not be discovered, so
+    a count over what came back would read a never-asked service as healthy."""
+    half = {"SONARR_URL": "http://127.0.0.1:8989", "SONARR_API_KEY": "a"}
+    down, judged, error = nas_health.services_down(
+        env=half, connect=_answers(), ssh=HOP, get=_up,
+        nzbget=_locked, plex=_plex)
+    assert down is None and judged == 0
+    assert "radarr" in error
+    assert "partial sweep" in error

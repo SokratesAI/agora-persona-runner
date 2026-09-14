@@ -91,6 +91,19 @@ AGORA = os.environ.get(
     "AGORA_SELF_URL", "http://agora.agents.svc.cluster.local:8080"
 )
 
+# The Sokrates Post's own app, unauthenticated, serving every article it has
+# ever printed at `/api/articles`. It is the only instrument for how much that
+# paper prints; the 113-a-day figure typed into `project-goals.md` came from a
+# `curl` at it.
+NEWSPAPER = os.environ.get(
+    "NEWSPAPER_SELF_URL", "http://newspaper.agents.svc.cluster.local"
+)
+
+#: The docs site's own repository. `docs-kpi-staleness` is a liveness
+#: guardrail on that site, and the site is published from this repo's default
+#: branch, so the newest commit on it is the last time the docs changed.
+DOCS_REPO = "SokratesAI/sokrates-docs"
+
 
 def today_oslo(now=None):
     """Today's date in Oslo, as `YYYY-MM-DD`.
@@ -1558,6 +1571,167 @@ def measure_agora_metered_spend(since, until):
                          + (", ..." if len(places) > 6 else ""))
 
 
+def fetch_docs_last_commit(repo=DOCS_REPO):
+    """The UTC timestamp of the newest commit on the docs repo's default branch.
+
+    Returns `(iso_timestamp, None)` or `(None, why)`. `gh api` rather than a
+    clone: this is one field and the checkout is not here.
+    """
+    try:
+        done = subprocess.run(
+            ["gh", "api", f"repos/{repo}/commits?per_page=1",
+             "--jq", ".[0].commit.committer.date"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"gh api could not run on {repo}: {exc}"
+    if done.returncode != 0:
+        return None, f"gh api failed on {repo}: {done.stderr.strip()[:200]}"
+    stamp = done.stdout.strip()
+    if not stamp:
+        return None, f"{repo} returned no commit at all, which is a repo this cannot judge"
+    return stamp, None
+
+
+def fetch_post_daily_counts(site=NEWSPAPER):
+    """Articles per Oslo day, from the Post's own API.
+
+    Returns `(counts, undated), None` -- `counts` a `{date: n}` dict -- or
+    `(None, why)`. `published_at` comes back as a UTC timestamp and is bucketed
+    by its Oslo date, because every window in this module is an Oslo one and an
+    article printed at 00:30 Oslo belongs to the day he would say it was.
+
+    `undated` is counted rather than dropped: an article with no
+    `published_at` cannot be placed in any day, and the caller has to decide
+    whether that makes the rate a floor. Today it is zero over all 1,599.
+    """
+    payload, error = _get_json(f"{site}/api/articles", timeout=120)
+    if error:
+        return None, error
+    articles = payload.get("articles") if isinstance(payload, dict) else payload
+    if not isinstance(articles, list):
+        return None, (f"{site}/api/articles did not return a list of articles, "
+                      "so there is nothing here to count")
+    counts, undated = {}, 0
+    for article in articles:
+        stamp = str((article or {}).get("published_at") or "").strip()
+        day = _oslo_day(stamp)
+        if day is None:
+            undated += 1
+            continue
+        counts[day] = counts.get(day, 0) + 1
+    return (counts, undated), None
+
+
+def _oslo_day(stamp):
+    """The Oslo calendar date of a UTC timestamp, or `None` if unparseable."""
+    text = stamp.replace("Z", "+00:00")
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(OSLO).date().isoformat()
+
+
+def measure_docs_staleness(since, until):
+    """Days since the docs site last changed. A level, so no window.
+
+    `since` and `until` are taken and dropped for the reason every other level
+    measurer here takes them: `kpi_rows` calls them all the same way.
+
+    **Zero is a real reading.** A commit landing today means the docs changed
+    today, which is the state this guardrail wants; `None` means only that
+    GitHub could not be asked. That is the same split as
+    `measure_marcus_push_subscribers`, and getting it backwards on a guardrail
+    whose low bound is 0 would make an unreadable repo look freshest of all.
+
+    It says nothing about whether the docs are *right* -- the note beside this
+    KPI in `project-goals.md` says so and it is still true, since a dependency
+    bump moves this exactly as far as a rewritten page does.
+    """
+    del since, until
+    stamp, error = fetch_docs_last_commit()
+    if error:
+        return None, error
+    day = _oslo_day(stamp)
+    if day is None:
+        return None, f"{DOCS_REPO}'s newest commit carried an unreadable date: {stamp!r}"
+    days = (date.fromisoformat(today_oslo()) - date.fromisoformat(day)).days
+    if days < 0:
+        return None, (f"{DOCS_REPO}'s newest commit is dated {day}, which is in "
+                      "the future in Oslo -- that is a clock to fix, not a reading")
+    return days, (f"the newest commit on {DOCS_REPO} is {day} Oslo "
+                  f"({stamp}), which is {days} day(s) ago")
+
+
+def measure_post_volume(since, until):
+    """Articles the Post printed per day, over the seven complete days to yesterday.
+
+    **The window is derived here and the tool's own window is dropped on
+    purpose.** This is a rate, so a partial day drags it toward zero for most
+    of every day: at 17:00 Oslo today the Post had printed 2 articles against a
+    seven-day floor of 82, and a measurer that included today would have
+    written `2` into a document whose bounds are 10 to 60 and called the paper
+    dead. Seven complete days ending yesterday is the same window the number in
+    `project-goals.md` was hand-measured over, so the two are comparable.
+
+    A day the Post printed nothing still counts as a day -- it is a zero in the
+    average, not a day that did not happen -- so the divisor is always seven.
+    """
+    del since, until
+    result, error = fetch_post_daily_counts()
+    if error:
+        return None, error
+    counts, undated = result
+    yesterday = date.fromisoformat(today_oslo()) - timedelta(days=1)
+    window = [(yesterday - timedelta(days=n)).isoformat() for n in range(7)]
+    total = sum(counts.get(day, 0) for day in window)
+    daily = [counts.get(day, 0) for day in reversed(window)]
+    rate = round(total / 7.0)
+    caveat = (f"; {undated} article(s) carry no publication date and are not "
+              "counted, so this is a floor" if undated else "")
+    return rate, (f"{total} article(s) over the seven complete days "
+                  f"{window[-1]}..{window[0]} Oslo is {rate} a day "
+                  f"(daily: {', '.join(str(n) for n in daily)}){caveat}")
+
+
+def measure_nas_services_down(since, until):
+    """NAS services that did not answer over the SSH hop. A level, no window.
+
+    Asks `tools.nas_health.services_down` rather than probing again, the same
+    call `measure_nova_unfixed_advisories` makes against `tools.security_alerts`:
+    that module already owns which services exist, how the hop is made and what
+    counts as an answer, and a second opinion here would be a second thing to
+    keep in step.
+
+    **Zero is the reading this most expects and it is a real one**, the way an
+    empty push list is in `measure_marcus_push_subscribers`. The ceiling is
+    zero because these four services are the reason the NAS exists, so one of
+    them being down is already the finding -- which means `None` has to be
+    reserved strictly for "I could not look", and a partial sweep counts as
+    could-not-look rather than as a small number of failures.
+
+    **This guardrail dies with server1.** It runs on the box it watches, so a
+    total failure of the cluster silences it instead of raising it; that is
+    what `nas-kr-off-box-watch` is about and it is not a fault in this reading.
+    """
+    del since, until
+    from tools.nas_health import services_down
+
+    down, judged, error = services_down()
+    if error:
+        return None, error
+    if not judged:
+        return None, "no NAS service was judged at all, so there is nothing to count"
+    if down == 0:
+        return 0, (f"all {judged} NAS service(s) answered over the SSH hop, "
+                   "read live from this pod")
+    return down, (f"{down} of {judged} NAS service(s) did not answer over the "
+                  "SSH hop")
+
+
 KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
     "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
@@ -1569,6 +1743,9 @@ KPI_MEASURERS = {
     "nova-kpi-markdown-board-readers": measure_nova_markdown_board_readers,
     "marcus-kpi-browser-monolith": measure_marcus_browser_monolith,
     "agora-kpi-metered-spend": measure_agora_metered_spend,
+    "docs-kpi-staleness": measure_docs_staleness,
+    "post-kpi-volume": measure_post_volume,
+    "nas-kpi-services-down": measure_nas_services_down,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a

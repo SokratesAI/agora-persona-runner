@@ -2014,3 +2014,205 @@ def test_metered_spend_is_wired_into_the_kpi_map():
     assert goal_measures.KPI_MEASURERS["agora-kpi-metered-spend"] is \
         goal_measures.measure_agora_metered_spend
     assert "agora-kpi-metered-spend" not in goal_measures.KPI_NO_INSTRUMENT
+
+
+# --- docs-kpi-staleness -----------------------------------------------------
+
+def _docs_stub(monkeypatch, stamp=None, error=None):
+    monkeypatch.setattr(goal_measures, "fetch_docs_last_commit",
+                        lambda *a, **k: (stamp, error))
+    monkeypatch.setattr(goal_measures, "today_oslo", lambda *a, **k: "2026-09-14")
+
+
+def test_docs_staleness_counts_days_from_the_newest_commit(monkeypatch):
+    _docs_stub(monkeypatch, stamp="2026-09-12T16:20:48Z")
+    value, detail = goal_measures.measure_docs_staleness(None, None)
+    assert value == 2
+    assert "2026-09-12" in detail
+
+
+def test_docs_staleness_dates_the_commit_in_oslo_not_utc(monkeypatch):
+    """22:30 UTC on the 11th is 00:30 Oslo on the 12th. Reading the `Z`
+    timestamp's own date prefix would call this 3 days stale, not 2."""
+    _docs_stub(monkeypatch, stamp="2026-09-11T22:30:00Z")
+    value, _ = goal_measures.measure_docs_staleness(None, None)
+    assert value == 2
+
+
+def test_docs_staleness_reads_a_commit_today_as_a_real_zero(monkeypatch):
+    """The low bound is 0, so an unreadable repo must not be able to look
+    fresher than a repo that changed this morning."""
+    _docs_stub(monkeypatch, stamp="2026-09-14T06:00:00Z")
+    value, detail = goal_measures.measure_docs_staleness(None, None)
+    assert value == 0
+    assert detail
+
+
+def test_docs_staleness_never_turns_an_unreadable_repo_into_zero(monkeypatch):
+    _docs_stub(monkeypatch, error="gh api failed on SokratesAI/sokrates-docs: 404")
+    value, detail = goal_measures.measure_docs_staleness(None, None)
+    assert value is None
+    assert "404" in detail
+
+
+def test_docs_staleness_refuses_a_commit_dated_in_the_future(monkeypatch):
+    """A negative number of days is a clock problem wearing a reading."""
+    _docs_stub(monkeypatch, stamp="2026-09-20T06:00:00Z")
+    value, detail = goal_measures.measure_docs_staleness(None, None)
+    assert value is None
+    assert "future" in detail
+
+
+def test_docs_staleness_refuses_an_unparseable_commit_date(monkeypatch):
+    _docs_stub(monkeypatch, stamp="last tuesday")
+    value, detail = goal_measures.measure_docs_staleness(None, None)
+    assert value is None
+    assert "unreadable date" in detail
+
+
+def test_docs_staleness_is_wired_into_the_kpi_map():
+    assert goal_measures.KPI_MEASURERS["docs-kpi-staleness"] is \
+        goal_measures.measure_docs_staleness
+
+
+# --- post-kpi-volume --------------------------------------------------------
+
+def _articles(days):
+    out = []
+    for day, count in days.items():
+        for _ in range(count):
+            out.append({"published_at": f"{day}T09:00:00Z"})
+    return out
+
+
+def _post_stub(monkeypatch, articles=None, error=None, today="2026-09-14"):
+    payload = None if error else {"articles": articles or []}
+    monkeypatch.setattr(goal_measures, "_get_json",
+                        lambda url, timeout=60: (payload, error))
+    monkeypatch.setattr(goal_measures, "today_oslo", lambda *a, **k: today)
+
+
+SEVEN_DAYS = {"2026-09-07": 109, "2026-09-08": 118, "2026-09-09": 132,
+              "2026-09-10": 132, "2026-09-11": 121, "2026-09-12": 95,
+              "2026-09-13": 82}
+
+
+def test_post_volume_averages_the_seven_complete_days_to_yesterday(monkeypatch):
+    _post_stub(monkeypatch, _articles(SEVEN_DAYS))
+    value, detail = goal_measures.measure_post_volume(None, None)
+    assert value == 113
+    assert "2026-09-07..2026-09-13" in detail
+
+
+def test_post_volume_leaves_todays_partial_day_out(monkeypatch):
+    """At 17:00 Oslo the Post had printed 2 articles against a seven-day floor
+    of 82. Counting today would write `2` into a document bounded 10..60 and
+    call the paper dead."""
+    with_today = dict(SEVEN_DAYS)
+    with_today["2026-09-14"] = 2
+    _post_stub(monkeypatch, _articles(with_today))
+    value, _ = goal_measures.measure_post_volume(None, None)
+    assert value == 113
+
+
+def test_post_volume_leaves_out_a_day_older_than_the_window(monkeypatch):
+    older = dict(SEVEN_DAYS)
+    older["2026-09-06"] = 5000
+    _post_stub(monkeypatch, _articles(older))
+    value, _ = goal_measures.measure_post_volume(None, None)
+    assert value == 113
+
+
+def test_post_volume_counts_a_silent_day_as_a_zero_not_as_a_missing_day(monkeypatch):
+    """The divisor is always seven. Dividing by the days that happened to
+    carry an article would hide a stopped timer."""
+    quiet = {"2026-09-13": 70}
+    _post_stub(monkeypatch, _articles(quiet))
+    value, detail = goal_measures.measure_post_volume(None, None)
+    assert value == 10
+    assert "0, 0, 0, 0, 0, 0, 70" in detail
+
+
+def test_post_volume_buckets_an_article_by_its_oslo_day(monkeypatch):
+    """23:30 UTC on the 13th is 01:30 Oslo on the 14th -- today, and therefore
+    outside the window.
+
+    Seventy of them rather than one, because one article rounds to 0 a day
+    under either reading and a test whose answer does not move is not a test.
+    Bucketing on the `Z` date prefix puts all seventy inside the window and
+    reads 10 a day."""
+    _post_stub(monkeypatch, [{"published_at": "2026-09-13T23:30:00Z"}] * 70)
+    value, _ = goal_measures.measure_post_volume(None, None)
+    assert value == 0
+
+
+def test_post_volume_says_so_when_an_article_carries_no_date(monkeypatch):
+    articles = _articles(SEVEN_DAYS) + [{"title_en": "undated"}]
+    _post_stub(monkeypatch, articles)
+    value, detail = goal_measures.measure_post_volume(None, None)
+    assert value == 113
+    assert "1 article(s) carry no publication date" in detail
+    assert "floor" in detail
+
+
+def test_post_volume_never_turns_an_unreachable_app_into_zero(monkeypatch):
+    _post_stub(monkeypatch, error="could not read /api/articles: 503")
+    value, detail = goal_measures.measure_post_volume(None, None)
+    assert value is None
+    assert "503" in detail
+
+
+def test_post_volume_refuses_a_payload_that_is_not_a_list_of_articles(monkeypatch):
+    monkeypatch.setattr(goal_measures, "_get_json",
+                        lambda url, timeout=60: ({"articles": {"oops": 1}}, None))
+    value, detail = goal_measures.measure_post_volume(None, None)
+    assert value is None
+    assert "nothing here to count" in detail
+
+
+def test_post_volume_is_wired_into_the_kpi_map():
+    assert goal_measures.KPI_MEASURERS["post-kpi-volume"] is \
+        goal_measures.measure_post_volume
+
+
+# --- nas-kpi-services-down --------------------------------------------------
+
+def _nas_stub(monkeypatch, down=0, judged=4, error=None):
+    from tools import nas_health
+    monkeypatch.setattr(nas_health, "services_down",
+                        lambda *a, **k: (down, judged, error))
+
+
+def test_nas_services_down_reads_a_healthy_box_as_a_real_zero(monkeypatch):
+    """The ceiling is 0, so `None` here would read exactly like a clean box."""
+    _nas_stub(monkeypatch, down=0, judged=4)
+    value, detail = goal_measures.measure_nas_services_down(None, None)
+    assert value == 0
+    assert "all 4" in detail
+
+
+def test_nas_services_down_counts_the_services_that_did_not_answer(monkeypatch):
+    _nas_stub(monkeypatch, down=2, judged=4)
+    value, detail = goal_measures.measure_nas_services_down(None, None)
+    assert value == 2
+    assert "2 of 4" in detail
+
+
+def test_nas_services_down_never_turns_a_pod_that_could_not_look_into_zero(monkeypatch):
+    _nas_stub(monkeypatch, down=None, judged=0,
+              error="this pod cannot make the SSH hop")
+    value, detail = goal_measures.measure_nas_services_down(None, None)
+    assert value is None
+    assert "SSH hop" in detail
+
+
+def test_nas_services_down_refuses_a_sweep_that_judged_nothing(monkeypatch):
+    _nas_stub(monkeypatch, down=0, judged=0)
+    value, detail = goal_measures.measure_nas_services_down(None, None)
+    assert value is None
+    assert "nothing to count" in detail
+
+
+def test_nas_services_down_is_wired_into_the_kpi_map():
+    assert goal_measures.KPI_MEASURERS["nas-kpi-services-down"] is \
+        goal_measures.measure_nas_services_down
