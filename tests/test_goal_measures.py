@@ -6,10 +6,13 @@ loop has now shipped twice.
 """
 
 import json
+import sys
+from collections import Counter
 from datetime import datetime, timezone
 
 import pytest
 
+import tools
 from tools import goal_measures as gm
 from tools import goal_measures
 
@@ -2216,3 +2219,391 @@ def test_nas_services_down_refuses_a_sweep_that_judged_nothing(monkeypatch):
 def test_nas_services_down_is_wired_into_the_kpi_map():
     assert goal_measures.KPI_MEASURERS["nas-kpi-services-down"] is \
         goal_measures.measure_nas_services_down
+
+
+# --- infra-kpi-ci-minutes ---------------------------------------------------
+
+class _CIStub:
+    ORG = "SokratesAI"
+
+    def __init__(self, private, public, unknown=None, raises=None):
+        self._split = (Counter(private), Counter(public), Counter(unknown or {}), 0.0)
+        self._raises = raises
+
+    def fetch_usage(self, org, year, month):
+        if self._raises:
+            raise RuntimeError(self._raises)
+        return []
+
+    def fetch_visibility(self, org):
+        return {}
+
+    def split_minutes(self, items, visibility):
+        return self._split
+
+    def month_progress(self, now):
+        return 13.6, 30.0
+
+
+def _stub_tool(monkeypatch, name, stub):
+    """Swap `tools.<name>` for `stub`, both ways a `from` import can find it.
+
+    `from tools import ci_minutes` reads the attribute off the already-imported
+    `tools` package before it ever looks in `sys.modules`, so patching only the
+    module table leaves the real module in place and the test passes against
+    production code that went and swept the org.
+    """
+    monkeypatch.setitem(sys.modules, "tools." + name, stub)
+    monkeypatch.setattr(tools, name, stub, raising=False)
+
+
+def _ci_stub(monkeypatch, stub):
+    _stub_tool(monkeypatch, "ci_minutes", stub)
+
+
+def test_ci_minutes_counts_only_the_private_repos(monkeypatch):
+    """The high bound is the *private* allowance, so folding in free public
+    minutes would make the guardrail fire on spend that costs nothing."""
+    _ci_stub(monkeypatch, _CIStub({"a": 300.0, "b": 158.0}, {"docs": 9000.0}))
+    value, detail = goal_measures.measure_infra_ci_minutes(None, None)
+    assert value == 458
+    assert "9000 public minute(s) are free" in detail
+
+
+def test_ci_minutes_reads_a_quiet_month_as_a_real_zero(monkeypatch):
+    """The low bound is 0 and a month with no billable run is a real month."""
+    _ci_stub(monkeypatch, _CIStub({}, {}))
+    value, detail = goal_measures.measure_infra_ci_minutes(None, None)
+    assert value == 0
+    assert detail
+
+
+def test_ci_minutes_says_so_when_a_repo_has_no_visibility(monkeypatch):
+    _ci_stub(monkeypatch, _CIStub({"a": 10.0}, {}, unknown={"ghost": 40.0}))
+    value, detail = goal_measures.measure_infra_ci_minutes(None, None)
+    assert value == 10
+    assert "floor" in detail and "40 minute(s)" in detail
+
+
+def test_ci_minutes_never_turns_an_unreadable_api_into_zero(monkeypatch):
+    _ci_stub(monkeypatch, _CIStub({}, {}, raises="gh api failed: 403"))
+    value, detail = goal_measures.measure_infra_ci_minutes(None, None)
+    assert value is None
+    assert "403" in detail
+
+
+def test_ci_minutes_is_wired_into_the_kpi_map():
+    assert goal_measures.KPI_MEASURERS["infra-kpi-ci-minutes"] is \
+        goal_measures.measure_infra_ci_minutes
+
+
+# --- infra-kpi-node-headroom ------------------------------------------------
+
+class _NodeStub:
+    MIB = 1024.0 ** 2
+
+    def __init__(self, readings, names=None, fails=None):
+        self._readings = readings
+        self._names = names if names is not None else list(readings)
+        self._fails = fails or {}
+
+    def read_node_names(self, **kwargs):
+        if self._names is None:
+            raise OSError("kubectl get nodes: connection refused")
+        return list(self._names)
+
+    def read_summary(self, node, **kwargs):
+        if node in self._fails:
+            raise OSError(self._fails[node])
+        return {"node": {"memory": self._readings[node]}}
+
+    @staticmethod
+    def node_memory(summary):
+        memory = (summary.get("node") or {}).get("memory") or {}
+        if memory.get("availableBytes") is None:
+            return None
+        return memory["availableBytes"], 0
+
+
+def _node_stub(monkeypatch, stub):
+    _stub_tool(monkeypatch, "node_memory", stub)
+
+
+def _mib(n):
+    return {"availableBytes": int(n * 1024 * 1024)}
+
+
+def test_node_headroom_reports_the_tightest_node_not_the_total(monkeypatch):
+    """Two nodes at 8000Mi and 100Mi have the headroom of the 100Mi one."""
+    _node_stub(monkeypatch, _NodeStub(
+        {"server1": _mib(4222), "server2": _mib(4670)}))
+    value, detail = goal_measures.measure_infra_node_headroom(None, None)
+    assert value == 4222
+    assert "server1" in detail and "server2 4670Mi" in detail
+
+
+def test_node_headroom_refuses_when_a_node_could_not_be_read(monkeypatch):
+    """A minimum over the half that answered can only read HIGHER than the
+    truth, which is the flattering direction on a low-bounded guardrail."""
+    _node_stub(monkeypatch, _NodeStub(
+        {"server1": _mib(4222), "server2": _mib(80)},
+        fails={"server2": "nodes/proxy: 503"}))
+    value, detail = goal_measures.measure_infra_node_headroom(None, None)
+    assert value is None
+    assert "503" in detail
+
+
+def test_node_headroom_refuses_a_kubelet_that_reported_no_available(monkeypatch):
+    _node_stub(monkeypatch, _NodeStub({"server1": {"workingSetBytes": 1}}))
+    value, detail = goal_measures.measure_infra_node_headroom(None, None)
+    assert value is None
+    assert "availableBytes" in detail
+
+
+def test_node_headroom_refuses_an_empty_node_list(monkeypatch):
+    _node_stub(monkeypatch, _NodeStub({}, names=[]))
+    value, detail = goal_measures.measure_infra_node_headroom(None, None)
+    assert value is None
+    assert "no nodes" in detail
+
+
+def test_node_headroom_is_wired_into_the_kpi_map():
+    assert goal_measures.KPI_MEASURERS["infra-kpi-node-headroom"] is \
+        goal_measures.measure_infra_node_headroom
+
+
+# --- maint-kr-supported and maint-kpi-eol-unjudged --------------------------
+
+def _eol_image(image, tag, verdict=None, kind="image"):
+    return {"kind": kind, "image": image, "tag": tag, "verdict": verdict,
+            "days": 0, "product": image, "eol": "2025-05-05"}
+
+
+class _EolStub:
+    DEFAULT_WITHIN_DAYS = 180
+
+    def __init__(self, judged, not_judged, repos=("SokratesAI/agora",),
+                 incomplete=False, products=({},), catalogue_why=None):
+        self._judged = judged
+        self._not_judged = not_judged
+        self._repos = list(repos)
+        self._incomplete = incomplete
+        self._products = products[0]
+        self._why = catalogue_why
+        self.sweeps = 0
+
+    def _repos_to_sweep(self):
+        return self._repos, [], [], self._incomplete
+
+    def catalogue(self):
+        if self._why:
+            return None, self._why
+        return self._products, None
+
+    def sweep(self, repos, products, today, within_days):
+        self.sweeps += 1
+        return list(self._judged), list(self._not_judged), []
+
+    def image_map(self, products):
+        return {}, {}
+
+    def cluster_images(self):
+        return [], []
+
+    def judge(self, *a, **k):
+        raise AssertionError("no cluster image was handed in")
+
+    @staticmethod
+    def group(images):
+        groups = {}
+        for image in images:
+            groups.setdefault(
+                (image.get("kind", "image"), image["image"], image["tag"]), []
+            ).append(image)
+        return groups
+
+    @staticmethod
+    def _pin(image):
+        return "%s:%s" % (image["image"], image["tag"] or "")
+
+
+def _eol_stub(monkeypatch, stub):
+    monkeypatch.setattr(goal_measures, "_EOL_SWEEP", {})
+    _stub_tool(monkeypatch, "eol_watch", stub)
+    return stub
+
+
+def test_maint_supported_counts_distinct_lines_not_occurrences(monkeypatch):
+    """One dead base image named in six Dockerfile stages is one line of work,
+    not six -- a count of occurrences measures our file layout."""
+    dead = [_eol_image("couchdb", "3.3", "eol") for _ in range(6)]
+    _eol_stub(monkeypatch, _EolStub(
+        dead + [_eol_image("node", "22", "supported")], []))
+    value, detail = goal_measures.measure_maint_supported(None, None)
+    assert value == 1
+    assert "couchdb:3.3" in detail
+
+
+def test_maint_supported_counts_a_line_going_dead_soon(monkeypatch):
+    _eol_stub(monkeypatch, _EolStub(
+        [_eol_image("couchdb", "3.3", "eol"),
+         _eol_image("prom/prometheus", "v3.14.0", "soon"),
+         _eol_image("node", "22", "supported")], []))
+    value, _ = goal_measures.measure_maint_supported(None, None)
+    assert value == 2
+
+
+def test_maint_supported_does_not_count_a_line_nothing_could_judge(monkeypatch):
+    """Unjudged is `maint-kpi-eol-unjudged`'s number. Folding it in here would
+    make an estate nothing can read look supported."""
+    _eol_stub(monkeypatch, _EolStub(
+        [_eol_image("node", "22", "supported")],
+        [_eol_image("go", "1.27"), _eol_image("nginx", "1.31")]))
+    value, _ = goal_measures.measure_maint_supported(None, None)
+    assert value == 0
+
+
+def test_maint_eol_unjudged_counts_distinct_unreadable_lines(monkeypatch):
+    _eol_stub(monkeypatch, _EolStub(
+        [_eol_image("node", "22", "supported")],
+        [_eol_image("go", "1.27"), _eol_image("go", "1.27"),
+         _eol_image("nginx", "1.31")]))
+    value, detail = goal_measures.measure_maint_eol_unjudged(None, None)
+    assert value == 2
+    assert "2 distinct line(s)" in detail
+
+
+def test_maint_eol_unjudged_reads_a_fully_judged_estate_as_zero(monkeypatch):
+    _eol_stub(monkeypatch, _EolStub([_eol_image("node", "22", "supported")], []))
+    value, _ = goal_measures.measure_maint_eol_unjudged(None, None)
+    assert value == 0
+
+
+def test_maint_eol_numbers_come_from_one_sweep(monkeypatch):
+    """The sweep lists every repo in the org and asks endoflife.date about
+    every line in it. Two numbers, one sweep, or the report doubles its own
+    slowest call to answer a question that cannot have two answers."""
+    stub = _eol_stub(monkeypatch, _EolStub(
+        [_eol_image("couchdb", "3.3", "eol")], [_eol_image("go", "1.27")]))
+    assert goal_measures.measure_maint_supported(None, None)[0] == 1
+    assert goal_measures.measure_maint_eol_unjudged(None, None)[0] == 1
+    assert stub.sweeps == 1
+
+
+def test_maint_eol_refuses_when_the_catalogue_is_unreadable(monkeypatch):
+    _eol_stub(monkeypatch, _EolStub([], [], catalogue_why="endoflife.date: 502"))
+    for measurer in (goal_measures.measure_maint_supported,
+                     goal_measures.measure_maint_eol_unjudged):
+        value, detail = measurer(None, None)
+        assert value is None
+        assert "502" in detail
+
+
+def test_maint_eol_refuses_when_the_repo_list_is_incomplete(monkeypatch):
+    _eol_stub(monkeypatch, _EolStub([], [], incomplete=True))
+    value, detail = goal_measures.measure_maint_supported(None, None)
+    assert value is None
+    assert "enumerate" in detail
+
+
+def test_maint_supported_is_wired_into_the_fetch_map():
+    assert goal_measures.KEY_RESULT_FETCH_MEASURERS["maint-kr-supported"] is \
+        goal_measures.measure_maint_supported
+    assert goal_measures.KPI_MEASURERS["maint-kpi-eol-unjudged"] is \
+        goal_measures.measure_maint_eol_unjudged
+
+
+# --- maint-kr-pins-current --------------------------------------------------
+
+def _pin_row(what, pinned, latest, gap):
+    return {"what": what, "pinned": pinned, "latest": latest, "gap": gap}
+
+
+class _PinStub:
+    def __init__(self, judged, problems=(), repos=("SokratesAI/agora",),
+                 incomplete=False):
+        self._judged = judged
+        self._problems = list(problems)
+        self._repos = list(repos)
+        self._incomplete = incomplete
+
+    def _repos_to_sweep(self):
+        return self._repos, [], [], self._incomplete
+
+    def sweep(self, repos):
+        return list(self._judged), [], list(self._problems)
+
+    @staticmethod
+    def _group(pins):
+        groups = {}
+        for pin in pins:
+            groups.setdefault((pin["what"], pin["pinned"], pin["latest"]), []).append(pin)
+        return groups
+
+
+def _pin_stub(monkeypatch, stub):
+    _stub_tool(monkeypatch, "pin_drift", stub)
+
+
+def test_pins_current_counts_a_patch_gap_too(monkeypatch):
+    """`pin_drift` raises only on a minor or a major, because that is where it
+    wants a cycle to act. The key result's measure is *behind upstream*, and a
+    patch behind is behind."""
+    _pin_stub(monkeypatch, _PinStub([
+        _pin_row("GH_CLI_VERSION", "2.98.0", "2.100.0", "minor"),
+        _pin_row("docker/setup-buildx-action", "v3", "v4.3.0", "major"),
+        _pin_row("NODE_VERSION", "22.1.0", "22.1.4", "patch"),
+        _pin_row("KUSTOMIZE_VERSION", "5.7.1", "5.7.1", "current"),
+    ]))
+    value, detail = goal_measures.measure_maint_pins_current(None, None)
+    assert value == 3
+    assert "2 of them by a minor or a major" in detail
+
+
+def test_pins_current_does_not_count_a_pin_ahead_of_upstream(monkeypatch):
+    """A pin past its ceiling is a real defect and the opposite one. Counting
+    it here would let a bump in the wrong direction cancel a missing one."""
+    _pin_stub(monkeypatch, _PinStub([
+        _pin_row("KUBECTL_VERSION", "v1.36.2", "v1.35.9", "ahead"),
+        _pin_row("GH_CLI_VERSION", "2.98.0", "2.100.0", "minor"),
+    ]))
+    value, _ = goal_measures.measure_maint_pins_current(None, None)
+    assert value == 1
+
+
+def test_pins_current_counts_distinct_triples_not_files(monkeypatch):
+    _pin_stub(monkeypatch, _PinStub([
+        _pin_row("actions/checkout", "v4", "v7.0.1", "major"),
+        _pin_row("actions/checkout", "v4", "v7.0.1", "major"),
+        _pin_row("actions/checkout", "v4", "v7.0.1", "major"),
+    ]))
+    value, _ = goal_measures.measure_maint_pins_current(None, None)
+    assert value == 1
+
+
+def test_pins_current_reads_a_fully_current_org_as_zero(monkeypatch):
+    _pin_stub(monkeypatch, _PinStub([
+        _pin_row("KUSTOMIZE_VERSION", "5.7.1", "5.7.1", "current")]))
+    value, _ = goal_measures.measure_maint_pins_current(None, None)
+    assert value == 0
+
+
+def test_pins_current_says_it_is_a_floor_when_a_pin_was_unreadable(monkeypatch):
+    _pin_stub(monkeypatch, _PinStub(
+        [_pin_row("GH_CLI_VERSION", "2.98.0", "2.100.0", "minor")],
+        problems=["SokratesAI/agora: Dockerfile: FOO pinned 1, upstream unreadable"]))
+    value, detail = goal_measures.measure_maint_pins_current(None, None)
+    assert value == 1
+    assert "floor" in detail
+
+
+def test_pins_current_refuses_when_the_repo_list_is_incomplete(monkeypatch):
+    _pin_stub(monkeypatch, _PinStub([], incomplete=True))
+    value, detail = goal_measures.measure_maint_pins_current(None, None)
+    assert value is None
+    assert "enumerate" in detail
+
+
+def test_pins_current_is_wired_into_the_fetch_map():
+    assert goal_measures.KEY_RESULT_FETCH_MEASURERS["maint-kr-pins-current"] is \
+        goal_measures.measure_maint_pins_current
