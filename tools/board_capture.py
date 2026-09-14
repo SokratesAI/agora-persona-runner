@@ -193,6 +193,53 @@ def known_names(contents, extra=()):
     return names
 
 
+DONE_WHEN_PREFIX = "**Done when:** "
+
+DONE_WHEN_REFUSAL = (
+    "a row is a task and a task needs a checkable definition of done -- "
+    "pass --done-when \"...\" (issue #212). A capture too vague to write one "
+    "for is not a task yet: ask him in a thread "
+    "(python -m agora_runner.needs_input) rather than boarding a row no "
+    "cycle can ever finish."
+)
+
+
+def apply_done_when(fields, done_when):
+    """Add issue #212's definition of done to a promoted row, or refuse it.
+
+    Issue #227's model ends at *"Task (one cycle, one checkable definition
+    of done)"*, and a board row is that bottom tier. Issue #212 is the half
+    of it that was never built: *"When boarding, break each capture into
+    tasks that each have a checkable definition of done."* So boarding
+    without one is refused here rather than left to whoever is reading.
+
+    The sentence is appended to the write-up rather than put in front of
+    his words. The write-up is his text verbatim -- `add_row`'s rule, not a
+    new one -- and a `**Nova, MM-DD:**` reply already lands after it, so
+    this goes where a reply goes.
+
+    **A capture that arrived already finished is the one carve-out.** A
+    bullet carrying `DONE (Cycle N)` boards straight to `✅ Done`, and
+    asking when a finished thing will be finished is ceremony rather than a
+    check. It is refused nothing and carries no line -- which is also why
+    this reads `fields["status"]` instead of the caller's `--status`:
+    `promote` is what turns that marker into `done`.
+
+    Returns `(fields, None)` or `(None, reason)`, the same shape `promote`
+    returns, so `main` has one refusal path rather than two.
+    """
+    if fields["status"] == "done":
+        return fields, None
+    stated = (done_when or "").strip()
+    if not stated:
+        return None, DONE_WHEN_REFUSAL
+    fields = dict(fields)
+    fields["write_up"] = (
+        f"{fields['write_up'].rstrip()}\n\n{DONE_WHEN_PREFIX}{stated}"
+    )
+    return fields, None
+
+
 def promote(text, priority, status, dated, title=None, project=None,
             known=()):
     """His bullet -> the arguments `add_row` takes, or `(None, reason)`.
@@ -268,6 +315,12 @@ def main(argv=None):
         action="store_true",
         help="board it ungrouped on purpose, when no milestone fits yet",
     )
+    parser.add_argument(
+        "--done-when",
+        help="how a cycle will know this row is finished, in one checkable "
+             "sentence (issue #212). Required unless the capture already "
+             "says DONE.",
+    )
     parser.add_argument("--cycle", type=int, help="stamped on the replies carried across")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -336,6 +389,11 @@ def main(argv=None):
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
 
+    fields, refusal = apply_done_when(fields, args.done_when)
+    if fields is None:
+        print(f"REFUSED: {refusal}", file=sys.stderr)
+        return 1
+
     tag = fields["project"]
     print(f"boarding — {fields['title']}")
     print(f"  status {STATUS_LABELS[fields['status']]!r}  "
@@ -358,6 +416,10 @@ def main(argv=None):
         print(f"  milestone {args.milestone!r}")
     else:
         print("  milestone (ungrouped), by --no-milestone")
+    if fields["status"] == "done":
+        print("  done when (none -- the capture arrived already finished)")
+    else:
+        print(f"  done when {args.done_when.strip()!r}")
     if args.dry_run:
         return 0
 

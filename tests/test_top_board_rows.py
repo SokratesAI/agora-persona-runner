@@ -1350,6 +1350,17 @@ def test_the_capture_block_prints_how_to_board_one():
     assert _capture_board_help([]) == []
 
 
+def test_the_board_help_names_the_definition_of_done_flag():
+    """`board_capture` refuses without `--done-when` (issue #212), and this
+    help text is the only place a cycle reads the command from -- so a
+    cycle copying it would otherwise be refused and have to guess why."""
+    from tools.top_board_rows import _capture_board_help
+
+    body = "\n".join(_capture_board_help(
+        [{"board": "issue", "index": 0, "text": "A thing", "original": "x"}]))
+    assert "--done-when" in body
+
+
 def test_the_board_help_names_the_records_tool_not_a_file():
     """Since the flip (Cycle 1395) board_capture takes --board and writes the
     records; the old --file / board_put / resync advice would send a cycle to
