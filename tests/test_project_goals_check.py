@@ -57,7 +57,8 @@ def test_a_linked_milestone_is_clean():
                      "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
                      "0 KPI(s) out of bounds, "
                      "0 objective(s) past their month, 1 undated, "
-                     "0 unplaced task(s)"]
+                     "0 unplaced task(s), "
+                     "1 of 1 project(s) have a goal"]
 
 
 def test_boards_that_were_not_read_say_so_instead_of_reading_clean():
@@ -68,13 +69,22 @@ def test_boards_that_were_not_read_say_so_instead_of_reading_clean():
     lines, code = report(GOALS, SEATS)
     assert code == 0
     assert any(line.startswith("TASKS NOT EVALUATED") for line in lines)
-    assert lines[-1].endswith("tasks not read")
+    assert lines[-1].endswith("tasks not read, project coverage not read")
     assert not any("unplaced task(s)" in line for line in lines)
+    # The same claim about the other half of what the boards are read for:
+    # which projects still have no goal is unknowable without them, and a
+    # clean "0 of 0" would be the guaranteed-positive answer again.
+    assert any(line.startswith("PROJECT COVERAGE NOT EVALUATED")
+               for line in lines)
+    assert not any(line.startswith("PROJECTS WITH NO GOAL") for line in lines)
 
     empty, code = report(GOALS, SEATS, rows=[])
     assert code == 0
     assert not any(line.startswith("TASKS NOT EVALUATED") for line in empty)
-    assert empty[-1].endswith("0 unplaced task(s)")
+    assert not any(line.startswith("PROJECT COVERAGE NOT EVALUATED")
+                   for line in empty)
+    assert empty[-1].endswith("0 unplaced task(s), "
+                              "0 of 0 project(s) have a goal")
 
 
 def test_a_task_under_an_unseated_milestone_exits_two():
@@ -135,7 +145,8 @@ def test_a_closed_task_is_not_asked_which_milestone_it_serves():
             row(4, status_key="done", done=True, milestone="Galaxy")]
     lines, code = report(GOALS, SEATS, rows=rows)
     assert code == 0
-    assert lines[-1].endswith("0 unplaced task(s)")
+    assert lines[-1].endswith("0 unplaced task(s), "
+                              "1 of 1 project(s) have a goal")
     assert not any("#2" in line or "#3" in line or "#4" in line
                    for line in lines)
 
@@ -466,3 +477,45 @@ def test_a_kpi_with_no_reading_is_not_reported_as_in_bounds_or_out():
 def test_the_breach_line_carries_the_unit_the_owner_reads():
     lines, _ = report(_kpi(now=3.4, high=2.0, unit="M"), SEATS, rows=[])
     assert "  Nova / nova-cost: 3.4 M is above the ceiling of 2.0 M" in lines
+
+
+def test_a_project_on_the_boards_with_no_objective_is_listed_but_does_not_raise():
+    """Issue #227's own title, counted. `Demos` has rows and no section, so
+    nothing in the document knows it exists -- which is why the list is read
+    off the boards rather than off `project-goals.md`, where every project
+    would have a goal by construction."""
+    rows = [row(1), row(2, project="Demos", milestone="")]
+    lines, code = report(GOALS, SEATS, rows=rows)
+    assert code == 0
+    assert ("PROJECTS WITH NO GOAL (1 of 2) -- issue #227's own title, an "
+            "inventory rather than a defect, so it does not raise. These "
+            "projects have rows on the boards and no objective anywhere:"
+            ) in lines
+    assert ("  Demos: no objective is written for this project -- 1 open "
+            "row(s) on the boards and nothing saying what any of them is for"
+            ) in lines
+    assert lines[-1].endswith("1 of 2 project(s) have a goal")
+
+
+def test_a_project_whose_rows_are_all_closed_is_still_counted_as_having_none():
+    """The open-row count is a number *in* the finding, never the gate on it.
+    `Research` has five closed rows and nothing open, and it is still a
+    project on the boards with no goal -- which is the strongest pruning
+    signal there is, and dropping it for having no open work would delete
+    exactly that."""
+    rows = [row(1),
+            row(9, project="Research", milestone="", status_key="done",
+                done=True)]
+    lines, code = report(GOALS, SEATS, rows=rows)
+    assert code == 0
+    assert ("  Research: no objective is written for this project -- 0 open "
+            "row(s) on the boards and nothing saying what any of them is for"
+            ) in lines
+
+
+def test_a_project_that_has_a_goal_is_not_in_the_list():
+    """The whole-document case: one project, one objective, nothing to say."""
+    lines, code = report(GOALS, SEATS, rows=[row(1)])
+    assert not any(line.startswith("PROJECTS WITH NO GOAL") for line in lines)
+    assert lines[-1].endswith("1 of 1 project(s) have a goal")
+    assert code == 0
