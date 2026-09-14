@@ -913,7 +913,7 @@ now: 5.5
 target: 2.0
 unit: PRs per closed row
 direction: down
-status: proposed
+status: discussing
 ```
 `now` is measured, as of Cycle 1533.
 
@@ -1181,3 +1181,51 @@ def test_an_objective_with_no_period_says_nothing_about_a_month():
     from agora_runner.nova_plan import _objective_prose
     out = _objective_prose(["statement: Be good", "status: discussing"])
     assert "Covers" not in out
+
+
+def test_a_key_result_prints_the_word_that_says_it_is_not_settled():
+    """`discussing` means he and I have not agreed this yet, and a key result
+    printed without it reads as decided -- the same call `_objective_prose`
+    makes one function up. The field was parsed and rendered nowhere until
+    cycle 1562, so the state of every key result was invisible on his phone."""
+    texts = _paragraphs(_projects_doc_with_seats(SEATS))
+    key_result = next(t for t in texts if t.startswith("Key result"))
+    assert key_result.startswith(
+        "Key result (discussing) — The work closes your rows.")
+
+
+def test_a_key_result_with_no_status_prints_no_comma():
+    """Absent is not a defect and must not render as a dangling `, .` --
+    `project_goals.problems` deliberately lets a block carry no status."""
+    from agora_runner.nova_plan import _key_result_prose
+
+    bare = _key_result_prose(["id: k", "name: A thing", "measure: m"])
+    assert bare.startswith("**Key result — A thing.**")
+    assert "()" not in bare
+    blank = _key_result_prose(
+        ["id: k", "name: A thing", "measure: m", "status:   "])
+    assert blank.startswith("**Key result — A thing.**")
+
+
+def test_a_status_this_page_does_not_recognise_is_still_printed():
+    """The builder prints, `project_goals.problems` judges. A word dropped
+    here because it is wrong would hide the very defect the checker reports,
+    on the one screen he actually opens."""
+    from agora_runner.nova_plan import _key_result_prose
+
+    out = _key_result_prose(["id: k", "name: A thing", "status: proposed"])
+    assert out.startswith("**Key result (proposed) — A thing.**")
+
+
+def test_a_name_with_a_comma_in_it_still_reads_as_one_sentence():
+    """Three live key results are named "X, not Y" -- his own phrasing. A
+    trailing `, discussing` on those reads as a third clause of his sentence,
+    which is why the status is parenthetical and attached to the label."""
+    from agora_runner.nova_plan import _key_result_prose
+
+    out = _key_result_prose(
+        ["id: k", "name: The work closes your rows, not my own plumbing",
+         "status: discussing"])
+    assert out.startswith(
+        "**Key result (discussing) — The work closes your rows, "
+        "not my own plumbing.**")

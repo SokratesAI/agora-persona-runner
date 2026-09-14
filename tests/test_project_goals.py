@@ -668,3 +668,54 @@ def test_an_ordinary_key_result_document_is_untouched():
     """The rule has to start green on documents that were already fine, or
     it is a permanently red check nobody reads."""
     assert _attribute_complaints(NOVA) == []
+
+
+def _kr(status):
+    return _doc(
+        "## Nova\n\n```key-result\nid: k\nname: a\nmeasure: m\n"
+        f"status: {status}\n```\n")
+
+
+def test_a_key_result_carries_the_same_three_words_as_its_objective():
+    """His 09-13 21:02 correction deletes the approval gate from goals, and a
+    key result is a goal. Cycle 1531 changed the objective and stopped there.
+    """
+    for word in project_goals.KEY_RESULT_STATUSES:
+        assert not [line for line in problems(_kr(word))
+                    if "status" in line], word
+
+
+def test_a_key_result_still_saying_proposed_is_refused_not_aliased():
+    """The word that survived on all fifteen live key results for a day.
+
+    Refused rather than quietly re-read as `discussing`: the whole point of
+    the correction is that an approval is not an agreement.
+    """
+    for word in ("proposed", "approved", "declined", "maybe"):
+        found = [line for line in problems(_kr(word)) if "status" in line]
+        assert len(found) == 1, (word, found)
+        assert word in found[0] and "'k'" in found[0]
+        assert "discussing/agreed/struck" in found[0]
+
+
+def test_a_key_result_with_no_status_at_all_is_not_a_defect():
+    """Absent is not wrong -- `problems()` reports a *bad* word, and the
+    fifteen blocks that predate the field must not all read as broken."""
+    doc = _doc("## Nova\n\n```key-result\nid: k\nname: a\nmeasure: m\n```\n")
+    assert not [line for line in problems(doc) if "status" in line]
+    blank = _doc(
+        "## Nova\n\n```key-result\nid: k\nname: a\nmeasure: m\nstatus:  \n```\n")
+    assert not [line for line in problems(blank) if "status" in line]
+
+
+def test_a_bad_key_result_status_names_the_key_result_not_the_objective():
+    """Both blocks may be wrong in one section and the two lines have to be
+    tellable apart -- an objective's message says `objective`, this one says
+    `key result`."""
+    doc = _doc(
+        "## Nova\n\n```objective\nstatement: s\nstatus: approved\n```\n"
+        "\n```key-result\nid: k\nname: a\nmeasure: m\nstatus: approved\n```\n")
+    lines = [line for line in problems(doc) if "status" in line]
+    assert len(lines) == 2
+    assert any("objective status" in line for line in lines)
+    assert any("key result 'k' has status" in line for line in lines)

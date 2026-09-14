@@ -79,7 +79,7 @@ PROJECT_GOALS_TEMPLATE = """\
 type: board
 tags: [agora, goals, board]
 status: built
-contract: Nova writes this. One `## <Project>` section per project, holding one ```objective fence (his words, status discussing/agreed/struck, with the Agora conversation it was agreed in), 2-3 ```key-result fences (an outcome with a measure, now and target) and any number of ```kpi fences (a health number with a range, never a target). A KPI is never a key result. Milestones point at a key result by id in the Serves column of milestone-seats.md. The set of projects that exist is read off the Project column on the boards, never from here.
+contract: Nova writes this. One `## <Project>` section per project, holding one ```objective fence (his words, status discussing/agreed/struck, with the Agora conversation it was agreed in), 2-3 ```key-result fences (an outcome with a measure, now and target, and the same status discussing/agreed/struck) and any number of ```kpi fences (a health number with a range, never a target). A KPI is never a key result. Milestones point at a key result by id in the Serves column of milestone-seats.md. The set of projects that exist is read off the Project column on the boards, never from here.
 ---
 
 # Project goals
@@ -116,6 +116,20 @@ OBJECTIVE_FIELDS = ("statement", "status", "conversation", "period")
 #: agreement, and a silent alias would say they are the same.
 OBJECTIVE_STATUSES = ("discussing", "agreed", "struck")
 DEFAULT_OBJECTIVE_STATUS = "discussing"
+
+#: **The same three words, on a key result.** His 21:02 correction deletes the
+#: approval gate from *goals*, and a key result is a goal -- so `proposed` is
+#: exactly as wrong here as it was on the objective above. It survived because
+#: cycle 1531 changed the objective and nothing else, and the word stayed
+#: legal on a key result only because nothing read the field: `problems()`
+#: checked the measure, the count and the id, never the status. All fourteen
+#: key results in the live document read `status: proposed` for a day, which
+#: is the struck-out shape still standing in the one place nothing looked.
+#:
+#: Refused rather than aliased, for the reason written above: an approval is
+#: not an agreement, and reading one silently as the other says they are the
+#: same thing.
+KEY_RESULT_STATUSES = OBJECTIVE_STATUSES
 
 #: `period` is issue #227's seventh rule -- *"Monthly objectives, weekly
 #: check. Quarterly is four hundred cycles here."* -- and until cycle 1559
@@ -307,6 +321,16 @@ def problems(markdown_or_sections):
                 found.append(
                     f"{name}: key result {label!r} has no measure -- an "
                     "outcome without one is a task with a nicer name")
+            # Named apart from the objective's `status` above so the two
+            # are never confused while reading this function.
+            result_status = row.get("status", "").strip().lower()
+            if result_status and result_status not in KEY_RESULT_STATUSES:
+                found.append(
+                    f"{name}: key result {label!r} has status "
+                    f"{result_status!r}, "
+                    "which is not one of "
+                    + "/".join(KEY_RESULT_STATUSES)
+                    + " -- goals are agreed in a conversation, not approved")
             # Rule 8. Read the `measure` and the `unit`, which are the two
             # fields that say what is being counted; `name` is deliberately
             # left out, because a key result may legitimately be *about* the

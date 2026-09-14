@@ -344,7 +344,21 @@ def _key_result_prose(lines, seats=None):
     if not name:
         return None
     unit = f" {row['unit']}" if row.get("unit") else ""
-    parts = [f"**Key result — {name}.**"]
+    # The status word travels with the name for the same reason it travels
+    # with the objective's statement one function up: `discussing` means he
+    # and I have not settled this yet, and a key result printed without it
+    # reads as decided. `project_goals.KEY_RESULT_STATUSES` is what the three
+    # words may be; this builder prints whatever the block says rather than
+    # judging it, so a word that module refuses is still visible on the page
+    # instead of being silently dropped.
+    status = row.get("status", "").strip()
+    # Parenthetical rather than a trailing `, discussing`: the status hangs
+    # off the label the way the objective's does, and three of the live names
+    # already contain a comma -- "The work closes your rows, not my own
+    # plumbing, discussing." reads as a third clause of his sentence.
+    head = f"**Key result ({status}) — {name}.**" if status else (
+        f"**Key result — {name}.**")
+    parts = [head]
     if row.get("measure"):
         parts.append(_sentence(row["measure"]))
     parts.append(f"Now {row['now']}{unit}." if row.get("now")
