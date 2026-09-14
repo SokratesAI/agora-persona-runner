@@ -35,10 +35,19 @@ work or a pruning signal for him -- which is the same call `security_alerts`
 makes on an already-fixed advisory and `argocd_health` on a stale Job
 failure. `--orphans` prints the list on its own for when it is the thing you
 came for.
+
+**The task end of the chain is checked the same way, one level down.** A
+board row naming a milestone with no seat is a defect and raises; a row
+under no milestone at all is an inventory and does not raise. Both boards
+are read through the site's own API, and a board it could not read prints
+`UNREADABLE: the boards` and exits `1` rather than reporting a clean zero
+unplaced tasks -- which reads identically to the best possible answer.
 """
 
 import argparse
+import json
 import sys
+import urllib.request
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 import sys as _sys, pathlib as _pathlib  # noqa: E402
@@ -157,9 +166,6 @@ def _fetch_rows(site=SITE):
     every single cycle. The site pod holds the credentials and serves the
     same records.
     """
-    import json
-    import urllib.request
-
     rows = []
     for board in BOARDS:
         try:
@@ -174,12 +180,20 @@ def _fetch_rows(site=SITE):
 
 
 def _rows_from_file(path):
-    import json
+    """A JSON list of rows on disk -> `(rows, ok)`, for the tests and a draft.
+
+    A payload that is not a list reads as unreadable rather than being
+    coerced: `list({...})` on the whole board payload would hand back its
+    keys, and a check that then reports every one of them as a task with no
+    milestone is worse than one that says it could not read the file.
+    """
     try:
         payload = json.loads(_pathlib.Path(path).read_text())
     except (OSError, ValueError):
         return [], False
-    return list(payload), True
+    if not isinstance(payload, list):
+        return [], False
+    return payload, True
 
 
 def main(argv=None):

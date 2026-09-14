@@ -205,6 +205,15 @@ def test_boards_it_cannot_read_exit_one_rather_than_reporting_no_unplaced_tasks(
                  "--rows", str(tmp_path / "nope.json")]) == 1
     assert "UNREADABLE: the boards" in capsys.readouterr().out
 
+    # The whole board payload rather than its `items` list: `list()` on it
+    # hands back its keys, and every key would then be reported as a task
+    # with no milestone.
+    whole = tmp_path / "whole.json"
+    whole.write_text(json.dumps({"name": "issues", "items": [row(1)]}))
+    assert main(["--goals", str(goals), "--seats", str(seats),
+                 "--rows", str(whole)]) == 1
+    assert "UNREADABLE: the boards" in capsys.readouterr().out
+
 
 def test_orphans_prints_the_inventory_alone_and_exits_zero(tmp_path, capsys):
     goals, seats = tmp_path / "g.md", tmp_path / "s.md"
