@@ -1779,3 +1779,90 @@ def test_markdown_board_readers_is_wired_into_the_kpi_map():
         goal_measures.measure_nova_markdown_board_readers
     assert "nova-kpi-markdown-board-readers" not in \
         goal_measures.KPI_NO_INSTRUMENT
+# --- marcus-kpi-browser-monolith -------------------------------------------
+#
+# The guardrail under `Codebase health`, the last lights-on milestone on
+# either board that named no KPI at all. A ratchet on the biggest hand-written
+# browser file, because Marcus has no bundler by choice (idea #213) and what
+# no milestone catches is that file growing back.
+
+
+class _FakeRun:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def _fake_gh(monkeypatch, result, record=None):
+    def run(argv, **kwargs):
+        if record is not None:
+            record.append(argv)
+        if isinstance(result, Exception):
+            raise result
+        return result
+    monkeypatch.setattr(gm.subprocess, "run", run)
+
+
+def test_browser_monolith_reads_the_largest_js_file_in_kilobytes(monkeypatch):
+    _fake_gh(monkeypatch, _FakeRun(json.dumps([
+        {"name": "app.js", "size": 292126},
+        {"name": "app-core.js", "size": 169355},
+        {"name": "sw.js", "size": 5705},
+    ])))
+    value, detail = gm.measure_marcus_browser_monolith(None, None)
+    assert value == 292
+    assert "app.js is 292KB" in detail
+    assert "must never rise" in detail
+    assert "app-core.js 169KB" in detail
+
+
+def test_browser_monolith_ignores_files_that_are_not_javascript(monkeypatch):
+    """A 900KB sprite sheet is not a subsystem hiding in one file."""
+    _fake_gh(monkeypatch, _FakeRun(json.dumps([
+        {"name": "sprites.png", "size": 900000},
+        {"name": "styles.css", "size": 400000},
+        {"name": "app.js", "size": 120000},
+    ])))
+    value, detail = gm.measure_marcus_browser_monolith(None, None)
+    assert value == 120
+    assert "app.js" in detail
+    assert "sprites.png" not in detail
+
+
+def test_browser_monolith_lists_public_without_recursing(monkeypatch):
+    """A vendored bundle under public/vendor/ must not decide this number."""
+    calls = []
+    _fake_gh(monkeypatch, _FakeRun(json.dumps([{"name": "app.js",
+                                                "size": 1000}])), calls)
+    gm.measure_marcus_browser_monolith(None, None)
+    argv = calls[0]
+    assert argv[:2] == ["gh", "api"]
+    assert argv[2] == "repos/SokratesAI/marcus/contents/public"
+    assert not any("recursive" in str(a) or "git/trees" in str(a)
+                   for a in argv)
+
+
+def test_browser_monolith_returns_nothing_when_gh_fails(monkeypatch):
+    """A failed read is not zero kilobytes of front end."""
+    _fake_gh(monkeypatch, _FakeRun("", returncode=1, stderr="Not Found"))
+    value, detail = gm.measure_marcus_browser_monolith(None, None)
+    assert value is None
+    assert "Not Found" in detail
+
+
+def test_browser_monolith_returns_nothing_when_the_directory_holds_no_js(
+        monkeypatch):
+    """public/ emptied of JS is a moved directory, not a 0KB reading."""
+    _fake_gh(monkeypatch, _FakeRun(json.dumps([{"name": "index.html",
+                                                "size": 4000}])))
+    value, detail = gm.measure_marcus_browser_monolith(None, None)
+    assert value is None
+    assert "moved directory" in detail
+
+
+def test_browser_monolith_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument."""
+    assert goal_measures.KPI_MEASURERS["marcus-kpi-browser-monolith"] is \
+        goal_measures.measure_marcus_browser_monolith
+    assert "marcus-kpi-browser-monolith" not in goal_measures.KPI_NO_INSTRUMENT

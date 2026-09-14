@@ -1295,6 +1295,82 @@ def measure_nova_markdown_board_readers(since, until):
     if vetoed:
         detail += f"; {len(vetoed)} vetoed"
     return len(names), detail
+MARCUS_BROWSER_DIR = "public"
+MARCUS_REPO = "SokratesAI/marcus"
+
+
+def _marcus_browser_files():
+    """List the JS files served straight to the browser, with their sizes.
+
+    One `gh api` call against the contents endpoint, non-recursive on purpose:
+    a `public/vendor/` full of third-party libraries would otherwise decide
+    this number, and a vendored bundle is not code anybody here wrote.
+    """
+    try:
+        done = subprocess.run(
+            ["gh", "api", f"repos/{MARCUS_REPO}/contents/"
+             f"{MARCUS_BROWSER_DIR}", "--jq",
+             '[.[] | select(.type == "file") | {name, size}]'],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"gh api could not list {MARCUS_REPO}/{MARCUS_BROWSER_DIR}: {exc}"
+    if done.returncode != 0:
+        return None, (f"gh api failed on {MARCUS_REPO}/{MARCUS_BROWSER_DIR}: "
+                      f"{done.stderr.strip()[:200]}")
+    try:
+        entries = json.loads(done.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        return None, f"gh api returned unreadable JSON for {MARCUS_REPO}: {exc}"
+    return [e for e in entries if str(e.get("name", "")).endswith(".js")], None
+
+
+def measure_marcus_browser_monolith(since, until):
+    """The biggest hand-written browser file in Marcus, in kilobytes.
+
+    The guardrail under `Codebase health`, the last lights-on milestone on
+    either of his boards that named no KPI at all. It is a **ratchet**: it may
+    fall and must never rise, and `high` is the reading taken the day it was
+    written -- nothing here may move it, for the same reason
+    `set_field_in_kpi` only ever writes `now`.
+
+    A level, so it takes and drops the window: a file is this big now or it is
+    not, and averaging that over 24h answers nothing.
+
+    Why this number rather than a test count or a coverage percentage. Marcus
+    has no bundler and no modules by choice -- idea #213 decided that at 92 KB
+    on 2026-09-01, deliberately before the LLM chat landed, because *"that row
+    adds a whole subsystem ... and it will land in the same file"*. What a
+    milestone cannot catch is the same file quietly growing back, which costs
+    nothing on the day and is paid by whoever opens it next.
+
+    Kilobytes, decimal, because 92 KB is the unit the decision itself was
+    written in. Non-`.js` files are skipped: the page's CSS and HTML are not
+    where a subsystem hides.
+
+    **No readable listing returns `None`, never 0.** Zero kilobytes of browser
+    code would say Marcus has no front end, which is the opposite of what a
+    failed `gh` call means.
+    """
+    del since, until
+    files, error = _marcus_browser_files()
+    if error:
+        return None, error
+    if not files:
+        return None, (f"{MARCUS_REPO}/{MARCUS_BROWSER_DIR} holds no .js file, "
+                      "so there is no browser code to size -- that is a moved "
+                      "directory rather than a reading")
+    biggest = max(files, key=lambda e: e.get("size") or 0)
+    size_kb = round((biggest.get("size") or 0) / 1000.0)
+    others = ", ".join(f"{e['name']} {round((e.get('size') or 0) / 1000.0)}KB"
+                       for e in sorted(files, key=lambda e: -(e.get("size") or 0))[1:4])
+    detail = (f"{biggest['name']} is {size_kb}KB, the largest of "
+              f"{len(files)} hand-written browser file(s) in "
+              f"{MARCUS_BROWSER_DIR}/; a ratchet, so it may fall and must "
+              "never rise")
+    if others:
+        detail += f" (next: {others})"
+    return size_kb, detail
 
 
 KPI_MEASURERS = {
@@ -1306,6 +1382,7 @@ KPI_MEASURERS = {
     "marcus-kpi-coach-latency": measure_marcus_coach_latency,
     "nova-kpi-unfixed-advisories": measure_nova_unfixed_advisories,
     "nova-kpi-markdown-board-readers": measure_nova_markdown_board_readers,
+    "marcus-kpi-browser-monolith": measure_marcus_browser_monolith,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
