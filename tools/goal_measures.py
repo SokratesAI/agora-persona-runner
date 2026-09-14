@@ -2698,6 +2698,330 @@ def measure_agora_nothing_unused(since, until):
     return len(unused), detail
 
 
+MCP_SPEC_REPO = "modelcontextprotocol/modelcontextprotocol"
+
+#: A module attribute that would only exist if this MCP server also spoke the
+#: deprecated HTTP+SSE transport -- that transport needs a long-lived GET
+#: stream beside the POST endpoint, and `handle_http` is the whole surface.
+_MCP_SSE_ENTRY_POINTS = ("handle_sse", "handle_stream", "sse_stream", "event_stream")
+
+#: The same read for Dynamic Client Registration, which is an RFC 7591
+#: `/register` endpoint reached through OAuth metadata. This server mints a
+#: per-turn bearer token in-process (`grant`/`revoke`) and registers nobody.
+_MCP_REGISTRATION_ENTRY_POINTS = ("register_client", "handle_register",
+                                  "oauth_metadata", "authorization_server_metadata")
+
+#: JSON-RPC methods a server would have to answer to be participating in each
+#: deprecated feature. Probed for real against `handle`, so a branch added to
+#: the dispatch flips the reading without anybody editing this map.
+_MCP_PROBE_METHODS = ("roots/list", "sampling/createMessage", "logging/setLevel")
+
+
+def _mcp_feature_key(cell):
+    """The Feature cell of the spec's registry, flattened for matching.
+
+    Markdown links out, backticks out, lowercased, whitespace collapsed. The
+    cell is prose with links in it -- `[Roots](/specification/.../roots)` --
+    and the link target moves every revision while the label does not.
+    """
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", cell or "")
+    text = text.replace("`", "").replace("*", "")
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def read_mcp_surface(module=None):
+    """`(surface, why)` -- what this loop's own MCP server advertises and answers.
+
+    A live read of the server rather than a grep of it: it mints a real grant,
+    sends a real `initialize`, and sends one real JSON-RPC request per method
+    in `_MCP_PROBE_METHODS` to see which the dispatch answers. Adding a
+    `logging/setLevel` branch to `agora_runner.tools_mcp.handle` changes this
+    reading with no edit here, which is the property that makes it an
+    instrument instead of a second copy of the truth.
+
+    The two things it cannot ask over JSON-RPC -- the transport and the
+    authorization scheme -- it reads as the presence or absence of a named
+    entry point on the module, and `measure_agora_mcp_current`'s detail string
+    says so rather than passing them off as protocol readings.
+
+    The grant is revoked in a `finally`, and no tool is ever called: every
+    probed method is one this server does not implement, so the dispatch
+    reaches its `unknown method` fallback and stops there.
+    """
+    if module is None:
+        try:
+            from agora_runner import tools_mcp as module
+        except Exception as exc:  # pragma: no cover - import guard
+            return None, f"could not import the MCP server to probe it: {exc}"
+    try:
+        token = module.grant({"name": "goal_measures probe"}, {"vaultRead": True}, None)
+    except Exception as exc:
+        return None, f"the MCP server refused a probe grant: {exc}"
+    if not token:
+        return None, ("the MCP server issued no grant, so nothing could be "
+                      "asked of it")
+    try:
+        status, payload = module.handle(token, {
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": module.DEFAULT_PROTOCOL_VERSION},
+        })
+        result = (payload or {}).get("result")
+        if status != 200 or not isinstance(result, dict):
+            return None, (f"the MCP server did not answer initialize "
+                          f"(status {status}), so its capabilities are unread")
+        caps = result.get("capabilities")
+        if not isinstance(caps, dict):
+            return None, "the MCP server's initialize carried no capabilities"
+        answers = {}
+        for method in _MCP_PROBE_METHODS:
+            _status, reply = module.handle(token, {
+                "jsonrpc": "2.0", "id": 2, "method": method, "params": {},
+            })
+            answers[method] = isinstance(reply, dict) and "result" in reply
+    finally:
+        try:
+            module.revoke(token)
+        except Exception:  # pragma: no cover - revoke is best effort
+            pass
+    return {
+        "revision": getattr(module, "DEFAULT_PROTOCOL_VERSION", None),
+        "capabilities": caps,
+        "answers": answers,
+        "sse": [name for name in _MCP_SSE_ENTRY_POINTS if hasattr(module, name)],
+        "registration": [name for name in _MCP_REGISTRATION_ENTRY_POINTS
+                         if hasattr(module, name)],
+    }, None
+
+
+def _mcp_in_use_roots(surface):
+    if "roots" in surface["capabilities"]:
+        return True, "initialize advertises a roots capability"
+    if surface["answers"].get("roots/list"):
+        return True, "the dispatch answers roots/list"
+    return False, ("no roots capability is advertised and roots/list is not "
+                   "answered")
+
+
+def _mcp_in_use_sampling(surface):
+    if "sampling" in surface["capabilities"]:
+        return True, "initialize advertises a sampling capability"
+    if surface["answers"].get("sampling/createMessage"):
+        return True, "the dispatch answers sampling/createMessage"
+    return False, ("no sampling capability is advertised and "
+                   "sampling/createMessage is not answered")
+
+
+def _mcp_in_use_logging(surface):
+    if "logging" in surface["capabilities"]:
+        return True, "initialize advertises a logging capability"
+    if surface["answers"].get("logging/setLevel"):
+        return True, "the dispatch answers logging/setLevel"
+    return False, ("no logging capability is advertised and logging/setLevel "
+                   "is not answered")
+
+
+def _mcp_in_use_include_context(surface):
+    """`includeContext` is a field on a sampling request, so it follows sampling.
+
+    The spec's own Earliest removal cell for this row says *"Follows
+    Sampling"*, and a server that never sends a sampling request cannot send
+    one carrying this field. Deriving it rather than probing for it is the
+    honest read: there is no separate capability or method to ask about.
+    """
+    used, why = _mcp_in_use_sampling(surface)
+    if used:
+        return True, f"sampling is in use, and this is a field on it: {why}"
+    return False, f"a field on a sampling request this server never sends ({why})"
+
+
+def _mcp_in_use_sse(surface):
+    if surface["sse"]:
+        return True, ("the MCP module exposes "
+                      + ", ".join(surface["sse"]) + ", which is an SSE stream")
+    return False, ("the MCP module exposes no SSE stream entry point, only the "
+                   "single POST endpoint Streamable HTTP asks for")
+
+
+def _mcp_in_use_dcr(surface):
+    if surface["registration"]:
+        return True, ("the MCP module exposes "
+                      + ", ".join(surface["registration"]))
+    return False, ("the MCP module registers no client -- authorization is a "
+                   "per-turn bearer token minted in-process")
+
+
+#: Ordered, and the order is load-bearing: the `includeContext` row names
+#: Sampling in its own Feature cell, so a plain "which key appears in this
+#: cell" match would read it as the Sampling row. First match wins and the
+#: narrower keys come first.
+_MCP_DEPRECATION_PROBES = (
+    ("includecontext", _mcp_in_use_include_context),
+    ("dynamic client registration", _mcp_in_use_dcr),
+    ("http+sse", _mcp_in_use_sse),
+    ("roots", _mcp_in_use_roots),
+    ("sampling", _mcp_in_use_sampling),
+    ("logging", _mcp_in_use_logging),
+)
+
+
+def parse_mcp_deprecations(text):
+    """`(rows, why)` -- the `## Deprecated` table of the spec's own registry.
+
+    `docs/specification/<revision>/deprecated.mdx` is the spec's registry of
+    features in the Deprecated state, and its own preamble calls it a derived
+    view of the normative per-feature notices. It carries one markdown table
+    under `## Deprecated` and a second under `## Removed`, so the section
+    boundary is the thing to respect: a removed feature is not a deprecated
+    one and folding the two together would count a row twice over its life.
+
+    An empty table is a failed read, not an empty registry. The page exists
+    because there are rows in it; a revision with nothing deprecated would not
+    publish one, and reading 0 features off a table this could not parse is
+    the flattering answer on a measure whose target is 0.
+    """
+    lines = (text or "").splitlines()
+    section, rows = None, []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            section = stripped[3:].strip().lower()
+            continue
+        if section != "deprecated" or not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 5:
+            continue
+        if set("".join(cells).replace(" ", "")) <= set("-:"):
+            continue
+        if _mcp_feature_key(cells[0]) == "feature":
+            continue
+        rows.append({
+            "feature": cells[0],
+            "key": _mcp_feature_key(cells[0]),
+            "deprecated_in": cells[2],
+            "removal": cells[-1],
+        })
+    if not rows:
+        return None, ("the spec's deprecation registry parsed to no row at "
+                      "all, which is a failed read rather than an empty "
+                      "registry")
+    return rows, None
+
+
+def fetch_mcp_deprecations(fetch=None):
+    """`((revision, rows), why)` -- the newest released revision's registry.
+
+    One `gh api tarball` of the spec repo, the same read
+    `measure_maint_self_documenting` makes of every repo in the org, because
+    the registry is one file inside a repo of 353 markdown pages and a
+    `contents` walk to find it would be two calls to save nothing.
+
+    `draft` is deliberately skipped. It is the unreleased revision, so a
+    feature deprecated only there is not yet deprecated in anything anybody
+    implements, and counting it would report a removal clock that has not
+    started.
+    """
+    from tools import running_images
+
+    fetch = fetch or running_images.fetch_manifests
+    files, why = fetch(repo=MCP_SPEC_REPO, suffixes=(".mdx",))
+    if why:
+        return None, f"could not read the MCP specification: {why}"
+    registries = {}
+    for path, text in (files or {}).items():
+        match = re.fullmatch(
+            r"docs/specification/(\d{4}-\d{2}-\d{2})/deprecated\.mdx", path)
+        if match:
+            registries[match.group(1)] = text
+    if not registries:
+        return None, (f"no docs/specification/<revision>/deprecated.mdx in "
+                      f"{MCP_SPEC_REPO}, so the spec's own deprecation "
+                      "registry could not be found")
+    revision = max(registries)
+    rows, why = parse_mcp_deprecations(registries[revision])
+    if why:
+        return None, f"{revision}: {why}"
+    return (revision, rows), None
+
+
+def measure_agora_mcp_current(since, until):
+    """Deprecated MCP features this loop's own server still uses, with a removal date.
+
+    A count with a target of 0 and a downward direction, so the low reading is
+    the good one and the fake to guard against is a small number.
+
+    **The list of deprecated features is the spec's, not mine.** The reading
+    this replaces was a 3 read off idea #238 -- Roots, Sampling and Logging --
+    and `project-goals.md` said in as many words what was wrong with it:
+    *"not off the MCP spec, which nothing here reads. So it ages the moment
+    the spec moves and I will not notice."* The spec publishes the registry as
+    a page of its own now, `deprecated.mdx`, and this reads that page.
+
+    **A row with no probe means no reading at all, for the whole measure**,
+    the same rule and the same reason as `measure_agora_nothing_unused`: a
+    feature nothing here can ask about cannot be shown to be unused, so
+    counting it as unused is the positive result that was guaranteed before it
+    was taken, and dropping it from the count shrinks a number trying to reach
+    0. Both flatter. A seventh row appearing in the spec therefore stops this
+    measure rather than being silently read as fine.
+
+    **What the reading is about is our server, not the whole estate.** Six of
+    the six rows resolve against `agora_runner.tools_mcp`, which is the only
+    MCP surface this loop serves; four are read out of a live handshake and
+    dispatch, and two -- the transport and Dynamic Client Registration -- are
+    read as the absence of a named entry point on that module, which the
+    detail string says outright because it is a weaker instrument than the
+    other four.
+    """
+    del since, until
+    fetched, why = fetch_mcp_deprecations()
+    if why:
+        return None, why
+    revision, rows = fetched
+    surface, why = read_mcp_surface()
+    if why:
+        return None, (f"the MCP specification's {revision} registry lists "
+                      f"{len(rows)} deprecated feature(s) and this loop's own "
+                      f"server could not be asked about any of them: {why}")
+    in_use, clear, undated, notes = [], [], [], []
+    for row in rows:
+        probe = next((fn for key, fn in _MCP_DEPRECATION_PROBES
+                      if key in row["key"]), None)
+        if probe is None:
+            return None, (f"the {revision} registry deprecates "
+                          f"{row['feature']!r} and nothing here reads whether "
+                          "we use it, so this count would be a guess at that "
+                          "row either way")
+        used, reason = probe(surface)
+        notes.append(f"{row['key']}: {'IN USE' if used else 'clear'} -- {reason}")
+        if not used:
+            clear.append(row["key"])
+        elif not row["removal"]:
+            undated.append(row["key"])
+        else:
+            in_use.append(row["key"])
+    named = ", ".join(in_use) or "none"
+    detail = (f"{len(in_use)} of the {len(rows)} feature(s) in the MCP "
+              f"specification's own {revision} deprecation registry are used "
+              f"by this loop's MCP server and carry an earliest removal "
+              f"({named}). Read off {MCP_SPEC_REPO}'s "
+              f"docs/specification/{revision}/deprecated.mdx and off a live "
+              f"handshake with agora_runner.tools_mcp, which advertises "
+              f"{sorted(surface['capabilities'])} and implements MCP revision "
+              f"{surface['revision']}. Four rows are decided by that handshake "
+              "and its dispatch; the transport and Dynamic Client "
+              "Registration rows are decided by the absence of a named entry "
+              "point on that module, which is a weaker read than the other "
+              "four and is why they are named here")
+    if undated:
+        detail += (f"; {', '.join(undated)} is in use with no earliest removal "
+                   "in the registry and is not counted, because the measure "
+                   "asks for a removal date")
+    if notes:
+        detail += "; " + "; ".join(notes)
+    return len(in_use), detail
+
+
 def measure_nas_services_down(since, until):
     """NAS services that did not answer over the SSH hop. A level, no window.
 
@@ -3611,6 +3935,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "maint-kr-self-documenting": measure_maint_self_documenting,
     "agora-kr-chat-basics": measure_agora_chat_basics,
     "agora-kr-nothing-unused": measure_agora_nothing_unused,
+    "agora-kr-mcp-current": measure_agora_mcp_current,
     "post-kr-editor": measure_post_editor,
     "post-kr-readership": measure_post_readership,
     "wa-kr-reaches-you": measure_wa_reaches_you,
