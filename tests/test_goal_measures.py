@@ -4235,3 +4235,245 @@ class TestOffBoxWatch:
     def test_the_key_result_is_registered(self):
         assert (gm.KEY_RESULT_FETCH_MEASURERS["nas-kr-off-box-watch"]
                 is gm.measure_nas_off_box_watch)
+
+
+_MCP_REGISTRY = """---
+title: Deprecated Features
+---
+
+Prose about the policy, with a | pipe in it that is not a table.
+
+## Deprecated
+
+| Feature | Deprecation SEP | Deprecated in | Migration path | Earliest removal |
+| ------- | --------------- | ------------- | -------------- | ---------------- |
+| [Roots](/specification/2026-07-28/client/roots) | [SEP-2577](x) | `2026-07-28` | Tool parameters | First revision released on or after 2027-07-28 |
+| [Sampling](/specification/2026-07-28/client/sampling) | [SEP-2577](x) | `2026-07-28` | LLM provider APIs | First revision released on or after 2027-07-28 |
+| [Logging](/specification/2026-07-28/server/utilities/logging) | [SEP-2577](x) | `2026-07-28` | stderr | First revision released on or after 2027-07-28 |
+| [Dynamic Client Registration](/specification/2026-07-28/basic/authorization/client-registration) | [PR #2858](x) | `2026-07-28` | [CIMD](y) | First revision released on or after 2027-07-28 |
+| `includeContext: "thisServer"` / `"allServers"` ([Sampling](/specification/2026-07-28/client/sampling#capabilities)) | [SEP-2596](x) | `2025-11-25` | Omit the field | Follows Sampling |
+| [HTTP+SSE transport](/specification/2024-11-05/basic/transports#http-with-sse) | [SEP-2596](x) | `2025-03-26` | [Streamable HTTP](y) | Three months after SEP-2596 reaches Final |
+
+## Removed
+
+| Feature | Deprecation SEP | Deprecated in | Migration path | Removed in |
+| ------- | --------------- | ------------- | -------------- | ---------- |
+| [Nothing yet](x) | [SEP-0](x) | `2025-01-01` | none | `2099-01-01` |
+"""
+
+
+def _mcp_module(caps=None, answers=(), extra=()):
+    """A stand-in for `agora_runner.tools_mcp` with a controllable surface.
+
+    Shaped like the real module's contract rather than like its internals:
+    `grant` hands back a token, `handle` answers `initialize` with whatever
+    capabilities this fixture was built with, and any method in `answers`
+    comes back as a result instead of the real module's `unknown method`.
+    """
+    revoked = []
+
+    def grant(persona, caps_in, conversation_id):
+        return "tok"
+
+    def handle(token, request):
+        assert token == "tok"
+        method = request.get("method")
+        if method == "initialize":
+            return 200, {"jsonrpc": "2.0", "id": request["id"], "result": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": dict(caps or {"tools": {}}),
+            }}
+        if method in answers:
+            return 200, {"jsonrpc": "2.0", "id": request["id"], "result": {}}
+        return 200, {"jsonrpc": "2.0", "id": request["id"],
+                     "error": {"code": -32601, "message": "unknown method"}}
+
+    module = types.SimpleNamespace(
+        DEFAULT_PROTOCOL_VERSION="2025-06-18",
+        grant=grant, handle=handle, handle_http=lambda *a: None,
+        revoke=revoked.append)
+    for name in extra:
+        setattr(module, name, lambda *a: None)
+    module.revoked = revoked
+    return module
+
+
+class TestMcpDeprecationRegistry:
+    """The spec half. Proved to find rows before any 0 is believed off it."""
+
+    def test_it_reads_every_deprecated_row_and_stops_at_removed(self):
+        rows, why = gm.parse_mcp_deprecations(_MCP_REGISTRY)
+        assert why is None
+        assert len(rows) == 6, [r["key"] for r in rows]
+        assert "nothing yet" not in [r["key"] for r in rows]
+
+    def test_it_flattens_the_links_out_of_a_feature_cell(self):
+        rows, _why = gm.parse_mcp_deprecations(_MCP_REGISTRY)
+        assert rows[0]["key"] == "roots"
+        assert rows[5]["key"] == "http+sse transport"
+
+    def test_a_table_it_cannot_parse_is_a_failed_read_not_an_empty_registry(self):
+        rows, why = gm.parse_mcp_deprecations(
+            "## Deprecated\n\nnothing tabular here at all\n")
+        assert rows is None
+        assert "failed read" in why
+
+    def test_it_takes_the_newest_released_revision_and_skips_draft(self):
+        files = {
+            "docs/specification/2025-11-25/deprecated.mdx":
+                "## Deprecated\n| F | S | D | M | R |\n|-|-|-|-|-|\n| Roots | x | y | z | later |\n",
+            "docs/specification/2026-07-28/deprecated.mdx": _MCP_REGISTRY,
+            "docs/specification/draft/deprecated.mdx":
+                "## Deprecated\n| F | S | D | M | R |\n|-|-|-|-|-|\n| Tools | x | y | z | later |\n",
+        }
+        fetched, why = gm.fetch_mcp_deprecations(
+            fetch=lambda repo, suffixes: (files, None))
+        assert why is None
+        revision, rows = fetched
+        assert revision == "2026-07-28"
+        assert len(rows) == 6
+
+    def test_a_failed_fetch_is_no_reading(self):
+        fetched, why = gm.fetch_mcp_deprecations(
+            fetch=lambda repo, suffixes: (None, "gh exited 1"))
+        assert fetched is None
+        assert "gh exited 1" in why
+
+    def test_a_repo_with_no_registry_page_is_no_reading(self):
+        fetched, why = gm.fetch_mcp_deprecations(
+            fetch=lambda repo, suffixes: ({"docs/index.mdx": "hi"}, None))
+        assert fetched is None
+        assert "deprecated.mdx" in why
+
+
+class TestMcpSurface:
+    """The our-side half. Every probe is proved to fire before a 0 is believed."""
+
+    def test_it_reads_the_live_servers_capabilities_and_revokes_its_grant(self):
+        from agora_runner import tools_mcp
+        surface, why = gm.read_mcp_surface()
+        assert why is None, why
+        assert "tools" in surface["capabilities"]
+        assert surface["revision"] == tools_mcp.DEFAULT_PROTOCOL_VERSION
+        assert surface["answers"] == {"roots/list": False,
+                                     "sampling/createMessage": False,
+                                     "logging/setLevel": False}
+        assert tools_mcp._grants == {}
+
+    def test_a_server_that_issues_no_grant_is_no_reading(self):
+        module = _mcp_module()
+        module.grant = lambda *a: None
+        surface, why = gm.read_mcp_surface(module=module)
+        assert surface is None
+        assert "no grant" in why
+
+    def test_an_initialize_with_no_capabilities_is_no_reading(self):
+        module = _mcp_module()
+        module.handle = lambda token, request: (200, {"result": {}})
+        surface, why = gm.read_mcp_surface(module=module)
+        assert surface is None
+        assert "capabilities" in why
+
+    def test_an_advertised_capability_reads_as_in_use(self):
+        surface, why = gm.read_mcp_surface(
+            module=_mcp_module(caps={"tools": {}, "logging": {}}))
+        assert why is None
+        used, reason = gm._mcp_in_use_logging(surface)
+        assert used and "advertises" in reason
+
+    def test_an_answered_method_reads_as_in_use(self):
+        surface, _why = gm.read_mcp_surface(
+            module=_mcp_module(answers=("roots/list",)))
+        used, reason = gm._mcp_in_use_roots(surface)
+        assert used and "roots/list" in reason
+
+    def test_include_context_follows_sampling_in_both_directions(self):
+        clear, _why = gm.read_mcp_surface(module=_mcp_module())
+        assert gm._mcp_in_use_include_context(clear)[0] is False
+        sampling, _why = gm.read_mcp_surface(
+            module=_mcp_module(answers=("sampling/createMessage",)))
+        assert gm._mcp_in_use_include_context(sampling)[0] is True
+
+    def test_an_sse_entry_point_reads_as_the_old_transport(self):
+        surface, _why = gm.read_mcp_surface(
+            module=_mcp_module(extra=("handle_sse",)))
+        used, reason = gm._mcp_in_use_sse(surface)
+        assert used and "handle_sse" in reason
+
+    def test_a_registration_entry_point_reads_as_dynamic_client_registration(self):
+        surface, _why = gm.read_mcp_surface(
+            module=_mcp_module(extra=("register_client",)))
+        used, reason = gm._mcp_in_use_dcr(surface)
+        assert used and "register_client" in reason
+
+
+class TestMcpCurrentMeasure:
+    """The count itself, with both halves stubbed so the join is what is tested."""
+
+    def _both_halves(self, monkeypatch, module, registry=_MCP_REGISTRY,
+                     revision="2026-07-28"):
+        """Stub the two halves, binding the real reader before patching its name.
+
+        The bind matters: a lambda that calls `gm.read_mcp_surface` reads the
+        patched attribute and recurses forever, which is what the first draft
+        of these tests did.
+        """
+        real = gm.read_mcp_surface
+        monkeypatch.setattr(gm, "fetch_mcp_deprecations",
+                            lambda: ((revision,
+                                      gm.parse_mcp_deprecations(registry)[0]), None))
+        monkeypatch.setattr(gm, "read_mcp_surface",
+                            lambda: real(module=module))
+
+    def test_a_server_using_none_of_them_reads_zero(self, monkeypatch):
+        module = _mcp_module()
+        self._both_halves(monkeypatch, module, registry=_MCP_REGISTRY)
+        value, detail = gm.measure_agora_mcp_current("2026-09-08", "2026-09-14")
+        assert value == 0, detail
+        assert "0 of the 6" in detail
+        assert "roots: clear" in detail
+
+    def test_a_server_using_all_of_them_reads_six(self, monkeypatch):
+        module = _mcp_module(
+            caps={"tools": {}, "roots": {}, "sampling": {}, "logging": {}},
+            extra=("handle_sse", "register_client"))
+        self._both_halves(monkeypatch, module, registry=_MCP_REGISTRY)
+        value, detail = gm.measure_agora_mcp_current("2026-09-08", "2026-09-14")
+        assert value == 6, detail
+        assert "6 of the 6" in detail
+
+    def test_a_row_with_no_probe_stops_the_whole_measure(self, monkeypatch):
+        registry = _MCP_REGISTRY.replace(
+            "| [Roots](/specification/2026-07-28/client/roots) |",
+            "| [Elicitation](/specification/2026-07-28/client/elicitation) |")
+        module = _mcp_module()
+        self._both_halves(monkeypatch, module, registry=registry)
+        value, detail = gm.measure_agora_mcp_current("2026-09-08", "2026-09-14")
+        assert value is None
+        assert "Elicitation" in detail and "guess" in detail
+
+    def test_a_server_it_cannot_ask_is_no_reading(self, monkeypatch):
+        monkeypatch.setattr(gm, "fetch_mcp_deprecations",
+                            lambda: (("2026-07-28",
+                                      gm.parse_mcp_deprecations(_MCP_REGISTRY)[0]),
+                                     None))
+        monkeypatch.setattr(gm, "read_mcp_surface",
+                            lambda: (None, "the pod is gone"))
+        value, detail = gm.measure_agora_mcp_current("2026-09-08", "2026-09-14")
+        assert value is None
+        assert "the pod is gone" in detail
+
+    def test_a_feature_in_use_with_no_removal_date_is_named_not_counted(self, monkeypatch):
+        registry = _MCP_REGISTRY.replace(
+            "| stderr | First revision released on or after 2027-07-28 |",
+            "| stderr |  |")
+        module = _mcp_module(caps={"tools": {}, "logging": {}})
+        self._both_halves(monkeypatch, module, registry=registry)
+        value, detail = gm.measure_agora_mcp_current("2026-09-08", "2026-09-14")
+        assert value == 0, detail
+        assert "no earliest removal" in detail
+        assert "logging: IN USE" in detail
+
+    def test_it_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["agora-kr-mcp-current"] is \
+            gm.measure_agora_mcp_current
