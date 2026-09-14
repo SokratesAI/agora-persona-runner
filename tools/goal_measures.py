@@ -2983,7 +2983,7 @@ def measure_agora_mcp_current(since, until):
         return None, (f"the MCP specification's {revision} registry lists "
                       f"{len(rows)} deprecated feature(s) and this loop's own "
                       f"server could not be asked about any of them: {why}")
-    in_use, clear, undated, notes = [], [], [], []
+    in_use, undated, notes = [], [], []
     for row in rows:
         probe = next((fn for key, fn in _MCP_DEPRECATION_PROBES
                       if key in row["key"]), None)
@@ -2995,8 +2995,8 @@ def measure_agora_mcp_current(since, until):
         used, reason = probe(surface)
         notes.append(f"{row['key']}: {'IN USE' if used else 'clear'} -- {reason}")
         if not used:
-            clear.append(row["key"])
-        elif not row["removal"]:
+            continue
+        if not row["removal"]:
             undated.append(row["key"])
         else:
             in_use.append(row["key"])
