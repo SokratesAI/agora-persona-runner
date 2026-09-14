@@ -348,15 +348,20 @@ def apply_done_when(fields, done_when, waived=False):
     would refuse the exact case issue #212 asks to park. It is keyed on the
     classification rather than on the status, because `--status
     blocked-on-edvard` is an operator's guess at where a row sits and
-    `--as question` is a statement about what the capture is.
+    `--as question` is a statement about what the capture is. It removes the
+    *requirement* and not the ability: a sentence passed anyway is still
+    written onto the row, because dropping an argument the caller typed is
+    the kind of silence this module exists to avoid.
 
     Returns `(fields, None)` or `(None, reason)`, the same shape `promote`
     returns, so `main` has one refusal path rather than two.
     """
-    if fields["status"] == "done" or waived:
+    if fields["status"] == "done":
         return fields, None
     stated = (done_when or "").strip()
     if not stated:
+        if waived:
+            return fields, None
         return None, DONE_WHEN_REFUSAL
     fields = dict(fields)
     fields["write_up"] = (

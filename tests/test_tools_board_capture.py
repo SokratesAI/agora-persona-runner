@@ -832,3 +832,13 @@ def test_main_still_demands_a_done_when_for_an_unclassified_capture(
     assert main(["--board", "idea", "--index", "0", "--dated", "09-14",
                  "--priority", "high", "--no-milestone"]) == 1
     assert "--done-when" in capsys.readouterr().err
+
+
+def test_a_waived_question_keeps_a_done_when_that_was_given_anyway():
+    """The waiver drops the requirement, not the sentence. Swallowing an
+    argument the caller typed is the silence this module is built against."""
+    fields = {"status": "backlog", "write_up": "his words"}
+    kept, why = apply_done_when(fields, "the thread has an answer", waived=True)
+    assert why is None
+    assert kept["write_up"].endswith(
+        DONE_WHEN_PREFIX + "the thread has an answer")
