@@ -842,3 +842,62 @@ def test_a_waived_question_keeps_a_done_when_that_was_given_anyway():
     assert why is None
     assert kept["write_up"].endswith(
         DONE_WHEN_PREFIX + "the thread has an answer")
+
+
+# --- the duplicate guard ------------------------------------------------
+
+
+def test_normalised_title_ignores_case_and_whitespace_runs():
+    assert board_capture.normalised_title("  Weekly   WORK\n") == (
+        board_capture.normalised_title("weekly work"))
+
+
+def test_normalised_title_keeps_a_difference_in_words():
+    assert board_capture.normalised_title("Weekly work") != (
+        board_capture.normalised_title("Weekly works"))
+
+
+def test_duplicate_rows_names_the_row_it_clashed_with(store):
+    found = board_capture.duplicate_rows(
+        _contents(store), ["weekly   work", "Something new"])
+    assert [(title, row["number"]) for title, row in found] == [
+        ("weekly   work", 100)]
+
+
+def test_duplicate_rows_matches_a_closed_row_too():
+    """#51 is under `## Done`, and a re-board of a finished item is exactly
+    the mistake this guard exists for."""
+    found = board_capture.duplicate_rows(
+        {"items": [{"number": 51, "title": "One way", "status": "✅ Done"}]},
+        ["One way"])
+    assert [row["number"] for _, row in found] == [51]
+
+
+def test_main_refuses_a_capture_whose_title_is_already_a_row(store, capsys):
+    """The Figma double-board, 2026-09-14: #298 from his capture and #299
+    from a record I wrote by hand, byte-identical titles, both on his board."""
+    before = len(capture_pairs(_contents(store)))
+    rows_before = set(_rows(store))
+    assert _run("--index", "0", "--priority", "high",
+                "--title", "Weekly work") == 1
+    error = capsys.readouterr().err
+    assert "#100" in error and "already says" in error
+    assert set(_rows(store)) == rows_before
+    assert len(capture_pairs(_contents(store))) == before
+
+
+def test_main_refuses_the_duplicate_before_the_dry_run_prints_it(store, capsys):
+    """A refusal that only fired on the real write would let `--dry-run`
+    report the boarding as fine, which is where I would have looked."""
+    assert _run("--index", "0", "--priority", "high",
+                "--title", "Weekly work", "--dry-run") == 1
+    assert "#100" in capsys.readouterr().err
+
+
+def test_allow_duplicate_boards_it_anyway(store):
+    """He is allowed to file the same thing twice; the flag is the sentence
+    that says he meant to."""
+    assert _run("--index", "0", "--priority", "high",
+                "--title", "Weekly work", "--allow-duplicate") == 0
+    titles = [one["title"] for one in _rows(store).values()]
+    assert titles.count("Weekly work") == 2
