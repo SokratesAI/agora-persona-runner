@@ -139,6 +139,53 @@ def liveness(hop, nzbget, plex):
     return lines, judged, status
 
 
+def services_down(env=None, connect=socket.create_connection, get=nas._get,
+                  ssh=nas._UNSET, run=None, nzbget=nas.nzbget_unlocked,
+                  plex=nas.plex_version):
+    """How many NAS services did not answer, and how many were judged at all.
+
+    Returns `(down, judged, None)` or `(None, 0, why)`. It exists so
+    `tools.goal_measures` can put a number on `nas-kpi-services-down` instead
+    of the hand count that was typed there, and it sits beside `report` rather
+    than inside it because a report prints prose and a KPI needs a count.
+
+    **It shares the primitives, not the verdicts.** `nas.config`, `nas.status`,
+    `nas.unconfigured` and `liveness` are the same calls `report` makes, in the
+    same order, so the two cannot disagree about whether a service answered;
+    what differs is only that this counts the failures and that prints them.
+
+    **`None` is not zero here and the distinction is the whole point.** A pod
+    with no hop, an unreachable box, or a service that was never asked because
+    its API key could not be discovered all return `None` -- "I could not
+    look" -- while a box that answered and had every service answer returns a
+    real `0`. A guardrail whose ceiling is zero would otherwise read green on
+    exactly the failure it is there to catch, which is the trap
+    `measure_agora_metered_spend` names from the other side.
+    """
+    hop = nas.ssh_config(env) if ssh is nas._UNSET else ssh
+    host = (hop or {}).get("host") or (env or {}).get("NAS_SSH_HOST") or nas.SSH_DEFAULTS["host"]
+    reachable, detail, _ = probe(host, connect=connect)
+    if not reachable:
+        return None, 0, f"the NAS did not answer on its SSH port: {detail}"
+    if hop is None:
+        return None, 0, ("this pod cannot make the SSH hop, so none of the "
+                         f"{len(nas.MEDIA_SERVICES)} service(s) were judged")
+    conf_all = nas.config(env, ssh=hop) if run is None else nas.config(env, ssh=hop, run=run)
+    if not conf_all:
+        return None, 0, "the SSH hop exists but no service could be configured through it"
+    missing = nas.unconfigured(conf_all)
+    if missing:
+        return None, 0, (f"{', '.join(missing)} {nas.UNDISCOVERED_REASON}, so "
+                         "this is a partial sweep rather than a count")
+    lines, _ = nas.status(conf_all, get=get)
+    down = sum(1 for line in lines if not line.startswith("ok"))
+    judged = len(lines)
+    live_lines, live_judged, _ = liveness(hop, nzbget, plex)
+    down += sum(1 for line in live_lines if "did not answer" in line)
+    judged += live_judged
+    return down, judged, None
+
+
 def report(env=None, out=sys.stdout, connect=socket.create_connection, get=nas._get, ssh=nas._UNSET,
            run=None, nzbget=nas.nzbget_unlocked, plex=nas.plex_version):
     """Print the report and return the exit status."""
