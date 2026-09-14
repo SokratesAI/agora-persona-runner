@@ -740,10 +740,13 @@ def _capture_board_help(captures):
     out = ["  Board one — python3 -m tools.board_capture --board issue|idea "
            "--index N --priority low|medium|high|immediate "
            "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD "
-           "--milestone '<name>'",
+           "--milestone '<name>' --done-when '<one checkable sentence>'",
            "  --milestone is required, or --no-milestone to board it "
            "ungrouped on purpose: a row under no milestone serves no key "
            "result (issue #227).",
+           "  --done-when is required too, unless the capture already says "
+           "DONE: a row is a task and a task needs a checkable definition of "
+           "done (issue #212).",
            "  It adds the row AND deletes the bullet in the record store, so "
            "the item is in one place; the site redraws his markdown. "
            "Board highest --index first: the indices renumber after each cut."]

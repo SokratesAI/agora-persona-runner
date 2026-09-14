@@ -27,6 +27,8 @@ from agora_runner.nova_boards import DEFAULT_PROJECT, canonical_priority
 from tests.test_board_records import writable
 from tools import board_capture
 from tools.board_capture import (
+    DONE_WHEN_PREFIX,
+    apply_done_when,
     capture_pairs,
     check_captures,
     first_sentence,
@@ -84,8 +86,14 @@ def _run(*args):
     # through `main` directly, never through here -- a helper that supplies
     # the flag cannot also prove the flag is required.
     named = "--milestone" in args or "--no-milestone" in args
+    # Same shape for `--done-when` (issue #212) and the same reason: a test
+    # about the project cell should not have to carry a definition of done,
+    # and the requirement itself is proved through `main` directly below.
+    stated = "--done-when" in args
     return main(["--board", "idea", "--dated", "09-10",
-                 *([] if named else ["--no-milestone"]), *args])
+                 *([] if named else ["--no-milestone"]),
+                 *([] if stated else ["--done-when", "the page loads in 1s"]),
+                 *args])
 
 
 # --- the pure half: what a bullet becomes -------------------------------
@@ -472,3 +480,75 @@ def test_the_milestone_is_written_after_the_bullet_is_cut(store):
     names = [name for name, _ in store.calls]
     last_row_write = max(i for i, name in enumerate(names) if name == "write_row")
     assert names.index("delete_capture") < last_row_write
+
+# --- issue #212: a task carries a checkable definition of done ----------
+
+
+def _promoted(status="backlog"):
+    fields, refusal = promote("The journal page is slow.", "high", status,
+                              "09-10")
+    assert refusal is None
+    return fields
+
+
+def test_a_definition_of_done_is_appended_after_his_words():
+    """His text is the write-up verbatim -- `add_row`'s rule -- so the
+    sentence lands after it, where a `**Nova, MM-DD:**` reply lands."""
+    fields, refusal = apply_done_when(_promoted(), "the page loads in 1s")
+    assert refusal is None
+    assert fields["write_up"] == (
+        "The journal page is slow.\n\n"
+        + DONE_WHEN_PREFIX + "the page loads in 1s"
+    )
+
+
+def test_boarding_without_a_definition_of_done_is_refused():
+    fields, refusal = apply_done_when(_promoted(), None)
+    assert fields is None
+    assert "--done-when" in refusal
+
+
+def test_a_blank_definition_of_done_is_refused_like_a_missing_one():
+    """`--done-when ' '` would otherwise satisfy the flag and write a row
+    whose definition of done is an empty line."""
+    fields, refusal = apply_done_when(_promoted(), "   ")
+    assert fields is None
+    assert "--done-when" in refusal
+
+
+def test_a_capture_that_arrived_finished_needs_no_definition_of_done():
+    """Asking when a finished thing will be finished is ceremony. This is
+    the resolved status, not the caller's: a `DONE (Cycle N)` bullet
+    boarded with the default `--status backlog` is what `promote` turns
+    into `done`, and that is the case this carve-out is for."""
+    fields, refusal = promote("DONE (Cycle 900): The slow journal page.",
+                              "high", "backlog", "09-10")
+    assert fields["status"] == "done"
+    fields, refusal = apply_done_when(fields, None)
+    assert refusal is None
+    assert fields["write_up"] == "The slow journal page."
+
+
+def test_the_promoted_fields_are_not_mutated_in_place():
+    """`main` prints from `fields` after this returns; a caller that still
+    holds the pre-call dict must not see the line appear in it."""
+    original = _promoted()
+    fields, _ = apply_done_when(original, "the page loads in 1s")
+    assert original["write_up"] == "The journal page is slow."
+    assert fields is not original
+
+
+def test_main_refuses_a_capture_with_no_definition_of_done(store, capsys):
+    """Through `main` and not `_run`, which injects the flag -- a helper
+    that supplies the flag cannot also prove the flag is required."""
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-10",
+                 "--priority", "high", "--no-milestone"]) == 1
+    assert "--done-when" in capsys.readouterr().err
+    assert store.calls == []
+
+
+def test_the_definition_of_done_reaches_the_row_he_reads(store):
+    assert _run("--index", "0", "--priority", "high",
+                "--done-when", "the landing page opens without the menu") == 0
+    detail = _contents(store)["details"][105]
+    assert DONE_WHEN_PREFIX + "the landing page opens without the menu" in detail
