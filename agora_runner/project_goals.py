@@ -643,8 +643,8 @@ def serves_orphans(serves, sections, keeps=None):
     is here, by `split_orphans`, which never drops one. `keeps` defaults
     to empty so a caller holding only the old column gets the old answer.
     """
-    prunable, awaiting = split_orphans(serves, sections, keeps)
-    return sorted(prunable + awaiting)
+    prunable, finished, awaiting = split_orphans(serves, sections, keeps)
+    return sorted(prunable + finished + awaiting)
 
 
 def project_has_goals_to_serve(project, sections):
@@ -660,8 +660,10 @@ def project_has_goals_to_serve(project, sections):
     return bool(section.get("keyResults") or section.get("kpis"))
 
 
-def split_orphans(serves, sections, keeps=None):
-    """The orphan list, split by *why* the seat is empty -> (prunable, awaiting).
+def split_orphans(serves, sections, keeps=None, rows=None):
+    """The orphan list, split by *why* the seat is empty.
+
+    Returns `(prunable, finished, awaiting)`.
 
     **Same call `serves_orphans` already made once, one level up.** That
     docstring splits an orphan from a seat that names its guardrail,
@@ -684,25 +686,68 @@ def split_orphans(serves, sections, keeps=None):
     a key result cannot move this line; the only thing that moves it is
     goals being written for the project the milestone is under, which is
     exactly when it becomes a question worth asking.
+
+    **`finished` is the same split again, one cause further down.** Rule 4
+    offers two verdicts and both of them assume there is work under the
+    milestone to keep or to drop. Measured Cycle 1568 against the live
+    boards: of the 6 milestones on the pruning list, `agora / operator
+    visibility` carries five rows and **every one of them is closed**, and
+    `marcus / body and progress tracking` carries three, all done. Those are
+    not prioritisation questions -- there is nothing under them to justify --
+    and printed under the same sentence as `nova / seeing the loop work`,
+    which carries three open rows including two 🟠 High, they read as four
+    equal decisions when two of them are free.
+
+    `rows` is the boards, and it is optional for the same reason `keeps`
+    is: a caller holding only the seats file gets the old two-way answer
+    with an empty `finished`. Membership still comes from the seat's own
+    empty cells; the boards only say which of rule 4's verdicts has already
+    been answered by the work itself.
     """
     guardrails = keeps or {}
-    prunable, awaiting = [], []
+    open_counts = _open_rows_by_milestone(rows)
+    prunable, finished, awaiting = [], [], []
     for (project, milestone) in sorted(serves):
         if split_serves(serves[(project, milestone)]):
             continue
         if split_serves(guardrails.get((project, milestone), "")):
             continue
-        if project_has_goals_to_serve(project, sections):
-            prunable.append(
-                f"{project} / {milestone}: serves no key result and keeps "
-                "no KPI -- either keep-the-lights-on work whose guardrail "
-                "has not been written yet, or work nobody can justify")
-        else:
+        if not project_has_goals_to_serve(project, sections):
             awaiting.append(
                 f"{project} / {milestone}: serves no key result and keeps "
                 "no KPI -- and there is none to serve, because no key "
                 "result or KPI is written for this project yet")
-    return prunable, awaiting
+            continue
+        key = ((project or "").strip().lower(), (milestone or "").strip().lower())
+        if rows is not None and not open_counts.get(key):
+            finished.append(
+                f"{project} / {milestone}: serves no key result and keeps "
+                "no KPI -- and no row under it is still open, so there is "
+                "nothing here to keep: retire the milestone")
+        else:
+            prunable.append(
+                f"{project} / {milestone}: serves no key result and keeps "
+                "no KPI -- either keep-the-lights-on work whose guardrail "
+                "has not been written yet, or work nobody can justify")
+    return prunable, finished, awaiting
+
+
+def _open_rows_by_milestone(rows):
+    """`{(project, milestone) lowercased: open row count}`.
+
+    Keyed off the row's own two fields rather than the seats file, because
+    the question is what is still on the boards under that name. A row with
+    no milestone cannot answer it and is dropped; `task_seat_orphans` is
+    what reports those.
+    """
+    counts = {}
+    for row in open_rows(rows):
+        milestone = (row.get("milestone") or "").strip().lower()
+        if not milestone:
+            continue
+        key = ((row.get("project") or "").strip().lower(), milestone)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def objective_periods(sections, today):
