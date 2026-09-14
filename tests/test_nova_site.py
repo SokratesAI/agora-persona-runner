@@ -4929,9 +4929,9 @@ def test_the_plan_page_and_its_endpoint_both_answer():
 
     The second half asserts what a *missing* document does, because it
     is the difference between a page that says "not written yet" and a
-    nav tab that 502s. `plan_markdown` reads two paths through one
-    patched `vault_read_path`, so returning `None` stands in for both
-    files being absent -- the state a fresh vault is in.
+    nav tab that 502s. `plan_markdown` reads every path through one
+    patched `vault_read_path`, so one return value stands in for all of
+    them being absent -- the state a fresh vault is in.
     """
     roadmap = "---\nupdated: 2026-08-16\n---\n\n# Roadmap\n\n## The five I would do next\n\nCI first.\n"
     with patch.object(nova_sources, "vault_read_path", return_value=roadmap):
@@ -4940,7 +4940,8 @@ def test_the_plan_page_and_its_endpoint_both_answer():
         shell_status, _, shell = _get("/plan")
     assert status == 200
     payload = json.loads(body)
-    assert [doc["key"] for doc in payload["documents"]] == ["roadmap", "goals"]
+    assert [doc["key"] for doc in payload["documents"]] == [
+        "roadmap", "goals", "projects"]
     assert payload["documents"][0]["title"] == "Roadmap"
     assert any(
         section["heading"] == "The five I would do next"

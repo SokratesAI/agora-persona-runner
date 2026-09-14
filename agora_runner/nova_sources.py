@@ -363,12 +363,13 @@ def goal_history_json():
 def plan_markdown():
     """`{key: markdown}` for every document on the `/plan` page.
 
-    Two reads rather than one because they are two files with two jobs --
-    `roadmap.md` is the order of what to do next, `goals.md` is what any
-    of it is for -- and they are fetched together so the page is built
-    from one consistent moment rather than from whichever the client
-    asked for first, the same reason `board_markdown` reads its three at
-    once.
+    One read per file rather than one shared read, because each has its
+    own job -- `roadmap.md` is the order of what to do next, `goals.md`
+    is what any of it is for, and `project-goals.md` is what each project
+    is for one at a time -- and they are fetched together so the page is
+    built from one consistent moment rather than from whichever the
+    client asked for first, the same reason `board_markdown` reads its
+    three at once.
 
     A missing file comes back as `""`, which `nova_plan` renders as a
     "not written yet" card. That is the `cost_ledger_json` call rather

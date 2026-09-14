@@ -76,9 +76,12 @@ def _text(section):
     return " ".join(out)
 
 
-def test_both_documents_are_shaped():
+def test_every_document_is_shaped_in_reading_order():
     payload = plan_payload({"roadmap": ROADMAP, "goals": GOALS})
-    assert [d["key"] for d in payload["documents"]] == ["roadmap", "goals"]
+    # `projects` joined these two on 2026-09-14 (issue #227) and is last on
+    # purpose; a fetch that found nothing still gets a card.
+    assert [d["key"] for d in payload["documents"]] == [
+        "roadmap", "goals", "projects"]
     assert _doc(payload, "roadmap")["title"] == "Roadmap"
     assert _doc(payload, "goals")["updated"] == "2026-08-17"
     assert not _doc(payload, "roadmap")["missing"]
@@ -880,3 +883,163 @@ def test_a_status_that_is_not_a_status_is_still_refused_through_the_wrapper():
     from agora_runner.nova_plan import set_status_in_goals
 
     assert set_status_in_goals(GOALS_WITH_BLOCKS, "G1 — one", "settled") is None
+
+
+# --- `project-goals.md` on the same page (issue #227) ---------------------
+
+PROJECT_GOALS = """---
+type: board
+updated: 2026-09-14
+contract: Nova writes this.
+---
+
+# Project goals
+
+Standfirst nothing parses.
+
+## Nova
+
+```objective
+statement: The loop spends its cycles on work you asked for
+status: discussing
+conversation: d62b6aca
+```
+
+```key-result
+id: nova-kr-your-rows
+name: The work closes your rows
+measure: Merged pull requests per board row closed
+now: 5.5
+target: 2.0
+unit: PRs per closed row
+direction: down
+status: proposed
+```
+`now` is measured, as of Cycle 1533.
+
+```kpi
+id: nova-kpi-cost
+name: What a cycle costs
+measure: Weighted tokens per cycle
+now: 1.63
+low: 0.8
+high: 2.0
+unit: M
+```
+"""
+
+
+def _projects_doc(markdown=PROJECT_GOALS):
+    documents = plan_payload({"projects": markdown})["documents"]
+    return [doc for doc in documents if doc["key"] == "projects"][0]
+
+
+def _paragraphs(doc):
+    out = []
+    for section in doc["sections"]:
+        for block in section["blocks"]:
+            out.append("".join(span.get("text", "")
+                               for span in block.get("spans", ())))
+    return out
+
+
+def test_project_goals_is_one_of_the_plan_documents():
+    """It was written to be argued with and reached no screen he owns."""
+    from agora_runner.nova_plan import PLAN_DOCUMENTS
+    from agora_runner.project_goals import PROJECT_GOALS_PATH
+
+    assert ("projects", "Project goals", PROJECT_GOALS_PATH) in PLAN_DOCUMENTS
+    # Every document appears whether or not the fetch found it.
+    keys = [doc["key"] for doc in plan_payload({})["documents"]]
+    assert keys.count("projects") == 1
+    assert plan_payload({})["documents"][keys.index("projects")]["missing"]
+
+
+def test_every_fence_becomes_prose_and_none_survives_as_a_code_block():
+    """A fence left in the text renders as a code block on his phone, which
+    is the Obsidian view this page exists to replace."""
+    doc = _projects_doc()
+
+    assert "```" not in PROJECT_GOALS.replace("```", "") + "".join(_paragraphs(doc))
+    assert not any("statement:" in text for text in _paragraphs(doc))
+    assert [section["heading"] for section in doc["sections"]] == [None, "Nova"]
+
+
+def test_a_block_renders_where_it_stood_not_gathered_at_the_top():
+    """The note explaining where a number came from sits directly under its
+    own block, so order is the only thing tying the two together."""
+    texts = _paragraphs(_projects_doc())
+    key_result = next(i for i, t in enumerate(texts) if "The work closes your rows" in t)
+    note = next(i for i, t in enumerate(texts) if "as of Cycle 1533" in t)
+    objective = next(i for i, t in enumerate(texts) if t.startswith("Objective"))
+    kpi = next(i for i, t in enumerate(texts) if t.startswith("KPI"))
+    assert objective < key_result < note < kpi
+    # And the note is its own paragraph rather than merged into the block
+    # above it, which is what happens without the blank line either side.
+    assert texts[note].startswith("now")
+
+
+def test_a_key_result_carries_its_status_word_and_its_bounds_in_words():
+    texts = _paragraphs(_projects_doc())
+    key_result = next(t for t in texts if "The work closes your rows" in t)
+    assert "Now 5.5 PRs per closed row." in key_result
+    assert "Target 2.0 PRs per closed row." in key_result
+    assert "Lower is better." in key_result
+    objective = next(t for t in texts if t.startswith("Objective"))
+    assert objective.startswith("Objective — discussing.")
+    assert "d62b6aca" in objective
+    kpi = next(t for t in texts if t.startswith("KPI"))
+    assert "In bounds 0.8 to 2.0 M." in kpi
+
+
+def test_a_kpi_never_prints_a_target_even_when_the_document_carries_one():
+    """Issue #227's own rule: a guardrail that carries a target gets
+    optimised instead of the work. `KPI_FIELDS` reads the key in only so
+    `project_goals.problems` can refuse it, so drawing it here would put
+    the forbidden thing on the page."""
+    markdown = PROJECT_GOALS.replace("high: 2.0\n", "high: 2.0\ntarget: 0.9\n")
+    kpi = next(t for t in _paragraphs(_projects_doc(markdown)) if t.startswith("KPI"))
+    assert "0.9" not in kpi
+    assert "Target" not in kpi
+
+
+def test_a_blank_now_reads_as_not_measured_and_never_as_zero():
+    """Four numbers in this document have been deliberately blank because no
+    instrument existed. An unmeasured guardrail and a perfect score must not
+    render the same."""
+    markdown = PROJECT_GOALS.replace("now: 5.5\n", "now:\n").replace("now: 1.63\n", "now:\n")
+    texts = _paragraphs(_projects_doc(markdown))
+    key_result = next(t for t in texts if "The work closes your rows" in t)
+    kpi = next(t for t in texts if t.startswith("KPI"))
+    assert "Not measured yet." in key_result and "Now 0" not in key_result
+    assert "Not measured yet." in kpi and "Now 0" not in kpi
+
+
+def test_a_key_result_never_becomes_a_scoreboard_row_he_can_tap():
+    """A scoreboard row is a control whose tap writes `goals.md` through
+    `set_status_in_goals`. He deleted the approve/decline gate for project
+    goals on 2026-09-13, so a button re-proposing it is worse than none."""
+    doc = _projects_doc()
+    assert doc["scoreboard"] == []
+    assert doc["ranked"] == [] and doc["rankedDone"] == []
+
+
+def test_a_half_written_block_is_put_back_rather_than_swallowed():
+    """`_fenced.abandon`'s measured rule: text disappearing is worse than a
+    stray fence appearing."""
+    from agora_runner.nova_plan import _inline_goal_blocks
+
+    unterminated = "## Nova\n\n```objective\nstatement: half typed\n\n## Marcus\n\nprose\n"
+    assert _inline_goal_blocks(unterminated) == unterminated
+    nameless = "```key-result\nid: x\nnow: 3\n```\n\nafter\n"
+    assert _inline_goal_blocks(nameless) == nameless
+
+
+def test_the_goal_and_next_fences_are_left_for_the_scoreboard():
+    """Two scans over one text, and a bare ``` closes whatever is open --
+    so this one must not touch a fence `_fenced` owns."""
+    from agora_runner.nova_plan import _inline_goal_blocks
+
+    goals = "```goal\nname: G1\nnow: 3\n```\n"
+    assert _inline_goal_blocks(goals) == goals
+    assert plan_payload({"goals": GOALS_WITH_BLOCKS})["documents"][1]["scoreboard"]

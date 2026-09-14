@@ -51,6 +51,9 @@ import re
 from agora_runner.md_sections import outline
 from agora_runner.nova_goal_history import GoalHistoryError, goal_key, series
 from agora_runner.nova_journal import parse_board_refs, render_blocks
+from agora_runner.project_goals import (
+    KEY_RESULT_FIELDS, KPI_FIELDS, OBJECTIVE_FIELDS, PROJECT_GOALS_PATH,
+)
 
 ROADMAP_PATH = "projects/sokrates/projects/nova/roadmap.md"
 GOALS_PATH = "projects/sokrates/projects/nova/goals.md"
@@ -62,6 +65,21 @@ GOALS_PATH = "projects/sokrates/projects/nova/goals.md"
 PLAN_DOCUMENTS = (
     ("roadmap", "Roadmap", ROADMAP_PATH),
     ("goals", "Goals", GOALS_PATH),
+    # `project-goals.md`, issue #227: one objective, its key results and the
+    # project's KPIs, per project. It is last because it is the longest and
+    # the most specific -- the roadmap answers "what next", `goals.md`
+    # answers "what for" across the whole loop, and this answers it one
+    # project at a time.
+    #
+    # **It is here because it repeated, one level down, the exact problem
+    # this module exists to fix.** The docstring above says `roadmap.md` and
+    # `goals.md` "live in his vault and nowhere else, so the one document
+    # whose entire purpose is being argued with is the one he has to open
+    # Obsidian to read". `project-goals.md` is 28KB written to be argued
+    # with -- his 09-13 correction deleted the approval step precisely so
+    # that each objective is settled in conversation instead -- and until
+    # now it reached no screen he owns.
+    ("projects", "Project goals", PROJECT_GOALS_PATH),
 )
 
 _UPDATED_RE = re.compile(r"^updated:[ \t]*(?P<value>.+?)[ \t]*$", re.MULTILINE)
@@ -246,6 +264,198 @@ def _fenced(text, builders):
     if block is not None:
         abandon()
     return rows, "\n".join(kept)
+
+
+
+# `project-goals.md`'s own three fences, turned into prose in place rather
+# than into payload rows. See `_inline_goal_blocks` for why that is the
+# right shape and not a shortcut.
+def _block_fields(lines, allowed):
+    """One fence's body lines -> `{field: value}`, unknown keys dropped.
+
+    The same rule as `_goal` and `_next`: a key outside the set is left out
+    of the row rather than passed through, so a `targt:` typo renders
+    nothing instead of rendering wrong.
+    """
+    row = {}
+    for line in lines:
+        match = _FIELD_RE.match(line)
+        if match and match.group("key") in allowed:
+            row[match.group("key")] = match.group("value").strip()
+    return row
+
+
+def _objective_prose(lines):
+    """A ```objective fence -> one markdown paragraph, or `None`.
+
+    `None` when there is no `statement`, which is the one field the
+    paragraph cannot be written without -- the same call `_goal` makes
+    about a missing `name`. `project_goals.problems` already reports that
+    block as a defect; this module's job is only not to invent a sentence
+    for it.
+
+    The status word travels with the statement because the three words are
+    the whole state of the thing: `discussing` means he and I have not
+    settled it, and an objective printed without it reads as decided.
+    """
+    row = _block_fields(lines, OBJECTIVE_FIELDS)
+    statement = row.get("statement", "")
+    if not statement:
+        return None
+    status = row.get("status", "")
+    head = f"**Objective — {status}.**" if status else "**Objective.**"
+    out = f"{head} {statement}"
+    if not out.endswith("."):
+        out += "."
+    if row.get("conversation"):
+        out += f" Argued out in Agora conversation `{row['conversation']}`."
+    return out
+
+
+def _key_result_prose(lines):
+    """A ```key-result fence -> one markdown paragraph, or `None`.
+
+    **A blank `now:` prints "not measured yet", never a zero.** Four of the
+    numbers in this document are deliberately blank because no instrument
+    exists to take them, and a scoreboard that renders a blank as 0 is the
+    one failure every cycle that built those instruments wrote down: an
+    unmeasured guardrail and a perfect score look identical, and the wrong
+    one looks like the best possible answer.
+    """
+    row = _block_fields(lines, KEY_RESULT_FIELDS)
+    name = row.get("name", "")
+    if not name:
+        return None
+    unit = f" {row['unit']}" if row.get("unit") else ""
+    parts = [f"**Key result — {name}.**"]
+    if row.get("measure"):
+        parts.append(_sentence(row["measure"]))
+    parts.append(f"Now {row['now']}{unit}." if row.get("now")
+                 else "Not measured yet.")
+    if row.get("target"):
+        parts.append(f"Target {row['target']}{unit}.")
+    if row.get("direction") == "down":
+        parts.append("Lower is better.")
+    elif row.get("direction") == "up":
+        parts.append("Higher is better.")
+    if row.get("id"):
+        parts.append(f"`{row['id']}`")
+    return " ".join(parts)
+
+
+def _kpi_prose(lines):
+    """A ```kpi fence -> one markdown paragraph, or `None`.
+
+    **A KPI's `target:` is deliberately never printed.** Issue #227's own
+    rule is that a KPI may never carry one -- *"the moment a guardrail
+    carries a target, the dashboard gets optimised instead of the work"* --
+    so `KPI_FIELDS` reads the key in only so `project_goals.problems` can
+    refuse it. Drawing it here would put the forbidden thing on the page
+    and leave the refusal in a tool nobody but a cycle runs.
+    """
+    row = _block_fields(lines, KPI_FIELDS)
+    name = row.get("name", "")
+    if not name:
+        return None
+    unit = f" {row['unit']}" if row.get("unit") else ""
+    parts = [f"**KPI — {name}.**"]
+    if row.get("measure"):
+        parts.append(_sentence(row["measure"]))
+    parts.append(f"Now {row['now']}{unit}." if row.get("now")
+                 else "Not measured yet.")
+    low, high = row.get("low", ""), row.get("high", "")
+    if low and high:
+        parts.append(f"In bounds {low} to {high}{unit}.")
+    elif high:
+        parts.append(f"Ceiling {high}{unit}.")
+    elif low:
+        parts.append(f"Floor {low}{unit}.")
+    if row.get("id"):
+        parts.append(f"`{row['id']}`")
+    return " ".join(parts)
+
+
+def _sentence(text):
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
+_GOAL_BLOCK_PROSE = {
+    "objective": _objective_prose,
+    "key-result": _key_result_prose,
+    "kpi": _kpi_prose,
+}
+
+
+def _inline_goal_blocks(text):
+    """Turn `project-goals.md`'s fences into prose, where they stand.
+
+    **Why prose and not payload rows, which is the obvious thing to do.**
+    Every field name in a ```key-result fence is `_FIELDS`' own vocabulary,
+    chosen by `project_goals` so "the scoreboard machinery is reused rather
+    than duplicated", so routing them into `scoreboard` costs one line and
+    draws a meter per key result for free. It also draws the meter's
+    *control*: a scoreboard row is a thing he taps to set a goal's status,
+    and that tap writes `goals.md` through `set_status_in_goals`. Pointing
+    it at this document would either write the wrong file or re-grow the
+    approve/decline gate he deleted on 2026-09-13 -- *"I should not have to
+    approve goals. Goals, milestones, kpis and okrs should be derived based
+    on a conversation between you and me"*. A button that re-proposes a
+    thing he struck out is worse than no button.
+
+    So the blocks render as sentences inside the section they already sit
+    in, which needs no new payload field and no new renderer: `/plan`'s
+    page walks `sections` for whatever headings are there, which is the
+    contract the module docstring sets out. The position matters and is
+    kept exactly -- each fence's prose goes where the fence was, under its
+    own `## <Project>` heading and above the paragraph explaining where its
+    number came from.
+
+    A fence this does not own is untouched, including ```goal and ```next,
+    so `_fenced` still sees them. An unterminated or nameless block is put
+    back verbatim, fences and all, for `_fenced.abandon`'s measured reason:
+    a half-written edit should render as a stray code block, never as
+    paragraphs silently disappearing.
+    """
+    kept, block, kind = [], None, None
+    opens = [(name, _fence_open_re(name)) for name in _GOAL_BLOCK_PROSE]
+
+    def opener(line):
+        for name, pattern in opens:
+            if pattern.match(line):
+                return name
+        return None
+
+    def put_back(closed):
+        kept.append("```" + kind)
+        kept.extend(block)
+        if closed:
+            kept.append("```")
+
+    for line in (text or "").split("\n"):
+        found = opener(line)
+        if block is None:
+            if found:
+                block, kind = [], found
+            else:
+                kept.append(line)
+        elif found:
+            put_back(False)
+            block, kind = [], found
+        elif _FENCE_CLOSE_RE.match(line):
+            prose = _GOAL_BLOCK_PROSE[kind](block)
+            if prose is None:
+                put_back(True)
+            else:
+                # Blank lines either side so the paragraph cannot merge
+                # into the note under it -- the file writes that note
+                # directly beneath the closing fence, with no blank line.
+                kept.extend(("", prose, ""))
+            block = None
+        else:
+            block.append(line)
+    if block is not None:
+        put_back(False)
+    return "\n".join(kept)
 
 
 # The three states a roadmap item can be in, and the words for them. The
@@ -501,6 +711,9 @@ def _document(key, label, text, history=None):
     # Before `outline`, so a block sitting under a heading does not have to
     # be found twice, and after the emptiness check, so a missing document
     # is still one branch.
+    # Before `_fenced`, and it owns three fence names `_fenced` does not,
+    # so the two scans cannot fight over a `` ``` `` close.
+    text = _inline_goal_blocks(text)
     blocks, text = _fenced(text, {"goal": _goal, "next": _next})
     scoreboard = _attach_history(blocks["goal"], history)
     ranked, ranked_done = _split_ranked(blocks["next"])
