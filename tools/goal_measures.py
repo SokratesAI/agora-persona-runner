@@ -2019,6 +2019,56 @@ def measure_demos_opened(since, until):
     return round(100.0 * len(opened) / len(rows), 1), detail
 
 
+def measure_demos_no_litter(since, until):
+    """Directory names under the demo root that no running demo claims. A count.
+
+    A demo exists to settle one question and then be thrown away, so the thing
+    worth counting is what survived the answer: files still on disk under
+    `nova_demos.DURABLE_ROOT` with no live registry row pointing at them.
+    `nova_demos.orphan_dirs` already decides that -- `tools.demo list` prints
+    the same set at the bottom of its output -- so this reads the same answer
+    rather than inventing a second one.
+
+    **A retired demo's directory is litter, and that falls out of the data
+    rather than being a rule here.** `nova_demos.retire` keeps three fields on
+    a tombstone and `dir` is deliberately not one of them, so a stopped demo
+    claims no name; `entries()` reads the running rows only. Both halves agree
+    that only a running demo protects a directory.
+
+    **The listing is done here rather than through `tools.demo.durable_dirs`,
+    and that is the whole point of the function.** `durable_dirs` answers `[]`
+    when the root cannot be listed, which is right for a printout that is
+    trying not to crash and wrong for a measure whose target is 0: on any pod
+    without `/data/workspace/demos` it would report a perfectly clean loop from
+    an instrument that never saw a disk. A missing or unreadable root is `None`
+    -- no reading -- because the reading it would otherwise give is the best
+    possible one.
+    """
+    del since, until
+    from agora_runner import nova_demos
+    from tools import demo as demo_tool
+
+    root = nova_demos.DURABLE_ROOT
+    try:
+        names = sorted(n for n in os.listdir(root)
+                       if os.path.isdir(os.path.join(root, n)))
+    except OSError as exc:
+        return None, (f"could not list {root}, so nothing here has seen the "
+                      f"disk this measure is about -- {exc}")
+    try:
+        registry, _rev = demo_tool._read_registry()
+    except Exception as exc:                      # DemoError, or no vault tool
+        return None, (f"could not read the demo registry, so no directory can "
+                      f"be told from a running demo's -- {str(exc)[:160]}")
+    left = nova_demos.orphan_dirs(registry, names)
+    running = len(registry.get("demos", []))
+    detail = (f"{len(left)} of {len(names)} directory/directories under {root} "
+              f"belong to no running demo ({running} running)")
+    if left:
+        detail += ": " + ", ".join(left)
+    return len(left), detail
+
+
 #: The vault folder every research write-up lands in. `identity.md` calls it
 #: "durable write-ups, so no cycle pays for the same investigation twice",
 #: which is the claim `research-kr-reused` exists to check.
@@ -2136,6 +2186,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "maint-kr-supported": measure_maint_supported,
     "maint-kr-pins-current": measure_maint_pins_current,
     "demos-kr-opened": measure_demos_opened,
+    "demos-kr-no-litter": measure_demos_no_litter,
     "research-kr-reused": measure_research_reused,
 }
 
