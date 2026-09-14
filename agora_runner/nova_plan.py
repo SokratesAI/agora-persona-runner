@@ -324,6 +324,14 @@ def _objective_prose(lines, seats=None):
     period = row.get("period", "")
     if period:
         out += f" Covers {month_name(period)}."
+    else:
+        # `objective_periods` already collects this one as `undated` and
+        # `project_goals_check` prints the count, so the defect was known --
+        # to the command line. The page printed a tidy paragraph for it, the
+        # same way it printed one for a key result with no target until
+        # yesterday: the sentence is missing, so nothing on the screen says
+        # anything is. Same words as the check, so the two cannot disagree.
+        out += " No month set."
     if row.get("conversation"):
         out += f" Argued out in Agora conversation `{row['conversation']}`."
     return out
