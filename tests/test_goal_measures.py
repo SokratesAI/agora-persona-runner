@@ -524,6 +524,17 @@ now: 83
 target: 99
 direction: up
 ```
+
+## Nova
+
+```key-result
+id: nova-kr-in-the-app
+name: Everything happens in the Nova app
+measure: Things he still has to leave the app to do
+now: 3
+target: 0
+direction: down
+```
 """
 
 
@@ -590,7 +601,11 @@ def test_marcus_filled_plan_reads_one_and_says_it_is_a_ceiling():
     assert "ceiling" in detail and "demo" in detail
 
 
-def test_marcus_key_results_are_measured_from_the_state_not_from_a_goal():
+def test_marcus_key_results_are_measured_from_the_state_not_from_a_goal(monkeypatch):
+    # `marcus-kr-coach-first-try` is read live off Marcus, so without this the
+    # test tries to open a socket to the pod -- which is the shape of every
+    # "a new fetch makes old tests hit the network" failure.
+    _no_outcomes(monkeypatch)
     state = {"sessions": [{"id": "a", "date": "2026-09-11"}],
              "plan": {"blockName": "No plan yet", "days": []}}
     out = goal_measures.key_result_rows(
@@ -601,13 +616,21 @@ def test_marcus_key_results_are_measured_from_the_state_not_from_a_goal():
     assert by_id["marcus-kr-a-plan-of-his-own"]["value"] == 0
     # The third has no instrument at all, and that is a different sentence
     # from "the state could not be read".
-    third = by_id["marcus-kr-coach-first-try"]
+    #
+    # It used to be `marcus-kr-coach-first-try`, and this test went red the
+    # day that one got an instrument -- which is the point: a fixture standing
+    # in for "the uninstrumented one" has to name an id that can never acquire
+    # an instrument, or closing the gap is what breaks it. `nova-kr-in-the-app`
+    # is a judgement about how the app feels to him and there is nothing on
+    # this box that could ever read it.
+    third = by_id["nova-kr-in-the-app"]
     assert third["value"] is None
     assert "no instrument" in third["detail"]
-    assert "production LLM route" in third["detail"]
+    assert "a judgement about his experience" in third["detail"]
 
 
-def test_an_unread_marcus_state_never_reads_as_having_no_instrument():
+def test_an_unread_marcus_state_never_reads_as_having_no_instrument(monkeypatch):
+    _no_outcomes(monkeypatch)
     # These have opposite fixes: one is a map entry, the other is a pod.
     out = goal_measures.key_result_rows(
         _marcus_sections(), [], marcus=None,
@@ -630,6 +653,7 @@ def test_main_writes_the_marcus_numbers_and_names_a_dead_state_in_the_report(
     goals.write_text(GOALS_FOR_WRITE, encoding="utf-8")
     pg = tmp_path / "project-goals.md"
     pg.write_text(MARCUS_PG_DOC, encoding="utf-8")
+    _no_outcomes(monkeypatch)
     monkeypatch.setattr(gm, "today_oslo", lambda now=None: "2026-09-13")
     monkeypatch.setattr(gm, "fetch_entries", lambda limit, site=None: ([], None))
     monkeypatch.setattr(gm, "fetch_board", lambda name, site=None: ([], None))
@@ -1492,3 +1516,80 @@ def test_every_kpi_in_the_document_now_has_a_measurer():
     later cycle adds a KPI with no measurer, it belongs in that map with its
     reason and this test says so."""
     assert goal_measures.KPI_NO_INSTRUMENT == {}
+
+
+def _no_outcomes(monkeypatch):
+    """Marcus unreachable for the outcomes route, for a test about something else."""
+    monkeypatch.setattr(goal_measures, "fetch_marcus_coach_outcomes",
+                        lambda site=None: (None, "could not read /api/coach/outcomes"))
+
+
+def _outcomes(payload, monkeypatch):
+    """Stub Marcus's `/api/coach/outcomes` with `payload`."""
+    def fake(url, **kwargs):
+        assert url.endswith("/api/coach/outcomes"), url
+        return payload, None
+    monkeypatch.setattr(goal_measures, "_get_json", fake)
+
+
+def test_coach_first_try_is_the_share_marcus_recorded(monkeypatch):
+    _outcomes({"count": 20, "answered": 19, "firstTryPct": 95.0,
+               "newestAt": "2026-09-14T00:11:00.000Z",
+               "byRoute": {"plan-draft": {"count": 12, "answered": 11},
+                           "chat": {"count": 8, "answered": 8}}}, monkeypatch)
+    value, detail = goal_measures.measure_marcus_coach_first_try(None, None)
+    assert value == 95.0
+    # The count travels with the number for `measure_pm_reversals`' reason:
+    # 95% over 20 taps and 95% over 200 are the same number and different
+    # readings.
+    assert "19 of 20 coach call(s)" in detail
+    assert "plan-draft 11/12" in detail and "chat 8/8" in detail
+    assert "unconfigured or metered refusal" in detail
+
+
+def test_coach_first_try_with_no_calls_is_never_written_as_zero(monkeypatch):
+    # 0% says every tap failed. An empty history says nobody has tapped.
+    _outcomes({"count": 0, "answered": 0, "firstTryPct": None,
+               "newestAt": None, "byRoute": {}}, monkeypatch)
+    value, detail = goal_measures.measure_marcus_coach_first_try(None, None)
+    assert value is None
+    assert "no coach call yet" in detail
+    assert "the route is live" in detail
+
+
+def test_coach_first_try_refuses_more_answers_than_calls(monkeypatch):
+    # A share above 100% is not a reading, and taking `firstTryPct` on trust
+    # would write one into the document.
+    _outcomes({"count": 3, "answered": 4, "firstTryPct": 133.3,
+               "newestAt": None, "byRoute": {}}, monkeypatch)
+    value, detail = goal_measures.measure_marcus_coach_first_try(None, None)
+    assert value is None
+    assert "which cannot be" in detail
+
+
+def test_coach_first_try_refuses_a_payload_with_no_count(monkeypatch):
+    _outcomes({"answered": 2, "firstTryPct": 100.0}, monkeypatch)
+    value, detail = goal_measures.measure_marcus_coach_first_try(None, None)
+    assert value is None
+    assert "non-negative integer `count`" in detail
+
+
+def test_coach_first_try_refuses_calls_with_no_share(monkeypatch):
+    _outcomes({"count": 5, "answered": 5, "firstTryPct": "all of them"},
+              monkeypatch)
+    value, detail = goal_measures.measure_marcus_coach_first_try(None, None)
+    assert value is None
+    assert "no numeric `firstTryPct`" in detail
+
+
+def test_coach_first_try_reaches_the_key_result_row(monkeypatch):
+    # The dispatch, not the measurer: a fourth measurer map that `key_result_rows`
+    # does not consult reads as "no instrument" and the row stays blank.
+    _outcomes({"count": 4, "answered": 4, "firstTryPct": 100.0,
+               "newestAt": "2026-09-14T00:11:00.000Z", "byRoute": {}}, monkeypatch)
+    out = goal_measures.key_result_rows(
+        _marcus_sections(), [], marcus={"sessions": [], "plan": {}},
+        since="2026-09-07", until="2026-09-13")
+    row = {r["id"]: r for r in out}["marcus-kr-coach-first-try"]
+    assert row["value"] == 100.0
+    assert "no instrument" not in row["detail"]

@@ -273,6 +273,50 @@ def fetch_marcus_coach_latency(site=MARCUS):
             "newest_at": payload.get("newestAt")}, None
 
 
+def fetch_marcus_coach_outcomes(site=MARCUS):
+    """Marcus's own record of whether each coach tap came back usable.
+
+    `GET /api/coach/outcomes` answers `{count, answered, firstTryPct,
+    newestAt, oldestAt, byRoute}` and never the individual calls. Marcus
+    records one row per call that actually reached the coach, on the volume
+    its state lives on.
+
+    Why this and not a sampling run, which is what this key result's written
+    "no instrument" prescribed: driving the live coach six times measures the
+    six taps this loop just took at 02:00, and the key result is about the
+    taps the owner takes. Same argument as `fetch_marcus_coach_latency`
+    above, and the same server already knew the answer.
+
+    **A call the coach never saw is not in here at all** -- Marcus refuses an
+    unconfigured or metered coach before anything leaves the pod, and counting
+    those would read 0% for a deployment where the coach was asked nothing.
+
+    `None` for an unreachable or malformed answer. `count == 0` comes back as
+    a real reading here and the caller decides what to do with it, which is
+    the same split the latency fetch uses.
+    """
+    payload, error = _get_json(f"{site}/api/coach/outcomes")
+    if error:
+        return None, error
+    payload = payload or {}
+    count = payload.get("count")
+    answered = payload.get("answered")
+    pct = payload.get("firstTryPct")
+    for name, value in (("count", count), ("answered", answered)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None, (f"{site}/api/coach/outcomes answered without a "
+                          f"non-negative integer `{name}`")
+    if answered > count:
+        return None, (f"{site}/api/coach/outcomes reported {answered} "
+                      f"answered of {count} call(s), which cannot be")
+    if count and not isinstance(pct, (int, float)):
+        return None, (f"{site}/api/coach/outcomes reported {count} call(s) "
+                      "with no numeric `firstTryPct`")
+    return {"count": count, "answered": answered, "pct": pct,
+            "newest_at": payload.get("newestAt"),
+            "by_route": payload.get("byRoute") or {}}, None
+
+
 def fetch_merged(repo, since, until, limit=1000):
     """Pull requests on `repo` merged inside the window, as numbers.
 
@@ -733,18 +777,64 @@ KEY_RESULT_DECISION_MEASURERS = {
     "pm-kr-reversals": measure_pm_reversals,
 }
 
+def measure_marcus_coach_first_try(since, until):
+    """Share of coach taps that came back with a usable answer, as a percent.
+
+    A level like the two Marcus KPIs, and it takes and drops the window for
+    the same reason the key-result rows are all called the same way. The
+    window it *does* have is the length of Marcus's own history, which is
+    reported in the detail rather than imposed here: 100% over 1 tap and 100%
+    over 80 are the same number and different readings.
+
+    **No calls yet returns `None`, never 0.** A 0 here says every tap failed,
+    which is the opposite of what an empty history means -- the same trap as
+    `measure_marcus_coach_latency`, and the opposite direction from
+    `measure_marcus_push_subscribers`, where 0 is the real reading.
+
+    "Without a retry" is a fact about the owner rather than about the server,
+    and the equivalence that makes this readable is written in Marcus's own
+    `coach-outcome.ts`: nothing there or in the page retries on his behalf, so
+    one tap is one call and a call that did not answer is a tap he had to take
+    again. If anything ever adds a retry, this measure stops meaning what it
+    says and the detail line below stops being true.
+    """
+    del since, until
+    summary, error = fetch_marcus_coach_outcomes()
+    if error:
+        return None, error
+    count = summary["count"]
+    if count == 0:
+        return None, ("Marcus has recorded no coach call yet, so there is no "
+                      "share to report -- the route is live and the history "
+                      "fills the next time he taps the coach")
+    routes = summary["by_route"]
+    if isinstance(routes, dict) and routes:
+        spread = ", ".join(
+            f"{name} {(r or {}).get('answered')}/{(r or {}).get('count')}"
+            for name, r in sorted(routes.items()))
+    else:
+        spread = "no per-route split reported"
+    newest = summary.get("newest_at") or "an unrecorded time"
+    return summary["pct"], (
+        f"{summary['answered']} of {count} coach call(s) Marcus recorded came "
+        f"back usable ({spread}), newest at {newest}, read live from "
+        "/api/coach/outcomes -- a call the coach never saw, such as an "
+        "unconfigured or metered refusal, is not counted either way")
+
+
+# A key result read live off Marcus over HTTP rather than off any document
+# this loop holds. Its own map for `KEY_RESULT_PR_MEASURERS`' reason and no
+# other: the argument shape is `(since, until)` and nothing else, because the
+# server being asked is the thing that keeps the record.
+KEY_RESULT_FETCH_MEASURERS = {
+    "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
+}
+
 KEY_RESULT_NO_INSTRUMENT = {
     "nova-kr-in-the-app": "counts things the owner still has to leave the Nova "
                           "app to do -- a judgement about his experience, not a "
                           "fact on this box; same reason as G2, which is the "
                           "same measure",
-    "marcus-kr-coach-first-try": "Marcus keeps no record of coach taps or "
-                                 "retries -- /api/state holds the chat but not "
-                                 "whether a tap needed a second one -- so the "
-                                 "only way to read this is to drive the live "
-                                 "coach a number of times and count, which is a "
-                                 "sampling run against a production LLM route "
-                                 "rather than a fact readable off the box",
 }
 
 
@@ -1257,6 +1347,15 @@ def key_result_rows(sections, rows, marcus=None, marcus_error=None,
             pr_measurer = KEY_RESULT_PR_MEASURERS.get(kr_id)
             if pr_measurer is not None:
                 value, detail = pr_measurer(prs, since, until)
+                if value is None:
+                    out.append({**row, "value": None,
+                                "detail": f"not measured — {detail}"})
+                    continue
+                out.append({**row, "value": value, "detail": detail})
+                continue
+            fetch_measurer = KEY_RESULT_FETCH_MEASURERS.get(kr_id)
+            if fetch_measurer is not None:
+                value, detail = fetch_measurer(since, until)
                 if value is None:
                     out.append({**row, "value": None,
                                 "detail": f"not measured — {detail}"})
