@@ -69,7 +69,7 @@ def test_writing_and_watching_are_refused_together():
 
 def test_an_unreadable_document_is_exit_1_and_judges_nothing(monkeypatch, capsys):
     """Not exit 0. A vault it could not reach must never read as clean."""
-    monkeypatch.setattr(goal_drift, "fetch", lambda path: ("", False))
+    monkeypatch.setattr(goal_drift, "fetch", lambda path, rev=None: ("", False))
     called = []
     monkeypatch.setattr("tools.goal_measures.main",
                         lambda argv: called.append(argv) or 0)
@@ -81,7 +81,7 @@ def test_a_missing_optional_document_still_judges_the_rest(monkeypatch):
     """`expectations.md` feeds one key result; losing it must not lose fifteen."""
     from agora_runner.expectations import EXPECTATIONS_PATH
 
-    def fetch(path):
+    def fetch(path, rev=None):
         return ("", False) if path == EXPECTATIONS_PATH else ("# doc\n", True)
 
     monkeypatch.setattr(goal_drift, "fetch", fetch)
@@ -97,19 +97,123 @@ def test_a_missing_optional_document_still_judges_the_rest(monkeypatch):
 
 def test_it_passes_the_measurement_its_own_exit_code(monkeypatch):
     """The verdict is `goal_measures`'s, not a second opinion taken here."""
-    monkeypatch.setattr(goal_drift, "fetch", lambda path: ("# doc\n", True))
+    monkeypatch.setattr(goal_drift, "fetch", lambda path, rev=None: ("# doc\n", True))
     monkeypatch.setattr("tools.goal_measures.main", lambda argv: 2)
     assert goal_drift.main([]) == 2
 
 
-def test_it_never_writes(monkeypatch):
-    """It reports stale numbers; repairing them is a cycle's decision."""
-    monkeypatch.setattr(goal_drift, "fetch", lambda path: ("# doc\n", True))
+def test_it_never_writes_by_default(monkeypatch):
+    """It reports stale numbers; repairing them is an explicit decision."""
+    monkeypatch.setattr(goal_drift, "fetch", lambda path, rev=None: ("# doc\n", True))
     seen = {}
     monkeypatch.setattr("tools.goal_measures.main",
                         _recorder(seen))
     goal_drift.main([])
     assert "--write" not in seen["argv"]
+
+
+def test_the_sweep_never_passes_the_repair_flag():
+    """`preflight` runs this every cycle; the write must stay a cycle typing it."""
+    import inspect
+    from tools import preflight
+    source = inspect.getsource(preflight)
+    assert goal_drift.REPAIR_FLAG not in source
+
+
+def test_no_revision_is_recorded_when_it_is_only_watching(monkeypatch):
+    """A `--rev-file` on a read that will never write is a call for nothing."""
+    revs = []
+    monkeypatch.setattr(goal_drift, "fetch",
+                        lambda path, rev=None: (revs.append(rev), ("# doc\n", True))[1])
+    monkeypatch.setattr("tools.goal_measures.main", _recorder({}))
+    goal_drift.main([])
+    assert revs and all(rev is None for rev in revs)
+
+
+def _repairing(monkeypatch, before, after, writer):
+    """Drive `--repair` over one fake required document. Returns the exit code.
+
+    The measurement is replaced by something that rewrites the local copy the
+    way `goal_measures --write` would, so what is under test is the vault
+    half: the revision guard, the line-count tripwire and the no-op skip.
+    """
+    from agora_runner.nova_plan import GOALS_PATH
+
+    def fetch(path, rev=None):
+        return (before, True) if path == GOALS_PATH else ("# doc\n", True)
+
+    monkeypatch.setattr(goal_drift, "fetch", fetch)
+
+    def measure(argv):
+        assert "--write" in argv
+        local = argv[argv.index("--goals") + 1]
+        open(local, "w", encoding="utf-8").write(after)
+        return 0
+
+    monkeypatch.setattr("tools.goal_measures.main", measure)
+    monkeypatch.setattr(goal_drift, "put", writer)
+    return goal_drift.main(["--repair"])
+
+
+def test_a_repair_writes_the_changed_document_back_under_its_revision(monkeypatch, capsys):
+    """The whole point: the measured number reaches the document he reads."""
+    seen = []
+    code = _repairing(monkeypatch, "now: 6.1\n", "now: 6.6\n",
+                      lambda path, local, rev: seen.append((path, rev)) or None)
+    assert code == 0
+    assert len(seen) == 1, "it wrote a document it had not changed"
+    path, rev = seen[0]
+    assert rev is not None, "written with no if_rev guard -- that is a clobber"
+
+
+def test_a_document_that_already_agrees_is_not_written(monkeypatch, capsys):
+    """A no-op write is a real chance to lose his edit for nothing."""
+    seen = []
+    code = _repairing(monkeypatch, "now: 6.6\n", "now: 6.6\n",
+                      lambda path, local, rev: seen.append(path) or None)
+    assert code == 0
+    assert seen == []
+    assert "already carried every measured number" in capsys.readouterr().out
+
+
+def test_a_repair_that_changed_the_line_count_is_refused(monkeypatch, capsys):
+    """A measurement swaps a value inside a line; anything else is not one."""
+    seen = []
+    code = _repairing(monkeypatch, "now: 6.1\n", "now: 6.6\nnow: 1\n",
+                      lambda path, local, rev: seen.append(path) or None)
+    assert code == 1, "a refused write must not read as a clean repair"
+    assert seen == [], "it wrote a copy it could not account for"
+    assert "line(s) against the" in capsys.readouterr().err
+
+
+def test_a_refused_write_is_exit_1_and_says_which(monkeypatch, capsys):
+    """A 409 from his own edit has to be visible, not swallowed."""
+    code = _repairing(monkeypatch, "now: 6.1\n", "now: 6.6\n",
+                      lambda path, local, rev: "FAILED(conflict)")
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "FAILED(conflict)" in captured.err
+    assert "REPAIRED 0 document(s)" in captured.out
+
+
+def test_nothing_is_written_when_the_measurement_failed(monkeypatch):
+    """A half-taken measurement must not become the scoreboard."""
+    monkeypatch.setattr(goal_drift, "fetch", lambda path, rev=None: ("# doc\n", True))
+    monkeypatch.setattr("tools.goal_measures.main", lambda argv: 1)
+    seen = []
+    monkeypatch.setattr(goal_drift, "put",
+                        lambda path, local, rev: seen.append(path) or None)
+    assert goal_drift.main(["--repair"]) == 1
+    assert seen == []
+
+
+def test_the_repair_never_waives_the_collapse_guard():
+    """`--allow-shrink` on a digit swap could only ever hide a bad read.
+
+    Read off the compiled constants rather than the source, because the
+    source says the words in a comment explaining why they are not passed.
+    """
+    assert "--allow-shrink" not in goal_drift.put.__code__.co_consts
 
 
 def test_it_is_registered_in_the_opening_sweep():
@@ -201,3 +305,16 @@ def test_key_results_get_no_carve_out():
           "detail": "measured"}], "project-goals.md")
     assert "drifted" in crossed
     assert "moved inside its own range" not in crossed
+
+
+def test_the_command_line_reaches_main():
+    """`main()` with no argv drops every flag typed at the shell, in silence.
+
+    That is what happened on the first real `--repair` run: it printed a
+    complete drift report and wrote nothing, because `__main__` called
+    `main()` and the module had never taken a flag before.
+    """
+    import inspect
+    source = inspect.getsource(goal_drift)
+    tail = source[source.index('if __name__ == "__main__":'):]
+    assert "main(sys.argv[1:])" in tail, "the shell's arguments never reach main"
