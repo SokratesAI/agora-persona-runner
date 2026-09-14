@@ -1185,6 +1185,118 @@ def measure_marcus_coach_latency(since, until):
                      "/api/coach/latency")
 
 
+def measure_nova_unfixed_advisories(since, until):
+    """Security advisories across the org whose fix is not on main yet.
+
+    Asks `tools.security_alerts` rather than counting again, the same call
+    `measure_nova_silent_cycles` makes against `cycle_postmortem`: that module
+    already enumerates every non-archived repo in every org a checkout names,
+    folds in the org-level view a per-repo read cannot see, and -- the part
+    that is genuinely hard -- checks each open alert's patched version against
+    the lockfile on the default branch, so an alert GitHub has not re-scanned
+    since the fix merged is not counted as work.
+
+    A level rather than a rate, so it takes and drops the window: an advisory
+    is open now or it is not, and averaging that over 24h answers nothing.
+
+    **This is a floor and says so, because `Dependabot disabled` is not zero
+    alerts.** `SokratesAI/platform-config` and `SokratesAI/vault` both have it
+    switched off today, and a repo that cannot be asked is no instrument
+    rather than a clean answer. Returning `None` whenever any repo is
+    unreadable would leave this guardrail permanently blank over a state
+    nobody is going to change, so the count is over the repos that answered
+    and the detail names how many did not. What does return `None` is a sweep
+    that could not build its own repo list at all -- then the denominator is
+    unknown too, and a floor over an unknown set is not a reading.
+    """
+    del since, until
+    from tools import security_alerts
+
+    repos, _unplaceable, _notes, incomplete = security_alerts._repos_to_sweep()
+    if incomplete or not repos:
+        return None, ("could not enumerate the repos to sweep, so there is no "
+                      "set to count over -- `python3 -m tools.security_alerts` "
+                      "prints why")
+    results = {repo: security_alerts.alerts_for(repo) for repo in repos}
+    org_views = {org: security_alerts.org_alerts(org)
+                 for org in security_alerts._orgs_from_workspace()}
+    security_alerts.fold_in_org_only(results, org_views)
+    security_alerts.verify_landed(results)
+
+    actionable, unreadable = [], []
+    for repo, (state, payload) in sorted(results.items()):
+        if state != security_alerts.OK:
+            unreadable.append(repo)
+            continue
+        for alert in payload:
+            if not security_alerts._still_counts(alert):
+                continue
+            if alert.get("landed"):
+                continue
+            actionable.append(f"{repo} {alert['package']} ({alert['severity']})")
+    detail = (f"{len(actionable)} advisory(ies) with no fix on the default "
+              f"branch, across {len(results) - len(unreadable)} of "
+              f"{len(results)} repo(s)")
+    if actionable:
+        detail += " (" + ", ".join(actionable[:6])
+        detail += ", ..." if len(actionable) > 6 else ""
+        detail += ")"
+    if unreadable:
+        detail += (f"; a floor, not a total -- {len(unreadable)} repo(s) could "
+                   f"not be asked ({', '.join(unreadable)})")
+    return len(actionable), detail
+
+
+def measure_nova_markdown_board_readers(since, until):
+    """Modules that still parse board markdown instead of the record store.
+
+    The guardrail under `Board store and growth`, and it is a **ratchet**: this
+    number may fall and must never rise. Issue #203 put a record store beside
+    his two boards and the switchover is unfinished, so for as long as both
+    exist the live risk is a *new* reader being written against the markdown --
+    which costs nothing today and has to be undone later, by somebody who was
+    not here. `tools.board_reader_inventory` already answers this exactly, gate
+    and vetoes included, so this asks it rather than re-deriving the scan, the
+    same call `measure_nova_silent_cycles` makes against `cycle_postmortem`.
+
+    A level, so it takes and drops the window.
+
+    **Why this is a KPI and not a key result, since the number's whole story is
+    that it should reach zero.** Rule 4 of issue #227 says a KPI carries a
+    range and never a target, and the honest range here is `0..<today's
+    count>`: finishing #203 is a milestone with its own definition of done, and
+    what no milestone can catch is the twelfth module appearing while the
+    eleven are still there. The ceiling is the reading taken the day this was
+    written, declared once, in the document -- nothing here may move it, for
+    the reason `set_field_in_kpi` only writes `now`.
+
+    `include_tests=False` on purpose: a test that parses markdown is testing
+    the parser, and counting it would make the gate unclearable while
+    `parse_board` still has tests, which it must until it is deleted.
+    """
+    del since, until
+    from tools import board_reader_inventory
+
+    found, _refs, unreadable, untokenized, mine, vetoed = \
+        board_reader_inventory.scan(include_tests=False)
+    if unreadable or untokenized:
+        return None, (f"{len(unreadable) + len(untokenized)} file(s) could not "
+                      "be read or tokenized, so this count is over an unknown "
+                      "set -- `python3 -m tools.board_reader_inventory` says "
+                      "which")
+    names = sorted(found)
+    detail = (f"{len(names)} module(s) still parse board markdown "
+              f"({', '.join(names[:8])}" + (", ..." if len(names) > 8 else "")
+              + "); a ratchet, so it may fall and must never rise")
+    if mine:
+        detail += (f"; {len(mine)} reader(s) of Nova's own documents rather "
+                   "than his boards are counted separately by the inventory "
+                   "and not here")
+    if vetoed:
+        detail += f"; {len(vetoed)} vetoed"
+    return len(names), detail
+
+
 KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
     "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
@@ -1192,6 +1304,8 @@ KPI_MEASURERS = {
     "pm-kpi-deprecations": measure_pm_deprecations,
     "marcus-kpi-push-subscribers": measure_marcus_push_subscribers,
     "marcus-kpi-coach-latency": measure_marcus_coach_latency,
+    "nova-kpi-unfixed-advisories": measure_nova_unfixed_advisories,
+    "nova-kpi-markdown-board-readers": measure_nova_markdown_board_readers,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
