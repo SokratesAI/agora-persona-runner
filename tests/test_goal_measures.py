@@ -2857,3 +2857,92 @@ class TestResearchReused:
     def test_research_reused_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["research-kr-reused"] is \
             gm.measure_research_reused
+
+
+class TestInfraOutlivesTheBox:
+    """The share of preflight's checks that survive the box they run on.
+
+    The measure reads `tools.preflight`'s own `SUBJECT` labels, so the tests
+    swap that registry rather than a fixture of their own -- a test that built
+    its own label map would pass on a build where `SUBJECT` is never consulted.
+    """
+
+    def _roster(self, monkeypatch, subject):
+        from tools import preflight
+        monkeypatch.setattr(preflight, "CHECKS", tuple(subject))
+        monkeypatch.setattr(preflight, "SUBJECT",
+                            {n: (where, n) for n, where in subject.items()})
+
+    def test_it_is_the_off_box_share_of_the_whole_roster(self, monkeypatch):
+        self._roster(monkeypatch, {
+            "nas_health": "off-box", "open_prs": "off-box",
+            "alerts": "on-box", "oom_history": "on-box",
+        })
+        value, detail = gm.measure_infra_outlives_the_box(None, None)
+        assert value == 50.0
+        assert "2 of 4" in detail
+        assert "nas_health, open_prs" in detail
+
+    def test_it_ignores_the_cadence_that_decides_a_sweep(self, monkeypatch):
+        # The hand-typed 23 was 8 of 35 because a sweep runs only the checks
+        # whose subject can have moved. The roster is 69. A measure that moved
+        # with the time of day would be reporting the scheduler, not the
+        # monitoring estate, so CADENCE_HOURS must not reach this number.
+        from tools import preflight
+        self._roster(monkeypatch, {
+            "nas_health": "off-box", "alerts": "on-box", "oom_history": "on-box",
+        })
+        monkeypatch.setattr(preflight, "CADENCE_HOURS", {"nas_health": 168.0})
+        first, _ = gm.measure_infra_outlives_the_box(None, None)
+        monkeypatch.setattr(preflight, "CADENCE_HOURS", {})
+        second, _ = gm.measure_infra_outlives_the_box(None, None)
+        assert first == second == round(100 / 3, 1)
+
+    def test_an_unlabelled_check_gets_no_reading_rather_than_a_side(
+            self, monkeypatch):
+        from tools import preflight
+        self._roster(monkeypatch, {
+            "nas_health": "off-box", "alerts": "on-box",
+        })
+        monkeypatch.setattr(preflight, "CHECKS",
+                            ("nas_health", "alerts", "brand_new"))
+        value, detail = gm.measure_infra_outlives_the_box(None, None)
+        assert value is None
+        assert "brand_new" in detail
+        assert "no SUBJECT label" in detail
+
+    def test_a_label_that_is_neither_side_gets_no_reading(self, monkeypatch):
+        self._roster(monkeypatch, {
+            "nas_health": "off-box", "alerts": "maybe",
+        })
+        value, detail = gm.measure_infra_outlives_the_box(None, None)
+        assert value is None
+        assert "alerts" in detail
+        assert "neither on-box nor off-box" in detail
+
+    def test_an_empty_roster_is_no_reading_and_not_zero(self, monkeypatch):
+        self._roster(monkeypatch, {})
+        value, detail = gm.measure_infra_outlives_the_box(None, None)
+        assert value is None
+        assert "no check at all" in detail
+
+    def test_the_detail_says_the_number_is_a_floor(self, monkeypatch):
+        # nova-deadman is the one instrument that reported the 2026-09-01
+        # outage and it is not in this roster, so the share understates the
+        # off-box monitoring that exists.
+        self._roster(monkeypatch, {"nas_health": "off-box", "alerts": "on-box"})
+        _value, detail = gm.measure_infra_outlives_the_box(None, None)
+        assert "floor" in detail
+        assert "nova-deadman" in detail
+
+    def test_the_live_roster_is_fully_labelled_and_answers(self):
+        # Against the real preflight, not a fixture: preflight refuses to run
+        # with an unlabelled check, so this measure must never be the thing
+        # that discovers one.
+        value, detail = gm.measure_infra_outlives_the_box(None, None)
+        assert value is not None, detail
+        assert 0 <= value <= 100
+
+    def test_outlives_the_box_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["infra-kr-outlives-the-box"] is \
+            gm.measure_infra_outlives_the_box

@@ -2069,6 +2069,68 @@ def measure_demos_no_litter(since, until):
     return len(left), detail
 
 
+def measure_infra_outlives_the_box(since, until):
+    """Share of this loop's automated checks that would still answer if server1 died.
+
+    `tools.preflight` already carries the judgement, one line per check, in
+    `SUBJECT`: `off-box` means the subject lives somewhere else -- GitHub, the
+    NAS, endoflife.date -- so the check keeps answering while the box is dark,
+    and `on-box` means it dies with what it watches. That label was written
+    against a criterion in prose (*would this still report if the thing it
+    watches failed completely?*), so this reads the labels rather than
+    re-deciding them; a second opinion here would be a second answer to one
+    question.
+
+    **The denominator is the whole `CHECKS` roster, not the checks due this
+    sweep, and that is the correction this instrument exists to make.** The
+    hand-typed 23 in `project-goals.md` was 8 of 35, taken off one morning's
+    printout -- but `CADENCE_HOURS` means a sweep runs only the checks whose
+    subject can have moved, so 35 was that hour's subset of a 69-check roster.
+    A share over it swings with the time of day and with whatever failed last
+    sweep, neither of which is a fact about whether monitoring survives the
+    box. Over the roster the number is stable and it is higher: 20 of 69.
+
+    A check in `CHECKS` with no `SUBJECT` entry returns no reading at all.
+    Calling it on-box would quietly depress the share and calling it off-box
+    would inflate it, and preflight itself refuses to run in that state
+    (`NO SUBJECT LABEL ... refusing to run`), so the honest answer here is the
+    same refusal rather than a number taken over a roster I cannot label.
+
+    **This counts preflight's roster and nothing else, so it is a floor.**
+    `nova-deadman` runs on GitHub Actions, reports exactly this failure, and is
+    deliberately not in the sweep -- it is the one instrument that spoke on
+    2026-09-01 -- so an off-box monitor built outside preflight does not move
+    this number. The detail says so, because the share's scope is the roster it
+    was taken over.
+    """
+    del since, until
+    from tools import preflight
+
+    roster = list(preflight.CHECKS)
+    if not roster:
+        return None, ("tools.preflight lists no check at all, so there is no "
+                      "roster to take a share over")
+    unlabelled = [n for n in roster if n not in preflight.SUBJECT]
+    if unlabelled:
+        return None, (f"{len(unlabelled)} check(s) carry no SUBJECT label "
+                      f"({', '.join(sorted(unlabelled)[:8])}), so they belong "
+                      "to neither half of the share -- preflight refuses to "
+                      "run in this state and so does this measure")
+    off = sorted(n for n in roster if preflight.SUBJECT[n][0] == "off-box")
+    on = sorted(n for n in roster if preflight.SUBJECT[n][0] == "on-box")
+    odd = [n for n in roster if preflight.SUBJECT[n][0] not in ("off-box", "on-box")]
+    if odd:
+        return None, (f"{len(odd)} check(s) carry a SUBJECT label that is "
+                      f"neither on-box nor off-box ({', '.join(sorted(odd)[:8])})")
+    detail = (f"{len(off)} of {len(roster)} check(s) in tools.preflight watch "
+              f"something off this box and {len(on)} run on the box they "
+              f"watch; taken over the whole roster, not the subset due this "
+              f"sweep. Off-box: {', '.join(off)}. A floor -- nova-deadman "
+              f"reports this same failure from GitHub Actions and is not in "
+              f"the roster, so it is counted on neither side")
+    return round(100.0 * len(off) / len(roster), 1), detail
+
+
 #: The vault folder every research write-up lands in. `identity.md` calls it
 #: "durable write-ups, so no cycle pays for the same investigation twice",
 #: which is the claim `research-kr-reused` exists to check.
@@ -2188,6 +2250,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "demos-kr-opened": measure_demos_opened,
     "demos-kr-no-litter": measure_demos_no_litter,
     "research-kr-reused": measure_research_reused,
+    "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
 }
 
 
