@@ -2546,9 +2546,9 @@ def measure_nas_services_down(since, until):
 #: never that it is up.
 _WA_WORKLOAD_KINDS = "deploy,statefulset,daemonset"
 
-#: The token a workload's name has to carry to be the WhatsApp bridge, and the
-#: names that carry it without being it. A substring match is right here and a
-#: token match is not: the repository is `whatsapp-bridge` and a deployment of
+#: The word a workload's name has to carry to be the WhatsApp bridge, and the
+#: names that carry it without being it. It is matched as a substring rather
+#: than as a whole name: the repository is `whatsapp-bridge` and a deployment of
 #: it could reasonably be called `whatsapp`, `whatsapp-bridge` or
 #: `whatsapp-bridge-web`, and none of those is a name I get to choose.
 _WA_NAME_NEEDLE = "whatsapp"
