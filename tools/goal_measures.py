@@ -2536,6 +2536,125 @@ def measure_nas_services_down(since, until):
                   "SSH hop")
 
 
+#: The workload kinds a long-lived service can run as, for
+#: `measure_wa_reaches_you`. **A CronJob is deliberately not one of them.**
+#: `whatsapp-auth-backup` is a CronJob in `agents` that mounts the bridge's own
+#: `infra/whatsapp-bridge-auth` claim every two hours, and its Pods are the only
+#: thing in this cluster whose name carries the word today -- so a kind list
+#: that admitted CronJobs would find the *backup of* the bridge and report the
+#: bridge as running. A backup of a thing is evidence the thing once existed,
+#: never that it is up.
+_WA_WORKLOAD_KINDS = "deploy,statefulset,daemonset"
+
+#: The token a workload's name has to carry to be the WhatsApp bridge, and the
+#: names that carry it without being it. A substring match is right here and a
+#: token match is not: the repository is `whatsapp-bridge` and a deployment of
+#: it could reasonably be called `whatsapp`, `whatsapp-bridge` or
+#: `whatsapp-bridge-web`, and none of those is a name I get to choose.
+_WA_NAME_NEEDLE = "whatsapp"
+_WA_NOT_THE_BRIDGE = ("whatsapp-auth-backup",)
+
+
+def _ready_replicas(item):
+    """How many Pods of one workload document are ready, across all three kinds.
+
+    A Deployment and a StatefulSet report `status.readyReplicas`; a DaemonSet
+    reports `status.numberReady` and has no `readyReplicas` at all. Reading only
+    the first field would score a perfectly healthy DaemonSet as zero ready,
+    which on this measure is the difference between "the path is down" and "the
+    path is up and I cannot read the share".
+    """
+    status = item.get("status") or {}
+    for field in ("readyReplicas", "numberReady"):
+        value = status.get(field)
+        if isinstance(value, int) and value > 0:
+            return value
+    return 0
+
+
+def measure_wa_reaches_you(since, until):
+    """Share of alerts needing an answer that reach his phone over WhatsApp.
+
+    Reads the cluster, not a document. The value this can prove is **0**, and
+    the reason it is worth an instrument anyway is that 0 here is not a guess:
+    if no workload in this cluster runs the bridge, there is no path for an
+    alert to travel, so nothing can have been delivered over it. That was a
+    hand count taken at 17:28 Oslo on 2026-09-14 off `tools.disk_health`
+    noticing the bridge's auth claim was mounted by no Pod; this asks the
+    cluster directly instead, cluster-wide rather than in one namespace,
+    because a bridge somebody starts in `infra` next week is as real as one in
+    `agents`.
+
+    **The branch that must never report 0 is the one where the bridge is up.**
+    Nothing in this loop records which alerts needed an answer, so the moment a
+    ready replica exists this returns no reading and says why. That is the
+    opposite of the usual guard in this module -- `measure_nas_unattended`
+    refuses a 0 it could not measure because 0 is its *target* -- and it points
+    the same way: this measure's target is 100 and its worst value is 0, so the
+    lie available here is reading 0 forever after the bridge starts working.
+    An unreadable cluster is no reading too, for the ordinary reason.
+    """
+    del since, until
+    try:
+        done = subprocess.run(["kubectl", "get", _WA_WORKLOAD_KINDS,
+                               "-A", "-o", "json"],
+                              capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl could not list the cluster's workloads: {exc}"
+    if done.returncode != 0:
+        blob = (done.stderr or done.stdout or "").strip()
+        first = blob.splitlines()[0] if blob else "exited %d" % done.returncode
+        return None, f"kubectl could not list the cluster's workloads: {first}"
+    try:
+        body = json.loads(done.stdout)
+    except ValueError as exc:
+        return None, f"kubectl returned something that is not JSON: {exc}"
+    items = body.get("items")
+    if not items:
+        return None, ("kubectl reports no Deployment, StatefulSet or DaemonSet "
+                      "anywhere in this cluster, which is no instrument rather "
+                      "than an empty cluster")
+
+    namespaces = set()
+    bridges = []
+    for item in items:
+        meta = item.get("metadata") or {}
+        name = (meta.get("name") or "").strip()
+        namespace = (meta.get("namespace") or "").strip()
+        if not name:
+            continue
+        namespaces.add(namespace)
+        if _WA_NAME_NEEDLE not in name.lower():
+            continue
+        if name in _WA_NOT_THE_BRIDGE:
+            continue
+        bridges.append((namespace, name, _ready_replicas(item)))
+
+    scope = (f"judged {len(items)} workload(s) across {len(namespaces)} "
+             f"namespace(s), every Deployment, StatefulSet and DaemonSet in "
+             f"the cluster")
+    if not bridges:
+        return 0.0, ("no workload in this cluster runs the WhatsApp bridge, so "
+                     "there is no path an alert could travel and the share is a "
+                     f"real 0 rather than unknown -- {scope}; the CronJob that "
+                     "backs up the bridge's auth claim is deliberately not "
+                     "counted as the bridge")
+
+    bridges.sort()
+    ready = [one for one in bridges if one[2] > 0]
+    named = ", ".join(f"{ns}/{name} ({count} ready)"
+                      for ns, name, count in bridges)
+    if not ready:
+        return 0.0, (f"the WhatsApp bridge exists but no replica of it is "
+                     f"ready ({named}), so nothing can be delivered over it "
+                     f"and the share is a real 0 -- {scope}")
+    return None, (f"the WhatsApp bridge is up ({named}), so the path exists -- "
+                  "but nothing here records which alerts needed an answer or "
+                  "which of them were delivered, so the share cannot be read; "
+                  "this deliberately reports no number rather than the 0 that "
+                  "was true while the bridge was down")
+
+
 def measure_infra_ci_minutes(since, until):
     """Billable GitHub Actions minutes this org has used this month. A level.
 
@@ -3069,6 +3188,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "agora-kr-chat-basics": measure_agora_chat_basics,
     "post-kr-editor": measure_post_editor,
     "post-kr-readership": measure_post_readership,
+    "wa-kr-reaches-you": measure_wa_reaches_you,
 }
 
 
