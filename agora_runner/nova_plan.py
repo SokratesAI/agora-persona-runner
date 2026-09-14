@@ -56,7 +56,7 @@ from agora_runner.nova_goal_history import GoalHistoryError, goal_key, series
 from agora_runner.nova_journal import parse_board_refs, render_blocks
 from agora_runner.project_goals import (
     KEY_RESULT_FIELDS, KPI_FIELDS, OBJECTIVE_FIELDS, PROJECT_GOALS_PATH,
-    month_name, split_serves,
+    kpi_breach, month_name, split_serves,
 )
 
 ROADMAP_PATH = "projects/sokrates/projects/nova/roadmap.md"
@@ -389,6 +389,16 @@ def _kpi_prose(lines, seats=None):
     so `KPI_FIELDS` reads the key in only so `project_goals.problems` can
     refuse it. Drawing it here would put the forbidden thing on the page
     and leave the refusal in a tool nobody but a cycle runs.
+
+    **The bounds sentence used to be the end of it, and that is the half that
+    was missing.** This paragraph printed *"Now 6."* and *"In bounds 0 to 1."*
+    one after the other and left the subtraction to the reader -- so a
+    guardrail breached six times over rendered exactly like one being held.
+    `kpi_breach` is the comparison, and it is bold because a KPI out of its
+    range is the one thing on this page that is asking for something to be
+    done. A KPI with no `now`, or a `now` nothing can read as a number, says
+    nothing here rather than guessing: unmeasured and in-bounds are not the
+    same state.
     """
     row = _block_fields(lines, KPI_FIELDS)
     name = row.get("name", "")
@@ -407,6 +417,9 @@ def _kpi_prose(lines, seats=None):
         parts.append(f"Ceiling {high}{unit}.")
     elif low:
         parts.append(f"Floor {low}{unit}.")
+    breach = kpi_breach(row)
+    if breach:
+        parts.append(f"**Out of bounds: {breach}.**")
     parts.extend(_seat_sentence(seats, "kept", row.get("id", "")))
     if row.get("id"):
         parts.append(f"`{row['id']}`")

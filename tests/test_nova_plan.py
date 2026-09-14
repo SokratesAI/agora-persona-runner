@@ -1248,3 +1248,29 @@ def test_a_name_with_a_comma_in_it_still_reads_as_one_sentence():
     assert out.startswith(
         "**Key result (discussing) — The work closes your rows, "
         "not my own plumbing.**")
+
+
+def test_a_kpi_outside_its_range_says_so_in_bold_on_the_page():
+    """The page printed "Now 6." and "In bounds 0 to 1." in adjacent
+    sentences and never said the two disagree, so a guardrail breached six
+    times over rendered exactly like one being held."""
+    markdown = PROJECT_GOALS.replace("now: 1.63\n", "now: 6.0\n")
+    kpi = next(t for t in _paragraphs(_projects_doc(markdown))
+               if t.startswith("KPI"))
+    assert "In bounds 0.8 to 2.0 M." in kpi
+    assert "Out of bounds: 6.0 M is above the ceiling of 2.0 M." in kpi
+
+
+def test_a_kpi_inside_its_range_draws_no_out_of_bounds_sentence():
+    kpi = next(t for t in _paragraphs(_projects_doc()) if t.startswith("KPI"))
+    assert "Out of bounds" not in kpi
+
+
+def test_a_kpi_with_no_reading_is_never_drawn_as_out_of_bounds():
+    """"Not measured yet." already says the honest thing; adding a breach
+    beside it would turn a missing instrument into a finding."""
+    markdown = PROJECT_GOALS.replace("now: 1.63\n", "")
+    kpi = next(t for t in _paragraphs(_projects_doc(markdown))
+               if t.startswith("KPI"))
+    assert "Not measured yet." in kpi
+    assert "Out of bounds" not in kpi

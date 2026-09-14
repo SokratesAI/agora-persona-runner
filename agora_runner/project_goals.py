@@ -387,6 +387,79 @@ def problems(markdown_or_sections):
     return found
 
 
+def _number(value):
+    """`"6"` -> `6.0`; anything that is not one number -> `None`.
+
+    A `now` of `not measured`, a blank, or `1.6M` is not a reading this can
+    compare, and the honest answer to "is it in bounds" for all three is that
+    nobody knows. `kpi_breach` returns `None` for those rather than guessing,
+    which is the same call `_seat_sentence` makes on a seats file it could not
+    read: unmeasured and in-bounds are not the same state.
+    """
+    try:
+        return float((value or "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def kpi_breach(row):
+    """One KPI fence -> the sentence saying it is out of its range, or `None`.
+
+    **This is the only thing in the model that reads a KPI's own numbers
+    against each other.** Issue #227 defines a KPI as *"health numbers with a
+    range rather than a target, for the things that must stay in bounds while
+    the work happens"* -- so a range that nothing ever compares the current
+    value to is decoration. `problems()` refuses a KPI with no range and a KPI
+    carrying a target; neither of those notices a KPI sitting outside the
+    range it does have. `/plan` printed both numbers in adjacent sentences --
+    *"Now 6."* and *"In bounds 0 to 1."* -- and left the comparison to whoever
+    was reading, which on a phone is nobody.
+
+    Measured on the live document the day this was written: ten KPIs, and
+    `nova-kpi-silent-cycles` reads 6 against a ceiling of 1. That guardrail
+    had been breached six times over and no tool, page or check said a word.
+
+    Returns the phrase rather than a boolean so the check and the page say the
+    same sentence -- `"6 is above the ceiling of 1"` -- and a reader never has
+    to hold two wordings for one finding.
+    """
+    now = _number(row.get("now"))
+    if now is None:
+        return None
+    unit = row.get("unit", "").strip()
+    unit = f" {unit}" if unit else ""
+    high = _number(row.get("high"))
+    if high is not None and now > high:
+        return (f"{row.get('now', '').strip()}{unit} is above the ceiling "
+                f"of {row.get('high', '').strip()}{unit}")
+    low = _number(row.get("low"))
+    if low is not None and now < low:
+        return (f"{row.get('now', '').strip()}{unit} is below the floor "
+                f"of {row.get('low', '').strip()}{unit}")
+    return None
+
+
+def kpi_breaches(sections):
+    """Every KPI outside its own range, as report lines.
+
+    An inventory rather than a model defect, the same call `split_orphans`
+    makes: the document is well formed and the *system* is out of bounds, so
+    this is a reading to act on rather than a file to fix. It is what a
+    guardrail is for, and until it existed the range was written down and
+    never read.
+    """
+    out = []
+    for section in sections.values():
+        name = section.get("project", "")
+        for row in section.get("kpis", ()):
+            breach = kpi_breach(row)
+            if breach:
+                label = row.get("id", "").strip() or row.get(
+                    "name", "").strip()
+                out.append(f"{name} / {label}: {breach}")
+    return out
+
+
 def key_result_ids(sections):
     """`{lowercased id: project}` over every key result. `Serves` resolves here."""
     out = {}

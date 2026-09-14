@@ -50,6 +50,16 @@ that does have goals are the pruning signal, and printed as one block of
 36 with the split beside it -- so this narrows what to read, never what
 is reported.
 
+**A KPI out of its own range is a section of its own, and it does not
+raise.** Issue #227 defines a KPI as a health number *"with a range rather
+than a target, for the things that must stay in bounds while the work
+happens"* -- and nothing here compared the current value to those bounds
+until cycle 1565, so the range was written down and never read. It is an
+inventory rather than a defect for `split_orphans`'s reason: the document is
+well formed and the *system* is out of bounds, which is a reading to act on
+rather than a file to fix. Measured against the live document the day it
+landed: one breach, `nova-kpi-silent-cycles` at 6 against a ceiling of 1.
+
 **The pointers are checked in both directions.** `Serves`/`Keeps` are read
 from the seat outwards -- an id that resolves to nothing is a defect, and a
 seat naming nothing at all is the orphan list above. `unpointed_goals` reads
@@ -83,7 +93,7 @@ from agora_runner.nova_boards import (
     MILESTONE_SEATS_PATH, parse_milestone_keeps, parse_milestone_serves,
 )
 from agora_runner.project_goals import (
-    PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, parse_project_goals, problems,
+    PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, kpi_breaches, parse_project_goals, problems,
     keeps_problems, serves_problems, split_orphans,
     task_seat_orphans,
     unpointed_goals,
@@ -135,6 +145,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     unplaced = [] if rows is None else task_seat_orphans(rows)
     past, undated = objective_periods(
         sections, today or datetime.date.today())
+    breaches = kpi_breaches(sections)
     defects = found + broken + unseated
     lines = ["BROKEN" if defects else "MODEL HOLDS"]
     for line in defects:
@@ -161,6 +172,14 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "goals side, an inventory rather than a defect, so it does not "
             "raise:")
         for line in unpointed:
+            lines.append(f"  {line}")
+    if breaches:
+        lines.append(
+            f"KPIS OUT OF BOUNDS ({len(breaches)}) -- a guardrail is a range "
+            "the system has to stay inside, and these do not. An inventory "
+            "rather than a defect, so it does not raise: the document is "
+            "well formed and the number is the finding:")
+        for line in breaches:
             lines.append(f"  {line}")
     if past:
         lines.append(
@@ -195,6 +214,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                     f"{len(awaiting)} awaiting project goals)"
                     if orphans else "") + ", "
                  f"{len(unpointed)} unpointed goal(s), "
+                 f"{len(breaches)} KPI(s) out of bounds, "
                  f"{len(past)} objective(s) past their month, "
                  f"{len(undated)} undated, "
                  + ("tasks not read"

@@ -55,6 +55,7 @@ def test_a_linked_milestone_is_clean():
                      "whether this month's goal is this month's",
                      "1 project section(s), 1 seated milestone(s), "
                      "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
+                     "0 KPI(s) out of bounds, "
                      "0 objective(s) past their month, 1 undated, "
                      "0 unplaced task(s)"]
 
@@ -409,3 +410,59 @@ def test_the_month_check_reads_the_caller_s_clock_not_the_box_s():
     assert [l for l in report(goals, SEATS, rows=[row(1)],
                               today=datetime.date(2026, 10, 1))[0]
             if l.startswith("PAST THEIR MONTH")]
+
+
+def _kpi(**fields):
+    body = "".join(f"{k.replace('_', '-')}: {v}\n" for k, v in fields.items())
+    return GOALS.replace(
+        "```kpi\nid: nova-cost\nname: c\nmeasure: m\nhigh: 2\n```\n",
+        f"```kpi\nid: nova-cost\nname: c\nmeasure: m\n{body}```\n")
+
+
+def test_a_kpi_outside_its_range_is_listed_but_does_not_raise():
+    """Issue #227 defines a KPI as a number that has to stay in bounds, and
+    nothing in the model compared the two until now. It is an inventory
+    rather than a defect: the document is well formed and the system is out
+    of bounds, which is a reading to act on rather than a file to fix."""
+    lines, code = report(_kpi(now=6, high=1), SEATS, rows=[])
+    assert code == 0
+    assert lines[0] == "MODEL HOLDS"
+    heading = next(t for t in lines if t.startswith("KPIS OUT OF BOUNDS"))
+    assert heading.startswith("KPIS OUT OF BOUNDS (1)")
+    assert "  Nova / nova-cost: 6 is above the ceiling of 1" in lines
+    assert lines[-1].count("1 KPI(s) out of bounds") == 1
+
+
+def test_a_kpi_below_its_floor_is_a_breach_too():
+    lines, _ = report(_kpi(now=0, low=1), SEATS, rows=[])
+    assert "  Nova / nova-cost: 0 is below the floor of 1" in lines
+
+
+def test_a_kpi_inside_its_range_says_nothing_and_the_summary_counts_zero():
+    lines, code = report(_kpi(now=1, low=0, high=2), SEATS, rows=[])
+    assert code == 0
+    assert not [t for t in lines if t.startswith("KPIS OUT OF BOUNDS")]
+    assert "0 KPI(s) out of bounds" in lines[-1]
+
+
+def test_a_value_on_the_bound_is_in_bounds():
+    """A ratchet KPI is written with `high` equal to the reading taken the day
+    it was declared -- `nova-kpi-markdown-board-readers` is 11 against a
+    ceiling of 11 -- so a `>=` here would report every ratchet as breached on
+    the day it was written."""
+    lines, _ = report(_kpi(now=11, low=0, high=11), SEATS, rows=[])
+    assert not [t for t in lines if t.startswith("KPIS OUT OF BOUNDS")]
+
+
+def test_a_kpi_with_no_reading_is_not_reported_as_in_bounds_or_out():
+    """Four goals in the live document carry no number because no instrument
+    exists yet. Unmeasured and in-bounds are not the same state, and reading a
+    blank as 0 would put every unmeasured KPI with a floor on the list."""
+    for now in ("", "not measured"):
+        lines, _ = report(_kpi(now=now, low=1, high=2), SEATS, rows=[])
+        assert not [t for t in lines if t.startswith("KPIS OUT OF BOUNDS")]
+
+
+def test_the_breach_line_carries_the_unit_the_owner_reads():
+    lines, _ = report(_kpi(now=3.4, high=2.0, unit="M"), SEATS, rows=[])
+    assert "  Nova / nova-cost: 3.4 M is above the ceiling of 2.0 M" in lines
