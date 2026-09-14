@@ -3059,13 +3059,13 @@ class TestDocsCoversWhatRuns:
         assert value is None
         assert "no markdown under docs/" in detail
 
-    def test_the_live_pair_answers(self):
-        # Against the real cluster and the real repo: the two halves of this
-        # measure are a kubectl read and a tarball read, and a fixture cannot
-        # tell me either one still works.
-        value, detail = gm.measure_docs_covers_what_runs(None, None)
-        assert value is not None, detail
-        assert 0 <= value <= 100
+    # There is deliberately no test here that runs the real measure against the
+    # real cluster and the real docs repo, and the reason is this file's own
+    # conftest: it blocks the network so that "local green" and "CI green" mean
+    # the same thing. Both halves of this measure are *subprocesses* -- kubectl
+    # and gh -- so they walk straight past that block, which is how such a test
+    # passed on this box and failed in CI, where there is no cluster. The live
+    # reading is a measurement a cycle takes and writes down, not an assertion.
 
     def test_covers_what_runs_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["docs-kr-covers-what-runs"] is \
