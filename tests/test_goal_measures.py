@@ -3296,6 +3296,129 @@ class TestNasUnattended:
             gm.measure_nas_unattended
 
 
+
+class TestAgoraChatBasics:
+    """`agora-kr-chat-basics` -- controls he asked for that are still missing.
+
+    The target is 0 and the direction is down, so a low count is the good
+    reading. Every test here is a way of arriving at a low one without having
+    looked, plus the one judgement the measure carries -- the exclusion -- in
+    both directions.
+    """
+
+    MILESTONE = "Chat basics he asked for"
+
+    def _boards(self, monkeypatch, issues, ideas=(), errors=None):
+        errors = errors or {}
+        boards = {"issues": list(issues), "ideas": list(ideas)}
+
+        def fetch_board(name, site=None):
+            if name in errors:
+                return [], errors[name]
+            return boards[name], None
+
+        monkeypatch.setattr(gm, "fetch_board", fetch_board)
+
+    def _row(self, number, milestone=None, status_key="backlog"):
+        return {"number": number,
+                "milestone": self.MILESTONE if milestone is None else milestone,
+                "statusKey": status_key, "done": False}
+
+    def test_it_counts_open_rows_under_the_milestone(self, monkeypatch):
+        self._boards(monkeypatch, [self._row(n) for n in
+                                   (136, 137, 138, 141, 142, 143)])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value == 6, detail
+        assert "6 of 6" in detail
+        assert "#136" in detail and "#143" in detail
+
+    def test_the_breakage_is_not_counted_as_a_missing_control(self,
+                                                              monkeypatch):
+        # Issue #205 is a chat that stopped responding, not a control he
+        # asked for. Folding it in lets fixing a crash read as answering an
+        # ask.
+        self._boards(monkeypatch, [self._row(205), self._row(136)])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value == 1, detail
+        assert "1 of 2" in detail
+        assert "#205" in detail and "not counted" in detail
+        assert "#136" in detail
+
+    def test_the_exclusion_is_silent_when_that_row_is_closed(self,
+                                                             monkeypatch):
+        # A closed #205 falls out with every other closed row; the detail
+        # should not claim it was excluded, because it was not open to begin
+        # with.
+        self._boards(monkeypatch,
+                     [self._row(205, status_key="done"), self._row(136)])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value == 1, detail
+        assert "deliberately not counted" not in detail
+        assert "1 more are done or outdated" in detail
+
+    def test_a_done_row_is_not_open_even_though_its_done_field_is_false(
+            self, monkeypatch):
+        # Every row the site serves carries `done: false`, including the ones
+        # marked `✅ Done`.
+        self._boards(monkeypatch, [
+            self._row(136, status_key="done"),
+            self._row(137, status_key="outdated"),
+            self._row(138),
+        ])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value == 1, detail
+        assert "2 more are done or outdated" in detail
+
+    def test_a_blocked_row_still_counts_as_missing(self, monkeypatch):
+        # Who it waits on changes who fixes it, not whether he has it.
+        self._boards(monkeypatch,
+                     [self._row(136, status_key="blocked-on-edvard")])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value == 1, detail
+
+    def test_it_reads_the_ideas_board_as_well(self, monkeypatch):
+        # The hand count this replaces was taken off the issues board alone.
+        self._boards(monkeypatch, [self._row(136)],
+                     ideas=[self._row(300)])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value == 2, detail
+
+    def test_a_row_under_another_milestone_does_not_count(self, monkeypatch):
+        self._boards(monkeypatch, [
+            self._row(94, milestone="Retire what nothing uses"),
+            self._row(136),
+        ])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value == 1, detail
+
+    def test_an_unreadable_board_gets_no_reading(self, monkeypatch):
+        # Half a sweep undercounts a count whose target is zero.
+        self._boards(monkeypatch, [self._row(136)],
+                     errors={"ideas": "could not read the site: refused"})
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value is None
+        assert "half a sweep" in detail
+        assert "refused" in detail
+
+    def test_no_row_under_the_milestone_gets_no_reading(self, monkeypatch):
+        # A renamed milestone reads as every control having been built.
+        self._boards(monkeypatch,
+                     [self._row(94, milestone="Retire what nothing uses")])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value is None
+        assert "renamed milestone" in detail
+
+    def test_every_row_closed_is_a_real_zero(self, monkeypatch):
+        self._boards(monkeypatch, [self._row(136, status_key="done")])
+        value, detail = gm.measure_agora_chat_basics(None, None)
+        assert value == 0, detail
+        assert "0 of 0" in detail
+
+    def test_chat_basics_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["agora-kr-chat-basics"] is \
+            gm.measure_agora_chat_basics
+
+
 class TestMaintSelfDocumenting:
     """`maint-kr-self-documenting` -- does a merge update a repo's own docs?
 
