@@ -1742,3 +1742,37 @@ def test_no_restart_reaps_a_rolled_demo_the_old_way(tmp_path):
                       lambda *a, **kw: pytest.fail("nothing to restart")):
         assert demo_cli.cmd_reap(_args(idle=None, no_restart=True)) == 0
     assert state["registry"]["demos"] == []
+
+
+def test_stopping_a_demo_keeps_whether_it_was_ever_opened():
+    # `demos-kr-opened` asks for the share of demos handed over that he
+    # opened at least once, and the evidence used to be thrown away at the
+    # moment the question became answerable: `opened_at` lived on the row,
+    # and `stop` popped the row.
+    registry = load("")
+    register(registry, "alpha", "10.42.0.84", "/tmp/a")
+    register(registry, "beta", "10.42.0.84", "/tmp/b")
+    nova_demos.mark_opened(registry, "alpha")
+
+    nova_demos.unregister(registry, "alpha")
+    nova_demos.unregister(registry, "beta")
+
+    retired = {row["slug"]: row for row in registry[nova_demos.RETIRED]}
+    assert set(retired) == {"alpha", "beta"}
+    assert retired["alpha"][nova_demos.OPENED_AT]
+    assert retired["beta"][nova_demos.OPENED_AT] is None
+    # A tombstone answers one question and carries nothing that describes a
+    # process which no longer exists.
+    assert set(retired["alpha"]) == {"slug", "started_at", nova_demos.OPENED_AT}
+
+
+def test_a_demo_that_never_started_leaves_no_tombstone():
+    # `tools.demo start` rolls its own registration back when the dev server
+    # dies two seconds in. That demo was never handed to anyone, and counting
+    # it as one he did not open would read a crash as disinterest.
+    registry = load("")
+    register(registry, "alpha", "10.42.0.84", "/tmp/a")
+
+    nova_demos.unregister(registry, "alpha", retire_row=False)
+
+    assert registry.get(nova_demos.RETIRED, []) == []

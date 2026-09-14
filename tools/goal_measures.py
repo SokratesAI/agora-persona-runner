@@ -1971,6 +1971,54 @@ def measure_maint_pins_current(since, until):
     return len(behind), detail
 
 
+def measure_demos_opened(since, until):
+    """Share of demos handed over that a person opened at least once. A share.
+
+    Reads the demo registry -- the same vault document `tools.demo` allocates
+    ports in -- and counts the rows carrying `opened_at`, which `nova_site`
+    writes the first time a real browser asks for `/demo/<slug>/`. A headless
+    probe is deliberately not an open there, so this counts people rather than
+    monitors.
+
+    **Both halves of the registry count.** A demo that is still running has a
+    row under `demos`; one that has been stopped has a tombstone under
+    `retired`, added by `nova_demos.unregister`. Counting only the live rows
+    would answer "of the demos running right now", which is a question about
+    this afternoon rather than about whether the hand-over works.
+
+    **It is a floor on the truth and the detail says so.** Two kinds of row
+    can never carry the mark: one started before Cycle 608 shipped the durable
+    `opened_at`, and one retired before Cycle 1585 started keeping tombstones.
+    Neither is distinguishable from a demo he ignored, so this reads low by as
+    many as there are of them and climbs toward the honest number as the old
+    rows age out.
+
+    `None` when the registry could not be read or holds no demo at all: a
+    share over nothing is not 0%, and 0% here is the worst reading this key
+    result has.
+    """
+    del since, until
+    from agora_runner.nova_demos import OPENED_AT, RETIRED
+    from tools import demo as demo_tool
+
+    try:
+        registry, _rev = demo_tool._read_registry()
+    except Exception as exc:                      # DemoError, or no vault tool
+        return None, (f"could not read the demo registry, so there is no set "
+                      f"to judge over -- {str(exc)[:160]}")
+    rows = list(registry.get("demos", [])) + list(registry.get(RETIRED, []))
+    if not rows:
+        return None, ("the demo registry holds no demo, running or retired, "
+                      "so there is no share to take")
+    opened = [r for r in rows if r.get(OPENED_AT)]
+    live = len(registry.get("demos", []))
+    detail = (f"{len(opened)} of {len(rows)} demo(s) carry a durable open mark "
+              f"({live} running, {len(rows) - live} retired); a floor, not a "
+              f"total -- a row started before the mark existed, or retired "
+              f"before this loop kept tombstones, cannot carry one")
+    return round(100.0 * len(opened) / len(rows), 1), detail
+
+
 # A key result whose measurer goes and reads its subject itself, rather than
 # being handed a document this loop already holds. Its own map for
 # `KEY_RESULT_PR_MEASURERS`' reason and no other: **the argument shape is
@@ -1985,6 +2033,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
     "maint-kr-supported": measure_maint_supported,
     "maint-kr-pins-current": measure_maint_pins_current,
+    "demos-kr-opened": measure_demos_opened,
 }
 
 
