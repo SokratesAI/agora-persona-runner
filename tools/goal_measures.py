@@ -249,8 +249,8 @@ def fetch_marcus_coach_latency(site=MARCUS):
     for a week was that timing the coach meant driving the coach, which is a
     synthetic request measured on an idle pod at 02:00 -- and it spends a real
     model call to learn a number Marcus already had. The server is the process
-    that does the waiting, so the honest reading is the one it took on Edvard's
-    own taps.
+    that does the waiting, so the honest reading is the one it took on the
+    owner's own taps.
 
     `None` for an unreachable or malformed answer, and `count == 0` is
     *also* returned as `None` by the caller rather than as a duration: no taps
