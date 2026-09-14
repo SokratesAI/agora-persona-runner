@@ -52,11 +52,13 @@ either pod and holds no credentials.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
 import subprocess
 import sys
+import yaml
 import statistics
 import urllib.error
 import urllib.request
@@ -1932,6 +1934,244 @@ def measure_docs_covers_what_runs(since, until):
     return round(100.0 * len(covered) / len(workloads), 1), detail
 
 
+#: The org `maint-kr-self-documenting` sweeps. The key result asks about "non-
+#: config repos", which is a claim about this org and nowhere else.
+SELF_DOCUMENTING_ORG = "SokratesAI"
+
+#: Repos left out of `maint-kr-self-documenting`'s denominator, and why for
+#: each one. This is a judgement, in the same shape and for the same reason as
+#: `DOCUMENTED_NAMESPACES`: nothing on a GitHub repo carries a label saying
+#: "this is configuration", so the line has to be drawn here where it can be
+#: argued with, and the detail line prints every name it dropped.
+#:
+#: Two classes, and both are the key result's own words rather than a wider
+#: net. **Configuration** is the `-config` repos ArgoCD syncs plus
+#: `platform-config` -- the key result says "non-config repos" in as many
+#: words. **A synced mirror** is a repo whose commits are made by a sync job
+#: rather than by a pull request: there is no merge for documentation to
+#: follow, so leaving them in would put a denominator under a target of 100%
+#: that can never be reached, which is a measure nobody can ever finish.
+#:
+#: Archived repos are dropped separately and by `repos_in_org`, because a
+#: read-only repo cannot take a workflow at all.
+SELF_DOCUMENTING_OUT_OF_SCOPE = {
+    "SokratesAI/agora-claude-bridge-config": "configuration",
+    "SokratesAI/agora-config": "configuration",
+    "SokratesAI/agora-persona-runner-config": "configuration",
+    "SokratesAI/marcus-config": "configuration",
+    "SokratesAI/sokrates-docs-config": "configuration",
+    "SokratesAI/platform-config": "configuration",
+    "SokratesAI/.claude": "a synced mirror",
+    "SokratesAI/capabilities": "a synced mirror",
+    "SokratesAI/dropbox": "a synced mirror",
+    "SokratesAI/marcus-backup": "a synced mirror",
+    "SokratesAI/session-store": "a synced mirror",
+    "SokratesAI/vault": "a synced mirror",
+}
+
+#: Branch names that mean "the default branch" when a `push:` trigger names
+#: its branches. Read off the trigger rather than asked of the API for one
+#: call per repo: every repo in this org defaults to `main`, and a workflow
+#: that fires on a push to some other branch is not answering "when a pull
+#: request merges" either way.
+_DEFAULT_BRANCH_NAMES = frozenset({"main", "master"})
+
+
+def _trigger_block(document):
+    """The parsed `on:` mapping of a workflow, or `None`.
+
+    **The key is not the string `on`.** PyYAML resolves an unquoted `on` with
+    the YAML 1.1 boolean rules, so `on:` at the top of every GitHub workflow
+    ever written parses as the key `True`. Asking for `document["on"]` reads
+    `None` on every file and the measure would report that nothing in the org
+    has any trigger at all -- a clean, confident zero off an instrument that
+    never looked.
+    """
+    if not isinstance(document, dict):
+        return None
+    for key in (True, "on"):
+        block = document.get(key)
+        if isinstance(block, dict):
+            return block
+        if isinstance(block, list):
+            return {name: None for name in block}
+        if isinstance(block, str):
+            return {block: None}
+    return None
+
+
+def fires_on_merge(triggers):
+    """Does this `on:` block fire when a pull request merges into the default branch?
+
+    Two shapes count and they are the two GitHub offers. A `push` to the
+    default branch is what a squash merge produces, and it is how every
+    `build.yaml` in this org is already wired. A `pull_request` with `closed`
+    in its `types` is the other -- it fires on a close as well as a merge, so
+    it is a superset, and a superset is the right side to err on for a
+    trigger check whose job is to not miss a real one.
+
+    A `push` with no `branches:` key fires on every branch, which includes the
+    default one, so it counts.
+    """
+    if not isinstance(triggers, dict):
+        return False
+    if "push" in triggers:
+        block = triggers.get("push")
+        if not isinstance(block, dict) or "branches" not in block:
+            return True
+        branches = block.get("branches")
+        if isinstance(branches, str):
+            branches = [branches]
+        if isinstance(branches, list) and any(
+                str(name).strip() in _DEFAULT_BRANCH_NAMES for name in branches):
+            return True
+    if "pull_request" in triggers:
+        block = triggers.get("pull_request")
+        types = block.get("types") if isinstance(block, dict) else None
+        if isinstance(types, str):
+            types = [types]
+        if isinstance(types, list) and any(
+                str(name).strip() == "closed" for name in types):
+            return True
+    return False
+
+
+#: The bare name of the docs repo, as a workflow in another repo would spell
+#: it -- `SokratesAI/sokrates-docs` in a checkout step, `sokrates-docs` in a
+#: `gh` call. The bare name matches both.
+_DOCS_REPO_NAME = "sokrates-docs"
+
+#: A path under `docs/`, at the start of a token so `my-docs/` and a URL's
+#: `/docs/` page reference do not count. `\S` keeps it to one path segment's
+#: worth of characters.
+_DOCS_PATH = re.compile(r"(?<![\w./-])docs/\S+")
+
+
+def writes_documentation(jobs):
+    """The signal in a workflow's `jobs:` that it writes documentation, or `None`.
+
+    **Only the `jobs:` half of the file is scanned, and that is the load-
+    bearing part.** A `paths: [docs/**]` filter lives under `on:` and means
+    the workflow *reacts* to a docs change -- the opposite of writing one --
+    so a whole-file grep for `docs/` counts every workflow that ignores docs
+    as one that maintains them. Splitting the file at `jobs:` removes that
+    class of false positive by construction rather than by a list of
+    exceptions.
+
+    Two signals, both of them a destination rather than a name. Naming
+    `sokrates-docs` is a workflow pushing its documentation to the site's
+    repo. A `docs/` path is a workflow writing pages into its own tree. A
+    workflow's *name* is deliberately not a signal: "docs" in a job name is
+    the substring guess that read 8 of 18 for `docs-kr-covers-what-runs`
+    where the honest answer was 1.
+
+    This reads what a workflow declares, not what it did. A job that names the
+    docs repo and then does nothing counts here, and that is the known ceiling
+    on this measure -- it is a claim about wiring, which is what the key result
+    asks about ("updates itself when a pull request merges"), and it will read
+    high rather than low if one is ever wired and left broken.
+    """
+    if jobs is None:
+        return None
+    try:
+        text = yaml.safe_dump(jobs, default_flow_style=False)
+    except yaml.YAMLError:
+        return None
+    if _DOCS_REPO_NAME in text:
+        return _DOCS_REPO_NAME
+    match = _DOCS_PATH.search(text)
+    return match.group(0) if match else None
+
+
+def judge_self_documenting(workflows):
+    """`(signal, why)` for one repo's workflows -- does a merge update its docs?
+
+    `workflows` is `{path: text}` for that repo's `.github/workflows/`.
+    Returns the winning `(path, signal)` pair when one qualifies and `None`
+    when none does. A repo with no workflows at all is a real "no", not a
+    failed read: nothing runs on a merge there, so nothing can document it.
+
+    gh-aw source files are `.md` and are deliberately not in `workflows` --
+    the caller asks for YAML only. gh-aw compiles the source to a
+    `.lock.yml` beside it and only the compiled file has an `on:` GitHub
+    reads, so judging the source would judge a file that never runs.
+    """
+    for path in sorted(workflows):
+        try:
+            document = yaml.safe_load(workflows[path])
+        except yaml.YAMLError:
+            continue
+        if not fires_on_merge(_trigger_block(document)):
+            continue
+        signal = writes_documentation(
+            document.get("jobs") if isinstance(document, dict) else None)
+        if signal:
+            return path, signal
+    return None
+
+
+def measure_maint_self_documenting(since, until, fetch=None, list_repos=None):
+    """Share of non-config repos whose documentation updates itself on a merge.
+
+    `now` on this key result was blank -- it printed as `no instrument`, and
+    the document said in as many words that the honest answer was "somewhere
+    between 0 and 1 of 26 repos and I have not built the counter that decides
+    which". This is that counter.
+
+    One `gh api tarball` per repo, the same read `docs-kr-covers-what-runs`
+    makes of the docs repo, fanned out because twenty of them serially is
+    twenty seconds of a check that already takes forty.
+
+    **A repo that could not be read returns `None` for the whole measure
+    rather than dropping out of the denominator.** Every excluded repo would
+    raise the share, and this is a number whose job is to be low until
+    somebody fixes it.
+    """
+    del since, until
+    from tools import running_images, security_alerts
+
+    fetch = fetch or running_images.fetch_manifests
+    list_repos = list_repos or security_alerts.repos_in_org
+    live, error, archived = list_repos(SELF_DOCUMENTING_ORG)
+    if error:
+        return None, f"could not list {SELF_DOCUMENTING_ORG}'s repos: {error}"
+    scope = [name for name in live if name not in SELF_DOCUMENTING_OUT_OF_SCOPE]
+    if not scope:
+        return None, (f"{SELF_DOCUMENTING_ORG} answered with no in-scope repo at "
+                      "all, which is a failed read rather than an empty org")
+
+    def read(repo):
+        files, why = fetch(repo=repo, suffixes=(".yml", ".yaml"))
+        if why:
+            return repo, None, why
+        return repo, {path: text for path, text in files.items()
+                      if path.startswith(".github/workflows/")}, None
+
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for repo, workflows, why in pool.map(read, scope):
+            if why:
+                return None, f"could not read {repo}'s workflows: {why}"
+            results[repo] = workflows
+
+    documenting = []
+    for repo in scope:
+        verdict = judge_self_documenting(results[repo])
+        if verdict:
+            documenting.append((repo, verdict[0], verdict[1]))
+    named = ", ".join(f"{repo} ({path} names {signal})"
+                      for repo, path, signal in documenting) or "none"
+    dropped = sorted(name for name in live if name in SELF_DOCUMENTING_OUT_OF_SCOPE)
+    detail = (f"{len(documenting)} of {len(scope)} non-config repo(s) in "
+              f"{SELF_DOCUMENTING_ORG} carry a workflow that both fires on a "
+              f"merge to the default branch and writes documentation: {named}. "
+              f"Out of scope: {len(dropped)} config or synced-mirror repo(s) "
+              f"({', '.join(dropped) or 'none'}) and {len(archived)} archived. "
+              "A workflow's name is not a signal -- only a destination is, "
+              "either the docs repo or a docs/ path it writes")
+    return round(100.0 * len(documenting) / len(scope), 1), detail
+
+
 def measure_post_volume(since, until):
     """Articles the Post printed per day, over the seven complete days to yesterday.
 
@@ -2597,6 +2837,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
     "docs-kr-sync-alive": measure_docs_sync_alive,
     "nas-kr-unattended": measure_nas_unattended,
+    "maint-kr-self-documenting": measure_maint_self_documenting,
 }
 
 
