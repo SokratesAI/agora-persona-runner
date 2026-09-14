@@ -495,6 +495,31 @@ def _as_number(text):
         return None
 
 
+def has_drifted(written, value):
+    """Does a measured value disagree with the number written in the document?
+
+    One definition, used by all three renderers and by `--exit-on-drift`, so
+    a report that says "drifted" and a status that says "clean" cannot
+    disagree. That is the same reason `key_result_rows` reads its number out
+    of the goals measurement rather than recomputing it: two derivations of
+    one fact drift apart the first time one of them is edited.
+
+    `value is None` is **not** drift. It means the measurer had nothing to
+    report -- no instrument at all, or an instrument whose history is still
+    empty -- and the written number is then the last honest reading rather
+    than a stale one. Raising on it would make every unbuildable instrument
+    permanently red, which is the trap `serves_orphans` had to be split out
+    of to get into `tools.preflight`.
+
+    A written value that is not a number at all *is* drift: a `now:` that
+    says nothing while the instrument answers is exactly the blank this was
+    built to fill.
+    """
+    if value is None:
+        return False
+    return _as_number(written) != _as_number(value)
+
+
 def render(rows, since, until, problems):
     lines = [f"GOAL MEASURES — {since} to {until} (Oslo dates on the journal, UTC on merges)"]
     for row in rows:
@@ -507,11 +532,10 @@ def render(rows, since, until, problems):
             continue
         shown = f"{value}{unit and ' ' + unit}"
         drift = ""
-        a, b = _as_number(written), _as_number(value)
-        if a is None:
-            drift = "  <- goals.md carries no number"
-        elif a != b:
-            drift = f"  <- goals.md says {written}, drifted"
+        if has_drifted(written, value):
+            drift = ("  <- goals.md carries no number"
+                     if _as_number(written) is None
+                     else f"  <- goals.md says {written}, drifted")
         lines.append(f"  {key}  {goal['name']}")
         lines.append(f"      measured {shown}{drift}")
         lines.append(f"      {detail}")
@@ -1437,8 +1461,8 @@ def render_kpis(rows, path):
         low = str(row["kpi"].get("low", "")).strip()
         high = str(row["kpi"].get("high", "")).strip()
         bounds = f"  [{low or '-'}..{high or '-'}]"
-        drift = "" if _as_number(written) == _as_number(row["value"]) else \
-            f"  <- the document says {written or '(blank)'}, drifted"
+        drift = (f"  <- the document says {written or '(blank)'}, drifted"
+                 if has_drifted(written, row["value"]) else "")
         lines.append(f"      measured {row['value']}{bounds}{drift}")
         lines.append(f"      {row['detail']}")
     return "\n".join(lines)
@@ -1589,8 +1613,8 @@ def render_key_results(kr_rows, path):
         if row["value"] is None:
             lines.append(f"      {path} says now: {written or '(blank)'} — {row['detail']}")
             continue
-        drift = "" if _as_number(written) == _as_number(row["value"]) else \
-            f"  <- the document says {written or '(blank)'}, drifted"
+        drift = (f"  <- the document says {written or '(blank)'}, drifted"
+                 if has_drifted(written, row["value"]) else "")
         lines.append(f"      measured {row['value']}{drift}")
         lines.append(f"      {row['detail']}")
     return "\n".join(lines)
@@ -1661,7 +1685,18 @@ def main(argv=None):
     parser.add_argument("--write", action="store_true",
                         help="write each measured value into the --goals file's "
                              "own `now:` field, in place (default: report only)")
+    parser.add_argument("--exit-on-drift", action="store_true",
+                        help="exit 2 when any written `now:` disagrees with its "
+                             "instrument, and end the report with a one-line "
+                             "count (default: report only, always exit 0)")
     args = parser.parse_args(argv)
+
+    if args.exit_on_drift and args.write:
+        # A repairer and a watcher are opposite jobs on one document: --write
+        # makes the drift go away, so a status taken after it would always be
+        # clean and would say nothing was ever stale.
+        parser.error("--exit-on-drift and --write are opposites: one repairs "
+                     "the drift, the other reports it")
 
     until = args.until or today_oslo()
     try:
@@ -1781,7 +1816,34 @@ def main(argv=None):
                 report += "\n\n" + write_back_kpis(
                     args.project_goals, pg_text, kpis)
 
+    if args.exit_on_drift:
+        drifted_rows = [
+            f"{row['key']} in {os.path.basename(args.goals)}"
+            for row in rows if has_drifted(row["goal"].get("now", ""), row["value"])
+        ]
+        instrumented = [row for row in rows if row["value"] is not None]
+        if args.project_goals:
+            drifted_rows += [
+                f"{row['project']} / {row['id']} in {os.path.basename(args.project_goals)}"
+                for row in kr_rows + kpis
+                if has_drifted(
+                    (row["kr"] if "kr" in row else row["kpi"]).get("now", ""),
+                    row["value"])
+            ]
+            instrumented += [row for row in kr_rows + kpis
+                             if row["value"] is not None]
+        for line in drifted_rows:
+            report += f"\n  ! {line} no longer matches its instrument"
+        # The summary is deliberately the LAST line: `tools.preflight` shows
+        # one line per check and takes the last one, so a count that prints
+        # above `WHAT THIS CANNOT SEE` would be invisible in the sweep.
+        report += (
+            f"\nDRIFT — {len(drifted_rows)} of {len(instrumented)} instrumented "
+            f"number(s) disagree with what is written down. A number with no "
+            f"reading to take is not counted either way.")
     print(report)
+    if args.exit_on_drift and drifted_rows:
+        return 2
     return 0
 
 

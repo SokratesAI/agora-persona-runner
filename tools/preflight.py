@@ -158,6 +158,7 @@ CHECKS = (
     "roll_health",
     "board_done_drift",
     "project_goals_check",
+    "goal_drift",
     "running_images",
     "workload_health",
     "alerts",
@@ -284,6 +285,7 @@ SUBJECT = {
     "roll_health":       ("on-box",  "my own digest and handoff files"),
     "board_done_drift":  ("on-box",  "the board records against my own claim ledger"),
     "project_goals_check": ("on-box",  "project-goals.md and milestone-seats.md in the vault, plus both boards through the site"),
+    "goal_drift":        ("on-box",  "goals.md and project-goals.md in the vault, against the instruments behind their numbers"),
     #: It reads GitHub too, for the mutable images `platform-config` declares
     #: that nothing runs -- but the cluster is still the subject it cannot
     #: survive the failure of, so the label stays `on-box`.
@@ -433,6 +435,12 @@ CADENCE_HOURS = {
     # the model is the previous one and a daily cadence would hide it for a
     # day. Both fetches together run in about four seconds.
     "project_goals_check": 0.0,
+    # Daily -- every instrument behind it is a window of a day or more
+    # (merges over seven days, closures over thirty), so a number that
+    # moves between two sweeps an hour apart has not really moved. It also
+    # asks GitHub, the site, Marcus and the journal, which is the slowest
+    # read in this sweep.
+    "goal_drift": 24.0,
     # Every sweep -- a pull request I open or merge in this cycle moves both.
     "open_prs": 0.0,
     "main_build": 0.0,
