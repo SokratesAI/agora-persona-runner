@@ -110,6 +110,9 @@ OBJECTIVE_FIELDS = ("statement", "status", "conversation", "period")
 #: (`agreed`). A document still carrying the old words does not quietly parse
 #: as the new ones: the whole correction is that an approval is not an
 #: agreement, and a silent alias would say they are the same.
+OBJECTIVE_STATUSES = ("discussing", "agreed", "struck")
+DEFAULT_OBJECTIVE_STATUS = "discussing"
+
 #: `period` is issue #227's seventh rule -- *"Monthly objectives, weekly
 #: check. Quarterly is four hundred cycles here."* -- and until cycle 1559
 #: nothing in this module could tell a month-old objective from one written
@@ -136,9 +139,6 @@ def month_name(period):
     year, month = period.split("-")
     return f"{_MONTHS[int(month) - 1]} {year}"
 
-
-OBJECTIVE_STATUSES = ("discussing", "agreed", "struck")
-DEFAULT_OBJECTIVE_STATUS = "discussing"
 
 #: *"Two or three key results per project. Fifteen is a backlog wearing a
 #: hat."* The floor is not checked: a project mid-proposal legitimately has
