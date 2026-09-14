@@ -70,6 +70,7 @@ unplaced tasks -- which reads identically to the best possible answer.
 """
 
 import argparse
+import datetime
 import json
 import sys
 import urllib.request
@@ -87,6 +88,7 @@ from agora_runner.project_goals import (
     task_seat_orphans,
     unpointed_goals,
     task_seat_problems,
+    objective_periods,
 )
 
 #: The two boards the owner's work sits on, read through the site's own API
@@ -98,7 +100,7 @@ BOARDS = ("issues", "ideas")
 SITE = "http://nova-site.agents.svc.cluster.local:8083"
 
 
-def report(goals_markdown, seats_markdown, rows=None):
+def report(goals_markdown, seats_markdown, rows=None, today=None):
     """`(lines, exit code)` -- the whole judgement, no I/O.
 
     Split out from `main` so the tests drive the logic rather than a
@@ -112,6 +114,11 @@ def report(goals_markdown, seats_markdown, rows=None):
     guaranteed-positive trap. So `None` prints that the task half was not
     evaluated, the way `top_board_rows` refuses to stay silent about a
     maintenance reservation it could not judge.
+
+    `today` is the clock rule 7's monthly check is read against, and it is
+    defaulted to this box's date only here, at the edge -- `objective_periods`
+    itself refuses to guess, so a test cannot quietly pass against a date it
+    never chose.
     """
     sections = parse_project_goals(goals_markdown)
     if not sections:
@@ -126,6 +133,8 @@ def report(goals_markdown, seats_markdown, rows=None):
     unpointed = unpointed_goals(serves, keeps, sections)
     unseated = [] if rows is None else task_seat_problems(rows, serves)
     unplaced = [] if rows is None else task_seat_orphans(rows)
+    past, undated = objective_periods(
+        sections, today or datetime.date.today())
     defects = found + broken + unseated
     lines = ["BROKEN" if defects else "MODEL HOLDS"]
     for line in defects:
@@ -153,6 +162,20 @@ def report(goals_markdown, seats_markdown, rows=None):
             "raise:")
         for line in unpointed:
             lines.append(f"  {line}")
+    if past:
+        lines.append(
+            f"PAST THEIR MONTH ({len(past)}) -- issue #227's seventh rule, "
+            "an inventory rather than a defect, so it does not raise. The "
+            "month an objective covers has ended and nobody re-cut it:")
+        for line in past:
+            lines.append(f"  {line}")
+    if undated:
+        lines.append(
+            f"NO MONTH AT ALL ({len(undated)}) -- also rule 7, and also not "
+            "a defect: an objective carrying no period is one nothing can "
+            "ever report as stale:")
+        for line in undated:
+            lines.append(f"  {line}")
     if rows is None:
         lines.append("TASKS NOT EVALUATED -- the boards were not read, so "
                      "nothing is claimed about which milestone a row sits "
@@ -172,6 +195,8 @@ def report(goals_markdown, seats_markdown, rows=None):
                     f"{len(awaiting)} awaiting project goals)"
                     if orphans else "") + ", "
                  f"{len(unpointed)} unpointed goal(s), "
+                 f"{len(past)} objective(s) past their month, "
+                 f"{len(undated)} undated, "
                  + ("tasks not read"
                     if rows is None
                     else f"{len(unplaced)} unplaced task(s)"))

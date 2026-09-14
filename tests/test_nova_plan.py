@@ -1159,3 +1159,25 @@ def test_the_plan_route_hands_the_seats_file_to_the_payload(monkeypatch):
            if d["key"] == "projects"][0]
     assert any("Served by 2 milestones." in text
                for text in _paragraphs(doc))
+
+
+def test_an_objective_prints_the_month_it_covers_but_never_judges_it():
+    """Issue #227's seventh rule reaches his phone, and stops there. This
+    builder has no clock on purpose: whether the month is over is a
+    question about today, and a page answering it would say one thing in
+    Oslo and another in UTC. `tools.project_goals_check` does that
+    arithmetic against a date its caller names."""
+    from agora_runner.nova_plan import _objective_prose
+    out = _objective_prose(
+        ["statement: Be good", "status: agreed", "period: 2026-09"])
+    assert "Covers September 2026." in out
+    assert "past" not in out.lower() and "ended" not in out.lower()
+
+
+def test_an_objective_with_no_period_says_nothing_about_a_month():
+    """An unread field must not speak. Rendering a missing period as a
+    month -- any month -- would put a date on his screen that no document
+    carries."""
+    from agora_runner.nova_plan import _objective_prose
+    out = _objective_prose(["statement: Be good", "status: discussing"])
+    assert "Covers" not in out

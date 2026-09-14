@@ -94,7 +94,7 @@ KEY_RESULT_FIELDS = (
 #: read in so it can be rejected.
 KPI_FIELDS = ("id", "name", "measure", "now", "low", "high", "unit", "target")
 
-OBJECTIVE_FIELDS = ("statement", "status", "conversation")
+OBJECTIVE_FIELDS = ("statement", "status", "conversation", "period")
 
 #: `struck` rather than `/plan`'s `declined`: he strikes an objective, and
 #: the word is his. A struck objective keeps its block, the same way a
@@ -110,6 +110,33 @@ OBJECTIVE_FIELDS = ("statement", "status", "conversation")
 #: (`agreed`). A document still carrying the old words does not quietly parse
 #: as the new ones: the whole correction is that an approval is not an
 #: agreement, and a silent alias would say they are the same.
+#: `period` is issue #227's seventh rule -- *"Monthly objectives, weekly
+#: check. Quarterly is four hundred cycles here."* -- and until cycle 1559
+#: nothing in this module could tell a month-old objective from one written
+#: this morning, because an objective carried no date at all. It is one
+#: month, `YYYY-MM`, and it is the month the objective covers rather than
+#: the day it was written: two objectives written a week apart can cover the
+#: same month, and the question rule 7 asks is only ever whether the month
+#: is over.
+_PERIOD_RE = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
+
+_MONTHS = ("January", "February", "March", "April", "May", "June", "July",
+           "August", "September", "October", "November", "December")
+
+
+def month_name(period):
+    """`2026-09` -> `September 2026`; anything else back verbatim.
+
+    Not `strftime`: that reads the process locale, so the same document
+    would render differently on two boxes, and a month name is something
+    Edvard reads on his phone.
+    """
+    if not _PERIOD_RE.match(period or ""):
+        return period
+    year, month = period.split("-")
+    return f"{_MONTHS[int(month) - 1]} {year}"
+
+
 OBJECTIVE_STATUSES = ("discussing", "agreed", "struck")
 DEFAULT_OBJECTIVE_STATUS = "discussing"
 
@@ -233,6 +260,12 @@ def problems(markdown_or_sections):
                 found.append(
                     f"{name}: objective is agreed but links no conversation "
                     "-- an agreement names where it was reached")
+            period = objective.get("period", "").strip()
+            if period and not _PERIOD_RE.match(period):
+                found.append(
+                    f"{name}: objective period {period!r} is not a month "
+                    "-- rule 7 wants YYYY-MM, and a date this cannot read "
+                    "is an objective nothing can age")
         results = section.get("keyResults", [])
         if len(results) > MAX_KEY_RESULTS:
             found.append(
@@ -445,6 +478,56 @@ def split_orphans(serves, sections, keeps=None):
                 "no KPI -- and there is none to serve, because no key "
                 "result or KPI is written for this project yet")
     return prunable, awaiting
+
+
+def objective_periods(sections, today):
+    """Rule 7's weekly check -> `(past, undated)`, two lists of strings.
+
+    Issue #227's seventh rule is *"Monthly objectives, weekly check"*, and
+    it was the one rule of the eight with no mechanism behind it at all:
+    an objective carried a statement, a status and a conversation, so the
+    document could not tell September's objective from one written in June
+    and nothing anywhere asked. A goal that quietly rolls forever is the
+    failure the rule names.
+
+    `today` is a `datetime.date` and is **required**, not defaulted here.
+    A month comparison against an implicit clock is the class of test that
+    passes against broken code because CI runs in UTC and the fixture was
+    written in Oslo; the caller owns the clock and the tests pin it.
+
+    **A struck objective is never past its period.** It is a decision kept
+    so it can be read back -- the same reason a struck goal keeps its block
+    on `/plan` -- and asking Edvard to re-cut a goal he has already killed
+    is the check inventing work. `discussing` is included on purpose: an
+    objective whose month ended while it was still being argued about is
+    exactly the thing rule 7 is watching for.
+
+    Neither list is a defect and neither raises. A month that has ended is
+    a conversation to have with him, not something a pull request closes --
+    the same call `serves_orphans` makes on the pruning list.
+    """
+    now = f"{today.year:04d}-{today.month:02d}"
+    past, undated = [], []
+    for key in sorted(sections):
+        section = sections[key]
+        objective = section.get("objective") or {}
+        if not objective:
+            continue
+        name = section.get("project", key)
+        if objective.get("status", "").strip().lower() == "struck":
+            continue
+        period = objective.get("period", "").strip()
+        if not period:
+            undated.append(
+                f"{name}: objective names no period -- nothing can tell "
+                "whether this month's goal is this month's")
+            continue
+        if _PERIOD_RE.match(period) and period < now:
+            past.append(
+                f"{name}: objective covers {month_name(period)}, which "
+                f"ended before {month_name(now)} -- re-cut it with him or "
+                "carry it forward on purpose")
+    return past, undated
 
 
 def unpointed_goals(serves, keeps, sections):

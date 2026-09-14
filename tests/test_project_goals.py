@@ -532,3 +532,41 @@ def test_a_seat_naming_its_guardrail_is_in_neither_list():
     prunable, awaiting = split_orphans({("Agora", "M"): ""}, sections,
                                        {("Agora", "M"): "nova-cost"})
     assert prunable == [] and awaiting == []
+
+
+def test_month_name_does_not_read_the_process_locale():
+    """A month name is something Edvard reads on his phone, and `strftime`
+    would render it differently on two boxes with different locales. A
+    value this cannot parse comes back verbatim rather than as an
+    invented month -- that case is `problems`' to report, not this one's."""
+    from agora_runner.project_goals import month_name
+    assert month_name("2026-09") == "September 2026"
+    assert month_name("2026-01") == "January 2026"
+    assert month_name("2026-12") == "December 2026"
+    assert month_name("September") == "September"
+    assert month_name("") == ""
+
+
+def test_objective_periods_requires_a_clock_rather_than_defaulting_to_today():
+    """The whole point of not defaulting it: a month comparison against an
+    implicit clock passes against broken code on any box whose date agrees
+    with the fixture, and CI runs in UTC."""
+    import datetime
+    import pytest as _pytest
+    from agora_runner.project_goals import objective_periods, parse_project_goals
+    sections = parse_project_goals(
+        "## Nova\n\n```objective\nstatement: s\nperiod: 2026-08\n```\n")
+    with _pytest.raises(TypeError):
+        objective_periods(sections)
+    past, undated = objective_periods(sections, datetime.date(2026, 9, 1))
+    assert len(past) == 1 and not undated
+
+
+def test_a_thirteenth_month_is_refused_rather_than_read_as_a_year():
+    """`\\d{4}-\\d{2}` would accept `2026-13` and then sort it after every
+    real month, so an objective could be permanently not-yet-due. The
+    month group is `0[1-9]|1[0-2]` for that reason."""
+    from agora_runner.project_goals import problems
+    assert problems("## Nova\n\n```objective\nstatement: s\nperiod: 2026-13\n```\n")
+    assert not problems(
+        "## Nova\n\n```objective\nstatement: s\nperiod: 2026-12\n```\n")
