@@ -237,6 +237,42 @@ def fetch_marcus_subscriber_count(site=MARCUS):
     return count, None
 
 
+def fetch_marcus_coach_latency(site=MARCUS):
+    """Marcus's own summary of how long its coach made him wait, or `(None, why)`.
+
+    `GET /api/coach/latency` answers `{count, medianMs, newestAt, oldestAt}`
+    and never the individual samples. Marcus records the wall clock around its
+    own call to the coach on every draft that *answered*, and keeps the newest
+    few hundred on the volume its state lives on.
+
+    Why this and not a sampling run. The reason this KPI carried no instrument
+    for a week was that timing the coach meant driving the coach, which is a
+    synthetic request measured on an idle pod at 02:00 -- and it spends a real
+    model call to learn a number Marcus already had. The server is the process
+    that does the waiting, so the honest reading is the one it took on Edvard's
+    own taps.
+
+    `None` for an unreachable or malformed answer, and `count == 0` is
+    *also* returned as `None` by the caller rather than as a duration: no taps
+    yet is a real fact about the world, but it is not a latency, and writing a
+    0 into the document would say the coach answers instantly.
+    """
+    payload, error = _get_json(f"{site}/api/coach/latency")
+    if error:
+        return None, error
+    payload = payload or {}
+    count = payload.get("count")
+    median = payload.get("medianMs")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        return None, (f"{site}/api/coach/latency answered without a "
+                      "non-negative integer `count`")
+    if count and not isinstance(median, (int, float)):
+        return None, (f"{site}/api/coach/latency reported {count} sample(s) "
+                      "with no numeric `medianMs`")
+    return {"count": count, "median_ms": median,
+            "newest_at": payload.get("newestAt")}, None
+
+
 def fetch_merged(repo, since, until, limit=1000):
     """Pull requests on `repo` merged inside the window, as numbers.
 
@@ -1026,24 +1062,58 @@ def measure_marcus_push_subscribers(since, until):
                    "/api/push/subscribers")
 
 
+def measure_marcus_coach_latency(since, until):
+    """How long a plan draft actually made him wait, in seconds.
+
+    A level like `measure_marcus_push_subscribers` above, and it takes and
+    drops the window for the same reason: `kpi_rows` calls every measurer the
+    same way. The window it *does* have is the length of Marcus's own history,
+    which is reported in the detail line rather than imposed here -- a median
+    over 2 taps and a median over 60 are the same number and different
+    readings, exactly as `measure_pm_reversals` prints its count beside the
+    size of the record.
+
+    **No taps yet returns `None`, never 0.** A latency of zero would say the
+    coach answers instantly, which is the opposite of what an empty history
+    means, and this is the same trap `fetch_marcus_subscriber_count` avoids in
+    the other direction -- there 0 is the real reading and `None` is the
+    failure; here 0 cannot be a real reading at all.
+    """
+    del since, until
+    summary, error = fetch_marcus_coach_latency()
+    if error:
+        return None, error
+    count = summary["count"]
+    if count == 0:
+        return None, ("Marcus has recorded no answered plan draft yet, so "
+                      "there is no wait to report -- the route is live and "
+                      "the history fills the next time he taps Draft")
+    seconds = round(summary["median_ms"] / 1000.0, 1)
+    newest = summary.get("newest_at") or "an unrecorded time"
+    return seconds, (f"median of {count} answered plan draft(s) Marcus timed "
+                     f"itself, newest at {newest}, read live from "
+                     "/api/coach/latency")
+
+
 KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
     "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
     "nova-kpi-silent-cycles": measure_nova_silent_cycles,
     "pm-kpi-deprecations": measure_pm_deprecations,
     "marcus-kpi-push-subscribers": measure_marcus_push_subscribers,
+    "marcus-kpi-coach-latency": measure_marcus_coach_latency,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
 #: silent gap, for the reason `KEY_RESULT_NO_INSTRUMENT` exists: a blank `now`
 #: says nothing about whether anyone tried, and three cycles re-deriving the
 #: same "there is no endpoint for this" is three cycles spent twice.
-KPI_NO_INSTRUMENT = {
-    "marcus-kpi-coach-latency": "timing it means driving the live coach, which "
-                                "is a sampling run against a production LLM "
-                                "route rather than a fact readable off the box "
-                                "-- same reason as marcus-kr-coach-first-try",
-}
+#:
+#: Empty, and that is a real state rather than a gap in this file: every KPI in
+#: `project-goals.md` has a measurer above. It stays because the mechanism is
+#: what matters -- the next KPI added without one belongs here with its reason,
+#: not with a silent blank.
+KPI_NO_INSTRUMENT = {}
 
 
 def kpi_rows(sections, since=None, until=None):
