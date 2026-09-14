@@ -83,6 +83,14 @@ MARCUS = os.environ.get(
     "MARCUS_SELF_URL", "http://marcus.agents.svc.cluster.local:8080"
 )
 
+# Agora's own public API, unauthenticated on :8080 -- the same host
+# `tools.heartbeat_gaps` already reads. It is the only place that knows which
+# model every persona, heartbeat and conversation is configured to run on, and
+# its `/models` catalog is where `metered` is decided rather than restated.
+AGORA = os.environ.get(
+    "AGORA_SELF_URL", "http://agora.agents.svc.cluster.local:8080"
+)
+
 
 def today_oslo(now=None):
     """Today's date in Oslo, as `YYYY-MM-DD`.
@@ -235,6 +243,76 @@ def fetch_marcus_subscriber_count(site=MARCUS):
         return None, (f"{site}/api/push/subscribers answered without a "
                       "non-negative integer `count`")
     return count, None
+
+
+def fetch_agora_metered_places(site=AGORA):
+    """Every place in Agora configured to run on a metered provider.
+
+    Returns `(places, None)` -- a list of `"<kind> <name> -> <model>"` strings,
+    empty when nothing is -- or `(None, why)` when Agora could not be read.
+
+    **What counts as metered is Agora's answer, not a list here.** `/models`
+    carries a `metered` flag per model, so this reads that catalog and derives
+    the metered *providers* from it rather than pinning model ids: a model id
+    can be retired out of the catalog while a stale config still names it, and
+    matching on the provider catches that where matching on the id would not.
+    `reply.METERED_PROVIDERS` -- the tuple the unattended-turn refusal itself
+    uses -- is unioned in, so this instrument can never end up blinder than the
+    guard it is watching. If the two ever disagree, the wider set wins here,
+    because a false alarm costs a cycle and a miss costs the prepaid balance.
+
+    **Three places, because a run can pick up a model from any of them.** A
+    persona carries one, a conversation carries its own and one per persona
+    link (which is what actually runs), and a heartbeat carries none today but
+    is read anyway so that adding the field later does not silently widen the
+    blind spot. Disabled heartbeats and archived conversations are left out:
+    they cannot spend.
+
+    **What this cannot see, and it is the whole caveat on the reading.** No
+    message records the model that produced it, so this is the configuration
+    as it stands right now, not a record of what ran. Spend that happened on a
+    config since changed back is invisible to it, and nothing in this loop
+    reads the prepaid balance.
+    """
+    from agora_runner.reply import METERED_PROVIDERS
+
+    catalog, error = _get_json(f"{site}/models")
+    if error:
+        return None, error
+    models = catalog if isinstance(catalog, list) else (catalog or {}).get("models") or []
+    providers = {str(m.get("provider") or "").strip()
+                 for m in models if m.get("metered")}
+    providers |= set(METERED_PROVIDERS)
+    providers.discard("")
+    if not providers:
+        return None, (f"{site}/models named no metered provider at all, which "
+                      "is a catalog this cannot judge rather than a clean bill")
+
+    def _metered(model):
+        return str(model or "").split(":", 1)[0].strip() in providers
+
+    places = []
+    for path, key, kind in (("personas", "personas", "persona"),
+                            ("heartbeats", "heartbeats", "heartbeat"),
+                            ("conversations?active=true", "conversations",
+                             "conversation")):
+        payload, error = _get_json(f"{site}/{path}")
+        if error:
+            return None, error
+        rows = payload if isinstance(payload, list) else (payload or {}).get(key) or []
+        for row in rows:
+            if kind == "heartbeat" and row.get("enabled") is False:
+                continue
+            if kind == "conversation" and row.get("archived"):
+                continue
+            name = row.get("name") or row.get("id") or "(unnamed)"
+            if _metered(row.get("model")):
+                places.append(f"{kind} {name} -> {row.get('model')}")
+            for link in row.get("personas") or []:
+                if _metered(link.get("model")):
+                    places.append(f"{kind} {name} / {link.get('name')} -> "
+                                  f"{link.get('model')}")
+    return sorted(set(places)), None
 
 
 def fetch_marcus_coach_latency(site=MARCUS):
@@ -1439,6 +1517,47 @@ def measure_marcus_browser_monolith(since, until):
     return size_kb, detail
 
 
+def measure_agora_metered_spend(since, until):
+    """Places in Agora that could spend the prepaid metered balance. Level, no window.
+
+    **This KPI's bound is the one in `project-goals.md` that is not mine to
+    set.** It is `identity.md` rule 9, his words: *"We must never use the
+    metered api for other than testing! It is expensive and I only have 16$
+    left."* A high of zero and no low at all is deliberate.
+
+    It used to be measured in dollars per week and had no instrument, because
+    nothing here reads the prepaid balance and no Agora message records which
+    model produced it -- so the only honest dollar figure was a blank. The
+    measure is a count now for the reason the document's own note already gave:
+    this watches *whether the enforcement is still in place*, not whether
+    anyone was careful. `reply.py` refuses a metered provider on an unattended
+    turn and Agora's default model is a subscription one, so the number that
+    tells you whether that still holds is how many places are configured to
+    reach a metered provider at all. Zero of them is a reading in exactly the
+    way an empty push list is (`measure_marcus_push_subscribers`) -- it is the
+    state this is supposed to be in, and it goes to a real 0 rather than a
+    blank.
+
+    **A breach must surface as a number above the ceiling, never as "not
+    measured".** `has_drifted` treats `None` as not-drift, so returning `None`
+    on a metered config would leave the document saying 0 and the sweep saying
+    nothing -- silence on the one event this exists to catch. So `None` here
+    means only that Agora could not be read.
+    """
+    del since, until
+    places, error = fetch_agora_metered_places()
+    if places is None:
+        return None, error
+    if not places:
+        return 0, ("nothing in Agora is configured to reach a metered "
+                   "provider -- no persona, no enabled heartbeat, no active "
+                   "conversation; read live, so it is the configuration now "
+                   "and not a record of what ran")
+    return len(places), (f"{len(places)} place(s) configured on a metered "
+                         f"provider: {', '.join(places[:6])}"
+                         + (", ..." if len(places) > 6 else ""))
+
+
 KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
     "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
@@ -1449,6 +1568,7 @@ KPI_MEASURERS = {
     "nova-kpi-unfixed-advisories": measure_nova_unfixed_advisories,
     "nova-kpi-markdown-board-readers": measure_nova_markdown_board_readers,
     "marcus-kpi-browser-monolith": measure_marcus_browser_monolith,
+    "agora-kpi-metered-spend": measure_agora_metered_spend,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
