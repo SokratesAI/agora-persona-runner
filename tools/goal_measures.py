@@ -979,13 +979,6 @@ def measure_marcus_coach_first_try(since, until):
         "unconfigured or metered refusal, is not counted either way")
 
 
-# A key result read live off Marcus over HTTP rather than off any document
-# this loop holds. Its own map for `KEY_RESULT_PR_MEASURERS`' reason and no
-# other: the argument shape is `(since, until)` and nothing else, because the
-# server being asked is the thing that keeps the record.
-KEY_RESULT_FETCH_MEASURERS = {
-    "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
-}
 
 KEY_RESULT_NO_INSTRUMENT = {
     "nova-kr-in-the-app": "counts things the owner still has to leave the Nova "
@@ -1732,6 +1725,269 @@ def measure_nas_services_down(since, until):
                   "SSH hop")
 
 
+def measure_infra_ci_minutes(since, until):
+    """Billable GitHub Actions minutes this org has used this month. A level.
+
+    Asks `tools.ci_minutes` rather than counting again, the same call
+    `measure_nova_unfixed_advisories` makes against `tools.security_alerts`:
+    that module already knows which repositories are private (a public repo's
+    minutes are free and are not billable at all), which month is the billing
+    month, and that a run with no date still carries minutes. A second opinion
+    here would be a second thing to keep in step with GitHub's billing API.
+
+    **Public minutes are deliberately not in the number.** The KPI's own
+    `high` is 2,000, which is the included private allowance on this plan, so
+    folding free minutes into a number bounded by a paid allowance would make
+    the guardrail fire on spend that costs nothing.
+
+    Zero is a real reading -- a month in which no private repo ran a billable
+    minute is a real month, and the low bound is 0 for that reason. `None`
+    means GitHub could not be asked.
+    """
+    del since, until
+    from tools import ci_minutes
+
+    now = datetime.now(timezone.utc)
+    try:
+        items = ci_minutes.fetch_usage(ci_minutes.ORG, now.year, now.month)
+        visibility = ci_minutes.fetch_visibility(ci_minutes.ORG)
+    except RuntimeError as exc:
+        return None, (f"GitHub's billing API could not be read -- {exc}; "
+                      "`python3 -m tools.ci_minutes` prints why")
+    private, public, unknown, _net = ci_minutes.split_minutes(items, visibility)
+    used = round(sum(private.values()))
+    elapsed, days_in_month = ci_minutes.month_progress(now)
+    detail = (f"{used} billable minute(s) across {len(private)} private "
+              f"repo(s) in {now.year}-{now.month:02d}, {elapsed:.1f} of "
+              f"{days_in_month:.0f} day(s) elapsed; "
+              f"{sum(public.values()):.0f} public minute(s) are free and are "
+              "not counted")
+    if unknown:
+        detail += (f"; a floor -- {sum(unknown.values()):.0f} minute(s) come "
+                   f"from {len(unknown)} repo(s) whose visibility GitHub did "
+                   "not report, so they are in neither bucket")
+    return used, detail
+
+
+def measure_infra_node_headroom(since, until):
+    """Memory available on the node with the least of it, in MiB. A level.
+
+    Asks `tools.node_memory` for the same reading its own check prints, and
+    that module reads each node's kubelet over `nodes/proxy` rather than this
+    pod's `/proc` -- so the node this pod is *not* standing on is judged the
+    same way as the one it is. Reading `/proc/meminfo` here would silently
+    measure one node and call it the cluster.
+
+    **The minimum, not the sum and not the average.** The guardrail is about
+    whether a pod can still be scheduled or restarted somewhere, and two nodes
+    with 8GiB and 100MiB free have no more usable headroom than the 100MiB
+    node has.
+
+    `None` when any node could not be read, and that is stricter than the
+    floor `measure_nova_unfixed_advisories` takes: there are two nodes, so an
+    unread one is half the estate, and a minimum over the half that answered
+    can only ever read higher than the truth -- an error in the flattering
+    direction, on a guardrail whose whole job is to catch a low number.
+    """
+    del since, until
+    from tools import node_memory as nm
+
+    try:
+        nodes = nm.read_node_names()
+    except (OSError, ValueError) as exc:
+        return None, f"the node list could not be read -- {exc}"
+    if not nodes:
+        return None, "the API server listed no nodes, so there is nothing to read"
+    readings = {}
+    for node in nodes:
+        try:
+            summary = nm.read_summary(node)
+        except (OSError, ValueError) as exc:
+            return None, (f"node {node} could not be read -- {exc}; a minimum "
+                          "over the nodes that answered would read higher "
+                          "than the truth")
+        pair = nm.node_memory(summary)
+        if pair is None:
+            return None, (f"node {node}'s kubelet reported no availableBytes, "
+                          "so the minimum is unknown")
+        readings[node] = int(pair[0] / nm.MIB)
+    tightest = min(readings, key=readings.get)
+    spread = ", ".join(f"{name} {mib}Mi" for name, mib in sorted(readings.items()))
+    return readings[tightest], (
+        f"{readings[tightest]}Mi available on {tightest}, the tightest of "
+        f"{len(readings)} node(s) ({spread}), read from each node's own "
+        "kubelet over nodes/proxy")
+
+
+#: One `tools.eol_watch` sweep, held for the life of the process.
+#:
+#: Two numbers in `project-goals.md` come out of this one sweep --
+#: `maint-kr-supported` and `maint-kpi-eol-unjudged` -- and it takes tens of
+#: seconds, because it lists every non-archived repo in the org, reads every
+#: Dockerfile and workflow in each, and asks endoflife.date about every line it
+#: finds. Running it twice in one report would double the slowest thing here to
+#: answer a question that cannot have two answers in the same run.
+#:
+#: Deliberately not a cache with a lifetime: the process is one report, so
+#: "once per run" is the whole contract and there is nothing to invalidate.
+_EOL_SWEEP = {}
+
+
+def _eol_sweep():
+    """`(judged, not_judged, error)` from one `tools.eol_watch` sweep."""
+    if not _EOL_SWEEP:
+        from tools import eol_watch
+
+        repos, unplaceable, _notes, incomplete = eol_watch._repos_to_sweep()
+        if incomplete or not repos:
+            _EOL_SWEEP["result"] = (None, None, (
+                "could not enumerate the repos to sweep, so there is no set to "
+                "judge over -- `python3 -m tools.eol_watch` prints why"))
+            return _EOL_SWEEP["result"]
+        products, why = eol_watch.catalogue()
+        if products is None:
+            _EOL_SWEEP["result"] = (None, None, (
+                f"the endoflife.date catalogue was unreadable -- {why}; that is "
+                "no instrument rather than no finding"))
+            return _EOL_SWEEP["result"]
+        today = date.today()
+        judged, not_judged, _problems = eol_watch.sweep(
+            repos, products, today, eol_watch.DEFAULT_WITHIN_DAYS)
+        mapping, ambiguous = eol_watch.image_map(products)
+        pins, _cluster_problems = eol_watch.cluster_images()
+        for image in pins:
+            where = eol_watch.judge(image, products, mapping, today,
+                                    eol_watch.DEFAULT_WITHIN_DAYS, ambiguous)
+            (judged if where == "judged" else not_judged).append(image)
+        _EOL_SWEEP["result"] = (judged, not_judged, None)
+        _EOL_SWEEP["unplaceable"] = unplaceable
+    return _EOL_SWEEP["result"]
+
+
+def measure_maint_supported(since, until):
+    """Runtime lines out of support, or inside the window before it. A level.
+
+    Counted the way `tools.eol_watch`'s own report counts it: distinct
+    `image:tag` lines, not occurrences. The same base image is named once per
+    stage of a multi-stage Dockerfile and once per repo that uses it, and a
+    key result reading 6 because one dead line appears in six places would be
+    a number about our file layout rather than about our estate.
+
+    A line whose end-of-life date is inside `eol_watch.DEFAULT_WITHIN_DAYS`
+    counts the same as one already past it, because the target is 0 and a line
+    that goes dead next month is already work to do.
+
+    `None` means the sweep could not be built at all. A line endoflife.date has
+    no answer for is **not** counted here in either direction -- it is
+    `maint-kpi-eol-unjudged`, the guardrail on this instrument's own blind
+    spot, and folding it in would make an unreadable estate look supported.
+    """
+    del since, until
+    from tools import eol_watch
+
+    judged, _not_judged, error = _eol_sweep()
+    if error:
+        return None, error
+    bad = eol_watch.group([i for i in judged
+                           if i["verdict"] in ("eol", "soon")])
+    named = ", ".join(sorted(eol_watch._pin(m[0]) for m in bad.values())[:6])
+    total = eol_watch.group(judged)
+    detail = (f"{len(bad)} of {len(total)} judged line(s) are out of support "
+              f"or inside {eol_watch.DEFAULT_WITHIN_DAYS} day(s) of it")
+    if bad:
+        detail += f" ({named}{', ...' if len(bad) > 6 else ''})"
+    return len(bad), detail
+
+
+def measure_maint_eol_unjudged(since, until):
+    """Distinct runtime lines endoflife.date has no answer for. A level.
+
+    The guardrail on `maint-kr-supported`'s own instrument rather than on the
+    estate: that key result reading 2 means very little while two thirds of
+    what we run is invisible to the catalogue, which is why this KPI exists at
+    all and why its high bound is 10 rather than 0.
+
+    Counted as distinct lines for `measure_maint_supported`'s reason, and off
+    the same single sweep, so the two numbers can never be taken over
+    different estates.
+
+    Zero is a real reading and the one this wants. `None` means the sweep
+    itself could not be built.
+    """
+    del since, until
+    from tools import eol_watch
+
+    _judged, not_judged, error = _eol_sweep()
+    if error:
+        return None, error
+    lines = eol_watch.group(not_judged)
+    return len(lines), (f"{len(lines)} distinct line(s) the catalogue could "
+                        "not place, so nothing here knows whether they are "
+                        "still supported")
+
+
+def measure_maint_pins_current(since, until):
+    """Pinned versions behind what upstream has published. A level.
+
+    Asks `tools.pin_drift`, which reads the pinned value out of the file every
+    time rather than from a table of what we pin -- a table would be a second
+    copy of the truth that goes stale exactly the way the pin it watches does.
+
+    **Every gap counts, not only a minor or a major.** That check's headline
+    raises on a minor or a major, because that is the line at which it wants a
+    cycle to go and do something; the key result's own measure is *pins behind
+    upstream*, and a patch behind is behind. The detail says how many of each
+    so the two numbers can be reconciled rather than looking like a
+    disagreement.
+
+    A pin *ahead* of what it is compared against is not counted here. It is a
+    real defect and `pin_drift` says so, but it is the opposite defect, and
+    adding it to a count whose target is 0 would let a bump in the wrong
+    direction cancel a missing one.
+
+    Counted as distinct `(what, pinned, latest)` triples, the way that module
+    groups them, for `measure_maint_supported`'s reason. `None` means the repo
+    list could not be built; a single unreadable pin is not fatal and shows up
+    in the detail as a floor.
+    """
+    del since, until
+    from tools import pin_drift
+
+    repos, _unplaceable, _notes, incomplete = pin_drift._repos_to_sweep()
+    if incomplete or not repos:
+        return None, ("could not enumerate the repos to sweep, so there is no "
+                      "set to judge over -- `python3 -m tools.pin_drift` "
+                      "prints why")
+    judged, _excluded, problems = pin_drift.sweep(repos)
+    behind = pin_drift._group([p for p in judged
+                               if p["gap"] in ("major", "minor", "patch")])
+    big = pin_drift._group([p for p in judged
+                            if p["gap"] in ("major", "minor")])
+    detail = (f"{len(behind)} of {len(pin_drift._group(judged))} judged pin(s) "
+              f"are behind upstream, {len(big)} of them by a minor or a major")
+    if problems:
+        detail += (f"; a floor, not a total -- {len(problems)} pin(s) could "
+                   "not be compared against upstream")
+    return len(behind), detail
+
+
+# A key result whose measurer goes and reads its subject itself, rather than
+# being handed a document this loop already holds. Its own map for
+# `KEY_RESULT_PR_MEASURERS`' reason and no other: **the argument shape is
+# `(since, until)` and nothing else.** These maps are split by signature, not
+# by subject -- it held only the Marcus coach reading until Cycle 1584, and the
+# comment here said so in a way that read like a rule about Marcus.
+#
+# It sits below the measurers rather than beside its siblings because the two
+# `maint-` entries are defined further down, next to the KPI they share a sweep
+# with.
+KEY_RESULT_FETCH_MEASURERS = {
+    "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
+    "maint-kr-supported": measure_maint_supported,
+    "maint-kr-pins-current": measure_maint_pins_current,
+}
+
+
 KPI_MEASURERS = {
     "nova-kpi-dropped-ticks": measure_nova_dropped_ticks,
     "nova-kpi-cost-per-cycle": measure_nova_cost_per_cycle,
@@ -1746,6 +2002,9 @@ KPI_MEASURERS = {
     "docs-kpi-staleness": measure_docs_staleness,
     "post-kpi-volume": measure_post_volume,
     "nas-kpi-services-down": measure_nas_services_down,
+    "infra-kpi-ci-minutes": measure_infra_ci_minutes,
+    "infra-kpi-node-headroom": measure_infra_node_headroom,
+    "maint-kpi-eol-unjudged": measure_maint_eol_unjudged,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a
