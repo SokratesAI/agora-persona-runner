@@ -2664,6 +2664,106 @@ class TestDemosOpened:
         assert "a floor, not a total" in detail
 
 
+class TestDemosNoLitter:
+    """`demos-kr-no-litter` -- directories on disk no running demo claims.
+
+    Both halves are stubbed: `nova_demos.DURABLE_ROOT` is pointed at a real
+    temporary directory so the listing is a real `os.listdir`, and the
+    registry is swapped on `tools.demo` for the reason `TestDemosOpened`
+    gives -- the measurer does `from tools import demo`, so a `sys.modules`
+    swap would leave the production vault read in place.
+    """
+
+    def _root(self, tmp_path, monkeypatch, names):
+        from agora_runner import nova_demos
+        for name in names:
+            (tmp_path / name).mkdir()
+        monkeypatch.setattr(nova_demos, "DURABLE_ROOT", str(tmp_path))
+        return str(tmp_path)
+
+    def _registry(self, payload, monkeypatch):
+        from tools import demo as demo_tool
+        monkeypatch.setattr(demo_tool, "_read_registry",
+                            lambda: (payload, "/tmp/rev"))
+
+    def test_it_counts_and_names_what_no_running_row_claims(
+            self, tmp_path, monkeypatch):
+        root = self._root(tmp_path, monkeypatch, ["station", "board166", "old"])
+        self._registry({"demos": [
+            {"slug": "station", "dir": root + "/station"},
+        ]}, monkeypatch)
+        value, detail = gm.measure_demos_no_litter(None, None)
+        assert value == 2
+        assert "2 of 3" in detail
+        assert "1 running" in detail
+        assert "board166, old" in detail
+        assert "station" not in detail.split(":")[-1]
+
+    def test_a_retired_demos_directory_is_litter(self, tmp_path, monkeypatch):
+        # `nova_demos.retire` keeps no `dir`, so a tombstone claims nothing --
+        # which is the answer this key result wants: the question is settled
+        # and the files are still here.
+        root = self._root(tmp_path, monkeypatch, ["gone"])
+        self._registry({
+            "demos": [],
+            "retired": [{"slug": "gone", "started_at": "2026-09-01T09:00:00",
+                         "opened_at": "2026-09-01T10:00:00"}],
+        }, monkeypatch)
+        value, detail = gm.measure_demos_no_litter(None, None)
+        assert value == 1
+        assert "gone" in detail
+
+    def test_an_unlistable_root_is_no_reading_rather_than_nought(
+            self, tmp_path, monkeypatch):
+        # The failure this whole measurer is shaped around. `tools.demo`'s own
+        # `durable_dirs` answers [] here, which would report a spotless loop
+        # off a disk nothing ever read -- and 0 is this measure's target.
+        from agora_runner import nova_demos
+        monkeypatch.setattr(nova_demos, "DURABLE_ROOT",
+                            str(tmp_path / "not-here"))
+        self._registry({"demos": []}, monkeypatch)
+        value, detail = gm.measure_demos_no_litter(None, None)
+        assert value is None
+        assert "not-here" in detail
+        assert "has seen the disk" in detail
+
+    def test_an_empty_root_is_a_real_nought(self, tmp_path, monkeypatch):
+        # The other side of the test above: a root that exists and holds
+        # nothing is a clean loop, and must not be refused as no reading.
+        self._root(tmp_path, monkeypatch, [])
+        self._registry({"demos": []}, monkeypatch)
+        value, detail = gm.measure_demos_no_litter(None, None)
+        assert value == 0
+        assert "0 of 0" in detail
+
+    def test_an_unreadable_registry_is_no_reading(self, tmp_path, monkeypatch):
+        from tools import demo as demo_tool
+
+        self._root(tmp_path, monkeypatch, ["board166"])
+
+        def boom():
+            raise demo_tool.DemoError("could not read demos.json")
+
+        monkeypatch.setattr(demo_tool, "_read_registry", boom)
+        value, detail = gm.measure_demos_no_litter(None, None)
+        assert value is None
+        assert "could not read demos.json" in detail
+
+    def test_a_row_pointing_outside_the_root_protects_nothing(
+            self, tmp_path, monkeypatch):
+        # `orphan_dirs` already decides this; the assertion pins that the
+        # measurer inherits it rather than re-deciding it.
+        self._root(tmp_path, monkeypatch, ["station"])
+        self._registry({"demos": [
+            {"slug": "station", "dir": "/somewhere/else/station"},
+        ]}, monkeypatch)
+        assert gm.measure_demos_no_litter(None, None)[0] == 1
+
+    def test_it_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["demos-kr-no-litter"] is \
+            gm.measure_demos_no_litter
+
+
 class TestResearchReused:
     """`research-kr-reused` -- the share of research write-ups a later entry cites.
 
