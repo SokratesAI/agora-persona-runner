@@ -363,8 +363,13 @@ def _key_result_prose(lines, seats=None):
         parts.append(_sentence(row["measure"]))
     parts.append(f"Now {row['now']}{unit}." if row.get("now")
                  else "Not measured yet.")
-    if row.get("target"):
-        parts.append(f"Target {row['target']}{unit}.")
+    # Said out loud when it is missing, the way "Not measured yet." is said
+    # for a missing `now` two lines up. `project_goals.problems()` refuses a
+    # key result with no target, and a defect it refuses has to stay visible
+    # on the page he actually opens rather than rendering as a key result
+    # that simply had nothing worth saying about its target.
+    parts.append(f"Target {row['target']}{unit}." if row.get("target")
+                 else "No target set.")
     if row.get("direction") == "down":
         parts.append("Lower is better.")
     elif row.get("direction") == "up":
