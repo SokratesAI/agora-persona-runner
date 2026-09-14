@@ -2273,6 +2273,86 @@ def measure_nas_unattended(since, until):
         "are in neither half")
 
 
+#: The milestone `agora-kr-chat-basics` counts rows under, exactly as both
+#: boards spell it. A string rather than an id for the same reason
+#: `_NAS_PROJECT` is one: a board row names its milestone in prose and nothing
+#: on the row carries a stable milestone key.
+_CHAT_BASICS_MILESTONE = "Chat basics he asked for"
+
+#: Rows under that milestone that are NOT a missing control, by number, with
+#: the reason each is here. This is the one judgement in the measure and it is
+#: written down rather than hidden: issue #205 is a chat that stopped
+#: responding mid-conversation, which is a breakage. Folding it in would let
+#: fixing a crash read as answering an ask, and the key result's own words in
+#: `project-goals.md` already say it is deliberately not counted.
+_CHAT_BASICS_NOT_A_CONTROL = {205: "a breakage, not a missing control"}
+
+
+def measure_agora_chat_basics(since, until):
+    """Basic chat controls the owner has asked for that are still missing.
+
+    A count with a target of 0 and a downward direction, so a low reading is
+    the good one and therefore the one that has to be hard to fake. The three
+    ways this could print a wrong 0 are each closed below.
+
+    **A milestone that names no row is no reading, not a zero.**
+    `_CHAT_BASICS_MILESTONE` is a string I typed here and the board carries no
+    id to check it against, so renaming the milestone would otherwise read as
+    every control having been built. Seven rows carry it today and the
+    objective exists because they are open, so an empty match is a rename far
+    more often than it is success.
+
+    **An unreadable board is no reading either.** Half a sweep undercounts a
+    measure whose best value is zero -- the same call `measure_nas_unattended`
+    makes, and for the same reason. It reads the ideas board as well as issues
+    because the key result says *controls you have asked for* rather than
+    *issues*; today every row under this milestone is an issue and the ideas
+    board contributes nothing, but an idea filed under it tomorrow is one of
+    these and the hand count would have missed it.
+
+    **Do NOT read the row's own `done` field** -- every row the site serves
+    carries `done: false`, including the ones marked done. `statusKey` is the
+    field that separates open from closed, and `_CLOSED_STATUS_KEYS` above is
+    what this shares with the NAS measure.
+
+    A row blocked on the owner still counts. It is a control he asked for and
+    does not have; who it is waiting on changes who fixes it, not whether it
+    is missing.
+    """
+    del since, until
+    rows = []
+    for name in ("issues", "ideas"):
+        items, error = fetch_board(name)
+        if error:
+            return None, (f"the {name} board could not be read, and half a "
+                          f"sweep undercounts a count whose target is 0: {error}")
+        rows.extend(items)
+    under = [r for r in rows
+             if (r.get("milestone") or "").strip() == _CHAT_BASICS_MILESTONE]
+    if not under:
+        return None, (f"no row on either board names the milestone "
+                      f"{_CHAT_BASICS_MILESTONE!r}, which is a renamed "
+                      "milestone far more often than it is an empty one")
+    open_rows = [r for r in under
+                 if (r.get("statusKey") or "").strip() not in _CLOSED_STATUS_KEYS]
+    excluded = [r for r in open_rows
+                if r.get("number") in _CHAT_BASICS_NOT_A_CONTROL]
+    missing = [r for r in open_rows
+               if r.get("number") not in _CHAT_BASICS_NOT_A_CONTROL]
+    numbers = ", ".join(f"#{r.get('number')}" for r in missing) or "none"
+    detail = (f"{len(missing)} of {len(open_rows)} open row(s) under "
+              f"{_CHAT_BASICS_MILESTONE!r} are a control he asked for and does "
+              f"not have ({numbers}), read live from the issues and ideas "
+              f"boards; {len(under) - len(open_rows)} more are done or outdated "
+              "and are in neither half")
+    if excluded:
+        named = ", ".join(
+            f"#{r.get('number')} ({_CHAT_BASICS_NOT_A_CONTROL[r['number']]})"
+            for r in excluded)
+        detail += f"; {named} is under the milestone and deliberately not counted"
+    return len(missing), detail
+
+
 def measure_nas_services_down(since, until):
     """NAS services that did not answer over the SSH hop. A level, no window.
 
@@ -2838,6 +2918,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "docs-kr-sync-alive": measure_docs_sync_alive,
     "nas-kr-unattended": measure_nas_unattended,
     "maint-kr-self-documenting": measure_maint_self_documenting,
+    "agora-kr-chat-basics": measure_agora_chat_basics,
 }
 
 
