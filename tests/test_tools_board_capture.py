@@ -35,6 +35,7 @@ from tools.board_capture import (
     known_names,
     main,
     promote,
+    route,
     split_into_tasks,
 )
 
@@ -714,3 +715,130 @@ def test_main_refuses_unpaired_tasks_before_any_write(store, capsys):
                  "--done-when", "one done"]) == 1
     assert "--done-when" in capsys.readouterr().err
     assert [name for name, _ in store.calls if name.startswith("write")] == []
+
+
+# --- issue #212's classify step -----------------------------------------
+#
+# Five tiers, and only two of them are a board row. The pure half is `route`,
+# which answers "what does --as <kind> do to this call" without a store, so
+# the refusals below cost nothing and can be asserted on directly.
+
+
+def test_route_defaults_to_a_task_at_backlog():
+    """The default has to mean exactly what every existing caller meant, or
+    shipping the classify step re-boards yesterday's rows differently."""
+    assert route("task", [], "Cost and quota", None) == ("backlog", None)
+
+
+def test_route_keeps_an_explicit_status_on_a_task():
+    assert route("task", [], None, "done") == ("done", None)
+
+
+def test_a_project_is_not_a_board_row():
+    status, why = route("project", [], None, None)
+    assert status is None
+    assert "not a board row" in why
+    assert "project note" in why
+
+
+def test_a_goal_is_not_a_board_row_and_says_it_is_his():
+    status, why = route("goal", [], None, None)
+    assert status is None
+    assert "project-goals.md" in why
+
+
+def test_a_question_boards_at_blocked_on_edvard():
+    """Issue #212: the capture waits in a needs-him state and does not block
+    the queue, which is the status the picker already ranks out."""
+    assert route("question", [], None, None) == ("blocked-on-edvard", None)
+
+
+def test_a_question_refuses_a_contradicting_status():
+    status, why = route("question", [], None, "in-progress")
+    assert status is None
+    assert "--status in-progress" in why
+
+
+def test_a_question_carrying_tasks_is_refused():
+    """If it can be cut into tasks it was never a question."""
+    status, why = route("question", ["First"], None, None)
+    assert status is None
+    assert "--task" in why
+
+
+def test_a_milestone_needs_more_than_one_task():
+    status, why = route("milestone", ["Only one"], "Cost and quota", None)
+    assert status is None
+    assert "several tasks" in why
+
+
+def test_a_milestone_refuses_no_milestone():
+    status, why = route("milestone", ["First", "Second"], None, None)
+    assert status is None
+    assert "--no-milestone" in why
+
+
+def test_a_milestone_with_two_tasks_and_a_name_is_a_backlog_row():
+    assert route(
+        "milestone", ["First", "Second"], "Cost and quota", None,
+    ) == ("backlog", None)
+
+
+def test_a_question_waives_the_definition_of_done():
+    """`waived` is keyed on the classification, not on the status: --as
+    question is a statement that nobody can write one."""
+    fields = {"status": "backlog", "write_up": "his words"}
+    kept, why = apply_done_when(fields, "", waived=True)
+    assert why is None
+    assert kept["write_up"] == "his words"
+    assert DONE_WHEN_PREFIX not in kept["write_up"]
+
+
+def test_blocked_on_edvard_alone_still_needs_a_definition_of_done():
+    """The separating case: the same status reached by --status rather than
+    by --as question is an operator's guess, and still owes the sentence."""
+    fields = {"status": "blocked-on-edvard", "write_up": "his words"}
+    assert apply_done_when(fields, "")[0] is None
+
+
+def test_main_refuses_a_project_before_reading_the_store(store, capsys):
+    """It is not a row, so it never asks which milestone the row sits under
+    -- and his bullet stays in the box, because nothing was built for it."""
+    before = len(capture_pairs(_contents(store)))
+    store.calls.clear()
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-14",
+                 "--priority", "high", "--as", "project"]) == 1
+    assert "project note" in capsys.readouterr().err
+    assert store.calls == []
+    assert len(capture_pairs(_contents(store))) == before
+
+
+def test_main_boards_a_question_with_no_done_when(store, capsys):
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-14",
+                 "--priority", "high", "--no-milestone",
+                 "--as", "question"]) == 0
+    from agora_runner.nova_boards import STATUS_LABELS
+    boarded = [one for one in _rows(store).values()
+               if one["status"] == STATUS_LABELS["blocked-on-edvard"]]
+    assert len(boarded) == 1
+    assert DONE_WHEN_PREFIX not in _contents(store)["details"][
+        boarded[0]["number"]]
+    assert "needs_input" in capsys.readouterr().out
+
+
+def test_main_still_demands_a_done_when_for_an_unclassified_capture(
+        store, capsys):
+    """The default did not change: a row is a task and a task needs one."""
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-14",
+                 "--priority", "high", "--no-milestone"]) == 1
+    assert "--done-when" in capsys.readouterr().err
+
+
+def test_a_waived_question_keeps_a_done_when_that_was_given_anyway():
+    """The waiver drops the requirement, not the sentence. Swallowing an
+    argument the caller typed is the silence this module is built against."""
+    fields = {"status": "backlog", "write_up": "his words"}
+    kept, why = apply_done_when(fields, "the thread has an answer", waived=True)
+    assert why is None
+    assert kept["write_up"].endswith(
+        DONE_WHEN_PREFIX + "the thread has an answer")
