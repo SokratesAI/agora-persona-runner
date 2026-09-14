@@ -49,10 +49,14 @@ wrong.
 import re
 
 from agora_runner.md_sections import outline
+from agora_runner.nova_boards import (
+    parse_milestone_keeps, parse_milestone_serves,
+)
 from agora_runner.nova_goal_history import GoalHistoryError, goal_key, series
 from agora_runner.nova_journal import parse_board_refs, render_blocks
 from agora_runner.project_goals import (
     KEY_RESULT_FIELDS, KPI_FIELDS, OBJECTIVE_FIELDS, PROJECT_GOALS_PATH,
+    split_serves,
 )
 
 ROADMAP_PATH = "projects/sokrates/projects/nova/roadmap.md"
@@ -285,8 +289,12 @@ def _block_fields(lines, allowed):
     return row
 
 
-def _objective_prose(lines):
+def _objective_prose(lines, seats=None):
     """A ```objective fence -> one markdown paragraph, or `None`.
+
+    `seats` is unused here and present only so the three builders share one
+    signature -- an objective is not a thing a milestone points at; its key
+    results are.
 
     `None` when there is no `statement`, which is the one field the
     paragraph cannot be written without -- the same call `_goal` makes
@@ -312,7 +320,7 @@ def _objective_prose(lines):
     return out
 
 
-def _key_result_prose(lines):
+def _key_result_prose(lines, seats=None):
     """A ```key-result fence -> one markdown paragraph, or `None`.
 
     **A blank `now:` prints "not measured yet", never a zero.** Four of the
@@ -338,12 +346,13 @@ def _key_result_prose(lines):
         parts.append("Lower is better.")
     elif row.get("direction") == "up":
         parts.append("Higher is better.")
+    parts.extend(_seat_sentence(seats, "served", row.get("id", "")))
     if row.get("id"):
         parts.append(f"`{row['id']}`")
     return " ".join(parts)
 
 
-def _kpi_prose(lines):
+def _kpi_prose(lines, seats=None):
     """A ```kpi fence -> one markdown paragraph, or `None`.
 
     **A KPI's `target:` is deliberately never printed.** Issue #227's own
@@ -370,9 +379,70 @@ def _kpi_prose(lines):
         parts.append(f"Ceiling {high}{unit}.")
     elif low:
         parts.append(f"Floor {low}{unit}.")
+    parts.extend(_seat_sentence(seats, "kept", row.get("id", "")))
     if row.get("id"):
         parts.append(f"`{row['id']}`")
     return " ".join(parts)
+
+
+# What each half of `seat_counts` is called, and the two sentences it turns
+# into. `served` counts `milestone-seats.md`'s `Serves` column, `kept` counts
+# its `Keeps` column, and the two are never pooled -- issue #227's rule that a
+# KPI may never be a key result is enforced one column at a time by
+# `project_goals.serves_problems` and `keeps_problems`, and a page that added
+# them together would report a broken pointer as coverage.
+_SEAT_WORDS = {
+    "served": ("Served by", "**No milestone serves this yet.**"),
+    "kept": ("Kept by", "**No milestone keeps this in bounds.**"),
+}
+
+
+def seat_counts(serves, keeps):
+    """The two seat maps -> `{"served": {id: n}, "kept": {id: n}}`.
+
+    `serves` and `keeps` are `nova_boards.parse_milestone_serves` and
+    `parse_milestone_keeps` -- `{(project, milestone): cell}`, every seated
+    milestone present including the ones whose cell is empty. This counts how
+    many seats name each id, which is `project_goals.unpointed_goals` read
+    forwards: that function lists the goals nothing points at, and this says,
+    for every goal, how much is pointed at it.
+
+    An id nobody names is simply absent from the map rather than present as
+    `0`, and `_seat_sentence` turns both into the same sentence. The
+    distinction that matters is one level up and is `None` versus a map --
+    see there.
+    """
+    out = {"served": {}, "kept": {}}
+    for name, cells in (("served", serves), ("kept", keeps)):
+        for cell in (cells or {}).values():
+            for identifier in split_serves(cell):
+                out[name][identifier] = out[name].get(identifier, 0) + 1
+    return out
+
+
+def _seat_sentence(seats, column, identifier):
+    """`[]` or one sentence saying how many milestones point at `identifier`.
+
+    **`seats` of `None` prints nothing, and that is the whole point of the
+    argument being optional** -- `plan_payload` passes `None` whenever the
+    seats text is missing or empty. The seats file is a separate vault fetch
+    from the document being rendered, so it can fail on its own; if it does,
+    every
+    key result on the page would otherwise read "No milestone serves this
+    yet", which is the worst failure this page can have -- a fetch that did
+    not happen rendering as the finding a cycle is meant to act on. Unread
+    and unserved are not the same state, so only a real map speaks.
+
+    An id of `""` also prints nothing: a block with no `id` is one no `Serves`
+    cell can name, so "nothing points at it" is true and useless.
+    """
+    if seats is None or not identifier:
+        return []
+    counted = (seats.get(column) or {}).get(identifier.strip().lower(), 0)
+    label, none_of_them = _SEAT_WORDS[column]
+    if not counted:
+        return [none_of_them]
+    return [f"{label} {counted} milestone{'' if counted == 1 else 's'}."]
 
 
 def _sentence(text):
@@ -386,7 +456,7 @@ _GOAL_BLOCK_PROSE = {
 }
 
 
-def _inline_goal_blocks(text):
+def _inline_goal_blocks(text, seats=None):
     """Turn `project-goals.md`'s fences into prose, where they stand.
 
     **Why prose and not payload rows, which is the obvious thing to do.**
@@ -442,7 +512,7 @@ def _inline_goal_blocks(text):
             put_back(False)
             block, kind = [], found
         elif _FENCE_CLOSE_RE.match(line):
-            prose = _GOAL_BLOCK_PROSE[kind](block)
+            prose = _GOAL_BLOCK_PROSE[kind](block, seats)
             if prose is None:
                 put_back(True)
             else:
@@ -684,7 +754,7 @@ def _attach_history(scoreboard, history):
     return scoreboard
 
 
-def _document(key, label, text, history=None):
+def _document(key, label, text, history=None, seats=None):
     """One markdown document -> one card's worth of payload.
 
     A missing or empty document is `missing: True` with no sections
@@ -713,7 +783,7 @@ def _document(key, label, text, history=None):
     # is still one branch.
     # Before `_fenced`, and it owns three fence names `_fenced` does not,
     # so the two scans cannot fight over a `` ``` `` close.
-    text = _inline_goal_blocks(text)
+    text = _inline_goal_blocks(text, seats)
     blocks, text = _fenced(text, {"goal": _goal, "next": _next})
     scoreboard = _attach_history(blocks["goal"], history)
     ranked, ranked_done = _split_ranked(blocks["next"])
@@ -747,13 +817,19 @@ def _document(key, label, text, history=None):
     }
 
 
-def plan_payload(documents, history=None):
+def plan_payload(documents, history=None, seats=None):
     """`{key: markdown}` -> the `/plan` payload.
 
     Every document in `PLAN_DOCUMENTS` appears in the output whether or
     not the fetch found it, in the fixed order above. A page that renders
     only what it managed to read is a page that goes quietly from two
     cards to one, and the missing one is exactly the case worth seeing.
+
+    `seats` is the raw `milestone-seats.md` text and defaults to none. None
+    or empty prints no coverage sentence at all. Passing it makes each key result say
+    how many milestones serve it and each KPI how many keep it -- the chain
+    issue #227 asks for, read on the page instead of in a tool only a cycle
+    runs. `_seat_sentence` has why none and empty are different.
 
     `history` is the raw `goal-history.json` text and defaults to none,
     which is a scoreboard with no lines under it -- the state of this
@@ -769,9 +845,19 @@ def plan_payload(documents, history=None):
         # goals, every word of both -- over a chart decoration is the
         # wrong trade, and the empty chart is visible on the page.
         past = {}
+    # `None` all the way down when there is no seats text, so an unread file
+    # renders as silence rather than as "no milestone serves this" against
+    # every goal on the page. **Empty is folded in with missing on purpose**:
+    # `nova_sources.milestone_seats_markdown` returns `""` both when the
+    # fetch fails and when the file is genuinely empty, so the two are not
+    # separable here, and the safe reading of an ambiguous pair is the one
+    # that does not print a finding.
+    counts = seat_counts(parse_milestone_serves(seats),
+                         parse_milestone_keeps(seats)) if seats else None
     return {
         "documents": [
-            _document(key, label, (documents or {}).get(key, ""), past)
+            _document(key, label, (documents or {}).get(key, ""), past,
+                      counts)
             for key, label, _path in PLAN_DOCUMENTS
         ]
     }
