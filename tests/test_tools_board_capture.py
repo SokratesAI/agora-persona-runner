@@ -78,7 +78,14 @@ def _rows(store):
 
 
 def _run(*args):
-    return main(["--board", "idea", "--dated", "09-10", *args])
+    # `--no-milestone` is injected only when the caller named neither flag, so
+    # a test about something else does not have to carry it and a test about
+    # the milestone still says which one it means. The guard itself is tested
+    # through `main` directly, never through here -- a helper that supplies
+    # the flag cannot also prove the flag is required.
+    named = "--milestone" in args or "--no-milestone" in args
+    return main(["--board", "idea", "--dated", "09-10",
+                 *([] if named else ["--no-milestone"]), *args])
 
 
 # --- the pure half: what a bullet becomes -------------------------------
@@ -320,7 +327,7 @@ def test_it_refuses_a_pipe_in_the_date(store, capsys):
     """A stray `|` shifts every column right of it, and the row still reads as
     a well-formed table."""
     assert main(["--board", "idea", "--index", "0", "--dated", "09|10",
-                 "--priority", "high"]) == 1
+                 "--priority", "high", "--no-milestone"]) == 1
     assert "--dated" in capsys.readouterr().err
     assert store.calls == []
 
@@ -396,3 +403,72 @@ def test_check_passes_the_honest_case():
     before = _pairs(("one", ["answered"]), ("two", []))
     after = _pairs(("two", []))
     assert check_captures(before, after, "one") == []
+
+
+# --- the milestone, which used to have no flag at all -------------------
+#
+# Every row this tool boarded landed under no milestone, because there was
+# nothing to name one with. `project_goals_check` counted 24 of them on
+# 2026-09-14 -- issue #227's task rule, found only because a check went
+# looking. These four pin the flag that stops the inventory regrowing.
+
+
+def test_it_refuses_when_neither_milestone_flag_is_named(store, capsys):
+    """The whole point: boarding with no milestone has to be a choice."""
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-10",
+                 "--priority", "high"]) == 1
+    assert "--no-milestone" in capsys.readouterr().err
+    assert store.calls == []
+
+
+def test_it_refuses_both_milestone_flags_at_once(store, capsys):
+    """Naming a milestone and saying none fits are opposite instructions, so
+    honouring either one would be this tool guessing which he meant."""
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-10",
+                 "--priority", "high", "--milestone", "Cost and quota",
+                 "--no-milestone"]) == 1
+    assert "--no-milestone" in capsys.readouterr().err
+    assert store.calls == []
+
+
+def test_the_named_milestone_reaches_the_cell(store):
+    """A row boarded with a milestone is placed, not merely announced: the
+    print line and the cell are different claims and only the cell is read by
+    `project_goals_check`."""
+    assert _run("--index", "0", "--priority", "high",
+                "--milestone", "Cost and quota") == 0
+    assert _rows(store)[105]["milestone"] == "Cost and quota"
+
+
+def test_no_milestone_boards_the_row_ungrouped(store):
+    """The escape hatch really does board the row -- a refusal wearing a flag
+    would be worse than no flag."""
+    assert _run("--index", "0", "--priority", "high", "--no-milestone") == 0
+    assert _rows(store)[105]["milestone"] == ""
+
+
+def test_a_pipe_in_the_milestone_is_refused_before_any_write(store, capsys):
+    """A `|` ends a cell, so it would shift every column right of it."""
+    assert _run("--index", "0", "--priority", "high",
+                "--milestone", "Cost | quota") == 1
+    assert "--milestone" in capsys.readouterr().err
+    assert store.calls == []
+
+
+def test_dry_run_with_a_milestone_writes_nothing(store, capsys):
+    assert _run("--index", "0", "--priority", "high", "--dry-run",
+                "--milestone", "Cost and quota") == 0
+    assert "Cost and quota" in capsys.readouterr().out
+    assert store.calls == []
+
+
+def test_the_milestone_is_written_after_the_bullet_is_cut(store):
+    """The pair above -- row written, bullet cut -- is what a re-run repairs,
+    so a third write may not sit between them. Put it there and a refused
+    regrouping leaves the bullet in the box, and the re-run boards the item a
+    second time."""
+    assert _run("--index", "0", "--priority", "high",
+                "--milestone", "Cost and quota") == 0
+    names = [name for name, _ in store.calls]
+    last_row_write = max(i for i, name in enumerate(names) if name == "write_row")
+    assert names.index("delete_capture") < last_row_write

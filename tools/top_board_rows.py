@@ -739,7 +739,11 @@ def _capture_board_help(captures):
         return []
     out = ["  Board one — python3 -m tools.board_capture --board issue|idea "
            "--index N --priority low|medium|high|immediate "
-           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD",
+           "--status backlog|in-progress|done|blocked-on-edvard --dated MM-DD "
+           "--milestone '<name>'",
+           "  --milestone is required, or --no-milestone to board it "
+           "ungrouped on purpose: a row under no milestone serves no key "
+           "result (issue #227).",
            "  It adds the row AND deletes the bullet in the record store, so "
            "the item is in one place; the site redraws his markdown. "
            "Board highest --index first: the indices renumber after each cut."]
