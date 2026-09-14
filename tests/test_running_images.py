@@ -264,6 +264,25 @@ def test_a_manifest_is_read_out_of_the_tarball_not_a_local_clone():
     assert "curlimages/curl:latest" in files["deployments/thing.yaml"]
 
 
+def test_the_tarball_read_can_be_pointed_at_other_suffixes():
+    """`tools.goal_measures` reads the docs repo's markdown through this.
+
+    A second copy of the tarball walk would be the third thing in this repo
+    that unpacks a `gh api tarball`; the default stays YAML so this module is
+    unchanged by it.
+    """
+    blob = _tarball({"deployments/thing.yaml": DEPLOYMENT,
+                     "docs/intro.md": "# Sokrates Developer Docs",
+                     "docs/intro.mdx": "# x"})
+    files, why = REAL_FETCH(runner=_gh(blob), suffixes=(".md", ".mdx"))
+    assert why is None
+    assert sorted(files) == ["docs/intro.md", "docs/intro.mdx"]
+
+    files, why = REAL_FETCH(runner=_gh(blob))
+    assert why is None
+    assert sorted(files) == ["deployments/thing.yaml"]
+
+
 def test_an_init_container_in_a_manifest_is_a_container():
     """The `curlimages/curl:latest` idea #178 names is an init container.
 

@@ -1659,6 +1659,156 @@ def measure_docs_staleness(since, until):
                   f"({stamp}), which is {days} day(s) ago")
 
 
+#: The namespaces `docs-kr-covers-what-runs` counts, and the ones it does not.
+#:
+#: `agents`, `infra` and `obsidian` hold what this platform is -- the personas,
+#: the sites, the telemetry stack, the vault's database. Everything else in the
+#: cluster is either an upstream operator nobody here should be writing a
+#: reference page about (`kube-system`, `argocd`, `crossplane-system`,
+#: `tailscale`, `headlamp`, `arc-systems`) or a throwaway (`test`). Counting
+#: those would put the share's denominator at 54 and its target permanently out
+#: of reach for a reason that has nothing to do with whether the docs are good.
+#:
+#: The list is written here rather than derived, because "is this ours" is a
+#: judgement and there is no label on the cluster that carries it. A namespace
+#: added later is invisible to this measure until somebody adds it here, which
+#: is the honest cost of the judgement and is why it is a constant a reader can
+#: see rather than a filter buried in the function.
+DOCUMENTED_NAMESPACES = ("agents", "infra", "obsidian")
+
+#: A word in a heading, where a word may carry internal hyphens.
+#:
+#: This is the whole matcher and the reason it is a *token* rather than a
+#: substring search: `hub` is a Deployment in `infra` and `GitHub` is in half
+#: the headings on the site, and `agora` is a Deployment whose name is a prefix
+#: of `agora-persona`, `agora-heartbeat` and `agora-claude-bridge`. A
+#: mention-anywhere count reads 8 of 18 and every one of the seven extra hits
+#: is one of those two mistakes. Requiring the workload's name to *be* a token
+#: -- maximal, so `agora-persona` is one token and not two -- gives 1 of 18,
+#: which is what I counted by hand.
+_HEADING_WORD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def read_documented_workloads(runner=subprocess.run):
+    """`(names, why)` -- every Deployment and StatefulSet in the namespaces we own.
+
+    Returns a sorted list of `(namespace, name)`. One `kubectl` call per
+    namespace, both kinds at once: a workload is the unit a page would be
+    written about, and a Pod is not -- a ReplicaSet's Pod is its Deployment
+    counted twice, and a workload parked at zero replicas still needs a page.
+
+    A namespace that answers with no workload at all returns `None` rather
+    than contributing nothing. All three of these demonstrably run something,
+    so an empty list from one of them is a read that went wrong, and letting
+    it through would raise the share by shrinking its denominator -- an error
+    in the flattering direction on a number whose job is to be low.
+    """
+    names = []
+    for namespace in DOCUMENTED_NAMESPACES:
+        try:
+            done = runner(["kubectl", "get", "deploy,statefulset",
+                           "-n", namespace, "-o", "json"],
+                          capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"kubectl could not read namespace {namespace}: {exc}"
+        if done.returncode != 0:
+            blob = (done.stderr or done.stdout or "").strip()
+            return None, (f"kubectl could not read namespace {namespace}: "
+                          f"{blob.splitlines()[0] if blob else 'exited %d' % done.returncode}")
+        try:
+            body = json.loads(done.stdout)
+        except ValueError as exc:
+            return None, f"kubectl returned something that is not JSON for {namespace}: {exc}"
+        items = body.get("items")
+        if not items:
+            return None, (f"namespace {namespace} reports no Deployment or "
+                          "StatefulSet at all, which is no instrument rather "
+                          "than an empty namespace")
+        for item in items:
+            meta = item.get("metadata") or {}
+            name = (meta.get("name") or "").strip()
+            if name:
+                names.append((namespace, name))
+    return sorted(set(names)), None
+
+
+def page_headings(files):
+    """Every token appearing in a heading or a `title:` of a docs page.
+
+    `files` is the `{path: text}` a repo tarball unpacks to. Only paths under
+    `docs/` count, and that is load-bearing rather than tidiness: the docs-sync
+    gh-aw workflow lives at `.github/workflows/docs-sync.md` and its shell
+    comments all start with `#`, so a repo-wide heading scan reads a comment
+    about Gemini quota as a page heading. A page is a thing the site publishes.
+
+    A heading and a `title:` are treated the same because they are the same
+    claim -- Docusaurus uses the frontmatter title when it has one and the
+    first heading when it does not, and a page that names a workload in either
+    is a page about that workload.
+    """
+    tokens = {}
+    for path, text in sorted(files.items()):
+        if not path.startswith("docs/"):
+            continue
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                heading = stripped.lstrip("#").strip()
+            elif stripped.startswith("title:"):
+                heading = stripped.split(":", 1)[1].strip().strip("\"'")
+            else:
+                continue
+            for word in _HEADING_WORD.findall(heading.lower()):
+                tokens.setdefault(word, path)
+    return tokens
+
+
+def measure_docs_covers_what_runs(since, until):
+    """Share of the workloads we run that any docs page is named after.
+
+    Both halves are read rather than typed. The workloads come from the live
+    cluster, because what is running is the question and a manifest ArgoCD has
+    not synced is not an answer to it. The pages come from
+    `SokratesAI/sokrates-docs` over one tarball call, because the docs site is
+    published from that repo's default branch and there is no checkout of it
+    here.
+
+    **A workload counts when a page is named after it, not when a page mentions
+    it.** `_HEADING_WORD` carries that argument and the numbers behind it.
+
+    `None` when either half could not be read. A share over the workloads that
+    answered would read higher or lower than the truth depending on which
+    namespace failed, and this is a key result whose whole job is to be a low
+    number somebody fixes.
+    """
+    del since, until
+    from tools import running_images
+
+    workloads, why = read_documented_workloads()
+    if why:
+        return None, why
+    files, why = running_images.fetch_manifests(
+        repo=DOCS_REPO, suffixes=(".md", ".mdx"))
+    if why:
+        return None, why
+    pages = sorted(p for p in files if p.startswith("docs/"))
+    if not pages:
+        return None, (f"{DOCS_REPO} carries no markdown under docs/ at all, "
+                      "which is no instrument rather than a site with no pages")
+    tokens = page_headings(files)
+    covered = [(ns, name) for ns, name in workloads if name in tokens]
+    missing = [name for ns, name in workloads if name not in tokens]
+    named = ", ".join(f"{name} ({tokens[name]})" for _, name in covered) or "none"
+    detail = (f"{len(covered)} of {len(workloads)} workload(s) across "
+              f"{', '.join(DOCUMENTED_NAMESPACES)} are named in a heading or a "
+              f"title of one of {DOCS_REPO}'s {len(pages)} pages under docs/. "
+              f"Named: {named}. Not named: {', '.join(missing) or 'none'}. "
+              "Named after, not mentioned in -- a mention-anywhere count reads "
+              "higher because `hub` is inside GitHub and `agora` is a prefix of "
+              "every agora-* sibling")
+    return round(100.0 * len(covered) / len(workloads), 1), detail
+
+
 def measure_post_volume(since, until):
     """Articles the Post printed per day, over the seven complete days to yesterday.
 
@@ -2251,6 +2401,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "demos-kr-no-litter": measure_demos_no_litter,
     "research-kr-reused": measure_research_reused,
     "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
+    "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
 }
 
 

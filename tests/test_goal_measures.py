@@ -5,6 +5,7 @@ passes with the fix ripped out is not evidence of anything, which this
 loop has now shipped twice.
 """
 
+import types
 import json
 import sys
 from collections import Counter
@@ -2946,3 +2947,126 @@ class TestInfraOutlivesTheBox:
     def test_outlives_the_box_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["infra-kr-outlives-the-box"] is \
             gm.measure_infra_outlives_the_box
+
+
+class TestDocsCoversWhatRuns:
+    """Share of the workloads we run that a docs page is named after.
+
+    Two halves, and each one has a way of going wrong that flatters the
+    number: a namespace that fails to read shrinks the denominator, and a
+    substring match inflates the numerator. Both get a test.
+    """
+
+    def _kubectl(self, per_namespace):
+        """A `subprocess.run` stand-in answering `kubectl get` per namespace."""
+        def runner(args, **_kwargs):
+            namespace = args[args.index("-n") + 1]
+            answer = per_namespace[namespace]
+            if isinstance(answer, int):
+                return types.SimpleNamespace(
+                    returncode=answer, stdout="", stderr="kubectl said no")
+            items = [{"metadata": {"name": name}} for name in answer]
+            return types.SimpleNamespace(
+                returncode=0, stdout=json.dumps({"items": items}), stderr="")
+        return runner
+
+    def _pages(self, monkeypatch, files):
+        from tools import running_images
+        monkeypatch.setattr(running_images, "fetch_manifests",
+                            lambda **_kw: (files, None))
+
+    def test_it_is_the_share_of_workloads_a_page_is_named_after(
+            self, monkeypatch):
+        monkeypatch.setattr(gm, "DOCUMENTED_NAMESPACES", ("agents",))
+        monkeypatch.setattr(gm, "read_documented_workloads",
+                            lambda: ([("agents", "agora"), ("agents", "marcus"),
+                                      ("agents", "redis"), ("agents", "hub")],
+                                     None))
+        self._pages(monkeypatch, {
+            "docs/explanation/agora.md": "---\ntitle: How Agora runs an agent\n---\n",
+            "docs/reference/marcus.md": "# Marcus\n",
+        })
+        value, detail = gm.measure_docs_covers_what_runs(None, None)
+        assert value == 50.0
+        assert "2 of 4" in detail
+        assert "redis" in detail and "hub" in detail
+
+    def test_a_mention_inside_another_word_does_not_count(self, monkeypatch):
+        # `hub` is a Deployment in infra and `GitHub` is in half the headings
+        # on that site; `agora` is a Deployment and a prefix of agora-persona.
+        # A substring match reads 2 of 2 here and the honest answer is 0.
+        monkeypatch.setattr(gm, "read_documented_workloads",
+                            lambda: ([("infra", "hub"), ("agents", "agora")],
+                                     None))
+        self._pages(monkeypatch, {
+            "docs/reference/github-service.md": "# GitHubService\n",
+            "docs/reference/agora-persona.md": "# agora-persona\n",
+        })
+        value, detail = gm.measure_docs_covers_what_runs(None, None)
+        assert value == 0.0, detail
+        assert "0 of 2" in detail
+
+    def test_a_heading_outside_docs_is_not_a_page(self, monkeypatch):
+        # `.github/workflows/docs-sync.md` is a gh-aw workflow whose shell
+        # comments all start with `#`. A repo-wide heading scan reads those as
+        # headings, which is how a comment could credit a workload with a page.
+        monkeypatch.setattr(gm, "read_documented_workloads",
+                            lambda: ([("agents", "marcus")], None))
+        self._pages(monkeypatch, {
+            ".github/workflows/docs-sync.md": "# marcus is mentioned here\n",
+            "docs/intro.md": "# Sokrates Developer Docs\n",
+        })
+        value, detail = gm.measure_docs_covers_what_runs(None, None)
+        assert value == 0.0, detail
+        assert "1 pages under docs/" in detail
+
+    def test_a_namespace_that_cannot_be_read_gets_no_reading(self, monkeypatch):
+        monkeypatch.setattr(gm, "DOCUMENTED_NAMESPACES", ("agents", "infra"))
+        runner = self._kubectl({"agents": ["agora"], "infra": 1})
+        names, why = gm.read_documented_workloads(runner=runner)
+        assert names is None
+        assert "infra" in why
+
+    def test_an_empty_namespace_is_a_failed_read_not_a_clean_one(
+            self, monkeypatch):
+        # All three demonstrably run something, so an empty list shrinks the
+        # denominator and raises the share -- an error in the flattering
+        # direction on a number whose job is to be low.
+        monkeypatch.setattr(gm, "DOCUMENTED_NAMESPACES", ("agents", "obsidian"))
+        runner = self._kubectl({"agents": ["agora"], "obsidian": []})
+        names, why = gm.read_documented_workloads(runner=runner)
+        assert names is None
+        assert "obsidian" in why
+
+    def test_both_kinds_are_read_in_one_call(self):
+        seen = []
+
+        def runner(args, **_kwargs):
+            seen.append(args)
+            return types.SimpleNamespace(
+                returncode=0, stdout=json.dumps({"items": [
+                    {"metadata": {"name": "x"}}]}), stderr="")
+
+        gm.read_documented_workloads(runner=runner)
+        assert all("deploy,statefulset" in args for args in seen)
+        assert len(seen) == len(gm.DOCUMENTED_NAMESPACES)
+
+    def test_a_site_with_no_pages_gets_no_reading(self, monkeypatch):
+        monkeypatch.setattr(gm, "read_documented_workloads",
+                            lambda: ([("agents", "agora")], None))
+        self._pages(monkeypatch, {"README.md": "# sokrates-docs\n"})
+        value, detail = gm.measure_docs_covers_what_runs(None, None)
+        assert value is None
+        assert "no markdown under docs/" in detail
+
+    def test_the_live_pair_answers(self):
+        # Against the real cluster and the real repo: the two halves of this
+        # measure are a kubectl read and a tarball read, and a fixture cannot
+        # tell me either one still works.
+        value, detail = gm.measure_docs_covers_what_runs(None, None)
+        assert value is not None, detail
+        assert 0 <= value <= 100
+
+    def test_covers_what_runs_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["docs-kr-covers-what-runs"] is \
+            gm.measure_docs_covers_what_runs
