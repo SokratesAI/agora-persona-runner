@@ -3063,17 +3063,17 @@ _MILESTONE_SEATS_HEADER = """---
 type: board
 tags: [agora, milestones, board]
 status: built
-contract: Nova writes this. The order Nova keeps each project's milestones in, one row per milestone, position 1-based inside its project. Read by nova_next.milestone_ranks after the computed order and before the owner's pins in milestones.md, which always win. A milestone with no row here goes after every seated one in its project. Serves names the key result ids in project-goals.md this milestone serves, comma-separated; empty means it serves no goal, which is either keep-the-lights-on work under a KPI or the pruning signal (issue #227).
+contract: Nova writes this. The order Nova keeps each project's milestones in, one row per milestone, position 1-based inside its project. Read by nova_next.milestone_ranks after the computed order and before the owner's pins in milestones.md, which always win. A milestone with no row here goes after every seated one in its project. Serves names the key result ids in project-goals.md this milestone serves, comma-separated. Keeps names the KPI ids it keeps in bounds, for keep-the-lights-on work that serves no goal. Both empty is the orphan: a milestone that serves no key result and keeps no guardrail, which is either a missing KPI or the pruning signal (issue #227).
 ---
 
 # Milestone seats
 
-| Project | Milestone | Position | Updated | Serves |
-|---|---|---|---|---|
+| Project | Milestone | Position | Updated | Serves | Keeps |
+|---|---|---|---|---|---|
 """
 
 
-def render_milestone_seats(order, updated="", serves=None):
+def render_milestone_seats(order, updated="", serves=None, keeps=None):
     """`[(project, milestone), ...]` in rank order -> `milestone-seats.md`.
 
     Positions are counted per project in the order given, so the list
@@ -3089,20 +3089,34 @@ def render_milestone_seats(order, updated="", serves=None):
     both render as an empty cell here, so the orphan list is built by
     `project_goals.serves_problems` over the seats that exist rather than
     inferred from a blank. A cell carrying a `|` is refused like a name.
+
+    `keeps` is the same map for the `Keeps` column -- which KPIs in
+    `project-goals.md` this milestone keeps in bounds. It exists because
+    rule 4 of issue #227 says an orphan is *one of exactly two things*,
+    keep-the-lights-on work that sits under a KPI or work nobody can
+    justify, and until this column there was nowhere to record which. A
+    seat with a `Serves` cell and a seat with a `Keeps` cell are both
+    answered; only a seat with neither is the pruning signal.
     """
     lines, seen = [_MILESTONE_SEATS_HEADER.rstrip("\n")], {}
-    pointers = {(str(a).strip().lower(), str(b).strip().lower()): value
-                for (a, b), value in (serves or {}).items()}
+
+    def _keyed(mapping):
+        return {(str(a).strip().lower(), str(b).strip().lower()): value
+                for (a, b), value in (mapping or {}).items()}
+
+    pointers, guardrails = _keyed(serves), _keyed(keeps)
     for project, milestone in order:
         name, group = (project or "").strip(), (milestone or "").strip()
         if not name or not group or "|" in name or "|" in group:
             return None
-        served = str(pointers.get((name.lower(), group.lower()), "")).strip()
-        if "|" in served:
+        key = (name.lower(), group.lower())
+        served = str(pointers.get(key, "")).strip()
+        kept = str(guardrails.get(key, "")).strip()
+        if "|" in served or "|" in kept:
             return None
         seen[name.lower()] = seen.get(name.lower(), 0) + 1
         lines.append(f"| {name} | {group} | {seen[name.lower()]} | "
-                     f"{(updated or '').strip()} | {served} |")
+                     f"{(updated or '').strip()} | {served} | {kept} |")
     return "\n".join(lines) + "\n"
 
 
@@ -3141,6 +3155,48 @@ def parse_milestone_serves(markdown):
             continue
         out[(project.lower(), milestone.lower())] = (
             cells[4] if len(cells) > 4 else "")
+    return out
+
+
+def parse_milestone_keeps(markdown):
+    """`milestone-seats.md` -> `{(project, milestone) lowercased: Keeps cell}`.
+
+    The `Serves` column's sibling, and the reason it is a separate column
+    rather than more ids in the same cell is issue #227's own rule that a
+    KPI may never be used as a key result: one cell holding both kinds
+    would make that rule unenforceable, since nothing could tell a wrong
+    pointer from a guardrail pointer.
+
+    Reads the sixth cell, so a file written before that column existed
+    answers `""` for every seat rather than failing -- an unanswered seat
+    and one whose answer is "no guardrail" are the same thing here, the
+    same call `parse_milestone_serves` makes one column to the left.
+    """
+    out = {}
+    for key, _ in parse_milestone_serves(markdown).items():
+        out[key] = ""
+    for line in (markdown or "").split("\n"):
+        text = line.strip()
+        if not text.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in text.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        if all(set(cell) <= set("-: ") and cell for cell in cells):
+            continue
+        project, milestone = cells[0], cells[1]
+        if not project or not milestone:
+            continue
+        if project.lower() == "project" and milestone.lower() == "milestone":
+            continue
+        try:
+            position = int(cells[2])
+        except (TypeError, ValueError):
+            continue
+        if position < 1:
+            continue
+        out[(project.lower(), milestone.lower())] = (
+            cells[5] if len(cells) > 5 else "")
     return out
 
 

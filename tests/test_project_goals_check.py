@@ -34,7 +34,8 @@ def test_an_orphan_milestone_is_listed_but_does_not_raise():
     seats = SEATS + "| Nova | Runner engineering | 2 | 09-13 |  |\n"
     lines, code = report(GOALS, seats)
     assert code == 0
-    assert any("serves nothing" in line for line in lines)
+    assert any("serves no key result and keeps no KPI" in line
+               for line in lines)
     assert any("1 orphan(s)" in line for line in lines)
     assert not any(line.startswith("BROKEN") for line in lines)
 
@@ -48,7 +49,8 @@ def test_an_orphan_beside_a_real_defect_still_raises_on_the_defect():
     lines, code = report(GOALS, seats)
     assert code == 2
     assert any("is a KPI" in line for line in lines)
-    assert any("serves nothing" in line for line in lines)
+    assert any("serves no key result and keeps no KPI" in line
+               for line in lines)
     assert lines[0] == "BROKEN"
 
 
@@ -96,9 +98,10 @@ def test_orphans_prints_the_inventory_alone_and_exits_zero(tmp_path, capsys):
     seats.write_text(SEATS + "| Nova | Runner engineering | 2 | 09-13 |  |\n")
     assert main(["--goals", str(goals), "--seats", str(seats), "--orphans"]) == 0
     out = capsys.readouterr().out.strip().splitlines()
-    assert out == ["nova / runner engineering: serves nothing -- either "
-                   "keep-the-lights-on work that belongs under a KPI, or "
-                   "work nobody can justify"]
+    assert out == ["nova / runner engineering: serves no key result and "
+                   "keeps no KPI -- either keep-the-lights-on work whose "
+                   "guardrail has not been written yet, or work nobody can "
+                   "justify"]
 
 
 def test_scaffold_prints_an_empty_document_that_parses_as_empty(capsys):
@@ -106,3 +109,24 @@ def test_scaffold_prints_an_empty_document_that_parses_as_empty(capsys):
     out = capsys.readouterr().out
     assert "# Project goals" in out and "contract:" in out
     assert parse_project_goals(out) == {}
+
+
+def test_a_seat_naming_the_kpi_it_keeps_leaves_the_orphan_list_empty():
+    """The `Keeps` column read end to end: the same row that was an orphan
+    above stops being one once it says which guardrail it holds, and the
+    document still holds -- issue #227's fourth rule, both verdicts."""
+    seats = (SEATS
+             + "| Nova | Runner engineering | 2 | 09-13 |  | nova-cost |\n")
+    lines, code = report(GOALS, seats)
+    assert code == 0
+    assert any("0 orphan(s)" in line for line in lines)
+    assert not any("keeps no KPI" in line for line in lines)
+
+
+def test_a_seat_keeping_a_key_result_raises():
+    """The other half of the rule that a guardrail is not a goal."""
+    seats = (SEATS
+             + "| Nova | Runner engineering | 2 | 09-13 |  | nova-kr1 |\n")
+    lines, code = report(GOALS, seats)
+    assert code == 2
+    assert any("is a key result" in line for line in lines)
