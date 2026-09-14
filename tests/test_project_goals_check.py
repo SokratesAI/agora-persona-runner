@@ -353,7 +353,7 @@ def _goals_with(period, status="agreed"):
 def test_an_objective_whose_month_has_ended_is_listed_but_does_not_raise():
     """Issue #227's seventh rule -- *"Monthly objectives, weekly check"* --
     and the reason it is an inventory rather than a defect: re-cutting a
-    goal is a conversation with Edvard, not something a pull request
+    goal is a conversation with the owner, not something a pull request
     closes. The same call `serves_orphans` makes on the pruning list."""
     lines, code = report(_goals_with("2026-08"), SEATS, rows=[row(1)],
                          today=datetime.date(2026, 9, 14))

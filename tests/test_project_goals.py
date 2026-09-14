@@ -535,7 +535,7 @@ def test_a_seat_naming_its_guardrail_is_in_neither_list():
 
 
 def test_month_name_does_not_read_the_process_locale():
-    """A month name is something Edvard reads on his phone, and `strftime`
+    """A month name is something the owner reads on his phone, and `strftime`
     would render it differently on two boxes with different locales. A
     value this cannot parse comes back verbatim rather than as an
     invented month -- that case is `problems`' to report, not this one's."""

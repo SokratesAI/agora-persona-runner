@@ -129,7 +129,7 @@ def month_name(period):
 
     Not `strftime`: that reads the process locale, so the same document
     would render differently on two boxes, and a month name is something
-    Edvard reads on his phone.
+    the owner reads on his phone.
     """
     if not _PERIOD_RE.match(period or ""):
         return period
@@ -497,7 +497,7 @@ def objective_periods(sections, today):
 
     **A struck objective is never past its period.** It is a decision kept
     so it can be read back -- the same reason a struck goal keeps its block
-    on `/plan` -- and asking Edvard to re-cut a goal he has already killed
+    on `/plan` -- and asking the owner to re-cut a goal he has already killed
     is the check inventing work. `discussing` is included on purpose: an
     objective whose month ended while it was still being argued about is
     exactly the thing rule 7 is watching for.
