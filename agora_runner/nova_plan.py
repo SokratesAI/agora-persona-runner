@@ -56,7 +56,7 @@ from agora_runner.nova_goal_history import GoalHistoryError, goal_key, series
 from agora_runner.nova_journal import parse_board_refs, render_blocks
 from agora_runner.project_goals import (
     KEY_RESULT_FIELDS, KPI_FIELDS, OBJECTIVE_FIELDS, PROJECT_GOALS_PATH,
-    split_serves,
+    month_name, split_serves,
 )
 
 ROADMAP_PATH = "projects/sokrates/projects/nova/roadmap.md"
@@ -315,6 +315,15 @@ def _objective_prose(lines, seats=None):
     out = f"{head} {statement}"
     if not out.endswith("."):
         out += "."
+    # The month it covers, from issue #227's seventh rule: *"Monthly
+    # objectives, weekly check."* Printed as a month name rather than
+    # `2026-09`, and printed here rather than judged -- whether the month is
+    # over is a question about today, this builder has no clock, and a page
+    # that renders one answer in Oslo and another in UTC is worse than one
+    # that states the fact and lets `project_goals_check` do the arithmetic.
+    period = row.get("period", "")
+    if period:
+        out += f" Covers {month_name(period)}."
     if row.get("conversation"):
         out += f" Argued out in Agora conversation `{row['conversation']}`."
     return out

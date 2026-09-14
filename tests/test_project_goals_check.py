@@ -7,6 +7,7 @@ nothing and 32 sit in projects the owner scoped out, so a merged list is red
 forever on work nobody is allowed to do.
 """
 
+import datetime
 import json
 
 from agora_runner.project_goals import parse_project_goals
@@ -31,7 +32,14 @@ def test_a_linked_milestone_is_clean():
     """`SEATS` has no `Keeps` column, so `nova-cost` is a KPI nobody holds in
     bounds. That is the unpointed-goal inventory and it is pinned here rather
     than hidden, because the subject of this test is that a model with an
-    inventory line in it still exits 0 -- an inventory is not a defect."""
+    inventory line in it still exits 0 -- an inventory is not a defect.
+
+    `GOALS` carries no `period:` deliberately, and for a second reason: a
+    fixture pinned to a real month goes red the morning that month ends,
+    which is a suite that was green at merge and fails later with no change
+    to the code. Undated is the one state rule 7 reads the same way forever,
+    so the shared fixture holds it and the tests that care about the clock
+    pass their own `today`."""
     lines, code = report(GOALS, SEATS, rows=[row(1)])
     assert code == 0
     assert lines == ["MODEL HOLDS",
@@ -40,8 +48,14 @@ def test_a_linked_milestone_is_clean():
                      "not raise:",
                      "  Nova / nova-cost: a KPI no milestone keeps -- no "
                      "milestone is accountable for holding it in bounds",
+                     "NO MONTH AT ALL (1) -- also rule 7, and also not a "
+                     "defect: an objective carrying no period is one nothing "
+                     "can ever report as stale:",
+                     "  Nova: objective names no period -- nothing can tell "
+                     "whether this month's goal is this month's",
                      "1 project section(s), 1 seated milestone(s), "
                      "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
+                     "0 objective(s) past their month, 1 undated, "
                      "0 unplaced task(s)"]
 
 
@@ -326,3 +340,72 @@ def test_the_orphans_flag_groups_the_two_kinds_too(tmp_path, capsys):
     assert len(out) == 2
     assert out[0].startswith("nova / runner engineering")
     assert out[1].startswith("alfa / nothing to serve")
+
+
+def _goals_with(period, status="agreed"):
+    """`GOALS` with a period and a status on its objective."""
+    conversation = "conversation: 18bdb05e-2ad0-479d-9a7d-d9b8bab3fd5e\n"
+    return GOALS.replace(
+        f"statement: s\nstatus: agreed\n{conversation}",
+        f"statement: s\nstatus: {status}\n{conversation}period: {period}\n")
+
+
+def test_an_objective_whose_month_has_ended_is_listed_but_does_not_raise():
+    """Issue #227's seventh rule -- *"Monthly objectives, weekly check"* --
+    and the reason it is an inventory rather than a defect: re-cutting a
+    goal is a conversation with the owner, not something a pull request
+    closes. The same call `serves_orphans` makes on the pruning list."""
+    lines, code = report(_goals_with("2026-08"), SEATS, rows=[row(1)],
+                         today=datetime.date(2026, 9, 14))
+    assert code == 0
+    assert sum(1 for l in lines if l.startswith("PAST THEIR MONTH (1)")) == 1
+    assert any("objective covers August 2026, which ended before "
+               "September 2026" in l for l in lines)
+    assert "1 objective(s) past their month, 0 undated," in lines[-1]
+
+
+def test_the_current_month_is_not_past_it():
+    """The boundary, and the half that makes the test above evidence: an
+    objective covering *this* month reads clean, so the finding comes from
+    the month having ended rather than from the field merely existing."""
+    lines, code = report(_goals_with("2026-09"), SEATS, rows=[row(1)],
+                         today=datetime.date(2026, 9, 1))
+    assert code == 0
+    assert not [l for l in lines if l.startswith("PAST THEIR MONTH")]
+    assert "0 objective(s) past their month, 0 undated," in lines[-1]
+
+
+def test_a_struck_objective_is_never_asked_to_be_re_cut():
+    """A struck objective is a decision kept so it can be read back, the
+    same way `/plan` keeps a declined goal's block. Asking him to re-cut a
+    goal he has already killed is the check inventing work."""
+    lines, code = report(_goals_with("2026-01", status="struck"), SEATS,
+                         rows=[row(1)], today=datetime.date(2026, 9, 14))
+    assert code == 0
+    assert not [l for l in lines if l.startswith("PAST THEIR MONTH")]
+    assert not [l for l in lines if l.startswith("NO MONTH AT ALL")]
+
+
+def test_a_period_that_is_not_a_month_is_a_defect_and_raises():
+    """Unlike the two inventories, a period this cannot parse *is* a model
+    problem: it is an objective nothing can ever age, which is the state
+    rule 7 exists to end, and it is closed by editing one line."""
+    lines, code = report(_goals_with("September"), SEATS, rows=[row(1)],
+                         today=datetime.date(2026, 9, 14))
+    assert code == 2
+    assert any("objective period 'September' is not a month" in l
+               for l in lines)
+
+
+def test_the_month_check_reads_the_caller_s_clock_not_the_box_s():
+    """`report` defaults `today` at the edge and `objective_periods` refuses
+    to guess, so the same document answers differently only when the caller
+    says so. A month test against an implicit clock is green forever on a
+    box whose date happens to agree with the fixture."""
+    goals = _goals_with("2026-09")
+    assert not [l for l in report(goals, SEATS, rows=[row(1)],
+                                  today=datetime.date(2026, 9, 30))[0]
+                if l.startswith("PAST THEIR MONTH")]
+    assert [l for l in report(goals, SEATS, rows=[row(1)],
+                              today=datetime.date(2026, 10, 1))[0]
+            if l.startswith("PAST THEIR MONTH")]
