@@ -3435,6 +3435,69 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
     assert len(message_fetches) == runner.heartbeats.CYCLE_LOOKBACK
 
 
+def test_a_timed_out_listing_does_not_kill_the_cycle(runner):
+    """The whole reason this walk catches anything at all.
+
+    `GET /conversations` timed out against the live store and the raised
+    `TimeoutError` travelled out of here into `run_heartbeat`, which killed
+    the cycle before it ran a turn -- 1350, 1405, 1505, 1527 and 1534, each
+    after about 33 seconds, each leaving no journal entry. The previous
+    cycle's own tail needs no network and must still come through, because
+    that is the message this walk exists to carry.
+    """
+    heartbeat = {"id": "hb1", "conversationId": "c-new"}
+    previous = {"personas": [], "messages": [
+        {"sender": "Edvard", "text": "did that merge work?", "id": "m1"}]}
+
+    with patch.object(runner.heartbeats, "agora_get",
+                      side_effect=TimeoutError("timed out")):
+        carried = runner.pending_across_cycles(heartbeat, previous)
+
+    assert [text for _source, text in carried] == ["did that merge work?"]
+
+
+def test_one_unreachable_older_conversation_does_not_lose_the_others(runner):
+    """A failure fetching one thread skips that thread, not the walk. The
+    non-200 branch beside it already behaved this way; an exception did not.
+    """
+    heartbeat = {"id": "hb1", "conversationId": "c-new"}
+    previous = {"personas": [], "messages": [
+        {"sender": "Test", "text": "cycle 4's report", "id": "m2"}]}
+    listing = {"conversations": [
+        {"id": "c-dead", "name": "dead", "tags": [runner.cycle_tag("hb1")],
+         "createdAt": "2026-08-03T01:00:00+00:00"},
+        {"id": "c-live", "name": "live", "tags": [runner.cycle_tag("hb1")],
+         "createdAt": "2026-08-02T01:00:00+00:00"}]}
+
+    def fake_agora_get(path):
+        if path == "/conversations":
+            return 200, listing
+        if "c-dead" in path:
+            raise ConnectionResetError("connection reset by peer")
+        return 200, {"personas": [], "messages": [
+            {"sender": "Edvard", "text": "the one before", "id": "m1"}]}
+
+    with patch.object(runner.heartbeats, "agora_get", side_effect=fake_agora_get):
+        carried = runner.pending_across_cycles(heartbeat, previous)
+
+    assert [text for _source, text in carried] == ["the one before"]
+
+
+def test_the_walk_still_crashes_on_a_bug_rather_than_a_network_failure(runner):
+    """The catch is `OSError`/`HTTPException`, deliberately not `Exception`.
+    A `KeyError` from the parsing below it is a defect in this repo and has
+    to keep crashing loudly; swallowing it would turn every future bug here
+    into a cycle that silently carries nothing.
+    """
+    heartbeat = {"id": "hb1", "conversationId": "c-new"}
+    previous = {"personas": [], "messages": []}
+
+    with patch.object(runner.heartbeats, "agora_get",
+                      side_effect=KeyError("conversations")):
+        with pytest.raises(KeyError):
+            runner.pending_across_cycles(heartbeat, previous)
+
+
 def test_pending_across_cycles_drops_the_oldest_when_over_the_char_cap(runner):
     """The owner's own constraint on a long-lived channel: "i do not want
     Claude to read that every time as it can quickly be megabytes of
