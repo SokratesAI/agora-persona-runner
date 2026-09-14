@@ -306,3 +306,23 @@ def test_a_report_with_no_orphans_does_not_carry_the_split():
     lines, _ = report(GOALS, SEATS, rows=[row(1)])
     assert "0 orphan(s)," in lines[-1]
     assert "pruning signal" not in lines[-1]
+
+
+def test_the_orphans_flag_groups_the_two_kinds_too(tmp_path, capsys):
+    """`--orphans` is for when the list is the thing you came for, so it
+    gets the same grouping the report does -- four pruning signals
+    interleaved alphabetically with thirty-two that have nothing to serve
+    is the state this split exists to end. `Alfa` sorts before `Nova`, so
+    a flat alphabetical list puts it first and this test reds."""
+    goals = tmp_path / "g.md"
+    goals.write_text(GOALS)
+    seats = tmp_path / "s.md"
+    seats.write_text(SEATS
+                     + "| Alfa | Nothing to serve | 2 | 09-13 |  |\n"
+                       "| Nova | Runner engineering | 3 | 09-13 |  |\n")
+    assert main(["--orphans", "--goals", str(goals),
+                 "--seats", str(seats)]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert len(out) == 2
+    assert out[0].startswith("nova / runner engineering")
+    assert out[1].startswith("alfa / nothing to serve")

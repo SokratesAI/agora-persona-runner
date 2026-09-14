@@ -83,7 +83,7 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.project_goals import (
     PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, parse_project_goals, problems,
-    keeps_problems, serves_orphans, serves_problems, split_orphans,
+    keeps_problems, serves_problems, split_orphans,
     task_seat_orphans,
     unpointed_goals,
     task_seat_problems,
@@ -278,9 +278,16 @@ def main(argv=None):
             print(f"UNREADABLE: {name}")
             return 1
     if args.orphans:
-        for line in serves_orphans(parse_milestone_serves(seats),
-                                   parse_project_goals(goals),
-                                   parse_milestone_keeps(seats)):
+        # Grouped, not one flat alphabetical list: this flag exists for
+        # when the orphan list is the thing you came for, and four
+        # pruning signals interleaved with thirty-two seats that have
+        # nothing to serve yet is the state the split fixed in `report`.
+        prunable, awaiting = split_orphans(parse_milestone_serves(seats),
+                                           parse_project_goals(goals),
+                                           parse_milestone_keeps(seats))
+        for line in prunable:
+            print(line)
+        for line in awaiting:
             print(line)
         return 0
     # Fetched here rather than beside the two documents so `--orphans`, which
