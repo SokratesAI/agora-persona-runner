@@ -3853,3 +3853,160 @@ class TestMeasurePostEditorAndReadership:
         assert gm.KEY_RESULT_FETCH_MEASURERS["post-kr-editor"] is gm.measure_post_editor
         assert (gm.KEY_RESULT_FETCH_MEASURERS["post-kr-readership"]
                 is gm.measure_post_readership)
+
+
+class TestOffBoxWatch:
+    """`nas-kr-off-box-watch` -- alerting paths that survive server1 dying."""
+
+    ALARM = (
+        "name: nova-deadman\n"
+        "on:\n"
+        "  schedule:\n"
+        "    - cron: '53 4 * * *'\n"
+        "  workflow_dispatch:\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "  issues: write\n"
+        "concurrency:\n"
+        "  group: nova-deadman\n"
+    )
+
+    def _sweep(self, workflows, runs=None, repos=None):
+        def fetch(repo, suffixes):
+            return dict(workflows.get(repo, {})), None
+
+        def list_repos(org):
+            return (repos if repos is not None
+                    else sorted(workflows)), None, []
+
+        def history(repo, workflow):
+            return list((runs or {}).get((repo, workflow), [])), None
+
+        return gm.measure_nas_off_box_watch(
+            None, "2026-09-14", fetch=fetch, list_repos=list_repos,
+            runs=history)
+
+    @staticmethod
+    def _run(day, event="schedule", status="completed"):
+        return {"event": event, "status": status, "conclusion": "success",
+                "createdAt": f"{day}T10:00:00Z"}
+
+    def test_a_scheduled_run_in_the_window_is_a_path(self):
+        value, detail = self._sweep(
+            {"o/r": {".github/workflows/deadman.yaml": self.ALARM}},
+            {("o/r", "deadman.yaml"): [self._run("2026-09-14")]})
+        assert value == 1, detail
+        assert "o/r/nova-deadman" in detail
+
+    def test_a_workflow_github_never_started_is_not_a_path(self):
+        """The whole reason this is an instrument and not a second hand count."""
+        value, detail = self._sweep(
+            {"o/r": {".github/workflows/deadman.yaml": self.ALARM}},
+            {("o/r", "deadman.yaml"): []})
+        assert value == 0, detail
+        assert "configuration rather than a path" in detail
+
+    def test_a_button_press_is_not_a_path(self):
+        value, detail = self._sweep(
+            {"o/r": {".github/workflows/deadman.yaml": self.ALARM}},
+            {("o/r", "deadman.yaml"): [self._run("2026-09-14",
+                                                 event="workflow_dispatch")]})
+        assert value == 0, detail
+
+    def test_a_run_outside_the_window_is_not_a_path(self):
+        value, detail = self._sweep(
+            {"o/r": {".github/workflows/deadman.yaml": self.ALARM}},
+            {("o/r", "deadman.yaml"): [self._run("2026-07-01")]})
+        assert value == 0, detail
+
+    def test_two_rungs_of_one_alarm_count_once(self):
+        fast = self.ALARM.replace("'53 4 * * *'", "'7,37 * * * *'")
+        value, detail = self._sweep(
+            {"o/r": {".github/workflows/deadman.yaml": self.ALARM,
+                     ".github/workflows/deadman-fast.yaml": fast}},
+            {("o/r", "deadman.yaml"): [self._run("2026-09-13")],
+             ("o/r", "deadman-fast.yaml"): [self._run("2026-09-14")]})
+        assert value == 1, detail
+        assert "2 workflow file(s) in 1 alarm(s)" in detail
+        assert "last scheduled run 2026-09-14" in detail
+
+    def test_a_live_rung_outranks_a_quiet_one_in_the_same_alarm(self):
+        fast = self.ALARM.replace("'53 4 * * *'", "'7,37 * * * *'")
+        value, detail = self._sweep(
+            {"o/r": {".github/workflows/deadman.yaml": self.ALARM,
+                     ".github/workflows/deadman-fast.yaml": fast}},
+            {("o/r", "deadman.yaml"): [],
+             ("o/r", "deadman-fast.yaml"): [self._run("2026-09-14")]})
+        assert value == 1, detail
+        assert "0 alarm(s) have had no scheduled run complete" in detail
+
+    def test_the_on_key_is_not_the_string_on(self):
+        """YAML 1.1 parses an unquoted `on:` as the boolean True."""
+        import yaml as _yaml
+        document = _yaml.safe_load(self.ALARM)
+        assert document.get("on") is None
+        assert gm.judge_off_box_alert(document)
+
+    def test_a_workflow_that_cannot_open_an_issue_is_not_a_path(self):
+        import yaml as _yaml
+        read_only = self.ALARM.replace("  issues: write\n", "  issues: read\n")
+        assert gm.judge_off_box_alert(_yaml.safe_load(read_only)) is None
+        none_at_all = self.ALARM.replace("permissions:\n  contents: read\n"
+                                         "  issues: write\n", "")
+        assert gm.judge_off_box_alert(_yaml.safe_load(none_at_all)) is None
+
+    def test_write_all_grants_it(self):
+        import yaml as _yaml
+        wide = self.ALARM.replace("permissions:\n  contents: read\n"
+                                  "  issues: write\n",
+                                  "permissions: write-all\n")
+        assert gm.judge_off_box_alert(_yaml.safe_load(wide))
+        narrow = self.ALARM.replace("permissions:\n  contents: read\n"
+                                    "  issues: write\n",
+                                    "permissions: read-all\n")
+        assert gm.judge_off_box_alert(_yaml.safe_load(narrow)) is None
+
+    def test_an_unscheduled_workflow_is_not_a_path(self):
+        import yaml as _yaml
+        manual = self.ALARM.replace("  schedule:\n    - cron: '53 4 * * *'\n", "")
+        assert gm.judge_off_box_alert(_yaml.safe_load(manual)) is None
+
+    def test_a_workflow_with_no_concurrency_is_its_own_alarm(self):
+        import yaml as _yaml
+        loose = self.ALARM.replace("concurrency:\n  group: nova-deadman\n", "")
+        assert (gm.alarm_group(_yaml.safe_load(loose), ".github/workflows/a.yaml")
+                == ".github/workflows/a.yaml")
+
+    def test_an_unreadable_repo_is_no_reading_not_a_smaller_count(self):
+        def fetch(repo, suffixes):
+            if repo == "o/broken":
+                return None, "403"
+            return {".github/workflows/deadman.yaml": self.ALARM}, None
+
+        value, detail = gm.measure_nas_off_box_watch(
+            None, "2026-09-14", fetch=fetch,
+            list_repos=lambda org: (["o/r", "o/broken"], None, []),
+            runs=lambda repo, workflow: ([self._run("2026-09-14")], None))
+        assert value is None
+        assert "403" in detail
+
+    def test_an_empty_org_is_a_failed_read(self):
+        value, detail = self._sweep({}, repos=[])
+        assert value is None
+        assert "failed read" in detail
+
+    def test_an_unreadable_run_history_is_no_reading(self):
+        def history(repo, workflow):
+            return None, "gh run list failed"
+
+        value, detail = gm.measure_nas_off_box_watch(
+            None, "2026-09-14",
+            fetch=lambda repo, suffixes: (
+                {".github/workflows/deadman.yaml": self.ALARM}, None),
+            list_repos=lambda org: (["o/r"], None, []), runs=history)
+        assert value is None
+        assert "gh run list failed" in detail
+
+    def test_the_key_result_is_registered(self):
+        assert (gm.KEY_RESULT_FETCH_MEASURERS["nas-kr-off-box-watch"]
+                is gm.measure_nas_off_box_watch)
