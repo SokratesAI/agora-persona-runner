@@ -35,6 +35,7 @@ from tools.board_capture import (
     known_names,
     main,
     promote,
+    split_into_tasks,
 )
 
 BOARD = """- Give me a landing page for the app. It should say what Nova is.
@@ -552,3 +553,164 @@ def test_the_definition_of_done_reaches_the_row_he_reads(store):
                 "--done-when", "the landing page opens without the menu") == 0
     detail = _contents(store)["details"][105]
     assert DONE_WHEN_PREFIX + "the landing page opens without the menu" in detail
+
+
+# --- issue #212: one capture becomes SEVERAL tasks ----------------------
+
+
+def test_one_capture_becomes_one_row_when_no_task_is_named():
+    """The single-row case is the list-of-one case, so `main` keeps one write
+    path. Nothing about a capture nobody cut up may change."""
+    rows, refusal = split_into_tasks(_promoted(), None, ["the page loads in 1s"])
+    assert refusal is None
+    assert len(rows) == 1
+    assert rows[0]["title"] == "The journal page is slow."
+    assert rows[0]["write_up"].endswith(f"{DONE_WHEN_PREFIX}the page loads in 1s")
+
+
+def test_each_task_becomes_its_own_row_with_its_own_definition_of_done():
+    """His ask is the plural: *"break each capture into tasks that each have a
+    checkable definition of done."*"""
+    rows, refusal = split_into_tasks(
+        _promoted(),
+        ["Profile the journal query", "Paginate the journal page"],
+        ["a flame graph names the slow call", "the page ships 20 entries"],
+    )
+    assert refusal is None
+    assert [one["title"] for one in rows] == [
+        "Profile the journal query", "Paginate the journal page"]
+    assert f"{DONE_WHEN_PREFIX}a flame graph names the slow call" in rows[0]["write_up"]
+    assert f"{DONE_WHEN_PREFIX}the page ships 20 entries" in rows[1]["write_up"]
+
+
+def test_every_task_row_carries_his_words_whole_and_says_which_task_it_is():
+    """Slicing his paragraph between the rows would be this tool deciding
+    which of his sentences belongs to which task, on a page he reads. So each
+    row repeats it, and each row says the repetition is one capture cut up."""
+    rows, _ = split_into_tasks(
+        _promoted(), ["First", "Second"], ["one done", "two done"])
+    for one in rows:
+        assert one["write_up"].startswith("The journal page is slow.")
+    assert "*Task 1 of 2, cut from one capture.*" in rows[0]["write_up"]
+    assert "*Task 2 of 2, cut from one capture.*" in rows[1]["write_up"]
+
+
+def test_a_task_with_no_definition_of_done_is_refused():
+    rows, refusal = split_into_tasks(
+        _promoted(), ["First", "Second"], ["one done"])
+    assert rows is None
+    assert "2 --task and 1 --done-when" in refusal
+
+
+def test_more_definitions_of_done_than_tasks_is_refused():
+    """Taking the shorter of the two would silently drop one of them."""
+    rows, refusal = split_into_tasks(
+        _promoted(), ["First"], ["one done", "two done"])
+    assert rows is None
+    assert "1 --task and 2 --done-when" in refusal
+
+
+def test_a_second_definition_of_done_with_no_task_names_a_task_that_is_missing():
+    rows, refusal = split_into_tasks(_promoted(), None, ["one done", "two done"])
+    assert rows is None
+    assert "--task" in refusal
+
+
+def test_a_blank_task_title_is_refused():
+    rows, refusal = split_into_tasks(_promoted(), ["First", "  "],
+                                     ["one done", "two done"])
+    assert rows is None
+    assert "needs a title" in refusal
+
+
+def test_a_blank_definition_of_done_beside_a_task_is_refused():
+    rows, refusal = split_into_tasks(_promoted(), ["First", "Second"],
+                                     ["one done", "   "])
+    assert rows is None
+    assert "--done-when" in refusal
+
+
+def test_a_finished_capture_may_not_be_cut_into_tasks():
+    """`promote` has already turned its DONE marker into the Done status, so
+    three rows here would be three finished rows for work that shipped once."""
+    rows, refusal = split_into_tasks(
+        _promoted(status="done"), ["First", "Second"], ["one done", "two done"])
+    assert rows is None
+    assert "already finished" in refusal
+
+
+def test_title_and_task_together_are_refused():
+    """Both name the row's title and there is no order between them."""
+    rows, refusal = split_into_tasks(
+        _promoted(), ["First"], ["one done"], title="Something else")
+    assert rows is None
+    assert "--title" in refusal
+
+
+def test_the_promoted_fields_survive_being_cut_into_tasks():
+    fields = _promoted()
+    rows, _ = split_into_tasks(fields, ["First", "Second"],
+                               ["one done", "two done"])
+    assert fields["title"] == "The journal page is slow."
+    assert fields["write_up"] == "The journal page is slow."
+    assert all(one["priority"] == fields["priority"] for one in rows)
+
+
+def test_main_boards_two_rows_from_one_capture_and_cuts_the_bullet_once(store):
+    """End to end: the rows really arrive on his board, and his one bullet
+    leaves the box once rather than twice."""
+    before = len(capture_pairs(_contents(store)))
+    assert main(["--board", "idea", "--index", "1", "--dated", "09-14",
+                 "--priority", "high", "--milestone", "Cost and quota",
+                 "--task", "Profile the journal query",
+                 "--done-when", "a flame graph names the slow call",
+                 "--task", "Paginate the journal page",
+                 "--done-when", "the page ships 20 entries"]) == 0
+    rows = _rows(store)
+    titles = {one["title"] for one in rows.values()}
+    assert "Profile the journal query" in titles
+    assert "Paginate the journal page" in titles
+    assert len(capture_pairs(_contents(store))) == before - 1
+
+
+def test_both_task_rows_land_under_the_named_milestone(store):
+    """The second row is the one a loop over `rows[0]` would leave ungrouped,
+    and an ungrouped row serves no key result (issue #227)."""
+    assert main(["--board", "idea", "--index", "1", "--dated", "09-14",
+                 "--priority", "high", "--milestone", "Cost and quota",
+                 "--task", "First", "--done-when", "one done",
+                 "--task", "Second", "--done-when", "two done"]) == 0
+    placed = {one["title"]: one["milestone"] for one in _rows(store).values()}
+    assert placed["First"] == "Cost and quota"
+    assert placed["Second"] == "Cost and quota"
+
+
+def test_his_replies_go_on_the_first_task_row_only(store):
+    """One conversation about one capture. Copied onto every task it would be
+    the same answer on his board three times."""
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-14",
+                 "--priority", "high", "--no-milestone",
+                 "--task", "First", "--done-when", "one done",
+                 "--task", "Second", "--done-when", "two done"]) == 0
+    by_title = {one["title"]: one["number"] for one in _rows(store).values()}
+    details = _contents(store)["details"]
+    assert "Nova, cycle 900" in details[by_title["First"]]
+    assert "Nova, cycle 900" not in details[by_title["Second"]]
+
+
+def test_a_pipe_in_a_task_title_is_refused_before_any_write(store, capsys):
+    """A `|` ends a cell, the same as it does in `--title`."""
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-14",
+                 "--priority", "high", "--no-milestone",
+                 "--task", "First | second", "--done-when", "one done"]) == 1
+    assert "--task" in capsys.readouterr().err
+    assert store.calls == []
+
+
+def test_main_refuses_unpaired_tasks_before_any_write(store, capsys):
+    assert main(["--board", "idea", "--index", "0", "--dated", "09-14",
+                 "--priority", "high", "--no-milestone",
+                 "--task", "First", "--task", "Second",
+                 "--done-when", "one done"]) == 1
+    assert "--done-when" in capsys.readouterr().err
+    assert [name for name, _ in store.calls if name.startswith("write")] == []

@@ -72,6 +72,30 @@ fine. Against records that span is gone, but `write_captures(prune=True)`
 is still one wrong call away from expressing a deletion as an absence, so
 the invariant is checked rather than assumed.
 
+**Since 2026-09-14 a capture can arrive as several tasks rather than one
+row.** That is the plural in issue #212 -- *"break each capture into tasks
+that each have a checkable definition of done"* -- and it was the half left
+over when `--done-when` shipped earlier the same day:
+
+    python3 -m tools.board_capture --board issue --index 3 \\
+        --priority high --dated 09-14 --milestone 'Cost and quota' \\
+        --task 'Profile the journal query' \\
+        --done-when 'a flame graph names the slow call' \\
+        --task 'Paginate the journal page' \\
+        --done-when 'the page ships 20 entries'
+
+`--task` and `--done-when` are paired by position, one each, and an unequal
+count is refused rather than trimmed. Every row carries his words whole --
+slicing his paragraph between them would be this tool deciding which of his
+sentences belongs to which task -- and each says which task of how many it
+is, so the repetition reads as one capture cut up.
+
+**The all-or-nothing guarantee below is weaker for several rows, and it says
+so out loud.** Rows are minted one at a time, so a failure on the second one
+leaves the first on the board with his bullet still in the box. That case
+prints the numbers that landed and says a blind re-run would board them
+twice, which is the one thing the operator cannot see from the board itself.
+
 **Since 2026-09-14 one of `--milestone` and `--no-milestone` is required.**
 This tool took `--project` and had no way to name a milestone at all, so
 every row it boarded arrived under none -- and issue #227's fourth rule is
@@ -240,6 +264,102 @@ def apply_done_when(fields, done_when):
     return fields, None
 
 
+MULTI_TASK_REFUSALS = {
+    "done": (
+        "a capture that arrived already finished is one row, not several -- "
+        "drop --task, or drop the DONE (Cycle N) marker if the work really "
+        "is still open."
+    ),
+    "title": (
+        "--title and --task both name the row's title. Pass --task once per "
+        "task instead; --title is for the single-row case."
+    ),
+    "empty": "a --task needs a title",
+}
+
+
+def _pair_refusal(tasks, stated):
+    """Why these `--task`/`--done-when` lists cannot be paired, or `None`.
+
+    They are paired by position, which is the only pairing an argument list
+    can express -- so an unequal count is not a detail to be forgiven. Taking
+    the shorter of the two would silently drop a task he asked for, and
+    reusing one sentence across several tasks would board rows whose
+    definition of done is not about them.
+    """
+    if len(stated) != len(tasks):
+        return (
+            f"{len(tasks)} --task and {len(stated)} --done-when. Each task "
+            "carries its own checkable definition of done (issue #212), and "
+            "they are paired in the order you typed them."
+        )
+    if any(not one for one in stated):
+        return DONE_WHEN_REFUSAL
+    if any(not one for one in tasks):
+        return MULTI_TASK_REFUSALS["empty"]
+    return None
+
+
+def split_into_tasks(fields, tasks, done_whens, title=None):
+    """One capture -> the rows it becomes, one per task, or `(None, reason)`.
+
+    His ask, issue #212: *"When boarding, break each capture into tasks that
+    each have a checkable definition of done."* The plural is the half that
+    was missing -- `apply_done_when` made one row carry one sentence, and a
+    capture that is really three jobs still arrived as a single row nobody
+    could finish in a cycle.
+
+    Pure, like `promote`: it reads no store, so every question about what a
+    capture becomes is answered without a board.
+
+    **His words go on every row, whole.** The write-up is his text verbatim,
+    which is `add_row`'s rule and not a new one, so the alternative -- giving
+    each row a slice of what he wrote -- would mean this tool deciding which
+    of his sentences belongs to which task and putting words in his mouth on
+    a page he reads. Each row then says which task of how many it is, so the
+    repetition reads as one capture cut up rather than three duplicates.
+
+    Returns a list of `fields` dicts, always -- the single-row case comes
+    back as a list of one -- so `main` has one write path rather than two.
+    """
+    tasks = [(one or "").strip() for one in (tasks or ())]
+    stated = [(one or "").strip() for one in (done_whens or ())]
+    if not tasks:
+        if len(stated) > 1:
+            return None, (
+                f"{len(stated)} --done-when and no --task. A second "
+                "definition of done describes a second task, so name it: "
+                "--task \"...\" --done-when \"...\", once per task."
+            )
+        one, refusal = apply_done_when(fields, stated[0] if stated else "")
+        return (None, refusal) if one is None else ([one], None)
+
+    # A finished capture is the carve-out `apply_done_when` documents, and it
+    # cannot also be several open tasks: `promote` has already turned its
+    # `DONE (Cycle N)` marker into `✅ Done`, so boarding three rows here
+    # would put three finished rows on his board for work that shipped once.
+    if fields["status"] == "done":
+        return None, MULTI_TASK_REFUSALS["done"]
+    if title:
+        return None, MULTI_TASK_REFUSALS["title"]
+    refusal = _pair_refusal(tasks, stated)
+    if refusal:
+        return None, refusal
+
+    total = len(tasks)
+    rows = []
+    for number, (one_title, done) in enumerate(zip(tasks, stated), start=1):
+        row = dict(fields)
+        row["title"] = one_title
+        row["write_up"] = (
+            f"{fields['write_up'].rstrip()}\n\n"
+            f"{DONE_WHEN_PREFIX}{done}\n\n"
+            f"*Task {number} of {total}, cut from one capture.*"
+        )
+        rows.append(row)
+    return rows, None
+
+
 def promote(text, priority, status, dated, title=None, project=None,
             known=()):
     """His bullet -> the arguments `add_row` takes, or `(None, reason)`.
@@ -317,9 +437,17 @@ def main(argv=None):
     )
     parser.add_argument(
         "--done-when",
+        action="append",
         help="how a cycle will know this row is finished, in one checkable "
              "sentence (issue #212). Required unless the capture already "
-             "says DONE.",
+             "says DONE. Repeat it once per --task.",
+    )
+    parser.add_argument(
+        "--task",
+        action="append",
+        help="cut this capture into several tasks: one --task <title> and "
+             "one --done-when <sentence> per task, paired in order "
+             "(issue #212). Leave it off to board the capture as one row.",
     )
     parser.add_argument("--cycle", type=int, help="stamped on the replies carried across")
     parser.add_argument("--dry-run", action="store_true")
@@ -348,8 +476,12 @@ def main(argv=None):
     # refuse before writing anything, but a refusal that costs no store call
     # is the better one -- and `--title` reaching `refuse_cell` here is what
     # makes the message name the flag he typed.
-    for value, flag in ((args.dated, "--dated"), (args.title, "--title"),
-                        (args.milestone, "--milestone")):
+    cells = [(args.dated, "--dated"), (args.title, "--title"),
+             (args.milestone, "--milestone")]
+    # Every `--task` becomes an `Item` cell, so it is the same check for the
+    # same reason -- a `|` in one of them would shift every column right of it.
+    cells.extend((one, "--task") for one in (args.task or ()))
+    for value, flag in cells:
         refusal = refuse_cell(value, flag)
         if refusal:
             print(f"REFUSED: {refusal}", file=sys.stderr)
@@ -389,13 +521,15 @@ def main(argv=None):
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
 
-    fields, refusal = apply_done_when(fields, args.done_when)
-    if fields is None:
+    tasks, refusal = split_into_tasks(
+        fields, args.task, args.done_when, args.title)
+    if tasks is None:
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
 
     tag = fields["project"]
-    print(f"boarding — {fields['title']}")
+    for one in tasks:
+        print(f"boarding — {one['title']}")
     print(f"  status {STATUS_LABELS[fields['status']]!r}  "
           f"priority {canonical_priority(fields['priority'])!r}")
     if tag:
@@ -419,21 +553,44 @@ def main(argv=None):
     if fields["status"] == "done":
         print("  done when (none -- the capture arrived already finished)")
     else:
-        print(f"  done when {args.done_when.strip()!r}")
+        for one, stated in zip(tasks, args.done_when or ()):
+            print(f"  done when {one['title']!r}: {stated.strip()!r}")
     if args.dry_run:
         return 0
 
-    try:
-        row = board_write.add_row(
-            args.board, fields["title"], args.dated, fields["priority"],
-            status=fields["status"], write_up=fields["write_up"],
-            notes=capture_replies_of(capture), project=tag,
-            cycle=args.cycle, author="nova", store=board_store,
-        )
-    except (board_write.WriteRefused, board_write.BoardDamaged,
-            board_records.RecordError) as problem:
-        print(f"REFUSED: {problem}", file=sys.stderr)
-        return 1
+    # **His replies go on the first row only.** They are one conversation
+    # about one capture; copying them onto every task would put the same
+    # answer on his board three times, and the row he already spoke under is
+    # the first one.
+    rows = []
+    for one in tasks:
+        try:
+            row = board_write.add_row(
+                args.board, one["title"], args.dated, one["priority"],
+                status=one["status"], write_up=one["write_up"],
+                notes=capture_replies_of(capture) if not rows else (),
+                project=tag, cycle=args.cycle, author="nova",
+                store=board_store,
+            )
+        except (board_write.WriteRefused, board_write.BoardDamaged,
+                board_records.RecordError) as problem:
+            print(f"REFUSED: {problem}", file=sys.stderr)
+            if rows:
+                # The all-or-nothing property this module documents holds for
+                # one row and cannot hold for several: rows are minted one at
+                # a time. Say exactly which ones landed, because the bullet is
+                # still in the box and a blind re-run would board them twice.
+                landed = ", ".join(f"#{done['number']}" for done in rows)
+                print(
+                    f"  {len(rows)} row(s) are already on the board: {landed}. "
+                    "His bullet is still in the box, so re-running this "
+                    "command boards them a second time -- close or delete "
+                    "those rows first, or finish the rest by hand.",
+                    file=sys.stderr,
+                )
+            return 1
+        rows.append(row)
+    row = rows[0]
 
     # The row is on his board from here on, so nothing below may return
     # without saying so: a failure here leaves the item in both places, which
@@ -468,22 +625,23 @@ def main(argv=None):
     # did for every row before today and what `board_milestone` repairs in
     # one call.
     if args.milestone:
-        try:
-            board_write.change_row(
-                args.board, row["number"],
-                {"milestone": args.milestone.strip()},
-                store=board_store,
-            )
-        except (board_write.WriteRefused, board_write.BoardDamaged,
-                board_records.RecordError) as problem:
-            print(
-                f"boarded #{row['number']}, but it is still ungrouped: "
-                f"{problem}. Run: python3 -m tools.board_milestone --board "
-                f"{args.board} --number {row['number']} --milestone "
-                f"{args.milestone!r}",
-                file=sys.stderr,
-            )
-            return 1
+        for one in rows:
+            try:
+                board_write.change_row(
+                    args.board, one["number"],
+                    {"milestone": args.milestone.strip()},
+                    store=board_store,
+                )
+            except (board_write.WriteRefused, board_write.BoardDamaged,
+                    board_records.RecordError) as problem:
+                print(
+                    f"boarded #{one['number']}, but it is still ungrouped: "
+                    f"{problem}. Run: python3 -m tools.board_milestone --board "
+                    f"{args.board} --number {one['number']} --milestone "
+                    f"{args.milestone!r}",
+                    file=sys.stderr,
+                )
+                return 1
 
     after = board_records.contents(args.board, store=board_store)
     problems = check_captures(before, after, raw_text)
@@ -492,7 +650,8 @@ def main(argv=None):
             print(f"REFUSED: {problem}", file=sys.stderr)
         return 1
 
-    print(f"boarded #{row['number']} on the {args.board} board")
+    boarded = ", ".join(f"#{one['number']}" for one in rows)
+    print(f"boarded {boarded} on the {args.board} board")
     print(f"  captures {len(capture_pairs(before))} -> {len(capture_pairs(after))}")
     return 0
 
