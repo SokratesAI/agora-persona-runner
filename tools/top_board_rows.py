@@ -747,6 +747,12 @@ def _capture_board_help(captures):
            "  --done-when is required too, unless the capture already says "
            "DONE: a row is a task and a task needs a checkable definition of "
            "done (issue #212).",
+           "  Classify it first — --as task|milestone|project|goal|question "
+           "(issue #212). Only task and milestone are board rows: a project "
+           "becomes a project note with the goal it was stating, a goal goes "
+           "on the goals slate for him, and a question boards at Blocked on "
+           "Edvard with no --done-when and is asked in a thread. The default "
+           "is task.",
            "  A capture that is really several jobs becomes several rows: "
            "--task '<title>' --done-when '<sentence>', repeated once per "
            "task and paired in that order (issue #212). One --done-when and "

@@ -96,6 +96,16 @@ leaves the first on the board with his bullet still in the box. That case
 prints the numbers that landed and says a blind re-run would board them
 twice, which is the one thing the operator cannot see from the board itself.
 
+**Since 2026-09-14 `--as` says which tier the capture is.** That is the
+classify step of issue #212, settled by the owner on 2026-09-13: a capture is a
+task, a milestone, a project, a goal, or a question for him, and only the
+first two are board rows. `--as project` and `--as goal` refuse and name
+where the item goes instead, leaving his bullet in the box because nothing
+has been built for it yet. `--as question` boards one row
+blocked on the owner, waives `--done-when` -- a question is precisely a capture nobody
+can write one for -- and prints the `needs_input` command. The default is
+`task`, so every call that worked yesterday means the same thing today.
+
 **Since 2026-09-14 one of `--milestone` and `--no-milestone` is required.**
 This tool took `--project` and had no way to name a milestone at all, so
 every row it boarded arrived under none -- and issue #227's fourth rule is
@@ -228,7 +238,90 @@ DONE_WHEN_REFUSAL = (
 )
 
 
-def apply_done_when(fields, done_when):
+# **Issue #212's classify step, settled by the owner on 2026-09-13.** Boarding
+# does not only cut a capture into tasks; it first decides what tier the
+# capture is, and four of the five tiers are not a board row at all:
+#
+#   task      one cycle, one checkable definition of done -- a row
+#   milestone up to ~7 tasks -- several rows under one named milestone
+#   project   more than one milestone -- a project note, not a row
+#   goal      an end state with a measure and no definition of done -- his
+#   question  not classifiable yet -- ask him, park it as blocked
+#
+# His words settling it: *"Ambiguous tasks are actually projects with goals,
+# milestones and tasks."* So a capture no cycle can finish has one answer --
+# promote it to a project and give it the goal it was really stating -- and
+# asking him is the fallback for when even the goal is unclear, not the
+# first move. `--as task` is the default because it is what every existing
+# caller means, so nothing that boarded a row yesterday changes today.
+_CLASS_CHOICES = ("task", "milestone", "project", "goal", "question")
+
+NOT_A_ROW = {
+    "project": (
+        "a project is more than one milestone, so it is not a board row -- "
+        "write it up as a project note under projects/sokrates/projects/ "
+        "with the goal it was really stating, then come back and board its "
+        "tasks under that project's milestones. His bullet is untouched and "
+        "still in the box, because nothing has been built for it yet."
+    ),
+    "goal": (
+        "a goal is an end state with a measure and no definition of done, "
+        "so it is not a board row -- it goes on the goals slate "
+        "(project-goals.md) as an objective with status: proposed, because "
+        "goals are his to approve (issue #227). His bullet is untouched and "
+        "still in the box."
+    ),
+}
+
+QUESTION_ROUTE = (
+    "Ask him: python -m agora_runner.needs_input -- one thread, and the row "
+    "below waits at Blocked on Edvard without holding up the queue."
+)
+
+
+def route(kind, tasks, milestone, status):
+    """What `--as <kind>` does to this call: `(status, None)` or `(None, why)`.
+
+    Pure, like `promote` and `split_into_tasks`, so the whole classify step
+    is answerable without a board. It returns the status the rows get rather
+    than mutating anything, because `question` is the one tier that changes
+    it -- issue #212's *"the capture waits in a 'needs him' state and doesn't
+    block the queue"*, which is the blocked-on-the-owner status the picker
+    already ranks out of the queue.
+    """
+    count = len(tasks or ())
+    if kind in NOT_A_ROW:
+        return None, NOT_A_ROW[kind]
+    if kind == "question":
+        if count:
+            return None, (
+                "a question is not tasks yet -- that is the whole point of "
+                "classifying it as one. Drop --task, ask him, and board the "
+                "tasks once he has answered."
+            )
+        if status is not None and status != "blocked-on-edvard":
+            return None, (
+                f"--as question boards at Blocked on Edvard, so --status "
+                f"{status} contradicts it. Drop --status."
+            )
+        return "blocked-on-edvard", None
+    if kind == "milestone":
+        if not milestone:
+            return None, (
+                "a milestone is what its tasks are grouped under, so "
+                "--as milestone has to name one and --no-milestone "
+                "contradicts it. Pass --milestone \"<name>\"."
+            )
+        if count < 2:
+            return None, (
+                f"a milestone is several tasks and this call has {count}. "
+                "Board it --as task, or cut it up: --task \"...\" "
+                "--done-when \"...\", once per task."
+            )
+    return (status or "backlog"), None
+
+
+def apply_done_when(fields, done_when, waived=False):
     """Add issue #212's definition of done to a promoted row, or refuse it.
 
     Issue #227's model ends at *"Task (one cycle, one checkable definition
@@ -249,10 +342,18 @@ def apply_done_when(fields, done_when):
     this reads `fields["status"]` instead of the caller's `--status`:
     `promote` is what turns that marker into `done`.
 
+    **`waived` is `--as question`, and it is the second carve-out.** A
+    capture classified as a question is one nobody can write a definition of
+    done for -- that is what the classification says -- so demanding one
+    would refuse the exact case issue #212 asks to park. It is keyed on the
+    classification rather than on the status, because `--status
+    blocked-on-edvard` is an operator's guess at where a row sits and
+    `--as question` is a statement about what the capture is.
+
     Returns `(fields, None)` or `(None, reason)`, the same shape `promote`
     returns, so `main` has one refusal path rather than two.
     """
-    if fields["status"] == "done":
+    if fields["status"] == "done" or waived:
         return fields, None
     stated = (done_when or "").strip()
     if not stated:
@@ -300,7 +401,7 @@ def _pair_refusal(tasks, stated):
     return None
 
 
-def split_into_tasks(fields, tasks, done_whens, title=None):
+def split_into_tasks(fields, tasks, done_whens, title=None, waived=False):
     """One capture -> the rows it becomes, one per task, or `(None, reason)`.
 
     His ask, issue #212: *"When boarding, break each capture into tasks that
@@ -331,7 +432,8 @@ def split_into_tasks(fields, tasks, done_whens, title=None):
                 "definition of done describes a second task, so name it: "
                 "--task \"...\" --done-when \"...\", once per task."
             )
-        one, refusal = apply_done_when(fields, stated[0] if stated else "")
+        one, refusal = apply_done_when(
+            fields, stated[0] if stated else "", waived=waived)
         return (None, refusal) if one is None else ([one], None)
 
     # A finished capture is the carve-out `apply_done_when` documents, and it
@@ -419,7 +521,13 @@ def main(argv=None):
         "--priority",
         help="low / medium / high / immediate; default is the bullet's own prefix",
     )
-    parser.add_argument("--status", default="backlog", choices=_STATUS_CHOICES)
+    parser.add_argument("--status", default=None, choices=_STATUS_CHOICES)
+    parser.add_argument(
+        "--as", dest="kind", default="task", choices=_CLASS_CHOICES,
+        help="what tier this capture is (issue #212's classify step): task, "
+             "milestone, project, goal or question. Only task and milestone "
+             "are board rows; the other three print where they go instead.",
+    )
     parser.add_argument("--dated", required=True, help="MM-DD, Oslo")
     parser.add_argument("--title", help="override the first-sentence title")
     parser.add_argument(
@@ -462,6 +570,15 @@ def main(argv=None):
     # one already on screen, and a row under the wrong milestone reads as
     # placed. So the caller either names the milestone or says out loud that
     # none fits yet, and neither is guessed for them.
+    # The classify step runs first, and deliberately before the milestone
+    # flags: `--as project` and `--as goal` are not board rows at all, so
+    # asking them which milestone they sit under is a question about a row
+    # that is never written.
+    status, refusal = route(args.kind, args.task, args.milestone, args.status)
+    if status is None:
+        print(f"REFUSED: {refusal}", file=sys.stderr)
+        return 1
+
     if bool(args.milestone) == bool(args.no_milestone):
         print(
             "REFUSED: name --milestone <name>, or pass --no-milestone to "
@@ -514,7 +631,7 @@ def main(argv=None):
     raw_text = capture_text_of(capture)
 
     fields, refusal = promote(
-        raw_text, args.priority, args.status, args.dated, args.title,
+        raw_text, args.priority, status, args.dated, args.title,
         args.project, names,
     )
     if fields is None:
@@ -522,7 +639,8 @@ def main(argv=None):
         return 1
 
     tasks, refusal = split_into_tasks(
-        fields, args.task, args.done_when, args.title)
+        fields, args.task, args.done_when, args.title,
+        waived=args.kind == "question")
     if tasks is None:
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
@@ -530,6 +648,7 @@ def main(argv=None):
     tag = fields["project"]
     for one in tasks:
         print(f"boarding — {one['title']}")
+    print(f"  classified {args.kind!r} (issue #212)")
     print(f"  status {STATUS_LABELS[fields['status']]!r}  "
           f"priority {canonical_priority(fields['priority'])!r}")
     if tag:
@@ -550,7 +669,11 @@ def main(argv=None):
         print(f"  milestone {args.milestone!r}")
     else:
         print("  milestone (ungrouped), by --no-milestone")
-    if fields["status"] == "done":
+    if args.kind == "question":
+        print("  done when (none -- classified a question, which is the "
+              "statement that nobody can write one yet)")
+        print(f"  {QUESTION_ROUTE}")
+    elif fields["status"] == "done":
         print("  done when (none -- the capture arrived already finished)")
     else:
         for one, stated in zip(tasks, args.done_when or ()):
