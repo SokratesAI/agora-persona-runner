@@ -3173,6 +3173,232 @@ def measure_research_reused(since, until):
 # It sits below the measurers rather than beside its siblings because the two
 # `maint-` entries are defined further down, next to the KPI they share a sweep
 # with.
+
+#: The permission a workflow needs to reach the owner from off this box, and the
+#: reason it is the whole test rather than one signal among several.
+#:
+#: An off-box job here has exactly one channel to him: a GitHub issue, which
+#: GitHub itself notifies him about. Nothing running in GitHub Actions in this
+#: org holds a Telegram token, a push key or an Agora credential -- those
+#: secrets are sealed into the `agents` namespace on server1, which is the box
+#: this key result assumes has died. So `issues: write` is not a proxy for
+#: "can alert"; it is the only spelling of it that exists here.
+OFF_BOX_ALERT_PERMISSION = ("issues", "write")
+
+#: How far back a scheduled run has to have completed for the path to count.
+#:
+#: 30 days matches the other rolling windows in this file. It is here because
+#: **a configured alarm is not an alerting path.** `nova-deadman` declared
+#: three cadences at once and GitHub started it zero times across 866 minutes
+#: (Cycle 555): the workflow was active, the repo public, the file correct,
+#: and nothing would have reached him. Reading the file alone would have
+#: counted that as coverage, which is the failure the workflow's own header
+#: comment calls "worse than no watchdog".
+_OFF_BOX_WINDOW_DAYS = 30
+
+
+def judge_off_box_alert(document):
+    """`why` when this workflow is an off-box alerting path, else `None`.
+
+    `document` is one parsed workflow file. Two conditions, both read off the
+    file: it fires on a **schedule** -- a path that only runs when somebody
+    presses a button does not survive an outage, because the person who would
+    press it is the person being alerted -- and it declares
+    `issues: write`, which is the only channel off-box code here has to him.
+
+    A `permissions:` block that is the string `write-all` grants it too, and
+    that spelling is accepted rather than missed.
+    """
+    triggers = _trigger_block(document)
+    if not isinstance(triggers, dict) or "schedule" not in triggers:
+        return None
+    key, needed = OFF_BOX_ALERT_PERMISSION
+    grants = document.get("permissions") if isinstance(document, dict) else None
+    if isinstance(grants, str):
+        if grants.strip() != "write-all":
+            return None
+        return "permissions: write-all, on a schedule"
+    if not isinstance(grants, dict):
+        return None
+    if str(grants.get(key) or "").strip() != needed:
+        return None
+    return f"{key}: {needed}, on a schedule"
+
+
+def alarm_group(document, path):
+    """What alarm this workflow file belongs to -- its `concurrency` group.
+
+    **Counting workflow files counts files, not alarms.** `nova-deadman` is
+    one alarm written as two files on purpose: the two cadences were split so
+    a 30-minute rung could not supersede a daily one in the same occurrence
+    queue, and `tools.deadman_check` comments on the one open issue rather
+    than opening a second, so both rungs firing on one outage is one alarm
+    reaching him once. Read as files that is 2 paths, which is the same
+    overcount `agora-kr-nothing-unused` is warned about in the document.
+
+    The `concurrency:` group is the author's own statement that two files are
+    one thing, and it is read off the file rather than decided here. A
+    workflow with no concurrency block is its own alarm, keyed by its path.
+    """
+    block = document.get("concurrency") if isinstance(document, dict) else None
+    if isinstance(block, str) and block.strip():
+        return block.strip()
+    if isinstance(block, dict):
+        group = block.get("group")
+        if isinstance(group, str) and group.strip():
+            return group.strip()
+    return path
+
+
+def fetch_workflow_runs(repo, workflow, runner=subprocess.run):
+    """Every recorded run of one workflow in one repo, newest first.
+
+    `(runs, None)` or `(None, why)`. An **empty list is a reading here**, not
+    an error, and that is the opposite call from `fetch_docs_sync_runs`: that
+    function asks about a workflow known to run, so nothing is far more likely
+    to be a name that resolved to nothing. This one asks the question "has
+    GitHub ever actually started this?", and zero is the answer it exists to
+    be able to give.
+    """
+    try:
+        done = runner(
+            ["gh", "run", "list", "--repo", repo, "--workflow", workflow,
+             "--limit", "100", "--json", "event,status,conclusion,createdAt"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"gh run list could not run on {repo}: {exc}"
+    if done.returncode != 0:
+        return None, (f"gh run list failed on {repo} for {workflow}: "
+                      f"{done.stderr.strip()[:200]}")
+    try:
+        runs = json.loads(done.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        return None, f"gh returned unreadable JSON for {workflow}: {exc}"
+    if not isinstance(runs, list):
+        return None, "gh returned a JSON object where a list of runs was expected"
+    return runs, None
+
+
+def measure_nas_off_box_watch(since, until, fetch=None, list_repos=None,
+                              runs=None):
+    """Alerting paths that survive server1 going down. A count.
+
+    `now` was a hand count of 0, taken on the true observation that Agora
+    push, the WhatsApp bridge and nova-site all run in `agents` on server1.
+    That is right about the cluster and it misses the one execution
+    environment in this system that is not the cluster: **GitHub Actions**.
+
+    So a path counts when three things hold, and all three are read rather
+    than decided. It is a scheduled workflow in this org (`judge_off_box_alert`
+    -- off-box because GitHub runs it, scheduled because nobody is there to
+    press the button). It can reach him (`OFF_BOX_ALERT_PERMISSION`). And
+    **GitHub has actually completed a scheduled run of it inside
+    `_OFF_BOX_WINDOW_DAYS`** -- a `workflow_dispatch` run proves only that a
+    button works, and this account's scheduler has a measured history of
+    running nothing at all for days.
+
+    That last condition is the one that makes this an instrument instead of a
+    second hand count, and it can genuinely go either way: the same workflow
+    that satisfies it today satisfied only the first two for the 866 minutes
+    Cycle 555 measured.
+
+    **A repo that could not be read returns `None` for the whole measure.**
+    The direction is up from 0 toward 1, so a dropped repo hides exactly the
+    path this key result is waiting for.
+    """
+    del since
+    from tools import running_images, security_alerts
+
+    fetch = fetch or running_images.fetch_manifests
+    list_repos = list_repos or security_alerts.repos_in_org
+    runs = runs or fetch_workflow_runs
+    live, error, _archived = list_repos(SELF_DOCUMENTING_ORG)
+    if error:
+        return None, f"could not list {SELF_DOCUMENTING_ORG}'s repos: {error}"
+    if not live:
+        return None, (f"{SELF_DOCUMENTING_ORG} answered with no live repo at "
+                      "all, which is a failed read rather than an empty org")
+
+    def read(repo):
+        files, why = fetch(repo=repo, suffixes=(".yml", ".yaml"))
+        if why:
+            return repo, None, why
+        return repo, {path: text for path, text in files.items()
+                      if path.startswith(".github/workflows/")}, None
+
+    candidates = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for repo, workflows, why in pool.map(read, sorted(live)):
+            if why:
+                return None, f"could not read {repo}'s workflows: {why}"
+            for path in sorted(workflows):
+                try:
+                    document = yaml.safe_load(workflows[path])
+                except yaml.YAMLError:
+                    continue
+                grant = judge_off_box_alert(document)
+                if grant:
+                    candidates.append((repo, path.split("/")[-1], grant,
+                                       alarm_group(document, path)))
+
+    until_date = date.fromisoformat(until)
+    window_start = until_date - timedelta(days=_OFF_BOX_WINDOW_DAYS)
+
+    def history(candidate):
+        repo, workflow, grant, group = candidate
+        found, why = runs(repo, workflow)
+        return repo, workflow, grant, group, found, why
+
+    alive, asleep = {}, {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for repo, workflow, grant, group, found, why in pool.map(history,
+                                                                 candidates):
+            if why:
+                return None, f"could not read runs of {workflow}: {why}"
+            newest = None
+            for run in found:
+                if (run.get("event") or "") != "schedule":
+                    continue
+                if (run.get("status") or "") != "completed":
+                    continue
+                day = _oslo_day(str(run.get("createdAt") or ""))
+                if day is None:
+                    continue
+                when = date.fromisoformat(day)
+                if window_start < when <= until_date and (newest is None
+                                                          or day > newest):
+                    newest = day
+            key = (repo, group)
+            if newest:
+                alive.setdefault(key, []).append((workflow, grant, newest))
+                asleep.pop(key, None)
+            elif key not in alive:
+                asleep.setdefault(key, []).append(workflow)
+
+    named = ", ".join(
+        f"{repo}/{group} ({', '.join(sorted(w for w, _g, _d in rungs))}; "
+        f"{rungs[0][1]}; last scheduled run "
+        f"{max(day for _w, _g, day in rungs)})"
+        for (repo, group), rungs in sorted(alive.items())) or "none"
+    quiet = ", ".join(f"{repo}/{group}"
+                      for repo, group in sorted(asleep)) or "none"
+    detail = (f"{len(alive)} alerting path(s) run off this box and have "
+              f"completed a scheduled run in the "
+              f"{_OFF_BOX_WINDOW_DAYS}d window {window_start.isoformat()}.."
+              f"{until} Oslo: {named}. Swept {len(live)} repo(s) in "
+              f"{SELF_DOCUMENTING_ORG} and found {len(candidates)} workflow "
+              f"file(s) in {len(alive) + len(asleep)} alarm(s) that a schedule "
+              f"starts and that can open an issue -- an alarm is a concurrency "
+              f"group, because nova-deadman is two files on purpose; "
+              f"{len(asleep)} alarm(s) have had no scheduled run complete in "
+              f"the window ({quiet}) and are configuration rather than a path. "
+              "Everything in the cluster is excluded by construction -- "
+              "Agora push, the WhatsApp bridge and nova-site all run in "
+              "agents on server1, so the box they would report on is the box "
+              "they die with")
+    return len(alive), detail
+
 KEY_RESULT_FETCH_MEASURERS = {
     "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
     "maint-kr-supported": measure_maint_supported,
@@ -3184,6 +3410,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
     "docs-kr-sync-alive": measure_docs_sync_alive,
     "nas-kr-unattended": measure_nas_unattended,
+    "nas-kr-off-box-watch": measure_nas_off_box_watch,
     "maint-kr-self-documenting": measure_maint_self_documenting,
     "agora-kr-chat-basics": measure_agora_chat_basics,
     "post-kr-editor": measure_post_editor,
