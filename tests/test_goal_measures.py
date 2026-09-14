@@ -1880,3 +1880,137 @@ def test_browser_monolith_is_wired_into_the_kpi_map():
     assert goal_measures.KPI_MEASURERS["marcus-kpi-browser-monolith"] is \
         goal_measures.measure_marcus_browser_monolith
     assert "marcus-kpi-browser-monolith" not in goal_measures.KPI_NO_INSTRUMENT
+
+
+# --- agora-kpi-metered-spend ------------------------------------------------
+
+_CATALOG = [
+    {"id": "anthropic:claude-opus-5", "provider": "anthropic", "metered": True},
+    {"id": "claude-cli:claude-opus-5", "provider": "claude-cli", "metered": False},
+    {"id": "gemini:gemini-3.6-flash", "provider": "gemini", "metered": False},
+]
+
+
+def _agora_stub(monkeypatch, *, catalog=None, personas=(), heartbeats=(),
+                conversations=(), error_on=None):
+    """Stand in for Agora's four reads, one payload each."""
+    bodies = {
+        "/models": catalog if catalog is not None else _CATALOG,
+        "/personas": list(personas),
+        "/heartbeats": list(heartbeats),
+        "/conversations?active=true": list(conversations),
+    }
+
+    def fake(url, timeout=60):
+        for suffix, body in bodies.items():
+            if url.endswith(suffix):
+                if error_on and url.endswith(error_on):
+                    return None, f"could not read {url}: HTTP 503"
+                return body, None
+        raise AssertionError(url)
+    monkeypatch.setattr(goal_measures, "_get_json", fake)
+
+
+def test_metered_spend_reads_a_clean_estate_as_a_real_zero(monkeypatch):
+    """Zero is the state rule 9 says this must be in, so it is a measurement
+    and not a blank -- the same shape as an empty push list."""
+    _agora_stub(
+        monkeypatch,
+        personas=[{"name": "Nova", "model": "claude-cli:claude-opus-5"}],
+        heartbeats=[{"name": "Nova", "enabled": True}],
+        conversations=[{"name": "Nova — Cycle 1", "model": "claude-cli:claude-opus-5",
+                        "personas": [{"name": "Nova", "model": "claude-cli:claude-opus-5"}]}],
+    )
+    value, detail = goal_measures.measure_agora_metered_spend(None, None)
+    assert value == 0
+    assert "nothing in Agora" in detail
+
+
+def test_metered_spend_finds_a_metered_persona(monkeypatch):
+    """The positive result this has to be able to produce: without it, the 0
+    above is guaranteed in advance and measures nothing."""
+    _agora_stub(monkeypatch,
+                personas=[{"name": "Spendy", "model": "anthropic:claude-opus-5"}])
+    value, detail = goal_measures.measure_agora_metered_spend(None, None)
+    assert value == 1
+    assert "persona Spendy -> anthropic:claude-opus-5" in detail
+
+
+def test_metered_spend_finds_a_conversations_own_model_and_its_persona_link(monkeypatch):
+    """A conversation carries its own model AND one per persona link, and the
+    link is what actually runs -- a sweep of personas alone would see neither."""
+    _agora_stub(monkeypatch, conversations=[{
+        "name": "Trial", "model": "anthropic:claude-opus-5",
+        "personas": [{"name": "Helper", "model": "anthropic:claude-sonnet-5"}],
+    }])
+    value, detail = goal_measures.measure_agora_metered_spend(None, None)
+    assert value == 2
+    assert "conversation Trial -> anthropic:claude-opus-5" in detail
+    assert "conversation Trial / Helper -> anthropic:claude-sonnet-5" in detail
+
+
+def test_metered_spend_ignores_what_cannot_spend(monkeypatch):
+    """A disabled heartbeat and an archived conversation never run."""
+    _agora_stub(
+        monkeypatch,
+        heartbeats=[{"name": "Old trial", "enabled": False,
+                     "model": "anthropic:claude-opus-5"}],
+        conversations=[{"name": "Archived", "archived": True,
+                        "model": "anthropic:claude-opus-5"}],
+    )
+    value, detail = goal_measures.measure_agora_metered_spend(None, None)
+    assert value == 0, detail
+
+
+def test_metered_spend_matches_a_model_id_the_catalog_has_retired(monkeypatch):
+    """Matching on the provider rather than the id: a config naming a model
+    Agora no longer lists still spends the same balance."""
+    _agora_stub(monkeypatch,
+                personas=[{"name": "Stale", "model": "anthropic:claude-opus-3"}])
+    value, _ = goal_measures.measure_agora_metered_spend(None, None)
+    assert value == 1
+
+
+def test_metered_spend_is_never_blinder_than_the_refusal_it_watches(monkeypatch):
+    """If Agora's catalog stopped flagging `anthropic` as metered, the guard in
+    `reply.py` would still refuse it -- so this must still count it."""
+    from agora_runner.reply import METERED_PROVIDERS
+    assert "anthropic" in METERED_PROVIDERS
+    _agora_stub(
+        monkeypatch,
+        catalog=[{"id": "anthropic:claude-opus-5", "provider": "anthropic",
+                  "metered": False}],
+        personas=[{"name": "Spendy", "model": "anthropic:claude-opus-5"}],
+    )
+    value, _ = goal_measures.measure_agora_metered_spend(None, None)
+    assert value == 1
+
+
+def test_metered_spend_refuses_a_catalog_with_no_metered_provider_at_all(monkeypatch):
+    """An empty catalog would make every estate look clean. `reply` still names
+    one, so this only fires when that tuple is emptied too."""
+    monkeypatch.setattr("agora_runner.reply.METERED_PROVIDERS", ())
+    _agora_stub(monkeypatch, catalog=[])
+    value, detail = goal_measures.measure_agora_metered_spend(None, None)
+    assert value is None
+    assert "no metered provider at all" in detail
+
+
+def test_metered_spend_never_turns_an_unreadable_agora_into_zero(monkeypatch):
+    """`None` here means only that Agora could not be read. A breach has to
+    come back as a number above the ceiling, because `has_drifted` treats
+    `None` as no drift and the sweep would go silent on it."""
+    for dead in ("/models", "/personas", "/heartbeats", "?active=true"):
+        _agora_stub(monkeypatch,
+                    personas=[{"name": "Nova", "model": "claude-cli:claude-opus-5"}],
+                    error_on=dead)
+        value, detail = goal_measures.measure_agora_metered_spend(None, None)
+        assert value is None, dead
+        assert "503" in detail, dead
+
+
+def test_metered_spend_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument."""
+    assert goal_measures.KPI_MEASURERS["agora-kpi-metered-spend"] is \
+        goal_measures.measure_agora_metered_spend
+    assert "agora-kpi-metered-spend" not in goal_measures.KPI_NO_INSTRUMENT
