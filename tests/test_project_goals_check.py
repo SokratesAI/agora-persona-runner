@@ -7,6 +7,8 @@ nothing and 32 sit in projects the owner scoped out, so a merged list is red
 forever on work nobody is allowed to do.
 """
 
+import json
+
 from agora_runner.project_goals import parse_project_goals
 from tools.project_goals_check import main, report
 
@@ -19,12 +21,109 @@ SEATS = ("| Project | Milestone | Position | Updated | Serves |\n"
          "| Nova | Picking | 1 | 09-13 | nova-kr1 |\n")
 
 
+def row(number, board="issues", project="Nova", milestone="Picking",
+        status_key="backlog", done=False):
+    return {"number": number, "board": board, "project": project,
+            "milestone": milestone, "statusKey": status_key, "done": done}
+
+
 def test_a_linked_milestone_is_clean():
-    lines, code = report(GOALS, SEATS)
+    lines, code = report(GOALS, SEATS, rows=[row(1)])
     assert code == 0
     assert lines == ["MODEL HOLDS",
                      "1 project section(s), 1 seated milestone(s), "
-                     "0 model problem(s), 0 orphan(s)"]
+                     "0 model problem(s), 0 orphan(s), 0 unplaced task(s)"]
+
+
+def test_boards_that_were_not_read_say_so_instead_of_reading_clean():
+    """`rows=None` and `rows=[]` are the same value to every function under
+    this and opposite findings. An unread board reporting zero unplaced
+    tasks is the best possible answer arriving from a check that never
+    ran."""
+    lines, code = report(GOALS, SEATS)
+    assert code == 0
+    assert any(line.startswith("TASKS NOT EVALUATED") for line in lines)
+    assert lines[-1].endswith("tasks not read")
+    assert not any("unplaced task(s)" in line for line in lines)
+
+    empty, code = report(GOALS, SEATS, rows=[])
+    assert code == 0
+    assert not any(line.startswith("TASKS NOT EVALUATED") for line in empty)
+    assert empty[-1].endswith("0 unplaced task(s)")
+
+
+def test_a_task_under_an_unseated_milestone_exits_two():
+    lines, code = report(GOALS, SEATS, rows=[row(7, milestone="Galaxy")])
+    assert code == 2
+    assert lines[0] == "BROKEN"
+    assert any("issues #7: under Nova / 'Galaxy', which has no seat"
+               in line for line in lines)
+
+
+def test_the_seat_is_matched_on_project_and_milestone_together():
+    """The same milestone title sits under more than one project, so a row
+    matched on the title alone would pass under any project at all."""
+    lines, code = report(GOALS, SEATS, rows=[row(7, project="Marcus")])
+    assert code == 2
+    assert any("under Marcus / 'Picking'" in line for line in lines)
+
+
+def test_a_task_under_no_milestone_is_listed_but_does_not_raise():
+    lines, code = report(GOALS, SEATS, rows=[row(9, milestone="")])
+    assert code == 0
+    assert any(line.startswith("UNPLACED TASKS (1)") for line in lines)
+    assert any("issues #9: Nova, under no milestone" in line for line in lines)
+    assert lines[0] == "MODEL HOLDS"
+
+
+def test_a_task_with_no_project_is_reported_as_unplaced_not_as_a_defect():
+    """It cannot be seated either way, and "this row hangs off nothing" is
+    one verdict -- splitting it across two lists would ask the reader to
+    join them back up."""
+    lines, code = report(GOALS, SEATS,
+                         rows=[row(9, project="", milestone="")])
+    assert code == 0
+    assert any("issues #9: no project, under no milestone" in line
+               for line in lines)
+
+
+def test_a_task_naming_a_milestone_but_no_project_is_unplaced_not_broken():
+    """A seat is keyed on the pair, so a row with no project cannot be
+    matched against one whatever milestone it names -- and calling that a
+    broken pointer would report a defect no diff can close, because there
+    is no seat it could ever match. It is the same verdict as naming no
+    milestone at all: the row hangs off nothing."""
+    lines, code = report(GOALS, SEATS, rows=[row(9, project="")])
+    assert code == 0
+    assert lines[0] == "MODEL HOLDS"
+    assert any("issues #9: no project, so its milestone 'Picking' cannot be "
+               "seated" in line for line in lines)
+    assert not any("no seat" in line for line in lines)
+
+
+def test_a_closed_task_is_not_asked_which_milestone_it_serves():
+    """The separating case for the open-row filter: a `done` or `outdated`
+    row is finished work, and counting it would make this list grow with
+    every board roll and never shrink."""
+    rows = [row(2, status_key="done", done=True, milestone=""),
+            row(3, status_key="outdated", milestone=""),
+            row(4, status_key="done", done=True, milestone="Galaxy")]
+    lines, code = report(GOALS, SEATS, rows=rows)
+    assert code == 0
+    assert lines[-1].endswith("0 unplaced task(s)")
+    assert not any("#2" in line or "#3" in line or "#4" in line
+                   for line in lines)
+
+
+def test_an_unplaced_task_beside_a_real_defect_still_raises_on_the_defect():
+    """Mirror of the orphan test below: if the unplaced list had merely been
+    dropped rather than split off, this would pass anyway."""
+    rows = [row(9, milestone=""), row(7, milestone="Galaxy")]
+    lines, code = report(GOALS, SEATS, rows=rows)
+    assert code == 2
+    assert lines[0] == "BROKEN"
+    assert any("no seat" in line for line in lines)
+    assert any(line.startswith("UNPLACED TASKS (1)") for line in lines)
 
 
 def test_an_orphan_milestone_is_listed_but_does_not_raise():
@@ -85,11 +184,35 @@ def test_an_unreadable_file_exits_one_rather_than_clean(tmp_path, capsys):
 
 
 def test_main_prints_the_report_and_returns_its_code(tmp_path, capsys):
-    goals, seats = tmp_path / "g.md", tmp_path / "s.md"
+    goals, seats, rows = tmp_path / "g.md", tmp_path / "s.md", tmp_path / "r.json"
     goals.write_text(GOALS)
     seats.write_text(SEATS.replace("nova-kr1", "nova-cost"))
-    assert main(["--goals", str(goals), "--seats", str(seats)]) == 2
+    rows.write_text(json.dumps([row(1)]))
+    assert main(["--goals", str(goals), "--seats", str(seats),
+                 "--rows", str(rows)]) == 2
     assert "is a KPI" in capsys.readouterr().out
+
+
+def test_boards_it_cannot_read_exit_one_rather_than_reporting_no_unplaced_tasks(
+        tmp_path, capsys):
+    """The same call `--goals` makes on a missing file. Reporting a clean
+    task list off a board nobody answered for is the guaranteed-positive
+    result -- it looks identical to the best possible outcome."""
+    goals, seats = tmp_path / "g.md", tmp_path / "s.md"
+    goals.write_text(GOALS)
+    seats.write_text(SEATS)
+    assert main(["--goals", str(goals), "--seats", str(seats),
+                 "--rows", str(tmp_path / "nope.json")]) == 1
+    assert "UNREADABLE: the boards" in capsys.readouterr().out
+
+    # The whole board payload rather than its `items` list: `list()` on it
+    # hands back its keys, and every key would then be reported as a task
+    # with no milestone.
+    whole = tmp_path / "whole.json"
+    whole.write_text(json.dumps({"name": "issues", "items": [row(1)]}))
+    assert main(["--goals", str(goals), "--seats", str(seats),
+                 "--rows", str(whole)]) == 1
+    assert "UNREADABLE: the boards" in capsys.readouterr().out
 
 
 def test_orphans_prints_the_inventory_alone_and_exits_zero(tmp_path, capsys):

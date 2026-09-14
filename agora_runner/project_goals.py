@@ -393,6 +393,105 @@ def serves_orphans(serves, sections, keeps=None):
             and not split_serves(guardrails.get((project, milestone), ""))]
 
 
+#: A row in one of these is finished, so it is not work waiting for a
+#: milestone. Spelled out here rather than imported from
+#: `nova_boards._CLOSED_STATUS_KEYS`, which is private -- the same copy
+#: `tools.board_status` keeps, for the same reason.
+CLOSED_STATUS_KEYS = frozenset({"done", "outdated"})
+
+
+def open_rows(rows):
+    """Every row still waiting to be built, closed ones dropped.
+
+    A `done` or `outdated` row is finished work: asking which milestone it
+    serves is asking about a decision nobody will take again, and counting
+    it would make the unplaced list grow forever as the boards roll.
+    """
+    return [row for row in (rows or [])
+            if not row.get("done")
+            and (row.get("statusKey") or "") not in CLOSED_STATUS_KEYS]
+
+
+def _row_label(row):
+    board = (row.get("board") or "row").strip() or "row"
+    return f"{board} #{row.get('number')}"
+
+
+def task_seat_problems(rows, serves):
+    """Open rows naming a milestone that `milestone-seats.md` has no seat for.
+
+    The last link in issue #227's chain -- objective, key result, milestone,
+    **task** -- and the only one nothing checked. `serves_problems` catches a
+    seat pointing at a key result that does not exist; this catches a task
+    pointing at a milestone that does not exist, which is the same defect one
+    level down and equally closeable by a pull request: either the row is
+    pointed at the wrong milestone or the milestone needs a seat.
+
+    Keyed on `(project, milestone)` lowercased, exactly as
+    `parse_milestone_serves` keys its seats, so a row under the right
+    milestone name in the wrong project is a finding rather than a silent
+    pass -- the same milestone title appears under more than one project.
+
+    A row with **no** milestone at all is deliberately not here; it is
+    `task_seat_orphans`. 24 of the 125 open rows carry none today, and
+    folding the two together would put this check permanently red on a
+    backlog nobody can close in one pull request -- exactly the merge
+    `serves_orphans` had to be split out of to get into `tools.preflight`
+    at all.
+    """
+    found = []
+    for row in sorted(open_rows(rows),
+                      key=lambda r: (str(r.get("board") or ""),
+                                     int(r.get("number") or 0))):
+        project = (row.get("project") or "").strip()
+        milestone = (row.get("milestone") or "").strip()
+        if not project or not milestone:
+            continue
+        if (project.lower(), milestone.lower()) in (serves or {}):
+            continue
+        found.append(
+            f"{_row_label(row)}: under {project} / {milestone!r}, which has "
+            "no seat in milestone-seats.md")
+    return found
+
+
+def task_seat_orphans(rows):
+    """Open rows under no milestone at all -- the inventory, not a defect.
+
+    The mirror of `serves_orphans` one level down. A milestone that serves
+    nothing is either lights-on work or a pruning signal; a task under no
+    milestone is either work that belongs to a milestone nobody has placed
+    it in, or work that should not be on the board. Both are judgements the
+    owner makes on a row, not something a diff closes, so this prints and
+    does not raise.
+
+    A row with **no project** is reported here too. It cannot be seated
+    either way, and reporting it as a separate third list would split one
+    verdict -- "this row hangs off nothing" -- across two places.
+    """
+    lines = []
+    for row in sorted(open_rows(rows),
+                      key=lambda r: (str(r.get("board") or ""),
+                                     int(r.get("number") or 0))):
+        project = (row.get("project") or "").strip()
+        milestone = (row.get("milestone") or "").strip()
+        if milestone and project:
+            continue
+        if not project and milestone:
+            # A seat is keyed on the pair, so this row can never match one
+            # whatever milestone it names. Saying "under no milestone" here
+            # would be false about a row that names one.
+            why = f"no project, so its milestone {milestone!r} cannot be seated"
+        elif not project:
+            why = "no project, under no milestone"
+        else:
+            why = f"{project}, under no milestone"
+        lines.append(
+            f"{_row_label(row)}: {why} -- it serves no key result and no KPI "
+            "by way of one")
+    return lines
+
+
 def _set_field_in_fence(markdown, fence, row_id, field, value):
     """Set one field inside one ```key-result fence, addressed by its `id`.
 

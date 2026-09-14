@@ -283,7 +283,7 @@ SUBJECT = {
     "claim_schema":      ("on-box",  "live claims in this cluster"),
     "roll_health":       ("on-box",  "my own digest and handoff files"),
     "board_done_drift":  ("on-box",  "the board records against my own claim ledger"),
-    "project_goals_check": ("on-box",  "project-goals.md and milestone-seats.md in the vault"),
+    "project_goals_check": ("on-box",  "project-goals.md and milestone-seats.md in the vault, plus both boards through the site"),
     #: It reads GitHub too, for the mutable images `platform-config` declares
     #: that nothing runs -- but the cluster is still the subject it cannot
     #: survive the failure of, so the label stays `on-box`.
