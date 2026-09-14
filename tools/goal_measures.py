@@ -1978,13 +1978,13 @@ _NAS_PROJECT = "NAS"
 #: something else. `statusKey` is the one that separates them.
 _CLOSED_STATUS_KEYS = frozenset({"done", "outdated"})
 
-#: The one status that means the row cannot move until Edvard does something.
+#: The one status that means the row cannot move until the owner does something.
 #: It is the board's own key, not a phrase matched out of the label.
 _BLOCKED_ON_EDVARD = "blocked-on-edvard"
 
 
 def measure_nas_unattended(since, until):
-    """Open NAS rows that cannot move until Edvard does something by hand.
+    """Open NAS rows that cannot move until the owner does something by hand.
 
     A count, not a share, so there is no denominator to get wrong -- but the
     target is 0 and the direction is down, which makes a low reading the good

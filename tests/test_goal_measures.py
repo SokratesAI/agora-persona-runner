@@ -3189,7 +3189,7 @@ class TestDocsSyncAlive:
 
 
 class TestNasUnattended:
-    """`nas-kr-unattended` -- open NAS rows parked on Edvard.
+    """`nas-kr-unattended` -- open NAS rows parked on the owner.
 
     The target is 0 and the direction is down, so a low count is the good
     reading. Every test here is about a way of arriving at a low one without
