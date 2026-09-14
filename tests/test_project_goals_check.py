@@ -263,3 +263,46 @@ def test_a_seat_keeping_a_key_result_raises():
     lines, code = report(GOALS, seats)
     assert code == 2
     assert any("is a key result" in line for line in lines)
+
+
+def test_the_report_prints_the_two_kinds_of_orphan_under_their_own_headings():
+    """The readability failure this split exists for: one empty seat under
+    a project with goals is rule 4's question, one under a project with
+    none is not, and printed together under one heading the first is
+    unfindable. Both are still reported and the total is still both."""
+    seats = (SEATS
+             + "| Nova | Runner engineering | 2 | 09-13 |  |\n"
+               "| Agora | Ask me a question | 3 | 09-13 |  |\n")
+    lines, code = report(GOALS, seats, rows=[row(1)])
+    assert code == 0
+    body = "\n".join(lines)
+    assert "ORPHANS (1)" in body
+    assert "NO GOALS TO SERVE YET (1)" in body
+    assert "  nova / runner engineering: serves no key result and keeps no " \
+           "KPI -- either keep-the-lights-on work whose guardrail has not " \
+           "been written yet, or work nobody can justify" in lines
+    assert "  agora / ask me a question: serves no key result and keeps no " \
+           "KPI -- and there is none to serve, because no key result or " \
+           "KPI is written for this project yet" in lines
+    assert "2 orphan(s) (1 pruning signal, 1 awaiting project goals)" \
+        in lines[-1]
+    # Each orphan is printed once, under exactly one of the two headings.
+    # Reporting the whole list under `ORPHANS` as well is the failure this
+    # split exists to end, and it leaves both assertions above true.
+    assert sum("ask me a question" in l for l in lines) == 1
+    assert sum("runner engineering" in l for l in lines) == 1
+    heading = next(i for i, l in enumerate(lines)
+                   if l.startswith("NO GOALS TO SERVE"))
+    assert next(i for i, l in enumerate(lines)
+                if "ask me a question" in l) == heading + 1
+    assert next(i for i, l in enumerate(lines)
+                if "runner engineering" in l) < heading
+
+
+def test_a_report_with_no_orphans_does_not_carry_the_split():
+    """A parenthetical that reads `(0 pruning signal, 0 awaiting project
+    goals)` on every clean run is noise on the line a cycle actually reads,
+    so the split only prints when there is something to split."""
+    lines, _ = report(GOALS, SEATS, rows=[row(1)])
+    assert "0 orphan(s)," in lines[-1]
+    assert "pruning signal" not in lines[-1]

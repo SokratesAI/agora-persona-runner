@@ -11,8 +11,8 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.project_goals import (
     MAX_KEY_RESULTS, key_result_ids, kpi_ids, parse_project_goals, problems,
-    keeps_problems, serves_orphans, serves_problems, split_serves,
-    unpointed_goals,
+    keeps_problems, project_has_goals_to_serve, serves_orphans,
+    serves_problems, split_orphans, split_serves, unpointed_goals,
 )
 
 
@@ -461,3 +461,74 @@ def test_the_check_prints_the_unpointed_goals_and_still_exits_zero():
     assert any("NOTHING POINTS AT (1)" in line for line in lines)
     assert any("nova-cost" in line for line in lines)
     assert any("1 unpointed goal(s)" in line for line in lines)
+
+
+def test_an_orphan_under_a_project_with_goals_is_the_pruning_signal():
+    """Rule 4's short list: Nova has key results and this seat names none
+    of them, so the question really is whether the work is justified."""
+    sections = parse_project_goals(NOVA)
+    prunable, awaiting = split_orphans({("Nova", "Runner engineering"): ""},
+                                       sections)
+    assert awaiting == []
+    assert prunable and "work nobody can justify" in prunable[0]
+
+
+def test_an_orphan_under_a_project_with_no_goals_is_not_a_pruning_signal():
+    """The 32 of 36 that made the list unreadable. `Agora` has no section
+    in the goals document at all, so nothing exists for this seat to point
+    at and pruning is not the question -- writing Agora's goals is."""
+    sections = parse_project_goals(NOVA)
+    prunable, awaiting = split_orphans({("Agora", "Ask me a question"): ""},
+                                       sections)
+    assert prunable == []
+    assert awaiting and "no key result or KPI is written for this project" \
+        in awaiting[0]
+    assert "work nobody can justify" not in awaiting[0]
+
+
+def test_a_project_section_with_no_goals_at_all_offers_nothing_to_serve():
+    """A section can exist and still be empty -- an objective alone gives a
+    milestone nothing to name, so its seats are awaiting, not prunable."""
+    empty = _doc("## Husk\n"
+                 "\n"
+                 "```objective\n"
+                 "statement: Something he has not decided yet\n"
+                 "status: discussing\n"
+                 "```\n")
+    sections = parse_project_goals(empty)
+    assert sections and not project_has_goals_to_serve("Husk", sections)
+    prunable, awaiting = split_orphans({("Husk", "M"): ""}, sections)
+    assert prunable == [] and len(awaiting) == 1
+
+
+def test_the_split_drops_nothing_and_serves_orphans_is_unchanged():
+    """The whole worry about reading the goals document here: an orphan
+    must not stop being an orphan. The two lists together are exactly what
+    the old single list returned, for both kinds at once."""
+    sections = parse_project_goals(NOVA)
+    seats = {("Nova", "Runner engineering"): "",
+             ("Agora", "Ask me a question"): "",
+             ("Nova", "Picking"): "nova-kr1"}
+    prunable, awaiting = split_orphans(seats, sections)
+    assert len(prunable) == 1 and len(awaiting) == 1
+    assert sorted(prunable + awaiting) == serves_orphans(seats, sections)
+    assert len(serves_orphans(seats, sections)) == 2
+
+
+def test_another_projects_goals_cannot_move_a_seats_verdict():
+    """Reading only the seat's own project is the thing that makes this
+    safe: `Agora` stays awaiting however much Nova gains."""
+    sections = parse_project_goals(NOVA)
+    assert not project_has_goals_to_serve("Agora", sections)
+    assert project_has_goals_to_serve("Nova", sections)
+    _, awaiting = split_orphans({("Agora", "M"): ""}, sections)
+    assert len(awaiting) == 1
+
+
+def test_a_seat_naming_its_guardrail_is_in_neither_list():
+    """`Keeps` already answered this seat; the new split must not
+    resurrect it under the second heading."""
+    sections = parse_project_goals(NOVA)
+    prunable, awaiting = split_orphans({("Agora", "M"): ""}, sections,
+                                       {("Agora", "M"): "nova-cost"})
+    assert prunable == [] and awaiting == []

@@ -378,19 +378,73 @@ def serves_orphans(serves, sections, keeps=None):
 
     So it is an inventory rather than a defect, which is why it is a
     separate function from `serves_problems` and why its caller does not
-    raise on it. `sections` is taken and unused on purpose: an orphan is
-    decided by the seat's own empty cells, and reading the goals document
-    to decide it would make a milestone stop being an orphan when some
-    other project gained a key result. `keeps` defaults to empty so a
-    caller holding only the old column gets the old answer.
+    raise on it. Membership is decided by the seat's own empty cells and
+    by nothing else -- reading the goals document to decide *membership*
+    would make a milestone stop being an orphan when some other project
+    gained a key result. `sections` is used only to say *why* each line
+    is here, by `split_orphans`, which never drops one. `keeps` defaults
+    to empty so a caller holding only the old column gets the old answer.
+    """
+    prunable, awaiting = split_orphans(serves, sections, keeps)
+    return sorted(prunable + awaiting)
+
+
+def project_has_goals_to_serve(project, sections):
+    """Is there anything under `project` for a milestone to point at?
+
+    A project section with no key result and no KPI offers nothing, so a
+    milestone under it cannot name one. Keyed lowercase, the way
+    `parse_project_goals` keys its output.
+    """
+    section = (sections or {}).get((project or "").strip().lower())
+    if not section:
+        return False
+    return bool(section.get("keyResults") or section.get("kpis"))
+
+
+def split_orphans(serves, sections, keeps=None):
+    """The orphan list, split by *why* the seat is empty -> (prunable, awaiting).
+
+    **Same call `serves_orphans` already made once, one level up.** That
+    docstring splits an orphan from a seat that names its guardrail,
+    citing `agentic_health`: one number, two causes, opposite actions. This
+    is the other cause hiding in the number. Measured Cycle 1555 against
+    the live documents: 36 orphans, of which **32 sit under a project that
+    has no objective, no key result and no KPI written at all**. There is
+    nothing for those seats to serve -- writing that project's goals is
+    the action, and it is blocked on the prune thread -- while the 4 under
+    a project that *does* have goals are the pruning signal rule 4 is
+    actually asking for. Printed as one block of 36 under one sentence
+    offering two verdicts, the 4 are unreadable.
+
+    **Nothing leaves the orphan list.** `serves_orphans` still returns all
+    36 and the count in the summary is unchanged; this only says which of
+    the rule's two verdicts each line is under. That is deliberate, and it
+    is the answer to the worry `serves_orphans` writes down -- reading the
+    goals document must not make a milestone *stop* being an orphan. It
+    also reads only the seat's **own** project, so another project gaining
+    a key result cannot move this line; the only thing that moves it is
+    goals being written for the project the milestone is under, which is
+    exactly when it becomes a question worth asking.
     """
     guardrails = keeps or {}
-    return [f"{project} / {milestone}: serves no key result and keeps no "
-            "KPI -- either keep-the-lights-on work whose guardrail has not "
-            "been written yet, or work nobody can justify"
-            for (project, milestone) in sorted(serves)
-            if not split_serves(serves[(project, milestone)])
-            and not split_serves(guardrails.get((project, milestone), ""))]
+    prunable, awaiting = [], []
+    for (project, milestone) in sorted(serves):
+        if split_serves(serves[(project, milestone)]):
+            continue
+        if split_serves(guardrails.get((project, milestone), "")):
+            continue
+        if project_has_goals_to_serve(project, sections):
+            prunable.append(
+                f"{project} / {milestone}: serves no key result and keeps "
+                "no KPI -- either keep-the-lights-on work whose guardrail "
+                "has not been written yet, or work nobody can justify")
+        else:
+            awaiting.append(
+                f"{project} / {milestone}: serves no key result and keeps "
+                "no KPI -- and there is none to serve, because no key "
+                "result or KPI is written for this project yet")
+    return prunable, awaiting
 
 
 def unpointed_goals(serves, keeps, sections):
