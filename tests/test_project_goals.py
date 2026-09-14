@@ -197,6 +197,92 @@ def test_a_milestone_serving_a_real_key_result_is_clean():
     assert serves_problems({("Nova", "Picking"): "nova-kr1"}, sections) == []
 
 
+TWO_PROJECTS = NOVA + (
+    "\n"
+    "## Marcus\n"
+    "\n"
+    "```objective\n"
+    "statement: Marcus is the app he trains from\n"
+    "status: discussing\n"
+    "```\n"
+    "\n"
+    "```key-result\n"
+    "id: marcus-kr1\n"
+    "name: He logs the session he did\n"
+    "measure: sessions logged per week\n"
+    "now: 0\n"
+    "target: 3\n"
+    "direction: up\n"
+    "```\n"
+    "\n"
+    "```kpi\n"
+    "id: marcus-page-weight\n"
+    "name: Biggest hand-written file served\n"
+    "measure: KB\n"
+    "now: 292\n"
+    "high: 292\n"
+    "```\n"
+)
+
+
+def test_serving_another_projects_key_result_is_refused():
+    """Issue #227's model is a tree: a milestone serves a key result of the
+    objective it sits under. The id resolves, so nothing downstream notices
+    -- the seat reads as filled, the milestone leaves rule 4's orphan list,
+    and `/plan` counts it under the other project's coverage line."""
+    sections = parse_project_goals(TWO_PROJECTS)
+    found = serves_problems({("marcus", "Body and progress"): "nova-kr1"},
+                            sections)
+    assert len(found) == 1
+    assert "belongs to 'Nova'" in found[0]
+    assert "its own project" in found[0]
+
+
+def test_serving_your_own_projects_key_result_is_clean_with_two_projects():
+    """The other half of the same call: the rule must not fire on the seat
+    it is meant to allow, and both projects carry a key result here so a
+    test that passed by there being only one id cannot pass."""
+    sections = parse_project_goals(TWO_PROJECTS)
+    assert serves_problems({("marcus", "Body and progress"): "marcus-kr1",
+                            ("nova", "Picking"): "nova-kr1"}, sections) == []
+
+
+def test_a_cross_project_pointer_is_a_defect_rather_than_an_orphan():
+    """The near miss `serves_problems` has made twice already: the cell was
+    filled in, so it is not an orphan, and it is wrong, so it raises. If it
+    read as an orphan instead it would never exit non-zero."""
+    sections = parse_project_goals(TWO_PROJECTS)
+    seats = {("marcus", "Body and progress"): "nova-kr1"}
+    assert serves_orphans(seats, sections) == []
+    assert serves_problems(seats, sections)
+
+
+def test_seat_and_goal_project_names_are_compared_case_folded():
+    """The seats table writes `product management` and the goals document
+    writes `Product management`, so a raw comparison would report every
+    correct seat in the file as cross-project."""
+    sections = parse_project_goals(TWO_PROJECTS)
+    assert serves_problems({("MARCUS", "M"): "marcus-kr1"}, sections) == []
+
+
+def test_keeping_another_projects_kpi_is_refused():
+    """`Keeps` sits in the same tree as `Serves`: a guardrail held by
+    another project is not this milestone's guardrail."""
+    sections = parse_project_goals(TWO_PROJECTS)
+    found = keeps_problems({("nova", "Runner engineering"):
+                            "marcus-page-weight"}, sections)
+    assert len(found) == 1
+    assert "belongs to 'Marcus'" in found[0]
+    assert "its own project" in found[0]
+
+
+def test_keeping_your_own_projects_kpi_is_clean_with_two_projects():
+    sections = parse_project_goals(TWO_PROJECTS)
+    assert keeps_problems({("nova", "Cost and quota"): "nova-cost",
+                           ("marcus", "Codebase health"):
+                           "marcus-page-weight"}, sections) == []
+
+
 def test_seats_carry_the_serves_cell_and_still_parse_as_seats():
     markdown = render_milestone_seats(
         [("Nova", "Picking"), ("Nova", "Cost and quota")],
