@@ -1855,7 +1855,8 @@ def plans_payload():
     here cold. It is reached from the nav, by which time the process has
     long since served the journal.
     """
-    return shape_plan(plan_markdown(), goal_history_json())
+    return shape_plan(plan_markdown(), goal_history_json(),
+                      milestone_seats_markdown())
 
 
 def board_page(payload, limit=None, item=None, search=None, mine=False):

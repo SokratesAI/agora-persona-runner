@@ -1043,3 +1043,119 @@ def test_the_goal_and_next_fences_are_left_for_the_scoreboard():
     goals = "```goal\nname: G1\nnow: 3\n```\n"
     assert _inline_goal_blocks(goals) == goals
     assert plan_payload({"goals": GOALS_WITH_BLOCKS})["documents"][1]["scoreboard"]
+
+
+SEATS = """| Project | Milestone | Position | Updated | Serves | Keeps |
+| --- | --- | --- | --- | --- | --- |
+| Nova | Seeing the loop work | 1 | 2026-09-14 | nova-kr-your-rows | |
+| Nova | Board records | 2 | 2026-09-14 | nova-kr-your-rows | |
+| Nova | Keeping the lights on | 3 | 2026-09-14 | | nova-kpi-cost |
+| Nova | Nothing here | 4 | 2026-09-14 | | |
+"""
+
+
+def _projects_doc_with_seats(seats, markdown=PROJECT_GOALS):
+    documents = plan_payload({"projects": markdown}, None, seats)["documents"]
+    return [doc for doc in documents if doc["key"] == "projects"][0]
+
+
+def test_a_key_result_says_how_many_milestones_serve_it():
+    """Issue #227's chain -- objective, key result, milestone -- read on the
+    page instead of in a tool only a cycle runs."""
+    texts = _paragraphs(_projects_doc_with_seats(SEATS))
+    key_result = next(t for t in texts if t.startswith("Key result"))
+    assert "Served by 2 milestones." in key_result
+    kpi = next(t for t in texts if t.startswith("KPI"))
+    assert "Kept by 1 milestone." in kpi
+    # Singular, because "1 milestones" on his phone is the kind of thing he
+    # reads as the page being broken.
+    assert "1 milestones" not in " ".join(texts)
+
+
+def test_the_coverage_sentence_sits_before_the_id():
+    """The id is the last thing in the paragraph and stays that way: it is the
+    handle, and a sentence after it reads as belonging to the next block."""
+    texts = _paragraphs(_projects_doc_with_seats(SEATS))
+    key_result = next(t for t in texts if t.startswith("Key result"))
+    assert key_result.rstrip().endswith(
+        "Served by 2 milestones. nova-kr-your-rows")
+
+
+def test_a_goal_nothing_points_at_says_so_in_bold():
+    """A key result no milestone serves is an outcome nobody is pursuing, and
+    a KPI no milestone keeps is a number nobody is accountable for."""
+    empty = """| Project | Milestone | Position | Updated | Serves | Keeps |
+| --- | --- | --- | --- | --- | --- |
+| Nova | Nothing here | 1 | 2026-09-14 | | |
+"""
+    texts = _paragraphs(_projects_doc_with_seats(empty))
+    assert "No milestone serves this yet." in next(
+        t for t in texts if t.startswith("Key result"))
+    assert "No milestone keeps this in bounds." in next(
+        t for t in texts if t.startswith("KPI"))
+
+
+def test_a_kpi_named_in_serves_is_not_counted_as_kept():
+    """Issue #227's rule that a guardrail may never be a key result is
+    enforced one column at a time, so pooling the two would report a pointer
+    `serves_problems` already refuses as coverage."""
+    crossed = """| Project | Milestone | Position | Updated | Serves | Keeps |
+| --- | --- | --- | --- | --- | --- |
+| Nova | Wrong column | 1 | 2026-09-14 | nova-kpi-cost | nova-kr-your-rows |
+"""
+    texts = _paragraphs(_projects_doc_with_seats(crossed))
+    assert "No milestone keeps this in bounds." in next(
+        t for t in texts if t.startswith("KPI"))
+    assert "No milestone serves this yet." in next(
+        t for t in texts if t.startswith("Key result"))
+
+
+def test_no_seats_text_prints_no_coverage_sentence_at_all():
+    """An unread seats file rendering as "no milestone serves this" against
+    every goal on the page is the worst failure this page can have -- a fetch
+    that did not happen printing as the finding a cycle is meant to act on.
+    `milestone_seats_markdown` returns "" for both missing and empty, so the
+    two cannot be told apart and both stay silent."""
+    for seats in (None, ""):
+        texts = " ".join(_paragraphs(_projects_doc_with_seats(seats)))
+        assert "milestone" not in texts.lower(), seats
+
+
+def test_an_objective_gets_no_coverage_sentence():
+    """Nothing points at an objective; its key results are what a seat names,
+    so a count on it would be a number with no column behind it."""
+    texts = _paragraphs(_projects_doc_with_seats(SEATS))
+    objective = next(t for t in texts if t.startswith("Objective"))
+    assert "milestone" not in objective.lower()
+
+
+def test_seat_counts_counts_each_column_separately():
+    """The unit under both sentences, asserted on its own so a renderer change
+    cannot quietly take the separation with it."""
+    from agora_runner.nova_boards import (
+        parse_milestone_keeps, parse_milestone_serves,
+    )
+    from agora_runner.nova_plan import seat_counts
+
+    counts = seat_counts(parse_milestone_serves(SEATS),
+                         parse_milestone_keeps(SEATS))
+    assert counts == {"served": {"nova-kr-your-rows": 2},
+                      "kept": {"nova-kpi-cost": 1}}
+
+
+def test_the_plan_route_hands_the_seats_file_to_the_payload(monkeypatch):
+    """The wiring, not the shaping: `nova_plan` cannot print a count the site
+    never fetched, and that seam is invisible from either side alone. Driven
+    through the real route function with both fetches stubbed, because
+    grepping the module for the call name passes on the three other calls to
+    it that were already there."""
+    from agora_runner import nova_site
+
+    monkeypatch.setattr(nova_site, "plan_markdown",
+                        lambda: {"projects": PROJECT_GOALS})
+    monkeypatch.setattr(nova_site, "goal_history_json", lambda: "")
+    monkeypatch.setattr(nova_site, "milestone_seats_markdown", lambda: SEATS)
+    doc = [d for d in nova_site.plans_payload()["documents"]
+           if d["key"] == "projects"][0]
+    assert any("Served by 2 milestones." in text
+               for text in _paragraphs(doc))
