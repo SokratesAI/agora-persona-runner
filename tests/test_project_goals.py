@@ -12,6 +12,7 @@ from agora_runner.nova_boards import (
 from agora_runner.project_goals import (
     MAX_KEY_RESULTS, key_result_ids, kpi_ids, parse_project_goals, problems,
     keeps_problems, serves_orphans, serves_problems, split_serves,
+    unpointed_goals,
 )
 
 
@@ -394,3 +395,69 @@ def test_orphans_without_a_keeps_map_answers_as_before():
     not silently told every milestone is answered."""
     sections = parse_project_goals(NOVA)
     assert len(serves_orphans({("Nova", "M"): ""}, sections)) == 1
+
+
+def test_a_key_result_no_seat_serves_is_reported():
+    """Rule 4 read from the goals side. Every pointer here resolves, so
+    `serves_problems` and `serves_orphans` are both silent -- and the
+    objective still has nothing being built toward it."""
+    sections = parse_project_goals(NOVA)
+    serves, keeps = {}, {("Nova", "Cost and quota"): "nova-cost"}
+    assert serves_problems(serves, sections) == []
+    assert serves_orphans(serves, sections, keeps) == []
+    found = unpointed_goals(serves, keeps, sections)
+    assert [line for line in found if "nova-kr1" in line]
+    assert "a key result no milestone serves" in found[0]
+
+
+def test_a_kpi_no_seat_keeps_is_reported():
+    sections = parse_project_goals(NOVA)
+    serves, keeps = {("Nova", "Picking"): "nova-kr1"}, {}
+    found = unpointed_goals(serves, keeps, sections)
+    assert [line for line in found if "nova-cost" in line]
+    assert all("nova-kr1" not in line for line in found)
+
+
+def test_a_fully_pointed_at_document_reports_nothing():
+    sections = parse_project_goals(NOVA)
+    assert unpointed_goals({("Nova", "Picking"): "nova-kr1"},
+                           {("Nova", "Cost"): "nova-cost"}, sections) == []
+
+
+def test_a_key_result_named_in_keeps_does_not_count_as_served():
+    """The near miss, and the reason each id is looked for in its own column
+    only: writing a key result into `Keeps` is already a defect, and letting
+    it answer this inventory would make a broken pointer hide two findings
+    at once."""
+    sections = parse_project_goals(NOVA)
+    keeps = {("Nova", "M"): "nova-kr1"}
+    assert keeps_problems(keeps, sections)
+    found = unpointed_goals({}, keeps, sections)
+    assert [line for line in found if "nova-kr1" in line]
+
+
+def test_a_kpi_named_in_serves_does_not_count_as_kept():
+    sections = parse_project_goals(NOVA)
+    serves = {("Nova", "M"): "nova-cost"}
+    assert serves_problems(serves, sections)
+    found = unpointed_goals(serves, {}, sections)
+    assert [line for line in found if "nova-cost" in line]
+
+
+def test_one_seat_of_many_is_enough_to_point_at_a_goal():
+    sections = parse_project_goals(NOVA)
+    serves = {("Nova", "A"): "", ("Nova", "B"): "nova-kr1"}
+    found = unpointed_goals(serves, {("Nova", "C"): "nova-cost"}, sections)
+    assert found == []
+
+
+def test_the_check_prints_the_unpointed_goals_and_still_exits_zero():
+    from tools.project_goals_check import report
+    seats = ("| Project | Milestone | Position | Updated | Serves | Keeps |\n"
+             "| --- | --- | --- | --- | --- | --- |\n"
+             "| Nova | Picking | 1 | 09-14 | nova-kr1 |  |\n")
+    lines, code = report(NOVA, seats, rows=[])
+    assert code == 0
+    assert any("NOTHING POINTS AT (1)" in line for line in lines)
+    assert any("nova-cost" in line for line in lines)
+    assert any("1 unpointed goal(s)" in line for line in lines)

@@ -28,11 +28,21 @@ def row(number, board="issues", project="Nova", milestone="Picking",
 
 
 def test_a_linked_milestone_is_clean():
+    """`SEATS` has no `Keeps` column, so `nova-cost` is a KPI nobody holds in
+    bounds. That is the unpointed-goal inventory and it is pinned here rather
+    than hidden, because the subject of this test is that a model with an
+    inventory line in it still exits 0 -- an inventory is not a defect."""
     lines, code = report(GOALS, SEATS, rows=[row(1)])
     assert code == 0
     assert lines == ["MODEL HOLDS",
+                     "NOTHING POINTS AT (1) -- rule 4 read from the goals "
+                     "side, an inventory rather than a defect, so it does "
+                     "not raise:",
+                     "  Nova / nova-cost: a KPI no milestone keeps -- no "
+                     "milestone is accountable for holding it in bounds",
                      "1 project section(s), 1 seated milestone(s), "
-                     "0 model problem(s), 0 orphan(s), 0 unplaced task(s)"]
+                     "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
+                     "0 unplaced task(s)"]
 
 
 def test_boards_that_were_not_read_say_so_instead_of_reading_clean():
