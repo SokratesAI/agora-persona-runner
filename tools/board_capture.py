@@ -71,6 +71,17 @@ cut took a neighbour's answer with it and left both documents looking
 fine. Against records that span is gone, but `write_captures(prune=True)`
 is still one wrong call away from expressing a deletion as an absence, so
 the invariant is checked rather than assumed.
+
+**Since 2026-09-14 one of `--milestone` and `--no-milestone` is required.**
+This tool took `--project` and had no way to name a milestone at all, so
+every row it boarded arrived under none -- and issue #227's fourth rule is
+that a task under no milestone serves no key result. `project_goals_check`
+counted 24 of them that morning; cycle 1554 placed them by hand and then
+came here, because a backlog cleared by hand regrows at exactly the rate
+the door creates it. A default was the tempting fix and is the wrong one:
+the cheap name is whichever milestone is already on screen, and a row
+under the wrong milestone reads as placed to every check downstream. So
+the caller either names one or says out loud that none fits yet.
 """
 
 import argparse
@@ -248,15 +259,44 @@ def main(argv=None):
         "--project",
         help="Project cell; default is the bullet's own '(Project: X)' prefix",
     )
+    parser.add_argument(
+        "--milestone",
+        help="the milestone this row belongs under, scoped to its project",
+    )
+    parser.add_argument(
+        "--no-milestone",
+        action="store_true",
+        help="board it ungrouped on purpose, when no milestone fits yet",
+    )
     parser.add_argument("--cycle", type=int, help="stamped on the replies carried across")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+
+    # **One of the two milestone flags is required, and that is issue #227's
+    # task rule enforced where the row is created.** This tool took
+    # `--project` and no `--milestone`, so every capture it boarded became a
+    # task under no milestone by construction -- `project_goals_check` found
+    # 24 of them on 2026-09-14 and cycle 1554 placed them one at a time. A
+    # default would put the inventory straight back: the cheap name is the
+    # one already on screen, and a row under the wrong milestone reads as
+    # placed. So the caller either names the milestone or says out loud that
+    # none fits yet, and neither is guessed for them.
+    if bool(args.milestone) == bool(args.no_milestone):
+        print(
+            "REFUSED: name --milestone <name>, or pass --no-milestone to "
+            "board it ungrouped on purpose. A row under no milestone serves "
+            "no key result (issue #227), so it is a choice rather than a "
+            "default.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Both go straight into table cells. `add_row` refuses them too and would
     # refuse before writing anything, but a refusal that costs no store call
     # is the better one -- and `--title` reaching `refuse_cell` here is what
     # makes the message name the flag he typed.
-    for value, flag in ((args.dated, "--dated"), (args.title, "--title")):
+    for value, flag in ((args.dated, "--dated"), (args.title, "--title"),
+                        (args.milestone, "--milestone")):
         refusal = refuse_cell(value, flag)
         if refusal:
             print(f"REFUSED: {refusal}", file=sys.stderr)
@@ -314,6 +354,10 @@ def main(argv=None):
                 "still in its title. Pass --project <name>.",
                 file=sys.stderr,
             )
+    if args.milestone:
+        print(f"  milestone {args.milestone!r}")
+    else:
+        print("  milestone (ungrouped), by --no-milestone")
     if args.dry_run:
         return 0
 
@@ -347,6 +391,37 @@ def main(argv=None):
             "box, so nothing was removed",
             file=sys.stderr,
         )
+
+    # The row exists now, so the milestone is a second write rather than a
+    # field on `add_row`: `add_row` mints the row and knows nothing about the
+    # milestone registry, and widening it would put a registry lookup inside
+    # the one function that creates rows for both boards.
+    #
+    # **It goes after the bullet is cut, not between the two writes above.**
+    # Those two are the pair the comment above guards -- a row written and a
+    # bullet still in the box is the state re-running the same call repairs,
+    # and slipping a third write in between would make a failed regrouping
+    # leave that pair open and a re-run board the item twice. Here, the worst
+    # case is one row on his board under no milestone, which is what the tool
+    # did for every row before today and what `board_milestone` repairs in
+    # one call.
+    if args.milestone:
+        try:
+            board_write.change_row(
+                args.board, row["number"],
+                {"milestone": args.milestone.strip()},
+                store=board_store,
+            )
+        except (board_write.WriteRefused, board_write.BoardDamaged,
+                board_records.RecordError) as problem:
+            print(
+                f"boarded #{row['number']}, but it is still ungrouped: "
+                f"{problem}. Run: python3 -m tools.board_milestone --board "
+                f"{args.board} --number {row['number']} --milestone "
+                f"{args.milestone!r}",
+                file=sys.stderr,
+            )
+            return 1
 
     after = board_records.contents(args.board, store=board_store)
     problems = check_captures(before, after, raw_text)
