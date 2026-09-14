@@ -49,16 +49,33 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.project_goals import (
     PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, parse_project_goals, problems,
-    keeps_problems, serves_orphans, serves_problems,
+    keeps_problems, serves_orphans, serves_problems, task_seat_orphans,
+    task_seat_problems,
 )
 
+#: The two boards the owner's work sits on, read through the site's own API
+#: -- the same store `top_board_rows` ranks, one HTTP call away, and
+#: reachable from the bridge pod where this check runs under `preflight`.
+#: `board_records` is not used here on purpose: it needs `COUCHDB_*`, which
+#: the bridge pod does not set, so it would raise on every cycle.
+BOARDS = ("issues", "ideas")
+SITE = "http://nova-site.agents.svc.cluster.local:8083"
 
-def report(goals_markdown, seats_markdown):
+
+def report(goals_markdown, seats_markdown, rows=None):
     """`(lines, exit code)` -- the whole judgement, no I/O.
 
     Split out from `main` so the tests drive the logic rather than a
     subprocess, and so a caller that already holds both documents (the
     project page, when step 4 draws this) does not fetch them twice.
+
+    `rows` is every board row, both boards, and `None` means **not read**
+    rather than "no rows". The two are the same value to every function
+    below and opposite findings: an unread board would print a clean zero
+    unplaced tasks and look like the best possible answer, which is the
+    guaranteed-positive trap. So `None` prints that the task half was not
+    evaluated, the way `top_board_rows` refuses to stay silent about a
+    maintenance reservation it could not judge.
     """
     sections = parse_project_goals(goals_markdown)
     if not sections:
@@ -69,7 +86,9 @@ def report(goals_markdown, seats_markdown):
     keeps = parse_milestone_keeps(seats_markdown)
     broken = serves_problems(serves, sections) + keeps_problems(keeps, sections)
     orphans = serves_orphans(serves, sections, keeps)
-    defects = found + broken
+    unseated = [] if rows is None else task_seat_problems(rows, serves)
+    unplaced = [] if rows is None else task_seat_orphans(rows)
+    defects = found + broken + unseated
     lines = ["BROKEN" if defects else "MODEL HOLDS"]
     for line in defects:
         lines.append(f"  {line}")
@@ -79,10 +98,24 @@ def report(goals_markdown, seats_markdown):
             "inventory rather than a defect, so it does not raise:")
         for line in orphans:
             lines.append(f"  {line}")
+    if rows is None:
+        lines.append("TASKS NOT EVALUATED -- the boards were not read, so "
+                     "nothing is claimed about which milestone a row sits "
+                     "under")
+    elif unplaced:
+        lines.append(
+            f"UNPLACED TASKS ({len(unplaced)}) -- the task end of issue "
+            "#227's chain, an inventory rather than a defect, so it does "
+            "not raise:")
+        for line in unplaced:
+            lines.append(f"  {line}")
     lines.append(f"{len(sections)} project section(s), "
                  f"{len(serves)} seated milestone(s), "
                  f"{len(defects)} model problem(s), "
-                 f"{len(orphans)} orphan(s)")
+                 f"{len(orphans)} orphan(s), "
+                 + ("tasks not read"
+                    if rows is None
+                    else f"{len(unplaced)} unplaced task(s)"))
     return lines, 2 if defects else 0
 
 
@@ -110,10 +143,51 @@ def _fetch(path):
     return ("" if "[not found]" in text[:200] else text), True
 
 
+def _fetch_rows(site=SITE):
+    """Every open and closed row on both boards -> `(rows, ok)`.
+
+    Each row is tagged with the board it came from, because a row number is
+    only unique inside one board and the finding has to name which `#227`
+    it means.
+
+    Read over HTTP rather than through `board_records` deliberately: this
+    check runs inside `tools.preflight` on the bridge pod, which holds
+    CouchDB credentials under `CDB_*` while `board_records` reads
+    `COUCHDB_*` -- so the record store would raise `UnmigratedStore` here
+    every single cycle. The site pod holds the credentials and serves the
+    same records.
+    """
+    import json
+    import urllib.request
+
+    rows = []
+    for board in BOARDS:
+        try:
+            with urllib.request.urlopen(
+                    f"{site}/api/board?name={board}", timeout=60) as response:
+                payload = json.loads(response.read())
+        except (OSError, ValueError):
+            return [], False
+        for item in payload.get("items") or []:
+            rows.append({**item, "board": board})
+    return rows, True
+
+
+def _rows_from_file(path):
+    import json
+    try:
+        payload = json.loads(_pathlib.Path(path).read_text())
+    except (OSError, ValueError):
+        return [], False
+    return list(payload), True
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--goals", help="local project-goals.md instead of a fetch")
     ap.add_argument("--seats", help="local milestone-seats.md instead of a fetch")
+    ap.add_argument("--rows", help="a JSON list of board rows instead of a "
+                                   "fetch from the site")
     ap.add_argument("--orphans", action="store_true",
                     help="print only the milestones that serve no key "
                          "result, one per line, and exit 0")
@@ -134,7 +208,8 @@ def main(argv=None):
                        else _fetch(PROJECT_GOALS_PATH))
     seats, ok_seats = (_read(args.seats) if args.seats
                        else _fetch(MILESTONE_SEATS_PATH))
-    for ok, name in ((ok_goals, "project-goals.md"), (ok_seats, "milestone-seats.md")):
+    for ok, name in ((ok_goals, "project-goals.md"),
+                     (ok_seats, "milestone-seats.md")):
         if not ok:
             print(f"UNREADABLE: {name}")
             return 1
@@ -144,7 +219,15 @@ def main(argv=None):
                                    parse_milestone_keeps(seats)):
             print(line)
         return 0
-    lines, code = report(goals, seats)
+    # Fetched here rather than beside the two documents so `--orphans`, which
+    # is a question about the seats file alone, does not pay for an HTTP call
+    # it never reads.
+    rows, ok_rows = (_rows_from_file(args.rows) if args.rows
+                     else _fetch_rows())
+    if not ok_rows:
+        print("UNREADABLE: the boards")
+        return 1
+    lines, code = report(goals, seats, rows)
     for line in lines:
         print(line)
     return code
