@@ -36,6 +36,17 @@ makes on an already-fixed advisory and `argocd_health` on a stale Job
 failure. `--orphans` prints the list on its own for when it is the thing you
 came for.
 
+**The pointers are checked in both directions.** `Serves`/`Keeps` are read
+from the seat outwards -- an id that resolves to nothing is a defect, and a
+seat naming nothing at all is the orphan list above. `unpointed_goals` reads
+them from the goals document inwards: a key result no milestone serves is an
+outcome nobody is building toward, and a KPI no milestone keeps is a number
+on the scoreboard nobody is accountable for. Neither direction implies the
+other -- every pointer in the file can resolve while four of the nine goals
+have nothing aimed at them, which is what it read the day it was written.
+It is an inventory and does not raise, for the orphan list's reason: which
+milestone owns a given number is a judgement, not something a diff closes.
+
 **The task end of the chain is checked the same way, one level down.** A
 board row naming a milestone with no seat is a defect and raises; a row
 under no milestone at all is an inventory and does not raise. Both boards
@@ -59,6 +70,7 @@ from agora_runner.nova_boards import (
 from agora_runner.project_goals import (
     PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, parse_project_goals, problems,
     keeps_problems, serves_orphans, serves_problems, task_seat_orphans,
+    unpointed_goals,
     task_seat_problems,
 )
 
@@ -95,6 +107,7 @@ def report(goals_markdown, seats_markdown, rows=None):
     keeps = parse_milestone_keeps(seats_markdown)
     broken = serves_problems(serves, sections) + keeps_problems(keeps, sections)
     orphans = serves_orphans(serves, sections, keeps)
+    unpointed = unpointed_goals(serves, keeps, sections)
     unseated = [] if rows is None else task_seat_problems(rows, serves)
     unplaced = [] if rows is None else task_seat_orphans(rows)
     defects = found + broken + unseated
@@ -106,6 +119,13 @@ def report(goals_markdown, seats_markdown, rows=None):
             f"ORPHANS ({len(orphans)}) -- issue #227's fourth rule, an "
             "inventory rather than a defect, so it does not raise:")
         for line in orphans:
+            lines.append(f"  {line}")
+    if unpointed:
+        lines.append(
+            f"NOTHING POINTS AT ({len(unpointed)}) -- rule 4 read from the "
+            "goals side, an inventory rather than a defect, so it does not "
+            "raise:")
+        for line in unpointed:
             lines.append(f"  {line}")
     if rows is None:
         lines.append("TASKS NOT EVALUATED -- the boards were not read, so "
@@ -122,6 +142,7 @@ def report(goals_markdown, seats_markdown, rows=None):
                  f"{len(serves)} seated milestone(s), "
                  f"{len(defects)} model problem(s), "
                  f"{len(orphans)} orphan(s), "
+                 f"{len(unpointed)} unpointed goal(s), "
                  + ("tasks not read"
                     if rows is None
                     else f"{len(unplaced)} unplaced task(s)"))

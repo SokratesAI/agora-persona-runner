@@ -393,6 +393,47 @@ def serves_orphans(serves, sections, keeps=None):
             and not split_serves(guardrails.get((project, milestone), ""))]
 
 
+def unpointed_goals(serves, keeps, sections):
+    """The goals side of rule 4, read backwards: what nothing points at.
+
+    `serves_orphans` starts at a seat and asks what it names. This starts at
+    a key result or a KPI and asks whether any seat names *it*. Both
+    directions are needed and neither implies the other: the whole seats
+    file can resolve perfectly while a key result has no work under it at
+    all, which is an outcome nobody is pursuing, and a KPI with no keeper is
+    a number on the scoreboard that no milestone is accountable for holding
+    in bounds.
+
+    **Each id is looked for in its own column only.** A key result named in
+    a `Keeps` cell does not count as served, and a KPI named in `Serves`
+    does not count as kept -- both of those are already defects
+    `keeps_problems` and `serves_problems` raise on, and honouring them here
+    would let a broken pointer silence this inventory. That is the same
+    separation the `Keeps` column was added for.
+
+    An inventory rather than a defect, like the orphan list: which milestone
+    ought to carry a given number is a judgement, not something a diff
+    closes.
+    """
+    served, kept = set(), set()
+    for cell in serves.values():
+        served.update(split_serves(cell))
+    for cell in (keeps or {}).values():
+        kept.update(split_serves(cell))
+    found = []
+    for identifier, project in sorted(key_result_ids(sections).items()):
+        if identifier not in served:
+            found.append(f"{project or '?'} / {identifier}: a key result no "
+                         "milestone serves -- nothing on the seats file is "
+                         "being built toward it")
+    for identifier, project in sorted(kpi_ids(sections).items()):
+        if identifier not in kept:
+            found.append(f"{project or '?'} / {identifier}: a KPI no "
+                         "milestone keeps -- no milestone is accountable for "
+                         "holding it in bounds")
+    return found
+
+
 #: A row in one of these is finished, so it is not work waiting for a
 #: milestone. Spelled out here rather than imported from
 #: `nova_boards._CLOSED_STATUS_KEYS`, which is private -- the same copy
