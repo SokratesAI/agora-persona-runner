@@ -36,6 +36,20 @@ makes on an already-fixed advisory and `argocd_health` on a stale Job
 failure. `--orphans` prints the list on its own for when it is the thing you
 came for.
 
+**The orphan list prints under two headings, because it holds two
+findings.** Rule 4 names exactly two verdicts and the `Keeps` column
+separated one of them; the other one is *why the seat is empty*. Measured
+Cycle 1555 against the live documents: 36 orphans, and 32 of them sit
+under a project with no objective, no key result and no KPI written at
+all -- there is nothing there for a seat to point at, so pruning is not
+the question and writing that project's goals is. The 4 under a project
+that does have goals are the pruning signal, and printed as one block of
+36 under one sentence offering two readings they were unfindable.
+`ORPHANS` is the short list; `NO GOALS TO SERVE YET` is the rest.
+**Nothing is dropped and the total is unchanged** -- the summary prints
+36 with the split beside it -- so this narrows what to read, never what
+is reported.
+
 **The pointers are checked in both directions.** `Serves`/`Keeps` are read
 from the seat outwards -- an id that resolves to nothing is a defect, and a
 seat naming nothing at all is the orphan list above. `unpointed_goals` reads
@@ -69,7 +83,8 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.project_goals import (
     PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, parse_project_goals, problems,
-    keeps_problems, serves_orphans, serves_problems, task_seat_orphans,
+    keeps_problems, serves_problems, split_orphans,
+    task_seat_orphans,
     unpointed_goals,
     task_seat_problems,
 )
@@ -106,7 +121,8 @@ def report(goals_markdown, seats_markdown, rows=None):
     serves = parse_milestone_serves(seats_markdown)
     keeps = parse_milestone_keeps(seats_markdown)
     broken = serves_problems(serves, sections) + keeps_problems(keeps, sections)
-    orphans = serves_orphans(serves, sections, keeps)
+    prunable, awaiting = split_orphans(serves, sections, keeps)
+    orphans = prunable + awaiting
     unpointed = unpointed_goals(serves, keeps, sections)
     unseated = [] if rows is None else task_seat_problems(rows, serves)
     unplaced = [] if rows is None else task_seat_orphans(rows)
@@ -114,11 +130,21 @@ def report(goals_markdown, seats_markdown, rows=None):
     lines = ["BROKEN" if defects else "MODEL HOLDS"]
     for line in defects:
         lines.append(f"  {line}")
-    if orphans:
+    if prunable:
         lines.append(
-            f"ORPHANS ({len(orphans)}) -- issue #227's fourth rule, an "
-            "inventory rather than a defect, so it does not raise:")
-        for line in orphans:
+            f"ORPHANS ({len(prunable)}) -- issue #227's fourth rule, an "
+            "inventory rather than a defect, so it does not raise. The "
+            "project has goals and this milestone names none of them, so "
+            "this is the list rule 4 is asking for:")
+        for line in prunable:
+            lines.append(f"  {line}")
+    if awaiting:
+        lines.append(
+            f"NO GOALS TO SERVE YET ({len(awaiting)}) -- also orphans "
+            "under rule 4, and also not a defect, but not a pruning "
+            "signal either: nothing is written for these projects to "
+            "serve. Writing their goals is the action, not pruning them:")
+        for line in awaiting:
             lines.append(f"  {line}")
     if unpointed:
         lines.append(
@@ -141,7 +167,10 @@ def report(goals_markdown, seats_markdown, rows=None):
     lines.append(f"{len(sections)} project section(s), "
                  f"{len(serves)} seated milestone(s), "
                  f"{len(defects)} model problem(s), "
-                 f"{len(orphans)} orphan(s), "
+                 f"{len(orphans)} orphan(s)"
+                 + (f" ({len(prunable)} pruning signal, "
+                    f"{len(awaiting)} awaiting project goals)"
+                    if orphans else "") + ", "
                  f"{len(unpointed)} unpointed goal(s), "
                  + ("tasks not read"
                     if rows is None
@@ -249,9 +278,16 @@ def main(argv=None):
             print(f"UNREADABLE: {name}")
             return 1
     if args.orphans:
-        for line in serves_orphans(parse_milestone_serves(seats),
-                                   parse_project_goals(goals),
-                                   parse_milestone_keeps(seats)):
+        # Grouped, not one flat alphabetical list: this flag exists for
+        # when the orphan list is the thing you came for, and four
+        # pruning signals interleaved with thirty-two seats that have
+        # nothing to serve yet is the state the split fixed in `report`.
+        prunable, awaiting = split_orphans(parse_milestone_serves(seats),
+                                           parse_project_goals(goals),
+                                           parse_milestone_keeps(seats))
+        for line in prunable:
+            print(line)
+        for line in awaiting:
             print(line)
         return 0
     # Fetched here rather than beside the two documents so `--orphans`, which
