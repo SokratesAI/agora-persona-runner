@@ -5,6 +5,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from http.client import HTTPException
 
 from agora_runner.config import (
     FETCH_LIMIT,
@@ -257,8 +258,32 @@ def _older_cycle_conversations(heartbeat, current_id):
     pre-rotation `conversationId`) and the empty one rotation just
     created for this cycle. Still a generator, but since 2026-08-05 the
     caller drains it every run rather than stopping at the first reply,
-    so expect all of them to be fetched."""
-    status, listing = agora_get("/conversations")
+    so expect all of them to be fetched.
+
+    Every fetch here degrades to "this contributes nothing" on a network
+    failure, exactly as it already does on a non-200. That is not
+    defensive coding for a case that cannot happen: `GET /conversations`
+    times out against the live store, and when it did, the raised
+    `TimeoutError` travelled up through `pending_across_cycles` into
+    `run_heartbeat` and killed the whole cycle before it had run a single
+    turn. Cycles 1350, 1405, 1505, 1527 and 1534 all died that way, each
+    after ~33s, each leaving no journal entry -- which is what put
+    `nova-kpi-silent-cycles` over its ceiling. This walk is enrichment:
+    it looks for something the owner may have typed into an older cycle's
+    thread. Losing it costs one carried message; raising out of it costs
+    the entire cycle, including the reply that would have told him.
+
+    `OSError` and `HTTPException` rather than `Exception`: a socket
+    timeout, a refused connection and a `URLError` are all `OSError`, and
+    a truncated or malformed response is `HTTPException`. A bare
+    `except Exception` here would also swallow a `KeyError` in the code
+    below, which is a bug and must still crash loudly."""
+    try:
+        status, listing = agora_get("/conversations")
+    except (OSError, HTTPException) as exc:
+        log("pending_across_cycles: listing conversations failed "
+            f"({exc!r}) -- carrying nothing from older cycle conversations")
+        return
     if status != 200:
         return
     tag = cycle_tag(heartbeat["id"])
@@ -270,8 +295,13 @@ def _older_cycle_conversations(heartbeat, current_id):
     ]
     candidates.sort(key=lambda c: c.get("createdAt", ""), reverse=True)
     for conversation in candidates[:CYCLE_LOOKBACK]:
-        detail_status, detail = agora_get(
-            f"/conversations/{conversation['id']}/messages?limit={FETCH_LIMIT}")
+        try:
+            detail_status, detail = agora_get(
+                f"/conversations/{conversation['id']}/messages?limit={FETCH_LIMIT}")
+        except (OSError, HTTPException) as exc:
+            log(f"pending_across_cycles: fetching {conversation['id']} failed "
+                f"({exc!r}) -- skipping it and walking on")
+            continue
         if detail_status != 200:
             continue
         yield detail, f'the conversation "{conversation.get("name") or conversation["id"]}"'
