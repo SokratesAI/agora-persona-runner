@@ -2662,3 +2662,98 @@ class TestDemosOpened:
         value, detail = gm.measure_demos_opened(None, None)
         assert value == 0.0
         assert "a floor, not a total" in detail
+
+
+class TestResearchReused:
+    """`research-kr-reused` -- the share of research write-ups a later entry cites.
+
+    Both halves are stubbed on the module under test: the folder listing and
+    the journal read. A test that reached the real vault or the real site
+    would measure this afternoon rather than the rule.
+    """
+
+    def _sources(self, monkeypatch, slugs, entries):
+        monkeypatch.setattr(gm, "research_write_ups", lambda: (slugs, None))
+        monkeypatch.setattr(gm, "_entries_oldest_first", lambda: (entries, None))
+
+    def _entry(self, text):
+        return {"title": text, "blocks": []}
+
+    def test_the_first_entry_naming_a_write_up_is_its_author_not_a_citation(
+            self, monkeypatch):
+        # Nothing records who wrote a document, so the earliest naming entry
+        # is read as the one that wrote it. One mention is therefore 0%.
+        self._sources(monkeypatch, ["idp-2026-08"],
+                      [self._entry("wrote research/idp-2026-08")])
+        value, detail = gm.measure_research_reused(None, None)
+        assert value == 0.0
+        assert "0 of 1" in detail
+
+    def test_a_second_entry_naming_it_is_the_citation(self, monkeypatch):
+        self._sources(monkeypatch, ["idp-2026-08"],
+                      [self._entry("wrote research/idp-2026-08"),
+                       self._entry("read research/idp-2026-08 again")])
+        assert gm.measure_research_reused(None, None)[0] == 100.0
+
+    def test_the_filename_counts_as_naming_it_and_the_bare_slug_does_not(
+            self, monkeypatch):
+        # `board-records` is a write-up AND a document in his own project
+        # folder; matching the bare word read 27 entries about issue #203 as
+        # citations of a file none of them opened.
+        self._sources(monkeypatch, ["board-records"],
+                      [self._entry("board-records"),
+                       self._entry("board-records"),
+                       self._entry("board-records")])
+        assert gm.measure_research_reused(None, None)[0] == 0.0
+        self._sources(monkeypatch, ["board-records"],
+                      [self._entry("board-records.md"),
+                       self._entry("board-records.md")])
+        assert gm.measure_research_reused(None, None)[0] == 100.0
+
+    def test_an_empty_folder_is_no_reading_rather_than_nought_percent(
+            self, monkeypatch):
+        self._sources(monkeypatch, [], [self._entry("anything")])
+        assert gm.measure_research_reused(None, None)[0] is None
+
+    def test_an_unreadable_folder_is_no_reading(self, monkeypatch):
+        monkeypatch.setattr(gm, "research_write_ups",
+                            lambda: ([], "vault_tool.py ls exited 1"))
+        value, detail = gm.measure_research_reused(None, None)
+        assert value is None
+        assert "vault_tool.py ls exited 1" in detail
+
+    def test_an_unreadable_journal_is_no_reading(self, monkeypatch):
+        monkeypatch.setattr(gm, "research_write_ups", lambda: (["a"], None))
+        monkeypatch.setattr(gm, "_entries_oldest_first",
+                            lambda: ([], "could not read the journal API"))
+        value, detail = gm.measure_research_reused(None, None)
+        assert value is None
+        assert "could not read the journal API" in detail
+
+    def test_the_listing_keeps_only_markdown_and_drops_the_template(self):
+        class Done:
+            returncode = 0
+            stdout = (gm.RESEARCH_PREFIX + "idp-2026-08.md\n"
+                      + gm.RESEARCH_PREFIX + "_template.md\n"
+                      + gm.RESEARCH_PREFIX + "notes.txt\n")
+            stderr = ""
+
+        slugs, error = gm.research_write_ups(runner=lambda *a, **k: Done())
+        assert error is None
+        assert slugs == ["idp-2026-08"]
+
+    def test_a_failed_listing_is_an_error_and_not_an_empty_folder(self):
+        # An empty folder and an unreadable one read as 0 write-ups either
+        # way; only the error tells them apart, and they mean opposite things.
+        class Done:
+            returncode = 1
+            stdout = ""
+            stderr = "no such folder"
+
+        slugs, error = gm.research_write_ups(runner=lambda *a, **k: Done())
+        assert slugs == []
+        assert "no such folder" in error
+
+    def test_research_reused_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["research-kr-reused"] is \
+            gm.measure_research_reused

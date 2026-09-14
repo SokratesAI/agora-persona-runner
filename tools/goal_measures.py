@@ -2019,6 +2019,107 @@ def measure_demos_opened(since, until):
     return round(100.0 * len(opened) / len(rows), 1), detail
 
 
+
+
+#: The vault folder every research write-up lands in. `identity.md` calls it
+#: "durable write-ups, so no cycle pays for the same investigation twice",
+#: which is the claim `research-kr-reused` exists to check.
+RESEARCH_PREFIX = "projects/sokrates/projects/agora/nova/resources/research/"
+
+VAULT_TOOL = "/app/bridge/vault_tool.py"
+
+
+def research_write_ups(runner=subprocess.run, tool=VAULT_TOOL):
+    """Every research write-up's slug -- its filename without `.md`.
+
+    The slug rather than the path because that is what an entry writes: a
+    cycle citing one types ``resources/research/idp-2026-08.md`` or just the
+    filename, never the whole vault path.
+    """
+    try:
+        done = runner([sys.executable, tool, "ls", RESEARCH_PREFIX],
+                      capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], f"could not list {RESEARCH_PREFIX}: {exc}"
+    if done.returncode != 0:
+        return [], (f"{tool} ls {RESEARCH_PREFIX} exited {done.returncode}: "
+                    f"{(done.stderr or '').strip()[:200]}")
+    slugs = []
+    for line in (done.stdout or "").splitlines():
+        name = line.strip().rsplit("/", 1)[-1]
+        if name.endswith(".md") and not name.startswith("_"):
+            slugs.append(name[:-3])
+    return slugs, None
+
+
+def _entries_oldest_first(site=SITE, limit=5000):
+    """Every journal entry there is, oldest first, by the time it was written.
+
+    Deliberately not `fetch_entries`: that drops `report` and `silence` cards
+    because neither can carry a `board` field, and a weekly research run's
+    card is exactly where a write-up is most often born. Dropping the entry
+    that *wrote* a document would promote its first real citation into the
+    author slot and hide it.
+    """
+    payload, error = _get_json(f"{site}/api/journal?limit={limit}")
+    if error:
+        return [], error
+    entries = payload.get("entries") or []
+    return sorted(entries, key=lambda e: ((e.get("writtenDate") or e.get("date") or ""),
+                                          (e.get("writtenTime") or e.get("time") or ""))), None
+
+
+def measure_research_reused(since, until):
+    """Share of research write-ups a later journal entry has cited. A share.
+
+    **The citation test is a name, and the name has to be the document's.**
+    An entry counts as citing one when its prose holds either the path
+    (`research/<slug>`) or the filename (`<slug>.md`). A bare slug is not
+    enough: `board-records` is a research write-up *and* a document in his own
+    project folder, and matching the bare word reads 27 entries about issue
+    #203 as citations of a file none of them opened.
+
+    **The first entry that names a write-up is read as the one that wrote it,
+    and is not a citation.** Nothing in the vault records who created a
+    document, so ordering the naming entries by when they were written and
+    dropping the earliest is the available answer. It makes this a floor in
+    the one direction that matters: a write-up whose author never named it in
+    prose loses its first real citation to this rule.
+
+    It is a floor for a second reason as well, and the bigger one -- a cycle
+    that reads a write-up and does not name it in its entry is invisible here.
+    There is no read log on the vault, so "cited" is what can be measured and
+    "read" is not.
+
+    `None` when the folder cannot be listed or holds nothing: a share over no
+    write-ups is not 0%, and 0% is the worst reading this key result has.
+    """
+    del since, until
+    slugs, error = research_write_ups()
+    if error:
+        return None, f"could not read the research folder, so there is no set to judge over -- {error}"
+    if not slugs:
+        return None, f"{RESEARCH_PREFIX} holds no write-up, so there is no share to take"
+    entries, error = _entries_oldest_first()
+    if error:
+        return None, f"could not read the journal, so nothing could have cited anything -- {error}"
+    if not entries:
+        return None, "the journal API answered with no entry at all"
+    texts = [entry_text(e) for e in entries]
+    cited = 0
+    for slug in slugs:
+        needles = (f"research/{slug.lower()}", f"{slug.lower()}.md")
+        naming = sum(1 for t in texts if any(n in t for n in needles))
+        if naming >= 2:
+            cited += 1
+    detail = (f"{cited} of {len(slugs)} research write-up(s) are named by an "
+              f"entry other than the earliest one that names them, across "
+              f"{len(entries)} journal entries; a floor -- a cycle that reads "
+              f"one without naming it cannot be counted, and a write-up its "
+              f"own author never named loses its first citation to that rule")
+    return round(100.0 * cited / len(slugs), 1), detail
+
+
 # A key result whose measurer goes and reads its subject itself, rather than
 # being handed a document this loop already holds. Its own map for
 # `KEY_RESULT_PR_MEASURERS`' reason and no other: **the argument shape is
@@ -2034,6 +2135,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "maint-kr-supported": measure_maint_supported,
     "maint-kr-pins-current": measure_maint_pins_current,
     "demos-kr-opened": measure_demos_opened,
+    "research-kr-reused": measure_research_reused,
 }
 
 
