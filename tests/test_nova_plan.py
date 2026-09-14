@@ -1193,13 +1193,20 @@ def test_an_objective_prints_the_month_it_covers_but_never_judges_it():
     assert "past" not in out.lower() and "ended" not in out.lower()
 
 
-def test_an_objective_with_no_period_says_nothing_about_a_month():
-    """An unread field must not speak. Rendering a missing period as a
-    month -- any month -- would put a date on his screen that no document
-    carries."""
+def test_an_objective_with_no_period_says_so_rather_than_printing_nothing():
+    """`objective_periods` already collects an undated objective and the
+    command-line check prints the count, so this defect was visible to me
+    and not to him: the paragraph simply had one fewer sentence in it.
+    Same call as the missing target one screen up.
+
+    It still must not invent a month -- naming any month on a document that
+    carries none is the failure the old version of this test guarded, and
+    that half is asserted here too."""
     from agora_runner.nova_plan import _objective_prose
     out = _objective_prose(["statement: Be good", "status: discussing"])
+    assert "No month set." in out
     assert "Covers" not in out
+    assert not any(month in out for month in ("January", "September", "2026"))
 
 
 def test_a_key_result_prints_the_word_that_says_it_is_not_settled():

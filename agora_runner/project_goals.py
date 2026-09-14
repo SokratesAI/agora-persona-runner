@@ -51,6 +51,11 @@ mechanical here.** `problems()` refuses what can be checked by reading:
 * an id used twice anywhere in the document, because `Serves` points at ids
   and an ambiguous pointer is worse than no pointer,
 * an objective with no `statement`, or a status outside the three,
+* key results or KPIs under a project with **no objective at all** --
+  the issue's own title, and the inverse of rule 4's orphan milestone:
+  outcomes with nothing to be outcomes of. Gated on the section holding
+  goal blocks, because a section is opened for every `##` heading and a
+  prose heading claims nothing,
 * a key result whose `measure` or `unit` is TRL, lifecycle or satisfaction
   -- rule 8, *"none of them measures whether a goal was reached"*. Those
   three are project attributes that already carry a number, which is what
@@ -314,6 +319,23 @@ def problems(markdown_or_sections):
                     "-- rule 7 wants YYYY-MM, and a date this cannot read "
                     "is an objective nothing can age")
         results = section.get("keyResults", [])
+        # The issue's own title -- *"give every project a goal"* -- and the
+        # one shape of it nothing here reported. A section carrying key
+        # results or KPIs and no ```objective fence is the inverse of rule
+        # 4's orphan milestone: work pointed at outcomes that are pointed at
+        # nothing. Every other rule passes it, because every other rule
+        # reads a fence that is there.
+        #
+        # It is gated on the section having goal blocks rather than raised
+        # on a bare `##` heading, and that is deliberate: `parse_project_goals`
+        # opens a section for *every* heading in the document, so a prose
+        # heading he types between projects would otherwise read as a defect.
+        # A heading with nothing under it claims nothing; a heading with key
+        # results under it claims they serve an objective.
+        if not objective and (results or section.get("kpis")):
+            found.append(
+                f"{name}: has key results or KPIs and no objective -- they "
+                "are outcomes with nothing to be outcomes of")
         if len(results) > MAX_KEY_RESULTS:
             found.append(
                 f"{name}: {len(results)} key results, the limit is "

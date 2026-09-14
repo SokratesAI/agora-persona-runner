@@ -104,7 +104,7 @@ def test_a_kpi_carrying_a_target_is_refused():
 def test_a_kpi_with_no_range_is_refused():
     doc = _doc("## Nova\n\n```kpi\nid: c\nname: Cost\nmeasure: m\nnow: 3\n```\n")
     assert any("has no range" in line for line in problems(doc))
-    low = _doc("## Nova\n\n```kpi\nid: c\nname: Cost\nmeasure: m\nlow: 1\n```\n")
+    low = _doc("## Nova\n\n```objective\nstatement: s\n```\n\n```kpi\nid: c\nname: Cost\nmeasure: m\nlow: 1\n```\n")
     assert problems(low) == []
 
 
@@ -825,7 +825,7 @@ def test_a_key_result_with_no_now_is_not_a_defect():
     # The asymmetry with the target rule above, pinned: four live key results
     # have no `now` because no instrument exists to read one yet, and that is
     # honest rather than wrong.
-    doc = _doc("## Nova\n\n```key-result\nid: k\nname: a\nmeasure: m\n"
+    doc = _doc("## Nova\n\n```objective\nstatement: s\n```\n\n```key-result\nid: k\nname: a\nmeasure: m\n"
                "target: 3\n```\n")
     assert problems(doc) == []
 
@@ -833,7 +833,7 @@ def test_a_key_result_with_no_now_is_not_a_defect():
 def test_a_target_of_zero_is_a_target():
     # `0` is falsy as a string only if it is empty; a goal of "zero silent
     # cycles" is the most common shape in the live document.
-    doc = _doc("## Nova\n\n```key-result\nid: k\nname: a\nmeasure: m\n"
+    doc = _doc("## Nova\n\n```objective\nstatement: s\n```\n\n```key-result\nid: k\nname: a\nmeasure: m\n"
                "target: 0\n```\n")
     assert problems(doc) == []
 
@@ -841,5 +841,59 @@ def test_a_target_of_zero_is_a_target():
 def test_a_kpi_is_not_asked_for_a_target():
     # The KPI rule is the opposite one: a target on a KPI is itself the
     # defect, so the key-result rule must not reach across to it.
-    doc = _doc("## Nova\n\n```kpi\nid: c\nname: Cost\nmeasure: m\nhigh: 2\n```\n")
+    doc = _doc("## Nova\n\n```objective\nstatement: s\n```\n\n```kpi\nid: c\nname: Cost\nmeasure: m\nhigh: 2\n```\n")
     assert problems(doc) == []
+
+
+def test_key_results_with_no_objective_are_refused():
+    """Issue #227's own title: *"give every project a goal"*. A section can
+    carry three key results and no ```objective fence and every other rule
+    in `problems()` passes it, because every other rule reads a fence that
+    is there. It is the inverse of rule 4's orphan milestone -- outcomes
+    with nothing to be outcomes of."""
+    found = problems(_doc(
+        "## Nova\n"
+        "\n"
+        "```key-result\n"
+        "id: nova-kr-lonely\n"
+        "name: A real outcome\n"
+        "measure: rows closed per week\n"
+        "target: 8\n"
+        "```\n"))
+    assert len(found) == 1, found
+    assert "no objective" in found[0]
+    assert "Nova" in found[0]
+
+
+def test_kpis_with_no_objective_are_refused_too():
+    """A KPI sits beside the objective rather than under it, so a section
+    holding only guardrails is still a project claiming goals live here."""
+    found = problems(_doc(
+        "## Nova\n"
+        "\n"
+        "```kpi\n"
+        "id: nova-kpi-lonely\n"
+        "name: Cost per cycle\n"
+        "measure: weighted tokens\n"
+        "low: 0.8\n"
+        "high: 2.0\n"
+        "```\n"))
+    assert len(found) == 1, found
+    assert "no objective" in found[0]
+
+
+def test_a_heading_with_nothing_under_it_is_not_a_defect():
+    """`parse_project_goals` opens a section for every `##` heading in the
+    document, including a prose heading he types between projects. A
+    heading with no goal blocks under it claims nothing, so raising on it
+    would make the check red over his own writing -- which is the same call
+    `serves_orphans` makes about a project with no goals written yet."""
+    assert not problems(_doc("## Notes to self\n\nSome prose, no fences.\n"))
+
+
+def test_the_live_document_carries_an_objective_in_every_section():
+    """The rule starts green, which is why it is worth adding today: seven
+    more sections are still to be written by hand for the projects with no
+    goals yet, and a rule added after the writing argues with work already
+    on his board."""
+    assert not [p for p in problems(NOVA) if "no objective" in p]
