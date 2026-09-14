@@ -1154,3 +1154,16 @@ def test_project_goals_check_is_on_the_roster():
 
     assert "project_goals_check" in pf.CHECKS
     assert pf.CADENCE_HOURS["project_goals_check"] == 0.0
+
+
+def test_goal_drift_runs_every_sweep():
+    # Cycle 1576. This sat at 24.0 on the reasoning that "a number that moves
+    # between two sweeps an hour apart has not really moved". Measured 8.4h
+    # after the check last exited 0: five of its nineteen instrumented numbers
+    # had drifted, and `nova-kpi-silent-cycles` was on his /plan page as 6
+    # against a ceiling of 1 while the instrument read 2. A rolling 24h window
+    # moves hour by hour as a bad cycle ages out of it, so the daily cadence
+    # published a wrong number to his phone for most of every day.
+    from tools import preflight as pf
+
+    assert pf.CADENCE_HOURS["goal_drift"] == 0.0

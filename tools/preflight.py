@@ -435,12 +435,19 @@ CADENCE_HOURS = {
     # the model is the previous one and a daily cadence would hide it for a
     # day. Both fetches together run in about four seconds.
     "project_goals_check": 0.0,
-    # Daily -- every instrument behind it is a window of a day or more
-    # (merges over seven days, closures over thirty), so a number that
-    # moves between two sweeps an hour apart has not really moved. It also
-    # asks GitHub, the site, Marcus and the journal, which is the slowest
-    # read in this sweep.
-    "goal_drift": 24.0,
+    # Every sweep -- the daily cadence this carried until Cycle 1576 rested on
+    # "a number that moves between two sweeps an hour apart has not really
+    # moved", and that is false for the rolling-window numbers. Measured
+    # 2026-09-14, 8.4h after this check last exited 0: five of its nineteen
+    # instrumented numbers had drifted, and `nova-kpi-silent-cycles` was on his
+    # /plan page as 6 against a ceiling of 1 when the instrument read 2. A
+    # 24h window does not stop moving just because it is 24h long -- a bad
+    # cycle ages out of it hour by hour. The second half of that comment was
+    # true and is not the reason: this is the slowest read in the sweep at
+    # 41.7s, but the sweep runs its checks concurrently and its slowest check
+    # today was pin_drift at 46.7s, so this fits inside the existing envelope
+    # and adds no wall clock. Its output collapses to one line when unchanged.
+    "goal_drift": 0.0,
     # Every sweep -- a pull request I open or merge in this cycle moves both.
     "open_prs": 0.0,
     "main_build": 0.0,
