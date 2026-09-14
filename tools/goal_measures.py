@@ -1963,6 +1963,76 @@ def measure_post_volume(since, until):
                   f"(daily: {', '.join(str(n) for n in daily)}){caveat}")
 
 
+#: The project name `nas-kr-unattended` counts rows for, exactly as both
+#: boards spell it. A string rather than an id because a board row names its
+#: project in prose and nothing on the row carries a stable project key.
+_NAS_PROJECT = "NAS"
+
+#: Status keys that mean a row is no longer open. `⚫ Outdated` is closed the
+#: same way `✅ Done` is -- it will never move again -- and the NAS ideas board
+#: holds exactly one row, in that state, which is why it has to be named here
+#: rather than left to fall out of a `done` check.
+#:
+#: **Do NOT read the row's own `done` field.** Every row the site serves
+#: carries `done: false`, including the 181 marked `✅ Done`; that field means
+#: something else. `statusKey` is the one that separates them.
+_CLOSED_STATUS_KEYS = frozenset({"done", "outdated"})
+
+#: The one status that means the row cannot move until Edvard does something.
+#: It is the board's own key, not a phrase matched out of the label.
+_BLOCKED_ON_EDVARD = "blocked-on-edvard"
+
+
+def measure_nas_unattended(since, until):
+    """Open NAS rows that cannot move until Edvard does something by hand.
+
+    A count, not a share, so there is no denominator to get wrong -- but the
+    target is 0 and the direction is down, which makes a low reading the good
+    one and therefore the dangerous one. Everything below is about making sure
+    a 0 here can only come from having looked.
+
+    It reads both boards, not just `issues`. The hand count this replaces was
+    taken off the issues board alone and the ideas board holds one NAS row, so
+    on today's data the two agree; a NAS idea blocked on him tomorrow would
+    make them disagree, and the key result's own words are *open NAS rows*.
+
+    **An unreadable board is no reading at all, never a smaller count.** Half a
+    sweep undercounts a measure whose best value is zero, so either board
+    failing returns `None` -- the same call `measure_nas_services_down` makes
+    about a partial SSH sweep for the same reason.
+
+    **A NAS project with no rows at all is also no reading.** `_NAS_PROJECT` is
+    a string I typed here and the board carries no id to check it against, so a
+    rename of the project reads as a perfect score rather than as a broken
+    instrument. Zero rows naming it is far more likely to be that than a real
+    emptiness: the project has eight issues today and the objective exists
+    because they are stuck.
+    """
+    del since, until
+    rows = []
+    for name in ("issues", "ideas"):
+        items, error = fetch_board(name)
+        if error:
+            return None, (f"the {name} board could not be read, and half a "
+                          f"sweep undercounts a count whose target is 0: {error}")
+        rows.extend(items)
+    nas = [r for r in rows if (r.get("project") or "").strip() == _NAS_PROJECT]
+    if not nas:
+        return None, (f"no row on either board names the project "
+                      f"{_NAS_PROJECT!r}, which is a renamed project far more "
+                      "often than it is an empty one")
+    open_rows = [r for r in nas
+                 if (r.get("statusKey") or "").strip() not in _CLOSED_STATUS_KEYS]
+    blocked = [r for r in open_rows
+               if (r.get("statusKey") or "").strip() == _BLOCKED_ON_EDVARD]
+    numbers = ", ".join(f"#{r.get('number')}" for r in blocked) or "none"
+    return len(blocked), (
+        f"{len(blocked)} of {len(open_rows)} open {_NAS_PROJECT} row(s) are "
+        f"blocked on Edvard ({numbers}), read live from the issues and ideas "
+        f"boards; {len(nas) - len(open_rows)} more are done or outdated and "
+        "are in neither half")
+
+
 def measure_nas_services_down(since, until):
     """NAS services that did not answer over the SSH hop. A level, no window.
 
@@ -2526,6 +2596,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
     "docs-kr-sync-alive": measure_docs_sync_alive,
+    "nas-kr-unattended": measure_nas_unattended,
 }
 
 

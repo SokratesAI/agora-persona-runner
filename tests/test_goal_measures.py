@@ -3186,3 +3186,110 @@ class TestDocsSyncAlive:
     def test_sync_alive_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["docs-kr-sync-alive"] is \
             gm.measure_docs_sync_alive
+
+
+class TestNasUnattended:
+    """`nas-kr-unattended` -- open NAS rows parked on Edvard.
+
+    The target is 0 and the direction is down, so a low count is the good
+    reading. Every test here is about a way of arriving at a low one without
+    having looked.
+    """
+
+    def _boards(self, monkeypatch, issues, ideas=(), errors=None):
+        errors = errors or {}
+        boards = {"issues": list(issues), "ideas": list(ideas)}
+
+        def fetch_board(name, site=None):
+            if name in errors:
+                return [], errors[name]
+            return boards[name], None
+
+        monkeypatch.setattr(gm, "fetch_board", fetch_board)
+
+    def _row(self, number, project="NAS", status_key="backlog"):
+        return {"number": number, "project": project,
+                "statusKey": status_key, "done": False}
+
+    def test_it_counts_open_rows_blocked_on_edvard(self, monkeypatch):
+        self._boards(monkeypatch, [
+            self._row(167, status_key="blocked-on-edvard"),
+            self._row(132, status_key="blocked-on-edvard"),
+            self._row(121, status_key="blocked-on-edvard"),
+            self._row(103, status_key="in-progress"),
+            self._row(135, status_key="done"),
+        ])
+        value, detail = gm.measure_nas_unattended(None, None)
+        assert value == 3, detail
+        assert "3 of 4" in detail
+        assert "#167" in detail and "#121" in detail
+
+    def test_a_done_row_is_not_open_even_though_its_done_field_is_false(
+            self, monkeypatch):
+        # Every row the site serves carries `done: false`, including the ones
+        # marked `✅ Done`. A measure that trusted that field would count all
+        # nine NAS rows as open.
+        self._boards(monkeypatch, [
+            self._row(135, status_key="done"),
+            self._row(133, status_key="done"),
+            self._row(167, status_key="blocked-on-edvard"),
+        ])
+        value, detail = gm.measure_nas_unattended(None, None)
+        assert value == 1, detail
+        assert "1 of 1" in detail
+        assert "2 more are done or outdated" in detail
+
+    def test_an_outdated_row_is_closed_too(self, monkeypatch):
+        self._boards(monkeypatch,
+                     [self._row(167, status_key="blocked-on-edvard")],
+                     ideas=[self._row(156, status_key="outdated")])
+        value, detail = gm.measure_nas_unattended(None, None)
+        assert value == 1, detail
+        assert "1 of 1" in detail
+
+    def test_it_reads_the_ideas_board_as_well(self, monkeypatch):
+        # The hand count this replaces was taken off the issues board alone.
+        self._boards(monkeypatch,
+                     [self._row(167, status_key="blocked-on-edvard")],
+                     ideas=[self._row(156, status_key="blocked-on-edvard")])
+        value, detail = gm.measure_nas_unattended(None, None)
+        assert value == 2, detail
+
+    def test_a_row_on_another_project_does_not_count(self, monkeypatch):
+        self._boards(monkeypatch, [
+            self._row(231, project="Product management",
+                      status_key="blocked-on-edvard"),
+            self._row(167, status_key="blocked-on-edvard"),
+        ])
+        value, detail = gm.measure_nas_unattended(None, None)
+        assert value == 1, detail
+
+    def test_an_unreadable_board_gets_no_reading(self, monkeypatch):
+        # Half a sweep undercounts a count whose target is zero.
+        self._boards(monkeypatch, [self._row(167,
+                                             status_key="blocked-on-edvard")],
+                     errors={"ideas": "could not read the site: refused"})
+        value, detail = gm.measure_nas_unattended(None, None)
+        assert value is None
+        assert "half a sweep" in detail
+        assert "refused" in detail
+
+    def test_no_nas_row_anywhere_gets_no_reading(self, monkeypatch):
+        # A renamed project reads as a perfect score otherwise.
+        self._boards(monkeypatch, [
+            self._row(231, project="Product management"),
+        ])
+        value, detail = gm.measure_nas_unattended(None, None)
+        assert value is None
+        assert "renamed project" in detail
+
+    def test_every_nas_row_open_and_none_blocked_is_a_real_zero(
+            self, monkeypatch):
+        self._boards(monkeypatch, [self._row(103, status_key="in-progress")])
+        value, detail = gm.measure_nas_unattended(None, None)
+        assert value == 0, detail
+        assert "0 of 1" in detail
+
+    def test_unattended_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["nas-kr-unattended"] is \
+            gm.measure_nas_unattended
