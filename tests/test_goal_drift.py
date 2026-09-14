@@ -11,7 +11,7 @@ renderers, and a status a sweep can read.
 import pytest
 
 from tools import goal_drift
-from tools.goal_measures import has_drifted
+from tools.goal_measures import has_drifted, kpi_drift_crosses_bounds
 
 
 def _recorder(seen):
@@ -116,3 +116,88 @@ def test_it_is_registered_in_the_opening_sweep():
     """A check nothing runs is the gap this closes, one level up."""
     from tools import preflight
     assert "goal_drift" in preflight.CHECKS
+
+
+def test_a_kpi_that_moved_inside_its_own_range_is_not_counted():
+    """The rolling-window treadmill this carve-out exists to end.
+
+    `nova-kpi-cost-per-cycle` is a median over the last 24 hours; it read
+    1.52 when Cycle 1576 wrote it into the vault and 1.5 an hour later, with
+    nothing having gone wrong. Both are inside `[0.8..2.0]`, so the guardrail's
+    own claim — this is in bounds — is unchanged, and the digit is a snapshot
+    ageing.
+    """
+    kpi = {"id": "nova-kpi-cost-per-cycle", "now": "1.52",
+           "low": "0.8", "high": "2.0"}
+    assert has_drifted(kpi["now"], 1.5) is True
+    assert kpi_drift_crosses_bounds(kpi, 1.5) is False
+
+
+def test_a_kpi_that_left_its_range_is_counted():
+    """The other side of the same bound, which must still raise."""
+    kpi = {"id": "nova-kpi-cost-per-cycle", "now": "1.52",
+           "low": "0.8", "high": "2.0"}
+    assert kpi_drift_crosses_bounds(kpi, 2.4) is True
+
+
+def test_a_kpi_whose_written_breach_has_ended_is_counted():
+    """Crossing inwards is a finding too: the page reports a breach that is over.
+
+    `nova-kpi-silent-cycles` sat at 6 against a ceiling of 1 for days. A
+    document still saying 6 while the instrument reads 0 is misreporting the
+    system in the flattering direction, which is the one nobody checks.
+    """
+    kpi = {"id": "nova-kpi-silent-cycles", "now": "6", "low": "0", "high": "1"}
+    assert kpi_drift_crosses_bounds(kpi, 0) is True
+
+
+def test_a_kpi_with_no_readable_number_always_counts():
+    """A guardrail with no reading is not a guardrail.
+
+    This is the blank `has_drifted` was built to fill, so the carve-out must
+    never be the thing that quietens it.
+    """
+    kpi = {"id": "nova-kpi-dropped-ticks", "now": "", "low": "0", "high": "10"}
+    assert kpi_drift_crosses_bounds(kpi, 3) is True
+    kpi["now"] = "not measured"
+    assert kpi_drift_crosses_bounds(kpi, 3) is True
+
+
+def test_no_reading_is_not_a_crossing():
+    """`value is None` stays neither drift nor crossing, as in `has_drifted`."""
+    kpi = {"id": "marcus-kpi-coach-latency", "now": "14.9",
+           "low": "0", "high": "30"}
+    assert kpi_drift_crosses_bounds(kpi, None) is False
+
+
+def test_key_results_get_no_carve_out():
+    """A target is read against the digit, so any drift there stays a defect.
+
+    Pinned through the two renderers rather than by reading the status block,
+    because what a reader sees and what the exit code counts have to be the
+    same judgement: a key result that moved 0.1 still says `drifted`, and a
+    KPI that moved the same 0.1 inside its range does not.
+    """
+    from tools.goal_measures import render_key_results, render_kpis
+
+    kr = {"id": "nova-kr-closes-rows", "name": "The work closes your rows",
+          "now": "3.9", "target": "2.0"}
+    drifted = render_key_results(
+        [{"project": "nova", "id": kr["id"], "kr": kr, "value": 3.8,
+          "detail": "measured"}], "project-goals.md")
+    assert "drifted" in drifted
+
+    # The same size of move on a KPI inside its range says the other thing.
+    kpi = {"id": "nova-kpi-cost-per-cycle", "now": "1.52",
+           "low": "0.8", "high": "2.0"}
+    moved = render_kpis(
+        [{"project": "nova", "id": kpi["id"], "kpi": kpi, "value": 1.5,
+          "detail": "measured"}], "project-goals.md")
+    assert "moved inside its own range" in moved
+    assert "drifted" not in moved
+
+    crossed = render_kpis(
+        [{"project": "nova", "id": kpi["id"], "kpi": kpi, "value": 2.4,
+          "detail": "measured"}], "project-goals.md")
+    assert "drifted" in crossed
+    assert "moved inside its own range" not in crossed

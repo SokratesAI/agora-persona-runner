@@ -17,6 +17,15 @@ of its own and holds no opinion of its own: the drift verdict comes from the
 one `has_drifted` every renderer in that module already uses, so the report
 and the status cannot disagree.
 
+One carve-out sits beside it, in the same module and used by the same
+renderer: `kpi_drift_crosses_bounds`. A KPI is a range rather than a target,
+every instrumented one here reads a rolling window, and two of them drifted
+again within an hour of Cycle 1576 repairing them -- so a KPI that moved
+without leaving its own range is printed as having moved and is not counted.
+Key results keep the strict comparison, because a target is read against the
+digit. The report still names both, so the two can never disagree about what
+was seen, only about what is worth acting on.
+
     python3 -m tools.goal_drift
 
 **It never writes.** Repairing the drift is `goal_measures --write` plus a
@@ -25,8 +34,9 @@ and touches a document the owner edits from his phone. This says the numbers
 are stale; it does not quietly restate them while he is looking at them.
 
 Exit codes are `tools.preflight`'s contract: `2` a written number disagrees
-with its instrument, `1` a document it needed could not be read, `0` every
-instrumented number matches. A key result or KPI whose instrument has no
+with its instrument in a way that changes what the document claims, `1` a
+document it needed could not be read, `0` every instrumented number matches
+or has only aged inside its own guardrail. A key result or KPI whose instrument has no
 reading to take -- `pm-kr-calibration` before anything records a prediction,
 Marcus's coach numbers before he taps the coach -- is not drift in either
 direction and is counted as neither.
