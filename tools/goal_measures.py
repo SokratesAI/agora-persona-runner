@@ -3920,6 +3920,148 @@ def measure_nas_off_box_watch(since, until, fetch=None, list_repos=None,
               "they die with")
     return len(alive), detail
 
+
+#: The kinds this measure reads provenance off. A cluster change lands on one
+#: of these; a Pod is deliberately absent, because a Pod is written by its own
+#: controller and never by a manifest, so counting Pods would drown every real
+#: change in reconciliation noise.
+SELF_SERVICE_KINDS = ("deploy,statefulset,daemonset,cronjob,service,configmap,"
+                      "ingress")
+
+#: Field managers that mean a committed manifest reconciled the object. Argo CD
+#: is the only GitOps engine on this cluster, and it writes under three names --
+#: the controller, the server (a UI-driven sync) and the application controller.
+SELF_SERVICE_GITOPS = ("argocd-controller", "argocd-server",
+                       "argocd-application-controller")
+
+#: Field managers that mean somebody drove the change by hand. Every `kubectl`
+#: verb stamps its own name (`kubectl-rollout`, `kubectl-client-side-apply`,
+#: `kubectl-edit`, ...), so the prefix carries them all; `k9s` is the same act
+#: through a terminal UI, and a `helm` release run at a prompt is a manual step
+#: even though a chart is a manifest, because nothing committed produced it.
+SELF_SERVICE_MANUAL_PREFIX = "kubectl"
+SELF_SERVICE_MANUAL_EXACT = ("k9s", "helm")
+
+
+def classify_field_manager(manager):
+    """`"gitops"`, `"manual"`, or `None` for a manager that is neither.
+
+    The third answer is the one that makes this measure honest. Most field
+    managers on this cluster are neither side of the question -- `k3s` writing
+    a status, `Reloader` bouncing a Deployment after a ConfigMap changed,
+    Crossplane composing a resource, `deploy@server1` laying down k3s's own
+    bundled manifests. None of those is a change anybody made; folding them
+    into either half would move the share without anything having happened.
+    """
+    name = (manager or "").strip()
+    if not name:
+        return None
+    if name in SELF_SERVICE_GITOPS or name.startswith("argocd"):
+        return "gitops"
+    if name in SELF_SERVICE_MANUAL_EXACT:
+        return "manual"
+    if name == SELF_SERVICE_MANUAL_PREFIX or name.startswith(
+            SELF_SERVICE_MANUAL_PREFIX + "-"):
+        return "manual"
+    return None
+
+
+def measure_infra_self_service(since, until):
+    """Share of in-window cluster changes that came through a committed manifest.
+
+    This key result carried a blank `now:` for its whole life and three cycles
+    wrote down the same reason -- no counter separates a change made by
+    committing a manifest from one made by hand. There is one, and it is on
+    every object: `metadata.managedFields`. Server-side apply records, per
+    object, which field manager last wrote which fields and when, and the
+    manager name says how the change arrived. Argo CD reconciling a commit
+    writes as `argocd-controller`; a `kubectl rollout restart` writes as
+    `kubectl-rollout`. Both halves were read live before this was written:
+    inside a seven-day window ending 2026-09-14 the cluster carried 13 Argo CD
+    entries and 3 `kubectl-client-side-apply` entries, the latter a `marcus-test`
+    Deployment, Service and Ingress stood up by hand in the `test` namespace.
+
+    **An entry is a manager that touched an object, not a change event.**
+    Kubernetes keeps one entry per (manager, operation, subresource) and moves
+    its timestamp forward, so two `kubectl edit`s on one Deployment in the same
+    week read as one. That makes the manual half a floor and the share a
+    ceiling, which is the safe direction for a measure whose target is 100 and
+    is said in the detail rather than hidden.
+
+    **Nothing here can tell my hand from the owner's.** `managedFields` records
+    no operator identity, so a `kubectl` this loop ran and one the owner ran at
+    his own keyboard are the same entry. The key result says "changes this loop
+    makes"; this reads every change anybody made. That is wider than the wording
+    and it is named in the detail, because the alternative -- guessing which
+    manual entries were mine -- would be a number I invented.
+
+    **No reading when the window is empty.** The target is 100, so the flattering
+    answer is 100, and a week in which nothing changed would produce it out of a
+    zero denominator. An unreadable cluster, a cluster reporting no objects, and
+    a window with no classified entry in it all return no number and say why.
+    """
+    try:
+        done = subprocess.run(["kubectl", "get", SELF_SERVICE_KINDS,
+                               "-A", "-o", "json", "--show-managed-fields"],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"kubectl could not read the cluster's objects: {exc}"
+    if done.returncode != 0:
+        blob = (done.stderr or done.stdout or "").strip()
+        first = blob.splitlines()[0] if blob else "exited %d" % done.returncode
+        return None, f"kubectl could not read the cluster's objects: {first}"
+    try:
+        body = json.loads(done.stdout)
+    except ValueError as exc:
+        return None, f"kubectl returned something that is not JSON: {exc}"
+    items = body.get("items")
+    if not items:
+        return None, (f"kubectl reports no {SELF_SERVICE_KINDS} anywhere in this "
+                      "cluster, which is no instrument rather than a cluster "
+                      "nobody changed")
+
+    start = f"{since}T00:00:00+00:00"
+    end = f"{until}T23:59:59+00:00"
+    gitops, manual = [], []
+    seen_manual_ever = 0
+    for item in items:
+        meta = item.get("metadata") or {}
+        name = (meta.get("name") or "").strip()
+        namespace = (meta.get("namespace") or "").strip()
+        kind = (item.get("kind") or "").strip()
+        for field in meta.get("managedFields") or []:
+            side = classify_field_manager(field.get("manager"))
+            if side == "manual":
+                seen_manual_ever += 1
+            stamp = (field.get("time") or "").strip()
+            if side is None or not stamp:
+                continue
+            if not start <= stamp.replace("Z", "+00:00") <= end:
+                continue
+            where = f"{namespace}/{kind} {name} by {field.get('manager')}"
+            (gitops if side == "gitops" else manual).append(where)
+
+    total = len(gitops) + len(manual)
+    if not total:
+        return None, (f"no object in this cluster was written by Argo CD or by "
+                      f"hand between {since} and {until}, so there is no "
+                      f"denominator to take a share over -- and 100 is this "
+                      f"measure's target, so reporting it off an empty window "
+                      f"would be the best possible reading of nothing")
+    detail = (f"{len(gitops)} of {total} recorded change(s) to {len(items)} "
+              f"object(s) between {since} and {until} came from Argo CD rather "
+              f"than from a hand at a keyboard. Kubernetes keeps one "
+              f"managedFields entry per manager and moves its timestamp, so two "
+              f"edits by the same tool in one window read as one -- the manual "
+              f"half is a floor and this share a ceiling. managedFields records "
+              f"no operator identity, so a manual change of yours counts the "
+              f"same as one of mine ({seen_manual_ever} manual entry/entries "
+              f"exist on these objects in total, in and out of window)")
+    if manual:
+        detail += ". By hand: " + ", ".join(sorted(manual)[:8])
+    return round(100.0 * len(gitops) / total, 1), detail
+
+
 KEY_RESULT_FETCH_MEASURERS = {
     "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
     "maint-kr-supported": measure_maint_supported,
@@ -3939,6 +4081,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "post-kr-editor": measure_post_editor,
     "post-kr-readership": measure_post_readership,
     "wa-kr-reaches-you": measure_wa_reaches_you,
+    "infra-kr-self-service": measure_infra_self_service,
 }
 
 
