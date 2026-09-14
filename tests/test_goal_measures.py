@@ -1593,3 +1593,189 @@ def test_coach_first_try_reaches_the_key_result_row(monkeypatch):
     row = {r["id"]: r for r in out}["marcus-kr-coach-first-try"]
     assert row["value"] == 100.0
     assert "no instrument" not in row["detail"]
+
+
+# --- nova-kpi-unfixed-advisories -------------------------------------------
+#
+# The guardrail under `Secrets and safety`, which was a lights-on milestone
+# under no KPI at all -- rule 4 of issue #227 says lights-on work sits under a
+# guardrail, so an orphan with nothing to name was a gap in the model rather
+# than a pruning signal. The check itself has existed since Cycle 397; what did
+# not exist was a *number* the goals document carries, so a week with an
+# unpatched advisory in it left no trace anywhere he reads.
+
+
+class _FakeAlerts:
+    OK = "ok"
+
+    def __init__(self, repos, results, incomplete=False, orgs=("SokratesAI",)):
+        self._repos = repos
+        self._results = results
+        self._incomplete = incomplete
+        self._orgs = orgs
+        self.verified = False
+
+    def _repos_to_sweep(self):
+        return self._repos, [], [], self._incomplete
+
+    def _orgs_from_workspace(self):
+        return self._orgs
+
+    def alerts_for(self, repo):
+        return self._results[repo]
+
+    def org_alerts(self, org):
+        return {}
+
+    def fold_in_org_only(self, results, org_views):
+        return None
+
+    def verify_landed(self, results):
+        self.verified = True
+
+    @staticmethod
+    def _still_counts(alert):
+        return alert["state"] == "open"
+
+
+def _install_fake_alerts(monkeypatch, fake):
+    """Swap the submodule on the `tools` package, not only in `sys.modules`.
+
+    `from tools import security_alerts` inside the measurer reads the attribute
+    off the already-imported package, so a `sys.modules` entry alone is a fake
+    the code under test never sees -- and it fails by silently measuring
+    production, which is a green test that proves nothing.
+    """
+    import sys
+    import tools
+    import tools.security_alerts  # noqa: F401 -- makes the attribute exist
+    monkeypatch.setattr(tools, "security_alerts", fake)
+    monkeypatch.setitem(sys.modules, "tools.security_alerts", fake)
+
+
+def _alert(package, severity="high", state="open", landed=False):
+    return {"package": package, "severity": severity, "state": state,
+            "landed": landed}
+
+
+def test_unfixed_advisories_counts_only_what_is_still_open_and_unpatched(
+        monkeypatch):
+    """A dismissed alert and one already fixed on main are both not work."""
+    fake = _FakeAlerts(
+        ["SokratesAI/a", "SokratesAI/b"],
+        {"SokratesAI/a": ("ok", [_alert("brace-expansion"),
+                                 _alert("js-yaml", landed=True)]),
+         "SokratesAI/b": ("ok", [_alert("tar", state="dismissed")])},
+    )
+    _install_fake_alerts(monkeypatch, fake)
+    value, detail = gm.measure_nova_unfixed_advisories(None, None)
+    assert value == 1
+    assert "brace-expansion" in detail
+    assert "js-yaml" not in detail
+    assert fake.verified, "the landed check has to run before anything is counted"
+
+
+def test_unfixed_advisories_calls_a_repo_it_cannot_ask_a_floor_not_a_zero(
+        monkeypatch):
+    """Dependabot switched off is no instrument, and must not read as clean."""
+    fake = _FakeAlerts(
+        ["SokratesAI/a", "SokratesAI/vault"],
+        {"SokratesAI/a": ("ok", []),
+         "SokratesAI/vault": ("disabled", [])},
+    )
+    _install_fake_alerts(monkeypatch, fake)
+    value, detail = gm.measure_nova_unfixed_advisories(None, None)
+    assert value == 0
+    assert "1 of 2 repo(s)" in detail
+    assert "a floor, not a total" in detail
+    assert "SokratesAI/vault" in detail
+
+
+def test_unfixed_advisories_refuses_a_sweep_that_lost_its_own_repo_list(
+        monkeypatch):
+    """An unknown denominator is not a floor over anything."""
+    fake = _FakeAlerts(["SokratesAI/a"], {"SokratesAI/a": ("ok", [])},
+                       incomplete=True)
+    _install_fake_alerts(monkeypatch, fake)
+    value, detail = gm.measure_nova_unfixed_advisories(None, None)
+    assert value is None
+    assert "enumerate" in detail
+
+
+def test_unfixed_advisories_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument."""
+    assert goal_measures.KPI_MEASURERS["nova-kpi-unfixed-advisories"] is \
+        goal_measures.measure_nova_unfixed_advisories
+    assert "nova-kpi-unfixed-advisories" not in goal_measures.KPI_NO_INSTRUMENT
+
+
+# --- nova-kpi-markdown-board-readers ---------------------------------------
+#
+# The guardrail under `Board store and growth`, the second Nova lights-on
+# milestone that named nothing. It is a ratchet rather than a target: the
+# migration itself is a milestone with a definition of done, and what no
+# milestone catches is a twelfth markdown reader written while the eleven are
+# still there.
+
+
+class _FakeInventory:
+    def __init__(self, found, unreadable=(), untokenized=(), mine=(),
+                 vetoed=()):
+        self._found = found
+        self._unreadable = list(unreadable)
+        self._untokenized = list(untokenized)
+        self._mine = list(mine)
+        self._vetoed = list(vetoed)
+        self.include_tests = None
+
+    def scan(self, root=None, include_tests=None):
+        self.include_tests = include_tests
+        return (self._found, [], self._unreadable, self._untokenized,
+                self._mine, self._vetoed)
+
+
+def _install_fake_inventory(monkeypatch, fake):
+    """Same swap and the same reason as `_install_fake_alerts` above."""
+    import sys
+    import tools
+    import tools.board_reader_inventory  # noqa: F401 -- attribute must exist
+    monkeypatch.setattr(tools, "board_reader_inventory", fake)
+    monkeypatch.setitem(sys.modules, "tools.board_reader_inventory", fake)
+
+
+def test_markdown_board_readers_counts_the_modules_the_inventory_found(
+        monkeypatch):
+    fake = _FakeInventory({"agora_runner/nova_boards.py": 1,
+                           "tools/board_publish.py": 2})
+    _install_fake_inventory(monkeypatch, fake)
+    value, detail = gm.measure_nova_markdown_board_readers(None, None)
+    assert value == 2
+    assert "agora_runner/nova_boards.py" in detail
+    assert "must never rise" in detail
+
+
+def test_markdown_board_readers_never_counts_tests(monkeypatch):
+    """`parse_board`'s own tests must not make the gate unclearable."""
+    fake = _FakeInventory({"agora_runner/nova_boards.py": 1})
+    _install_fake_inventory(monkeypatch, fake)
+    gm.measure_nova_markdown_board_readers(None, None)
+    assert fake.include_tests is False
+
+
+def test_markdown_board_readers_refuses_a_scan_it_could_not_complete(
+        monkeypatch):
+    """A count over an unknown set of files is not a reading."""
+    fake = _FakeInventory({"agora_runner/nova_boards.py": 1},
+                          untokenized=["tools/odd.py"])
+    _install_fake_inventory(monkeypatch, fake)
+    value, detail = gm.measure_nova_markdown_board_readers(None, None)
+    assert value is None
+    assert "unknown set" in detail
+
+
+def test_markdown_board_readers_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument."""
+    assert goal_measures.KPI_MEASURERS["nova-kpi-markdown-board-readers"] is \
+        goal_measures.measure_nova_markdown_board_readers
+    assert "nova-kpi-markdown-board-readers" not in \
+        goal_measures.KPI_NO_INSTRUMENT
