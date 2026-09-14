@@ -554,9 +554,9 @@ def test_an_orphan_under_a_project_with_goals_is_the_pruning_signal():
     """Rule 4's short list: Nova has key results and this seat names none
     of them, so the question really is whether the work is justified."""
     sections = parse_project_goals(NOVA)
-    prunable, awaiting = split_orphans({("Nova", "Runner engineering"): ""},
-                                       sections)
-    assert awaiting == []
+    prunable, finished, awaiting = split_orphans(
+        {("Nova", "Runner engineering"): ""}, sections)
+    assert awaiting == [] and finished == []
     assert prunable and "work nobody can justify" in prunable[0]
 
 
@@ -565,9 +565,9 @@ def test_an_orphan_under_a_project_with_no_goals_is_not_a_pruning_signal():
     in the goals document at all, so nothing exists for this seat to point
     at and pruning is not the question -- writing Agora's goals is."""
     sections = parse_project_goals(NOVA)
-    prunable, awaiting = split_orphans({("Agora", "Ask me a question"): ""},
-                                       sections)
-    assert prunable == []
+    prunable, finished, awaiting = split_orphans(
+        {("Agora", "Ask me a question"): ""}, sections)
+    assert prunable == [] and finished == []
     assert awaiting and "no key result or KPI is written for this project" \
         in awaiting[0]
     assert "work nobody can justify" not in awaiting[0]
@@ -584,8 +584,9 @@ def test_a_project_section_with_no_goals_at_all_offers_nothing_to_serve():
                  "```\n")
     sections = parse_project_goals(empty)
     assert sections and not project_has_goals_to_serve("Husk", sections)
-    prunable, awaiting = split_orphans({("Husk", "M"): ""}, sections)
-    assert prunable == [] and len(awaiting) == 1
+    prunable, finished, awaiting = split_orphans({("Husk", "M"): ""},
+                                                 sections)
+    assert prunable == [] and finished == [] and len(awaiting) == 1
 
 
 def test_the_split_drops_nothing_and_serves_orphans_is_unchanged():
@@ -596,9 +597,10 @@ def test_the_split_drops_nothing_and_serves_orphans_is_unchanged():
     seats = {("Nova", "Runner engineering"): "",
              ("Agora", "Ask me a question"): "",
              ("Nova", "Picking"): "nova-kr1"}
-    prunable, awaiting = split_orphans(seats, sections)
-    assert len(prunable) == 1 and len(awaiting) == 1
-    assert sorted(prunable + awaiting) == serves_orphans(seats, sections)
+    prunable, finished, awaiting = split_orphans(seats, sections)
+    assert len(prunable) == 1 and len(awaiting) == 1 and finished == []
+    assert sorted(prunable + finished + awaiting) == serves_orphans(
+        seats, sections)
     assert len(serves_orphans(seats, sections)) == 2
 
 
@@ -608,17 +610,17 @@ def test_another_projects_goals_cannot_move_a_seats_verdict():
     sections = parse_project_goals(NOVA)
     assert not project_has_goals_to_serve("Agora", sections)
     assert project_has_goals_to_serve("Nova", sections)
-    _, awaiting = split_orphans({("Agora", "M"): ""}, sections)
-    assert len(awaiting) == 1
+    _, _finished, awaiting = split_orphans({("Agora", "M"): ""}, sections)
+    assert len(awaiting) == 1 and _finished == []
 
 
 def test_a_seat_naming_its_guardrail_is_in_neither_list():
     """`Keeps` already answered this seat; the new split must not
     resurrect it under the second heading."""
     sections = parse_project_goals(NOVA)
-    prunable, awaiting = split_orphans({("Agora", "M"): ""}, sections,
-                                       {("Agora", "M"): "nova-cost"})
-    assert prunable == [] and awaiting == []
+    prunable, finished, awaiting = split_orphans(
+        {("Agora", "M"): ""}, sections, {("Agora", "M"): "nova-cost"})
+    assert prunable == [] and awaiting == [] and finished == []
 
 
 def test_month_name_does_not_read_the_process_locale():
@@ -964,3 +966,80 @@ def test_a_row_with_no_project_is_not_a_project():
     found, total = projects_without_goals(
         [_row("Nova"), _row("  ")], parse_project_goals(NOVA))
     assert (found, total) == ([], 1)
+
+
+def _seat_row(project, milestone, status_key="backlog", done=False):
+    return {"project": project, "milestone": milestone,
+            "statusKey": status_key, "done": done}
+
+
+def test_a_pruning_orphan_whose_rows_are_all_closed_is_not_a_question():
+    """Cycle 1568's finding, in one seat: `agora / operator visibility`
+    carried five rows and every one was outdated. Asking whether that work
+    is justified is asking about work that is not there."""
+    sections = parse_project_goals(NOVA)
+    rows = [_seat_row("Nova", "Runner engineering", "outdated"),
+            _seat_row("Nova", "Runner engineering", "done", done=True)]
+    prunable, finished, awaiting = split_orphans(
+        {("Nova", "Runner engineering"): ""}, sections, None, rows)
+    assert prunable == [] and awaiting == []
+    assert finished and "retire the milestone" in finished[0]
+    assert "work nobody can justify" not in finished[0]
+
+
+def test_one_open_row_keeps_the_orphan_on_the_pruning_list():
+    """The separating input: the same seat with a single backlog row under
+    it is still the judgement rule 4 asks for, not a free retirement."""
+    sections = parse_project_goals(NOVA)
+    rows = [_seat_row("Nova", "Runner engineering", "done", done=True),
+            _seat_row("Nova", "Runner engineering")]
+    prunable, finished, awaiting = split_orphans(
+        {("Nova", "Runner engineering"): ""}, sections, None, rows)
+    assert finished == [] and awaiting == []
+    assert prunable and "work nobody can justify" in prunable[0]
+
+
+def test_the_boards_are_matched_on_project_as_well_as_milestone():
+    """Two projects can name a milestone the same thing. An open row under
+    another project's milestone of that name must not keep this seat on the
+    pruning list."""
+    sections = parse_project_goals(NOVA)
+    rows = [_seat_row("Marcus", "Runner engineering")]
+    _prunable, finished, _awaiting = split_orphans(
+        {("Nova", "Runner engineering"): ""}, sections, None, rows)
+    assert len(finished) == 1
+
+
+def test_case_and_spacing_in_a_rows_milestone_do_not_hide_it():
+    """His boards carry the milestone as he typed it and the seats file as
+    Nova typed it; matching on the raw strings would read an open row as
+    absent and offer a live milestone for retirement."""
+    sections = parse_project_goals(NOVA)
+    rows = [_seat_row(" nova ", " RUNNER Engineering ")]
+    prunable, finished, _awaiting = split_orphans(
+        {("Nova", "Runner engineering"): ""}, sections, None, rows)
+    assert finished == [] and len(prunable) == 1
+
+
+def test_a_caller_with_no_boards_gets_the_old_two_way_answer():
+    """`rows` is optional the way `keeps` is. Without the boards there is no
+    evidence a milestone is finished, and guessing it is would retire live
+    work -- so every orphan stays the question it was."""
+    sections = parse_project_goals(NOVA)
+    prunable, finished, awaiting = split_orphans(
+        {("Nova", "Runner engineering"): ""}, sections)
+    assert finished == [] and awaiting == []
+    assert len(prunable) == 1
+
+
+def test_the_third_split_still_drops_nothing():
+    """Same guarantee the second split had to carry: the orphan count is
+    unchanged and `serves_orphans` returns all three lists together."""
+    sections = parse_project_goals(NOVA)
+    seats = {("Nova", "Runner engineering"): "",
+             ("Nova", "Cost and quota"): "",
+             ("Agora", "Ask me a question"): ""}
+    rows = [_seat_row("Nova", "Cost and quota")]
+    prunable, finished, awaiting = split_orphans(seats, sections, None, rows)
+    assert len(prunable) == 1 and len(finished) == 1 and len(awaiting) == 1
+    assert len(serves_orphans(seats, sections)) == 3

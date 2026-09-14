@@ -299,19 +299,22 @@ def test_the_report_prints_the_two_kinds_of_orphan_under_their_own_headings():
     seats = (SEATS
              + "| Nova | Runner engineering | 2 | 09-13 |  |\n"
                "| Agora | Ask me a question | 3 | 09-13 |  |\n")
-    lines, code = report(GOALS, seats, rows=[row(1)])
+    lines, code = report(GOALS, seats,
+                         rows=[row(1),
+                               row(2, milestone="Runner engineering")])
     assert code == 0
     body = "\n".join(lines)
     assert "ORPHANS (1)" in body
     assert "NO GOALS TO SERVE YET (1)" in body
+    assert "NOTHING LEFT TO KEEP" not in body
     assert "  nova / runner engineering: serves no key result and keeps no " \
            "KPI -- either keep-the-lights-on work whose guardrail has not " \
            "been written yet, or work nobody can justify" in lines
     assert "  agora / ask me a question: serves no key result and keeps no " \
            "KPI -- and there is none to serve, because no key result or " \
            "KPI is written for this project yet" in lines
-    assert "2 orphan(s) (1 pruning signal, 1 awaiting project goals)" \
-        in lines[-1]
+    assert "2 orphan(s) (1 pruning signal, 0 with nothing left to keep, " \
+           "1 awaiting project goals)" in lines[-1]
     # Each orphan is printed once, under exactly one of the two headings.
     # Reporting the whole list under `ORPHANS` as well is the failure this
     # split exists to end, and it leaves both assertions above true.
@@ -519,3 +522,23 @@ def test_a_project_that_has_a_goal_is_not_in_the_list():
     assert not any(line.startswith("PROJECTS WITH NO GOAL") for line in lines)
     assert lines[-1].endswith("1 of 1 project(s) have a goal")
     assert code == 0
+
+
+def test_an_orphan_with_no_open_row_gets_its_own_heading():
+    """The third heading, and the reason it is not a fourth verdict: the
+    total is unchanged and the line moves out of the question list, because
+    a milestone whose every row is closed is not a prioritisation call."""
+    seats = SEATS + "| Nova | Runner engineering | 2 | 09-13 |  |\n"
+    lines, code = report(
+        GOALS, seats,
+        rows=[row(1),
+              row(2, milestone="Runner engineering", status_key="outdated")])
+    assert code == 0
+    body = "\n".join(lines)
+    assert "ORPHANS" not in body
+    assert "NOTHING LEFT TO KEEP (1)" in body
+    assert "  nova / runner engineering: serves no key result and keeps no " \
+           "KPI -- and no row under it is still open, so there is nothing " \
+           "here to keep: retire the milestone" in lines
+    assert "1 orphan(s) (0 pruning signal, 1 with nothing left to keep, " \
+           "0 awaiting project goals)" in lines[-1]

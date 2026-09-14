@@ -139,8 +139,8 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     serves = parse_milestone_serves(seats_markdown)
     keeps = parse_milestone_keeps(seats_markdown)
     broken = serves_problems(serves, sections) + keeps_problems(keeps, sections)
-    prunable, awaiting = split_orphans(serves, sections, keeps)
-    orphans = prunable + awaiting
+    prunable, finished, awaiting = split_orphans(serves, sections, keeps, rows)
+    orphans = prunable + finished + awaiting
     unpointed = unpointed_goals(serves, keeps, sections)
     unseated = [] if rows is None else task_seat_problems(rows, serves)
     unplaced = [] if rows is None else task_seat_orphans(rows)
@@ -160,6 +160,14 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "project has goals and this milestone names none of them, so "
             "this is the list rule 4 is asking for:")
         for line in prunable:
+            lines.append(f"  {line}")
+    if finished:
+        lines.append(
+            f"NOTHING LEFT TO KEEP ({len(finished)}) -- also rule 4's "
+            "pruning list, and also not a defect, but not a question "
+            "either: every row under these is closed, so retiring the "
+            "milestone drops no open work:")
+        for line in finished:
             lines.append(f"  {line}")
     if awaiting:
         lines.append(
@@ -225,6 +233,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                  f"{len(defects)} model problem(s), "
                  f"{len(orphans)} orphan(s)"
                  + (f" ({len(prunable)} pruning signal, "
+                    f"{len(finished)} with nothing left to keep, "
                     f"{len(awaiting)} awaiting project goals)"
                     if orphans else "") + ", "
                  f"{len(unpointed)} unpointed goal(s), "
@@ -345,10 +354,12 @@ def main(argv=None):
         # when the orphan list is the thing you came for, and four
         # pruning signals interleaved with thirty-two seats that have
         # nothing to serve yet is the state the split fixed in `report`.
-        prunable, awaiting = split_orphans(parse_milestone_serves(seats),
-                                           parse_project_goals(goals),
-                                           parse_milestone_keeps(seats))
+        prunable, finished, awaiting = split_orphans(
+            parse_milestone_serves(seats), parse_project_goals(goals),
+            parse_milestone_keeps(seats))
         for line in prunable:
+            print(line)
+        for line in finished:
             print(line)
         for line in awaiting:
             print(line)
