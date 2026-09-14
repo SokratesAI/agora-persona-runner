@@ -4477,3 +4477,254 @@ class TestMcpCurrentMeasure:
     def test_it_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["agora-kr-mcp-current"] is \
             gm.measure_agora_mcp_current
+
+
+# --- infra-kr-self-service: provenance read off managedFields -----------------
+
+
+def _self_service_kubectl(monkeypatch, items=None, returncode=0, stdout=None,
+                          stderr="", raises=None):
+    """Stand in for the one `kubectl get ... -A -o json --show-managed-fields`."""
+    def fake(cmd, **kwargs):
+        del kwargs
+        assert cmd[:2] == ["kubectl", "get"], cmd
+        assert cmd[2] == goal_measures.SELF_SERVICE_KINDS, cmd
+        assert "-A" in cmd and "--show-managed-fields" in cmd, cmd
+        if raises is not None:
+            raise raises
+        blob = stdout if stdout is not None else json.dumps(
+            {"items": items if items is not None else []})
+        return types.SimpleNamespace(returncode=returncode, stdout=blob,
+                                     stderr=stderr)
+    monkeypatch.setattr(goal_measures.subprocess, "run", fake)
+
+
+def _managed(name, managers, namespace="agents", kind="Deployment"):
+    """One object carrying `(manager, time)` pairs in its managedFields."""
+    fields = [{"manager": m, "operation": "Update", "time": t}
+              for m, t in managers]
+    return {"kind": kind,
+            "metadata": {"name": name, "namespace": namespace,
+                         "managedFields": fields}}
+
+
+def test_classify_field_manager_reads_argocd_as_the_committed_path():
+    """Every name Argo CD writes under is the GitOps half."""
+    for manager in goal_measures.SELF_SERVICE_GITOPS:
+        assert goal_measures.classify_field_manager(manager) == "gitops"
+
+
+def test_classify_field_manager_reads_every_kubectl_verb_as_manual():
+    """`kubectl` stamps a different manager per verb, so the prefix carries them."""
+    for manager in ("kubectl", "kubectl-edit", "kubectl-patch", "kubectl-rollout",
+                    "kubectl-scale", "kubectl-client-side-apply",
+                    "kubectl-last-applied", "kubectl-annotate"):
+        assert goal_measures.classify_field_manager(manager) == "manual", manager
+
+
+def test_classify_field_manager_reads_a_terminal_ui_and_a_helm_prompt_as_manual():
+    """Neither leaves a commit behind, which is the whole question."""
+    assert goal_measures.classify_field_manager("k9s") == "manual"
+    assert goal_measures.classify_field_manager("helm") == "manual"
+
+
+def test_classify_field_manager_reads_a_reconciler_as_neither():
+    """A controller writing a status is not a change anybody made.
+
+    This is the half that keeps the share honest: `k3s` alone writes 91 entries
+    on this cluster, and folding those into either side would move the number
+    without anything having happened.
+    """
+    for manager in ("k3s", "Reloader", "crossplane", "operator",
+                    "deploy@server1", "helm-controller@server1",
+                    "k3s-supervisor@server1", "", None):
+        assert goal_measures.classify_field_manager(manager) is None, manager
+
+
+def test_classify_field_manager_does_not_read_a_kubectl_lookalike_as_manual():
+    """The prefix match is on a real manager name, not on any word starting with it."""
+    assert goal_measures.classify_field_manager("kubectlike-operator") is None
+
+
+def test_self_service_takes_the_share_of_changes_that_came_through_argocd(monkeypatch):
+    """Both halves present: three Argo CD entries and one by hand reads 75.0."""
+    _self_service_kubectl(monkeypatch, [
+        _managed("agora", [("argocd-controller", "2026-09-10T10:00:00Z"),
+                           ("k3s", "2026-09-10T10:01:00Z")]),
+        _managed("marcus", [("argocd-controller", "2026-09-11T10:00:00Z")]),
+        _managed("nova-site", [("argocd-controller", "2026-09-12T10:00:00Z")]),
+        _managed("marcus-test", [("kubectl-client-side-apply",
+                                  "2026-09-11T08:31:21Z")], namespace="test"),
+    ])
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value == 75.0
+    assert "3 of 4 recorded change(s) to 4 object(s)" in detail
+    assert "test/Deployment marcus-test by kubectl-client-side-apply" in detail
+
+
+def test_self_service_ignores_an_entry_outside_the_window(monkeypatch):
+    """managedFields keeps an old entry forever; only the window counts.
+
+    The live cluster carries a `kubectl-rollout` on `newspaper` from 2026-07-18
+    that has survived every Argo CD sync since. A measure that counted it would
+    report the same manual change every week until somebody else touched the
+    object.
+    """
+    _self_service_kubectl(monkeypatch, [
+        _managed("agora", [("argocd-controller", "2026-09-10T10:00:00Z")]),
+        _managed("newspaper", [("kubectl-rollout", "2026-07-18T04:05:58Z")]),
+    ])
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value == 100.0
+    assert "1 of 1 recorded change(s)" in detail
+    assert "By hand" not in detail
+
+
+def test_self_service_still_reports_the_out_of_window_manual_count(monkeypatch):
+    """A 100 arrives with the evidence that the manual half can be seen at all.
+
+    This is the reading that flatters -- 100 is the target -- so the detail has
+    to carry the denominator and the fact that manual entries exist on these
+    objects, or a reader cannot tell a clean week from a blind instrument.
+    """
+    _self_service_kubectl(monkeypatch, [
+        _managed("agora", [("argocd-controller", "2026-09-10T10:00:00Z")]),
+        _managed("newspaper", [("kubectl-rollout", "2026-07-18T04:05:58Z"),
+                               ("kubectl", "2026-06-01T00:00:00Z")]),
+    ])
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value == 100.0
+    assert "2 manual entry/entries exist on these objects in total" in detail
+
+
+def test_self_service_counts_an_entry_on_the_first_day_of_the_window(monkeypatch):
+    """The window is inclusive at both ends, in whole Oslo-dated days."""
+    _self_service_kubectl(monkeypatch, [
+        _managed("agora", [("argocd-controller", "2026-09-08T00:00:00Z")]),
+        _managed("hand", [("kubectl-edit", "2026-09-14T23:59:00Z")]),
+    ])
+    value, _ = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value == 50.0
+
+
+def test_self_service_skips_an_entry_with_no_timestamp(monkeypatch):
+    """An entry with no `time` cannot be placed in or out of the window."""
+    _self_service_kubectl(monkeypatch, [
+        _managed("agora", [("argocd-controller", "2026-09-10T10:00:00Z")]),
+        _managed("hand", [("kubectl-edit", None)]),
+    ])
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value == 100.0
+    assert "1 of 1 recorded change(s)" in detail
+
+
+def test_self_service_reports_no_number_when_the_window_is_empty(monkeypatch):
+    """100 is the target, so an empty denominator must not produce it.
+
+    A week in which nothing changed would otherwise read as a perfect week of
+    GitOps, and that number would then sit in the document looking measured.
+    """
+    _self_service_kubectl(monkeypatch, [
+        _managed("agora", [("k3s", "2026-09-10T10:00:00Z")]),
+    ])
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value is None
+    assert "no denominator to take a share over" in detail
+
+
+def test_self_service_reports_no_number_when_the_cluster_is_empty(monkeypatch):
+    """No objects at all is a broken read, not a cluster nobody changed."""
+    _self_service_kubectl(monkeypatch, [])
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value is None
+    assert "no instrument rather than a cluster nobody changed" in detail
+
+
+def test_self_service_reports_no_number_when_kubectl_cannot_run(monkeypatch):
+    _self_service_kubectl(monkeypatch, raises=OSError("no kubectl"))
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value is None
+    assert "kubectl could not read the cluster's objects" in detail
+    assert "no kubectl" in detail
+
+
+def test_self_service_reports_no_number_when_kubectl_exits_non_zero(monkeypatch):
+    _self_service_kubectl(monkeypatch, returncode=1,
+                          stderr="Error from server (Forbidden): secrets is forbidden")
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value is None
+    assert "Forbidden" in detail
+
+
+def test_self_service_reports_no_number_when_kubectl_is_not_json(monkeypatch):
+    _self_service_kubectl(monkeypatch, stdout="not json at all")
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value is None
+    assert "not JSON" in detail
+
+
+def test_self_service_names_the_identity_gap_in_every_reading(monkeypatch):
+    """managedFields records no operator, and the detail says so rather than
+    letting the key result's wording ("changes this loop makes") stand."""
+    _self_service_kubectl(monkeypatch, [
+        _managed("agora", [("argocd-controller", "2026-09-10T10:00:00Z")]),
+    ])
+    _value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert "no operator identity" in detail
+
+
+def test_self_service_caps_the_by_hand_list_at_eight(monkeypatch):
+    """The list is evidence, not the measure; the count above it is whole."""
+    _self_service_kubectl(monkeypatch, [
+        _managed(f"hand-{i}", [("kubectl-edit", "2026-09-10T10:00:00Z")])
+        for i in range(12)
+    ])
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value == 0.0
+    assert "0 of 12 recorded change(s)" in detail
+    assert detail.count("by kubectl-edit") == 8
+
+
+def test_self_service_is_wired_into_the_key_result_table():
+    """Without this the key result reads `no instrument` however good the code is."""
+    assert (goal_measures.KEY_RESULT_FETCH_MEASURERS["infra-kr-self-service"]
+            is goal_measures.measure_infra_self_service)
+
+
+def test_self_service_is_not_listed_as_having_no_instrument():
+    assert "infra-kr-self-service" not in goal_measures.KEY_RESULT_NO_INSTRUMENT
+
+
+def test_classify_field_manager_reads_an_unlisted_argocd_manager_as_gitops():
+    """Argo CD grows components; a new one is still the committed path.
+
+    `argocd-applicationset-controller` is not in the tuple above and would be
+    classified as neither without the prefix, which would quietly shrink the
+    denominator rather than fail loudly.
+    """
+    assert goal_measures.classify_field_manager(
+        "argocd-applicationset-controller") == "gitops"
+
+
+def test_self_service_ignores_an_entry_newer_than_the_window(monkeypatch):
+    """`--until` can ask for an older week, and today's changes are not in it."""
+    _self_service_kubectl(monkeypatch, [
+        _managed("agora", [("argocd-controller", "2026-09-10T10:00:00Z")]),
+        _managed("hand", [("kubectl-edit", "2026-09-20T10:00:00Z")]),
+    ])
+    value, detail = goal_measures.measure_infra_self_service(
+        "2026-09-08", "2026-09-14")
+    assert value == 100.0
+    assert "1 of 1 recorded change(s)" in detail
