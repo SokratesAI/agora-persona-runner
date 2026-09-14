@@ -141,3 +141,41 @@ def test_next_payload_orders_by_the_seats():
     assert top()[0] == 1
     seats = render_milestone_seats([("Nova", "Trivial"), ("Nova", "Urgent")])
     assert top(seats_markdown=seats)[0] == 2
+
+
+def test_keeps_column_is_rendered_and_read_back():
+    """A `Keeps` cell survives a render/parse round trip, issue #227 rule 4."""
+    from agora_runner.nova_boards import (
+        parse_milestone_keeps, parse_milestone_serves, render_milestone_seats)
+
+    text = render_milestone_seats(
+        [("Nova", "Picking and planning"), ("Nova", "Cost and quota")],
+        updated="09-14",
+        serves={("nova", "picking and planning"): "nova-kr-your-rows"},
+        keeps={("nova", "cost and quota"): "nova-kpi-cost-per-cycle"})
+
+    assert parse_milestone_serves(text) == {
+        ("nova", "picking and planning"): "nova-kr-your-rows",
+        ("nova", "cost and quota"): ""}
+    assert parse_milestone_keeps(text) == {
+        ("nova", "picking and planning"): "",
+        ("nova", "cost and quota"): "nova-kpi-cost-per-cycle"}
+
+
+def test_keeps_reads_empty_on_a_file_written_before_the_column_existed():
+    """Five columns is the old shape; every seat answers "" rather than raising."""
+    from agora_runner.nova_boards import parse_milestone_keeps
+
+    old = ("| Project | Milestone | Position | Updated | Serves |\n"
+           "|---|---|---|---|---|\n"
+           "| Nova | Cost and quota | 1 | 09-13 |  |\n")
+    assert parse_milestone_keeps(old) == {("nova", "cost and quota"): ""}
+
+
+def test_a_keeps_cell_carrying_a_pipe_is_refused():
+    """Same refusal `Serves` already makes -- a `|` would forge a column."""
+    from agora_runner.nova_boards import render_milestone_seats
+
+    assert render_milestone_seats(
+        [("Nova", "Cost and quota")],
+        keeps={("nova", "cost and quota"): "a | b"}) is None

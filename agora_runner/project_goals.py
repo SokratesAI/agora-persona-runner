@@ -330,26 +330,67 @@ def serves_problems(serves, sections):
     return found
 
 
-def serves_orphans(serves, sections):
-    """The milestones that serve no key result -- issue #227's fourth rule.
+def keeps_problems(keeps, sections):
+    """`{(project, milestone): Keeps cell}` + sections -> broken pointers.
+
+    The mirror of `serves_problems`, one column to the right, and both
+    halves of issue #227's rule that a guardrail and a goal are different
+    kinds of thing: `Serves` naming a KPI is refused there, and `Keeps`
+    naming a **key result** is refused here. Without this second half the
+    rule is only enforced in one direction, and the cheapest way to make an
+    orphan disappear would be to write its key result into `Keeps`.
+
+    A cell naming an id that is neither is the same defect `serves_problems`
+    reports: a pointer at nothing, which a pull request can close.
+    """
+    results, guardrails = key_result_ids(sections), kpi_ids(sections)
+    found = []
+    for (project, milestone) in sorted(keeps):
+        for identifier in split_serves(keeps[(project, milestone)]):
+            if identifier in results:
+                found.append(
+                    f"{project} / {milestone}: keeps {identifier!r}, which "
+                    "is a key result -- a goal is not a guardrail")
+            elif identifier not in guardrails:
+                found.append(
+                    f"{project} / {milestone}: keeps {identifier!r}, which "
+                    "is not a KPI id")
+    return found
+
+
+def serves_orphans(serves, sections, keeps=None):
+    """The milestones that serve no key result and keep no KPI -- rule 4.
 
     *"A milestone that serves nothing is one of exactly two things -- keep-
     the-lights-on work, which is legitimate and sits under a KPI rather than
     a goal, or work nobody can justify, which is the pruning signal. The
     orphan list is a deliverable of this job, not a side effect."*
 
+    **Read that rule twice: it names two verdicts, and until the `Keeps`
+    column existed this list merged them.** 43 milestones came back as one
+    undifferentiated block in which `Cost and quota` -- legitimate,
+    permanent, and the reason `nova-kpi-cost-per-cycle` exists at all --
+    sat beside the galaxy view nobody can justify. That is the same merge
+    `agentic_health` had to unpick between a failing run and a run GitHub
+    refused to start: one number, two causes, opposite actions. So a seat
+    that names the guardrail it keeps is *answered*, and what is left is
+    the short list rule 4 is actually asking for.
+
     So it is an inventory rather than a defect, which is why it is a
     separate function from `serves_problems` and why its caller does not
     raise on it. `sections` is taken and unused on purpose: an orphan is
-    decided by the seat's own empty cell, and reading the goals document to
-    decide it would make a milestone stop being an orphan when some other
-    project gained a key result.
+    decided by the seat's own empty cells, and reading the goals document
+    to decide it would make a milestone stop being an orphan when some
+    other project gained a key result. `keeps` defaults to empty so a
+    caller holding only the old column gets the old answer.
     """
-    return [f"{project} / {milestone}: serves nothing -- either "
-            "keep-the-lights-on work that belongs under a KPI, or work "
-            "nobody can justify"
+    guardrails = keeps or {}
+    return [f"{project} / {milestone}: serves no key result and keeps no "
+            "KPI -- either keep-the-lights-on work whose guardrail has not "
+            "been written yet, or work nobody can justify"
             for (project, milestone) in sorted(serves)
-            if not split_serves(serves[(project, milestone)])]
+            if not split_serves(serves[(project, milestone)])
+            and not split_serves(guardrails.get((project, milestone), ""))]
 
 
 def _set_field_in_fence(markdown, fence, row_id, field, value):

@@ -45,11 +45,11 @@ import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner.nova_boards import (
-    MILESTONE_SEATS_PATH, parse_milestone_serves,
+    MILESTONE_SEATS_PATH, parse_milestone_keeps, parse_milestone_serves,
 )
 from agora_runner.project_goals import (
     PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, parse_project_goals, problems,
-    serves_orphans, serves_problems,
+    keeps_problems, serves_orphans, serves_problems,
 )
 
 
@@ -66,8 +66,9 @@ def report(goals_markdown, seats_markdown):
                 "(issue #227 step 2 writes the content)"], 0
     found = problems(sections)
     serves = parse_milestone_serves(seats_markdown)
-    broken = serves_problems(serves, sections)
-    orphans = serves_orphans(serves, sections)
+    keeps = parse_milestone_keeps(seats_markdown)
+    broken = serves_problems(serves, sections) + keeps_problems(keeps, sections)
+    orphans = serves_orphans(serves, sections, keeps)
     defects = found + broken
     lines = ["BROKEN" if defects else "MODEL HOLDS"]
     for line in defects:
@@ -139,7 +140,8 @@ def main(argv=None):
             return 1
     if args.orphans:
         for line in serves_orphans(parse_milestone_serves(seats),
-                                   parse_project_goals(goals)):
+                                   parse_project_goals(goals),
+                                   parse_milestone_keeps(seats)):
             print(line)
         return 0
     lines, code = report(goals, seats)

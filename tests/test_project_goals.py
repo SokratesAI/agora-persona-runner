@@ -11,7 +11,7 @@ from agora_runner.nova_boards import (
 )
 from agora_runner.project_goals import (
     MAX_KEY_RESULTS, key_result_ids, kpi_ids, parse_project_goals, problems,
-    serves_orphans, serves_problems, split_serves,
+    keeps_problems, serves_orphans, serves_problems, split_serves,
 )
 
 
@@ -173,7 +173,7 @@ def test_a_milestone_serving_nothing_is_the_orphan_list_and_not_a_problem():
     seats = {("Nova", "Runner engineering"): ""}
     assert serves_problems(seats, sections) == []
     orphans = serves_orphans(seats, sections)
-    assert orphans and "serves nothing" in orphans[0]
+    assert orphans and "serves no key result and keeps no KPI" in orphans[0]
 
 
 def test_a_well_linked_milestone_is_not_an_orphan():
@@ -345,3 +345,52 @@ high: 1
     out = project_goals.set_field_in_key_result(doc, "nova-kr-your-rows", "now", "3.9")
     assert out is not None
     assert "now: 99" in out
+
+
+def test_a_lights_on_milestone_naming_its_kpi_is_not_an_orphan():
+    """Rule 4's first verdict, which had nowhere to be written down before.
+
+    *"keep-the-lights-on work, which is legitimate and sits under a KPI
+    rather than a goal"* -- `Cost and quota` is that, and until the `Keeps`
+    column it appeared in the same undifferentiated list as work nobody can
+    justify.
+    """
+    sections = parse_project_goals(NOVA)
+    seats = {("Nova", "Cost and quota"): ""}
+    keeps = {("Nova", "Cost and quota"): "nova-cost"}
+    assert serves_orphans(seats, sections, keeps) == []
+    assert keeps_problems(keeps, sections) == []
+
+
+def test_keeping_a_key_result_is_refused():
+    """The mirror of `Serves` naming a KPI, and the reason `Keeps` is its own
+    column: without this, writing the key result into `Keeps` is the cheapest
+    way to make an orphan disappear."""
+    sections = parse_project_goals(NOVA)
+    found = keeps_problems({("Nova", "M"): "nova-kr1"}, sections)
+    assert found and "is a key result" in found[0]
+
+
+def test_keeping_an_unknown_id_is_refused():
+    sections = parse_project_goals(NOVA)
+    found = keeps_problems({("Nova", "M"): "nova-kpi9"}, sections)
+    assert found and "not a KPI id" in found[0]
+
+
+def test_a_broken_keeps_pointer_is_a_defect_rather_than_an_orphan():
+    """The same call `serves_problems` already makes one column to the left:
+    a cell that was filled in is an answer, and a wrong answer raises. It
+    cannot hide, because the defect exits 2 while the orphan list never
+    does."""
+    sections = parse_project_goals(NOVA)
+    seats = {("Nova", "M"): ""}
+    keeps = {("Nova", "M"): "nova-kpi9"}
+    assert keeps_problems(keeps, sections)
+    assert serves_orphans(seats, sections, keeps) == []
+
+
+def test_orphans_without_a_keeps_map_answers_as_before():
+    """`keeps` defaults to empty so a caller holding only the old column is
+    not silently told every milestone is answered."""
+    sections = parse_project_goals(NOVA)
+    assert len(serves_orphans({("Nova", "M"): ""}, sections)) == 1
