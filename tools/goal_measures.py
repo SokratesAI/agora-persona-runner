@@ -2019,8 +2019,6 @@ def measure_demos_opened(since, until):
     return round(100.0 * len(opened) / len(rows), 1), detail
 
 
-
-
 #: The vault folder every research write-up lands in. `identity.md` calls it
 #: "durable write-ups, so no cycle pays for the same investigation twice",
 #: which is the claim `research-kr-reused` exists to check.
@@ -2052,21 +2050,24 @@ def research_write_ups(runner=subprocess.run, tool=VAULT_TOOL):
     return slugs, None
 
 
-def _entries_oldest_first(site=SITE, limit=5000):
-    """Every journal entry there is, oldest first, by the time it was written.
+def _every_journal_entry(site=SITE, limit=5000):
+    """Every journal entry there is, in whatever order the site answers.
 
     Deliberately not `fetch_entries`: that drops `report` and `silence` cards
     because neither can carry a `board` field, and a weekly research run's
     card is exactly where a write-up is most often born. Dropping the entry
     that *wrote* a document would promote its first real citation into the
     author slot and hide it.
+
+    The order genuinely does not matter to the caller and this does not sort:
+    "an entry other than the earliest one naming it" and "at least two entries
+    name it" are the same set, so deciding which one is the author would be
+    work whose answer is never read.
     """
     payload, error = _get_json(f"{site}/api/journal?limit={limit}")
     if error:
         return [], error
-    entries = payload.get("entries") or []
-    return sorted(entries, key=lambda e: ((e.get("writtenDate") or e.get("date") or ""),
-                                          (e.get("writtenTime") or e.get("time") or ""))), None
+    return list(payload.get("entries") or []), None
 
 
 def measure_research_reused(since, until):
@@ -2080,11 +2081,11 @@ def measure_research_reused(since, until):
     #203 as citations of a file none of them opened.
 
     **The first entry that names a write-up is read as the one that wrote it,
-    and is not a citation.** Nothing in the vault records who created a
-    document, so ordering the naming entries by when they were written and
-    dropping the earliest is the available answer. It makes this a floor in
-    the one direction that matters: a write-up whose author never named it in
-    prose loses its first real citation to this rule.
+    and is not a citation** -- so a write-up needs two naming entries to count,
+    and which of them is the author never has to be decided. Nothing in the
+    vault records who created a document, so this is the available answer, and
+    it makes the reading a floor: a write-up whose author never named it in
+    prose loses its first real citation to the rule.
 
     It is a floor for a second reason as well, and the bigger one -- a cycle
     that reads a write-up and does not name it in its entry is invisible here.
@@ -2100,7 +2101,7 @@ def measure_research_reused(since, until):
         return None, f"could not read the research folder, so there is no set to judge over -- {error}"
     if not slugs:
         return None, f"{RESEARCH_PREFIX} holds no write-up, so there is no share to take"
-    entries, error = _entries_oldest_first()
+    entries, error = _every_journal_entry()
     if error:
         return None, f"could not read the journal, so nothing could have cited anything -- {error}"
     if not entries:

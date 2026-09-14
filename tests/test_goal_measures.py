@@ -2674,7 +2674,7 @@ class TestResearchReused:
 
     def _sources(self, monkeypatch, slugs, entries):
         monkeypatch.setattr(gm, "research_write_ups", lambda: (slugs, None))
-        monkeypatch.setattr(gm, "_entries_oldest_first", lambda: (entries, None))
+        monkeypatch.setattr(gm, "_every_journal_entry", lambda: (entries, None))
 
     def _entry(self, text):
         return {"title": text, "blocks": []}
@@ -2724,7 +2724,7 @@ class TestResearchReused:
 
     def test_an_unreadable_journal_is_no_reading(self, monkeypatch):
         monkeypatch.setattr(gm, "research_write_ups", lambda: (["a"], None))
-        monkeypatch.setattr(gm, "_entries_oldest_first",
+        monkeypatch.setattr(gm, "_every_journal_entry",
                             lambda: ([], "could not read the journal API"))
         value, detail = gm.measure_research_reused(None, None)
         assert value is None
