@@ -269,7 +269,7 @@ def _older_cycle_conversations(heartbeat, current_id):
     turn. Cycles 1350, 1405, 1505, 1527 and 1534 all died that way, each
     after ~33s, each leaving no journal entry -- which is what put
     `nova-kpi-silent-cycles` over its ceiling. This walk is enrichment:
-    it looks for something Edvard may have typed into an older cycle's
+    it looks for something the owner may have typed into an older cycle's
     thread. Losing it costs one carried message; raising out of it costs
     the entire cycle, including the reply that would have told him.
 
