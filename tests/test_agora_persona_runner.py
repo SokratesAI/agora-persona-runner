@@ -3249,7 +3249,7 @@ def _rotating_heartbeat_run(runner, old_messages, persona_name="Test", older=Non
             return 200, old_detail
         if path.startswith("/conversations/c-new"):
             return 200, new_detail
-        if path == "/conversations":
+        if path == runner.heartbeats.CYCLE_LISTING_PATH:
             return 200, listing
         for cid, messages in (older or {}).items():
             if path.startswith(f"/conversations/{cid}"):
@@ -3421,7 +3421,7 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
     ]}
 
     def fake_agora_get(path):
-        if path == "/conversations":
+        if path == runner.heartbeats.CYCLE_LISTING_PATH:
             return 200, listing
         return 200, {"personas": [], "messages": []}
 
@@ -3431,8 +3431,74 @@ def test_the_lookback_walk_stays_bounded_by_cycle_lookback(runner):
 
     assert carried == []
     message_fetches = [c for c in mock_get.call_args_list
-                       if c.args[0] != "/conversations"]
+                       if c.args[0] != runner.heartbeats.CYCLE_LISTING_PATH]
     assert len(message_fetches) == runner.heartbeats.CYCLE_LOOKBACK
+
+
+def test_the_lookback_asks_agora_to_leave_the_archived_cycles_out(runner):
+    """The listing this walk reads is the one that timed out and killed five
+    cycles, and it was asking for every conversation Agora has ever held.
+
+    Measured against the live store 2026-09-14: 1,614 conversations,
+    `/conversations` 954,759 bytes in 1.36-1.49s, `/conversations?active=true`
+    28,727 bytes in 0.44s. Only 50 of the 1,614 are un-archived, and the walk
+    discards the other 1,564 itself the moment they arrive -- so the whole
+    reduction was already available in a query parameter Agora has had all
+    along and `agora_runner.poll` already uses.
+
+    The literal is asserted here rather than the constant, because a test that
+    reads `CYCLE_LISTING_PATH` on both sides passes whatever the constant says
+    and would not notice it going back to the unfiltered path.
+    """
+    heartbeat = {"id": "hb1", "conversationId": "c-new"}
+    previous = {"personas": [], "messages": [
+        {"sender": "Test", "text": "cycle 4's report", "id": "m1"}]}
+
+    with patch.object(runner.heartbeats, "agora_get",
+                      return_value=(200, {"conversations": []})) as mock_get:
+        runner.pending_across_cycles(heartbeat, previous)
+
+    listing_paths = [c.args[0] for c in mock_get.call_args_list]
+    assert listing_paths == ["/conversations?active=true"]
+
+
+def test_the_lookback_still_drops_an_archived_row_the_server_sends_anyway(runner):
+    """The server-side filter is an optimisation, not the rule.
+
+    Express ignores a query parameter it does not know, so an Agora without
+    `?active=true` answers with the full list and this walk has to keep being
+    correct against it. Without the client-side check that deployment would
+    start walking archived cycle threads again -- quietly, because the counts
+    would still look plausible.
+    """
+    heartbeat = {"id": "hb1", "conversationId": "c-new"}
+    previous = {"personas": [], "messages": [
+        {"sender": "Test", "text": "cycle 4's report", "id": "m1"}]}
+    tag = runner.cycle_tag("hb1")
+    listing = {"conversations": [
+        {"id": "c-live", "name": "live one", "tags": [tag],
+         "createdAt": "2026-08-02T01:00:00+00:00"},
+        {"id": "c-gone", "name": "archived one", "tags": [tag], "archived": True,
+         "createdAt": "2026-08-03T01:00:00+00:00"},
+    ]}
+
+    def fake_agora_get(path):
+        if path.startswith("/conversations?"):
+            return 200, listing
+        return 200, {"personas": [], "messages": [
+            {"sender": "Edvard", "text": f"typed into {path}", "id": "m9"}]}
+
+    with patch.object(runner.heartbeats, "agora_get",
+                      side_effect=fake_agora_get) as mock_get:
+        carried = runner.pending_across_cycles(heartbeat, previous)
+
+    fetched = [c.args[0] for c in mock_get.call_args_list
+               if not c.args[0].startswith("/conversations?")]
+    assert fetched == ["/conversations/c-live/messages?limit=%d"
+                       % runner.heartbeats.FETCH_LIMIT]
+    assert [text for _source, text in carried] == [
+        "typed into /conversations/c-live/messages?limit=%d"
+        % runner.heartbeats.FETCH_LIMIT]
 
 
 def test_a_timed_out_listing_does_not_kill_the_cycle(runner):
@@ -3470,7 +3536,7 @@ def test_one_unreachable_older_conversation_does_not_lose_the_others(runner):
          "createdAt": "2026-08-02T01:00:00+00:00"}]}
 
     def fake_agora_get(path):
-        if path == "/conversations":
+        if path == runner.heartbeats.CYCLE_LISTING_PATH:
             return 200, listing
         if "c-dead" in path:
             raise ConnectionResetError("connection reset by peer")
@@ -3510,7 +3576,7 @@ def test_pending_across_cycles_drops_the_oldest_when_over_the_char_cap(runner):
          "createdAt": "2026-08-02T01:00:00+00:00"}]}
 
     def fake_agora_get(path):
-        if path == "/conversations":
+        if path == runner.heartbeats.CYCLE_LISTING_PATH:
             return 200, listing
         return 200, {"personas": [], "messages": [
             {"sender": "Edvard", "text": "O" * 3000, "id": "m1"}]}
