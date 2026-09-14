@@ -76,7 +76,13 @@ a check that still exists and no name diff would see that. A branch that is
 behind and also ahead is told to merge rather than to check main out.
 Being only *ahead* (an ordinary feature branch) prints and does not raise.
 It is timed and counted in the footer like any other row, and it is the one
-row that runs serially, because everything after it depends on the answer. A crash inside a
+row that runs serially, because everything after it depends on the answer.
+**Its verdict is also the last line of the report when it is not clean**, and
+that repetition is deliberate: the row is line three of a report that runs to
+hundreds of lines, a reader piping it through `tail` never sees it, and Cycle
+1593 did exactly that and rebuilt a measurer that had been on `main` for hours.
+Nothing else here is printed twice; nothing else here invalidates every other
+row. A crash inside a
 check is a non-zero exit and gets the loud treatment, so the failure mode
 of this tool is noisy, not silent -- which is the direction "How to work"
 asks for when a negative result could otherwise be guaranteed in advance.
@@ -1179,7 +1185,47 @@ def render(results, stream=None, verbose=False, state=None, now=None,
               f"their caveats are the indented lines above. Exit 0 is the right "
               f"status for those and it is not a claim about what they skipped.",
               file=stream)
+    for line in stale_checkout_lines(results):
+        print(line, file=stream)
     return worst
+
+
+def stale_checkout_lines(results):
+    """The last word, when the tree these checks came from is not the current one.
+
+    `source_revision` already measures this and already raises 2 on it. Its
+    report is a single sentence, so the branch above deliberately does not
+    reproduce it in a `===== full output =====` block -- it would print the
+    same sentence twice. That is right for the body and it leaves the verdict
+    living in exactly one place: row one of a table that is hundreds of lines
+    long on a normal morning.
+
+    Cycle 1593 ran this sweep, read it with `tail -80`, and spent twenty
+    minutes building a measurer that had already existed on `main` for hours.
+    The checkout was seventeen commits behind; `source_revision` had said so,
+    in a line that had scrolled off. Seven KPIs printed `no instrument --
+    nothing here computes this measure` and every one of them was wrong.
+
+    Piping a long report through `tail` is not a misuse to be trained out --
+    it is what a reader does with hundreds of lines, and the footer is where
+    the summary already lives. So the one verdict that invalidates every other
+    row goes there too. It does not change the exit code, which already counts
+    it, and it prints nothing when the checkout is current, because a warning
+    on a clean sweep is one nobody reads.
+    """
+    for name, code, output, _seconds in results:
+        if name != "source_revision" or code == 0:
+            continue
+        return [
+            "",
+            f"!! THIS SWEEP RAN FROM A CHECKOUT THAT IS NOT CURRENT: "
+            f"{summary_line(output)}",
+            "   Every verdict above was computed by the code in that tree, so a "
+            "check missing there is absent rather than clean and a check that has "
+            "changed since answers as its older self. Update and re-run before "
+            "acting on any of it.",
+        ]
+    return []
 
 
 def main(argv=None):

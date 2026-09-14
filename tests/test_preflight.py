@@ -650,9 +650,18 @@ def test_the_line_breaks_are_part_of_the_fingerprint():
 def test_a_one_line_finding_is_not_repeated_underneath_itself():
     # source_variant of source_revision: the whole report is the summary row,
     # so there is nothing left to reproduce and nothing to collapse either.
+    #
+    # This asserted a count of exactly 1 until Cycle 1593, which is a tighter
+    # claim than the name makes: what it guards is that the body does not print
+    # the sentence a second time *underneath its own row*, as a full-output
+    # block or an UNCHANGED note. The footer's stale-checkout line is neither --
+    # it is the summary section, and it exists because the row above scrolls off
+    # a sweep read with `tail`. So the assertion now names the two places that
+    # must stay empty rather than counting the whole document.
     _, text = render_with([("source_revision", 2, "BEHIND origin/main by 1 commit(s).", 0.6)],
                           state={}, now=1000.0, keep={})
-    assert text.count("BEHIND origin/main by 1 commit(s).") == 1
+    body = text.split("\nRan 1 check(s)")[0]
+    assert body.count("BEHIND origin/main by 1 commit(s).") == 1
     assert "UNCHANGED" not in text and "standing finding" not in text
     assert "===== source_revision" not in text
 
@@ -1167,3 +1176,52 @@ def test_goal_drift_runs_every_sweep():
     from tools import preflight as pf
 
     assert pf.CADENCE_HOURS["goal_drift"] == 0.0
+
+
+def test_a_stale_checkout_is_said_again_at_the_end_of_the_report():
+    # Cycle 1593 read this sweep with `tail -80` and acted on it. The checkout
+    # was seventeen commits behind main, `source_revision` had said so in row
+    # one, and that line had scrolled off -- so seven KPIs printed "no
+    # instrument" for measurers that already existed and the cycle built one of
+    # them a second time. The verdict that invalidates every other row has to
+    # survive a reader who looks at the end.
+    body = ("BEHIND origin/main by 17 commit(s) -- on nova/x at dd289bf. Missing "
+            "from this tree: nas_watch. Run `git checkout main && git pull`, then "
+            "re-run before trusting this sweep.")
+    code, text = render([
+        ("source_revision", 2, body + "\n", 0.9),
+        ("goal_drift", 2, "DRIFT -- 4 of 19\nmore\n", 1.0),
+    ])
+    assert code == 2
+    tail = text.rstrip().splitlines()[-3:]
+    assert any("NOT CURRENT" in line for line in tail), tail
+    assert any("BEHIND origin/main by 17 commit(s)" in line for line in tail), tail
+    assert any("absent rather than clean" in line for line in tail), tail
+
+
+def test_a_current_checkout_adds_no_warning_at_the_end():
+    # A warning printed on a clean sweep is one nobody reads, and this one has
+    # to still mean something on the morning it fires.
+    _, text = render([
+        ("source_revision", 0, "Current: on main at d73ff31, level with origin/main.\n", 0.9),
+        ("goal_drift", 2, "DRIFT -- 4 of 19\nmore\n", 1.0),
+    ])
+    assert "NOT CURRENT" not in text
+
+
+def test_the_stale_warning_reads_source_revision_and_not_any_failing_check():
+    # The footer line says every verdict above came from the wrong tree. Any
+    # other check exiting 2 is an ordinary finding and says nothing of the kind.
+    _, text = render([
+        ("source_revision", 0, "Current: on main at d73ff31, level with origin/main.\n", 0.9),
+        ("cpu_throttle", 2, "THROTTLED 89.0%\nmore\n", 1.0),
+    ])
+    assert "NOT CURRENT" not in text
+
+
+def test_the_stale_warning_survives_a_sweep_where_it_is_the_only_finding():
+    # `--only source_revision` is a real invocation and the one-line report
+    # means the body prints it exactly once; the footer is the second place.
+    code, text = render([("source_revision", 2, "UNREADABLE -- on x at y.\n", 0.4)])
+    assert code == 2
+    assert "UNREADABLE -- on x at y." in text.rstrip().splitlines()[-2]
