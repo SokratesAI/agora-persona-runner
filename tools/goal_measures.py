@@ -3988,9 +3988,9 @@ def measure_infra_self_service(since, until):
     ceiling, which is the safe direction for a measure whose target is 100 and
     is said in the detail rather than hidden.
 
-    **Nothing here can tell my hand from his.** `managedFields` records no
-    operator identity, so a `kubectl` this loop ran and one Edvard ran at his
-    own keyboard are the same entry. The key result says "changes this loop
+    **Nothing here can tell my hand from the owner's.** `managedFields` records
+    no operator identity, so a `kubectl` this loop ran and one the owner ran at
+    his own keyboard are the same entry. The key result says "changes this loop
     makes"; this reads every change anybody made. That is wider than the wording
     and it is named in the detail, because the alternative -- guessing which
     manual entries were mine -- would be a number I invented.
