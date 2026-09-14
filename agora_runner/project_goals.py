@@ -796,6 +796,58 @@ def unpointed_goals(serves, keeps, sections):
     return found
 
 
+def projects_without_goals(rows, sections):
+    """Issue #227's own title, counted -> `(lines, projects on the boards)`.
+
+    *"Give every project a goal"* is the sentence this whole issue is
+    named after, and nothing anywhere said how far along it is. The
+    check reported 19 orphan milestones "awaiting project goals", which
+    is the same fact read through the seats file, one milestone at a
+    time -- so the number of *projects* still without an objective was
+    derivable and never stated, and a project carrying board rows but no
+    milestone seat at all would not appear in it in any form.
+
+    **The set of projects is read off the boards, never off this
+    document.** That is `project-goals.md`'s own frontmatter contract:
+    *"The set of projects that exist is read off the Project column on
+    the boards, never from here."* Reading it from the goals file would
+    make the check congratulate itself -- every project it knows about
+    would have a goal by construction, which is the guaranteed-positive
+    trap.
+
+    **A project counts as having a goal when its section carries an
+    ```objective fence**, the same gate `problems()` uses when it refuses
+    key results with nothing to be outcomes of. A fence whose statement is
+    blank is already a defect there and is not re-reported here as an
+    absence; the two are different claims.
+
+    An inventory rather than a defect, like the orphan list and the KPI
+    breaches: a project with no goal is either work waiting for a
+    conversation with him or a project that should stop existing, and
+    neither is something a pull request closes.
+    """
+    with_goals = {key for key, section in (sections or {}).items()
+                  if section.get("objective")}
+    seen, open_counts = {}, {}
+    for row in rows or ():
+        name = (row.get("project") or "").strip()
+        if name:
+            seen.setdefault(name.lower(), name)
+    for row in open_rows(rows or ()):
+        name = (row.get("project") or "").strip()
+        if name:
+            open_counts[name.lower()] = open_counts.get(name.lower(), 0) + 1
+    found = []
+    for key in sorted(seen):
+        if key in with_goals:
+            continue
+        found.append(
+            f"{seen[key]}: no objective is written for this project -- "
+            f"{open_counts.get(key, 0)} open row(s) on the boards and "
+            "nothing saying what any of them is for")
+    return found, len(seen)
+
+
 #: A row in one of these is finished, so it is not work waiting for a
 #: milestone. Spelled out here rather than imported from
 #: `nova_boards._CLOSED_STATUS_KEYS`, which is private -- the same copy

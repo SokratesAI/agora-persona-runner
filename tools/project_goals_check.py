@@ -99,6 +99,7 @@ from agora_runner.project_goals import (
     unpointed_goals,
     task_seat_problems,
     objective_periods,
+    projects_without_goals,
 )
 
 #: The two boards the owner's work sits on, read through the site's own API
@@ -146,6 +147,8 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     past, undated = objective_periods(
         sections, today or datetime.date.today())
     breaches = kpi_breaches(sections)
+    missing_goals, projects_on_boards = (
+        ([], 0) if rows is None else projects_without_goals(rows, sections))
     defects = found + broken + unseated
     lines = ["BROKEN" if defects else "MODEL HOLDS"]
     for line in defects:
@@ -195,7 +198,18 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "ever report as stale:")
         for line in undated:
             lines.append(f"  {line}")
+    if missing_goals:
+        lines.append(
+            f"PROJECTS WITH NO GOAL ({len(missing_goals)} of "
+            f"{projects_on_boards}) -- issue #227's own title, an inventory "
+            "rather than a defect, so it does not raise. These projects have "
+            "rows on the boards and no objective anywhere:")
+        for line in missing_goals:
+            lines.append(f"  {line}")
     if rows is None:
+        lines.append("PROJECT COVERAGE NOT EVALUATED -- the boards were not "
+                     "read, so nothing is claimed about which projects still "
+                     "have no goal")
         lines.append("TASKS NOT EVALUATED -- the boards were not read, so "
                      "nothing is claimed about which milestone a row sits "
                      "under")
@@ -219,7 +233,11 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                  f"{len(undated)} undated, "
                  + ("tasks not read"
                     if rows is None
-                    else f"{len(unplaced)} unplaced task(s)"))
+                    else f"{len(unplaced)} unplaced task(s)") + ", "
+                 + ("project coverage not read"
+                    if rows is None
+                    else f"{projects_on_boards - len(missing_goals)} of "
+                         f"{projects_on_boards} project(s) have a goal"))
     return lines, 2 if defects else 0
 
 

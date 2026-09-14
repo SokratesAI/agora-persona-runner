@@ -12,7 +12,8 @@ from agora_runner.nova_boards import (
 from agora_runner.project_goals import (
     MAX_KEY_RESULTS, key_result_ids, kpi_ids, parse_project_goals, problems,
     keeps_problems, project_has_goals_to_serve, serves_orphans,
-    serves_problems, split_orphans, split_serves, unpointed_goals,
+    projects_without_goals, serves_problems, split_orphans, split_serves,
+    unpointed_goals,
 )
 
 
@@ -897,3 +898,69 @@ def test_the_live_document_carries_an_objective_in_every_section():
     goals yet, and a rule added after the writing argues with work already
     on his board."""
     assert not [p for p in problems(NOVA) if "no objective" in p]
+
+
+def _row(project, status_key="backlog", done=False):
+    return {"project": project, "statusKey": status_key, "done": done}
+
+
+def test_a_project_with_no_objective_fence_has_no_goal():
+    """Issue #227's title, read off the boards. `Demos` is on them and has no
+    section in the document at all."""
+    sections = parse_project_goals(NOVA)
+    found, total = projects_without_goals(
+        [_row("Nova"), _row("Demos")], sections)
+    assert total == 2
+    assert found == [
+        "Demos: no objective is written for this project -- 1 open row(s) "
+        "on the boards and nothing saying what any of them is for"]
+
+
+def test_the_project_list_comes_from_the_boards_not_the_document():
+    """The guaranteed-positive trap, pinned. Reading the set of projects off
+    `project-goals.md` would mean every project it knows about has a goal by
+    construction and the answer is always clean -- so a project written up
+    with goals and carrying no board rows does not inflate the total either.
+    """
+    sections = parse_project_goals(NOVA)
+    found, total = projects_without_goals([], sections)
+    assert (found, total) == ([], 0)
+
+
+def test_a_heading_with_no_objective_is_a_project_with_no_goal():
+    """The gate is the ```objective fence, the same one `problems()` uses when
+    it refuses key results with nothing to be outcomes of. A section that
+    exists and carries no objective is not a goal."""
+    headless = _doc("## Demos\n\n```kpi\nid: d-k\nname: n\nhigh: 2\n```\n")
+    found, _ = projects_without_goals(
+        [_row("Demos")], parse_project_goals(headless))
+    assert found and found[0].startswith("Demos: no objective is written")
+
+
+def test_the_project_name_is_matched_case_insensitively():
+    """He types the Project cell on a phone, so `nova` and `Nova` are one
+    project -- `parse_project_goals` keys lowercase for exactly this reason,
+    and the finding prints the spelling the board used."""
+    found, total = projects_without_goals(
+        [_row("nova")], parse_project_goals(NOVA))
+    assert (found, total) == ([], 1)
+
+
+def test_a_closed_row_still_counts_its_project_but_not_as_open():
+    """The open count is a number inside the finding, never the gate: a
+    project whose every row is closed is still a project with no goal."""
+    found, total = projects_without_goals(
+        [_row("Nova"), _row("Research", status_key="done", done=True)],
+        parse_project_goals(NOVA))
+    assert total == 2
+    assert found == [
+        "Research: no objective is written for this project -- 0 open row(s) "
+        "on the boards and nothing saying what any of them is for"]
+
+
+def test_a_row_with_no_project_is_not_a_project():
+    """A row he has not filed under anything is a gap on the board, not a
+    thirteenth project with no goal."""
+    found, total = projects_without_goals(
+        [_row("Nova"), _row("  ")], parse_project_goals(NOVA))
+    assert (found, total) == ([], 1)
