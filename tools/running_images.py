@@ -262,8 +262,9 @@ def read_pods(runner=subprocess.run):
     return free, resolved, []
 
 
-def fetch_manifests(repo=MANIFEST_REPO, runner=subprocess.run):
-    """`(files, why)` -- every YAML file on a repo's default branch.
+def fetch_manifests(repo=MANIFEST_REPO, runner=subprocess.run,
+                    suffixes=(".yaml", ".yml")):
+    """`(files, why)` -- every file with one of `suffixes` on a repo's default branch.
 
     One `gh api .../tarball` call rather than a tree walk plus a
     `contents` read per file: `platform-config` is 461KB and answers in
@@ -272,6 +273,13 @@ def fetch_manifests(repo=MANIFEST_REPO, runner=subprocess.run):
     It reads GitHub, never a local clone. A checkout in `/data/workspace`
     can be days behind without saying so, and "what does git declare" is
     only worth asking of the branch ArgoCD actually syncs.
+
+    `suffixes` defaults to YAML because that is what this module wants, and
+    it is a parameter because `tools.goal_measures` needs the same read over
+    markdown for `docs-kr-covers-what-runs`. A second copy of the tarball
+    walk would be the third thing in this repo that unpacks a `gh api
+    tarball`, and `prompt.md`'s rule is that the third one means the shape is
+    the bug.
     """
     try:
         proc = runner(["gh", "api", "repos/%s/tarball" % repo],
@@ -288,7 +296,7 @@ def fetch_manifests(repo=MANIFEST_REPO, runner=subprocess.run):
             for member in tar.getmembers():
                 if not member.isfile():
                     continue
-                if not member.name.endswith((".yaml", ".yml")):
+                if not member.name.endswith(tuple(suffixes)):
                     continue
                 handle = tar.extractfile(member)
                 if handle is None:
