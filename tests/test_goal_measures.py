@@ -12,6 +12,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 import pytest
+import yaml
 
 import tools
 from tools import goal_measures as gm
@@ -3293,3 +3294,194 @@ class TestNasUnattended:
     def test_unattended_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["nas-kr-unattended"] is \
             gm.measure_nas_unattended
+
+
+class TestMaintSelfDocumenting:
+    """`maint-kr-self-documenting` -- does a merge update a repo's own docs?
+
+    Every test here feeds fixtures to the pure halves or to an injected
+    fetcher. Both of this measure's real instruments are subprocesses -- `gh
+    repo list` and `gh api tarball` -- and `tests/conftest.py`'s network block
+    only covers this process's own sockets, so a test that let either one run
+    would be green here and red in CI against a real GitHub.
+    """
+
+    BUILD = (
+        "name: build\n"
+        "on:\n"
+        "  push:\n"
+        "    branches: [main]\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  test:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: pytest tests/\n"
+    )
+    SCHEDULED_DOCS = (
+        "name: docs-sync\n"
+        "on:\n"
+        "  schedule:\n"
+        "    - cron: '20 8 * * 5'\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  sync:\n"
+        "    steps:\n"
+        "      - run: gh pr create --repo SokratesAI/sokrates-docs\n"
+    )
+    MERGED_DOCS = (
+        "name: publish-docs\n"
+        "on:\n"
+        "  push:\n"
+        "    branches: [main]\n"
+        "jobs:\n"
+        "  publish:\n"
+        "    steps:\n"
+        "      - run: gh pr create --repo SokratesAI/sokrates-docs\n"
+    )
+
+    def _measure(self, monkeypatch, per_repo, live=None, archived=()):
+        live = list(live if live is not None else per_repo)
+
+        def fetch(repo, suffixes=None):
+            answer = per_repo[repo]
+            if isinstance(answer, str):
+                return None, answer
+            return {".github/workflows/%s" % name: text
+                    for name, text in answer.items()}, None
+
+        return gm.measure_maint_self_documenting(
+            None, None, fetch=fetch,
+            list_repos=lambda _org: (live, None, list(archived)))
+
+    # -- the two halves, separately, because the live reading is 0 and a 0
+    # -- that comes from one half never firing is not the same finding.
+
+    def test_a_build_workflow_fires_on_merge(self):
+        triggers = gm._trigger_block(yaml.safe_load(self.BUILD))
+        assert gm.fires_on_merge(triggers) is True
+
+    def test_an_unquoted_on_key_parses_as_the_boolean_true(self):
+        # YAML 1.1 resolves bare `on` to a boolean, so `document["on"]` is
+        # None on every GitHub workflow ever written. If `_trigger_block`
+        # stopped handling that, every repo would read "no trigger at all"
+        # and the measure would print a confident 0 off an instrument that
+        # never looked at a single `on:` block.
+        document = yaml.safe_load(self.BUILD)
+        assert "on" not in document and True in document
+        assert gm._trigger_block(document) == document[True]
+
+    def test_a_scheduled_docs_workflow_does_not_fire_on_merge(self):
+        triggers = gm._trigger_block(yaml.safe_load(self.SCHEDULED_DOCS))
+        assert gm.fires_on_merge(triggers) is False
+
+    def test_a_scheduled_docs_workflow_still_writes_documentation(self):
+        # The live org's only docs workflow is exactly this shape, so this is
+        # the test that proves the docs half can say yes at all -- without it
+        # the measure's 0 could come from a signal that never matches.
+        jobs = yaml.safe_load(self.SCHEDULED_DOCS)["jobs"]
+        assert gm.writes_documentation(jobs) == "sokrates-docs"
+
+    def test_a_pull_request_closed_trigger_counts_as_a_merge(self):
+        triggers = gm._trigger_block(yaml.safe_load(
+            "on:\n  pull_request:\n    types: [closed]\njobs: {}\n"))
+        assert gm.fires_on_merge(triggers) is True
+
+    def test_a_push_to_some_other_branch_is_not_a_merge(self):
+        triggers = gm._trigger_block(yaml.safe_load(
+            "on:\n  push:\n    branches: [gh-pages]\njobs: {}\n"))
+        assert gm.fires_on_merge(triggers) is False
+
+    def test_a_paths_filter_naming_docs_is_not_writing_docs(self):
+        # `paths: [docs/**]` lives under `on:` and means the workflow reacts
+        # to a docs change. A whole-file grep counts it, and it is the single
+        # most likely false positive in this org.
+        document = yaml.safe_load(
+            "on:\n  push:\n    branches: [main]\n    paths: ['docs/**']\n"
+            "jobs:\n  a:\n    steps:\n      - run: pytest\n")
+        assert gm.fires_on_merge(gm._trigger_block(document)) is True
+        assert gm.writes_documentation(document["jobs"]) is None
+
+    def test_a_job_named_docs_is_not_a_signal(self):
+        jobs = yaml.safe_load(
+            "jobs:\n  docs:\n    name: build the docs\n"
+            "    steps:\n      - run: pytest\n")["jobs"]
+        assert gm.writes_documentation(jobs) is None
+
+    def test_a_docs_path_it_writes_is_a_signal(self):
+        jobs = yaml.safe_load(
+            "jobs:\n  a:\n    steps:\n"
+            "      - run: python gen.py > docs/reference/api.md\n")["jobs"]
+        assert gm.writes_documentation(jobs) == "docs/reference/api.md"
+
+    def test_a_docs_segment_inside_another_word_is_not_a_path(self):
+        jobs = yaml.safe_load(
+            "jobs:\n  a:\n    steps:\n      - run: cat my-docs/readme.md\n")["jobs"]
+        assert gm.writes_documentation(jobs) is None
+
+    # -- the measure itself
+
+    def test_a_repo_needs_both_halves(self, monkeypatch):
+        value, detail = self._measure(monkeypatch, {
+            "SokratesAI/marcus": {"build.yaml": self.BUILD},
+            "SokratesAI/sokrates-docs": {"build.yaml": self.BUILD,
+                                         "docs-sync.lock.yml": self.SCHEDULED_DOCS},
+        })
+        assert value == 0.0, detail
+        assert "0 of 2" in detail
+
+    def test_a_merge_triggered_docs_workflow_counts(self, monkeypatch):
+        value, detail = self._measure(monkeypatch, {
+            "SokratesAI/marcus": {"build.yaml": self.BUILD},
+            "SokratesAI/agora": {"publish-docs.yaml": self.MERGED_DOCS},
+        })
+        assert value == 50.0, detail
+        assert "1 of 2" in detail
+        assert "SokratesAI/agora" in detail
+        assert "publish-docs.yaml" in detail
+
+    def test_a_repo_with_no_workflows_at_all_is_a_no_not_a_gap(self, monkeypatch):
+        value, detail = self._measure(monkeypatch, {
+            "SokratesAI/agora": {"publish-docs.yaml": self.MERGED_DOCS},
+            "SokratesAI/platform-memory": {},
+        })
+        assert value == 50.0, detail
+        assert "1 of 2" in detail
+
+    def test_config_and_mirror_repos_leave_the_denominator(self, monkeypatch):
+        value, detail = self._measure(
+            monkeypatch,
+            {"SokratesAI/agora": {"publish-docs.yaml": self.MERGED_DOCS}},
+            live=["SokratesAI/agora", "SokratesAI/marcus-config",
+                  "SokratesAI/vault"])
+        assert value == 100.0, detail
+        assert "1 of 1" in detail
+        assert "SokratesAI/marcus-config" in detail and "SokratesAI/vault" in detail
+
+    def test_an_unreadable_repo_gets_no_reading_at_all(self, monkeypatch):
+        # Dropping it instead would raise the share by shrinking a
+        # denominator on a number whose job is to be low until it is fixed.
+        value, detail = self._measure(monkeypatch, {
+            "SokratesAI/agora": {"publish-docs.yaml": self.MERGED_DOCS},
+            "SokratesAI/marcus": "gh exited 4",
+        })
+        assert value is None
+        assert "SokratesAI/marcus" in detail and "gh exited 4" in detail
+
+    def test_an_org_listing_that_failed_gets_no_reading(self, monkeypatch):
+        value, detail = gm.measure_maint_self_documenting(
+            None, None, fetch=lambda **_kw: ({}, None),
+            list_repos=lambda _org: ([], "gh exited 1", []))
+        assert value is None
+        assert "gh exited 1" in detail
+
+    def test_an_empty_in_scope_list_is_a_failed_read_not_an_empty_org(self):
+        value, detail = gm.measure_maint_self_documenting(
+            None, None, fetch=lambda **_kw: ({}, None),
+            list_repos=lambda _org: (["SokratesAI/vault"], None, []))
+        assert value is None
+        assert "failed read" in detail
+
+    def test_self_documenting_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["maint-kr-self-documenting"] is \
+            gm.measure_maint_self_documenting
