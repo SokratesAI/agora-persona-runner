@@ -2633,6 +2633,31 @@ body.has-full-chart { overflow: hidden; }
 .plan-title { margin: 0; font-size: 1.1rem; }
 .plan-updated { margin: 0; color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
 
+/* How many projects have no goal, under the card title (issue #227).
+ *
+ * One wrapping line of chips rather than a list, because it is a count
+ * first and a set of names second -- the sentence has to be readable on a
+ * phone at a glance, and the names are what he taps his way to from the
+ * boards anyway. */
+.plan-coverage {
+  margin: 0 0 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+}
+.plan-coverage-count { color: var(--dim); }
+.plan-coverage-chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+.plan-coverage-rows { color: var(--dim); font-size: 0.74rem; }
+
 /* The goals scoreboard, above the prose (issue #96).
  *
  * Five rows of small type rather than five cards: the whole point is that

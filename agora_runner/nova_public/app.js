@@ -8550,6 +8550,41 @@
     return fold;
   }
 
+  /* Issue #227's own title, as one sentence: how many projects have no
+   * goal, and which. It sits directly under the card title because it is
+   * the one fact this card cannot show any other way -- a project with no
+   * objective has no section in the document, so the prose below reads as
+   * complete however many are missing.
+   *
+   * Nothing at all when the payload has no `coverage`, which is what the
+   * server sends when it could not read both boards. A count built from
+   * an unread board would be smaller and would look better, which is
+   * exactly why it is not drawn. `total` of zero is the same case one step
+   * on: two boards holding no project between them is not a page that
+   * should announce "0 of 0". */
+  function renderCoverage(cov) {
+    if (!cov || !cov.total) return null;
+    var missing = cov.missing || [];
+    var wrap = el("p", "plan-coverage");
+    if (!missing.length) {
+      wrap.appendChild(el("span", "plan-coverage-count",
+        "All " + cov.total + " projects have a goal."));
+      return wrap;
+    }
+    wrap.appendChild(el("span", "plan-coverage-count",
+      missing.length + " of " + cov.total + " projects have no goal:"));
+    missing.forEach(function (entry) {
+      var chip = el("span", "plan-coverage-chip", entry.project);
+      /* The open-row count is the part that says whether this matters:
+       * a project with no goal and no open rows is a pruning question,
+       * one with nine is work nobody has said the point of. */
+      chip.appendChild(el("span", "plan-coverage-rows",
+        entry.openRows + " open"));
+      wrap.appendChild(chip);
+    });
+    return wrap;
+  }
+
   function renderPlanDocument(doc) {
     var card = el("article", "plan-card");
     var head = el("header", "plan-head");
@@ -8560,6 +8595,8 @@
       card.appendChild(el("p", "empty", "Not written yet."));
       return card;
     }
+    var coverage = renderCoverage(doc.coverage);
+    if (coverage) card.appendChild(coverage);
     // Above the prose, because it is the answer and the prose is the
     // argument for it. A document with no `goal` blocks gets nothing here
     // and renders exactly as it did before this existed.

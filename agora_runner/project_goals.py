@@ -871,6 +871,23 @@ def projects_without_goals(rows, sections):
     conversation with him or a project that should stop existing, and
     neither is something a pull request closes.
     """
+    missing, total = project_goal_coverage(rows, sections)
+    return [f"{entry['project']}: no objective is written for this project "
+            f"-- {entry['openRows']} open row(s) on the boards and nothing "
+            "saying what any of them is for"
+            for entry in missing], total
+
+
+def project_goal_coverage(rows, sections):
+    """The same reading as `projects_without_goals`, before it is a sentence.
+
+    `([{project, openRows}], projects on the boards)`, sorted by the name
+    the boards spell. The two callers want different things out of one
+    count: the check prints a paragraph per project, and the `/plan` page
+    prints `5 of 12 projects have no goal` and the names. Formatting in
+    here and re-parsing it there is how one reading becomes two that can
+    disagree, so the numbers live here and the wording lives at each end.
+    """
     with_goals = {key for key, section in (sections or {}).items()
                   if section.get("objective")}
     seen, open_counts = {}, {}
@@ -882,15 +899,9 @@ def projects_without_goals(rows, sections):
         name = (row.get("project") or "").strip()
         if name:
             open_counts[name.lower()] = open_counts.get(name.lower(), 0) + 1
-    found = []
-    for key in sorted(seen):
-        if key in with_goals:
-            continue
-        found.append(
-            f"{seen[key]}: no objective is written for this project -- "
-            f"{open_counts.get(key, 0)} open row(s) on the boards and "
-            "nothing saying what any of them is for")
-    return found, len(seen)
+    missing = [{"project": seen[key], "openRows": open_counts.get(key, 0)}
+               for key in sorted(seen) if key not in with_goals]
+    return missing, len(seen)
 
 
 #: A row in one of these is finished, so it is not work waiting for a

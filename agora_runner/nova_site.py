@@ -1854,9 +1854,40 @@ def plans_payload():
     Not warmed at startup, for the reason the retro is not: nobody lands
     here cold. It is reached from the nav, by which time the process has
     long since served the journal.
+
+    The board rows are read too, and they are the only input here that can
+    fail on its own without costing the page anything: they answer one
+    sentence (`5 of 12 projects have no goal`), and a read that raises
+    hands `None` down, which prints no sentence at all. That is deliberate
+    over a zero -- see `nova_plan._coverage`.
     """
     return shape_plan(plan_markdown(), goal_history_json(),
-                      milestone_seats_markdown())
+                      milestone_seats_markdown(), _plan_board_rows())
+
+
+def _plan_board_rows():
+    """Every row on both boards, or `None` if either could not be read.
+
+    Both boards or neither: a coverage count built from one board would
+    silently drop every project that only appears on the other, and the
+    page would print a smaller, confident number. `None` is the honest
+    answer to a partial read and `_coverage` renders it as silence.
+
+    Reads the same `"board:<name>"` cache `/projects` and `_send_board`
+    use, so this costs a dict lookup on a warm process rather than a
+    second board build.
+    """
+    rows = []
+    for board in ("issues", "ideas"):
+        try:
+            payload, _body, _etag = cached_payload(
+                "board:" + board, lambda b=board: board_payload(b)
+            )
+        except Exception as problem:  # noqa: BLE001 - one sentence, not the page
+            log(f"nova-site plan coverage unavailable, boards unread: {problem}")
+            return None
+        rows.extend(payload.get("items") or [])
+    return rows
 
 
 def board_page(payload, limit=None, item=None, search=None, mine=False):
