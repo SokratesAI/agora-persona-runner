@@ -3920,6 +3920,7 @@ def measure_nas_off_box_watch(since, until, fetch=None, list_repos=None,
               "they die with")
     return len(alive), detail
 
+
 #: The kinds this measure reads provenance off. A cluster change lands on one
 #: of these; a Pod is deliberately absent, because a Pod is written by its own
 #: controller and never by a manifest, so counting Pods would drown every real
