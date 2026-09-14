@@ -377,12 +377,51 @@ def register(registry, slug, host, directory, now=None, command=None):
     return port
 
 
-def unregister(registry, slug):
-    """Drop a demo. Returns the entry, or None if it was not registered."""
+#: The registry key holding one line per demo that has been retired.
+#: Three fields -- `slug`, `started_at`, `opened_at` -- and nothing else, so
+#: the answer to "was this ever opened" outlives the row that carried it.
+RETIRED = "retired"
+
+
+def retire(entry):
+    """The tombstone `unregister` keeps for a demo it is dropping.
+
+    Only the three fields that answer a question about history. The port,
+    the pid, the host and the directory all describe a process that no
+    longer exists, and keeping them would grow this document forever to
+    record things nothing can ask.
+    """
+    return {
+        "slug": entry.get("slug"),
+        "started_at": entry.get("started_at"),
+        OPENED_AT: entry.get(OPENED_AT),
+    }
+
+
+def unregister(registry, slug, retire_row=True):
+    """Drop a demo. Returns the entry, or None if it was not registered.
+
+    **The row is dropped and a tombstone is kept.** `demos-kr-opened` asks
+    for the share of demos handed over that the owner opened at least once,
+    and until now this loop threw the evidence away at exactly the moment
+    the question became answerable: `opened_at` is written when a real
+    browser asks for a demo, and `stop` then popped the row carrying it. So
+    a demo opened twenty times and one never opened both left the registry
+    identically, and the key result has sat with a blank `now` and the note
+    "keeps no record of whether one was EVER opened" since it was written.
+
+    `retire_row=False` is for a rollback rather than a retirement: a dev
+    server that died two seconds after `start` registered it was never
+    handed to anyone, and counting it as a demo the owner did not open
+    would make a crash look like disinterest.
+    """
     demos = registry.get("demos", [])
     for i, demo in enumerate(demos):
         if demo.get("slug") == slug:
-            return demos.pop(i)
+            entry = demos.pop(i)
+            if retire_row:
+                registry.setdefault(RETIRED, []).append(retire(entry))
+            return entry
     return None
 
 

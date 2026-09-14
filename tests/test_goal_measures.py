@@ -2607,3 +2607,58 @@ def test_pins_current_refuses_when_the_repo_list_is_incomplete(monkeypatch):
 def test_pins_current_is_wired_into_the_fetch_map():
     assert goal_measures.KEY_RESULT_FETCH_MEASURERS["maint-kr-pins-current"] is \
         goal_measures.measure_maint_pins_current
+
+
+class TestDemosOpened:
+    """`demos-kr-opened` -- the share of demos handed over that he opened.
+
+    Stubbed at `tools.demo._read_registry` rather than through `sys.modules`:
+    `measure_demos_opened` does `from tools import demo`, which reads the
+    attribute off the already-imported package, so a module-level swap would
+    leave the real vault read in place and the test would talk to production.
+    """
+
+    def _registry(self, payload, monkeypatch):
+        from tools import demo as demo_tool
+        monkeypatch.setattr(demo_tool, "_read_registry",
+                            lambda: (payload, "/tmp/rev"))
+
+    def test_a_retired_demo_counts_the_same_as_a_running_one(self, monkeypatch):
+        # Counting only the live rows answers "of the demos running right
+        # now", which is a question about this afternoon.
+        self._registry({
+            "demos": [{"slug": "a", "opened_at": "2026-09-14T09:00:00"},
+                      {"slug": "b"}],
+            "retired": [{"slug": "c", "opened_at": "2026-09-01T09:00:00"},
+                        {"slug": "d", "opened_at": None}],
+        }, monkeypatch)
+        value, detail = gm.measure_demos_opened(None, None)
+        assert value == 50.0
+        assert "2 of 4" in detail
+        assert "2 running, 2 retired" in detail
+
+    def test_an_empty_registry_is_no_reading_rather_than_nought_percent(
+            self, monkeypatch):
+        # 0% is the worst reading this key result has, and a share over
+        # nothing is not it.
+        self._registry({"demos": [], "retired": []}, monkeypatch)
+        assert gm.measure_demos_opened(None, None)[0] is None
+
+    def test_an_unreadable_registry_is_no_reading(self, monkeypatch):
+        from tools import demo as demo_tool
+
+        def boom():
+            raise demo_tool.DemoError("could not read demos.json")
+
+        monkeypatch.setattr(demo_tool, "_read_registry", boom)
+        value, detail = gm.measure_demos_opened(None, None)
+        assert value is None
+        assert "could not read demos.json" in detail
+
+    def test_the_reading_is_named_as_a_floor(self, monkeypatch):
+        # A row predating the durable mark cannot carry one, and is not
+        # distinguishable from a demo he ignored.
+        self._registry({"demos": [{"slug": "a"}]}, monkeypatch)
+        value, detail = gm.measure_demos_opened(None, None)
+        assert value == 0.0
+        assert "a floor, not a total" in detail

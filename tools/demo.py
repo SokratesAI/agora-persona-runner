@@ -242,7 +242,10 @@ def cmd_start(args):
     time.sleep(SPAWN_CHECK_SECONDS)
     if proc.poll() is not None:
         registry, rev = _read_registry()
-        unregister(registry, args.slug)
+        # A rollback, not a retirement: this demo was never handed to
+        # anyone, so a tombstone saying he did not open it would read as
+        # disinterest in `demos-kr-opened` when it was a crash.
+        unregister(registry, args.slug, retire_row=False)
         _write_registry(registry, rev)
         tail = ""
         try:
