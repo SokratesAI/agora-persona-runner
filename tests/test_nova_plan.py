@@ -992,6 +992,25 @@ def test_a_key_result_carries_its_status_word_and_its_bounds_in_words():
     assert "In bounds 0.8 to 2.0 M." in kpi
 
 
+def test_a_key_result_with_no_target_says_so_rather_than_printing_nothing():
+    """`project_goals.problems` refuses a key result with no target, so the
+    page he opens has to show the defect. A target line that simply vanishes
+    renders a broken key result as a tidy one."""
+    markdown = PROJECT_GOALS.replace("target: 2.0\n", "")
+    key_result = next(t for t in _paragraphs(_projects_doc(markdown))
+                      if "The work closes your rows" in t)
+    assert "No target set." in key_result
+    assert "Target" not in key_result.replace("No target set.", "")
+
+
+def test_a_kpi_never_says_no_target_set():
+    """The missing-target sentence belongs to key results only. A KPI has a
+    range by design, so saying "No target set." on one would put issue #227's
+    forbidden word on every guardrail on the page."""
+    kpi = next(t for t in _paragraphs(_projects_doc()) if t.startswith("KPI"))
+    assert "No target set." not in kpi
+
+
 def test_a_kpi_never_prints_a_target_even_when_the_document_carries_one():
     """Issue #227's own rule: a guardrail that carries a target gets
     optimised instead of the work. `KPI_FIELDS` reads the key in only so

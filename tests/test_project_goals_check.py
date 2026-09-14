@@ -15,7 +15,7 @@ from tools.project_goals_check import main, report
 
 GOALS = ("# Project goals\n\n## Nova\n\n"
          "```objective\nstatement: s\nstatus: agreed\nconversation: 18bdb05e-2ad0-479d-9a7d-d9b8bab3fd5e\n```\n\n"
-         "```key-result\nid: nova-kr1\nname: n\nmeasure: m\n```\n\n"
+         "```key-result\nid: nova-kr1\nname: n\nmeasure: m\ntarget: 1\n```\n\n"
          "```kpi\nid: nova-cost\nname: c\nmeasure: m\nhigh: 2\n```\n")
 SEATS = ("| Project | Milestone | Position | Updated | Serves |\n"
          "|---|---|---|---|---|\n"

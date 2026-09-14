@@ -41,6 +41,10 @@ mechanical here.** `problems()` refuses what can be checked by reading:
   wearing a hat"*),
 * a key result with no `measure` -- an outcome with no measure is a task
   with a nicer name, which is rule 1,
+* a key result with no `target` -- rule 7 reads a goal as *"target versus
+  current number"*, so a measure with nothing to reach is not a goal. A
+  blank `now` is deliberately fine beside it: that is a reading nobody has
+  an instrument for yet, where a blank target is a goal nobody agreed,
 * a KPI carrying a `target:` -- *"the moment a guardrail carries a target,
   the dashboard gets optimised instead of the work"*,
 * a KPI with no range at all (`low`/`high`, either bound is enough),
@@ -321,6 +325,23 @@ def problems(markdown_or_sections):
                 found.append(
                     f"{name}: key result {label!r} has no measure -- an "
                     "outcome without one is a task with a nicer name")
+            # Rule 7: *"Target versus current number says everything."* The
+            # measure above says what is counted; the target says which
+            # number means the goal was reached, and without it there is a
+            # number going up and nothing it is going up towards.
+            #
+            # `now` is deliberately NOT checked beside it, and the asymmetry
+            # is the point. A blank `now` is honest -- four key results carry
+            # one today because no instrument exists to take the reading yet,
+            # and `/plan` prints "Not measured yet." for exactly that. A
+            # blank `target` is never a missing measurement: it is a number
+            # the two of us settle on in the conversation, so its absence
+            # means the goal was never agreed rather than never read.
+            if not row.get("target", "").strip():
+                found.append(
+                    f"{name}: key result {label!r} has no target -- rule 7 "
+                    "reads a goal as target against current number, and a "
+                    "measure with nothing to reach is not one")
             # Named apart from the objective's `status` above so the two
             # are never confused while reading this function.
             result_status = row.get("status", "").strip().lower()

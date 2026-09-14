@@ -719,3 +719,41 @@ def test_a_bad_key_result_status_names_the_key_result_not_the_objective():
     assert len(lines) == 2
     assert any("objective status" in line for line in lines)
     assert any("key result 'k' has status" in line for line in lines)
+
+
+def test_a_key_result_with_no_target_is_refused():
+    # Rule 7 reads a goal as target against current number. A measure with
+    # no target is a number going up towards nothing.
+    doc = _doc("## Nova\n\n```key-result\nid: k\nname: a\n"
+               "measure: share of cycles he did not override\nnow: 0.6\n```\n")
+    assert any("has no target" in line for line in problems(doc))
+
+
+def test_a_blank_target_line_is_the_same_as_no_target():
+    doc = _doc("## Nova\n\n```key-result\nid: k\nname: a\nmeasure: m\n"
+               "target:   \n```\n")
+    assert any("has no target" in line for line in problems(doc))
+
+
+def test_a_key_result_with_no_now_is_not_a_defect():
+    # The asymmetry with the target rule above, pinned: four live key results
+    # have no `now` because no instrument exists to read one yet, and that is
+    # honest rather than wrong.
+    doc = _doc("## Nova\n\n```key-result\nid: k\nname: a\nmeasure: m\n"
+               "target: 3\n```\n")
+    assert problems(doc) == []
+
+
+def test_a_target_of_zero_is_a_target():
+    # `0` is falsy as a string only if it is empty; a goal of "zero silent
+    # cycles" is the most common shape in the live document.
+    doc = _doc("## Nova\n\n```key-result\nid: k\nname: a\nmeasure: m\n"
+               "target: 0\n```\n")
+    assert problems(doc) == []
+
+
+def test_a_kpi_is_not_asked_for_a_target():
+    # The KPI rule is the opposite one: a target on a KPI is itself the
+    # defect, so the key-result rule must not reach across to it.
+    doc = _doc("## Nova\n\n```kpi\nid: c\nname: Cost\nmeasure: m\nhigh: 2\n```\n")
+    assert problems(doc) == []
