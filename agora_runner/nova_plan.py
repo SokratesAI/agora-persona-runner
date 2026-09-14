@@ -56,7 +56,8 @@ from agora_runner.nova_goal_history import GoalHistoryError, goal_key, series
 from agora_runner.nova_journal import parse_board_refs, render_blocks
 from agora_runner.project_goals import (
     KEY_RESULT_FIELDS, KPI_FIELDS, OBJECTIVE_FIELDS, PROJECT_GOALS_PATH,
-    kpi_breach, month_name, split_serves,
+    kpi_breach, month_name, parse_project_goals, project_goal_coverage,
+    split_serves,
 )
 
 ROADMAP_PATH = "projects/sokrates/projects/nova/roadmap.md"
@@ -866,7 +867,34 @@ def _document(key, label, text, history=None, seats=None):
     }
 
 
-def plan_payload(documents, history=None, seats=None):
+def _coverage(text, rows):
+    """`{total, withGoal, missing:[{project, openRows}]}`, or `None`.
+
+    Issue #227's own title, on the page it is about. The check has printed
+    `7 of 12 project(s) have a goal` since cycle 1567 and he has to run a
+    tool in a pod to see it; the projects with no goal are *absent* from
+    `project-goals.md`, so the card renders as complete by construction --
+    which is the guaranteed-positive shape `prompt.md` warns about, drawn
+    on his phone.
+
+    `rows` is every row on both boards and `None` means **not read**, which
+    is a different claim from "no rows": an unread board would count zero
+    projects and print `0 of 0`, the best-looking answer available. So
+    `None` returns `None` and the page says nothing, the same convention
+    `seats` already uses one function down and `report` uses in the check.
+
+    The set of projects comes off the board rows, never off this document
+    -- `projects_without_goals` has the argument, and it is the whole
+    reason this number is worth printing.
+    """
+    if rows is None:
+        return None
+    missing, total = project_goal_coverage(rows, parse_project_goals(text))
+    return {"total": total, "withGoal": total - len(missing),
+            "missing": missing}
+
+
+def plan_payload(documents, history=None, seats=None, rows=None):
     """`{key: markdown}` -> the `/plan` payload.
 
     Every document in `PLAN_DOCUMENTS` appears in the output whether or
@@ -879,6 +907,11 @@ def plan_payload(documents, history=None, seats=None):
     how many milestones serve it and each KPI how many keep it -- the chain
     issue #227 asks for, read on the page instead of in a tool only a cycle
     runs. `_seat_sentence` has why none and empty are different.
+
+    `rows` is every board row, both boards, and defaults to none, which
+    prints no coverage line. It answers "how many projects have no goal at
+    all" on the one card that cannot see them -- `_coverage` has why that
+    reading needs the boards rather than this document.
 
     `history` is the raw `goal-history.json` text and defaults to none,
     which is a scoreboard with no lines under it -- the state of this
@@ -903,13 +936,20 @@ def plan_payload(documents, history=None, seats=None):
     # that does not print a finding.
     counts = seat_counts(parse_milestone_serves(seats),
                          parse_milestone_keeps(seats)) if seats else None
-    return {
-        "documents": [
-            _document(key, label, (documents or {}).get(key, ""), past,
-                      counts)
-            for key, label, _path in PLAN_DOCUMENTS
-        ]
-    }
+    docs = []
+    for key, label, _path in PLAN_DOCUMENTS:
+        text = (documents or {}).get(key, "")
+        doc = _document(key, label, text, past, counts)
+        # Only on the project-goals card, because it is the only one whose
+        # subject is projects. The same sentence over `goals.md` would be a
+        # count about a document that never claimed to hold one section per
+        # project.
+        if key == "projects":
+            coverage = _coverage(text, rows)
+            if coverage:
+                doc["coverage"] = coverage
+        docs.append(doc)
+    return {"documents": docs}
 
 
 # Bounding the 409 retry, same as `nova_capture.WRITE_ATTEMPTS` and for the

@@ -9186,6 +9186,73 @@ describe("the plan page", () => {
     assert.match(window.document.querySelector(".rank-card").textContent, /Get CI back/);
   });
 
+  /* How many of his projects have no goal (issue #227). The DOM is the only
+   * place that can answer it, because a project with no objective has no
+   * section in `project-goals.md` -- so the card renders as complete
+   * whatever the count is, and the sentence either reaches his phone or the
+   * number exists only inside a tool he has to run in a pod. */
+  const covered = (coverage) => ({
+    documents: [{
+      key: "projects", label: "Project goals", title: "Project goals",
+      updated: "2026-09-14", missing: false, scoreboard: [], ranked: [],
+      rankedDone: [], coverage,
+      sections: [{ level: 2, heading: "Nova", blocks: [
+        { type: "p", spans: [{ kind: "text", text: "The objective." }] },
+      ] }],
+    }],
+  });
+
+  test("the card says how many projects have no goal, and which", async () => {
+    const window = await loadSite("/plan", { plan: covered({
+      total: 12, withGoal: 7,
+      missing: [{ project: "NAS", openRows: 4 },
+                { project: "Research", openRows: 0 },
+                { project: "Demos", openRows: 1 },
+                { project: "Infra", openRows: 2 },
+                { project: "Maintenance", openRows: 3 }],
+    }) });
+    const line = window.document.querySelector(".plan-coverage");
+    /* Counted off the names it is about to draw, never off `withGoal`:
+     * the two are the same number by construction, and reading the one
+     * the chips come from is what stops the sentence disagreeing with
+     * the list under it. */
+    assert.match(line.textContent, /5 of 12 projects have no goal/);
+    const chips = [...line.querySelectorAll(".plan-coverage-chip")]
+      .map((n) => n.textContent);
+    assert.deepEqual(chips.slice(0, 2), ["NAS4 open", "Research0 open"]);
+    assert.equal(chips.length, 5);
+  });
+
+  test("the sentence sits above the prose it is about", async () => {
+    const window = await loadSite("/plan", { plan: covered({
+      total: 2, withGoal: 1, missing: [{ project: "NAS", openRows: 4 }],
+    }) });
+    const kids = [...window.document.querySelector(".plan-card").children]
+      .map((n) => [...n.classList]);
+    const at = (name) => kids.findIndex((c) => c.includes(name));
+    assert.ok(at("plan-coverage") < at("plan-section") && at("plan-section") !== -1,
+      "the count goes above the prose: " + JSON.stringify(kids));
+  });
+
+  test("every project having a goal is a sentence too, not silence", async () => {
+    const window = await loadSite("/plan", { plan: covered({
+      total: 12, withGoal: 12, missing: [],
+    }) });
+    assert.equal(window.document.querySelector(".plan-coverage").textContent,
+      "All 12 projects have a goal.");
+  });
+
+  test("boards the server could not read print no count at all", async () => {
+    /* Not a zero. An unread board would count no projects and print the
+     * best-looking answer available. */
+    const window = await loadSite("/plan", { plan: covered(undefined) });
+    assert.equal(window.document.querySelector(".plan-coverage"), null);
+    const empty = await loadSite("/plan", { plan: covered({
+      total: 0, withGoal: 0, missing: [],
+    }) });
+    assert.equal(empty.document.querySelector(".plan-coverage"), null);
+  });
+
   test("a document with no ranked strip renders exactly as it did before", async () => {
     const window = await loadSite("/plan", { plan: twoDocuments });
     assert.equal(window.document.querySelector(".rank-strip"), null);

@@ -1281,3 +1281,105 @@ def test_a_kpi_with_no_reading_is_never_drawn_as_out_of_bounds():
                if t.startswith("KPI"))
     assert "Not measured yet." in kpi
     assert "Out of bounds" not in kpi
+
+
+#: Two boards' worth of rows, as `/api/board` serves them -- the shape
+#: `tools.project_goals_check` already reads and the only place the set of
+#: projects is allowed to come from. Nova has a goal in `PROJECT_GOALS`;
+#: NAS and Research do not, and Research's only row is closed, which is the
+#: difference between "nobody said what this is for" and "prune it".
+COVERAGE_ROWS = [
+    {"number": 1, "project": "Nova", "done": False, "statusKey": "next"},
+    {"number": 2, "project": "NAS", "done": False, "statusKey": "next"},
+    {"number": 3, "project": "NAS", "done": False, "statusKey": ""},
+    {"number": 4, "project": "Research", "done": True, "statusKey": "done"},
+    {"number": 5, "project": "", "done": False, "statusKey": "next"},
+]
+
+
+def _coverage_doc(rows, markdown=PROJECT_GOALS):
+    documents = plan_payload({"projects": markdown}, None, None, rows)["documents"]
+    return [doc for doc in documents if doc["key"] == "projects"][0]
+
+
+def test_the_plan_page_says_how_many_projects_have_no_goal():
+    """Issue #227's own title, on the page it is about. The projects with no
+    objective have no section in the document, so without this the card is
+    complete by construction however many are missing."""
+    coverage = _coverage_doc(COVERAGE_ROWS)["coverage"]
+    assert coverage["total"] == 3
+    assert coverage["withGoal"] == 1
+    assert [entry["project"] for entry in coverage["missing"]] == ["NAS",
+                                                                  "Research"]
+    # The open count is what separates a pruning question from unexplained
+    # work: Research's one row is done, NAS has two still open.
+    assert [entry["openRows"] for entry in coverage["missing"]] == [2, 0]
+
+
+def test_a_row_with_no_project_is_not_a_project():
+    """An unfiled row would otherwise mint a nameless project with no goal,
+    and the count on his phone would be one higher than his boards."""
+    coverage = _coverage_doc([{"number": 5, "project": "  ",
+                               "done": False, "statusKey": ""}])["coverage"]
+    assert coverage == {"total": 0, "withGoal": 0, "missing": []}
+
+
+def test_unread_boards_print_no_coverage_at_all():
+    """`None` is "not read", not "no rows". An unread board would count zero
+    projects and print the best-looking answer available, which is the
+    guaranteed-positive trap `prompt.md` names."""
+    assert "coverage" not in _coverage_doc(None)
+    # And the default is that same silence, so every existing caller keeps
+    # the page it had.
+    documents = plan_payload({"projects": PROJECT_GOALS})["documents"]
+    assert all("coverage" not in doc for doc in documents)
+
+
+def test_only_the_project_goals_card_counts_projects():
+    """`goals.md` never claimed to hold one section per project, so a
+    coverage count over it would be a sentence about the wrong document."""
+    documents = plan_payload(
+        {"projects": PROJECT_GOALS, "goals": PROJECT_GOALS, "roadmap": ""},
+        None, None, COVERAGE_ROWS)["documents"]
+    carried = [doc["key"] for doc in documents if "coverage" in doc]
+    assert carried == ["projects"]
+
+
+def test_the_plan_route_hands_the_boards_to_the_payload(monkeypatch):
+    """The wiring, not the shaping: `nova_plan` cannot count projects the
+    site never fetched, and that seam is invisible from either side."""
+    from agora_runner import nova_site
+
+    monkeypatch.setattr(nova_site, "plan_markdown",
+                        lambda: {"projects": PROJECT_GOALS})
+    monkeypatch.setattr(nova_site, "goal_history_json", lambda: "")
+    monkeypatch.setattr(nova_site, "milestone_seats_markdown", lambda: "")
+    monkeypatch.setattr(
+        nova_site, "cached_payload",
+        lambda name, build: ({"items": COVERAGE_ROWS if name == "board:issues"
+                              else []}, b"", "etag"))
+    doc = [d for d in nova_site.plans_payload()["documents"]
+           if d["key"] == "projects"][0]
+    assert doc["coverage"]["total"] == 3
+
+
+def test_a_board_that_cannot_be_read_takes_the_whole_count_down(monkeypatch):
+    """Both boards or neither. A count built from one board silently drops
+    every project that only appears on the other, and prints a smaller
+    number with the same confidence."""
+    from agora_runner import nova_site
+
+    monkeypatch.setattr(nova_site, "plan_markdown",
+                        lambda: {"projects": PROJECT_GOALS})
+    monkeypatch.setattr(nova_site, "goal_history_json", lambda: "")
+    monkeypatch.setattr(nova_site, "milestone_seats_markdown", lambda: "")
+
+    def _half(name, build):
+        if name == "board:ideas":
+            raise RuntimeError("couch is down")
+        return {"items": COVERAGE_ROWS}, b"", "etag"
+
+    monkeypatch.setattr(nova_site, "cached_payload", _half)
+    doc = [d for d in nova_site.plans_payload()["documents"]
+           if d["key"] == "projects"][0]
+    assert "coverage" not in doc
