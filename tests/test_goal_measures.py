@@ -932,12 +932,26 @@ def test_write_back_kpis_writes_nothing_when_the_document_already_agrees(tmp_pat
 
 
 def test_render_kpis_prints_the_range_and_flags_drift():
+    """8 -> 3 inside `[0..10]` is the carve-out, 8 -> 14 is still drift.
+
+    Both halves live here because the range is what separates them, and this
+    is the only renderer that prints a range. See
+    `goal_measures.kpi_drift_crosses_bounds`.
+    """
     rows = goal_measures.kpi_rows(_kpi_sections())
     for row in rows:
         if row["id"] == "nova-kpi-dropped-ticks":
             row["value"], row["detail"] = 3, "1 of 33"
     text = goal_measures.render_kpis(rows, "project-goals.md")
     assert "measured 3  [0..10]" in text
+    assert "the document says 8, moved inside its own range" in text
+    assert "drifted" not in text
+
+    rows = goal_measures.kpi_rows(_kpi_sections())
+    for row in rows:
+        if row["id"] == "nova-kpi-dropped-ticks":
+            row["value"], row["detail"] = 14, "14 of 33"
+    text = goal_measures.render_kpis(rows, "project-goals.md")
     assert "the document says 8, drifted" in text
 
 

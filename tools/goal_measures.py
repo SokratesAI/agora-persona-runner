@@ -520,6 +520,48 @@ def has_drifted(written, value):
     return _as_number(written) != _as_number(value)
 
 
+def kpi_drift_crosses_bounds(kpi, value):
+    """A KPI whose written number has drifted -- does the drift change anything?
+
+    Only ever asked of a row `has_drifted` already said yes to. It is the
+    second half of that question and it exists because the first half, on a
+    KPI, is answered by the clock.
+
+    **Every instrumented KPI here reads a rolling window**, so its number
+    moves on its own: `nova-kpi-cost-per-cycle` is a median over the last 24
+    hours and `nova-kpi-dropped-ticks` counts firings in the same window, and
+    both had drifted again within an hour of Cycle 1576 repairing them in the
+    vault -- 1.52 to 1.5, and 2 to 0, with nothing in the system having gone
+    wrong. A check that is red every sweep over that is one nobody reads,
+    which is the exact reasoning `split_orphans` was built on one document
+    over.
+
+    So the line is what a KPI *claims*. Issue #227 defines it as a health
+    number with a range rather than a target -- the claim is "this is inside
+    its guardrail", not "this digit". While the written and the measured
+    number are on the same side of every bound, that claim is still true and
+    the digit is a snapshot; the moment they are on different sides, the
+    document is reporting a breach that has ended or missing one that has
+    started, and that is a real finding.
+
+    **Key results are deliberately not given this carve-out.** They carry a
+    `target` rather than a range, and rule 7 reads a goal as *"target versus
+    current number"* -- there the digit IS the claim, so any drift stays a
+    defect.
+
+    A written `now` that is not a number at all always crosses: a guardrail
+    with no reading is not a guardrail, and that is the blank `has_drifted`
+    was built to fill rather than something to quieten here.
+    """
+    from agora_runner.project_goals import kpi_breach
+
+    if value is None:
+        return False
+    if _as_number(kpi.get("now", "")) is None:
+        return True
+    return bool(kpi_breach(kpi)) != bool(kpi_breach({**kpi, "now": str(value)}))
+
+
 def render(rows, since, until, problems):
     lines = [f"GOAL MEASURES — {since} to {until} (Oslo dates on the journal, UTC on merges)"]
     for row in rows:
@@ -1461,8 +1503,12 @@ def render_kpis(rows, path):
         low = str(row["kpi"].get("low", "")).strip()
         high = str(row["kpi"].get("high", "")).strip()
         bounds = f"  [{low or '-'}..{high or '-'}]"
-        drift = (f"  <- the document says {written or '(blank)'}, drifted"
-                 if has_drifted(written, row["value"]) else "")
+        drift = ""
+        if has_drifted(written, row["value"]):
+            drift = (f"  <- the document says {written or '(blank)'}, drifted"
+                     if kpi_drift_crosses_bounds(row["kpi"], row["value"])
+                     else f"  <- the document says {written}, moved inside "
+                          "its own range")
         lines.append(f"      measured {row['value']}{bounds}{drift}")
         lines.append(f"      {row['detail']}")
     return "\n".join(lines)
@@ -1817,6 +1863,7 @@ def main(argv=None):
                     args.project_goals, pg_text, kpis)
 
     if args.exit_on_drift:
+        moved_rows = []
         drifted_rows = [
             f"{row['key']} in {os.path.basename(args.goals)}"
             for row in rows if has_drifted(row["goal"].get("now", ""), row["value"])
@@ -1825,22 +1872,43 @@ def main(argv=None):
         if args.project_goals:
             drifted_rows += [
                 f"{row['project']} / {row['id']} in {os.path.basename(args.project_goals)}"
-                for row in kr_rows + kpis
-                if has_drifted(
-                    (row["kr"] if "kr" in row else row["kpi"]).get("now", ""),
-                    row["value"])
+                for row in kr_rows
+                if has_drifted(row["kr"].get("now", ""), row["value"])
+            ]
+            # A KPI that drifted without crossing a bound is reported and not
+            # counted -- see `kpi_drift_crosses_bounds` for why the digit is
+            # not the claim a guardrail makes. It is named here rather than
+            # dropped, because the vault still carries a number an hour old
+            # and a cycle repairing it should be able to see which.
+            moved_rows += [
+                f"{row['project']} / {row['id']} in {os.path.basename(args.project_goals)}"
+                for row in kpis
+                if has_drifted(row["kpi"].get("now", ""), row["value"])
+                and not kpi_drift_crosses_bounds(row["kpi"], row["value"])
+            ]
+            drifted_rows += [
+                f"{row['project']} / {row['id']} in {os.path.basename(args.project_goals)}"
+                for row in kpis
+                if has_drifted(row["kpi"].get("now", ""), row["value"])
+                and kpi_drift_crosses_bounds(row["kpi"], row["value"])
             ]
             instrumented += [row for row in kr_rows + kpis
                              if row["value"] is not None]
         for line in drifted_rows:
             report += f"\n  ! {line} no longer matches its instrument"
+        for line in moved_rows:
+            report += (f"\n  - {line} moved inside its own range -- reported, "
+                       "not counted")
         # The summary is deliberately the LAST line: `tools.preflight` shows
         # one line per check and takes the last one, so a count that prints
         # above `WHAT THIS CANNOT SEE` would be invisible in the sweep.
         report += (
             f"\nDRIFT — {len(drifted_rows)} of {len(instrumented)} instrumented "
             f"number(s) disagree with what is written down. A number with no "
-            f"reading to take is not counted either way.")
+            f"reading to take is not counted either way"
+            + (f", and {len(moved_rows)} KPI(s) moved without leaving their "
+               "own range, which is a snapshot ageing rather than a finding"
+               if moved_rows else "") + ".")
     print(report)
     if args.exit_on_drift and drifted_rows:
         return 2
