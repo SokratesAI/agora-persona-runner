@@ -2203,6 +2203,154 @@ def measure_post_volume(since, until):
                   f"(daily: {', '.join(str(n) for n in daily)}){caveat}")
 
 
+#: The article fields the Post uses to record that a human reacted to a piece
+#: after it was printed. Measured live Cycle 1596 against all 1,599 articles:
+#: `feedback` carries `"up"` on 37 of them and `dismissed` carries `True` on 13.
+#:
+#: **Neither of these existed in the hand count this replaces.** The number in
+#: `project-goals.md` was taken this morning off "the union of keys across the
+#: sample", and both fields sit on 2.3% of the corpus, so a sample missed them
+#: and wrote a 0 that said the Post records nothing at all. A field present on
+#: one article in forty is exactly what a sample cannot see, which is why this
+#: measurer reads every article the API returns and never a page of them.
+_POST_REACTION_FIELDS = ("feedback", "dismissed")
+
+#: Field names that would mean somebody chose to print an article *before* it
+#: went out. None of them is on the Post today; the list is here so that the
+#: day the Post starts recording one, this measure moves on its own instead of
+#: waiting for a cycle to notice.
+#:
+#: **`_POST_REACTION_FIELDS` is deliberately not in here, and that is the one
+#: judgement in this measure.** A thumbs-up is a reaction to something already
+#: published, so counting it would let "he liked it afterwards" read as
+#: "somebody chose to print it", and the whole point of idea #96 is that a
+#: 600-second timer is doing the choosing. Same shape as the `#205` exclusion
+#: in `measure_agora_chat_basics`: named, with its reason beside it, so it is
+#: arguable rather than re-taken silently every time somebody reads the number.
+_POST_EDITORIAL_FIELDS = (
+    "approved_by", "approved_at", "editor", "edited_by", "editorial_decision",
+    "chosen_by", "curated_by", "selected_by", "reviewed_by", "publish_decision",
+)
+
+#: Every key the Post's articles carried when this measurer was written. It
+#: exists so the measure can say "the schema moved" rather than quietly keep
+#: reporting a number computed from fields that may no longer be the ones that
+#: matter -- the failure this measure was written on top of.
+_POST_KNOWN_FIELDS = frozenset({
+    "_id", "_rev", "body_en", "category", "date", "dismissed", "feedback",
+    "generated_at", "has_full_text", "image_url", "published_at",
+    "source_name", "source_url", "title_en", "topic", "vault_relevant",
+})
+
+
+def fetch_post_articles(site=NEWSPAPER):
+    """Every article the Post will serve, as a list, or `(None, why)`.
+
+    Deliberately not paged and deliberately not sampled. See
+    `_POST_REACTION_FIELDS` for what a sample cost.
+    """
+    payload, error = _get_json(f"{site}/api/articles", timeout=120)
+    if error:
+        return None, error
+    articles = payload.get("articles") if isinstance(payload, dict) else payload
+    if not isinstance(articles, list):
+        return None, (f"{site}/api/articles did not return a list of articles, "
+                      "so there is nothing here to read")
+    return [a for a in articles if isinstance(a, dict)], None
+
+
+def _post_field_set(articles):
+    """The union of keys across every article, and the ones I have never seen."""
+    seen = set()
+    for article in articles:
+        seen |= set(article.keys())
+    return seen, sorted(seen - _POST_KNOWN_FIELDS)
+
+
+def _has_value(article, field):
+    """True when `field` is present on `article` carrying something real.
+
+    `dismissed` comes back as the *string* `"True"` on some rows and the JSON
+    boolean on others, so this cannot be a plain truthiness check -- and a
+    field present but empty is the Post writing a placeholder, not a decision.
+    """
+    value = article.get(field)
+    if value is None or value is False:
+        return False
+    text = str(value).strip()
+    return bool(text) and text.lower() not in ("false", "0", "none", "null")
+
+
+def measure_post_editor(since, until):
+    """Share of the Post's articles carrying a record that someone chose to print them.
+
+    Zero here means *by absence* -- no article carries any field in
+    `_POST_EDITORIAL_FIELDS` -- and that is a real reading, not a gap. The
+    gap answer is `None`, and it is returned for the two cases where a 0 would
+    be manufactured rather than measured: the API cannot be reached, and the
+    API returns no articles at all. The second matters because the target is
+    100 and the direction is up, so an empty corpus would otherwise divide by
+    zero or, worse, read as a spotless 0%.
+    """
+    del since, until
+    articles, error = fetch_post_articles()
+    if error:
+        return None, error
+    if not articles:
+        return None, ("the Post's API returned no articles, so there is no "
+                      "denominator here and 0% would be a number about nothing")
+    chosen = [a for a in articles
+              if any(_has_value(a, f) for f in _POST_EDITORIAL_FIELDS)]
+    share = round(100.0 * len(chosen) / len(articles), 1)
+    _, unknown = _post_field_set(articles)
+    drift = (f"; the Post has grown field(s) I have never judged "
+             f"({', '.join(unknown)}) -- check whether one of them records an "
+             "editorial decision" if unknown else "")
+    reacted = sum(1 for a in articles
+                  if any(_has_value(a, f) for f in _POST_REACTION_FIELDS))
+    return share, (f"{len(chosen)} of {len(articles)} article(s) carry a field "
+                   f"recording a decision to print "
+                   f"({', '.join(_POST_EDITORIAL_FIELDS)}); {reacted} carry a "
+                   f"reaction after printing, which is deliberately not counted "
+                   f"as choosing{drift}")
+
+
+def measure_post_readership(since, until):
+    """Distinct days the Post holds any record that a human read an article.
+
+    A reaction carries no timestamp of its own, so a day here is the *publication*
+    day of a reacted article. That is a proxy and the detail says so; it is the
+    only date the Post stores, and the alternative was leaving this hand-typed.
+
+    Zero is real -- it means no article carries a reaction. `None` is the
+    unreadable case, and the split matters more here than usual: the target is
+    30 and the direction is up, so a failed fetch read as 0 would look like a
+    Post that lost its readership data rather than a measure that could not ask.
+    """
+    del since, until
+    articles, error = fetch_post_articles()
+    if error:
+        return None, error
+    reacted = [a for a in articles
+               if any(_has_value(a, f) for f in _POST_REACTION_FIELDS)]
+    days = sorted({d for d in (_oslo_day(str(a.get("published_at") or ""))
+                               for a in reacted) if d})
+    undated = len(reacted) - sum(
+        1 for a in reacted if _oslo_day(str(a.get("published_at") or "")))
+    if not reacted:
+        return 0, (f"no article of the {len(articles)} the Post serves carries "
+                   f"any of {', '.join(_POST_REACTION_FIELDS)}, so it holds no "
+                   "record that anyone read one")
+    caveat = (f"; {undated} reacted article(s) carry no publication date and "
+              "cannot be placed on a day" if undated else "")
+    newest = f", newest {days[-1]}" if days else ""
+    return len(days), (f"{len(reacted)} of {len(articles)} article(s) carry a "
+                       f"reaction ({', '.join(_POST_REACTION_FIELDS)}), falling "
+                       f"on {len(days)} distinct Oslo day(s) by publication "
+                       f"date{newest}; the reaction itself is not "
+                       f"timestamped{caveat}")
+
+
 #: The project name `nas-kr-unattended` counts rows for, exactly as both
 #: boards spell it. A string rather than an id because a board row names its
 #: project in prose and nothing on the row carries a stable project key.
@@ -2919,6 +3067,8 @@ KEY_RESULT_FETCH_MEASURERS = {
     "nas-kr-unattended": measure_nas_unattended,
     "maint-kr-self-documenting": measure_maint_self_documenting,
     "agora-kr-chat-basics": measure_agora_chat_basics,
+    "post-kr-editor": measure_post_editor,
+    "post-kr-readership": measure_post_readership,
 }
 
 
