@@ -747,6 +747,10 @@ def _capture_board_help(captures):
            "  --done-when is required too, unless the capture already says "
            "DONE: a row is a task and a task needs a checkable definition of "
            "done (issue #212).",
+           "  A capture that is really several jobs becomes several rows: "
+           "--task '<title>' --done-when '<sentence>', repeated once per "
+           "task and paired in that order (issue #212). One --done-when and "
+           "no --task is still one row.",
            "  It adds the row AND deletes the bullet in the record store, so "
            "the item is in one place; the site redraws his markdown. "
            "Board highest --index first: the indices renumber after each cut."]
