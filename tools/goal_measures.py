@@ -1659,6 +1659,129 @@ def measure_docs_staleness(since, until):
                   f"({stamp}), which is {days} day(s) ago")
 
 
+#: The workflow `docs-kr-sync-alive` is about, as GitHub files it. gh-aw keeps
+#: the human-written job at `.github/workflows/docs-sync.md` and compiles it to
+#: `docs-sync.lock.yml`, and only the compiled name is a workflow GitHub will
+#: list runs for -- asking for `docs-sync.md` returns nothing, which is
+#: indistinguishable from a workflow that has never run.
+DOCS_SYNC_WORKFLOW = "docs-sync.lock.yml"
+
+#: How far back `measure_docs_sync_alive` looks. Its own constant rather than a
+#: share of `_DEPRECATION_WINDOW_DAYS`, which is also 30 and counts something
+#: else; folding them together would make a change to either silently change
+#: both. Thirty days is four scheduled runs, because docs-sync is weekly -- a
+#: shorter window would put the denominator at one or two and turn a single red
+#: run into a 0% reading.
+_DOCS_SYNC_WINDOW_DAYS = 30
+
+
+def fetch_docs_sync_runs(repo=DOCS_REPO, workflow=DOCS_SYNC_WORKFLOW,
+                         runner=subprocess.run):
+    """Every recorded run of the docs-sync workflow, newest first.
+
+    Returns `(runs, None)` or `(None, why)`. Each run is the dict `gh` hands
+    back: `event`, `status`, `conclusion`, `createdAt`.
+
+    An empty list is an error rather than a reading, for
+    `measure_docs_covers_what_runs`' reason: this workflow demonstrably runs,
+    so "no runs at all" is a workflow name that resolved to nothing far more
+    often than it is a true zero, and a share over nothing is not 0%.
+    """
+    try:
+        done = runner(
+            ["gh", "run", "list", "--repo", repo, "--workflow", workflow,
+             "--limit", "100", "--json", "event,status,conclusion,createdAt"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"gh run list could not run on {repo}: {exc}"
+    if done.returncode != 0:
+        return None, (f"gh run list failed on {repo} for {workflow}: "
+                      f"{done.stderr.strip()[:200]}")
+    try:
+        runs = json.loads(done.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        return None, f"gh returned unreadable JSON for {workflow}: {exc}"
+    if not isinstance(runs, list):
+        return None, "gh returned a JSON object where a list of runs was expected"
+    if not runs:
+        return None, (f"{repo} lists no run of {workflow} at all, which is a "
+                      "workflow name that resolved to nothing more often than "
+                      "it is a true zero")
+    return runs, None
+
+
+def measure_docs_sync_alive(since, until):
+    """Share of scheduled docs-sync runs in the window that finished. A share.
+
+    **`workflow_dispatch` runs are excluded and that is the whole point of the
+    measure.** A docs job that only works when somebody presses the button is
+    exactly what this key result exists to catch. Counting the manual runs
+    reads 40% against 25% on today's history and hides it, which is why the
+    filter is `event == "schedule"` rather than "every run".
+
+    **A run GitHub refused to start still counts as not finishing.** The
+    2026-08-21 run died two seconds in over an account spending limit, with no
+    step executed -- `tools.agentic_health` deliberately does not raise its
+    exit status for one of those, because there is no pull request that fixes
+    a billing setting. This is a different question: the key result asks
+    whether the docs keep themselves up to date, and a run that never started
+    did not. The target is 90 rather than 100 for exactly that reason, and it
+    is written down beside the key result.
+
+    **A run still in flight is in neither half.** It is dropped from the
+    denominator rather than counted as a failure, because it has not failed
+    yet; the detail says how many were dropped, so a window that is mostly
+    in-flight cannot read as a confident share.
+
+    `None` when the history could not be read, or when the window holds no
+    scheduled run at all -- a share over nothing is not 0%, and 0% is the
+    worst reading this key result has.
+    """
+    del since
+    runs, why = fetch_docs_sync_runs()
+    if why:
+        return None, why
+    until_date = date.fromisoformat(until)
+    window_start = until_date - timedelta(days=_DOCS_SYNC_WINDOW_DAYS)
+    scheduled, undated = [], 0
+    for run in runs:
+        if (run.get("event") or "") != "schedule":
+            continue
+        day = _oslo_day(str(run.get("createdAt") or ""))
+        if day is None:
+            undated += 1
+            continue
+        when = date.fromisoformat(day)
+        if window_start < when <= until_date:
+            scheduled.append((day, run))
+    finished = [(day, run) for day, run in scheduled
+                if (run.get("status") or "") == "completed"]
+    in_flight = len(scheduled) - len(finished)
+    if not finished:
+        return None, (f"no scheduled run of {DOCS_SYNC_WORKFLOW} has completed "
+                      f"in the {_DOCS_SYNC_WINDOW_DAYS}d window "
+                      f"{window_start.isoformat()}..{until}"
+                      + (f" ({in_flight} still in flight)" if in_flight else "")
+                      + (f"; {undated} run(s) carried an unreadable date"
+                         if undated else ""))
+    green = [day for day, run in finished
+             if (run.get("conclusion") or "") == "success"]
+    detail = (f"{len(green)} of {len(finished)} scheduled run(s) of "
+              f"{DOCS_SYNC_WORKFLOW} finished in the "
+              f"{_DOCS_SYNC_WINDOW_DAYS}d window {window_start.isoformat()}.."
+              f"{until} Oslo (green: "
+              f"{', '.join(green) if green else 'none'}); manual "
+              f"workflow_dispatch runs are excluded, because a docs job that "
+              f"only works when somebody presses the button is what this "
+              f"measures")
+    if in_flight:
+        detail += f"; {in_flight} run(s) still in flight are in neither half"
+    if undated:
+        detail += f"; {undated} run(s) carried an unreadable date"
+    return round(100.0 * len(green) / len(finished), 1), detail
+
+
 #: The namespaces `docs-kr-covers-what-runs` counts, and the ones it does not.
 #:
 #: `agents`, `infra` and `obsidian` hold what this platform is -- the personas,
@@ -2402,6 +2525,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "research-kr-reused": measure_research_reused,
     "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
+    "docs-kr-sync-alive": measure_docs_sync_alive,
 }
 
 

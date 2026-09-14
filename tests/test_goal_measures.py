@@ -3070,3 +3070,119 @@ class TestDocsCoversWhatRuns:
     def test_covers_what_runs_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["docs-kr-covers-what-runs"] is \
             gm.measure_docs_covers_what_runs
+
+
+class TestDocsSyncAlive:
+    """`docs-kr-sync-alive` — share of *scheduled* docs-sync runs that finish.
+
+    The hand-typed number this replaces was 25, and the live reading taken
+    when it was wired in was 25.0 over the same window. The tests below are
+    about the three judgements inside that number, not the number.
+    """
+
+    def _runs(self, monkeypatch, runs):
+        monkeypatch.setattr(gm, "fetch_docs_sync_runs", lambda: (runs, None))
+
+    def _run(self, day, event="schedule", conclusion="success",
+             status="completed"):
+        return {"event": event, "status": status, "conclusion": conclusion,
+                "createdAt": f"{day}T12:00:00Z"}
+
+    def test_it_is_the_share_of_scheduled_runs_that_succeeded(self, monkeypatch):
+        self._runs(monkeypatch, [
+            self._run("2026-09-11"),
+            self._run("2026-09-04", conclusion="failure"),
+            self._run("2026-08-28", conclusion="failure"),
+            self._run("2026-08-21", conclusion="failure"),
+        ])
+        value, detail = gm.measure_docs_sync_alive(None, "2026-09-14")
+        assert value == 25.0
+        assert "1 of 4" in detail
+        assert "2026-09-11" in detail
+
+    def test_a_manual_run_does_not_count(self, monkeypatch):
+        # This is the whole measure. A docs job that only works when somebody
+        # presses the button is what the key result exists to catch, and on the
+        # real history counting dispatches reads 40% against 25%.
+        self._runs(monkeypatch, [
+            self._run("2026-09-13", event="workflow_dispatch"),
+            self._run("2026-09-12", event="workflow_dispatch"),
+            self._run("2026-09-11", conclusion="failure"),
+        ])
+        value, detail = gm.measure_docs_sync_alive(None, "2026-09-14")
+        assert value == 0.0, detail
+        assert "0 of 1" in detail
+
+    def test_a_run_still_in_flight_is_in_neither_half(self, monkeypatch):
+        # Not a failure: it has not failed yet. Counting it as one would make
+        # every reading taken while a run is going read a week too pessimistic.
+        self._runs(monkeypatch, [
+            self._run("2026-09-14", conclusion=None, status="in_progress"),
+            self._run("2026-09-11"),
+        ])
+        value, detail = gm.measure_docs_sync_alive(None, "2026-09-14")
+        assert value == 100.0, detail
+        assert "1 of 1" in detail
+        assert "in flight" in detail
+
+    def test_a_run_outside_the_window_does_not_count(self, monkeypatch):
+        self._runs(monkeypatch, [
+            self._run("2026-09-11"),
+            self._run("2026-07-04", conclusion="failure"),
+        ])
+        value, detail = gm.measure_docs_sync_alive(None, "2026-09-14")
+        assert value == 100.0, detail
+        assert "1 of 1" in detail
+
+    def test_a_window_with_no_completed_scheduled_run_gets_no_reading(
+            self, monkeypatch):
+        # A share over nothing is not 0%, and 0% is the worst reading this key
+        # result has -- returning it here would report a catastrophe on a month
+        # in which the schedule simply did not fire.
+        self._runs(monkeypatch, [
+            self._run("2026-09-13", event="workflow_dispatch"),
+        ])
+        value, detail = gm.measure_docs_sync_alive(None, "2026-09-14")
+        assert value is None
+        assert "no scheduled run" in detail
+
+    def test_an_unreadable_history_gets_no_reading(self, monkeypatch):
+        monkeypatch.setattr(gm, "fetch_docs_sync_runs",
+                            lambda: (None, "gh run list failed on X: nope"))
+        value, detail = gm.measure_docs_sync_alive(None, "2026-09-14")
+        assert value is None
+        assert "gh run list failed" in detail
+
+    def test_an_empty_run_list_is_a_failed_read_not_a_clean_one(self):
+        # docs-sync demonstrably runs, so "no runs at all" is a workflow name
+        # that resolved to nothing far more often than it is a true zero.
+        runner = lambda *_a, **_k: types.SimpleNamespace(
+            returncode=0, stdout="[]", stderr="")
+        runs, why = gm.fetch_docs_sync_runs(runner=runner)
+        assert runs is None
+        assert "no run of" in why
+
+    def test_it_asks_for_the_compiled_workflow_name(self):
+        seen = []
+
+        def runner(args, **_kwargs):
+            seen.append(args)
+            return types.SimpleNamespace(
+                returncode=0, stdout=json.dumps([{"event": "schedule"}]),
+                stderr="")
+
+        gm.fetch_docs_sync_runs(runner=runner)
+        # gh lists runs for the compiled `.lock.yml`, never the gh-aw source.
+        assert "docs-sync.lock.yml" in seen[0]
+        assert "docs-sync.md" not in seen[0]
+
+    def test_a_failing_gh_is_an_error_not_an_empty_history(self):
+        runner = lambda *_a, **_k: types.SimpleNamespace(
+            returncode=1, stdout="", stderr="could not resolve to a Repository")
+        runs, why = gm.fetch_docs_sync_runs(runner=runner)
+        assert runs is None
+        assert "could not resolve" in why
+
+    def test_sync_alive_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["docs-kr-sync-alive"] is \
+            gm.measure_docs_sync_alive
