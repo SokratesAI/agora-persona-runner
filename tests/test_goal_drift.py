@@ -305,3 +305,16 @@ def test_key_results_get_no_carve_out():
           "detail": "measured"}], "project-goals.md")
     assert "drifted" in crossed
     assert "moved inside its own range" not in crossed
+
+
+def test_the_command_line_reaches_main():
+    """`main()` with no argv drops every flag typed at the shell, in silence.
+
+    That is what happened on the first real `--repair` run: it printed a
+    complete drift report and wrote nothing, because `__main__` called
+    `main()` and the module had never taken a flag before.
+    """
+    import inspect
+    source = inspect.getsource(goal_drift)
+    tail = source[source.index('if __name__ == "__main__":'):]
+    assert "main(sys.argv[1:])" in tail, "the shell's arguments never reach main"

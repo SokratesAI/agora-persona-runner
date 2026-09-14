@@ -245,4 +245,10 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # `sys.argv[1:]` and not a bare `main()`: this module took no flags until
+    # `--repair` existed, so `main()` was called with nothing and every
+    # command-line argument was dropped in silence. The first real `--repair`
+    # run printed a complete, plausible drift report and wrote nothing --
+    # the shape this loop's own rule warns about, a positive-looking result
+    # that was guaranteed before the flag was ever read.
+    raise SystemExit(main(sys.argv[1:]))
