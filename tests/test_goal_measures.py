@@ -2223,6 +2223,137 @@ def test_nas_services_down_is_wired_into_the_kpi_map():
         goal_measures.measure_nas_services_down
 
 
+# --- wa-kr-reaches-you ------------------------------------------------------
+
+def _wa_kubectl(monkeypatch, items, returncode=0, stderr="", blob=None,
+                raises=None):
+    """Stand in for the one `kubectl get deploy,statefulset,daemonset -A` call."""
+    def fake(cmd, **kwargs):
+        del kwargs
+        assert cmd[:2] == ["kubectl", "get"], cmd
+        assert cmd[2] == goal_measures._WA_WORKLOAD_KINDS, cmd
+        assert "-A" in cmd, cmd
+        if raises is not None:
+            raise raises
+        stdout = blob if blob is not None else json.dumps({"items": items})
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout,
+                                     stderr=stderr)
+    monkeypatch.setattr(goal_measures.subprocess, "run", fake)
+
+
+def _wa_workload(name, namespace="agents", kind="Deployment", ready=None,
+                 number_ready=None):
+    status = {}
+    if ready is not None:
+        status["readyReplicas"] = ready
+    if number_ready is not None:
+        status["numberReady"] = number_ready
+    return {"kind": kind, "metadata": {"name": name, "namespace": namespace},
+            "status": status}
+
+
+def test_wa_reaches_you_reads_a_cluster_with_no_bridge_as_a_real_zero(monkeypatch):
+    """No path for an alert to travel means nothing was delivered over it."""
+    _wa_kubectl(monkeypatch, [_wa_workload("agora", ready=1),
+                              _wa_workload("redis", kind="StatefulSet", ready=1)])
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value == 0.0
+    assert "no workload in this cluster runs the WhatsApp bridge" in detail
+    assert "judged 2 workload(s) across 1 namespace(s)" in detail
+
+
+def test_wa_reaches_you_reports_no_number_once_the_bridge_is_up(monkeypatch):
+    """The whole point: the 0 must not survive the bridge starting to work.
+
+    Nothing here records which alerts needed an answer, so a share cannot be
+    computed -- and reporting the old 0 would be a measure that says the
+    feature is broken forever after it was fixed.
+    """
+    _wa_kubectl(monkeypatch, [_wa_workload("agora", ready=1),
+                              _wa_workload("whatsapp-bridge", namespace="infra",
+                                           ready=1)])
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value is None
+    assert "infra/whatsapp-bridge (1 ready)" in detail
+    assert "cannot be read" in detail
+
+
+def test_wa_reaches_you_counts_a_bridge_with_no_ready_replica_as_zero(monkeypatch):
+    """A Deployment scaled to zero is a path that exists and does not carry."""
+    _wa_kubectl(monkeypatch, [_wa_workload("whatsapp-bridge", ready=0)])
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value == 0.0
+    assert "no replica of it is ready" in detail
+    assert "agents/whatsapp-bridge (0 ready)" in detail
+
+
+def test_wa_reaches_you_does_not_mistake_the_auth_backup_for_the_bridge(monkeypatch):
+    """`whatsapp-auth-backup` carries the word and is a backup of the bridge.
+
+    It runs as a CronJob today, which this measure does not list at all -- so
+    this covers the second half of the same guard: the name is excluded even
+    when something hands it over as a Deployment.
+    """
+    _wa_kubectl(monkeypatch, [_wa_workload("whatsapp-auth-backup", ready=1)])
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value == 0.0
+    assert "no workload in this cluster runs the WhatsApp bridge" in detail
+
+
+def test_wa_reaches_you_reads_a_daemonset_bridge_as_up(monkeypatch):
+    """A DaemonSet reports `numberReady` and has no `readyReplicas` at all.
+
+    There is no DaemonSet in this cluster today, so this is the only thing that
+    holds that branch: reading only `readyReplicas` would score a healthy
+    DaemonSet bridge as a 0 and report the path as down while it carried
+    traffic.
+    """
+    _wa_kubectl(monkeypatch, [_wa_workload("whatsapp-bridge", kind="DaemonSet",
+                                           number_ready=2)])
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value is None
+    assert "(2 ready)" in detail
+
+
+def test_wa_reaches_you_refuses_a_cluster_it_could_not_read(monkeypatch):
+    _wa_kubectl(monkeypatch, [], returncode=1,
+                stderr="error: You must be logged in to the server")
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value is None
+    assert "must be logged in" in detail
+
+
+def test_wa_reaches_you_refuses_an_empty_cluster(monkeypatch):
+    """Zero workloads anywhere is a read that went wrong, not a bare cluster."""
+    _wa_kubectl(monkeypatch, [])
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value is None
+    assert "no instrument rather than an empty cluster" in detail
+
+
+def test_wa_reaches_you_refuses_output_that_is_not_json(monkeypatch):
+    _wa_kubectl(monkeypatch, [], blob="Unable to connect to the server")
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value is None
+    assert "not JSON" in detail
+
+
+def test_wa_reaches_you_refuses_when_kubectl_is_not_there(monkeypatch):
+    _wa_kubectl(monkeypatch, [], raises=OSError("No such file or directory"))
+    value, detail = goal_measures.measure_wa_reaches_you(None, None)
+    assert value is None
+    assert "could not list the cluster's workloads" in detail
+
+
+def test_wa_reaches_you_is_wired_into_the_fetch_map():
+    assert goal_measures.KEY_RESULT_FETCH_MEASURERS["wa-kr-reaches-you"] is \
+        goal_measures.measure_wa_reaches_you
+
+
+def test_wa_reaches_you_is_no_longer_listed_as_having_no_instrument():
+    assert "wa-kr-reaches-you" not in goal_measures.KEY_RESULT_NO_INSTRUMENT
+
+
 # --- infra-kpi-ci-minutes ---------------------------------------------------
 
 class _CIStub:
