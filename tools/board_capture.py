@@ -210,6 +210,45 @@ def check_captures(before, after, capture_text):
     return problems
 
 
+def normalised_title(text):
+    """One title reduced to what a duplicate comparison should see.
+
+    Case and run-length of whitespace are the two things that differ between
+    the same sentence typed twice and boarded twice, and neither of them is a
+    difference he meant. Nothing else is stripped: punctuation and wording are
+    his, and two captures that differ in a word are two captures.
+    """
+    return " ".join((text or "").split()).casefold()
+
+
+def duplicate_rows(contents, titles):
+    """`[(title, row), ...]` for every task title already on this board.
+
+    Built after I boarded his Figma idea twice on 2026-09-14 -- #298 from the
+    app's own capture and #299 from a capture record I wrote by hand, with
+    byte-identical titles, because I had concluded from an empty capture list
+    that his bullet had never been boarded. The empty list was correct:
+    boarding a capture deletes its record, so zero captures is the normal
+    resting state of both boards, and reading it as "his input was lost" is
+    the mistake this guard stops the next time.
+
+    Matched against **every** row, closed ones included. A capture that
+    repeats a row I already marked Done is worth stopping on for the same
+    reason a repeat of an open one is -- it is nearly always me re-boarding
+    something, and when it genuinely is him filing the same thing again
+    `--allow-duplicate` is one flag.
+    """
+    seen = {}
+    for row in contents.get("items") or ():
+        seen.setdefault(normalised_title(row.get("title")), row)
+    found = []
+    for title in titles:
+        row = seen.get(normalised_title(title))
+        if row is not None:
+            found.append((title, row))
+    return found
+
+
 def known_names(contents, extra=()):
     """The board's own projects first, then any the caller added.
 
@@ -563,6 +602,9 @@ def main(argv=None):
              "(issue #212). Leave it off to board the capture as one row.",
     )
     parser.add_argument("--cycle", type=int, help="stamped on the replies carried across")
+    parser.add_argument(
+        "--allow-duplicate", action="store_true",
+        help="board it even though a row with this exact title already exists")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -649,6 +691,20 @@ def main(argv=None):
     if tasks is None:
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
+
+    if not args.allow_duplicate:
+        clashes = duplicate_rows(before, [one["title"] for one in tasks])
+        if clashes:
+            for title, row in clashes:
+                print(
+                    f"REFUSED: #{row['number']} on the {args.board} board "
+                    f"already says {title!r} ({row.get('status') or 'no status'}). "
+                    "Boarding a capture deletes its record, so an empty "
+                    "capture list is the normal state and not a lost bullet. "
+                    "Pass --allow-duplicate if he really filed it twice.",
+                    file=sys.stderr,
+                )
+            return 1
 
     tag = fields["project"]
     for one in tasks:
