@@ -3608,3 +3608,117 @@ class TestMaintSelfDocumenting:
     def test_self_documenting_is_wired_into_the_fetch_map(self):
         assert gm.KEY_RESULT_FETCH_MEASURERS["maint-kr-self-documenting"] is \
             gm.measure_maint_self_documenting
+
+
+class TestMeasurePostEditorAndReadership:
+    """`post-kr-editor` and `post-kr-readership`, which share one fetch.
+
+    Both were hand-typed as 0 off a *sample* of the Post's articles. The fields
+    that actually exist sit on 2.3% of the corpus, so the sample missed them --
+    which is why every test here works on a whole list and why both halves of
+    each measure are proved to fire separately.
+    """
+
+    def _articles(self, monkeypatch, articles, error=None):
+        def fake(site=None):
+            return (None, error) if error else (articles, None)
+        monkeypatch.setattr(gm, "fetch_post_articles", fake)
+
+    def _article(self, **extra):
+        base = {"_id": "art-1", "title_en": "t", "published_at": "2026-07-19T12:00:00Z"}
+        base.update(extra)
+        return base
+
+    def test_no_editorial_field_anywhere_is_a_real_zero(self, monkeypatch):
+        self._articles(monkeypatch, [self._article(), self._article(_id="art-2")])
+        value, detail = gm.measure_post_editor(None, None)
+        assert value == 0.0, detail
+        assert "0 of 2" in detail
+
+    def test_an_article_somebody_chose_reads_as_chosen(self, monkeypatch):
+        # The other half of the same measure: a 0 above is only worth having
+        # once a non-zero has been shown to be reachable.
+        self._articles(monkeypatch, [
+            self._article(approved_by="edvard"),
+            self._article(_id="art-2"),
+        ])
+        value, detail = gm.measure_post_editor(None, None)
+        assert value == 50.0, detail
+
+    def test_a_reaction_is_not_a_decision_to_print(self, monkeypatch):
+        # The one judgement in this measure, held by a test so that changing it
+        # has to be deliberate.
+        self._articles(monkeypatch, [self._article(feedback="up", dismissed=True)])
+        value, detail = gm.measure_post_editor(None, None)
+        assert value == 0.0, detail
+        assert "1 carry a reaction" in detail
+
+    def test_an_empty_editorial_field_is_not_a_decision(self, monkeypatch):
+        self._articles(monkeypatch, [self._article(editor="   ")])
+        value, detail = gm.measure_post_editor(None, None)
+        assert value == 0.0, detail
+
+    def test_a_new_field_on_the_articles_is_reported(self, monkeypatch):
+        self._articles(monkeypatch, [self._article(curator_note="printed by hand")])
+        value, detail = gm.measure_post_editor(None, None)
+        assert value == 0.0
+        assert "curator_note" in detail
+
+    def test_an_unreachable_post_gets_no_reading(self, monkeypatch):
+        self._articles(monkeypatch, None, error="could not reach the Post: refused")
+        value, detail = gm.measure_post_editor(None, None)
+        assert value is None
+        assert "refused" in detail
+
+    def test_no_articles_at_all_is_not_a_zero_per_cent(self, monkeypatch):
+        self._articles(monkeypatch, [])
+        value, detail = gm.measure_post_editor(None, None)
+        assert value is None
+        assert "denominator" in detail
+
+    def test_readership_counts_distinct_publication_days(self, monkeypatch):
+        self._articles(monkeypatch, [
+            self._article(feedback="up"),
+            self._article(_id="art-2", feedback="up"),
+            self._article(_id="art-3", feedback="up",
+                          published_at="2026-07-18T12:00:00Z"),
+            self._article(_id="art-4"),
+        ])
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 2, detail
+        assert "3 of 4" in detail
+
+    def test_dismissed_as_the_string_true_counts(self, monkeypatch):
+        # The Post serves this field as the string "True" on some rows and as a
+        # JSON boolean on others; a plain truthiness check reads "False" as a
+        # reaction and a str() check reads the boolean False as one.
+        self._articles(monkeypatch, [self._article(dismissed="True")])
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 1, detail
+
+    def test_dismissed_false_is_not_a_reaction(self, monkeypatch):
+        self._articles(monkeypatch, [self._article(dismissed=False),
+                                     self._article(_id="art-2", dismissed="False")])
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 0, detail
+        assert "no record that anyone read one" in detail
+
+    def test_readership_zero_is_real_and_unreadable_is_not(self, monkeypatch):
+        self._articles(monkeypatch, [self._article()])
+        value, _ = gm.measure_post_readership(None, None)
+        assert value == 0
+        self._articles(monkeypatch, None, error="could not reach the Post: refused")
+        value, detail = gm.measure_post_readership(None, None)
+        assert value is None
+        assert "refused" in detail
+
+    def test_a_reacted_article_with_no_date_is_reported_not_dropped(self, monkeypatch):
+        self._articles(monkeypatch, [self._article(feedback="up", published_at="")])
+        value, detail = gm.measure_post_readership(None, None)
+        assert value == 0, detail
+        assert "cannot be placed on a day" in detail
+
+    def test_both_key_results_are_registered(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["post-kr-editor"] is gm.measure_post_editor
+        assert (gm.KEY_RESULT_FETCH_MEASURERS["post-kr-readership"]
+                is gm.measure_post_readership)
