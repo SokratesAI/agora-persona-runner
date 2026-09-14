@@ -814,14 +814,21 @@ unit: %
 ```
 
 ```kpi
-id: marcus-kpi-coach-latency
-name: How long the coach takes
-measure: Median seconds for a plan draft
+id: nova-kpi-invented-for-this-fixture
+name: Something nothing here can read
+measure: A number no measurer computes
 now: 1.74
 low: 0
 high: 2.0
 ```
 """
+# The second block is deliberately an id that does NOT exist in production.
+# It used to be `marcus-kpi-coach-latency`, which was the real uninstrumented
+# KPI at the time -- and the day that KPI got an instrument these six tests
+# started making live HTTP calls to Marcus, because the fixture's meaning
+# ("the one with no measurer") was pinned to a fact about the world rather
+# than to the fixture. A stand-in that can never be instrumented cannot rot
+# that way.
 
 
 def _kpi_sections():
@@ -838,15 +845,26 @@ def test_kpi_rows_measures_the_one_with_an_instrument(monkeypatch):
     assert by_id["nova-kpi-dropped-ticks"]["detail"] == "1 of 33 slot(s)"
 
 
-def test_kpi_rows_names_why_an_uninstrumented_kpi_is_blank():
+def test_kpi_rows_says_a_kpi_with_no_measurer_is_uninstrumented():
     out = goal_measures.kpi_rows(_kpi_sections(), "2026-09-07", "2026-09-13")
     by_id = {row["id"]: row for row in out}
-    row = by_id["marcus-kpi-coach-latency"]
+    row = by_id["nova-kpi-invented-for-this-fixture"]
     assert row["value"] is None
-    # The reason is the point: a blank `now` says nothing about whether anyone
-    # tried, which is how three cycles come to re-derive the same gap.
     assert "no instrument" in row["detail"]
-    assert "production LLM route" in row["detail"]
+    assert "nothing here computes this measure" in row["detail"]
+
+
+def test_kpi_rows_prints_the_written_reason_when_there_is_one(monkeypatch):
+    """`KPI_NO_INSTRUMENT` is empty in production now that every KPI has a
+    measurer, and the mechanism still has to work for the next one added
+    without one: a blank `now` says nothing about whether anyone tried, which
+    is how three cycles come to re-derive the same gap."""
+    monkeypatch.setitem(goal_measures.KPI_NO_INSTRUMENT,
+                        "nova-kpi-invented-for-this-fixture",
+                        "nothing on this box records it")
+    out = goal_measures.kpi_rows(_kpi_sections(), "2026-09-07", "2026-09-13")
+    row = {r["id"]: r for r in out}["nova-kpi-invented-for-this-fixture"]
+    assert row["detail"] == "no instrument — nothing on this box records it"
 
 
 def test_kpi_rows_separates_a_failed_reading_from_a_missing_instrument(monkeypatch):
@@ -1379,3 +1397,98 @@ def test_push_subscribers_is_wired_into_the_kpi_map():
     assert goal_measures.KPI_MEASURERS["marcus-kpi-push-subscribers"] is \
         goal_measures.measure_marcus_push_subscribers
     assert "marcus-kpi-push-subscribers" not in goal_measures.KPI_NO_INSTRUMENT
+
+
+# --- marcus-kpi-coach-latency ----------------------------------------------
+#
+# How long the coach makes him wait. It carried no instrument for a week with
+# the reason "timing it means driving the live coach", which was true about a
+# *synthetic* sample and false about a recorded one: Marcus is the process that
+# does the waiting, so `GET /api/coach/latency` reports the median of the taps
+# it timed itself (SokratesAI/marcus#161).
+
+
+def _latency_stub(monkeypatch, payload, error=None):
+    """Stand in for the live pod at `/api/coach/latency`.
+
+    Patches `_get_json` for the same reason `_subscribers_stub` does: the
+    fetch helper's own validation of the payload is part of what is tested.
+    """
+    def fake(url, timeout=60):
+        assert url.endswith("/api/coach/latency"), url
+        return (None, error) if error else (payload, None)
+    monkeypatch.setattr(goal_measures, "_get_json", fake)
+
+
+def test_measure_coach_latency_reports_seconds_not_milliseconds(monkeypatch):
+    """The KPI's unit is `s` and the route answers `medianMs`."""
+    _latency_stub(monkeypatch, {"count": 5, "medianMs": 14_900,
+                                "newestAt": "2026-09-14T00:12:00.000Z"})
+    value, detail = goal_measures.measure_marcus_coach_latency(None, None)
+    assert value == 14.9
+    assert "5 answered plan draft(s)" in detail
+
+
+def test_measure_coach_latency_prints_the_sample_count_beside_the_number(monkeypatch):
+    """A median over 1 tap and over 60 are the same number and different
+    readings, so the count is never left out of the detail line."""
+    _latency_stub(monkeypatch, {"count": 1, "medianMs": 3_000,
+                                "newestAt": "2026-09-14T00:12:00.000Z"})
+    value, detail = goal_measures.measure_marcus_coach_latency(None, None)
+    assert value == 3.0
+    assert "1 answered plan draft(s)" in detail
+    assert "2026-09-14T00:12:00.000Z" in detail
+
+
+def test_measure_coach_latency_refuses_to_call_an_empty_history_zero(monkeypatch):
+    """The trap this measure has, and it runs the OPPOSITE way from the
+    subscriber count's: there 0 is the real reading, here 0 cannot be one. A
+    zero-second median would say the coach answers instantly."""
+    _latency_stub(monkeypatch, {"count": 0, "medianMs": None, "newestAt": None})
+    value, detail = goal_measures.measure_marcus_coach_latency(None, None)
+    assert value is None
+    assert "no answered plan draft" in detail
+
+
+def test_measure_coach_latency_never_turns_an_unreachable_pod_into_a_number(monkeypatch):
+    _latency_stub(monkeypatch, None, error="could not read ...: HTTP 503")
+    value, detail = goal_measures.measure_marcus_coach_latency(None, None)
+    assert value is None
+    assert "503" in detail
+
+
+def test_measure_coach_latency_refuses_an_answer_that_is_not_a_summary(monkeypatch):
+    """A count that is not a non-negative integer is not a reading -- including
+    a boolean, which Python would otherwise accept as an int."""
+    for bad in ({}, {"count": "many"}, {"count": None}, {"count": True},
+                {"count": -1}, {"count": 2.5}):
+        _latency_stub(monkeypatch, bad)
+        value, detail = goal_measures.measure_marcus_coach_latency(None, None)
+        assert value is None, bad
+        assert "non-negative integer" in detail, bad
+
+
+def test_measure_coach_latency_refuses_samples_with_no_median(monkeypatch):
+    """`count` above zero and `medianMs` missing is a broken route, not a
+    reading -- and `round(None / 1000)` would be a crash rather than a `None`."""
+    for bad in ({"count": 4, "medianMs": None}, {"count": 4, "medianMs": "slow"},
+                {"count": 4}):
+        _latency_stub(monkeypatch, bad)
+        value, detail = goal_measures.measure_marcus_coach_latency(None, None)
+        assert value is None, bad
+        assert "no numeric `medianMs`" in detail, bad
+
+
+def test_coach_latency_is_wired_into_the_kpi_map():
+    """A measurer nothing calls is not an instrument."""
+    assert goal_measures.KPI_MEASURERS["marcus-kpi-coach-latency"] is \
+        goal_measures.measure_marcus_coach_latency
+    assert "marcus-kpi-coach-latency" not in goal_measures.KPI_NO_INSTRUMENT
+
+
+def test_every_kpi_in_the_document_now_has_a_measurer():
+    """The state this cycle left behind: `KPI_NO_INSTRUMENT` is empty because
+    every KPI has an instrument, not because the mechanism was deleted. If a
+    later cycle adds a KPI with no measurer, it belongs in that map with its
+    reason and this test says so."""
+    assert goal_measures.KPI_NO_INSTRUMENT == {}
