@@ -39,6 +39,22 @@ from agora_runner import dropped_ticks
 CYCLE_LOOKBACK = 5
 PENDING_CHARS_CAP = 4000
 
+# The listing this walk asks for. `?active=true` is a filter Agora has had all
+# along and this call was not using: it drops archived conversations on the
+# server, and every conversation an earlier cycle finished with gets archived.
+# Measured against the live store 2026-09-14, 1,614 conversations: `/conversations`
+# is 954,759 bytes in 1.36-1.49s, `/conversations?active=true` is 28,727 bytes in
+# 0.44s -- 33x less to serialize, send and parse, on the one call whose timeout
+# killed cycles 1350, 1405, 1505, 1527 and 1534. It is not the whole cure: the
+# server still walks every conversation file to build the list, so the part that
+# grows by one a cycle is untouched, and a tag filter would not help either --
+# 1,578 of those 1,614 carry this loop's own cycle tag.
+#
+# The `not c.get("archived")` filter below stays. Express ignores a query
+# parameter it does not know, so if this ever runs against an Agora without the
+# filter it gets the full list back and still reads it correctly, slowly.
+CYCLE_LISTING_PATH = "/conversations?active=true"
+
 
 # Everything this repo ships, so a frame can be told from a stdlib one. The
 # package directory's parent, not a name: the checkout is `/app` on the pod
@@ -279,7 +295,7 @@ def _older_cycle_conversations(heartbeat, current_id):
     `except Exception` here would also swallow a `KeyError` in the code
     below, which is a bug and must still crash loudly."""
     try:
-        status, listing = agora_get("/conversations")
+        status, listing = agora_get(CYCLE_LISTING_PATH)
     except (OSError, HTTPException) as exc:
         log("pending_across_cycles: listing conversations failed "
             f"({exc!r}) -- carrying nothing from older cycle conversations")
