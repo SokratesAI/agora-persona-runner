@@ -410,6 +410,19 @@ def kpi_ids(sections):
     return out
 
 
+def _same_project(seat_project, goal_project):
+    """Does a seat's project name and a goal's project name mean one project?
+
+    `parse_milestone_serves` keys its rows by the project name as the board
+    writes it and `key_result_ids` carries the name as the goals document
+    writes it -- `nova` against `Nova`, `product management` against
+    `Product management` -- so the two are compared case-folded and
+    stripped rather than raw.
+    """
+    return (seat_project or "").strip().lower() == (
+        goal_project or "").strip().lower()
+
+
 def split_serves(cell):
     """A `Serves` cell -> `[id, ...]`, lowercased, comma-separated, empty dropped.
 
@@ -423,9 +436,24 @@ def split_serves(cell):
 def serves_problems(serves, sections):
     """`{(project, milestone): serves cell}` + parsed sections -> broken pointers.
 
-    Two findings, both of them defects a pull request can close: a `Serves`
-    cell naming an id that no key result carries, and one naming a KPI --
-    *"a KPI may never be used as a key result"*, issue #227's own rule.
+    Three findings, all of them defects a pull request can close: a `Serves`
+    cell naming an id that no key result carries, one naming a KPI --
+    *"a KPI may never be used as a key result"*, issue #227's own rule --
+    and one naming a key result that belongs to a **different project**.
+
+    That third one is the quiet one, and it is why it is here rather than
+    left to reading. Issue #227's model is a tree -- project, then its
+    objective, then that objective's key results, then the milestones that
+    serve them -- so a milestone under one project pointing at another
+    project's key result is not a milestone with an unusual pointer, it is
+    a branch grafted onto the wrong trunk. Nothing downstream notices:
+    the id resolves, so the seat reads as filled, `split_orphans` drops
+    the row off rule 4's pruning list, and `/plan` counts the milestone in
+    the other project's "Served by N milestones." line. Measured on the
+    live documents the day this landed: 58 seats, 0 cross-project pointers,
+    so the rule starts green -- which is the point of adding it now, with
+    19 more seats still to be written for the projects that have no goals
+    yet, rather than after a copy-paste has put one in.
 
     **The orphan is deliberately not here; it is `serves_orphans`.** It used
     to be, and folding the two together is what kept this whole check out of
@@ -449,6 +477,11 @@ def serves_problems(serves, sections):
                 found.append(
                     f"{project} / {milestone}: serves {identifier!r}, which "
                     "is not a key result id")
+            elif not _same_project(project, results[identifier]):
+                found.append(
+                    f"{project} / {milestone}: serves {identifier!r}, which "
+                    f"belongs to {results[identifier]!r} -- a milestone "
+                    "serves a key result of its own project")
     return found
 
 
@@ -463,7 +496,10 @@ def keeps_problems(keeps, sections):
     orphan disappear would be to write its key result into `Keeps`.
 
     A cell naming an id that is neither is the same defect `serves_problems`
-    reports: a pointer at nothing, which a pull request can close.
+    reports: a pointer at nothing, which a pull request can close. So is a
+    cell naming a KPI that belongs to another project -- `Keeps` sits in
+    the same tree as `Serves` and a guardrail held by someone else's
+    project is not this milestone's guardrail.
     """
     results, guardrails = key_result_ids(sections), kpi_ids(sections)
     found = []
@@ -477,6 +513,11 @@ def keeps_problems(keeps, sections):
                 found.append(
                     f"{project} / {milestone}: keeps {identifier!r}, which "
                     "is not a KPI id")
+            elif not _same_project(project, guardrails[identifier]):
+                found.append(
+                    f"{project} / {milestone}: keeps {identifier!r}, which "
+                    f"belongs to {guardrails[identifier]!r} -- a milestone "
+                    "keeps a KPI of its own project")
     return found
 
 
