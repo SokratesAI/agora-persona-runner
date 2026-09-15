@@ -1170,3 +1170,92 @@ def set_field_in_kpi(markdown, kpi_id, field, value):
     KPI/key-result split exists to prevent. The caller passes `now`.
     """
     return _set_field_in_fence(markdown, "kpi", kpi_id, field, value)
+
+
+#: The clause a cycle writes under a goal block to say where its number came
+#: from -- `Measured 48 at 00:16 Oslo on 2026-09-14`. Anchored on the ` at `
+#: on purpose: the same paragraphs also say things like "It read 6 at 00:16"
+#: and "It replaces a hand-typed 1", which are history rather than the
+#: current reading, and a looser pattern would report those as the claim.
+_MEASURED_RE = re.compile(r"\bMeasured\s+(?P<value>-?\d+(?:\.\d+)?)\s+at\b")
+
+
+def _writeup_blocks(markdown):
+    """Yield `(project, fence, fields, prose)` for every owned fence.
+
+    `parse_project_goals` throws the prose away -- it builds the model, and
+    the model is the fields. This walks the same document keeping the text
+    *between* one fence's close and the next fence or heading, which is where
+    a cycle writes how it took the number.
+    """
+    project, fence, body, fields, prose = "", None, [], None, []
+    for line in (markdown or "").split("\n"):
+        if fence is not None:
+            if _FENCE_CLOSE_RE.match(line):
+                if fence in _FENCES and project:
+                    allowed = (OBJECTIVE_FIELDS if fence == "objective"
+                               else KEY_RESULT_FIELDS if fence == "key-result"
+                               else KPI_FIELDS)
+                    fields = _fields(body, allowed)
+                    prose = []
+                fence, body = None, []
+            else:
+                body.append(line)
+            continue
+        opened = _FENCE_OPEN_RE.match(line)
+        heading = None if opened else _HEADING_RE.match(line)
+        if opened or heading:
+            if fields is not None:
+                yield project, "\n".join(prose), fields
+                fields = None
+            if opened:
+                fence, body = (opened.group("name")
+                               if opened.group("name") in _FENCES else ""), []
+                continue
+            project = heading.group("name")
+            continue
+        if fields is not None:
+            prose.append(line)
+    if fields is not None:
+        yield project, "\n".join(prose), fields
+
+
+def stale_writeups(markdown):
+    """Every goal block whose write-up quotes a reading its `now:` contradicts.
+
+    The number and the sentence under it are written by different hands.
+    `tools.goal_drift --repair` rewrites `now:` and has never touched a word
+    of prose -- correctly, because the paragraph says *why* and *when*, and a
+    tool that edited the digit inside "2 of the 64 cycles that ran in the last
+    24 hours wrote no journal entry: 1527 failed, 1534 failed" would leave the
+    rest of that sentence lying. So every repair mints a block where the
+    scoreboard says one number and the audit trail under it says another, and
+    nothing said so.
+
+    Measured on the live document the day this was written: four of the 56
+    blocks, including `nova-kpi-silent-cycles` reading a green `now: 0`
+    against a ceiling of 1 while the paragraph beneath it says two cycles
+    wrote nothing and names them.
+
+    An inventory rather than a defect, the same call `kpi_breaches` makes: the
+    document is well formed, and which of the two numbers is right is a
+    judgement. Comparison is numeric, so `now: 0` under "Measured 0.0" is the
+    same reading written twice and not a finding.
+    """
+    out = []
+    for project, prose, fields in _writeup_blocks(markdown):
+        now = _number(fields.get("now"))
+        if now is None:
+            continue
+        found = _MEASURED_RE.search(prose or "")
+        if not found:
+            continue
+        measured = _number(found.group("value"))
+        if measured is None or measured == now:
+            continue
+        label = fields.get("id", "").strip() or fields.get("name", "").strip()
+        out.append(f"{project} / {label}: now: {fields.get('now', '').strip()} "
+                   f"but the write-up under it says "
+                   f"\"{found.group(0)} ...\" -- the number was repaired and "
+                   f"the sentence was not")
+    return out
