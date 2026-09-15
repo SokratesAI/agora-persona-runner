@@ -470,15 +470,83 @@ def kpi_breaches(sections):
     guardrail is for, and until it existed the range was written down and
     never read.
     """
+    return [f"{project} / {label}: {breach}"
+            for project, label, _, breach in _breached_kpis(sections)]
+
+
+def _breached_kpis(sections):
+    """`(project, label, lowercased id, breach sentence)` for each KPI out of
+    its range.
+
+    One walk, because `kpi_breaches` and `unworked_breaches` are the same
+    finding read to two different depths and a second copy of the walk is how
+    the two lists come to disagree about what is breached.
+    """
     out = []
     for section in sections.values():
         name = section.get("project", "")
         for row in section.get("kpis", ()):
             breach = kpi_breach(row)
             if breach:
-                label = row.get("id", "").strip() or row.get(
-                    "name", "").strip()
-                out.append(f"{name} / {label}: {breach}")
+                identifier = row.get("id", "").strip()
+                label = identifier or row.get("name", "").strip()
+                out.append((name, label, identifier.lower(), breach))
+    return out
+
+
+def unworked_breaches(sections, keeps, rows):
+    """Every breached KPI whose keepers hold no open row -- rule 4 from the
+    guardrail's side.
+
+    `kpi_breaches` says the number is out of range. `unpointed_goals` says a
+    KPI no milestone keeps is nobody's to hold. Between them sits the state
+    that actually goes unnoticed: the pointer exists, the guardrail is
+    breached, and **every milestone named as its keeper is empty of open
+    work**. Nothing on either board would bring the number back, and the
+    breach reads as owned because a `Keeps` cell names somebody.
+
+    Measured against the live documents the day this was written: two KPIs
+    out of bounds, and they split. `post-kpi-volume` (112 articles a day
+    against a ceiling of 60) is kept by *Sokrates Post / An editor for the
+    Post*, which carries the open `ideas #96` -- somebody is on it.
+    `marcus-kpi-browser-monolith` (303 KB against a ceiling of 292 KB) is
+    kept by *Marcus / Codebase health*, which carries **no open row at
+    all**. One line, and it was unreadable inside a two-line list that
+    offered no verdict.
+
+    A KPI that *no* milestone keeps is deliberately not reported here:
+    `unpointed_goals` already prints it, with a different action -- write the
+    pointer, rather than open the work -- and one fact under two verdicts is
+    how a list silently changes size.
+
+    `rows` of `None` means the boards were **not read**, and that returns an
+    empty list rather than every breach: with no boards, "no open row" is
+    guaranteed true for every keeper, which is the negative result nothing
+    could have contradicted. `report` says the task half was not evaluated in
+    that case, the same way it does for the unplaced list.
+
+    An inventory rather than a defect, like every list around it: opening a
+    row, retiring the milestone or moving the fence are all judgements the
+    owner takes, and none of them is something a diff closes.
+    """
+    if rows is None:
+        return []
+    open_counts = _open_rows_by_milestone(rows)
+    keepers = {}
+    for seat, cell in (keeps or {}).items():
+        for identifier in split_serves(cell):
+            keepers.setdefault(identifier, []).append(seat)
+    out = []
+    for project, label, identifier, breach in _breached_kpis(sections):
+        seats = keepers.get(identifier, [])
+        if not seats:
+            continue
+        if any(open_counts.get(seat) for seat in seats):
+            continue
+        named = ", ".join(f"{seat[0]} / {seat[1]}" for seat in sorted(seats))
+        out.append(f"{project} / {label}: {breach} -- and {named} keeps it "
+                   "with no open row under it, so nothing on either board "
+                   "would bring the number back")
     return out
 
 
