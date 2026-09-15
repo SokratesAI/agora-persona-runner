@@ -1177,7 +1177,15 @@ def set_field_in_kpi(markdown, kpi_id, field, value):
 #: on purpose: the same paragraphs also say things like "It read 6 at 00:16"
 #: and "It replaces a hand-typed 1", which are history rather than the
 #: current reading, and a looser pattern would report those as the claim.
-_MEASURED_RE = re.compile(r"\bMeasured\s+(?P<value>-?\d+(?:\.\d+)?)\s+at\b")
+#:
+#: The trailing date is optional and capturing it is what lets
+#: `writeup_readings` tell a dated sentence from an undatable one. Bold
+#: markers are allowed around the digits because the live document writes
+#: `Measured **0** at 04:05 Oslo on 2026-09-14` in at least one block, and a
+#: pattern that missed those would report a clean block by reading nothing.
+_MEASURED_RE = re.compile(
+    r"\bMeasured\s+\**(?P<value>-?\d+(?:\.\d+)?)\**\s+at\b"
+    r"(?:[^\n.]{0,40}?\bon\s+(?P<date>\d{4}-\d{2}-\d{2}))?")
 
 
 def _writeup_blocks(markdown):
@@ -1220,8 +1228,11 @@ def _writeup_blocks(markdown):
         yield project, "\n".join(prose), fields
 
 
-def stale_writeups(markdown):
-    """Every goal block whose write-up quotes a reading its `now:` contradicts.
+def writeup_readings(markdown):
+    """Goal blocks whose write-up quotes a reading its `now:` disagrees with.
+
+    Returns `(contradicting, older)` -- two lists, because the two are
+    different things and the first version of this reported them as one.
 
     The number and the sentence under it are written by different hands.
     `tools.goal_drift --repair` rewrites `now:` and has never touched a word
@@ -1229,20 +1240,40 @@ def stale_writeups(markdown):
     tool that edited the digit inside "2 of the 64 cycles that ran in the last
     24 hours wrote no journal entry: 1527 failed, 1534 failed" would leave the
     rest of that sentence lying. So every repair mints a block where the
-    scoreboard says one number and the audit trail under it says another, and
-    nothing said so.
+    scoreboard says one number and the audit trail under it says another.
 
-    Measured on the live document the day this was written: four of the 56
-    blocks, including `nova-kpi-silent-cycles` reading a green `now: 0`
-    against a ceiling of 1 while the paragraph beneath it says two cycles
-    wrote nothing and names them.
+    **A disagreement is not by itself a contradiction, and calling it one made
+    this list unanswerable.** It shipped reporting four blocks and asking a
+    cycle to decide "which of the two is right"; all four sentences were
+    dated, all four dates were in the past, and both numbers were true when
+    they were written. Worse, the disagreement is minted *by design*: the
+    drift check repairs `now:` on every sweep, and three of those four measure
+    a rolling 24-hour window, so the pair comes apart again within the hour.
+    A finding that is guaranteed to reappear is one nobody reads.
 
-    An inventory rather than a defect, the same call `kpi_breaches` makes: the
-    document is well formed, and which of the two numbers is right is a
-    judgement. Comparison is numeric, so `now: 0` under "Measured 0.0" is the
-    same reading written twice and not a finding.
+    So the split, and it needs no clock and no threshold:
+
+    * A clause carrying a date -- `Measured 1.63 at 23:55 Oslo on 2026-09-13`
+      -- is **history**. `now:` is rewritten on every sweep, so it is never
+      older than a dated sentence beneath it, and the sentence is the audit
+      trail of an earlier reading rather than a competing claim about today.
+      It goes in `older`, with its date, so a write-up quoting a reading from
+      a month ago is still visible as rotten prose.
+    * A clause carrying **no** date -- or one this cannot parse -- goes in
+      `contradicting`. Nothing orders the two readings, so which is current
+      really is a judgement, and that is the whole of what is left of the
+      original list.
+
+    Measured on the live document the day the split was written: 4
+    disagreements, all 4 dated (2026-09-13 and 2026-09-14), so
+    `contradicting` is empty and `older` holds all four.
+
+    Neither list is a defect and neither raises, the same call `kpi_breaches`
+    makes: the document is well formed. Comparison is numeric, so `now: 0`
+    under "Measured 0.0" is the same reading written twice and not a finding
+    at all.
     """
-    out = []
+    contradicting, older = [], []
     for project, prose, fields in _writeup_blocks(markdown):
         now = _number(fields.get("now"))
         if now is None:
@@ -1254,8 +1285,16 @@ def stale_writeups(markdown):
         if measured is None or measured == now:
             continue
         label = fields.get("id", "").strip() or fields.get("name", "").strip()
-        out.append(f"{project} / {label}: now: {fields.get('now', '').strip()} "
-                   f"but the write-up under it says "
-                   f"\"{found.group(0)} ...\" -- the number was repaired and "
-                   f"the sentence was not")
-    return out
+        written = fields.get("now", "").strip()
+        date = found.group("date")
+        if date:
+            older.append(
+                f"{project} / {label}: now: {written} but the write-up under "
+                f"it reads {found.group('value')}, taken on {date} -- an "
+                f"earlier reading, not a competing one")
+        else:
+            contradicting.append(
+                f"{project} / {label}: now: {written} but the write-up under "
+                f"it says \"{found.group(0)} ...\" and gives no date, so "
+                f"nothing here says which reading is current")
+    return contradicting, older

@@ -101,7 +101,7 @@ from agora_runner.project_goals import (
     objective_periods,
     undecided_goals,
     projects_without_goals,
-    stale_writeups,
+    writeup_readings,
 )
 
 #: The two boards the owner's work sits on, read through the site's own API
@@ -150,7 +150,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
         sections, today or datetime.date.today())
     undecided = undecided_goals(sections)
     breaches = kpi_breaches(sections)
-    stale = stale_writeups(goals_markdown)
+    contradicting, older = writeup_readings(goals_markdown)
     missing_goals, projects_on_boards = (
         ([], 0) if rows is None else projects_without_goals(rows, sections))
     defects = found + broken + unseated
@@ -196,14 +196,23 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "well formed and the number is the finding:")
         for line in breaches:
             lines.append(f"  {line}")
-    if stale:
+    if contradicting:
         lines.append(
-            f"WRITE-UP CONTRADICTS ITS OWN NUMBER ({len(stale)}) -- the block "
-            "says one reading and the paragraph under it says another. An "
-            "inventory rather than a defect, so it does not raise: `goal_drift "
-            "--repair` writes `now:` and deliberately never edits prose, so "
-            "which of the two is right is a judgement:")
-        for line in stale:
+            f"WRITE-UP CONTRADICTS ITS OWN NUMBER ({len(contradicting)}) -- "
+            "the block says one reading, the paragraph under it says another, "
+            "and the paragraph carries no date, so nothing orders the two. An "
+            "inventory rather than a defect, so it does not raise: which of "
+            "the two is current is a judgement:")
+        for line in contradicting:
+            lines.append(f"  {line}")
+    if older:
+        lines.append(
+            f"WRITE-UP QUOTES AN EARLIER READING ({len(older)}) -- the "
+            "paragraph is dated and `now:` is rewritten on every sweep, so "
+            "this is the audit trail of a reading already taken and not a "
+            "second claim about today. Printed so prose that has gone stale "
+            "stays visible; it is not a question anyone has to answer:")
+        for line in older:
             lines.append(f"  {line}")
     if past:
         lines.append(
@@ -260,7 +269,9 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                     if orphans else "") + ", "
                  f"{len(unpointed)} unpointed goal(s), "
                  f"{len(breaches)} KPI(s) out of bounds, "
-                 f"{len(stale)} write-up(s) contradicting their own number, "
+                 f"{len(contradicting)} write-up(s) contradicting their "
+                 "own number, "
+                 f"{len(older)} quoting an earlier reading, "
                  f"{len(past)} objective(s) past their month, "
                  f"{len(undated)} undated, "
                  f"{len(undecided)} of {len(sections)} project(s) still "

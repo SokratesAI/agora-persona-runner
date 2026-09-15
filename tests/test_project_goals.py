@@ -1117,28 +1117,32 @@ def test_a_project_with_no_objective_is_not_an_undecided_one():
 
 def test_a_repaired_number_leaves_the_sentence_under_it_saying_the_old_one():
     """The failure this exists for, taken off the live document: `--repair`
-    writes `now:` and never a word of prose, so the two disagree in silence."""
-    from agora_runner.project_goals import stale_writeups
+    writes `now:` and never a word of prose, so the two disagree in silence.
+
+    It lands in `older` rather than `contradicting` because the sentence is
+    dated: `now:` is rewritten on every sweep, so a dated sentence beneath it
+    is the previous reading and not a rival claim about today."""
+    from agora_runner.project_goals import writeup_readings
     doc = _doc("## Nova\n\n```kpi\nid: nova-kpi-silent-cycles\n"
                "name: Cycles that write nothing\nmeasure: m\nnow: 0\n"
                "low: 0\nhigh: 1\n```\n\n"
                "Instrumented: `tools.goal_measures`. Measured 2 at 14:47 Oslo "
                "on 2026-09-14 -- 1527 failed, 1534 failed.\n")
-    assert stale_writeups(doc) == [
-        'Nova / nova-kpi-silent-cycles: now: 0 but the write-up under it says '
-        '"Measured 2 at ..." -- the number was repaired and the sentence was '
-        'not']
+    assert writeup_readings(doc) == ([], [
+        'Nova / nova-kpi-silent-cycles: now: 0 but the write-up under it '
+        'reads 2, taken on 2026-09-14 -- an earlier reading, not a '
+        'competing one'])
 
 
 def test_the_same_reading_written_two_ways_is_not_a_contradiction():
     """`now: 0` under "Measured 0.0" is one number formatted twice. A string
     comparison here would report every integer-versus-decimal pair forever,
     which is the linter that gets ignored."""
-    from agora_runner.project_goals import stale_writeups
+    from agora_runner.project_goals import writeup_readings
     doc = _doc("## Marcus\n\n```key-result\nid: marcus-kr-sessions-logged\n"
                "name: n\nmeasure: m\nnow: 0\ntarget: 3\n```\n\n"
                "Measured 0.0 at 01:52 Oslo on 2026-09-14.\n")
-    assert stale_writeups(doc) == []
+    assert writeup_readings(doc) == ([], [])
 
 
 def test_history_in_the_paragraph_is_not_read_as_the_current_reading():
@@ -1146,46 +1150,90 @@ def test_history_in_the_paragraph_is_not_read_as_the_current_reading():
     read 6 at 00:16", "It replaces a hand-typed 1". Only the `Measured N at`
     clause claims to be the reading behind `now:`, so only it is compared;
     matching the loose numbers would report a block that is perfectly honest."""
-    from agora_runner.project_goals import stale_writeups
+    from agora_runner.project_goals import writeup_readings
     doc = _doc("## Nova\n\n```kpi\nid: k\nname: n\nmeasure: m\nnow: 2\n"
                "low: 0\nhigh: 5\n```\n\n"
                "Measured 2 at 14:47 Oslo on 2026-09-14. It read 6 at 00:16 "
                "the same day and it replaces a hand-typed 1.\n")
-    assert stale_writeups(doc) == []
+    assert writeup_readings(doc) == ([], [])
 
 
 def test_a_block_with_no_write_up_at_all_is_not_a_finding():
     """Most blocks in the document carry a paragraph; a few do not, and a
     missing audit trail is a different gap from a contradictory one."""
-    from agora_runner.project_goals import stale_writeups
+    from agora_runner.project_goals import writeup_readings
     doc = _doc("## Nova\n\n```kpi\nid: k\nname: n\nmeasure: m\nnow: 4\n"
                "low: 0\nhigh: 5\n```\n")
-    assert stale_writeups(doc) == []
+    assert writeup_readings(doc) == ([], [])
 
 
 def test_the_paragraph_is_read_against_its_own_block_not_the_one_before_it():
     """Two fences in a row with one paragraph between them: the prose belongs
     to the fence above it. Attaching it to the wrong block reports a
     contradiction on a number nobody wrote about."""
-    from agora_runner.project_goals import stale_writeups
+    from agora_runner.project_goals import writeup_readings
     doc = _doc("## Nova\n\n```kpi\nid: first\nname: n\nmeasure: m\nnow: 9\n"
                "low: 0\nhigh: 10\n```\n\n"
                "Measured 9 at 01:00 Oslo on 2026-09-15.\n\n"
                "```kpi\nid: second\nname: n\nmeasure: m\nnow: 3\n"
                "low: 0\nhigh: 10\n```\n\n"
                "Measured 7 at 01:00 Oslo on 2026-09-15.\n")
-    assert [line.split(":")[0] for line in stale_writeups(doc)] == [
-        "Nova / second"]
+    contradicting, older = writeup_readings(doc)
+    assert contradicting == []
+    assert [line.split(":")[0] for line in older] == ["Nova / second"]
 
 
 def test_a_fence_this_module_does_not_own_does_not_capture_the_prose():
     """A ```python sample sits in these write-ups. `parse_project_goals`
     already refuses to read one as fields; this must not read the paragraph
     after one as a block's audit trail either."""
-    from agora_runner.project_goals import stale_writeups
+    from agora_runner.project_goals import writeup_readings
     doc = _doc("## Nova\n\n```kpi\nid: k\nname: n\nmeasure: m\nnow: 5\n"
                "low: 0\nhigh: 10\n```\n\n"
                "Measured 5 at 01:00 Oslo on 2026-09-15.\n\n"
                "```python\nprint(1)\n```\n\n"
                "Measured 1 at 01:00 Oslo on 2026-09-15.\n")
-    assert stale_writeups(doc) == []
+    assert writeup_readings(doc) == ([], [])
+
+
+def test_an_undated_sentence_is_the_only_real_contradiction():
+    """Nothing in the document orders an undated reading against `now:`, so
+    which one is current is a judgement -- the whole of what is left of the
+    original list, and the one case worth a cycle's attention."""
+    from agora_runner.project_goals import writeup_readings
+    doc = _doc("## Nova\n\n```kpi\nid: k\nname: n\nmeasure: m\nnow: 3\n"
+               "low: 0\nhigh: 10\n```\n\n"
+               "Instrumented by hand. Measured 8 at 01:00 Oslo.\n")
+    contradicting, older = writeup_readings(doc)
+    assert older == []
+    assert contradicting == [
+        'Nova / k: now: 3 but the write-up under it says "Measured 8 at ..." '
+        'and gives no date, so nothing here says which reading is current']
+
+
+def test_a_bold_reading_is_read_rather_than_skipped():
+    """`marcus-kpi-browser-monolith` writes `Measured **292** at ...` and the
+    first version of this pattern could not see it, so the live list reported
+    four of the five blocks that disagree and looked complete doing it."""
+    from agora_runner.project_goals import writeup_readings
+    doc = _doc("## Marcus\n\n```kpi\nid: marcus-kpi-browser-monolith\n"
+               "name: n\nmeasure: m\nnow: 303\nlow: 0\nhigh: 292\n```\n\n"
+               "Measured **292** at 04:16 Oslo on 2026-09-14 -- `app.js`.\n")
+    contradicting, older = writeup_readings(doc)
+    assert contradicting == []
+    assert [line.split(":")[0] for line in older] == [
+        "Marcus / marcus-kpi-browser-monolith"]
+
+
+def test_a_date_in_a_later_sentence_is_not_this_readings_date():
+    """The date must belong to the `Measured N at ...` clause itself. Reading
+    on past a full stop would date an undated reading off an unrelated
+    sentence and file a real contradiction as settled history."""
+    from agora_runner.project_goals import writeup_readings
+    doc = _doc("## Nova\n\n```kpi\nid: k\nname: n\nmeasure: m\nnow: 3\n"
+               "low: 0\nhigh: 10\n```\n\n"
+               "Measured 8 at 01:00 Oslo. It replaced a number typed on "
+               "2026-09-01.\n")
+    contradicting, older = writeup_readings(doc)
+    assert older == []
+    assert [line.split(":")[0] for line in contradicting] == ["Nova / k"]
