@@ -69,6 +69,15 @@ reading to take -- `pm-kr-calibration` before anything records a prediction,
 Marcus's coach numbers before he taps the coach -- is not drift in either
 direction and is counted as neither.
 
+Two things were wearing that one sentence, and since 2026-09-15 they are
+told apart. A document that publishes nothing and measures nothing is
+silent. A document that publishes a *number* while its instrument has no
+reading to take is named on its own `?` line and counted on the summary --
+`marcus-kpi-coach-latency` carried `now: 14.9` with no answered plan draft
+ever recorded, so 14.9 was on the `/plan` scoreboard and no sweep could
+contradict it. It still does not raise: an instrument whose history is
+empty is a thing to wait for, not a defect a pull request closes.
+
 `vault_tool.py` lives only on the bridge pod, which is where `preflight`
 runs; from the runner pod this exits 1 rather than pretending the documents
 were clean.
