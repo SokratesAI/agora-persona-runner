@@ -550,6 +550,101 @@ def unworked_breaches(sections, keeps, rows):
     return out
 
 
+def short_key_results(sections):
+    """`(project, label, lowercased id, shortfall sentence)` for each key
+    result standing short of its own target.
+
+    One walk, for the same reason `_breached_kpis` is one walk: the list and
+    the rule-4 read of it are the same finding at two depths, and a second
+    copy of the walk is how the two come to disagree about what is short.
+
+    Three rows are skipped, each for its own reason. A `struck` key result is
+    one he killed, so measuring it is the check inventing work -- the same
+    call `undecided_goals` makes. A row whose `now` or `target` is not one
+    number has no comparison to make, which is `_number`'s contract. And a
+    row with no `direction` cannot be judged at all: `now: 3` against
+    `target: 0` is finished work if down is good and untouched work if up is,
+    and guessing which would put a verdict on the owner's page that nothing
+    in the document supports.
+    """
+    out = []
+    for section in sections.values():
+        name = section.get("project", "")
+        for row in section.get("keyResults", ()):
+            if row.get("status", "").strip().lower() == "struck":
+                continue
+            now = _number(row.get("now"))
+            target = _number(row.get("target"))
+            direction = row.get("direction", "").strip().lower()
+            if now is None or target is None or direction not in ("up", "down"):
+                continue
+            if now <= target if direction == "down" else now >= target:
+                continue
+            identifier = row.get("id", "").strip()
+            label = identifier or row.get("name", "").strip()
+            unit = row.get("unit", "").strip()
+            unit = f" {unit}" if unit else ""
+            word = "above" if direction == "down" else "below"
+            out.append((name, label, identifier.lower(),
+                        f"{row.get('now', '').strip()}{unit} is {word} the "
+                        f"target of {row.get('target', '').strip()}{unit}"))
+    return out
+
+
+def unworked_shortfalls(sections, serves, rows):
+    """Every key result short of target whose servers hold no open row --
+    rule 4 read from the target's side.
+
+    `unworked_breaches` is the same sentence about a KPI: the pointer exists,
+    the number is out of bounds, and every milestone named against it is
+    empty of open work. This is the half that was missing, and the reason it
+    was missing is that nothing in this module ever compared a key result's
+    `now` to its `target` at all. `problems()` refuses a key result with no
+    target and `goal_drift` asks whether the written number still matches its
+    instrument; neither of them asks whether the number is any good. A target
+    nothing ever compares against is decoration, which is the same thing
+    `kpi_breach` was written to stop.
+
+    **The bare list of short key results is deliberately not a finding.**
+    Measured on the live documents the day this was written: 28 key results,
+    24 of them short of target. Of course they are -- a key result is a thing
+    not yet achieved, and printing all 24 says only that the year is not over.
+    Exactly **one** of the 24 has nobody on it: `research-kr-reused` at 7.3%
+    against a target of 50%, served only by *Research / read what other agent
+    loops do*, which holds no open row. That line is the finding, and inside
+    a 24-line list it would have been unreadable.
+
+    Same three refusals as `unworked_breaches`, for the same reasons. A key
+    result **no** milestone serves is not reported here -- `unpointed_goals`
+    already prints it with a different action, write the pointer rather than
+    open the work, and one fact under two verdicts is how a list changes size
+    silently. `rows` of `None` means the boards were not read, and returns an
+    empty list rather than everything: with no boards "no open row" is true of
+    every server by construction, so the negative result was guaranteed.
+    And it does not raise -- opening a row, retiring the milestone or moving
+    the target are three different calls and all three are his.
+    """
+    if rows is None:
+        return []
+    open_counts = _open_rows_by_milestone(rows)
+    servers = {}
+    for seat, cell in (serves or {}).items():
+        for identifier in split_serves(cell):
+            servers.setdefault(identifier, []).append(seat)
+    out = []
+    for project, label, identifier, shortfall in short_key_results(sections):
+        seats = servers.get(identifier, [])
+        if not seats:
+            continue
+        if any(open_counts.get(seat) for seat in seats):
+            continue
+        named = ", ".join(f"{seat[0]} / {seat[1]}" for seat in sorted(seats))
+        out.append(f"{project} / {label}: {shortfall} -- and {named} serves "
+                   "it with no open row under it, so nothing on either board "
+                   "would move the number")
+    return out
+
+
 def key_result_ids(sections):
     """`{lowercased id: project}` over every key result. `Serves` resolves here."""
     out = {}

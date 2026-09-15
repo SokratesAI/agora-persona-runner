@@ -59,6 +59,7 @@ def test_a_linked_milestone_is_clean():
                      "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
                      "0 KPI(s) out of bounds, "
                      "0 of them with nobody on it, "
+                     "0 key result(s) short of target with nobody on it, "
                      "0 write-up(s) contradicting their own number, "
                      "0 quoting an earlier reading, "
                      "0 objective(s) past their month, 1 undated, "
@@ -826,3 +827,155 @@ def test_one_keeper_with_open_work_answers_for_all_of_them():
     one_busy, _ = report(_kpi(now=6, high=1), seats,
                          rows=[row(1, milestone="Planning")])
     assert not [t for t in one_busy if t.startswith("BREACHED WITH NOBODY")]
+
+
+def _kr(**fields):
+    """`GOALS` with the key result's fields replaced wholesale.
+
+    `id`, `name` and `measure` are kept because `problems()` refuses a key
+    result missing any of them, and a fixture that fails the model check
+    would raise before the list under test is ever reached.
+    """
+    body = "".join(f"{k.replace('_', '-')}: {v}\n" for k, v in fields.items())
+    return GOALS.replace(
+        "```key-result\nid: nova-kr1\nname: n\nmeasure: m\ntarget: 1\n"
+        "status: agreed\n```\n",
+        f"```key-result\nid: nova-kr1\nname: n\nmeasure: m\n{body}```\n")
+
+
+def test_a_short_key_result_whose_server_holds_no_open_row_is_listed():
+    """The mirror of the breach list, and the half that was missing: nothing
+    in the model ever compared a key result's `now` to its `target` at all.
+    Live when this shipped: `research-kr-reused` at 7.3% against a target of
+    50%, served only by *Research / read what other agent loops do*, which
+    holds no open row."""
+    lines, code = report(_kr(now=7.3, target=50, direction="up",
+                             unit="%", status="agreed"), SEATS, rows=[])
+    assert code == 0
+    assert lines[0] == "MODEL HOLDS"
+    heading = next(t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY"))
+    assert heading.startswith("SHORT OF TARGET WITH NOBODY ON IT (1)")
+    # The count in the heading is read off the document rather than typed:
+    # a frozen "24 of the 28" is a live reading baked into a printed string,
+    # and it goes wrong the first time a key result moves.
+    assert "1 of them are short right now" in heading
+    assert ("  Nova / nova-kr1: 7.3 % is below the target of 50 % -- and "
+            "nova / picking serves it with no open row under it, so nothing "
+            "on either board would move the number") in lines
+    assert "1 key result(s) short of target with nobody on it" in lines[-1]
+
+
+def test_a_key_result_over_its_target_downward_is_short_too():
+    """`direction: down` inverts which side of the target is the shortfall --
+    `nova-kr-your-rows` reads 6.9 against a target of 2.0 and is behind, not
+    ahead. A single comparison here would call half the live document done."""
+    lines, _ = report(_kr(now=6.9, target=2.0, direction="down",
+                          status="agreed"), SEATS, rows=[])
+    assert ["  Nova / nova-kr1: 6.9 is above the target of 2.0 -- and nova / "
+            "picking serves it with no open row under it, so nothing on "
+            "either board would move the number"] == [
+        t for t in lines if t.startswith("  Nova / nova-kr1:")]
+
+
+def test_a_key_result_on_its_target_is_not_short():
+    """Reaching the target is the point, so the boundary belongs on the good
+    side of the line in both directions."""
+    for direction, now in (("up", 50), ("down", 2.0)):
+        lines, _ = report(_kr(now=now, target=(50 if direction == "up" else 2.0),
+                              direction=direction, status="agreed"),
+                          SEATS, rows=[])
+        assert not [t for t in lines
+                    if t.startswith("SHORT OF TARGET WITH NOBODY")], direction
+        assert "0 key result(s) short of target with nobody on it" in lines[-1]
+
+
+def test_a_short_key_result_whose_server_holds_an_open_row_is_not_listed():
+    """Somebody is on it. That is the whole difference between this list and
+    the 24 short key results it deliberately does not print."""
+    lines, _ = report(_kr(now=7.3, target=50, direction="up",
+                          status="agreed"), SEATS, rows=[row(1)])
+    assert not [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+    assert "0 key result(s) short of target with nobody on it" in lines[-1]
+
+
+def test_a_server_holding_only_closed_rows_counts_as_nobody():
+    """A milestone whose work is all done is not work in progress. Counting a
+    closed row would empty this list out as the boards roll, which is the
+    opposite of what an unmet target means."""
+    lines, _ = report(_kr(now=7.3, target=50, direction="up", status="agreed"),
+                      SEATS, rows=[row(1, status_key="done", done=True)])
+    assert [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+
+
+def test_a_short_key_result_nobody_serves_is_left_to_the_unpointed_list():
+    """One fact under two verdicts is how a list silently changes size. A key
+    result with no server is already `NOTHING POINTS AT`, and its action is
+    different -- write the pointer, not open the work."""
+    unserved = ("| Project | Milestone | Position | Updated | Serves |\n"
+                "|---|---|---|---|---|\n"
+                "| Nova | Picking | 1 | 09-13 |  |\n")
+    lines, _ = report(_kr(now=7.3, target=50, direction="up", status="agreed"),
+                      unserved, rows=[])
+    assert not [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+    assert [t for t in lines if t.startswith("NOTHING POINTS AT")]
+    assert "0 key result(s) short of target with nobody on it" in lines[-1]
+
+
+def test_an_unread_board_claims_nothing_rather_than_listing_every_shortfall():
+    """With no boards, "no open row" is true of every server by construction.
+    Twenty-four lines would appear and every one of them would be a negative
+    result nothing could have contradicted."""
+    lines, _ = report(_kr(now=7.3, target=50, direction="up", status="agreed"),
+                      SEATS, rows=None)
+    assert not [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+    assert "short of target with nobody on it" not in lines[-1]
+
+
+def test_the_serving_seat_and_the_row_match_on_case():
+    """The seats file is parsed lowercased and a board row carries the case the
+    owner typed. Comparing them raw makes every server look empty, which reads
+    as the strongest possible finding and is wrong on every line."""
+    lines, _ = report(_kr(now=7.3, target=50, direction="up", status="agreed"),
+                      SEATS, rows=[row(1, project="NOVA", milestone="PICKING")])
+    assert not [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+
+
+def test_a_struck_key_result_is_not_measured():
+    """He killed it. Asking whether anybody is working towards a target he
+    struck is the check inventing work, the same call `undecided_goals`
+    makes."""
+    lines, _ = report(_kr(now=7.3, target=50, direction="up", status="struck"),
+                      SEATS, rows=[])
+    assert not [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+    assert "0 key result(s) short of target with nobody on it" in lines[-1]
+
+
+def test_a_key_result_with_no_direction_is_not_judged():
+    """`now: 3` against `target: 0` is finished work if down is good and
+    untouched work if up is. Guessing would put a verdict on his page that
+    nothing in the document supports, so the row is skipped rather than
+    assumed."""
+    lines, _ = report(_kr(now=7.3, target=50, status="agreed"), SEATS, rows=[])
+    assert not [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+    assert "0 key result(s) short of target with nobody on it" in lines[-1]
+
+
+def test_a_key_result_whose_now_is_not_a_number_is_not_judged():
+    """`now: not measured` is the honest state of a key result whose
+    instrument has not run, and it is neither short nor met."""
+    lines, _ = report(_kr(now="not measured", target=50, direction="up",
+                          status="agreed"), SEATS, rows=[])
+    assert not [t for t in lines if t.startswith("SHORT OF TARGET WITH NOBODY")]
+
+
+def test_one_server_with_open_work_answers_for_all_of_them():
+    """The question is whether anything is being done about the number, so one
+    open row anywhere under any serving milestone is enough."""
+    seats = SEATS + "| Nova | Planning | 2 | 09-13 | nova-kr1 |\n"
+    goals = _kr(now=7.3, target=50, direction="up", status="agreed")
+    both_empty, _ = report(goals, seats, rows=[])
+    listed = [t for t in both_empty if "serves it with no open row" in t]
+    assert len(listed) == 1
+    assert "nova / picking, nova / planning serves it" in listed[0]
+    one_busy, _ = report(goals, seats, rows=[row(1, milestone="Planning")])
+    assert not [t for t in one_busy if t.startswith("SHORT OF TARGET WITH NOBODY")]
