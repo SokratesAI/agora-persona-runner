@@ -103,6 +103,7 @@ from agora_runner.project_goals import (
     undecided_goals,
     projects_without_goals,
     writeup_readings,
+    unworked_breaches,
 )
 
 #: The two boards the owner's work sits on, plural because that is the
@@ -154,6 +155,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
         sections, today or datetime.date.today())
     undecided = undecided_goals(sections)
     breaches = kpi_breaches(sections)
+    unworked = unworked_breaches(sections, keeps, rows)
     contradicting, older = writeup_readings(goals_markdown)
     missing_goals, projects_on_boards = (
         ([], 0) if rows is None else projects_without_goals(rows, sections))
@@ -199,6 +201,16 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "rather than a defect, so it does not raise: the document is "
             "well formed and the number is the finding:")
         for line in breaches:
+            lines.append(f"  {line}")
+    if unworked:
+        lines.append(
+            f"BREACHED WITH NOBODY ON IT ({len(unworked)}) -- rule 4 read "
+            "from the guardrail's side: the KPI is out of bounds, a "
+            "milestone is named as its keeper, and that milestone holds no "
+            "open row. An inventory rather than a defect, so it does not "
+            "raise: opening a row, retiring the milestone or moving the "
+            "fence are all yours to choose between:")
+        for line in unworked:
             lines.append(f"  {line}")
     if contradicting:
         lines.append(
@@ -273,8 +285,10 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                     if orphans else "") + ", "
                  f"{len(unpointed)} unpointed goal(s), "
                  f"{len(breaches)} KPI(s) out of bounds, "
-                 f"{len(contradicting)} write-up(s) contradicting their "
-                 "own number, "
+                 + ("" if rows is None
+                    else f"{len(unworked)} of them with nobody on it, ")
+                 + f"{len(contradicting)} write-up(s) contradicting their "
+                 + "own number, "
                  f"{len(older)} quoting an earlier reading, "
                  f"{len(past)} objective(s) past their month, "
                  f"{len(undated)} undated, "

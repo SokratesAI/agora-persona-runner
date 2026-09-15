@@ -58,6 +58,7 @@ def test_a_linked_milestone_is_clean():
                      "1 project section(s), 1 seated milestone(s), "
                      "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
                      "0 KPI(s) out of bounds, "
+                     "0 of them with nobody on it, "
                      "0 write-up(s) contradicting their own number, "
                      "0 quoting an earlier reading, "
                      "0 objective(s) past their month, 1 undated, "
@@ -734,3 +735,94 @@ def test_both_stores_unreadable_is_unreadable_rather_than_no_rows(monkeypatch):
 
     monkeypatch.setattr(project_goals_check.urllib.request, "urlopen", boom)
     assert project_goals_check._fetch_rows() == ([], False)
+
+
+#: `SEATS` with a `Keeps` column, so `nova-cost` has a keeper and leaves the
+#: unpointed inventory. Without this the breach can never reach the
+#: nobody-on-it list at all, and every test below would pass on a document
+#: the list is not about.
+KEPT_SEATS = ("| Project | Milestone | Position | Updated | Serves | Keeps |\n"
+              "|---|---|---|---|---|---|\n"
+              "| Nova | Picking | 1 | 09-13 | nova-kr1 | nova-cost |\n")
+
+
+def test_a_breached_kpi_whose_keeper_holds_no_open_row_is_listed():
+    """The state between the two lists that already existed: `kpi_breaches`
+    says the number is out of range and `unpointed_goals` says nobody is
+    named, so a breach with a keeper that is empty of work read as owned.
+    Live when this shipped: `marcus-kpi-browser-monolith` at 303 KB against a
+    ceiling of 292 KB, kept by *Marcus / Codebase health*, no open row."""
+    lines, code = report(_kpi(now=6, high=1), KEPT_SEATS, rows=[])
+    assert code == 0
+    assert lines[0] == "MODEL HOLDS"
+    heading = next(t for t in lines if t.startswith("BREACHED WITH NOBODY"))
+    assert heading.startswith("BREACHED WITH NOBODY ON IT (1)")
+    assert ["  Nova / nova-cost: 6 is above the ceiling of 1 -- and nova / "
+            "picking keeps it with no open row under it, so nothing on "
+            "either board would bring the number back"] == [
+        t for t in lines if t.startswith("  Nova / nova-cost: 6 is above")
+        and "keeps it" in t]
+    assert "1 of them with nobody on it" in lines[-1]
+
+
+def test_a_breached_kpi_whose_keeper_holds_an_open_row_is_not_listed():
+    """`post-kpi-volume` is the other half of the live split: 112 articles a
+    day against a ceiling of 60, and `ideas #96` is open under the milestone
+    that keeps it. Somebody is on it, so it is not this list's finding."""
+    lines, _ = report(_kpi(now=6, high=1), KEPT_SEATS, rows=[row(1)])
+    assert not [t for t in lines if t.startswith("BREACHED WITH NOBODY")]
+    assert "0 of them with nobody on it" in lines[-1]
+
+
+def test_a_keeper_holding_only_closed_rows_counts_as_nobody():
+    """A milestone whose work is all done is not work in progress. Counting a
+    closed row here would make the list empty out as the boards roll, which is
+    the opposite of what a breached guardrail means."""
+    lines, _ = report(_kpi(now=6, high=1), KEPT_SEATS,
+                      rows=[row(1, status_key="done", done=True)])
+    assert [t for t in lines if t.startswith("BREACHED WITH NOBODY")]
+
+
+def test_a_breached_kpi_nobody_keeps_is_left_to_the_unpointed_list():
+    """One fact under two verdicts is how a list silently changes size. A KPI
+    with no keeper is already `NOTHING POINTS AT`, and its action is different
+    -- write the pointer, not open the work."""
+    lines, _ = report(_kpi(now=6, high=1), SEATS, rows=[])
+    assert not [t for t in lines if t.startswith("BREACHED WITH NOBODY")]
+    assert [t for t in lines if t.startswith("NOTHING POINTS AT")]
+    assert "0 of them with nobody on it" in lines[-1]
+
+
+def test_an_unread_board_claims_nothing_rather_than_listing_every_breach():
+    """With no boards, "no open row" is true of every keeper by construction
+    -- the guaranteed positive `report` already refuses for unplaced tasks. So
+    the list is empty and the summary drops the phrase rather than printing a
+    zero nobody measured."""
+    lines, _ = report(_kpi(now=6, high=1), KEPT_SEATS, rows=None)
+    assert not [t for t in lines if t.startswith("BREACHED WITH NOBODY")]
+    assert "with nobody on it" not in lines[-1]
+    assert "1 KPI(s) out of bounds" in lines[-1]
+
+
+def test_the_seat_and_the_row_match_on_case():
+    """The seats file is parsed lowercased and a board row carries the case the
+    owner typed. Comparing them raw makes every keeper look empty, which reads
+    as the strongest possible finding and is wrong on every line -- measured
+    against the live boards before this rule existed."""
+    lines, _ = report(_kpi(now=6, high=1), KEPT_SEATS,
+                      rows=[row(1, project="NOVA", milestone="PICKING")])
+    assert not [t for t in lines if t.startswith("BREACHED WITH NOBODY")]
+
+
+def test_one_keeper_with_open_work_answers_for_all_of_them():
+    """Two milestones keep `nova-kpi-silent-cycles` on the live seats file. The
+    question is whether anything is being done about the number, so one open
+    row anywhere under it is enough."""
+    seats = KEPT_SEATS + "| Nova | Planning | 2 | 09-13 | nova-kr1 | nova-cost |\n"
+    both_empty, _ = report(_kpi(now=6, high=1), seats, rows=[])
+    listed = [t for t in both_empty if "keeps it with no open row" in t]
+    assert len(listed) == 1
+    assert "nova / picking, nova / planning keeps it" in listed[0]
+    one_busy, _ = report(_kpi(now=6, high=1), seats,
+                         rows=[row(1, milestone="Planning")])
+    assert not [t for t in one_busy if t.startswith("BREACHED WITH NOBODY")]
