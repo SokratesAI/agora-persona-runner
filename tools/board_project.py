@@ -53,6 +53,17 @@ which refuses when anything other than the named row's `project` moved.
 There is deliberately no allowed-projects list: `board_projects` reads the
 names back off the rows, so a new project costs one write, and a constant
 here would be the second source of truth that the spec already ruled out.
+
+**One more refusal, and it is about the cell this tool does not touch.** A
+row's milestone is seated under a project in `milestone-seats.md`, so moving
+the row to a different project leaves the milestone it still carries with no
+seat -- the row reads as placed to every check downstream while serving no
+key result, which is what `project_goals.task_seat_problems` reports and
+what cycle 1628 repaired sixteen times by hand. `tools.board_capture` refuses
+that state on the way in (#1139) and `tools.board_milestone` on a change of
+milestone (#1140); this is the same rule on the third and last door. Clearing
+the milestone first is always allowed, an ungrouped row never pays for the
+read, and an unreadable seats file warns rather than refuses.
 """
 
 import argparse
@@ -65,7 +76,9 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import board_records, board_store, board_write
 from agora_runner.board_document import BOARDS
-from agora_runner.nova_boards import board_projects
+from agora_runner.nova_boards import board_projects, parse_milestone_serves
+from agora_runner.project_goals import unseated_refusal
+from tools.board_capture import seats_markdown
 
 #: The cell rules, kept here rather than imported from `set_row_project`,
 #: which took markdown and is on its way out. They are about the generated
@@ -103,6 +116,43 @@ def missing_rows(contents, numbers):
     """
     on_board = {item["number"] for item in contents["items"]}
     return [number for number in numbers if number not in on_board]
+
+
+def unseated_by_the_move(was, numbers, project):
+    """`[(number, why)]` for rows the new project would leave unseated.
+
+    **This is the third door onto one defect and the last one open.** A row
+    whose milestone has no seat under its project reads as placed to every
+    check downstream while serving no key result;
+    `project_goals.task_seat_problems` reports it after the fact, and cycle
+    1628 moved sixteen such rows by hand. `tools.board_capture` shut the door
+    a row arrives through (#1139) and `tools.board_milestone` the one a
+    milestone changes through (#1140). Both ask about the pair (the row's
+    project, the new milestone). This tool moves the *other* half of that
+    same pair -- the milestone stays and the project changes underneath it --
+    so it asks about (the new project, the row's existing milestone), which
+    is the pair `board_records.store_item` will mint and the pair
+    `task_seat_problems` compares on.
+
+    `None` -- distinct from an empty list -- means the seats file could not
+    be read, and the caller warns rather than refuses: not checked is not the
+    same as no seats, and an unreadable vault must not stand between him and
+    his own board. A row carrying no milestone is nothing to check and never
+    pays for the read; that is `task_seat_orphans`' inventory, not a defect.
+    """
+    carrying = [n for n in numbers if (was[n].get("milestone") or "").strip()]
+    if not carrying:
+        return []
+    seats, read_seats = seats_markdown()
+    if not read_seats:
+        return None
+    serves = parse_milestone_serves(seats)
+    found = []
+    for number in carrying:
+        refusal = unseated_refusal(project, was[number]["milestone"], serves)
+        if refusal:
+            found.append((number, refusal))
+    return found
 
 
 def main(argv=None):
@@ -147,6 +197,24 @@ def main(argv=None):
         return 1
 
     was = {item["number"]: item for item in before["items"]}
+
+    refusals = unseated_by_the_move(was, args.number, project)
+    if refusals is None:
+        print(
+            "  WARNING: milestone-seats.md could not be read, so the seats "
+            "behind the milestones these rows already carry were NOT "
+            "checked.",
+            file=sys.stderr,
+        )
+    elif refusals:
+        for number, refusal in refusals:
+            print(f"REFUSED: #{number}: {refusal}", file=sys.stderr)
+        print(
+            f"nothing was written — no row is tagged {project}",
+            file=sys.stderr,
+        )
+        return 1
+
     for number in args.number:
         # `contents` fills an unfiled row with `DEFAULT_PROJECT`, so this is
         # always a name -- there is no blank cell to write "(none)" for.
