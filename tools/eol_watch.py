@@ -741,6 +741,35 @@ CAUSE_ORDER = (
 )
 
 
+#: The two causes no change here will ever convert into a judgement, named
+#: once so the report's prose and `maint-kpi-eol-unjudged` cannot drift apart.
+#: `endoflife.date publishes no product` is not this reader's blind spot --
+#: there is no support window published anywhere for crossplane, tailscale or
+#: dex, so no amount of work here judges them -- and `no end-of-life date
+#: published yet` is a real product whose current release simply has no date on
+#: it, which resolves upstream without anybody doing anything.
+#:
+#: Measured 2026-09-15: 22 of the 23 unjudged lines carry one of these two. A
+#: KPI counting the total therefore has a floor of 22 under a ceiling of 10 and
+#: is red forever, which is a permanent red light rather than a guardrail.
+#: Everything else is this tool's own reach and is worth one.
+OUT_OF_REACH_CAUSES = (
+    "endoflife.date publishes no product",
+    "no end-of-life date published yet",
+)
+
+
+def in_reach(not_judged):
+    """`{key: members}` over the unjudged lines a change here could judge.
+
+    Keyed the way `group` keys, because the count that matters is distinct
+    lines rather than occurrences, and a line with no recorded cause counts as
+    in reach: an unexplained gap is exactly the kind this is meant to surface.
+    """
+    return {key: members for key, members in group(not_judged).items()
+            if members[0].get("cause") not in OUT_OF_REACH_CAUSES}
+
+
 def cause_counts(not_judged):
     """`[(cause, distinct lines)]` over everything that was not judged."""
     counts = {}

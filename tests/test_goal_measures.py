@@ -17,6 +17,11 @@ import yaml
 import tools
 from tools import goal_measures as gm
 from tools import goal_measures
+from tools import eol_watch
+#: Bound at import so the stub below can reuse the real cause
+#: tuple: `_stub_tool` swaps what `goal_measures` reaches for,
+#: and a second copy of the tuple here would drift from it.
+_real_eol_watch = eol_watch
 
 
 def _entry(date, board="", title="", blocks=None, kind="cycle"):
@@ -2507,9 +2512,9 @@ def test_node_headroom_is_wired_into_the_kpi_map():
 
 # --- maint-kr-supported and maint-kpi-eol-unjudged --------------------------
 
-def _eol_image(image, tag, verdict=None, kind="image"):
+def _eol_image(image, tag, verdict=None, kind="image", cause=None):
     return {"kind": kind, "image": image, "tag": tag, "verdict": verdict,
-            "days": 0, "product": image, "eol": "2025-05-05"}
+            "days": 0, "product": image, "eol": "2025-05-05", "cause": cause}
 
 
 class _EolStub:
@@ -2559,6 +2564,12 @@ class _EolStub:
     def _pin(image):
         return "%s:%s" % (image["image"], image["tag"] or "")
 
+    #: The real function, not a copy of it. A second implementation here
+    #: passed every test in this file while the real one was inverted --
+    #: the stub was answering, so nothing under test ever ran.
+    OUT_OF_REACH_CAUSES = _real_eol_watch.OUT_OF_REACH_CAUSES
+    in_reach = staticmethod(_real_eol_watch.in_reach)
+
 
 def _eol_stub(monkeypatch, stub):
     monkeypatch.setattr(goal_measures, "_EOL_SWEEP", {})
@@ -2603,7 +2614,40 @@ def test_maint_eol_unjudged_counts_distinct_unreadable_lines(monkeypatch):
          _eol_image("nginx", "1.31")]))
     value, detail = goal_measures.measure_maint_eol_unjudged(None, None)
     assert value == 2
-    assert "2 distinct line(s)" in detail
+    assert "2 of 2 distinct unjudged line(s)" in detail
+
+
+def test_maint_eol_unjudged_leaves_out_what_no_change_here_could_judge():
+    """The separating case, and the reason this KPI was changed on 2026-09-15:
+    18 of the estate's lines are products endoflife.date publishes nothing for
+    and 4 have no end-of-life date yet, so counting the total put a floor of 22
+    under a ceiling of 10 and the number could never come back into range."""
+    assert set(eol_watch.OUT_OF_REACH_CAUSES) == {
+        "endoflife.date publishes no product",
+        "no end-of-life date published yet"}
+
+
+def test_maint_eol_unjudged_counts_only_the_reachable_cause(monkeypatch):
+    _eol_stub(monkeypatch, _EolStub(
+        [_eol_image("node", "22", "supported")],
+        [_eol_image("crossplane", "v2.3.3",
+                    cause="endoflife.date publishes no product"),
+         _eol_image("go", "1.27", cause="no end-of-life date published yet"),
+         _eol_image("nginx", "alpine", cause="tag names no release line")]))
+    value, detail = goal_measures.measure_maint_eol_unjudged(None, None)
+    assert value == 1
+    assert "1 of 3 distinct unjudged line(s)" in detail
+    assert "the other 2" in detail
+
+
+def test_maint_eol_unjudged_counts_a_line_whose_cause_was_not_recorded(monkeypatch):
+    """An unexplained gap is exactly what this is meant to surface, so a
+    missing cause counts as in reach rather than being excused into the
+    out-of-reach pile."""
+    _eol_stub(monkeypatch, _EolStub(
+        [_eol_image("node", "22", "supported")],
+        [_eol_image("mystery", "1.0")]))
+    assert goal_measures.measure_maint_eol_unjudged(None, None)[0] == 1
 
 
 def test_maint_eol_unjudged_reads_a_fully_judged_estate_as_zero(monkeypatch):

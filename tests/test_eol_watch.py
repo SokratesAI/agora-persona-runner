@@ -686,3 +686,29 @@ def test_every_unjudged_row_records_a_cause():
     for where, entry in cases:
         assert where == "not-judged"
         assert entry.get("cause"), entry
+
+
+# --- in_reach ---------------------------------------------------------------
+
+def _unjudged(image, tag, cause):
+    return {"kind": "image", "image": image, "tag": tag, "cause": cause}
+
+
+def test_in_reach_drops_a_cause_no_change_here_could_convert():
+    lines = [_unjudged("crossplane", "v2.3.3",
+                       "endoflife.date publishes no product"),
+             _unjudged("go", "1.27", "no end-of-life date published yet"),
+             _unjudged("nginx", "alpine", "tag names no release line")]
+    assert [m[0]["image"] for m in eol_watch.in_reach(lines).values()] \
+        == ["nginx"]
+
+
+def test_in_reach_keeps_a_line_with_no_recorded_cause():
+    """An unexplained gap is the kind this exists to surface, so it counts."""
+    assert len(eol_watch.in_reach([_unjudged("mystery", "1.0", None)])) == 1
+
+
+def test_in_reach_counts_distinct_lines_not_occurrences():
+    same = [_unjudged("nginx", "alpine", "tag names no release line")
+            for _ in range(4)]
+    assert len(eol_watch.in_reach(same)) == 1
