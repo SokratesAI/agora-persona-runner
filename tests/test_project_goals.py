@@ -948,15 +948,40 @@ def test_the_project_name_is_matched_case_insensitively():
     assert (found, total) == ([], 1)
 
 
-def test_a_closed_row_still_counts_its_project_but_not_as_open():
-    """The open count is a number inside the finding, never the gate: a
-    project whose every row is closed is still a project with no goal."""
+def test_a_project_whose_every_row_is_finished_is_not_on_the_boards():
+    """Cycle 1630's finding. `Nova` and `Maintenance` carried 235 rows between
+    them and every one was `done` or `outdated`, so #227's headline measure
+    read `11 of 13` and no action could move it -- writing an objective for a
+    project with no open work is the case the orphan list calls work nobody
+    can justify. `split_orphans` already makes this call one level down."""
     found, total = projects_without_goals(
         [_row("Nova"), _row("Research", status_key="done", done=True)],
         parse_project_goals(NOVA))
+    assert (found, total) == ([], 1)
+
+
+def test_an_outdated_row_retires_its_project_the_same_way_a_done_one_does():
+    """`open_rows` closes on both keys and the two names are one state here:
+    50 of the `Nova` rows were `outdated` rather than `done`, so a gate that
+    read only `done` would have left the project in the list anyway."""
+    found, total = projects_without_goals(
+        [_row("Nova"), _row("Research", status_key="outdated")],
+        parse_project_goals(NOVA))
+    assert (found, total) == ([], 1)
+
+
+def test_one_open_row_puts_a_finished_project_back_on_the_list():
+    """The counterpart, and the reason this is a reading rather than a
+    deletion: nothing is forgotten, so a project reappears the moment work
+    opens under it."""
+    found, total = projects_without_goals(
+        [_row("Nova"),
+         _row("Research", status_key="done", done=True),
+         _row("Research")],
+        parse_project_goals(NOVA))
     assert total == 2
     assert found == [
-        "Research: no objective is written for this project -- 0 open row(s) "
+        "Research: no objective is written for this project -- 1 open row(s) "
         "on the boards and nothing saying what any of them is for"]
 
 
