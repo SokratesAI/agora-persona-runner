@@ -231,3 +231,137 @@ def test_each_window_is_measured_from_the_one_before_it_not_from_the_start(monke
     assert code == 0
     assert "33.3%" in out
     assert "2.0% 0.0% 98.0%" in out
+
+
+def test_a_burst_in_one_window_is_not_raised_once_the_next_window_disagrees():
+    """The false alarm this was built for: 90.8% then quiet.
+
+    `test/nova-test` read 90.8% over 119 periods at 00:36 on 2026-09-16 while
+    `kubectl top` had it at 1 millicore of a 500m limit, and two re-samples a
+    minute later did not rate it at all.
+
+    Aggregating is not enough on its own, and these numbers are the reason: a
+    hard burst over a window that is barely above the floor still totals 81.2%,
+    because the quiet window contributes too few periods to average it away.
+    So the verdict is read off the newest window rather than the total.
+    """
+    key = ("test", "nova-test-1", "workspace")
+    series = {key: [(1000.0, 900.0), (120.0, 10.0)]}
+    rows = {key: (1120.0, 910.0)}
+    lines, code = ct.judge(rows, 40, series=series, confirm=True)
+    out = "\n".join(lines)
+    assert code == 0
+    assert "BURST" in out
+    assert "THROTTLED" not in out
+    assert "81.2%" in out
+    assert "the confirming window read 8.3%" in out
+
+
+def test_a_container_held_at_its_limit_still_raises_after_the_confirming_window():
+    """A positive result has to stay reachable, or the check measures nothing.
+
+    agora sat at 78.7% for about a week. That crosses in every window, so the
+    confirmation agrees and the alarm fires.
+    """
+    key = ("agents", "agora-1", "agora")
+    series = {key: [(1000.0, 787.0), (1000.0, 800.0)]}
+    rows = {key: (2000.0, 1587.0)}
+    lines, code = ct.judge(rows, 40, series=series, confirm=True)
+    out = "\n".join(lines)
+    assert code == 2
+    assert "THROTTLED" in out
+    assert "not raised" not in out
+
+
+def test_a_confirming_window_too_quiet_to_rate_does_not_confirm():
+    """Barely runnable is not agreement.
+
+    The claim is that the container is stopped whenever it tries to run. A
+    window it did not really try in cannot support that, and rating it would be
+    a percentage of a handful of periods -- the same thing MIN_PERIODS exists
+    to refuse one level up.
+    """
+    key = ("test", "nova-test-1", "workspace")
+    series = {key: [(119.0, 108.0), (7.0, 7.0)]}
+    rows = {key: (126.0, 115.0)}
+    lines, code = ct.judge(rows, 40, series=series, confirm=True)
+    out = "\n".join(lines)
+    assert code == 0
+    assert "BURST" in out
+    assert "too quiet to judge (7 period(s))" in out
+
+
+def test_confirmation_does_not_move_the_line_for_a_container_under_it():
+    """A container under the raising line is untouched by any of this."""
+    key = ("obsidian", "couchdb-1", "couchdb")
+    series = {key: [(1000.0, 315.0), (1000.0, 300.0)]}
+    rows = {key: (2000.0, 615.0)}
+    lines, code = ct.judge(rows, 40, series=series, confirm=True)
+    out = "\n".join(lines)
+    assert code == 0
+    assert "ok" in out
+    assert "BURST" not in out
+
+
+def test_a_clean_first_window_never_costs_a_second_scrape(monkeypatch):
+    """The cost guard: nothing over the line, so no confirming window is taken."""
+    key = ("a", "p", "c")
+    scrapes = [
+        {key: {"periods": 0.0, "throttled": 0.0}},
+        {key: {"periods": 1000.0, "throttled": 10.0}},
+    ]
+    taken = iter(scrapes)
+    monkeypatch.setattr(ct, "node_names", lambda: (["n1"], None))
+    monkeypatch.setattr(ct, "_scrape_all", lambda nodes: (next(taken), []))
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+
+    code = ct.main(["--window", "0"])
+
+    assert code == 0
+    # A third scrape would have raised StopIteration; two is all it took.
+    assert "in 1 sample(s)" in "\n".join(printed)
+
+
+def test_main_takes_the_confirming_window_when_the_first_one_crosses(monkeypatch):
+    """End to end: the burst is caught by main, not only by judge."""
+    key = ("a", "p", "c")
+    scrapes = [
+        {key: {"periods": 0.0, "throttled": 0.0}},
+        {key: {"periods": 200.0, "throttled": 180.0}},
+        {key: {"periods": 320.0, "throttled": 190.0}},
+    ]
+    taken = iter(scrapes)
+    monkeypatch.setattr(ct, "node_names", lambda: (["n1"], None))
+    monkeypatch.setattr(ct, "_scrape_all", lambda nodes: (next(taken), []))
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+
+    code = ct.main(["--window", "0"])
+
+    out = "\n".join(printed)
+    assert code == 0
+    assert "BURST" in out
+    assert "in 2 sample(s)" in out
+
+
+def test_no_confirm_keeps_the_old_single_window_verdict(monkeypatch):
+    """The escape hatch still raises on one window, for a run that wants that."""
+    key = ("a", "p", "c")
+    scrapes = [
+        {key: {"periods": 0.0, "throttled": 0.0}},
+        {key: {"periods": 200.0, "throttled": 180.0}},
+    ]
+    taken = iter(scrapes)
+    monkeypatch.setattr(ct, "node_names", lambda: (["n1"], None))
+    monkeypatch.setattr(ct, "_scrape_all", lambda nodes: (next(taken), []))
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+
+    code = ct.main(["--window", "0", "--no-confirm"])
+
+    assert code == 2
+    assert "THROTTLED" in "\n".join(printed)
