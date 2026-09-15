@@ -1043,3 +1043,46 @@ def test_the_third_split_still_drops_nothing():
     prunable, finished, awaiting = split_orphans(seats, sections, None, rows)
     assert len(prunable) == 1 and len(finished) == 1 and len(awaiting) == 1
     assert len(serves_orphans(seats, sections)) == 3
+
+
+def test_a_settled_project_is_not_listed_as_still_being_argued():
+    """`NOVA`'s objective reads `agreed` and its one key result does not, so
+    the line names the key result and never the objective. The separating
+    case for a roll-up that just counted the section."""
+    from agora_runner.project_goals import undecided_goals
+    lines = undecided_goals(parse_project_goals(NOVA))
+    assert lines == ["Nova: still discussing 1 key result(s): nova-kr1"]
+
+    settled = parse_project_goals(NOVA.replace(
+        "target: 0.9\ndirection: up", "target: 0.9\ndirection: up\nstatus: agreed"))
+    assert undecided_goals(settled) == []
+
+
+def test_silence_on_a_status_reads_as_still_being_argued():
+    """`DEFAULT_OBJECTIVE_STATUS` is what the document means by an absent
+    status, so a block with no status line is undecided rather than skipped.
+    Written as its own test because the opposite reading -- treat unknown as
+    decided -- is the one that reports a settled model that nobody settled."""
+    from agora_runner.project_goals import undecided_goals
+    doc = _doc("## Nova\n\n```objective\nstatement: s\n```\n")
+    assert undecided_goals(doc and parse_project_goals(doc)) == [
+        "Nova: still discussing the objective"]
+
+
+def test_a_struck_goal_is_decided_and_never_asked_about_again():
+    """Same call `objective_periods` makes: he killed it, so raising it as
+    open business is the check inventing work."""
+    from agora_runner.project_goals import undecided_goals
+    doc = _doc("## Nova\n\n```objective\nstatement: s\nstatus: struck\n```\n\n"
+               "```key-result\nid: k1\nname: n\nmeasure: m\ntarget: 1\n"
+               "status: struck\n```\n")
+    assert undecided_goals(parse_project_goals(doc)) == []
+
+
+def test_a_project_with_no_objective_is_not_an_undecided_one():
+    """A section holding only KPIs has nothing to agree; that gap is
+    `projects_without_goals`, and counting it here would say the same thing
+    twice under two different names."""
+    from agora_runner.project_goals import undecided_goals
+    doc = _doc("## Nova\n\n```kpi\nid: c\nname: c\nmeasure: m\nhigh: 2\n```\n")
+    assert undecided_goals(parse_project_goals(doc)) == []

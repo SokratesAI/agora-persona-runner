@@ -800,6 +800,65 @@ def objective_periods(sections, today):
     return past, undated
 
 
+def undecided_goals(sections):
+    """What is still being argued about -> a list of one line per project.
+
+    Issue #227's sixth rule as he re-cut it himself, 2026-09-14 21:02:
+    *"Not where you guess something and i just approve or decline."* So an
+    objective is either still being argued about (`discussing`) or settled
+    between us (`agreed`), and a goal nobody has settled is the state this
+    job is actually in until it is not.
+
+    Nothing here reported that. `report` printed `MODEL HOLDS` and
+    `12 of 12 project(s) have a goal` while every one of the twelve
+    objectives and all thirty-two key results read `discussing` -- which is
+    the true sentence *a goal exists* standing exactly where the false one
+    *the goals are settled* would go. Six of my cycles each re-derived
+    "still waiting on him" by reading a 60KB document, and then wrote it
+    into a digest line instead of into the instrument. That is the same
+    shape as `security_alerts` re-proving one patched advisory three cycles
+    running: a fact that lives in prose gets re-measured forever.
+
+    `struck` is decided and never listed -- it is a goal he killed, and
+    asking again is the check inventing work, the same call
+    `objective_periods` makes. A missing status reads as `discussing`,
+    because `DEFAULT_OBJECTIVE_STATUS` is what the document means by
+    silence.
+
+    Not a defect and it does not raise. Agreeing a goal is a conversation
+    with him, not something a pull request closes.
+    """
+    lines = []
+    for key in sorted(sections):
+        section = sections[key]
+        name = section.get("project", key)
+        objective = section.get("objective") or {}
+        if not objective:
+            continue
+        undecided_objective = _is_undecided(objective)
+        pending = [
+            (row.get("id") or row.get("name") or "?").strip()
+            for row in section.get("keyResults", ())
+            if _is_undecided(row)
+        ]
+        if not undecided_objective and not pending:
+            continue
+        parts = []
+        if undecided_objective:
+            parts.append("the objective")
+        if pending:
+            parts.append(
+                f"{len(pending)} key result(s): " + ", ".join(pending))
+        lines.append(f"{name}: still discussing " + "; ".join(parts))
+    return lines
+
+
+def _is_undecided(block):
+    """`discussing`, written or meant by silence. `agreed`/`struck` are not."""
+    status = (block.get("status") or "").strip().lower()
+    return (status or DEFAULT_OBJECTIVE_STATUS) == "discussing"
+
+
 def unpointed_goals(serves, keeps, sections):
     """The goals side of rule 4, read backwards: what nothing points at.
 

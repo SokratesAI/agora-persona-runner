@@ -15,7 +15,7 @@ from tools.project_goals_check import main, report
 
 GOALS = ("# Project goals\n\n## Nova\n\n"
          "```objective\nstatement: s\nstatus: agreed\nconversation: 18bdb05e-2ad0-479d-9a7d-d9b8bab3fd5e\n```\n\n"
-         "```key-result\nid: nova-kr1\nname: n\nmeasure: m\ntarget: 1\n```\n\n"
+         "```key-result\nid: nova-kr1\nname: n\nmeasure: m\ntarget: 1\nstatus: agreed\n```\n\n"
          "```kpi\nid: nova-cost\nname: c\nmeasure: m\nhigh: 2\n```\n")
 SEATS = ("| Project | Milestone | Position | Updated | Serves |\n"
          "|---|---|---|---|---|\n"
@@ -57,6 +57,7 @@ def test_a_linked_milestone_is_clean():
                      "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
                      "0 KPI(s) out of bounds, "
                      "0 objective(s) past their month, 1 undated, "
+                     "0 of 1 project(s) still being argued, "
                      "0 unplaced task(s), "
                      "1 of 1 project(s) have a goal"]
 
@@ -147,8 +148,8 @@ def test_a_closed_task_is_not_asked_which_milestone_it_serves():
     assert code == 0
     assert lines[-1].endswith("0 unplaced task(s), "
                               "1 of 1 project(s) have a goal")
-    assert not any("#2" in line or "#3" in line or "#4" in line
-                   for line in lines)
+    assert not any("issues #2" in line or "issues #3" in line
+                   or "issues #4" in line for line in lines)
 
 
 def test_an_unplaced_task_beside_a_real_defect_still_raises_on_the_defect():
@@ -542,3 +543,19 @@ def test_an_orphan_with_no_open_row_gets_its_own_heading():
            "here to keep: retire the milestone" in lines
     assert "1 orphan(s) (0 pruning signal, 1 with nothing left to keep, " \
            "0 awaiting project goals)" in lines[-1]
+
+
+def test_a_written_goal_nobody_settled_prints_and_still_exits_zero():
+    """The state the live document was in for two days: twelve projects with
+    an objective each, `12 of 12 project(s) have a goal` on the summary line,
+    and not one of them agreed with him. Written and settled are different
+    states and the summary now carries both."""
+    goals = GOALS.replace("status: agreed", "status: discussing")
+    lines, code = report(goals, SEATS, rows=[row(1)])
+    assert code == 0
+    assert any(line.startswith("STILL BEING ARGUED (1 of 1)")
+               for line in lines)
+    assert ("  Nova: still discussing the objective; "
+            "1 key result(s): nova-kr1") in lines
+    assert "1 of 1 project(s) still being argued" in lines[-1]
+    assert lines[-1].endswith("1 of 1 project(s) have a goal")
