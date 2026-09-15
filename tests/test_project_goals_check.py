@@ -56,6 +56,7 @@ def test_a_linked_milestone_is_clean():
                      "1 project section(s), 1 seated milestone(s), "
                      "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
                      "0 KPI(s) out of bounds, "
+                     "0 write-up(s) contradicting their own number, "
                      "0 objective(s) past their month, 1 undated, "
                      "0 of 1 project(s) still being argued, "
                      "0 unplaced task(s), "
@@ -559,3 +560,30 @@ def test_a_written_goal_nobody_settled_prints_and_still_exits_zero():
             "1 key result(s): nova-kr1") in lines
     assert "1 of 1 project(s) still being argued" in lines[-1]
     assert lines[-1].endswith("1 of 1 project(s) have a goal")
+
+
+def test_a_contradicted_write_up_is_listed_counted_and_does_not_raise():
+    """The sweep is where this has to arrive -- `preflight` shows the summary
+    line and nothing else, so a finding that is only in the body is one the
+    morning read never sees. And it must not raise: which of the two numbers
+    is right is a judgement, the same call `kpi_breaches` makes."""
+    goals = (GOALS.replace("measure: m\nhigh: 2", "measure: m\nnow: 1\nhigh: 2")
+             + "\nMeasured 7 at 14:47 Oslo on 2026-09-14 -- the paragraph "
+               "nobody rewrote.\n")
+    lines, code = report(goals, SEATS, rows=[row(1)],
+                         today=datetime.date(2026, 9, 15))
+    assert code == 0
+    assert any(line.startswith("WRITE-UP CONTRADICTS ITS OWN NUMBER (1)")
+               for line in lines)
+    assert any("nova-cost: now: " in line for line in lines)
+    assert "1 write-up(s) contradicting their own number" in lines[-1]
+
+
+def test_a_document_whose_numbers_and_sentences_agree_says_zero():
+    """A count that only ever appears when it is non-zero cannot be read as
+    "checked and clean" -- the summary carries the 0 as well."""
+    lines, code = report(GOALS, SEATS, rows=[row(1)],
+                         today=datetime.date(2026, 9, 15))
+    assert code == 0
+    assert not any(line.startswith("WRITE-UP CONTRADICTS") for line in lines)
+    assert "0 write-up(s) contradicting their own number" in lines[-1]
