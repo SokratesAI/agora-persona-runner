@@ -30,6 +30,15 @@ list of allowed ones would be me deciding in advance what increments a
 project may have. What is refused instead is a name that would break the
 generated board view: a `|` ends a cell, a line break ends a row.
 
+**What the name must have is a seat, which is not the same as a vocabulary.**
+`milestone-seats.md` is his own document rather than a set of mine, and a name
+missing from it is refused here the way `tools.board_capture` refuses it at
+the door a row arrives through (issue #227). The rule is the one
+`project_goals.task_seat_problems` reports after the fact: a milestone with no
+seat serves no key result, so a row filed under it reads as placed while
+serving nothing. Writing the seat first is the whole of the fix, and an
+unreadable seats file warns rather than refuses.
+
 **The name is scoped to the row's project, and against records that is an id
 rather than a coincidence of spelling.** `store_item` mints or finds the
 milestone under the row's *own* project (`entity_id.ensure_milestone`), so two
@@ -76,6 +85,9 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner import board_records, board_store, board_write
 from agora_runner.board_document import BOARDS
 from agora_runner.board_write import refuse_cell
+from agora_runner.nova_boards import parse_milestone_serves
+from agora_runner.project_goals import unseated_refusal
+from tools.board_capture import seats_markdown
 
 
 def milestone_changes(milestone, dated=None):
@@ -172,6 +184,40 @@ def main(argv=None):
         return 1
 
     was = {item["number"]: item for item in before["items"]}[args.number]
+
+    # **A milestone with no seat is refused here too, and this is the second
+    # of the two doors.** `tools.board_capture` grew the same rule for a row
+    # arriving on the board (issue #227, #1139); this tool moves a row that is
+    # already there, and a move is how a seated row becomes unseated. Either
+    # way the row ends up reading as placed to every check downstream while
+    # serving no key result, which is what issue #233 did overnight.
+    #
+    # The pair asked about is the row's OWN project and the new name, because
+    # that is the pair `store_item` mints the milestone under -- a seat under
+    # another project is a different milestone, exactly as it is to
+    # `project_goals.task_seat_problems`.
+    #
+    # Two cases deliberately never reach the vault: `--milestone ''` clears
+    # the cell, and an ungrouped row is `task_seat_orphans`' inventory rather
+    # than a defect; and a row with no project cannot be seated either way.
+    # A seats file that cannot be READ is not a refusal -- not checked is not
+    # the same as no seats, and refusing here would put an unreadable vault
+    # between him and his own board.
+    if milestone and (was.get("project") or "").strip():
+        seats, read_seats = seats_markdown()
+        if not read_seats:
+            print(
+                "  WARNING: milestone-seats.md could not be read, so the "
+                "seat behind --milestone was NOT checked.",
+                file=sys.stderr,
+            )
+        else:
+            refusal = unseated_refusal(
+                was["project"], milestone, parse_milestone_serves(seats))
+            if refusal:
+                print(f"REFUSED: {refusal}", file=sys.stderr)
+                return 1
+
     print(
         f"#{args.number}: {was['milestone'] or '(ungrouped)'}"
         f" -> {milestone or '(ungrouped)'}"

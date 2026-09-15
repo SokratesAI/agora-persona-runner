@@ -53,12 +53,33 @@ Body text nothing here may touch.
 """
 
 
+# Every milestone any test here moves a row to, seated under the project that
+# test's row carries. The fixture below answers with this by default, so the
+# seat rule is satisfied for tests that are about something else -- and so
+# that no test reaches for the real `milestone-seats.md` in the vault.
+SEATS = (
+    "| Project | Milestone | Position | Updated | Serves | Keeps |\n"
+    "|---|---|---|---|---|---|\n"
+    "| Nova | Cost and quota | 1 | 09-15 |  | nova-kpi-cost-per-cycle |\n"
+    "| Nova | Picking redesign | 2 | 09-15 | nova-kr-in-the-app |  |\n"
+    "| Nova | Backup | 3 | 09-15 | nova-kr-in-the-app |  |\n"
+    "| Marcus | Backup | 1 | 09-15 | marcus-kr-plan |  |\n"
+)
+
+
 @pytest.fixture
 def store(monkeypatch):
     """A migrated, writable fake of that board, wired in where `main` looks."""
     _, fake = writable(board="idea", markdown=BOARD)
     monkeypatch.setattr(board_milestone, "board_store", fake)
+    monkeypatch.setattr(board_milestone, "seats_markdown",
+                        lambda *a, **k: (SEATS, True))
     return fake
+
+
+def _seats_answer(monkeypatch, text, ok=True):
+    monkeypatch.setattr(board_milestone, "seats_markdown",
+                        lambda *a, **k: (text, ok))
 
 
 def _contents(store):
@@ -267,3 +288,61 @@ def test_refuse_row_passes_an_open_row_and_stops_a_finished_one():
     assert refuse_row(contents, 1) is None
     assert refuse_row(contents, 2) is not None
     assert refuse_row(contents, 3) is not None
+
+
+# --- the seat behind the milestone (issue #227, issue #233) -------------
+#
+# `tools.board_capture` refuses an unseated milestone on the way in. A row
+# already on the board is moved by this tool, and a move is the other way the
+# same state is reached: filed under a milestone `milestone-seats.md` does not
+# seat, so it reads as placed to every check downstream while serving no key
+# result.
+
+
+def test_a_milestone_with_no_seat_is_refused_before_anything_is_written(
+        store, capsys):
+    before = _contents(store)
+    assert _run("--dated", "09-06", milestone="Framework rewrite") == 1
+    problem = capsys.readouterr().err
+    assert "no seat in milestone-seats.md" in problem
+    # It names what IS seated under that project, so a typo is visible.
+    assert "picking redesign" in problem
+    assert _contents(store) == before
+    assert not [call for call in store.calls if call[0] == "write_row"]
+
+
+def test_a_seat_in_another_project_does_not_count(store, capsys):
+    """`store_item` mints the milestone under the row's own project, so the
+    same name under a different project is a different milestone -- the same
+    key `project_goals.task_seat_problems` compares on."""
+    assert _run(number=104, milestone="Picking redesign") == 1
+    assert "no seat in milestone-seats.md" in capsys.readouterr().err
+    assert _rows(store)[104]["milestone"] == ""
+
+
+def test_a_dry_run_refuses_an_unseated_milestone_too(store):
+    """A dry run that reports a move the real run would refuse is a lying
+    instrument, so the seat is checked before `--dry-run` returns."""
+    assert _run("--dry-run", milestone="Framework rewrite") == 1
+
+
+def test_an_unreadable_seats_file_warns_and_moves_the_row(
+        store, monkeypatch, capsys):
+    """Not checked is not the same as no seats. Refusing here would put an
+    unreadable vault between him and his own board."""
+    _seats_answer(monkeypatch, "", ok=False)
+    assert _run("--dated", "09-06", milestone="Framework rewrite") == 0
+    assert "NOT checked" in capsys.readouterr().err
+    assert _rows(store)[100]["milestone"] == "Framework rewrite"
+
+
+def test_clearing_the_milestone_never_reaches_the_seats_file(
+        store, monkeypatch):
+    """`--milestone ''` is how a regrouping starts, and an ungrouped row is
+    `task_seat_orphans`' inventory rather than a defect, so it must not pay
+    for a vault read either."""
+    def explode(*a, **k):
+        raise AssertionError("the seats file was fetched to clear a cell")
+    monkeypatch.setattr(board_milestone, "seats_markdown", explode)
+    assert _run("--dated", "09-06", milestone="") == 0
+    assert _rows(store)[100]["milestone"] == ""
