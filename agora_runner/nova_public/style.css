@@ -1270,6 +1270,41 @@ body.nav-open { overflow: hidden; }
   -webkit-tap-highlight-color: transparent;
 }
 
+/* The tap area, extended to 48x48 without changing what the button looks like.
+ *
+ * The button draws at 2.5rem = 40px. That clears WCAG 2.2 SC 2.5.8, whose
+ * floor is 24x24 CSS pixels, and it clears Apple's stated minimum control
+ * size for iOS, which is 28x28 pt. It is under both of the numbers those two
+ * documents actually recommend: Apple's *default* control size for iOS is
+ * 44x44 pt, and Material's touch-target guidance is "for most platforms,
+ * consider making touch targets at least 48 x 48dp" -- about 9mm of finger,
+ * against a recommended 7-10mm. See resources/design-wiki/touch-target-size.md,
+ * verified against both vendors' own pages on 2026-09-15.
+ *
+ * This is the app's primary navigation control and it is on every route, so
+ * the 4px is worth having. Growing width/height instead would enlarge the
+ * bordered square and the glyph's surroundings on a header whose three top
+ * edges have to agree (see --shell-top); an inset pseudo-element is the same
+ * 48px of finger with nothing new to look at.
+ *
+ * `content` is required -- a pseudo-element without it is not generated at
+ * all. A background is NOT: I wrote one in first, on the belief that a box is
+ * hit-tested only where it paints, and then measured it both ways. Chromium
+ * hit-tests the box, painted or not, so the rule is three declarations rather
+ * than five and there is nothing here that can ever be seen.
+ *
+ * Measured, not reasoned: `elementFromPoint` walking outward from each edge
+ * answers this button 4px further out on every side, so 40x40 becomes 48x48.
+ * The rendered header is not quite byte-identical -- 6 of 187,200 subpixels
+ * differ, by at most 3 of 255, on one rounded corner. That is the extra paint
+ * layer rounding differently, and it is below anything an eye resolves, but it
+ * is not zero and this comment is not going to say it is. */
+.menu-btn::before {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+
 .menu-bar {
   width: 1.15rem;
   height: 2px;
