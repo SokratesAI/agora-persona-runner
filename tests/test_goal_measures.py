@@ -3428,6 +3428,144 @@ class TestNasUnattended:
 
 
 
+class TestInfraNoNewMoney:
+    """`infra-kr-no-new-money` -- NOK per month of new spend he is asked for.
+
+    Target 0, direction down, so a low reading is the good one. Every test
+    here is a way of arriving at a low one without having looked.
+    """
+
+    def _boards(self, monkeypatch, issues=(), ideas=(), errors=None):
+        errors = errors or {}
+        boards = {"issues": list(issues), "ideas": list(ideas)}
+
+        def fetch_board(name, site=None):
+            if name in errors:
+                return [], errors[name]
+            return boards[name], None
+
+        monkeypatch.setattr(gm, "fetch_board", fetch_board)
+
+    def _row(self, number, title="", status_key="backlog"):
+        return {"number": number, "title": title, "statusKey": status_key,
+                "done": False}
+
+    def _registry(self, monkeypatch, mapping):
+        monkeypatch.setattr(gm, "_PROPOSED_SPEND_ROWS", mapping)
+
+    def test_it_sums_the_open_registered_rows(self, monkeypatch):
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node"),
+                                     ("issues", 12): (49, "a second box")})
+        self._boards(monkeypatch,
+                     issues=[self._row(12)],
+                     ideas=[self._row(179, status_key="blocked-on-edvard")])
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value == 649, detail
+        assert "ideas #179 600 NOK/month" in detail
+        assert "issues #12 49 NOK/month" in detail
+
+    def test_a_closed_row_stops_counting_without_anyone_retyping(
+            self, monkeypatch):
+        # The whole point of instrumenting this: the day he closes the row,
+        # a hand-typed 600 would keep saying 600 forever.
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        self._boards(monkeypatch, ideas=[self._row(179, status_key="done")])
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value == 0, detail
+        assert "ideas #179" in detail
+        assert "no longer counts" in detail
+
+    def test_an_outdated_row_is_closed_too(self, monkeypatch):
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        self._boards(monkeypatch,
+                     ideas=[self._row(179, status_key="outdated")])
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value == 0, detail
+
+    def test_a_done_row_is_closed_even_though_its_done_field_is_false(
+            self, monkeypatch):
+        # Every row the site serves carries `done: false`, including the ones
+        # marked done, so the measure reads `statusKey`.
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        row = self._row(179, status_key="done")
+        assert row["done"] is False
+        self._boards(monkeypatch, ideas=[row])
+        value, _detail = gm.measure_infra_no_new_money(None, None)
+        assert value == 0
+
+    def test_an_unreadable_board_gets_no_reading(self, monkeypatch):
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        self._boards(monkeypatch, ideas=[self._row(179)],
+                     errors={"issues": "could not read the site: refused"})
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value is None
+        assert "half a sweep" in detail
+        assert "refused" in detail
+
+    def test_a_registered_row_on_neither_board_gets_no_reading(
+            self, monkeypatch):
+        # A renumbered row would otherwise read as a withdrawn proposal, which
+        # is this measure's target value.
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        self._boards(monkeypatch, ideas=[self._row(200)])
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value is None
+        assert "ideas #179" in detail
+        assert "renumbered or deleted" in detail
+
+    def test_a_zero_over_an_unjudged_row_is_refused(self, monkeypatch):
+        # Zero is the target here, so it is the one reading nobody questions.
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        self._boards(monkeypatch,
+                     issues=[self._row(300, title="rent a 40 EUR/month VPS")],
+                     ideas=[self._row(179, status_key="done")])
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value is None
+        assert "issues #300" in detail
+        assert "may not be published" in detail
+
+    def test_a_real_zero_with_nothing_unjudged_is_reported(self, monkeypatch):
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        self._boards(monkeypatch,
+                     issues=[self._row(300, title="a plain row")],
+                     ideas=[self._row(179, status_key="done")])
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value == 0, detail
+        assert "no other open row" in detail
+
+    def test_an_unjudged_row_is_named_beside_a_non_zero_reading(
+            self, monkeypatch):
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        self._boards(monkeypatch,
+                     issues=[self._row(300, title="rent a 40 EUR/month VPS")],
+                     ideas=[self._row(179)])
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value == 600, detail
+        assert "a floor" in detail
+        assert "issues #300" in detail
+
+    def test_a_closed_row_naming_money_is_not_an_unjudged_candidate(
+            self, monkeypatch):
+        self._registry(monkeypatch, {("ideas", 179): (600, "a second node")})
+        self._boards(monkeypatch,
+                     issues=[self._row(300, title="rent a 40 EUR/month VPS",
+                                       status_key="outdated")],
+                     ideas=[self._row(179, status_key="done")])
+        value, detail = gm.measure_infra_no_new_money(None, None)
+        assert value == 0, detail
+        assert "issues #300" not in detail
+
+    def test_the_live_registry_names_the_row_it_was_written_for(self):
+        assert ("ideas", 179) in gm._PROPOSED_SPEND_ROWS
+        nok, why = gm._PROPOSED_SPEND_ROWS[("ideas", 179)]
+        assert nok == 600
+        assert why.strip()
+
+    def test_no_new_money_is_wired_into_the_fetch_map(self):
+        assert gm.KEY_RESULT_FETCH_MEASURERS["infra-kr-no-new-money"] is \
+            gm.measure_infra_no_new_money
+
+
 class TestAgoraChatBasics:
     """`agora-kr-chat-basics` -- controls he asked for that are still missing.
 

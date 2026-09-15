@@ -4062,6 +4062,130 @@ def measure_infra_self_service(since, until):
     return round(100.0 * len(gitops) / total, 1), detail
 
 
+#: Open board rows I have judged to propose new recurring spend, keyed by
+#: `(board, number)`, each with the NOK per month it proposes and why that
+#: figure is that figure. This is the one judgement in the measure and it is
+#: written down rather than hidden, the same way `_CHAT_BASICS_NOT_A_CONTROL`
+#: is: deciding that a row proposes new money is mine, and deciding whether
+#: the row is still open is the board's. The second half is the one that goes
+#: stale, and it is the half that was making this key result a typed digit --
+#: the day he buys the server or closes the row, a hand-typed 600 keeps saying
+#: 600 forever.
+_PROPOSED_SPEND_ROWS = {
+    ("ideas", 179): (600, "a second node from the Hetzner auction to relieve "
+                          "server1's memory pressure, at his own stated "
+                          "budget of max 600 NOK/month"),
+}
+
+#: What a currency amount looks like in a board row's title. Deliberately
+#: loose -- it is a net for rows I have not judged yet, not a parser, and a
+#: false positive here costs one named row in the detail while a false
+#: negative costs the whole claim.
+_MONEY_IN_A_TITLE = re.compile(r"\bNOK\b|\bkr\b|\bUSD\b|\bEUR\b|[$\u20ac\u00a3]",
+                               re.IGNORECASE)
+
+
+def measure_infra_no_new_money(since, until):
+    """NOK per month of new spend currently proposed to keep the cluster up.
+
+    `infra-kr-no-new-money`. Target 0, direction down, so **a low reading is
+    the good one and therefore the dangerous one** -- and here the best value
+    is also the loudest claim this loop can make about his wallet. Everything
+    below is about making a 0 impossible to reach without having looked.
+
+    The reading is a sum over rows, not over prose: a row proposes spend
+    because I said it does, and it counts because the board still says it is
+    open. A row he closes -- by buying the thing or by deciding against it --
+    drops out of the sum on the next sweep with no cycle retyping anything.
+
+    Four ways this could print a wrong number, each closed:
+
+    * **Either board unreadable is no reading at all.** Half a sweep
+      undercounts a measure whose target is 0, the same call
+      `measure_nas_unattended` makes.
+    * **A registered row the boards do not carry is a broken instrument, not
+      a closed proposal.** The numbers here are typed into this file and the
+      board confirms nothing about them, so a renumbered or deleted row would
+      read as the proposal having gone away.
+    * **A row I have not judged is named, never silently dropped.** Any open
+      row whose title carries a currency amount and is not in the registry is
+      printed, because the registry cannot see a proposal made after it was
+      written.
+    * **A 0 with unjudged candidates outstanding is refused.** Zero is this
+      measure's target, so publishing it over rows I have not read would be
+      the one reading nobody would question. With something registered still
+      open the candidates are only a floor caveat and the detail says so.
+
+    Titles only: a board row the site serves carries `title` and no body, so
+    the net is cast over exactly the text there is.
+    """
+    del since, until
+    rows = {}
+    for name in ("issues", "ideas"):
+        items, error = fetch_board(name)
+        if error:
+            return None, (f"the {name} board could not be read, and half a "
+                          f"sweep undercounts a measure whose target is 0: "
+                          f"{error}")
+        for row in items:
+            rows[(name, row.get("number"))] = row
+
+    missing = [key for key in _PROPOSED_SPEND_ROWS if key not in rows]
+    if missing:
+        named = ", ".join(f"{board} #{number}" for board, number in
+                          sorted(missing, key=lambda k: (k[0], k[1] or 0)))
+        return None, (f"{named} is registered here as proposing new spend and "
+                      "is on neither board, which is a renumbered or deleted "
+                      "row far more often than it is a withdrawn proposal")
+
+    open_spend, closed_spend = [], []
+    for key, (nok, why) in sorted(_PROPOSED_SPEND_ROWS.items(),
+                                  key=lambda kv: (kv[0][0], kv[0][1] or 0)):
+        board, number = key
+        status = (rows[key].get("statusKey") or "").strip()
+        (closed_spend if status in _CLOSED_STATUS_KEYS
+         else open_spend).append((board, number, nok, why))
+
+    unjudged = []
+    for (board, number), row in rows.items():
+        if (board, number) in _PROPOSED_SPEND_ROWS:
+            continue
+        if (row.get("statusKey") or "").strip() in _CLOSED_STATUS_KEYS:
+            continue
+        if _MONEY_IN_A_TITLE.search(row.get("title") or ""):
+            unjudged.append(f"{board} #{number}")
+
+    total = sum(nok for _board, _number, nok, _why in open_spend)
+    if total == 0 and unjudged:
+        return None, (
+            "nothing registered here is still open, but "
+            f"{len(unjudged)} open row(s) name a currency amount and I have "
+            f"not judged them ({', '.join(sorted(unjudged))}) -- 0 is this "
+            "measure's target and it may not be published over a row nobody "
+            "has read")
+
+    if open_spend:
+        proposals = "; ".join(f"{board} #{number} {nok} NOK/month ({why})"
+                              for board, number, nok, why in open_spend)
+    else:
+        proposals = "none"
+    detail = (f"{total} NOK per month proposed across {len(open_spend)} open "
+              f"row(s), read live from the issues and ideas boards: "
+              f"{proposals}")
+    if closed_spend:
+        detail += ("; " + ", ".join(
+            f"{board} #{number}" for board, number, _nok, _why in closed_spend)
+            + " is registered here and is now done or outdated, so it no "
+              "longer counts")
+    if unjudged:
+        detail += ("; a floor -- " + ", ".join(sorted(unjudged)) +
+                   " also name a currency amount and are not judged here")
+    else:
+        detail += ("; no other open row on either board names a currency "
+                   "amount")
+    return total, detail
+
+
 KEY_RESULT_FETCH_MEASURERS = {
     "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
     "maint-kr-supported": measure_maint_supported,
@@ -4082,6 +4206,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "post-kr-readership": measure_post_readership,
     "wa-kr-reaches-you": measure_wa_reaches_you,
     "infra-kr-self-service": measure_infra_self_service,
+    "infra-kr-no-new-money": measure_infra_no_new_money,
 }
 
 
