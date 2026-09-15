@@ -104,6 +104,8 @@ from agora_runner.project_goals import (
     projects_without_goals,
     writeup_readings,
     unworked_breaches,
+    unworked_shortfalls,
+    short_key_results,
 )
 
 #: The two boards the owner's work sits on, plural because that is the
@@ -156,6 +158,8 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     undecided = undecided_goals(sections)
     breaches = kpi_breaches(sections)
     unworked = unworked_breaches(sections, keeps, rows)
+    stalled = unworked_shortfalls(sections, serves, rows)
+    short = short_key_results(sections)
     contradicting, older = writeup_readings(goals_markdown)
     missing_goals, projects_on_boards = (
         ([], 0) if rows is None else projects_without_goals(rows, sections))
@@ -211,6 +215,17 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "raise: opening a row, retiring the milestone or moving the "
             "fence are all yours to choose between:")
         for line in unworked:
+            lines.append(f"  {line}")
+    if stalled:
+        lines.append(
+            f"SHORT OF TARGET WITH NOBODY ON IT ({len(stalled)}) -- the same "
+            "read from the target's side: the key result is short of its own "
+            "target, a milestone is named as serving it, and that milestone "
+            "holds no open row. The bare list of short key results is not "
+            f"printed and is not a finding -- {len(short)} of them are short "
+            "right now, because that is what a key result is. An inventory "
+            "rather than a defect, so it does not raise:")
+        for line in stalled:
             lines.append(f"  {line}")
     if contradicting:
         lines.append(
@@ -287,6 +302,9 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                  f"{len(breaches)} KPI(s) out of bounds, "
                  + ("" if rows is None
                     else f"{len(unworked)} of them with nobody on it, ")
+                 + ("" if rows is None
+                    else f"{len(stalled)} key result(s) short of target with "
+                         "nobody on it, ")
                  + f"{len(contradicting)} write-up(s) contradicting their "
                  + "own number, "
                  f"{len(older)} quoting an earlier reading, "
