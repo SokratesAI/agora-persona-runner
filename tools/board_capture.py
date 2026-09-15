@@ -134,8 +134,11 @@ from agora_runner.board_document import (  # noqa: E402
 )
 from agora_runner.board_store import StoreError  # noqa: E402
 from agora_runner.board_write import refuse_cell  # noqa: E402
+from agora_runner.project_goals import unseated_refusal  # noqa: E402
 from agora_runner.nova_boards import (  # noqa: E402
+    MILESTONE_SEATS_PATH,
     PRIORITY_LABELS,
+    parse_milestone_serves,
     STATUS_LABELS,
     board_projects,
     canonical_priority,
@@ -556,6 +559,38 @@ def promote(text, priority, status, dated, title=None, project=None,
     }, None
 
 
+def seats_markdown(runner=None):
+    """`milestone-seats.md` out of the vault -> `(markdown, ok)`.
+
+    `ok` is False when the document could not be read at all, and the
+    caller treats that as *not checked* rather than as no seats. Refusing
+    every capture because the vault client is missing would put an
+    unreadable vault between him and his own board -- the opposite trade
+    from the one the seat rule is worth.
+
+    Injectable so the tests drive the refusal without a subprocess; the
+    real runner is `vault_tool.py`, which lives on the bridge pod only.
+    """
+    import subprocess
+    runner = runner or subprocess.run
+    try:
+        done = runner(
+            [sys.executable, "/app/bridge/vault_tool.py", "get",
+             MILESTONE_SEATS_PATH],
+            capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return "", False
+    if done.returncode != 0:
+        return "", False
+    # The vault client answers a missing document with this marker and
+    # exit 0. An absent seats file is unreadable for this purpose: it
+    # would seat nothing and refuse everything.
+    text = done.stdout
+    if "[not found]" in text[:200] or not text.strip():
+        return "", False
+    return text, True
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--board", required=True, choices=list(BOARDS),
@@ -707,6 +742,32 @@ def main(argv=None):
             return 1
 
     tag = fields["project"]
+
+    # **A milestone with no seat is refused here, not reported later.**
+    # `project_goals_check.task_seat_problems` already finds a row under a
+    # milestone `milestone-seats.md` does not seat -- that is how issue #233
+    # was found the morning after it was boarded. The row reads as placed to
+    # every check downstream while serving no key result, so the seat is a
+    # precondition for boarding rather than a repair afterwards. A vault the
+    # tool cannot read is not a refusal: it warns and boards, because an
+    # unreadable seats file would otherwise stand between him and his board.
+    # A row with no project cannot be seated either way, so it is not
+    # fetched for: `unseated_refusal` would answer None and the call
+    # would be a vault read taken for nothing.
+    if args.milestone and tag:
+        seats, read_seats = seats_markdown()
+        if not read_seats:
+            print(
+                "  WARNING: milestone-seats.md could not be read, so the "
+                "seat behind --milestone was NOT checked.",
+                file=sys.stderr,
+            )
+        else:
+            refusal = unseated_refusal(
+                tag, args.milestone, parse_milestone_serves(seats))
+            if refusal:
+                print(f"REFUSED: {refusal}", file=sys.stderr)
+                return 1
     for one in tasks:
         print(f"boarding — {one['title']}")
     print(f"  classified {args.kind!r} (issue #212)")

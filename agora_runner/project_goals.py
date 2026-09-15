@@ -1201,6 +1201,45 @@ def task_seat_problems(rows, serves):
     return found
 
 
+def unseated_refusal(project, milestone, serves):
+    """Message refusing a row about to land under a milestone with no seat.
+
+    `task_seat_problems` above finds this *after* the row is on the board.
+    Issue #233 was boarded under `Nova the app / Framework rewrite` on
+    2026-09-15 and the opening sweep reported it as the only model problem
+    on either board -- the row read as placed to every check downstream
+    while serving nothing, and the seat had to be written by hand the next
+    cycle. This is the same rule at the door the row comes through, so the
+    seat is written first rather than repaired afterwards.
+
+    `serves` is `nova_boards.parse_milestone_serves`, whose keys are
+    lowercased, so the names listed back read lowercased too. That is the
+    key both the lookup here and `task_seat_problems` use, and two
+    milestone names differing only in case are one seat to both.
+
+    `None` means there is nothing to refuse, which includes a row carrying
+    no milestone or no project: a row under no milestone is
+    `task_seat_orphans`' inventory and a choice the caller already made out
+    loud, not a defect this should block.
+    """
+    project = (project or "").strip()
+    milestone = (milestone or "").strip()
+    if not project or not milestone:
+        return None
+    if (project.lower(), milestone.lower()) in (serves or {}):
+        return None
+    seated = sorted(
+        name for owner, name in (serves or {}) if owner == project.lower())
+    known = ("; ".join(seated) if seated
+             else "no milestone is seated under that project yet")
+    return (
+        f"{project} / {milestone!r} has no seat in milestone-seats.md, so "
+        "the row would serve no key result the moment it lands (issue "
+        "#227). Write the seat first -- Serves the key result it serves, "
+        "Keeps the KPI it keeps, both blank if it is deliberately an "
+        f"orphan. Seated under {project}: {known}.")
+
+
 def task_seat_orphans(rows):
     """Open rows under no milestone at all -- the inventory, not a defect.
 
