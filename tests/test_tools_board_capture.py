@@ -901,3 +901,82 @@ def test_allow_duplicate_boards_it_anyway(store):
                 "--title", "Weekly work", "--allow-duplicate") == 0
     titles = [one["title"] for one in _rows(store).values()]
     assert titles.count("Weekly work") == 2
+
+
+# --- the seat behind the milestone (issue #227, issue #233) -------------
+#
+# `project_goals_check` finds a row under a milestone `milestone-seats.md`
+# does not seat, and that is how issue #233 was found the morning after it
+# was boarded under `Nova the app / Framework rewrite`. These prove the same
+# rule at the door: the seat is a precondition for boarding.
+
+_SEATS = (
+    "| Project | Milestone | Position | Updated | Serves | Keeps |\n"
+    "|---|---|---|---|---|---|\n"
+    "| Nova the app | Look and feel | 1 | 09-15 | nova-kr-in-the-app |  |\n"
+    "| Nova the app | Board store and growth | 2 | 09-15 |  | nova-kpi-x |\n"
+    "| Marcus | Coaching intelligence | 1 | 09-15 | marcus-kr-plan |  |\n"
+)
+
+
+def _seats_answer(monkeypatch, text, ok=True):
+    monkeypatch.setattr(board_capture, "seats_markdown",
+                        lambda *a, **k: (text, ok))
+
+
+def test_a_milestone_with_no_seat_is_refused_before_any_write(
+        store, monkeypatch, capsys):
+    """The row would read as placed to every check downstream while serving
+    no key result, which is exactly what issue #233 did."""
+    _seats_answer(monkeypatch, _SEATS)
+    assert _run("--index", "0", "--priority", "high",
+                "--project", "Nova the app",
+                "--milestone", "Framework rewrite") == 1
+    problem = capsys.readouterr().err
+    assert "no seat in milestone-seats.md" in problem
+    # It names what IS seated under that project, so a typo is visible.
+    assert "look and feel" in problem
+    assert store.calls == []
+
+
+def test_a_seated_milestone_boards_the_row(store, monkeypatch):
+    """A refusal wearing a flag would be worse than no check: the ordinary
+    call still has to land."""
+    _seats_answer(monkeypatch, _SEATS)
+    assert _run("--index", "0", "--priority", "high",
+                "--project", "Nova the app",
+                "--milestone", "Look and feel") == 0
+    assert _rows(store)[105]["milestone"] == "Look and feel"
+
+
+def test_a_seat_in_another_project_does_not_count(store, monkeypatch, capsys):
+    """The seat is keyed on the pair, the same key `task_seat_problems` uses,
+    so the same milestone title under the wrong project is a finding."""
+    _seats_answer(monkeypatch, _SEATS)
+    assert _run("--index", "0", "--priority", "high",
+                "--project", "Nova the app",
+                "--milestone", "Coaching intelligence") == 1
+    assert "no seat in milestone-seats.md" in capsys.readouterr().err
+    assert store.calls == []
+
+
+def test_an_unreadable_seats_file_warns_and_boards(store, monkeypatch, capsys):
+    """Not checked is not the same as no seats. Refusing here would put an
+    unreadable vault between him and his own board."""
+    _seats_answer(monkeypatch, "", ok=False)
+    assert _run("--index", "0", "--priority", "high",
+                "--project", "Nova the app",
+                "--milestone", "Framework rewrite") == 0
+    assert "NOT checked" in capsys.readouterr().err
+    assert _rows(store)[105]["milestone"] == "Framework rewrite"
+
+
+def test_no_milestone_never_reaches_the_seats_file(store, monkeypatch):
+    """A row boarded ungrouped on purpose is `task_seat_orphans`' inventory,
+    not a defect, so it must not pay for a vault read either."""
+    def explode(*a, **k):
+        raise AssertionError("the seats file was fetched for an ungrouped row")
+    monkeypatch.setattr(board_capture, "seats_markdown", explode)
+    assert _run("--index", "0", "--priority", "high",
+                "--project", "Nova the app", "--no-milestone") == 0
+    assert _rows(store)[105]["milestone"] == ""
