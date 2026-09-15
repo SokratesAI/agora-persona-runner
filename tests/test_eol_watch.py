@@ -611,3 +611,78 @@ def test_a_floating_line_outranks_an_incomplete_sweep(monkeypatch):
     _, loose = judged("nginx", "alpine")
     assert _run_main(monkeypatch, [live], not_judged_out=[loose],
                      problems=["o/s: could not list"]) == 2
+
+
+def test_a_k3s_mirrored_image_is_judged_as_the_upstream_it_mirrors():
+    # `rancher/mirrored-library-traefik:3.6.7` is the ingress this cluster
+    # actually runs, and it read as a product endoflife.date has never heard
+    # of until Cycle 1607 -- while traefik has been in the catalogue the
+    # whole time. The convention is k3s's: the upstream `<org>/<repo>` is
+    # flattened into one Docker Hub name under `rancher/mirrored-`.
+    where, entry = judged("rancher/mirrored-library-node", "20")
+    assert where == "judged"
+    assert entry["product"] == "nodejs"
+    assert entry["verdict"] == "eol"
+
+
+def test_the_literal_name_still_wins_over_the_un_mirrored_guess():
+    products = [
+        {"name": "the-whole-name", "aliases": ["mirrored-library-node"],
+         "identifiers": [],
+         "releases": [{"name": "20", "isEol": False, "eolFrom": "2030-01-01"}]},
+    ] + PRODUCTS
+    where, entry = judged("rancher/mirrored-library-node", "20",
+                          products=products)
+    assert where == "judged"
+    assert entry["product"] == "the-whole-name"
+
+
+def test_an_un_mirrored_guess_may_answer_but_never_raise_a_new_complaint():
+    # `rancher/mirrored-metrics-server` un-flattens to `server`, which two
+    # products claim. Printing "two products claim this name" about it would
+    # replace one true sentence with a confident wrong one, so only the
+    # literal name is allowed to earn the ambiguity reason.
+    products = [
+        {"name": "couchbase-server", "aliases": [],
+         "identifiers": [{"id": "pkg:docker/library/server"}],
+         "releases": [{"name": "7", "isEol": True, "eolFrom": "2020-01-01"}]},
+        {"name": "authentik", "aliases": [],
+         "identifiers": [{"id": "pkg:docker/goauthentik/server"}],
+         "releases": [{"name": "7", "isEol": False, "eolFrom": "2030-01-01"}]},
+    ]
+    where, entry = judged("rancher/mirrored-metrics-server", "7",
+                          products=products)
+    assert where == "not-judged"
+    assert "publishes no product" in entry["reason"]
+    assert "not decidable" not in entry["reason"]
+
+
+def test_an_ordinary_image_is_unaffected_by_the_mirror_rule():
+    assert eol_watch.lookup_names("docker.io/library/node") == ["node"]
+    assert eol_watch.lookup_names("redis") == ["redis"]
+
+
+def test_the_report_breaks_the_unjudged_count_down_by_cause():
+    # One number for three unrelated situations reads as a diagnosis and is
+    # not one: an image nobody publishes a support window for can never be
+    # judged, and a release with no end-of-life date yet resolves upstream.
+    rows = []
+    for image in ("ghcr.io/o/never-heard-of-it", "ghcr.io/o/also-unknown"):
+        _, entry = judged(image, "1.0")
+        rows.append(entry)
+    _, undated = judged("node", "26")
+    rows.append(undated)
+    report = eol_watch.format_report([], rows, [], [], 180)
+    assert "2 — endoflife.date publishes no product" in report
+    assert "1 — no end-of-life date published yet" in report
+
+
+def test_every_unjudged_row_records_a_cause():
+    cases = [judged("ghcr.io/o/unknown", "1.0"),
+             judged("node", "26"),
+             judged("node", "99"),
+             judged("node", "latest"),
+             judged("node", None)]
+    for where, entry in cases:
+        assert where == "not-judged"
+        assert entry.get("cause"), entry
