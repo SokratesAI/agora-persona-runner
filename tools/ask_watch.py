@@ -176,6 +176,58 @@ NUDGE_TEXT = (
 )
 
 
+def resolve(conversation_id, because, rows=None):
+    """Close an ask whose answer arrived somewhere other than its own thread.
+
+    This is the half `spoken_elsewhere` left unfinished. That function can say
+    "he has been talking elsewhere"; nothing could say "and the answer is in
+    there, and I acted on it". So an ask he settled in another conversation
+    stayed in `waiting` for good -- thread 18bdb05e asked whether five projects
+    should stop being projects, he answered it in **Manual feedback &
+    improvements** at 06:57 on 2026-09-15, three cycles executed the answer in
+    full, and 37 hours later this tool still told me he owed me a word. Every
+    cycle read that and none of them could clear it.
+
+    Deciding that an answer arrived elsewhere is judgement and stays mine.
+    Recording it is not, which is why it is here: the closing message goes into
+    the ask thread so the question on his phone stops reading as unanswered,
+    and the thread is archived so `check` drops it.
+
+    **Post first, archive second, and never the other way round.** If the
+    archive fails the closing message is still in the thread and the ask still
+    reads open -- visible and recoverable. If the archive landed and the post
+    failed, the ask would be gone from every list with nothing saying why.
+
+    Returns (ok, detail). Archiving is reversible: PATCH `archived: false`.
+    """
+    because = (because or "").strip()
+    if not because:
+        # A closed ask with no reason is exactly the thing this replaces.
+        return False, "refused: --because is empty, and a closed ask with no reason is worse than an open one"
+    if rows is not None and not any(
+            str(m.get("sender") or "").strip() == SENDER for m in rows):
+        return False, "refused: no message of mine in this thread, so it is not an ask of mine to close"
+
+    text = (f"**Closed — you answered this, just not in here.** {because}\n\n"
+            "Nothing above has changed and nothing is being asked of you. "
+            "— Nova, closing the thread out.")
+    # No `push_held` check, unlike `nudge`: a withheld buzz on a close is not
+    # a failure. Nothing is being asked of him, so the message only has to be
+    # in the thread when he next opens it.
+    status, _ = agora_internal(
+        "POST", f"/conversations/{conversation_id}/notify",
+        {"text": text, "sender": SENDER, "system": False})
+    if status not in (200, 201):
+        return False, f"nothing posted and nothing archived: notify returned HTTP {status}"
+
+    status, _ = agora_internal(
+        "PATCH", f"/conversations/{conversation_id}", {"archived": True})
+    if status not in (200, 201, 204):
+        return False, (f"the closing message is posted but the archive returned "
+                       f"HTTP {status} — the ask still reads as waiting")
+    return True, "closed out and archived"
+
+
 def nudge(conversation_id, text=NUDGE_TEXT):
     """Post the re-announcement, so the ask gets the one push it never got.
 
@@ -418,7 +470,22 @@ def main(argv=None):
         "--nudge", action="store_true",
         help="re-announce every open ask whose push was withheld, so his "
              "phone finally buzzes for it")
+    parser.add_argument(
+        "--resolve", metavar="CONVERSATION_ID",
+        help="close an ask he answered in some other thread: post why, then "
+             "archive it so it stops reading as waiting. Needs --because.")
+    parser.add_argument(
+        "--because", metavar="TEXT", default="",
+        help="one line for --resolve: where he answered and what it changed")
     args = parser.parse_args(argv)
+    if args.resolve:
+        rows, problem = messages(args.resolve)
+        if problem:
+            print(f"COULD NOT READ {args.resolve}: {problem}")
+            return 1
+        ok, detail = resolve(args.resolve, args.because, rows)
+        print(f"{'resolved' if ok else 'NOT resolved'} — {detail}")
+        return 0 if ok else 1
     return report(*check(), do_nudge=args.nudge)
 
 

@@ -380,3 +380,79 @@ def test_the_age_reported_is_his_newest_word_not_his_oldest(monkeypatch):
     assert "last 30 min ago" in text, text
     # newest first, so the freshest thing he said is the first one I read
     assert text.index("Perfect. Cycles.") < text.index("first thought"), text
+
+
+# --- `--resolve`: an ask he answered in some other thread ---------------------
+
+
+def _fake_internal(log, statuses):
+    def internal(method, path, payload=None):
+        log.append((method, path, payload))
+        return statuses.pop(0), {}
+    return internal
+
+
+def test_resolve_posts_the_reason_then_archives(monkeypatch):
+    log = []
+    monkeypatch.setattr(ask_watch, "agora_internal", _fake_internal(log, [200, 200]))
+    ok, detail = ask_watch.resolve(
+        "c1", "You settled it in Manual feedback at 06:57 and I re-homed 58 rows.",
+        [_msg("Nova")])
+    assert ok, detail
+    (m1, p1, b1), (m2, p2, b2) = log
+    assert (m1, p1) == ("POST", "/conversations/c1/notify")
+    assert "Manual feedback" in b1["text"]
+    assert b1["sender"] == ask_watch.SENDER
+    assert (m2, p2, b2) == ("PATCH", "/conversations/c1", {"archived": True})
+
+
+def test_resolve_refuses_without_a_reason(monkeypatch):
+    log = []
+    monkeypatch.setattr(ask_watch, "agora_internal", _fake_internal(log, [200, 200]))
+    ok, detail = ask_watch.resolve("c1", "   ", [_msg("Nova")])
+    assert not ok
+    assert "--because is empty" in detail
+    assert log == []
+
+
+def test_resolve_refuses_a_thread_that_is_not_mine(monkeypatch):
+    log = []
+    monkeypatch.setattr(ask_watch, "agora_internal", _fake_internal(log, [200, 200]))
+    ok, detail = ask_watch.resolve("c1", "he answered elsewhere", [_msg("Edvard")])
+    assert not ok
+    assert "not an ask of mine" in detail
+    assert log == []
+
+
+def test_a_failed_archive_does_not_read_as_resolved(monkeypatch):
+    log = []
+    monkeypatch.setattr(ask_watch, "agora_internal", _fake_internal(log, [200, 500]))
+    ok, detail = ask_watch.resolve("c1", "he answered elsewhere", [_msg("Nova")])
+    assert not ok
+    assert "still reads as waiting" in detail
+    assert len(log) == 2
+
+
+def test_nothing_is_archived_when_the_message_never_posted(monkeypatch):
+    log = []
+    monkeypatch.setattr(ask_watch, "agora_internal", _fake_internal(log, [502, 200]))
+    ok, detail = ask_watch.resolve("c1", "he answered elsewhere", [_msg("Nova")])
+    assert not ok
+    assert "nothing posted and nothing archived" in detail
+    assert len(log) == 1
+
+
+def test_resolve_from_main_exits_nonzero_when_it_refuses(monkeypatch):
+    monkeypatch.setattr(ask_watch, "messages", lambda cid: ([_msg("Nova")], None))
+    monkeypatch.setattr(ask_watch, "agora_internal",
+                        _fake_internal([], [200, 200]))
+    assert ask_watch.main(["--resolve", "c1"]) == 1
+    assert ask_watch.main(["--resolve", "c1", "--because", "he said yes in chat"]) == 0
+
+
+def test_resolve_does_not_run_the_sweep(monkeypatch):
+    """The sweep costs a listing plus one read per ask; --resolve needs neither."""
+    monkeypatch.setattr(ask_watch, "check", lambda *a, **k: 1 / 0)
+    monkeypatch.setattr(ask_watch, "messages", lambda cid: ([_msg("Nova")], None))
+    monkeypatch.setattr(ask_watch, "agora_internal", _fake_internal([], [200, 200]))
+    assert ask_watch.main(["--resolve", "c1", "--because", "answered in chat"]) == 0
