@@ -3625,7 +3625,7 @@ def measure_infra_outlives_the_box(since, until):
 
 #: The vault folder every research write-up lands in. `identity.md` calls it
 #: "durable write-ups, so no cycle pays for the same investigation twice",
-#: which is the claim `research-kr-reused` exists to check.
+#: which is the claim `pm-kpi-research-reused` exists to check.
 RESEARCH_PREFIX = "projects/sokrates/projects/agora/nova/resources/research/"
 
 VAULT_TOOL = "/app/bridge/vault_tool.py"
@@ -4230,10 +4230,8 @@ def measure_infra_no_new_money(since, until):
 KEY_RESULT_FETCH_MEASURERS = {
     "marcus-kr-coach-first-try": measure_marcus_coach_first_try,
     "maint-kr-supported": measure_maint_supported,
-    "maint-kr-pins-current": measure_maint_pins_current,
     "demos-kr-opened": measure_demos_opened,
     "demos-kr-no-litter": measure_demos_no_litter,
-    "research-kr-reused": measure_research_reused,
     "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
     "docs-kr-sync-alive": measure_docs_sync_alive,
@@ -4242,7 +4240,6 @@ KEY_RESULT_FETCH_MEASURERS = {
     "maint-kr-self-documenting": measure_maint_self_documenting,
     "agora-kr-chat-basics": measure_agora_chat_basics,
     "agora-kr-nothing-unused": measure_agora_nothing_unused,
-    "agora-kr-mcp-current": measure_agora_mcp_current,
     "post-kr-editor": measure_post_editor,
     "post-kr-readership": measure_post_readership,
     "wa-kr-reaches-you": measure_wa_reaches_you,
@@ -4268,6 +4265,9 @@ KPI_MEASURERS = {
     "infra-kpi-ci-minutes": measure_infra_ci_minutes,
     "infra-kpi-node-headroom": measure_infra_node_headroom,
     "maint-kpi-eol-unjudged": measure_maint_eol_unjudged,
+    "agora-kpi-mcp-deprecated": measure_agora_mcp_current,
+    "pm-kpi-pins-current": measure_maint_pins_current,
+    "pm-kpi-research-reused": measure_research_reused,
 }
 
 #: A KPI with no instrument, and why. Written down here rather than left as a

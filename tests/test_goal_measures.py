@@ -2781,9 +2781,10 @@ def test_pins_current_refuses_when_the_repo_list_is_incomplete(monkeypatch):
     assert "enumerate" in detail
 
 
-def test_pins_current_is_wired_into_the_fetch_map():
-    assert goal_measures.KEY_RESULT_FETCH_MEASURERS["maint-kr-pins-current"] is \
+def test_pins_current_is_wired_into_the_kpi_map():
+    assert goal_measures.KPI_MEASURERS["pm-kpi-pins-current"] is \
         goal_measures.measure_maint_pins_current
+    assert "maint-kr-pins-current" not in goal_measures.KEY_RESULT_FETCH_MEASURERS
 
 
 class TestDemosOpened:
@@ -3031,9 +3032,10 @@ class TestResearchReused:
         assert slugs == []
         assert "no such folder" in error
 
-    def test_research_reused_is_wired_into_the_fetch_map(self):
-        assert gm.KEY_RESULT_FETCH_MEASURERS["research-kr-reused"] is \
+    def test_research_reused_is_wired_into_the_kpi_map(self):
+        assert gm.KPI_MEASURERS["pm-kpi-research-reused"] is \
             gm.measure_research_reused
+        assert "research-kr-reused" not in gm.KEY_RESULT_FETCH_MEASURERS
 
 
 class TestInfraOutlivesTheBox:
@@ -4656,9 +4658,10 @@ class TestMcpCurrentMeasure:
         assert "no earliest removal" in detail
         assert "logging: IN USE" in detail
 
-    def test_it_is_wired_into_the_fetch_map(self):
-        assert gm.KEY_RESULT_FETCH_MEASURERS["agora-kr-mcp-current"] is \
+    def test_it_is_wired_into_the_kpi_map(self):
+        assert gm.KPI_MEASURERS["agora-kpi-mcp-deprecated"] is \
             gm.measure_agora_mcp_current
+        assert "agora-kr-mcp-current" not in gm.KEY_RESULT_FETCH_MEASURERS
 
 
 # --- infra-kr-self-service: provenance read off managedFields -----------------
