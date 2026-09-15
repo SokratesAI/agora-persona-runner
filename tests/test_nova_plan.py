@@ -1307,13 +1307,12 @@ def test_the_plan_page_says_how_many_projects_have_no_goal():
     objective have no section in the document, so without this the card is
     complete by construction however many are missing."""
     coverage = _coverage_doc(COVERAGE_ROWS)["coverage"]
-    assert coverage["total"] == 3
+    assert coverage["total"] == 2
     assert coverage["withGoal"] == 1
-    assert [entry["project"] for entry in coverage["missing"]] == ["NAS",
-                                                                  "Research"]
-    # The open count is what separates a pruning question from unexplained
-    # work: Research's one row is done, NAS has two still open.
-    assert [entry["openRows"] for entry in coverage["missing"]] == [2, 0]
+    assert [entry["project"] for entry in coverage["missing"]] == ["NAS"]
+    # `Research` is off the card entirely: its only row is done, so there is
+    # no work left to say what it is for (Cycle 1630).
+    assert [entry["openRows"] for entry in coverage["missing"]] == [2]
 
 
 def test_a_row_with_no_project_is_not_a_project():
@@ -1360,7 +1359,7 @@ def test_the_plan_route_hands_the_boards_to_the_payload(monkeypatch):
                               else []}, b"", "etag"))
     doc = [d for d in nova_site.plans_payload()["documents"]
            if d["key"] == "projects"][0]
-    assert doc["coverage"]["total"] == 3
+    assert doc["coverage"]["total"] == 2
 
 
 def test_a_board_that_cannot_be_read_takes_the_whole_count_down(monkeypatch):

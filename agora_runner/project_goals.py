@@ -1095,6 +1095,18 @@ def projects_without_goals(rows, sections):
     would have a goal by construction, which is the guaranteed-positive
     trap.
 
+    **"On the boards" means an open row**, and it did not until Cycle
+    1630. `Nova` and `Maintenance` carried 235 rows between them and every
+    single one was `done` or `outdated` -- names left over from the
+    re-home, with nothing being built under either. They sat in this list
+    anyway, so #227's own headline measure read `11 of 13 projects have a
+    goal` and could not reach 13 by any action: writing an objective for a
+    project with no open work is the "work nobody can justify" case the
+    orphan list exists to name. `split_orphans` already makes exactly this
+    call one level down -- a pruning orphan whose rows are all closed is
+    not a question, Cycle 1568 -- and this function contradicted it. A
+    project reappears here the moment a row opens under it.
+
     **A project counts as having a goal when its section carries an
     ```objective fence**, the same gate `problems()` uses when it refuses
     key results with nothing to be outcomes of. A fence whose statement is
@@ -1105,6 +1117,9 @@ def projects_without_goals(rows, sections):
     breaches: a project with no goal is either work waiting for a
     conversation with him or a project that should stop existing, and
     neither is something a pull request closes.
+
+    A project whose every row is finished is neither of those, so it is
+    not here at all -- see `project_goal_coverage`.
     """
     missing, total = project_goal_coverage(rows, sections)
     return [f"{entry['project']}: no objective is written for this project "
@@ -1126,13 +1141,10 @@ def project_goal_coverage(rows, sections):
     with_goals = {key for key, section in (sections or {}).items()
                   if section.get("objective")}
     seen, open_counts = {}, {}
-    for row in rows or ():
-        name = (row.get("project") or "").strip()
-        if name:
-            seen.setdefault(name.lower(), name)
     for row in open_rows(rows or ()):
         name = (row.get("project") or "").strip()
         if name:
+            seen.setdefault(name.lower(), name)
             open_counts[name.lower()] = open_counts.get(name.lower(), 0) + 1
     missing = [{"project": seen[key], "openRows": open_counts.get(key, 0)}
                for key in sorted(seen) if key not in with_goals]

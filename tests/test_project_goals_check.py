@@ -153,7 +153,7 @@ def test_a_closed_task_is_not_asked_which_milestone_it_serves():
     lines, code = report(GOALS, SEATS, rows=rows)
     assert code == 0
     assert lines[-1].endswith("0 unplaced task(s), "
-                              "1 of 1 project(s) have a goal")
+                              "0 of 0 project(s) have a goal")
     assert not any("issues #2" in line or "issues #3" in line
                    or "issues #4" in line for line in lines)
 
@@ -507,20 +507,18 @@ def test_a_project_on_the_boards_with_no_objective_is_listed_but_does_not_raise(
     assert lines[-1].endswith("1 of 2 project(s) have a goal")
 
 
-def test_a_project_whose_rows_are_all_closed_is_still_counted_as_having_none():
-    """The open-row count is a number *in* the finding, never the gate on it.
-    `Research` has five closed rows and nothing open, and it is still a
-    project on the boards with no goal -- which is the strongest pruning
-    signal there is, and dropping it for having no open work would delete
-    exactly that."""
+def test_a_project_whose_rows_are_all_closed_is_not_a_project_with_no_goal():
+    """Cycle 1630. `Research` has closed rows and nothing open, so there is no
+    work left to say what it is for -- the same call `split_orphans` makes on a
+    pruning orphan whose rows are all closed. It is not a pruning signal
+    either: pruning is stopping open work, and this has already stopped."""
     rows = [row(1),
             row(9, project="Research", milestone="", status_key="done",
                 done=True)]
     lines, code = report(GOALS, SEATS, rows=rows)
     assert code == 0
-    assert ("  Research: no objective is written for this project -- 0 open "
-            "row(s) on the boards and nothing saying what any of them is for"
-            ) in lines
+    assert not [line for line in lines if "Research: no objective" in line]
+    assert lines[-1].endswith("1 of 1 project(s) have a goal")
 
 
 def test_a_project_that_has_a_goal_is_not_in_the_list():
