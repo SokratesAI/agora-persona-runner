@@ -213,3 +213,63 @@ def test_broken_outranks_pending_in_the_exit_code(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "gone: BROKEN" in out
     assert "slow: STILL PENDING" in out
+
+
+def test_the_default_deadline_fits_the_bash_tools_default_timeout(monkeypatch):
+    """The default invocation must answer in the foreground.
+
+    `--deadline 240` against a 120s foreground budget meant every
+    unadorned call detached, which is the shape that ends a turn with
+    no journal entry (cycles 1644, 1655, 1664).
+    """
+    assert waitfor.DEFAULT_DEADLINE < waitfor.BASH_DEFAULT_TIMEOUT_S
+    assert waitfor.budget_warning(waitfor.DEFAULT_DEADLINE) is None
+    # The constant is only worth anything if the CLI actually uses it:
+    # the whole defect was a default nobody passes explicitly.
+    seen = {}
+
+    def fake_poll(conditions, deadline, interval):
+        seen["deadline"] = deadline
+        for cond in conditions:
+            cond.resolved = True
+            cond.elapsed = 1.0
+        return []
+
+    monkeypatch.setattr(waitfor, "poll", fake_poll)
+    waitfor.main(["ready:true"])
+    assert seen["deadline"] == waitfor.DEFAULT_DEADLINE
+
+
+def test_a_deadline_over_the_budget_names_the_timeout_to_pass():
+    warning = waitfor.budget_warning(300)
+    assert warning is not None
+    assert "--deadline 300s" in warning
+    # The caller needs the number in milliseconds, with room for the
+    # last round's own commands on top of the deadline.
+    assert "timeout: 320000" in warning
+
+
+def test_a_deadline_at_the_budget_still_warns():
+    """120 against a 120s budget overruns: the final round runs after
+    the deadline check, so the process outlives its own deadline."""
+    assert waitfor.budget_warning(waitfor.BASH_DEFAULT_TIMEOUT_S) is not None
+
+
+def test_the_warning_is_printed_before_the_wait_begins(monkeypatch, capsys):
+    """Printed first, flushed, so it survives the wait being killed.
+
+    If it were printed with the report, the one caller who needs it --
+    the one whose wait is about to be detached -- never sees it.
+    """
+    seen = []
+
+    def fake_poll(conditions, deadline, interval):
+        seen.append(capsys.readouterr().out)
+        for cond in conditions:
+            cond.resolved = True
+            cond.elapsed = 1.0
+        return []
+
+    monkeypatch.setattr(waitfor, "poll", fake_poll)
+    waitfor.main(["--deadline", "300", "slow:true"])
+    assert seen and "timeout: 320000" in seen[0]

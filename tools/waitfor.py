@@ -17,6 +17,20 @@ measured it this morning: a 25-second foreground command returns its
 output in the same turn, and the Bash timeout goes to 600 seconds. So a
 wait can simply block.
 
+**600 is the ceiling; 120 is what you actually get.** That sentence
+above read as a budget for three months and it is a maximum -- the Bash
+tool's own `timeout` parameter defaults to 120000ms, and a call that
+does not raise it is detached at 120 seconds no matter what it is
+running. So the old `--deadline 240` default was, by construction,
+twice the foreground budget of the caller that did not think about it:
+every default invocation of this tool detached mid-flight. That is the
+exact shape that made cycles 1644 and 1655 silent -- a turn that ends
+on a background wait ends with no journal entry and no reply -- and it
+happened again to cycle 1664 at 01:48, on a `--deadline 300` that got
+120 seconds. The default deadline is now `DEFAULT_DEADLINE`, inside the
+budget, and any deadline above it prints the exact `timeout` to pass
+**before** blocking, so the note survives being detached.
+
 What this does NOT do is drop a check. Every condition is still run,
 every one still reports, and the command's own stdout is reproduced
 verbatim -- the same contract `tools.preflight` has. It removes
@@ -28,7 +42,7 @@ picks up exactly where polling would have left it. Nothing is lost by
 guessing the deadline too low.
 
     python3 -m tools.waitfor \
-        --deadline 240 \
+        --deadline 110 \
         'argo:kubectl get application sokratesai-infra -n argocd -o jsonpath="{.status.sync.status}" | grep -qx Synced' \
         'ping:kubectl get pods -n obsidian | grep -q nova-alive-ping-2980022'
 
@@ -57,6 +71,39 @@ import shlex
 import subprocess
 import sys
 import time
+
+
+#: What the Bash tool gives a command that does not ask for more, in
+#: seconds. Measured cycle 1664: a call with no `timeout` set was moved
+#: to the background with "did not complete within its 120s timeout".
+#: The tool's documented maximum is 600, and that maximum is what this
+#: module's docstring used to quote as if it were the budget.
+BASH_DEFAULT_TIMEOUT_S = 120
+
+#: The deadline a caller gets when it does not pick one. Deliberately
+#: inside `BASH_DEFAULT_TIMEOUT_S` rather than at it: the last round's
+#: own condition commands run after the deadline check, so a deadline
+#: equal to the budget still overruns it.
+DEFAULT_DEADLINE = 110
+
+
+def budget_warning(deadline, budget=BASH_DEFAULT_TIMEOUT_S):
+    """The line to print before blocking, or None if the wait fits.
+
+    Returned rather than printed so a test can read it without capturing
+    stdout, and printed by `main` before `poll` rather than after, which
+    is the whole point: a wait that overruns the caller's budget is
+    detached or killed, and anything this module prints afterwards is
+    never read by the turn that needed it.
+    """
+    if deadline <= budget - 10:
+        return None
+    return (
+        "NOTE: --deadline %ds does not fit the Bash tool's default %ds timeout. "
+        "Pass timeout: %d (ms) on the Bash call, or this wait is detached "
+        "mid-flight and the turn ends with no answer in it."
+        % (deadline, budget, (deadline + 20) * 1000)
+    )
 
 
 class Condition:
@@ -221,8 +268,10 @@ def main(argv=None):
     parser.add_argument(
         "--deadline",
         type=int,
-        default=240,
-        help="seconds to block in the foreground before detaching (default 240; Bash allows 600)",
+        default=DEFAULT_DEADLINE,
+        help=("seconds to block in the foreground before detaching (default %d, "
+              "which fits the Bash tool's default %ds timeout; raising it means "
+              "raising that call's timeout too)" % (DEFAULT_DEADLINE, BASH_DEFAULT_TIMEOUT_S)),
     )
     parser.add_argument("--interval", type=int, default=10, help="seconds between rounds (default 10)")
     parser.add_argument(
@@ -233,6 +282,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     conditions = [parse_condition(spec) for spec in args.conditions]
+    warning = budget_warning(args.deadline)
+    if warning:
+        print(warning, flush=True)
     pending = poll(conditions, args.deadline, args.interval)
     if pending:
         detach(pending, args.handoff, args.interval)
