@@ -49,21 +49,43 @@ whose answer he typed somewhere else entirely — a board comment, a note — wh
 is the same known hole `top_board_rows` has, not something to fix by loosening
 the match.
 
+**And a waiting thread is not always a thread he has seen.** Agora appends
+the message and withholds the phone buzz during quiet hours -- 22:00 to 07:00
+Europe/Oslo, the default in `agora`'s `src/config.ts`, and nothing in the
+`agents` namespace overrides it. Nothing retries it afterwards, so an ask
+opened at 02:22 reaches him only if he goes looking. That is thread
+`0256140f`, the twelve objectives: seven consecutive cycles wrote "still
+unanswered" into the handoff about a question his phone never mentioned. His
+capture, 2026-09-15: *"Never got a notification for the ask thread from cycle
+1617 ... my silence is a symptom of them not reaching me, not me ignoring
+them."* So a waiting thread whose newest message landed inside quiet hours is
+reported separately, as `NEVER REACHED HIS PHONE`, and `--nudge` re-announces
+it.
+
+**The predicate is the state, which is why this needs no ledger.** A nudge is
+posted only while it is audible, so the thread's newest message is then
+outside quiet hours and the predicate is false for good. It fires once per
+silenced ask and cannot loop.
+
 Exit codes: 0 nothing of mine is unanswered, 1 a thread could not be read (no
-instrument is not no answer), 2 he has answered and no cycle has picked it up.
+instrument is not no answer), 2 something needs a cycle to act -- he has
+answered and nobody picked it up, or an ask is waiting that never reached his
+phone.
 """
 
 import argparse
 import sys
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
 # See tests/test_tools_run_as_scripts.py.
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.http_util import agora_get
-from agora_runner.needs_input import NAME_PREFIX, NEEDS_INPUT_TAG, SENDER
+from agora_runner.http_util import agora_get, agora_internal
+from agora_runner.needs_input import (
+    NAME_PREFIX, NEEDS_INPUT_TAG, SENDER, push_held)
 
 
 def _is_ask(row):
@@ -95,6 +117,72 @@ def _age_hours(ts, now):
 # ever opened comes close, and a thread past it degrades in the safe direction.
 WINDOW = 200
 
+# Agora's own defaults, from `agora`'s `src/config.ts`:
+# `QUIET_HOURS_START ?? "22:00"`, `QUIET_HOURS_END ?? "07:00"`,
+# `QUIET_HOURS_TZ ?? "Europe/Oslo"`. Copied rather than read because Agora
+# publishes no route that answers them; verified against the live cluster on
+# 2026-09-15 -- no container in `agents` sets any of the three, so the
+# defaults are what is running. If that ever changes there, change it here.
+QUIET_START_MINUTE = 22 * 60
+QUIET_END_MINUTE = 7 * 60
+QUIET_TZ = "Europe/Oslo"
+
+
+def _oslo_minutes(when):
+    """Minutes since local midnight in Oslo, DST included."""
+    return (when.astimezone(ZoneInfo(QUIET_TZ)).hour * 60
+            + when.astimezone(ZoneInfo(QUIET_TZ)).minute)
+
+
+def in_quiet_hours(when):
+    """Was `when` inside the window where Agora withholds the phone buzz?
+
+    Half-open on both ends, the same as Agora's `isQuiet`, so a message at
+    exactly 07:00 is audible and one at exactly 22:00 is not. The window wraps
+    midnight, which is why this is not a single comparison.
+    """
+    if when is None:
+        return False
+    minutes = _oslo_minutes(when)
+    return minutes >= QUIET_START_MINUTE or minutes < QUIET_END_MINUTE
+
+
+def _parse_ts(ts):
+    if not ts:
+        return None
+    try:
+        when = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when
+
+
+NUDGE_TEXT = (
+    "**This question is still open and your phone never mentioned it** — I "
+    "posted it during quiet hours, so Agora filed the message and withheld the "
+    "buzz, and nothing retried it. Nothing above has changed; scroll up for the "
+    "ask itself. — Nova, re-announcing once."
+)
+
+
+def nudge(conversation_id, text=NUDGE_TEXT):
+    """Post the re-announcement, so the ask gets the one push it never got.
+
+    Returns (ok, detail). Deliberately a normal message rather than a
+    `system: true` one: a system notice is machinery talking and Nova's thread
+    filters those out of what it renders, which is the opposite of what an ask
+    he has not seen needs.
+    """
+    status, body = agora_internal(
+        "POST", f"/conversations/{conversation_id}/notify",
+        {"text": text, "sender": SENDER, "system": False})
+    if status not in (200, 201):
+        return False, f"notify returned HTTP {status}"
+    held = push_held(body)
+    if held:
+        return False, f"posted but the push was withheld again ({held})"
+    return True, "his phone buzzed"
+
 
 def messages(conversation_id):
     """The thread's last `WINDOW` messages, oldest first, or None with a reason.
@@ -115,14 +203,20 @@ def messages(conversation_id):
 
 
 def check(now=None):
-    """Returns (answered, waiting, settled, unreadable)."""
+    """Returns (answered, waiting, silenced, settled, unreadable).
+
+    `silenced` is the subset of waiting threads whose newest message -- mine,
+    by definition of waiting -- landed inside quiet hours, so his phone was
+    never told about it. They are not in `waiting` as well: a thread is in
+    exactly one list, because the two ask for different things from a cycle.
+    """
     now = now or datetime.now(timezone.utc)
     status, body = agora_get("/conversations?active=true")
     if status != 200:
-        return None, None, None, [
+        return None, None, None, None, [
             ("(the listing)", "", f"conversation listing returned HTTP {status}")]
 
-    answered, waiting, settled, unreadable = [], [], [], []
+    answered, waiting, silenced, settled, unreadable = [], [], [], [], []
     for row in (body or {}).get("conversations") or []:
         cid = row.get("id")
         if not cid or row.get("archived") or not _is_ask(row):
@@ -144,9 +238,11 @@ def check(now=None):
             answered.append((name, cid, sender, age, str(newest.get("text") or "")))
         elif any(str(m.get("sender") or "").strip() not in ("", SENDER) for m in rows):
             settled.append((name, cid, age))
+        elif in_quiet_hours(_parse_ts(newest.get("ts"))):
+            silenced.append((name, cid, age))
         else:
             waiting.append((name, cid, age))
-    return answered, waiting, settled, unreadable
+    return answered, waiting, silenced, settled, unreadable
 
 
 def _age(hours):
@@ -157,7 +253,8 @@ def _age(hours):
     return f"{hours:.1f}h ago"
 
 
-def report(answered, waiting, settled, unreadable, out=sys.stdout):
+def report(answered, waiting, silenced, settled, unreadable,
+           out=sys.stdout, do_nudge=False, now=None):
     if answered is None:
         for name, _cid, problem in unreadable:
             print(f"COULD NOT READ {name}: {problem}", file=out)
@@ -172,6 +269,23 @@ def report(answered, waiting, settled, unreadable, out=sys.stdout):
     for name, cid, problem in unreadable:
         print(f"COULD NOT READ — {name}", file=out)
         print(f"  {cid}  {problem}", file=out)
+    now = now or datetime.now(timezone.utc)
+    audible = not in_quiet_hours(now)
+    for name, cid, age in silenced:
+        print(f"NEVER REACHED HIS PHONE — {name}", file=out)
+        print(f"  {cid}  asked {_age(age)}, and the newest message landed in "
+              "quiet hours, so Agora withheld the buzz and nothing retried it",
+              file=out)
+        if not do_nudge:
+            print("  Re-announce it: python3 -m tools.ask_watch --nudge", file=out)
+        elif not audible:
+            print("  Not re-announced: it is quiet hours right now, so the "
+                  "nudge would be withheld too. Run it after 07:00 Oslo.",
+                  file=out)
+        else:
+            ok, detail = nudge(cid)
+            print(f"  {'re-announced' if ok else 'COULD NOT re-announce'} — "
+                  f"{detail}", file=out)
     for name, cid, age in waiting:
         print(f"waiting on him — {name}", file=out)
         print(f"  {cid}  asked {_age(age)}, he has not written in it", file=out)
@@ -180,9 +294,10 @@ def report(answered, waiting, settled, unreadable, out=sys.stdout):
         print(f"Could not read {len(unreadable)} open ask(s) — that is no "
               "instrument, not no answer.", file=out)
         return 1
-    if answered:
+    if answered or silenced:
         print(f"{len(answered)} of my open ask(s) have an answer nobody has "
-              f"picked up; {len(waiting)} still waiting on him and "
+              f"picked up; {len(silenced)} never reached his phone; "
+              f"{len(waiting)} still waiting on him and "
               f"{len(settled)} answered and closed out.", file=out)
         return 2
     print(f"Nothing he answered is sitting unread; {len(waiting)} open ask(s) "
@@ -193,8 +308,12 @@ def report(answered, waiting, settled, unreadable, out=sys.stdout):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.parse_args(argv)
-    return report(*check())
+    parser.add_argument(
+        "--nudge", action="store_true",
+        help="re-announce every open ask whose push was withheld, so his "
+             "phone finally buzzes for it")
+    args = parser.parse_args(argv)
+    return report(*check(), do_nudge=args.nudge)
 
 
 if __name__ == "__main__":
