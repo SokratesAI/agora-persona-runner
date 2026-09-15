@@ -10,7 +10,9 @@ forever on work nobody is allowed to do.
 import datetime
 import json
 
+from agora_runner import board_store
 from agora_runner.project_goals import parse_project_goals
+from tools import project_goals_check
 from tools.project_goals_check import main, report
 
 GOALS = ("# Project goals\n\n## Nova\n\n"
@@ -610,3 +612,125 @@ def test_a_document_whose_numbers_and_sentences_agree_says_zero():
     assert not any(line.startswith("WRITE-UP QUOTES") for line in lines)
     assert "0 write-up(s) contradicting their own number" in lines[-1]
     assert "0 quoting an earlier reading" in lines[-1]
+
+
+# --- where the rows come from -------------------------------------------
+#
+# The site's `/api/board` is a stale-while-revalidate cache over the same
+# records, so a cycle that seats a row and then runs this check used to be
+# told its own write had not happened. These pin the store as the source and
+# the API as the fallback, which is the only thing that separates them.
+
+
+class _Store:
+    """A `board_store` stand-in: two boards, one registry, optional raise."""
+
+    StoreError = board_store.StoreError
+
+    def __init__(self, rows, raises=None):
+        self._rows = rows
+        self._raises = raises
+        self.asked = []
+
+    def read_registry(self):
+        if self._raises:
+            raise self._raises
+        return {
+            "projects": {"prj_nova": {"name": "Nova"}},
+            "milestones": {"ms_picking": {"name": "Picking"}},
+        }
+
+    def read_rows(self, board):
+        self.asked.append(board)
+        return self._rows.get(board, [])
+
+
+def _doc(number, board="idea", **fields):
+    doc = {"_id": f"board:{board}:{number}", "type": "row", "board": board,
+           "number": number, "title": "t", "status": "⚪ Backlog",
+           "updated": "09-15", "where": "", "priority": "🔵 Medium",
+           "size": "", "order": None, "done": False}
+    doc.update(fields)
+    return doc
+
+
+def test_rows_come_out_of_the_record_store_with_their_names_resolved(monkeypatch):
+    store = _Store({"idea": [_doc(308, projectId="prj_nova",
+                                  milestoneId="ms_picking")],
+                    "issue": []})
+    monkeypatch.setattr(project_goals_check, "board_store", store)
+    rows, ok = project_goals_check._rows_from_store()
+    assert ok
+    assert sorted(store.asked) == ["idea", "issue"]
+    assert [r["board"] for r in rows] == ["ideas"]
+    assert rows[0]["number"] == 308
+    assert rows[0]["project"] == "Nova"
+    assert rows[0]["milestone"] == "Picking"
+    # Derived by `from_document`, not copied into a second definition here:
+    # `open_rows` drops a row on `statusKey` and the record carries none.
+    assert rows[0]["statusKey"] == "backlog"
+
+
+def test_a_done_record_keeps_the_key_that_closes_it(monkeypatch):
+    store = _Store({"idea": [_doc(1, done=True, status="✅ Done",
+                                  projectId="prj_nova")],
+                    "issue": []})
+    monkeypatch.setattr(project_goals_check, "board_store", store)
+    rows, ok = project_goals_check._rows_from_store()
+    assert ok and rows[0]["statusKey"] == "done"
+
+
+def test_the_board_name_a_finding_prints_is_the_plural_one(monkeypatch):
+    store = _Store({"idea": [_doc(1, board="idea")],
+                    "issue": [_doc(2, board="issue")]})
+    monkeypatch.setattr(project_goals_check, "board_store", store)
+    rows, _ = project_goals_check._rows_from_store()
+    assert sorted(r["board"] for r in rows) == ["ideas", "issues"]
+
+
+def test_the_check_reads_the_store_and_never_asks_the_site(monkeypatch):
+    store = _Store({"idea": [_doc(1, projectId="prj_nova",
+                                  milestoneId="ms_picking")], "issue": []})
+    monkeypatch.setattr(project_goals_check, "board_store", store)
+
+    def refuse(*args, **kwargs):  # pragma: no cover - a call is the failure
+        raise AssertionError("the site was asked while the store answered")
+
+    monkeypatch.setattr(project_goals_check.urllib.request, "urlopen", refuse)
+    rows, ok = project_goals_check._fetch_rows()
+    assert ok and [r["number"] for r in rows] == [1]
+
+
+def test_an_unreadable_store_falls_back_to_the_site(monkeypatch):
+    store = _Store({}, raises=board_store.StoreError("no credentials"))
+    monkeypatch.setattr(project_goals_check, "board_store", store)
+    payload = json.dumps({"items": [{"number": 7, "project": "Nova",
+                                     "milestone": "Picking",
+                                     "statusKey": "backlog"}]}).encode()
+
+    class _Response:
+        def read(self):
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(project_goals_check.urllib.request, "urlopen",
+                        lambda *a, **k: _Response())
+    rows, ok = project_goals_check._fetch_rows()
+    assert ok
+    assert sorted(r["board"] for r in rows) == ["ideas", "issues"]
+
+
+def test_both_stores_unreadable_is_unreadable_rather_than_no_rows(monkeypatch):
+    store = _Store({}, raises=board_store.StoreError("no credentials"))
+    monkeypatch.setattr(project_goals_check, "board_store", store)
+
+    def boom(*args, **kwargs):
+        raise OSError("no route")
+
+    monkeypatch.setattr(project_goals_check.urllib.request, "urlopen", boom)
+    assert project_goals_check._fetch_rows() == ([], False)

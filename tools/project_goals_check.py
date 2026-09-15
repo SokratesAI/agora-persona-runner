@@ -89,6 +89,7 @@ import urllib.request
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
+from agora_runner import board_document, board_store
 from agora_runner.nova_boards import (
     MILESTONE_SEATS_PATH, parse_milestone_keeps, parse_milestone_serves,
 )
@@ -104,12 +105,15 @@ from agora_runner.project_goals import (
     writeup_readings,
 )
 
-#: The two boards the owner's work sits on, read through the site's own API
-#: -- the same store `top_board_rows` ranks, one HTTP call away, and
-#: reachable from the bridge pod where this check runs under `preflight`.
-#: `board_records` is not used here on purpose: it needs `COUCHDB_*`, which
-#: the bridge pod does not set, so it would raise on every cycle.
+#: The two boards the owner's work sits on, plural because that is the
+#: name a finding prints (`ideas #299`) and the name the site's API takes.
+#: The record store spells them singular, which is what `STORE_BOARDS`
+#: below is for.
 BOARDS = ("issues", "ideas")
+
+#: Board name as a finding prints it -> board name as the #203 record store
+#: spells it.
+STORE_BOARDS = {"issues": "issue", "ideas": "idea"}
 SITE = "http://nova-site.agents.svc.cluster.local:8083"
 
 
@@ -310,6 +314,47 @@ def _fetch(path):
     return ("" if "[not found]" in text[:200] else text), True
 
 
+def _rows_from_store():
+    """Both boards straight out of the #203 record store -> `(rows, ok)`.
+
+    **The store is the truth and the site's answer is a cached view of it.**
+    `/api/board` is served out of `nova_site._cached`, which is
+    stale-while-revalidate: a request after the entry has gone stale is
+    answered from the old payload and only *starts* the rebuild. So a cycle
+    that places a row and then runs this check is told its own write did not
+    happen -- which is exactly what cycle 1615 was told about ten rows it had
+    just seated, and it nearly filed that as a regression.
+
+    The docstring this replaces said the record store needs `COUCHDB_*`,
+    which the bridge pod does not set -- true of `board_records` and **not**
+    of `board_store`, which nothing had tried from here. It answers both
+    boards in 0.22s against 0.36-0.48s over HTTP, measured from this pod on
+    2026-09-15; the speed is a bonus and the staleness is the reason.
+
+    `from_document` is what turns a stored document into the row dict the
+    rest of this module reads, so `statusKey` and the two names are derived
+    in one place rather than copied into a second one.
+    """
+    try:
+        registry = board_store.read_registry()
+        projects = {key: (value or {}).get("name")
+                    for key, value in (registry.get("projects") or {}).items()}
+        milestones = {key: (value or {}).get("name")
+                      for key, value in (registry.get("milestones") or {}).items()}
+        rows = []
+        for board, stored in STORE_BOARDS.items():
+            for doc in board_store.read_rows(stored):
+                row = board_document.from_document(
+                    doc,
+                    project_name=projects.get(doc.get("projectId") or ""),
+                    milestone_name=milestones.get(doc.get("milestoneId") or ""),
+                )
+                rows.append({**row, "board": board})
+    except (board_store.StoreError, OSError, ValueError, KeyError):
+        return [], False
+    return rows, True
+
+
 def _fetch_rows(site=SITE):
     """Every open and closed row on both boards -> `(rows, ok)`.
 
@@ -317,13 +362,15 @@ def _fetch_rows(site=SITE):
     only unique inside one board and the finding has to name which `#227`
     it means.
 
-    Read over HTTP rather than through `board_records` deliberately: this
-    check runs inside `tools.preflight` on the bridge pod, which holds
-    CouchDB credentials under `CDB_*` while `board_records` reads
-    `COUCHDB_*` -- so the record store would raise `UnmigratedStore` here
-    every single cycle. The site pod holds the credentials and serves the
-    same records.
+    The record store first, the site's API second. The fallback is not
+    belt-and-braces: this check runs under `preflight` on the bridge pod and
+    an unreadable store there would take the board half of the report away
+    entirely, which reads as `TASKS NOT EVALUATED` rather than as a clean
+    zero -- honest, but less than the site can still answer.
     """
+    rows, ok = _rows_from_store()
+    if ok:
+        return rows, True
     rows = []
     for board in BOARDS:
         try:
