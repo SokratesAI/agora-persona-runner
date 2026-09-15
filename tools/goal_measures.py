@@ -613,6 +613,32 @@ def has_drifted(written, value):
     return _as_number(written) != _as_number(value)
 
 
+def publishes_unconfirmed_number(written, value):
+    """The document publishes a number and the instrument had none to offer.
+
+    `has_drifted` calls `value is None` not-drift, and its reason is sound:
+    an instrument with an empty history is a thing that fills in, not a
+    defect, and raising on it makes every young measure permanently red.
+    But that reason assumes the written number is *"the last honest reading"*
+    -- and nothing checks that it ever was one.
+
+    Live case this was built on, 2026-09-15: `marcus-kpi-coach-latency`
+    carries `now: 14.9` while its measurer reports that Marcus has recorded
+    no answered plan draft at all. There is no history for 14.9 to be the
+    tail of. It is a typed number, on the `/plan` scoreboard, that no sweep
+    could contradict -- the summary counted it in neither the numerator nor
+    the denominator and said only that a number with no reading is "not
+    counted either way", which is true of a blank `now:` and of this in
+    exactly the same words.
+
+    So this separates the two states the old sentence merged:
+    nothing published and nothing measured (fine, silent), against a number
+    published with nothing behind it (named). It deliberately does **not**
+    raise -- see `main`.
+    """
+    return value is None and _as_number(written) is not None
+
+
 def kpi_drift_crosses_bounds(kpi, value):
     """A KPI whose written number has drifted -- does the drift change anything?
 
@@ -4482,6 +4508,97 @@ def write_back_key_results(path, text, kr_rows):
     return "\n".join([f"WROTE {changed} value(s) into {path}"] + lines)
 
 
+def drift_status(rows, kr_rows, kpis, goals_name, project_goals_name=None):
+    """The drift verdict as `(lines, drifted)`: what to append, and what counts.
+
+    Lifted out of `main` so it can be driven from a test with three lists of
+    rows instead of a live measurement run -- `main` reaches the network for
+    every one of the 46 numbers, so the only previously available test of
+    this block was to read it.
+
+    `drifted` is the list the exit code is built from and it deliberately
+    holds neither the moved KPIs nor the unconfirmed numbers; see
+    `kpi_drift_crosses_bounds` and `publishes_unconfirmed_number` for why
+    each of those is printed without raising.
+    """
+    goals_name = os.path.basename(goals_name)
+    drifted = [
+        f"{row['key']} in {goals_name}"
+        for row in rows if has_drifted(row["goal"].get("now", ""), row["value"])
+    ]
+    instrumented = [row for row in rows if row["value"] is not None]
+    unconfirmed = [
+        f"{row['key']} in {goals_name}"
+        for row in rows
+        if publishes_unconfirmed_number(row["goal"].get("now", ""), row["value"])
+    ]
+    moved = []
+    if project_goals_name:
+        pg_name = os.path.basename(project_goals_name)
+        drifted += [
+            f"{row['project']} / {row['id']} in {pg_name}"
+            for row in kr_rows
+            if has_drifted(row["kr"].get("now", ""), row["value"])
+        ]
+        # A KPI that drifted without crossing a bound is reported and not
+        # counted -- see `kpi_drift_crosses_bounds` for why the digit is
+        # not the claim a guardrail makes. It is named here rather than
+        # dropped, because the vault still carries a number an hour old
+        # and a cycle repairing it should be able to see which.
+        moved += [
+            f"{row['project']} / {row['id']} in {pg_name}"
+            for row in kpis
+            if has_drifted(row["kpi"].get("now", ""), row["value"])
+            and not kpi_drift_crosses_bounds(row["kpi"], row["value"])
+        ]
+        drifted += [
+            f"{row['project']} / {row['id']} in {pg_name}"
+            for row in kpis
+            if has_drifted(row["kpi"].get("now", ""), row["value"])
+            and kpi_drift_crosses_bounds(row["kpi"], row["value"])
+        ]
+        instrumented += [row for row in kr_rows + kpis
+                         if row["value"] is not None]
+        unconfirmed += [
+            f"{row['project']} / {row['id']} in {pg_name}"
+            for row in kr_rows
+            if publishes_unconfirmed_number(row["kr"].get("now", ""), row["value"])
+        ] + [
+            f"{row['project']} / {row['id']} in {pg_name}"
+            for row in kpis
+            if publishes_unconfirmed_number(row["kpi"].get("now", ""), row["value"])
+        ]
+    lines = ""
+    for line in drifted:
+        lines += f"\n  ! {line} no longer matches its instrument"
+    for line in moved:
+        lines += (f"\n  - {line} moved inside its own range -- reported, "
+                  "not counted")
+    # Printed with its own marker and deliberately NOT counted as drift.
+    # A number nothing could confirm is not a number that disagrees with its
+    # instrument, and an instrument whose history is still empty is a thing
+    # to wait for rather than a defect a pull request closes -- the same call
+    # the orphan list and `project_goals_check` make. What was missing was
+    # not a verdict, it was the sentence.
+    for line in unconfirmed:
+        lines += (f"\n  ? {line} publishes a number no instrument could "
+                  "confirm this sweep")
+    # The summary is deliberately the LAST line: `tools.preflight` shows
+    # one line per check and takes the last one, so a count that prints
+    # above `WHAT THIS CANNOT SEE` would be invisible in the sweep.
+    lines += (
+        f"\nDRIFT — {len(drifted)} of {len(instrumented)} instrumented "
+        f"number(s) disagree with what is written down. A number with no "
+        f"reading to take is not counted either way"
+        + (f", and {len(moved)} KPI(s) moved without leaving their "
+           "own range, which is a snapshot ageing rather than a finding"
+           if moved else "")
+        + (f", and {len(unconfirmed)} published number(s) had no reading to "
+           "confirm them at all"
+           if unconfirmed else "") + ".")
+    return lines, drifted
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=" ".join(__doc__.split("\n\n")[0].split()))
@@ -4640,53 +4757,13 @@ def main(argv=None):
                 report += "\n\n" + write_back_kpis(
                     args.project_goals, pg_text, kpis)
 
+    drifted_rows = []
     if args.exit_on_drift:
-        moved_rows = []
-        drifted_rows = [
-            f"{row['key']} in {os.path.basename(args.goals)}"
-            for row in rows if has_drifted(row["goal"].get("now", ""), row["value"])
-        ]
-        instrumented = [row for row in rows if row["value"] is not None]
-        if args.project_goals:
-            drifted_rows += [
-                f"{row['project']} / {row['id']} in {os.path.basename(args.project_goals)}"
-                for row in kr_rows
-                if has_drifted(row["kr"].get("now", ""), row["value"])
-            ]
-            # A KPI that drifted without crossing a bound is reported and not
-            # counted -- see `kpi_drift_crosses_bounds` for why the digit is
-            # not the claim a guardrail makes. It is named here rather than
-            # dropped, because the vault still carries a number an hour old
-            # and a cycle repairing it should be able to see which.
-            moved_rows += [
-                f"{row['project']} / {row['id']} in {os.path.basename(args.project_goals)}"
-                for row in kpis
-                if has_drifted(row["kpi"].get("now", ""), row["value"])
-                and not kpi_drift_crosses_bounds(row["kpi"], row["value"])
-            ]
-            drifted_rows += [
-                f"{row['project']} / {row['id']} in {os.path.basename(args.project_goals)}"
-                for row in kpis
-                if has_drifted(row["kpi"].get("now", ""), row["value"])
-                and kpi_drift_crosses_bounds(row["kpi"], row["value"])
-            ]
-            instrumented += [row for row in kr_rows + kpis
-                             if row["value"] is not None]
-        for line in drifted_rows:
-            report += f"\n  ! {line} no longer matches its instrument"
-        for line in moved_rows:
-            report += (f"\n  - {line} moved inside its own range -- reported, "
-                       "not counted")
-        # The summary is deliberately the LAST line: `tools.preflight` shows
-        # one line per check and takes the last one, so a count that prints
-        # above `WHAT THIS CANNOT SEE` would be invisible in the sweep.
-        report += (
-            f"\nDRIFT — {len(drifted_rows)} of {len(instrumented)} instrumented "
-            f"number(s) disagree with what is written down. A number with no "
-            f"reading to take is not counted either way"
-            + (f", and {len(moved_rows)} KPI(s) moved without leaving their "
-               "own range, which is a snapshot ageing rather than a finding"
-               if moved_rows else "") + ".")
+        tail, drifted_rows = drift_status(
+            rows, kr_rows if args.project_goals else [],
+            kpis if args.project_goals else [],
+            args.goals, args.project_goals)
+        report += tail
     print(report)
     if args.exit_on_drift and drifted_rows:
         return 2

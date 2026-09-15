@@ -4866,3 +4866,121 @@ def test_self_service_ignores_an_entry_newer_than_the_window(monkeypatch):
         "2026-09-08", "2026-09-14")
     assert value == 100.0
     assert "1 of 1 recorded change(s)" in detail
+
+
+def _g_row(key, now, value):
+    return {"key": key, "goal": {"name": key, "now": now}, "value": value,
+            "detail": "d"}
+
+
+def _kr_row(rid, now, value):
+    return {"project": "nova", "id": rid, "kr": {"id": rid, "now": now},
+            "value": value, "detail": "d"}
+
+
+def _kpi_row(rid, kpi, value):
+    return {"project": "marcus", "id": rid, "kpi": kpi, "value": value,
+            "detail": "d"}
+
+
+def test_a_published_number_with_no_reading_is_not_drift():
+    """`value is None` stays out of the drift count whether or not it published.
+
+    The carve-out in `has_drifted` is what keeps a young instrument from
+    holding the check permanently red, and naming the number must not quietly
+    repeal it.
+    """
+    assert goal_measures.publishes_unconfirmed_number("14.9", None) is True
+    assert goal_measures.publishes_unconfirmed_number("", None) is False
+    assert goal_measures.publishes_unconfirmed_number("not measured", None) is False
+    # A reading exists: that is drift's job, not this one, in both directions.
+    assert goal_measures.publishes_unconfirmed_number("14.9", 14.9) is False
+    assert goal_measures.publishes_unconfirmed_number("14.9", 3) is False
+
+
+def test_drift_status_names_a_number_no_instrument_could_confirm():
+    """The live case: `marcus-kpi-coach-latency` at 14.9 with an empty history.
+
+    Before this, the report said `says now: 14.9 — not measured` in the body
+    and the summary said only that a number with no reading is "not counted
+    either way" -- the same sentence it uses for a blank `now:`. A reader of
+    `tools.preflight`, which shows the last line only, could not tell a KPI
+    publishing an unverifiable digit from one publishing nothing.
+    """
+    kpi = {"id": "marcus-kpi-coach-latency", "now": "14.9",
+           "low": "0", "high": "30"}
+    lines, drifted = goal_measures.drift_status(
+        [], [], [_kpi_row("marcus-kpi-coach-latency", kpi, None)],
+        "goals.md", "project-goals.md")
+    assert ("? marcus / marcus-kpi-coach-latency in project-goals.md "
+            "publishes a number no instrument could confirm this sweep") in lines
+    assert "1 published number(s) had no reading to confirm them at all" in lines
+    # Named, never raised: an empty history is a thing to wait for.
+    assert drifted == []
+    assert "DRIFT — 0 of 0 instrumented" in lines
+
+
+def test_drift_status_stays_silent_when_nothing_was_published():
+    """A blank `now:` with no reading publishes nothing, so there is nothing to say."""
+    kpi = {"id": "marcus-kpi-coach-latency", "now": "", "low": "0", "high": "30"}
+    lines, drifted = goal_measures.drift_status(
+        [], [], [_kpi_row("marcus-kpi-coach-latency", kpi, None)],
+        "goals.md", "project-goals.md")
+    assert "no instrument could confirm" not in lines
+    assert "had no reading to confirm them" not in lines
+    assert drifted == []
+
+
+def test_drift_status_covers_all_three_documents_of_numbers():
+    """goals.md, the key results and the KPIs each get the same sentence.
+
+    Three separate row shapes read three different keys (`goal`, `kr`, `kpi`),
+    so a helper wired into one of them and not the others would look done and
+    report a third of the truth.
+    """
+    lines, drifted = goal_measures.drift_status(
+        [_g_row("G1", "2.8", None)],
+        [_kr_row("nova-kr-your-rows", "3.9", None)],
+        [_kpi_row("marcus-kpi-coach-latency",
+                  {"id": "marcus-kpi-coach-latency", "now": "14.9",
+                   "low": "0", "high": "30"}, None)],
+        "goals.md", "project-goals.md")
+    assert "? G1 in goals.md publishes a number" in lines
+    assert "? nova / nova-kr-your-rows in project-goals.md publishes a number" in lines
+    assert "? marcus / marcus-kpi-coach-latency in project-goals.md publishes" in lines
+    assert "3 published number(s) had no reading to confirm them at all" in lines
+    assert drifted == []
+
+
+def test_drift_status_still_counts_real_drift_and_keeps_the_summary_last():
+    """The verdict this block already made has to survive the new clause.
+
+    A key result that moved is still drift, a KPI that moved inside its range
+    is still reported-not-counted, and the `DRIFT —` line is still the last
+    one in the text -- `tools.preflight` reads only the last line, so a clause
+    appended after it would take the whole sweep's summary with it.
+    """
+    kpi = {"id": "nova-kpi-cost-per-cycle", "now": "1.52",
+           "low": "0.8", "high": "2.0"}
+    lines, drifted = goal_measures.drift_status(
+        [_g_row("G1", "2.8", 2.5)],
+        [_kr_row("nova-kr-your-rows", "3.9", 3.8)],
+        [_kpi_row("nova-kpi-cost-per-cycle", kpi, 1.5),
+         _kpi_row("marcus-kpi-coach-latency",
+                  {"id": "marcus-kpi-coach-latency", "now": "14.9",
+                   "low": "0", "high": "30"}, None)],
+        "goals.md", "project-goals.md")
+    assert drifted == ["G1 in goals.md",
+                       "nova / nova-kr-your-rows in project-goals.md"]
+    assert "moved inside its own range" in lines
+    assert lines.strip().splitlines()[-1].startswith("DRIFT — 2 of 3 instrumented")
+    assert "1 published number(s) had no reading to confirm them at all" in lines
+
+
+def test_drift_status_judges_goals_alone_when_there_are_no_project_goals():
+    """`--project-goals` is optional to `main`, so the block must not need it."""
+    lines, drifted = goal_measures.drift_status(
+        [_g_row("G1", "2.8", None)], [], [], "goals.md", None)
+    assert "? G1 in goals.md publishes a number" in lines
+    assert "project-goals.md" not in lines
+    assert drifted == []
