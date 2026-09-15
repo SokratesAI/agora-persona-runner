@@ -550,6 +550,121 @@ def unworked_breaches(sections, keeps, rows):
     return out
 
 
+def key_result_shortfall(row):
+    """One key result -> the sentence saying it has not reached its target,
+    or `None`.
+
+    The mirror of `kpi_breach`, and it was the other half of the model that
+    nothing compared. A key result carries `now`, `target` and `direction`
+    and **no code anywhere read the three against each other** -- `problems()`
+    refuses a key result with no target, and then nothing ever asked whether
+    the number got there. Issue #227 reads a goal as *"target against current
+    number"*; without this the target is decoration on the objective side
+    exactly the way the range was on the guardrail side.
+
+    `direction` decides which side of the target is short, and it is neither
+    required nor validated by `problems()`. A row that does not say `up` or
+    `down` returns `None` rather than being assumed to climb: which way a
+    number is supposed to move is not derivable from the number, and guessing
+    it would file a key result that has arrived as one that is behind. Same
+    call `_number` makes on an unreadable reading -- unmeasured and reached
+    are not the same state.
+
+    Returns the phrase rather than a boolean, for `kpi_breach`'s reason: one
+    wording, so the check and anything that prints it later never carry two.
+    """
+    direction = (row.get("direction") or "").strip().lower()
+    if direction not in ("up", "down"):
+        return None
+    now = _number(row.get("now"))
+    target = _number(row.get("target"))
+    if now is None or target is None:
+        return None
+    unit = row.get("unit", "").strip()
+    unit = f" {unit}" if unit else ""
+    shown_now = f"{row.get('now', '').strip()}{unit}"
+    shown_target = f"{row.get('target', '').strip()}{unit}"
+    if direction == "up" and now < target:
+        return f"{shown_now} is short of the target of {shown_target}"
+    if direction == "down" and now > target:
+        return f"{shown_now} has not come down to the target of {shown_target}"
+    return None
+
+
+def _shortfall_key_results(sections):
+    """`(project, label, lowercased id, shortfall sentence)` for each key
+    result that has not reached its target.
+
+    One walk, for `_breached_kpis`'s reason: a second copy is how two lists
+    built on the same fact come to disagree about what it is.
+    """
+    out = []
+    for section in sections.values():
+        name = section.get("project", "")
+        for row in section.get("keyResults", ()):
+            shortfall = key_result_shortfall(row)
+            if shortfall:
+                identifier = row.get("id", "").strip()
+                label = identifier or row.get("name", "").strip()
+                out.append((name, label, identifier.lower(), shortfall))
+    return out
+
+
+def unworked_shortfalls(sections, serves, rows):
+    """Every key result short of its target whose servers hold no open row --
+    rule 4 read from the objective's side.
+
+    `unworked_breaches` is this sentence about a guardrail: the KPI is out of
+    bounds, a milestone keeps it, and that milestone is empty. This is the
+    same sentence about an outcome, and it is the one that says an objective
+    is not going to move -- the key result is behind, a milestone is named as
+    serving it, and **every one of those milestones holds no open row**. The
+    pointer exists, so it reads as owned.
+
+    **A key result behind its target is not reported on its own**, and that
+    is deliberate rather than an omission. Measured on the live documents the
+    day this was written: 24 of 28 key results are short, which is what a key
+    result is for -- a list of them is the scoreboard, not a finding. One of
+    the 24 has nobody on it: `research-kr-reused`, 7.3 against a target of
+    50, served only by *Research / Read what other agent loops do*, which
+    carries no open row.
+
+    A key result *no* milestone serves is deliberately not reported here:
+    `unpointed_goals` already prints it, with a different action -- write the
+    pointer, rather than open the work -- and one fact under two verdicts is
+    how a list silently changes size. That is `unworked_breaches`'s rule and
+    the reason is the same on this side.
+
+    `rows` of `None` means the boards were **not read**, and that returns an
+    empty list rather than every shortfall: with no boards, "no open row" is
+    guaranteed true for every server, which is the negative result nothing
+    could have contradicted.
+
+    An inventory rather than a defect: opening a row, moving the target or
+    striking the key result are three different calls and all three are the
+    owner's.
+    """
+    if rows is None:
+        return []
+    open_counts = _open_rows_by_milestone(rows)
+    servers = {}
+    for seat, cell in (serves or {}).items():
+        for identifier in split_serves(cell):
+            servers.setdefault(identifier, []).append(seat)
+    out = []
+    for project, label, identifier, shortfall in _shortfall_key_results(sections):
+        seats = servers.get(identifier, [])
+        if not seats:
+            continue
+        if any(open_counts.get(seat) for seat in seats):
+            continue
+        named = ", ".join(f"{seat[0]} / {seat[1]}" for seat in sorted(seats))
+        out.append(f"{project} / {label}: {shortfall} -- and {named} serves "
+                   "it with no open row under it, so nothing on either board "
+                   "is being built toward it")
+    return out
+
+
 def key_result_ids(sections):
     """`{lowercased id: project}` over every key result. `Serves` resolves here."""
     out = {}

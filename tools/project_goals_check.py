@@ -104,6 +104,7 @@ from agora_runner.project_goals import (
     projects_without_goals,
     writeup_readings,
     unworked_breaches,
+    unworked_shortfalls,
 )
 
 #: The two boards the owner's work sits on, plural because that is the
@@ -156,6 +157,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     undecided = undecided_goals(sections)
     breaches = kpi_breaches(sections)
     unworked = unworked_breaches(sections, keeps, rows)
+    behind = unworked_shortfalls(sections, serves, rows)
     contradicting, older = writeup_readings(goals_markdown)
     missing_goals, projects_on_boards = (
         ([], 0) if rows is None else projects_without_goals(rows, sections))
@@ -211,6 +213,18 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "raise: opening a row, retiring the milestone or moving the "
             "fence are all yours to choose between:")
         for line in unworked:
+            lines.append(f"  {line}")
+    if behind:
+        lines.append(
+            f"BEHIND WITH NOBODY ON IT ({len(behind)}) -- rule 4 read from "
+            "the objective's side: the key result has not reached its "
+            "target, a milestone is named as serving it, and that milestone "
+            "holds no open row. A key result behind its target is the normal "
+            "state and is not listed; this is the list of the ones nothing "
+            "is moving. An inventory rather than a defect, so it does not "
+            "raise: opening a row, moving the target or striking the key "
+            "result are all yours to choose between:")
+        for line in behind:
             lines.append(f"  {line}")
     if contradicting:
         lines.append(
@@ -287,6 +301,9 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                  f"{len(breaches)} KPI(s) out of bounds, "
                  + ("" if rows is None
                     else f"{len(unworked)} of them with nobody on it, ")
+                 + ("" if rows is None
+                    else f"{len(behind)} key result(s) behind with nobody on "
+                         "them, ")
                  + f"{len(contradicting)} write-up(s) contradicting their "
                  + "own number, "
                  f"{len(older)} quoting an earlier reading, "

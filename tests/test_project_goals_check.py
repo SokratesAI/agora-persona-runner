@@ -59,6 +59,7 @@ def test_a_linked_milestone_is_clean():
                      "0 model problem(s), 0 orphan(s), 1 unpointed goal(s), "
                      "0 KPI(s) out of bounds, "
                      "0 of them with nobody on it, "
+                     "0 key result(s) behind with nobody on them, "
                      "0 write-up(s) contradicting their own number, "
                      "0 quoting an earlier reading, "
                      "0 objective(s) past their month, 1 undated, "
@@ -826,3 +827,158 @@ def test_one_keeper_with_open_work_answers_for_all_of_them():
     one_busy, _ = report(_kpi(now=6, high=1), seats,
                          rows=[row(1, milestone="Planning")])
     assert not [t for t in one_busy if t.startswith("BREACHED WITH NOBODY")]
+
+
+def _kr(**fields):
+    """`GOALS`'s key result with `now`/`target`/`direction` written in.
+
+    Kept beside `_kpi` and built the same way, because the shortfall list and
+    the breach list are the same sentence about the two halves of the model
+    and a second fixture dialect is how the two drift apart.
+    """
+    body = "".join(f"{k.replace('_', '-')}: {v}\n" for k, v in fields.items())
+    return GOALS.replace(
+        "```key-result\nid: nova-kr1\nname: n\nmeasure: m\ntarget: 1\n"
+        "status: agreed\n```\n",
+        f"```key-result\nid: nova-kr1\nname: n\nmeasure: m\n{body}"
+        "status: agreed\n```\n")
+
+
+#: A seats file that seats the same milestone and names nothing in `Serves`,
+#: so `nova-kr1` is a key result no milestone serves. Without it the
+#: unpointed-list handoff below cannot be told from a seat that simply has no
+#: open row.
+UNSERVED_SEATS = ("| Project | Milestone | Position | Updated | Serves |\n"
+                  "|---|---|---|---|---|\n"
+                  "| Nova | Picking | 1 | 09-13 |  |\n")
+
+
+def test_a_key_result_short_of_target_whose_server_is_empty_is_listed():
+    """The objective-side mirror of the breach list, and the half of the model
+    nothing compared: a key result carries `now`, `target` and `direction`,
+    `problems()` refuses one with no target, and then nothing ever asked
+    whether the number got there. Live when this shipped: `research-kr-reused`
+    at 7.3% against a target of 50%, served only by *Research / Read what
+    other agent loops do*, which holds no open row."""
+    lines, code = report(_kr(now=0, target=3, direction="up"), SEATS, rows=[])
+    assert code == 0
+    assert lines[0] == "MODEL HOLDS"
+    heading = next(t for t in lines if t.startswith("BEHIND WITH NOBODY"))
+    assert heading.startswith("BEHIND WITH NOBODY ON IT (1)")
+    assert ("  Nova / nova-kr1: 0 is short of the target of 3 -- and nova / "
+            "picking serves it with no open row under it, so nothing on "
+            "either board is being built toward it") in lines
+    assert "1 key result(s) behind with nobody on them" in lines[-1]
+
+
+def test_a_key_result_whose_server_holds_an_open_row_is_not_listed():
+    """23 of the 24 live shortfalls are this case. Somebody is on it, so it is
+    the scoreboard rather than a finding."""
+    lines, _ = report(_kr(now=0, target=3, direction="up"), SEATS,
+                      rows=[row(1)])
+    assert not [t for t in lines if t.startswith("BEHIND WITH NOBODY")]
+    assert "0 key result(s) behind with nobody on them" in lines[-1]
+
+
+def test_a_server_holding_only_closed_rows_counts_as_nobody():
+    """Work that is finished is not work in progress. Counting a closed row
+    would make this list empty out as the boards roll, which is the opposite
+    of what a key result stuck below its target means."""
+    lines, _ = report(_kr(now=0, target=3, direction="up"), SEATS,
+                      rows=[row(1, status_key="done", done=True)])
+    assert [t for t in lines if t.startswith("BEHIND WITH NOBODY")]
+
+
+def test_a_shortfall_nobody_serves_is_left_to_the_unpointed_list():
+    """One fact under two verdicts is how a list silently changes size. A key
+    result no milestone serves is already `NOTHING POINTS AT`, and its action
+    is different -- write the pointer, not open the work."""
+    lines, _ = report(_kr(now=0, target=3, direction="up"), UNSERVED_SEATS,
+                      rows=[])
+    assert not [t for t in lines if t.startswith("BEHIND WITH NOBODY")]
+    assert [t for t in lines if t.startswith("NOTHING POINTS AT")]
+    assert "0 key result(s) behind with nobody on them" in lines[-1]
+
+
+def test_an_unread_board_claims_nothing_rather_than_listing_every_shortfall():
+    """With no boards, "no open row" is true of every server by construction,
+    and 24 of 28 live key results are short -- so an unread board would print
+    almost the whole scoreboard as a finding. The summary drops the phrase
+    rather than printing a zero nobody measured."""
+    lines, _ = report(_kr(now=0, target=3, direction="up"), SEATS, rows=None)
+    assert not [t for t in lines if t.startswith("BEHIND WITH NOBODY")]
+    assert "behind with nobody on them" not in lines[-1]
+
+
+def test_the_serving_seat_and_the_row_match_on_case():
+    """The seats file is parsed lowercased and a board row carries the case
+    the owner typed. Comparing them raw makes every server look empty, which
+    reads as the strongest possible finding and is wrong on every line."""
+    lines, _ = report(_kr(now=0, target=3, direction="up"), SEATS,
+                      rows=[row(1, project="NOVA", milestone="PICKING")])
+    assert not [t for t in lines if t.startswith("BEHIND WITH NOBODY")]
+
+
+def test_one_server_with_open_work_answers_for_all_of_them():
+    """The question is whether anything is being built toward the outcome, so
+    one open row anywhere under any milestone that serves it is enough."""
+    seats = SEATS + "| Nova | Planning | 2 | 09-13 | nova-kr1 |\n"
+    both_empty, _ = report(_kr(now=0, target=3, direction="up"), seats,
+                           rows=[])
+    listed = [t for t in both_empty if "serves it with no open row" in t]
+    assert len(listed) == 1
+    assert "nova / picking, nova / planning serves it" in listed[0]
+    one_busy, _ = report(_kr(now=0, target=3, direction="up"), seats,
+                         rows=[row(1, milestone="Planning")])
+    assert not [t for t in one_busy if t.startswith("BEHIND WITH NOBODY")]
+
+
+def test_a_downward_key_result_is_behind_when_it_is_above_its_target():
+    """Nine of the live key results count down -- `nova-kr-your-rows` reads 7
+    against a target of 2. Reading every key result as climbing would call all
+    nine of them arrived."""
+    lines, _ = report(_kr(now=7, target=2, direction="down", unit="rows"),
+                      SEATS, rows=[])
+    assert ("  Nova / nova-kr1: 7 rows has not come down to the target of "
+            "2 rows -- and nova / picking serves it with no open row under "
+            "it, so nothing on either board is being built toward it") in lines
+
+
+def test_a_downward_key_result_at_or_under_its_target_has_arrived():
+    lines, _ = report(_kr(now=1, target=2, direction="down"), SEATS, rows=[])
+    assert not [t for t in lines if t.startswith("BEHIND WITH NOBODY")]
+
+
+def test_a_key_result_on_its_target_has_arrived():
+    """`marcus-kr-coach-first-try` reads 100 against a target of 99 and four
+    live key results sit at or past theirs. A strict comparison is what keeps
+    them off a list about work nobody is doing."""
+    lines, _ = report(_kr(now=3, target=3, direction="up"), SEATS, rows=[])
+    assert not [t for t in lines if t.startswith("BEHIND WITH NOBODY")]
+    assert "0 key result(s) behind with nobody on them" in lines[-1]
+
+
+def test_a_key_result_with_no_direction_is_not_judged():
+    """`direction` is neither required nor validated by `problems()`. Which
+    way a number is supposed to move is not derivable from the number, so
+    defaulting to `up` would file a key result as behind on a reading that is
+    arrived if `down` was meant.
+
+    The reading is 0 against a target of 3 on purpose, and that is the whole
+    test: on `7 against 2` -- the first fixture I wrote -- a default of `up`
+    and no judgement at all produce the identical empty list, so the mutant
+    survived and the guard was unobservable."""
+    lines, _ = report(_kr(now=0, target=3), SEATS, rows=[])
+    assert not [t for t in lines if t.startswith("BEHIND WITH NOBODY")]
+    assert "0 key result(s) behind with nobody on them" in lines[-1]
+
+
+def test_a_key_result_with_an_unreadable_reading_is_not_judged():
+    """A blank `now` is honest -- `problems()` says so in as many words, and
+    key results carry one while no instrument exists. Unmeasured and arrived
+    are not the same state, which is the call `_number` already makes."""
+    blank, _ = report(_kr(now="", target=3, direction="up"), SEATS, rows=[])
+    assert not [t for t in blank if t.startswith("BEHIND WITH NOBODY")]
+    words, _ = report(_kr(now="not measured", target=3, direction="up"),
+                      SEATS, rows=[])
+    assert not [t for t in words if t.startswith("BEHIND WITH NOBODY")]
