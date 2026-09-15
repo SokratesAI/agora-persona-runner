@@ -34,7 +34,10 @@ class FakeAgora:
         if path.endswith("/notify"):
             body = self.notify_body
             if body is None:
-                body = {"message": {"id": "msg-1"}}
+                # What Agora answers when the phone actually buzzed. The
+                # `status` field is what `push_held` reads, so a fake that
+                # omits it makes every ask look silently withheld.
+                body = {"status": "sent", "message": {"id": "msg-1"}}
             return self.notify_status, body
         if method == "PATCH":
             return self.tag_status, {}
@@ -233,3 +236,89 @@ def test_cli_posts_and_names_the_thread(agora, capsys):
     assert code == 0
     assert len(agora.notified()) == 1
     assert "conv-1" in capsys.readouterr().out
+
+
+# --- did his phone actually buzz? ---------------------------------------
+# His capture, 2026-09-15: "Never got a notification for the ask thread from
+# cycle 1617 ... my silence is a symptom of them not reaching me, not me
+# ignoring them." Agora appends the message and withholds the push during
+# quiet hours; nothing here read that back, so an ask nobody was told about
+# reported exactly like one that rang.
+
+def test_a_sent_push_is_not_reported_as_held():
+    assert needs_input.push_held({"status": "sent", "message": {"id": "m"}}) is None
+
+
+def test_quiet_hours_is_reported_as_held():
+    held = needs_input.push_held({"status": "recorded", "quietHours": True})
+    assert held is not None and "quiet hours" in held
+
+
+def test_a_muted_thread_is_reported_as_held():
+    assert "nova:mute" in needs_input.push_held(
+        {"status": "recorded", "muted": True})
+
+
+def test_a_watched_thread_is_reported_as_held():
+    assert "on screen" in needs_input.push_held(
+        {"status": "recorded", "watching": True})
+
+
+def test_a_flag_that_is_not_true_does_not_count_as_held():
+    """`recorded` with every flag false is a shape Agora does not send today;
+    it must not read as a delivered push either, because only `sent` says so."""
+    assert needs_input.push_held(
+        {"status": "sent", "quietHours": False}) is None
+
+
+def test_an_unrecognised_response_is_not_taken_as_delivered():
+    assert needs_input.push_held({"status": "recorded"}) is not None
+    assert needs_input.push_held({}) is not None
+    assert needs_input.push_held(None) is not None
+
+
+def test_ask_reports_the_held_push(monkeypatch):
+    def fake(method, path, payload=None):
+        if path == "/conversations":
+            return 201, {"conversation": {"id": "c1"}}
+        if path.endswith("/notify"):
+            return 200, {"status": "recorded", "quietHours": True,
+                         "message": {"id": "m1"}}
+        return 200, {}
+
+    monkeypatch.setattr(needs_input, "agora_internal", fake)
+    ok, info = needs_input.ask("Yes or no, is this a thing?", "because")
+    assert ok is True
+    assert info["pushed"] is False
+    assert "quiet hours" in info["pushHeld"]
+
+
+def test_ask_reports_a_delivered_push(monkeypatch):
+    def fake(method, path, payload=None):
+        if path == "/conversations":
+            return 201, {"conversation": {"id": "c1"}}
+        if path.endswith("/notify"):
+            return 200, {"status": "sent", "message": {"id": "m1"}}
+        return 200, {}
+
+    monkeypatch.setattr(needs_input, "agora_internal", fake)
+    ok, info = needs_input.ask("Yes or no, is this a thing?", "because")
+    assert info["pushed"] is True and info["pushHeld"] is None
+
+
+def test_main_exits_nonzero_when_his_phone_did_not_buzz(monkeypatch, capsys):
+    monkeypatch.setattr(needs_input, "ask", lambda *a, **k: (True, {
+        "conversationId": "c1", "name": "Nova needs you — x?", "repeat": False,
+        "messageId": "m1", "pushed": False, "pushHeld": "quiet hours"}))
+    code = needs_input.main(["--question", "Yes or no?", "--context", "why"])
+    assert code == 3
+    assert "HIS PHONE DID NOT BUZZ" in capsys.readouterr().out
+
+
+def test_main_exits_zero_when_it_did(monkeypatch, capsys):
+    monkeypatch.setattr(needs_input, "ask", lambda *a, **k: (True, {
+        "conversationId": "c1", "name": "Nova needs you — x?", "repeat": False,
+        "messageId": "m1", "pushed": True, "pushHeld": None}))
+    code = needs_input.main(["--question", "Yes or no?", "--context", "why"])
+    assert code == 0
+    assert "HIS PHONE DID NOT BUZZ" not in capsys.readouterr().out

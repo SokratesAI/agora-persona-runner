@@ -174,8 +174,50 @@ def ask(question, context, cycle=None):
     if status not in (200, 201) or not message_id:
         log(f"needs_input: notify failed HTTP {status}")
         return False, f"opened {name} but could not post the question (HTTP {status})"
+    held = push_held(posted)
+    if held:
+        log(f"needs_input: {cid} posted but the push was withheld ({held})")
     return True, {"conversationId": cid, "name": name, "repeat": repeat,
-                  "messageId": message_id}
+                  "messageId": message_id, "pushed": held is None,
+                  "pushHeld": held}
+
+
+# What Agora answers when it appended the message and deliberately did not
+# buzz his phone. Keyed on the flag rather than on `status`, because
+# `status: "recorded"` is the same word for all three (agora src/server.ts).
+PUSH_HELD_REASONS = {
+    "quietHours": "quiet hours -- 22:00 to 07:00 Europe/Oslo",
+    "muted": "the thread is tagged nova:mute",
+    "watching": "he had the thread on screen in another app",
+}
+
+
+def push_held(response):
+    """Why his phone did not buzz for a message Agora accepted, or None.
+
+    An ask exists to reach him, so "appended, not announced" is not the same
+    outcome as "sent" and must not read like it. Nothing here read this body
+    at all, which is how thread `0256140f` -- the twelve objectives, opened
+    02:22 on 2026-09-15, inside quiet hours -- was reported as asked by seven
+    consecutive cycles while his phone never made a sound. His capture of
+    2026-09-15 is the only reason I know: *"Never got a notification for the
+    ask thread from cycle 1617 ... my silence is a symptom of them not
+    reaching me, not me ignoring them."*
+    """
+    if not isinstance(response, dict):
+        # Not evidence either way, and the safe reading of "I cannot tell" on
+        # a measure whose whole point is reaching him is "he was not reached".
+        return "Agora answered with no body to read"
+    for flag, reason in PUSH_HELD_REASONS.items():
+        if response.get(flag) is True:
+            return reason
+    if str(response.get("status") or "") == "sent":
+        return None
+    if response.get("error"):
+        return str(response["error"])
+    # An unknown shape is not evidence that the push went out. Say so rather
+    # than reporting a buzz nobody can show happened.
+    return "Agora did not say the push was sent"
 
 
 def main(argv=None):
@@ -205,6 +247,11 @@ def main(argv=None):
         return 1
     what = "posted into the existing thread" if info["repeat"] else "opened"
     print(f"{what}: {info['name']}  ({info['conversationId']})")
+    if info.get("pushHeld"):
+        print(f"HIS PHONE DID NOT BUZZ — {info['pushHeld']}. The question is in "
+              "the thread and he has no idea it is there. `python3 -m "
+              "tools.ask_watch --nudge` re-announces it once it is audible again.")
+        return 3
     return 0
 
 

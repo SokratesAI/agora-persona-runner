@@ -33,7 +33,7 @@ def _fake_get(listing, threads, calls=None):
 def _run(monkeypatch, listing, threads, calls=None):
     monkeypatch.setattr(ask_watch, "agora_get", _fake_get(listing, threads, calls))
     out = io.StringIO()
-    code = ask_watch.report(*ask_watch.check(now=NOW), out=out)
+    code = ask_watch.report(*ask_watch.check(now=NOW), out=out, now=NOW)
     return code, out.getvalue()
 
 
@@ -86,7 +86,7 @@ def test_an_unreadable_thread_does_not_read_as_clean(monkeypatch):
 def test_an_unreachable_listing_does_not_read_as_no_open_asks(monkeypatch):
     monkeypatch.setattr(ask_watch, "agora_get", lambda path: (502, {}))
     out = io.StringIO()
-    code = ask_watch.report(*ask_watch.check(now=NOW), out=out)
+    code = ask_watch.report(*ask_watch.check(now=NOW), out=out, now=NOW)
     assert code == 1
     assert "no instrument, not no answer" in out.getvalue()
 
@@ -167,3 +167,124 @@ def test_main_returns_the_report_code(monkeypatch):
     monkeypatch.setattr(ask_watch, "agora_get", _fake_get(
         [_row("c1")], {"c1": (200, {"messages": [_msg("Edvard", "no")]})}))
     assert ask_watch.main([]) == 2
+
+
+# --- an ask whose push was withheld -------------------------------------
+# His capture, 2026-09-15: "Never got a notification for the ask thread from
+# cycle 1617 ... my silence is a symptom of them not reaching me, not me
+# ignoring them." 02:22 Oslo is 00:22 UTC, inside Agora's 22:00-07:00 window.
+
+QUIET_TS = "2026-09-15T00:22:00.000Z"   # 02:22 Oslo -- withheld
+AUDIBLE_TS = "2026-09-15T05:30:00.000Z"  # 07:30 Oslo -- sent
+
+
+def test_an_ask_posted_in_quiet_hours_is_not_reported_as_merely_waiting(monkeypatch):
+    code, text = _run(monkeypatch, [_row("c1")], {
+        "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})})
+    assert code == 2
+    assert "NEVER REACHED HIS PHONE" in text
+    # It must not also be counted as an ordinary waiting thread, or the
+    # summary line double-counts one ask.
+    assert "0 never reached his phone" not in text
+    assert "1 never reached his phone; 0 still waiting on him" in text
+
+
+def test_an_ask_posted_while_audible_stays_an_ordinary_wait(monkeypatch):
+    """The separating input: same thread, same shape, one timestamp apart."""
+    code, text = _run(monkeypatch, [_row("c1")], {
+        "c1": (200, {"messages": [_msg("Nova", ts=AUDIBLE_TS)]})})
+    assert code == 0
+    assert "NEVER REACHED HIS PHONE" not in text
+    assert "1 open ask(s) still waiting on him" in text
+
+
+def test_an_answered_thread_is_never_reported_as_silenced(monkeypatch):
+    """His reply is proof he saw it, whatever hour my message landed at."""
+    code, text = _run(monkeypatch, [_row("c1")], {
+        "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS),
+                                  _msg("Edvard", "no", ts=QUIET_TS)]})})
+    assert code == 2
+    assert "NEVER REACHED HIS PHONE" not in text
+    assert "ANSWERED" in text
+
+
+def test_quiet_hours_wraps_midnight_and_is_half_open():
+    def utc(h, m):
+        # Oslo is UTC+2 in September, so each of these reads two hours later
+        # on his phone -- which is the clock Agora's window is written in.
+        return datetime(2026, 9, 15, h, m, tzinfo=timezone.utc)
+    assert ask_watch.in_quiet_hours(utc(0, 22)) is True    # 02:22 Oslo
+    assert ask_watch.in_quiet_hours(utc(20, 0)) is True     # 22:00 Oslo, quiet
+    assert ask_watch.in_quiet_hours(utc(19, 59)) is False   # 21:59 Oslo, audible
+    assert ask_watch.in_quiet_hours(utc(5, 0)) is False     # 07:00 Oslo, audible
+    assert ask_watch.in_quiet_hours(utc(4, 59)) is True     # 06:59 Oslo, quiet
+    assert ask_watch.in_quiet_hours(None) is False
+
+
+def test_nudge_is_offered_but_not_sent_without_the_flag(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ask_watch, "agora_internal",
+                        lambda *a, **k: sent.append(a) or (200, {"status": "sent"}))
+    code, text = _run(monkeypatch, [_row("c1")], {
+        "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})})
+    assert sent == []
+    assert "--nudge" in text
+    assert code == 2
+
+
+def _run_nudging(monkeypatch, listing, threads, now):
+    monkeypatch.setattr(ask_watch, "agora_get", _fake_get(listing, threads))
+    out = io.StringIO()
+    code = ask_watch.report(*ask_watch.check(now=now), out=out,
+                            do_nudge=True, now=now)
+    return code, out.getvalue()
+
+
+def test_nudge_posts_the_re_announcement_when_it_is_audible(monkeypatch):
+    calls = []
+
+    def fake(method, path, payload=None):
+        calls.append((method, path, payload))
+        return 200, {"status": "sent", "message": {"id": "m1"}}
+
+    monkeypatch.setattr(ask_watch, "agora_internal", fake)
+    code, text = _run_nudging(monkeypatch, [_row("c1")], {
+        "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})}, NOW)
+    assert calls == [("POST", "/conversations/c1/notify",
+                      {"text": ask_watch.NUDGE_TEXT, "sender": "Nova",
+                       "system": False})]
+    assert "re-announced" in text
+    assert "his phone buzzed" in text
+    assert code == 2
+
+
+def test_nudge_does_not_post_during_quiet_hours(monkeypatch):
+    """A nudge withheld for the same reason is not a nudge, and posting it
+    would also move the newest message forward -- clearing the predicate
+    without ever telling him."""
+    calls = []
+    monkeypatch.setattr(ask_watch, "agora_internal",
+                        lambda *a, **k: calls.append(a) or (200, {"status": "sent"}))
+    quiet_now = datetime(2026, 9, 15, 1, 0, tzinfo=timezone.utc)  # 03:00 Oslo
+    code, text = _run_nudging(monkeypatch, [_row("c1")], {
+        "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})}, quiet_now)
+    assert calls == []
+    assert "it is quiet hours right now" in text
+    assert code == 2
+
+
+def test_a_nudge_agora_withheld_again_is_not_reported_as_delivered(monkeypatch):
+    monkeypatch.setattr(ask_watch, "agora_internal",
+                        lambda *a, **k: (200, {"status": "recorded", "muted": True}))
+    code, text = _run_nudging(monkeypatch, [_row("c1")], {
+        "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})}, NOW)
+    assert "COULD NOT re-announce" in text
+    assert "nova:mute" in text
+
+
+def test_a_failed_nudge_call_says_so(monkeypatch):
+    monkeypatch.setattr(ask_watch, "agora_internal", lambda *a, **k: (502, {}))
+    code, text = _run_nudging(monkeypatch, [_row("c1")], {
+        "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})}, NOW)
+    assert "COULD NOT re-announce" in text
+    assert "HTTP 502" in text
