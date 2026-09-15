@@ -106,6 +106,7 @@ from agora_runner.project_goals import (
     unworked_breaches,
     unworked_shortfalls,
     short_key_results,
+    key_results_without_baseline,
 )
 
 #: The two boards the owner's work sits on, plural because that is the
@@ -160,6 +161,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     unworked = unworked_breaches(sections, keeps, rows)
     stalled = unworked_shortfalls(sections, serves, rows)
     short = short_key_results(sections)
+    unbased, judged_krs = key_results_without_baseline(sections)
     contradicting, older = writeup_readings(goals_markdown)
     missing_goals, projects_on_boards = (
         ([], 0) if rows is None else projects_without_goals(rows, sections))
@@ -226,6 +228,14 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "right now, because that is what a key result is. An inventory "
             "rather than a defect, so it does not raise:")
         for line in stalled:
+            lines.append(f"  {line}")
+    if unbased:
+        lines.append(
+            f"NO BASELINE ({len(unbased)} of {judged_krs}) -- a key result "
+            "records where its number stands, and nothing records where it "
+            "started. An inventory rather than a defect, so it does not "
+            "raise: the baseline is a reading someone has to take:")
+        for line in unbased:
             lines.append(f"  {line}")
     if contradicting:
         lines.append(
@@ -305,6 +315,8 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                  + ("" if rows is None
                     else f"{len(stalled)} key result(s) short of target with "
                          "nobody on it, ")
+                 + f"{len(unbased)} of {judged_krs} key result(s) with no "
+                 + "baseline, "
                  + f"{len(contradicting)} write-up(s) contradicting their "
                  + "own number, "
                  f"{len(older)} quoting an earlier reading, "

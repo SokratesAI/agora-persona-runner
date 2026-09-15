@@ -50,6 +50,11 @@ def test_a_linked_milestone_is_clean():
                      "not raise:",
                      "  Nova / nova-cost: a KPI no milestone keeps -- no "
                      "milestone is accountable for holding it in bounds",
+                     "NO BASELINE (1 of 1) -- a key result records where its "
+                     "number stands, and nothing records where it started. An "
+                     "inventory rather than a defect, so it does not raise: "
+                     "the baseline is a reading someone has to take:",
+                     "  Nova / nova-kr1",
                      "NO MONTH AT ALL (1) -- also rule 7, and also not a "
                      "defect: an objective carrying no period is one nothing "
                      "can ever report as stale:",
@@ -60,6 +65,7 @@ def test_a_linked_milestone_is_clean():
                      "0 KPI(s) out of bounds, "
                      "0 of them with nobody on it, "
                      "0 key result(s) short of target with nobody on it, "
+                     "1 of 1 key result(s) with no baseline, "
                      "0 write-up(s) contradicting their own number, "
                      "0 quoting an earlier reading, "
                      "0 objective(s) past their month, 1 undated, "
@@ -839,6 +845,55 @@ def _kr(**fields):
         "```key-result\nid: nova-kr1\nname: n\nmeasure: m\ntarget: 1\n"
         "status: agreed\n```\n",
         f"```key-result\nid: nova-kr1\nname: n\nmeasure: m\n{body}```\n")
+
+
+def _no_baseline(lines):
+    return [t for t in lines if t.startswith("NO BASELINE")]
+
+
+def test_a_key_result_carrying_a_baseline_is_not_listed():
+    """Flaw 3 of the goals-model review: a key result with no baseline is a
+    wish. Live when this shipped, 25 of 25 carried none. The separating input
+    is the one field, so this runs the same fixture both ways."""
+    without, code = report(_kr(target=1, status="agreed"), SEATS, rows=[])
+    assert code == 0
+    assert _no_baseline(without) == [
+        "NO BASELINE (1 of 1) -- a key result records where its number "
+        "stands, and nothing records where it started. An inventory rather "
+        "than a defect, so it does not raise: the baseline is a reading "
+        "someone has to take:"]
+    assert "  Nova / nova-kr1" in without
+    assert "1 of 1 key result(s) with no baseline" in without[-1]
+    carrying, code = report(_kr(target=1, baseline=3, status="agreed"),
+                            SEATS, rows=[])
+    assert code == 0
+    assert not _no_baseline(carrying)
+    assert "0 of 1 key result(s) with no baseline" in carrying[-1]
+
+
+def test_a_baseline_survives_the_parse():
+    """`_fields` drops a key it does not know as a typo, so before `baseline`
+    was in `KEY_RESULT_FIELDS` a baseline written into the document vanished
+    on parse and the list above would have asked for one that was there."""
+    sections = parse_project_goals(_kr(target=1, baseline=3, status="agreed"))
+    (section,) = sections.values()
+    assert section["keyResults"][0]["baseline"] == "3"
+
+
+def test_a_baseline_that_is_not_one_number_still_counts_as_present():
+    """A dated baseline like `0 (09-15)` is a baseline. Reading it through
+    `_number` would drop it and ask for a reading already taken."""
+    lines, _ = report(_kr(target=1, baseline="0 (09-15)", status="agreed"),
+                      SEATS, rows=[])
+    assert not _no_baseline(lines)
+
+
+def test_a_struck_key_result_is_not_asked_for_a_baseline():
+    """He killed it, so asking where it started invents work -- and it drops
+    out of the count too, or the summary would read 0 of 1 over nothing."""
+    lines, _ = report(_kr(target=1, status="struck"), SEATS, rows=[])
+    assert not _no_baseline(lines)
+    assert "0 of 0 key result(s) with no baseline" in lines[-1]
 
 
 def test_a_short_key_result_whose_server_holds_no_open_row_is_listed():

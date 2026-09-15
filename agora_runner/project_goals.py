@@ -97,8 +97,12 @@ contract: Nova writes this. One `## <Project>` section per project, holding one 
 #: Deliberately the same vocabulary as `nova_plan`'s ```goal fence, so the
 #: scoreboard machinery on `/plan` reads a key result without a second
 #: dialect. `id` is the one addition and it is what `Serves` points at.
+#: `baseline` is where the number stood when the key result was set. Without
+#: it in this tuple `_fields` drops the key as a typo, so a baseline written
+#: into the document would vanish on parse and read as never recorded.
 KEY_RESULT_FIELDS = (
-    "id", "name", "measure", "now", "target", "unit", "direction", "status")
+    "id", "name", "measure", "now", "target", "unit", "direction", "status",
+    "baseline")
 
 #: A KPI has a range, not a target. `target` is **kept** here rather than
 #: dropped as an unknown key, and that is the whole point: `_fields` drops
@@ -589,6 +593,39 @@ def short_key_results(sections):
                         f"{row.get('now', '').strip()}{unit} is {word} the "
                         f"target of {row.get('target', '').strip()}{unit}"))
     return out
+
+
+def key_results_without_baseline(sections):
+    """`(lines, judged)` -- each live key result with no `baseline:`, and how
+    many live key results there were to judge.
+
+    A key result with no baseline is a wish rather than a key result: `now`
+    says where the number stands today and nothing says where it started, so
+    a reading that moved toward the target cannot be told from one that was
+    always there. That is flaw 3 of the goals-model review in the owner's
+    key-results thread (2026-09-15), and it holds whatever shape the layers
+    above a key result end up taking.
+
+    A `struck` key result is skipped, the same call `short_key_results`
+    makes: he killed it, so asking for its baseline invents work. A baseline
+    that is present but not one number still counts as present -- `_number`
+    would drop "0 (09-15)" and this list would then ask for a baseline the
+    document already carries.
+    """
+    lines, judged = [], 0
+    for section in sections.values():
+        name = section.get("project", "")
+        for row in section.get("keyResults", ()):
+            if row.get("status", "").strip().lower() == "struck":
+                continue
+            judged += 1
+            if row.get("baseline", "").strip():
+                continue
+            label = row.get("id", "").strip() or row.get("name", "").strip()
+            # The reason is the same for every line, so the report prints it
+            # once in the heading: 25 copies of one sentence hid the names.
+            lines.append(f"{name} / {label}")
+    return lines, judged
 
 
 def unworked_shortfalls(sections, serves, rows):
