@@ -242,12 +242,25 @@ def parse_project_goals(markdown):
         if fence is not None:
             if _FENCE_CLOSE_RE.match(line):
                 if current is not None and fence in _FENCES:
+                    section = out[current]
                     if fence == "objective":
-                        out[current]["objective"] = _fields(
-                            body, OBJECTIVE_FIELDS)
+                        # A project holds several objectives since the
+                        # 2026-09-15 re-cut (thread 3f42afbc: Trust, Control,
+                        # Scale). This used to assign, so a second fence
+                        # silently replaced the first. `objective` stays the
+                        # first one for the readers that only ask whether a
+                        # goal exists.
+                        block = _fields(body, OBJECTIVE_FIELDS)
+                        section["objectives"].append(block)
+                        section["keyResultsByObjective"].append([])
+                        if not section["objective"]:
+                            section["objective"] = block
                     elif fence == "key-result":
-                        out[current]["keyResults"].append(
-                            _fields(body, KEY_RESULT_FIELDS))
+                        row = _fields(body, KEY_RESULT_FIELDS)
+                        section["keyResults"].append(row)
+                        # A key result belongs to the objective above it.
+                        if section["keyResultsByObjective"]:
+                            section["keyResultsByObjective"][-1].append(row)
                     else:
                         out[current]["kpis"].append(_fields(body, KPI_FIELDS))
                 fence, body = None, []
@@ -272,8 +285,20 @@ def parse_project_goals(markdown):
             current = name.lower()
             out.setdefault(
                 current,
-                {"project": name, "objective": {}, "keyResults": [], "kpis": []})
+                {"project": name, "objective": {}, "objectives": [],
+                 "keyResults": [], "keyResultsByObjective": [], "kpis": []})
     return out
+
+
+def _objectives(section):
+    """Every objective in a section, in document order.
+
+    Falls back to the single `objective` for a section built by hand
+    without the list, so a caller's dict keeps working.
+    """
+    if section.get("objectives"):
+        return section["objectives"]
+    return [section["objective"]] if section.get("objective") else []
 
 
 def _ids(section):
@@ -299,7 +324,7 @@ def problems(markdown_or_sections):
         section = sections[key]
         name = section.get("project", key)
         objective = section.get("objective") or {}
-        if objective:
+        for objective in _objectives(section):
             if not objective.get("statement", "").strip():
                 found.append(f"{name}: objective has no statement")
             status = objective.get("status", "").strip().lower()
@@ -340,10 +365,16 @@ def problems(markdown_or_sections):
             found.append(
                 f"{name}: has key results or KPIs and no objective -- they "
                 "are outcomes with nothing to be outcomes of")
-        if len(results) > MAX_KEY_RESULTS:
-            found.append(
-                f"{name}: {len(results)} key results, the limit is "
-                f"{MAX_KEY_RESULTS}")
+        # The limit is per objective: a project with three time-boxed
+        # objectives may carry more than three key results in total.
+        groups = section.get("keyResultsByObjective") or [results]
+        for index, group in enumerate(groups):
+            if len(group) > MAX_KEY_RESULTS:
+                which = (f"objective {index + 1} has "
+                         if len(groups) > 1 else "")
+                found.append(
+                    f"{name}: {which}{len(group)} key results, the limit "
+                    f"is {MAX_KEY_RESULTS}")
         for row in results:
             label = row.get("id", "").strip() or row.get("name", "").strip()
             measure = row.get("measure", "").strip()
@@ -980,23 +1011,21 @@ def objective_periods(sections, today):
     past, undated = [], []
     for key in sorted(sections):
         section = sections[key]
-        objective = section.get("objective") or {}
-        if not objective:
-            continue
         name = section.get("project", key)
-        if objective.get("status", "").strip().lower() == "struck":
-            continue
-        period = objective.get("period", "").strip()
-        if not period:
-            undated.append(
-                f"{name}: objective names no period -- nothing can tell "
-                "whether this month's goal is this month's")
-            continue
-        if _PERIOD_RE.match(period) and period < now:
-            past.append(
-                f"{name}: objective covers {month_name(period)}, which "
-                f"ended before {month_name(now)} -- re-cut it with him or "
-                "carry it forward on purpose")
+        for objective in _objectives(section):
+            if objective.get("status", "").strip().lower() == "struck":
+                continue
+            period = objective.get("period", "").strip()
+            if not period:
+                undated.append(
+                    f"{name}: objective names no period -- nothing can tell "
+                    "whether this month's goal is this month's")
+                continue
+            if _PERIOD_RE.match(period) and period < now:
+                past.append(
+                    f"{name}: objective covers {month_name(period)}, which "
+                    f"ended before {month_name(now)} -- re-cut it with him "
+                    "or carry it forward on purpose")
     return past, undated
 
 
@@ -1032,10 +1061,11 @@ def undecided_goals(sections):
     for key in sorted(sections):
         section = sections[key]
         name = section.get("project", key)
-        objective = section.get("objective") or {}
-        if not objective:
+        objectives = _objectives(section)
+        if not objectives:
             continue
-        undecided_objective = _is_undecided(objective)
+        undecided = [o for o in objectives if _is_undecided(o)]
+        undecided_objective = bool(undecided)
         pending = [
             (row.get("id") or row.get("name") or "?").strip()
             for row in section.get("keyResults", ())
@@ -1053,7 +1083,7 @@ def undecided_goals(sections):
             # where it was reached -- and the same sentence is true one
             # status earlier. Reported here rather than raised: opening the
             # thread is a thing to do, not a defect in the document.
-            if (objective.get("conversation") or "").strip():
+            if all((o.get("conversation") or "").strip() for o in undecided):
                 parts.append("the objective")
             else:
                 parts.append(

@@ -1262,3 +1262,74 @@ def test_a_date_in_a_later_sentence_is_not_this_readings_date():
     contradicting, older = writeup_readings(doc)
     assert older == []
     assert [line.split(":")[0] for line in contradicting] == ["Nova / k"]
+
+
+def _objective_block(statement, status="agreed", period="2026-09",
+               conversation="3f42afbc"):
+    return ("```objective\n"
+            f"statement: {statement}\n"
+            f"status: {status}\n"
+            f"conversation: {conversation}\n"
+            f"period: {period}\n"
+            "```\n\n")
+
+
+def _kr_block(kr_id):
+    return ("```key-result\n"
+            f"id: {kr_id}\n"
+            f"name: {kr_id}\n"
+            "measure: a count\n"
+            "now: 1\n"
+            "target: 2\n"
+            "direction: up\n"
+            "```\n\n")
+
+
+def test_a_second_objective_does_not_replace_the_first():
+    # The 2026-09-15 re-cut gave Nova the app three objectives. The parser
+    # used to assign, so only the last fence survived, silently.
+    doc = _doc("## Nova the app\n\n"
+               + _objective_block("Trust") + _kr_block("t1") + _kr_block("t2")
+               + _objective_block("Control") + _kr_block("c1"))
+    section = parse_project_goals(doc)["nova the app"]
+    assert [o["statement"] for o in section["objectives"]] == [
+        "Trust", "Control"]
+    assert section["objective"]["statement"] == "Trust"
+    assert [[r["id"] for r in group]
+            for group in section["keyResultsByObjective"]] == [
+                ["t1", "t2"], ["c1"]]
+    assert [r["id"] for r in section["keyResults"]] == ["t1", "t2", "c1"]
+    assert problems(doc) == []
+
+
+def test_the_key_result_limit_is_counted_per_objective_block():
+    fits = _doc("## P\n\n"
+                + _objective_block("A") + _kr_block("a1") + _kr_block("a2") + _kr_block("a3")
+                + _objective_block("B") + _kr_block("b1") + _kr_block("b2"))
+    assert problems(fits) == []
+    over = _doc("## P\n\n"
+                + _objective_block("A") + _kr_block("a1")
+                + _objective_block("B") + "".join(_kr_block(f"b{i}") for i in range(4)))
+    assert problems(over) == [
+        f"P: objective 2 has 4 key results, the limit is {MAX_KEY_RESULTS}"]
+
+
+def test_a_bad_status_on_the_first_of_two_objectives_is_still_refused():
+    doc = _doc("## P\n\n"
+               + _objective_block("A", status="trial") + _kr_block("a1")
+               + _objective_block("B") + _kr_block("b1"))
+    assert any("objective status 'trial'" in p for p in problems(doc))
+
+
+def test_periods_and_undecided_read_every_objective_block():
+    import datetime
+    doc = _doc("## P\n\n"
+               + _objective_block("A", period="2026-08") + _kr_block("a1")
+               + _objective_block("B", status="discussing") + _kr_block("b1"))
+    sections = parse_project_goals(doc)
+    past, undated = project_goals.objective_periods(
+        sections, datetime.date(2026, 9, 15))
+    assert len(past) == 1 and "August" in past[0] and undated == []
+    lines = project_goals.undecided_goals(sections)
+    assert lines == [
+        "P: still discussing the objective; 2 key result(s): a1, b1"]
