@@ -29,7 +29,19 @@ from agora_runner import board_records, board_write
 from agora_runner.nova_boards import DEFAULT_PROJECT, board_projects
 from tests.test_board_records import writable
 from tools import board_project
-from tools.board_project import main, missing_rows, refuse_project
+from tools.board_project import (
+    main, missing_rows, refuse_project, unseated_by_the_move)
+
+#: The fixture board's #41 carries `Records` under `Nova`; `NAS` seats the
+#: same name so the ordinary runs below are a legal move, and `Agora` seats
+#: something else so an illegal one is one argument away.
+SEATS = (
+    "| Project | Milestone | Position | Updated | Serves | Keeps |\n"
+    "|---|---|---|---|---|---|\n"
+    "| Nova | Records | 1 | 09-15 | nova-kr-in-the-app |  |\n"
+    "| NAS | Records | 1 | 09-15 | nas-kr-off-box-watch |  |\n"
+    "| Agora | Chat basics he asked for | 1 | 09-15 | agora-kr-chat-basics |  |\n"
+)
 
 
 @pytest.fixture
@@ -37,7 +49,14 @@ def store(monkeypatch):
     """A migrated, writable fake store, wired in where `main` looks for it."""
     _, fake = writable()
     monkeypatch.setattr(board_project, "board_store", fake)
+    monkeypatch.setattr(board_project, "seats_markdown",
+                        lambda *a, **k: (SEATS, True))
     return fake
+
+
+def _seats_answer(monkeypatch, text, ok=True):
+    monkeypatch.setattr(board_project, "seats_markdown",
+                        lambda *a, **k: (text, ok))
 
 
 def _run(numbers=(41,), project="NAS", board="issue", **overrides):
@@ -189,3 +208,81 @@ def test_a_row_the_after_check_refuses_names_what_already_landed(
     err = capsys.readouterr().err
     assert "already written: #41" in err, err
     assert _rows(store)[41]["project"] == "NAS"
+
+
+# --- the seat the move leaves behind (issue #227) ------------------------
+#
+# A milestone is seated under a project. This tool changes the project and
+# leaves the milestone where it is, so it is the third way a row reaches the
+# state `project_goals.task_seat_problems` reports -- filed under a milestone
+# that seats nothing under the row's own project, reading as placed while
+# serving no key result. `board_capture` (#1139) and `board_milestone`
+# (#1140) already refuse the other two.
+
+
+def test_a_move_that_unseats_the_rows_milestone_is_refused(store, capsys):
+    before = _rows(store)
+    assert _run(numbers=(41,), project="Agora") == 1
+    problem = capsys.readouterr().err
+    assert "no seat in milestone-seats.md" in problem
+    # It names what IS seated under the destination, so a typo is visible.
+    assert "chat basics he asked for" in problem
+    assert _rows(store) == before, "nothing was written"
+    assert not [call for call in store.calls if call[0] == "write_row"]
+
+
+def test_a_seated_destination_is_moved(store):
+    """`NAS` seats `Records` too, so the row keeps serving something."""
+    assert _run(numbers=(41,), project="NAS") == 0
+    assert _rows(store)[41]["project"] == "NAS"
+    assert _rows(store)[41]["milestone"] == "Records"
+
+
+def test_one_unseated_row_stops_the_whole_run(store, capsys):
+    """Same promise as an absent row: every named row is judged before the
+    first write, so a good row and a bad one leave the board untouched."""
+    before = _rows(store)
+    assert _run(numbers=(43, 41), project="Agora") == 1
+    assert "#41" in capsys.readouterr().err
+    assert _rows(store) == before
+
+
+def test_a_row_under_no_milestone_is_never_judged(store, monkeypatch):
+    """#43 carries no milestone, so there is no seat to lose and no reason to
+    pay for the vault read at all."""
+    def explode(*a, **k):
+        raise AssertionError("the seats file was fetched for an ungrouped row")
+    monkeypatch.setattr(board_project, "seats_markdown", explode)
+    assert _run(numbers=(43,), project="Agora") == 0
+    assert _rows(store)[43]["project"] == "Agora"
+
+
+def test_a_dry_run_refuses_an_unseating_move_too(store):
+    """A dry run that reports a move the real run would refuse is a lying
+    instrument, so the seats are read before `--dry-run` returns."""
+    assert _run(numbers=(41,), project="Agora", dry_run=True) == 1
+
+
+def test_an_unreadable_seats_file_warns_and_tags_the_row(
+        store, monkeypatch, capsys):
+    """Not checked is not the same as no seats -- an unreadable vault must
+    not stand between him and his own board."""
+    _seats_answer(monkeypatch, "", ok=False)
+    assert _run(numbers=(41,), project="Agora") == 0
+    assert "NOT checked" in capsys.readouterr().err
+    assert _rows(store)[41]["project"] == "Agora"
+
+
+def test_unseated_by_the_move_tells_no_seats_from_unreadable(monkeypatch):
+    """`[]` and `None` are different answers and the caller acts on each
+    differently -- one writes silently, the other writes and warns -- so a
+    falsy test on the return value cannot tell them apart."""
+    ungrouped = {7: {"number": 7, "milestone": "", "project": "Nova"}}
+    assert unseated_by_the_move(ungrouped, [7], "Agora") == []
+
+    grouped = {7: {"number": 7, "milestone": "Records", "project": "Nova"}}
+    _seats_answer(monkeypatch, "", ok=False)
+    assert unseated_by_the_move(grouped, [7], "Agora") is None
+
+    _seats_answer(monkeypatch, SEATS)
+    assert unseated_by_the_move(grouped, [7], "NAS") == []
