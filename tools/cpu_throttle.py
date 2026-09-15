@@ -52,6 +52,26 @@ that actually hurt. Every container over the floor is printed with its ratio
 whatever the verdict, so couchdb at 31.5% is visible without being an alarm --
 the interface carries the data, the threshold only carries the alarm.
 
+**One window over the line is not an incident, and two false alarms in one
+night is what showed it.** `combine` below already recorded the shape --
+couchdb read 3.3%, 100.0% and 99.3% in three windows on 2026-09-06 -- but the
+sweep still raised on a single window, so the alarm went on landing in front of
+a cycle that had to re-sample by hand to find out it was nothing. On 2026-09-15
+the sweep raised on couchdb at 19:47 Oslo and on `test/nova-test` at 00:36 the
+next morning (90.8% over 119 periods); both re-sampled clean within a minute,
+and `kubectl top` had `nova-test` at **1 millicore** against a 500m limit the
+whole time. A bursty multi-threaded process can exhaust a 50 ms quota slice in
+a couple of milliseconds of wall clock and spend the rest of the period stopped,
+which is a true reading and not the claim the alarm is making.
+
+So a container over the line no longer raises on its own: the sweep takes one
+more window and asks whether that window agrees. **A clean sweep costs exactly
+what it did before** -- the extra window is taken only once something has
+already crossed -- and a container held at its limit for a week crosses in every
+window, so the alarm can still fire. One that does not confirm is printed as
+`BURST` with both windows' ratios under it, because twenty seconds clamped is
+worth seeing even when it is not something to act on.
+
 Scope, said plainly: this judges containers that declare a CPU limit, because
 a container with no limit cannot be throttled and its counters read zero
 forever. It says how many it skipped for that reason.
@@ -78,6 +98,12 @@ DEFAULT_WINDOW = 20
 #: One window is a spot reading. See `combine` for why more than one is a
 #: different measurement rather than a longer one.
 DEFAULT_SAMPLES = 1
+
+#: Extra windows taken ONLY when the first pass has something over the line.
+#: A clean sweep costs exactly what it did before; a sweep about to raise pays
+#: one more window to find out whether it is looking at a burst. See the
+#: module docstring for the two false alarms that bought this.
+CONFIRM_WINDOWS = 1
 
 _METRIC = re.compile(
     r'^container_cpu_cfs_(throttled_)?periods_total\{([^}]*)\}\s+([0-9.eE+-]+)'
@@ -178,9 +204,44 @@ def _spread_line(entries, min_periods):
     return line
 
 
+def _confirming_window(entries, min_periods, raise_pct):
+    """Does the LAST window agree that this container is over the line?
+
+    `(agreed, why_not)`. Aggregating the confirming window into the total is
+    not enough and that is the trap worth naming: a container that spent one
+    20-second window at 90% and the next barely runnable still totals near 90%,
+    because the quiet window contributes almost no periods to average against.
+    So the confirmation is read off that window on its own.
+
+    A confirming window the container was barely scheduled in does not confirm.
+    The claim being made is that a container is stopped whenever it tries to
+    run, and a window in which it did not really try says nothing about that.
+    A sustained clamp -- agora pinned at its limit for a week -- crosses the
+    line in every window, so a positive result is still reachable here.
+    """
+    if len(entries) < 2:
+        return True, None
+    dp, dt = entries[-1]
+    if dp < min_periods:
+        return False, (f"the confirming window rated it too quiet to judge "
+                       f"({int(dp)} period(s))")
+    pct = dt / dp * 100.0
+    if pct > raise_pct:
+        return True, None
+    return False, f"the confirming window read {pct:.1f}%"
+
+
 def judge(rows, window_s, min_periods=MIN_PERIODS, raise_pct=RAISE_PCT,
-          series=None):
-    """Lines to print and the exit code, from `deltas` output."""
+          series=None, confirm=False):
+    """Lines to print and the exit code, from `deltas` output.
+
+    `confirm` is set on the second pass, once a first pass has found something
+    over the line and `main` has taken another window for it. It does not move
+    the threshold: a container still has to cross to be a candidate at all. It
+    only asks whether the newest window agrees, and prints the ones that do not
+    as BURST rather than dropping them, because a container that really did
+    spend twenty seconds clamped is worth seeing even when it is not an alarm.
+    """
     judged, skipped = [], []
     for key, (dp, dt) in rows.items():
         if dp < min_periods:
@@ -193,12 +254,24 @@ def judge(rows, window_s, min_periods=MIN_PERIODS, raise_pct=RAISE_PCT,
     lines, harmed = [], []
     for pct, dp, key in judged:
         ns, pod, container = key
-        mark = "THROTTLED" if pct > raise_pct else "  ok     "
+        entries = (series or {}).get(key, [])
+        agreed, why_not = (True, None)
+        if confirm and pct > raise_pct:
+            agreed, why_not = _confirming_window(entries, min_periods, raise_pct)
+        if pct <= raise_pct:
+            mark = "  ok     "
+        elif agreed:
+            mark = "THROTTLED"
+        else:
+            mark = "BURST    "
         lines.append(f"  {mark}  {pct:5.1f}%  {int(dp)} period(s)  {ns}/{pod} [{container}]")
-        spread = _spread_line((series or {}).get(key, []), min_periods)
+        spread = _spread_line(entries, min_periods)
         if spread:
             lines.append(spread)
-        if pct > raise_pct:
+        if why_not:
+            lines.append(f"      not raised: {why_not}, so this was a burst "
+                         "rather than a container held at its limit")
+        if pct > raise_pct and agreed:
             harmed.append(key)
     if skipped:
         lines.append(
@@ -256,6 +329,9 @@ def main(argv=None):
                              "each window's own ratio beside the total")
     parser.add_argument("--raise-pct", type=float, default=RAISE_PCT,
                         help="raise above this percentage of throttled periods")
+    parser.add_argument("--no-confirm", action="store_true",
+                        help="raise on the first window that crosses the line, "
+                             "without taking a confirming one")
     args = parser.parse_args(argv)
 
     print("CPU THROTTLE")
@@ -280,6 +356,19 @@ def main(argv=None):
 
     rows, series = combine(samples)
     lines, code = judge(rows, window, raise_pct=args.raise_pct, series=series)
+    if code == 2 and not args.no_confirm:
+        # Only now, and only for as long as something is over the line: a
+        # clean sweep costs the one window it always did.
+        for _ in range(CONFIRM_WINDOWS):
+            time.sleep(args.window)
+            after, more = _scrape_all(nodes)
+            problems += more
+            samples.append(deltas(before, after))
+            before = after
+        window = time.time() - t0
+        rows, series = combine(samples)
+        lines, code = judge(rows, window, raise_pct=args.raise_pct,
+                            series=series, confirm=True)
     for line in lines:
         print(line)
     for problem in problems:
