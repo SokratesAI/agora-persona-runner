@@ -767,7 +767,7 @@ def in_reach(not_judged):
     in reach: an unexplained gap is exactly the kind this is meant to surface.
     """
     return {key: members for key, members in group(not_judged).items()
-            if (members[0].get("cause") or "") not in OUT_OF_REACH_CAUSES}
+            if members[0].get("cause") not in OUT_OF_REACH_CAUSES}
 
 
 def cause_counts(not_judged):
