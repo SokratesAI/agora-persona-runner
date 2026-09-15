@@ -62,6 +62,22 @@ digest or a build argument is not floating. Measured on the first run:
 two across the whole org, both fixed in the same cycle, so this is not a
 check that is red on day one and forever.
 
+**A mirrored image is judged as the upstream it mirrors.** k3s ships the
+components it bundles through one Docker Hub account, flattening the
+upstream `<org>/<repo>` into `rancher/mirrored-<org>-<repo>` -- so the
+name a running workload carries is not the name the catalogue publishes.
+`rancher/mirrored-library-traefik:3.6.7` is the ingress every request into
+this box goes through, and it read as a product endoflife.date has never
+heard of, while `traefik` has been in the catalogue the whole time. Its
+security support **ended 2026-08-16**, 30 days before this learned to look
+(Cycle 1607). `lookup_names` offers the un-flattened name as a candidate
+and the catalogue decides, so this stays a rule about a naming convention
+rather than a table of what an image means. The guess may only ever
+*answer* -- it never raises a complaint of its own, because
+`rancher/mirrored-metrics-server` un-flattens to `server`, which two
+products claim, and saying so would replace one true sentence with a
+confident wrong one.
+
 **An image `endoflife.date` has no product for prints under NOT JUDGED
 and does not raise.** That is the same call `pin_drift` makes on a commit
 SHA and `security_alerts` makes on an already-fixed advisory: a check
@@ -363,6 +379,42 @@ def floating(image):
             "show it")
 
 
+#: `rancher/mirrored-library-traefik`, `rancher/mirrored-coredns-coredns`.
+#: k3s ships every upstream component it bundles through one Docker Hub
+#: account, flattening the upstream `<org>/<repo>` into `mirrored-<org>-<repo>`
+#: -- so the name this reads off a running workload is never the name the
+#: catalogue publishes.
+MIRROR_PREFIX = "mirrored-"
+
+
+def lookup_names(image):
+    """Catalogue names to try for one image reference, most literal first.
+
+    The last path segment is what the catalogue publishes for an ordinary
+    image and is always tried first. The second candidate exists because
+    **the ingress this cluster runs is called `rancher/mirrored-library-traefik`
+    and `traefik` is in the catalogue** -- so the one component here whose
+    support window matters most was reported as a product endoflife.date has
+    never heard of, which was false about it.
+
+    Undoing the flattening is not fully reversible -- `rancher/mirrored-metrics-server`
+    drops its org entirely -- so this offers the piece after the first `-` as a
+    candidate and lets the caller decide by whether the catalogue answers.
+    That keeps the rule this module already states: no table of what an image
+    means lives here, the catalogue is the source. A candidate the catalogue
+    does not publish changes nothing, because the reason printed is the same
+    one the literal name earned.
+    """
+    short = image.rsplit("/", 1)[-1].lower()
+    names = [short]
+    if short.startswith(MIRROR_PREFIX):
+        rest = short[len(MIRROR_PREFIX):]
+        for candidate in (rest, rest.split("-", 1)[-1]):
+            if candidate and candidate not in names:
+                names.append(candidate)
+    return names
+
+
 def judge(image, products, mapping, today, within_days, ambiguous=None):
     """Fill one image dict with a verdict, or a reason it was not judged.
 
@@ -375,10 +427,19 @@ def judge(image, products, mapping, today, within_days, ambiguous=None):
     loose = floating(image)
     if loose is not None:
         image["floating"], image["reason"] = True, loose
+        image["cause"] = "floating"
         return "not-judged"
-    short = image["image"].rsplit("/", 1)[-1].lower()
-    product_name = mapping.get(short)
+    names = lookup_names(image["image"])
+    short = names[0]
+    product_name = next((mapping[n] for n in names if n in mapping), None)
     if product_name is None:
+        # Only the literal name may raise the ambiguity complaint. An
+        # un-mirrored candidate is a guess about a naming convention, so it
+        # is allowed to *answer* the question and never to invent a new
+        # objection: `rancher/mirrored-metrics-server` un-flattens to
+        # `server`, which two products claim, and reporting that would
+        # replace one true sentence with a confident wrong one about an
+        # image neither product has anything to do with.
         claimed = (ambiguous or {}).get(short)
         if claimed:
             image["reason"] = ("endoflife.date has %d products claiming the "
@@ -386,9 +447,11 @@ def judge(image, products, mapping, today, within_days, ambiguous=None):
                                "window this means is not decidable from the "
                                "catalogue" % (len(claimed), short,
                                               ", ".join(claimed)))
+            image["cause"] = "two products claim the name"
         else:
             image["reason"] = ("endoflife.date publishes no product for this "
                                "image, so it has no support window to read")
+            image["cause"] = "endoflife.date publishes no product"
         return "not-judged"
 
     tag = image["tag"]
@@ -404,11 +467,13 @@ def judge(image, products, mapping, today, within_days, ambiguous=None):
             else "pinned through a build argument, so the line it resolves "
                  "to is not written in this file" if image.get("templated")
             else "no tag, so this follows `latest` and pins no line at all")
+        image["cause"] = "no version to look up"
         return "not-judged"
     leading = LEADING_VERSION_RE.match(tag)
     if not leading:
         image["reason"] = (f"tag `{tag}` names no version, so there is no "
                            "support window to look up")
+        image["cause"] = "no version to look up"
         return "not-judged"
 
     version = leading.group(1)
@@ -423,6 +488,7 @@ def judge(image, products, mapping, today, within_days, ambiguous=None):
         image["reason"] = (f"{product_name} publishes no release line named "
                            f"`{version}`, so this tag pins no single support "
                            "window")
+        image["cause"] = "tag names no release line"
         return "not-judged"
 
     eol = release.get("eolFrom")
@@ -434,11 +500,13 @@ def judge(image, products, mapping, today, within_days, ambiguous=None):
     if eol is None:
         image["reason"] = (f"{product_name} {version} has no end-of-life date "
                            "published yet")
+        image["cause"] = "no end-of-life date published yet"
         return "not-judged"
     days = _days(eol, today)
     if days is None:
         image["reason"] = f"{product_name} {version} carries an unreadable "\
                           f"end-of-life date `{eol}`"
+        image["cause"] = "unreadable end-of-life date"
         return "not-judged"
     image["days"] = days
     image["verdict"] = "soon" if days <= within_days else "supported"
@@ -633,7 +701,56 @@ def format_report(judged, not_judged, problems, notes, within_days):
                   len(group(not_judged))))
     out.append("Of those, %d distinct `FROM` line(s) name no release at all."
                % len(group([i for i in not_judged if i.get("floating")])))
+    causes = cause_counts(not_judged)
+    if causes:
+        out.append("Why the %d were not judged — the total on its own merges "
+                   "causes that want different answers. `endoflife.date "
+                   "publishes no product` is not a blind spot here and never "
+                   "becomes one: there is no support window published "
+                   "anywhere to read, so no change to this tool will ever "
+                   "judge those. `no end-of-life date published yet` resolves "
+                   "upstream on its own. The rest are this tool's own reach:"
+                   % len(group(not_judged)))
+        for cause, count in causes:
+            out.append("  %d — %s" % (count, cause))
     return "\n".join(out)
+
+
+#: Most of what this cannot judge is not a blind spot in the reader and never
+#: becomes one. On 2026-09-15, 20 of the 24 unjudged lines were images
+#: endoflife.date publishes no product for at all -- crossplane, tailscale,
+#: dex, the k3s system images -- and no change here will ever judge them,
+#: because there is no support window published anywhere to read. Two more
+#: were real products whose current release simply has no end-of-life date
+#: *yet* (go 1.27, argo-cd 3.3.2), which resolves upstream on its own.
+#:
+#: `maint-kpi-eol-unjudged` reads that one total against a ceiling of 10 and
+#: has been six over it, and I had nothing to say about which kind it was.
+#: One number for three unrelated situations is the shape `prompt.md` calls a
+#: streak counter merging causes: the digit reads as a diagnosis and is not
+#: one. The breakdown does not change the KPI or the exit status -- it makes
+#: the number legible, which is what decides whether anyone should act.
+CAUSE_ORDER = (
+    "endoflife.date publishes no product",
+    "no end-of-life date published yet",
+    "unreadable end-of-life date",
+    "floating",
+    "no version to look up",
+    "tag names no release line",
+    "two products claim the name",
+)
+
+
+def cause_counts(not_judged):
+    """`[(cause, distinct lines)]` over everything that was not judged."""
+    counts = {}
+    for members in group(not_judged).values():
+        cause = members[0].get("cause") or "reason not recorded"
+        counts[cause] = counts.get(cause, 0) + 1
+    return sorted(counts.items(),
+                  key=lambda item: (CAUSE_ORDER.index(item[0])
+                                    if item[0] in CAUSE_ORDER
+                                    else len(CAUSE_ORDER), item[0]))
 
 
 def main(argv=None):
