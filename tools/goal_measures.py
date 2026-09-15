@@ -3377,12 +3377,24 @@ def measure_maint_supported(since, until):
 
 
 def measure_maint_eol_unjudged(since, until):
-    """Distinct runtime lines endoflife.date has no answer for. A level.
+    """Unjudged runtime lines a change to `tools.eol_watch` could judge. A level.
 
     The guardrail on `maint-kr-supported`'s own instrument rather than on the
-    estate: that key result reading 2 means very little while two thirds of
-    what we run is invisible to the catalogue, which is why this KPI exists at
-    all and why its high bound is 10 rather than 0.
+    estate: that key result reading 2 means very little while what we run is
+    partly invisible to the catalogue.
+
+    **It counts the reachable half, not the total, and that is the whole
+    point.** It read the total until 2026-09-15, and on that day 22 of the 23
+    unjudged lines carried one of `eol_watch.OUT_OF_REACH_CAUSES` -- 18
+    products endoflife.date publishes nothing for, which no work here ever
+    converts, and 4 whose current release has no end-of-life date published
+    yet, which resolve upstream on their own. A number with a floor of 22 under
+    a ceiling of 10 is not a guardrail; it is a red light that can never go out,
+    and a KPI nobody can move teaches everyone to stop reading it.
+
+    The total is not hidden by this and is not meant to be: `tools.eol_watch`
+    prints it with a count per cause every sweep, and the detail below names
+    both halves so the KPI and the report reconcile.
 
     Counted as distinct lines for `measure_maint_supported`'s reason, and off
     the same single sweep, so the two numbers can never be taken over
@@ -3398,9 +3410,12 @@ def measure_maint_eol_unjudged(since, until):
     if error:
         return None, error
     lines = eol_watch.group(not_judged)
-    return len(lines), (f"{len(lines)} distinct line(s) the catalogue could "
-                        "not place, so nothing here knows whether they are "
-                        "still supported")
+    reach = eol_watch.in_reach(not_judged)
+    return len(reach), (
+        f"{len(reach)} of {len(lines)} distinct unjudged line(s) are this "
+        f"instrument's own reach; the other {len(lines) - len(reach)} have no "
+        "support window published anywhere, or no end-of-life date published "
+        "yet, so no change here judges them")
 
 
 def measure_maint_pins_current(since, until):
