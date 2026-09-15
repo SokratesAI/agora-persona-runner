@@ -162,6 +162,7 @@ CHECKS = (
     "claim_drift",
     "claim_schema",
     "roll_health",
+    "ask_watch",
     "board_done_drift",
     "project_goals_check",
     "goal_drift",
@@ -289,6 +290,7 @@ SUBJECT = {
     "claim_drift":       ("on-box",  "live claims in this cluster"),
     "claim_schema":      ("on-box",  "live claims in this cluster"),
     "roll_health":       ("on-box",  "my own digest and handoff files"),
+    "ask_watch":         ("on-box",  "my open question threads in Agora, in this cluster"),
     "board_done_drift":  ("on-box",  "the board records against my own claim ledger"),
     "project_goals_check": ("on-box",  "project-goals.md and milestone-seats.md in the vault, plus both boards through the site"),
     "goal_drift":        ("on-box",  "goals.md and project-goals.md in the vault, against the instruments behind their numbers"),
@@ -433,6 +435,10 @@ CADENCE_HOURS = {
     # exactly who could have broken them.
     "doc_integrity": 0.0,
     "roll_health": 0.0,
+    # Every sweep -- the thing it watches for is an answer of his sitting
+    # unread, and the cost of missing one is a cycle that walks past the
+    # reply that unblocks it. Five threads, six small reads, under a second.
+    "ask_watch": 0.0,
     # Every sweep -- the ledger window is about a day, so a drift this
     # collapses is one that ages out of the evidence before it is read.
     "board_done_drift": 0.0,

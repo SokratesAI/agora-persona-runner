@@ -68,6 +68,13 @@ MAX_NAME_QUESTION_CHARS = 90
 # is what de-duplicates; this is only a label.
 NEEDS_INPUT_TAG = "nova:needs-input"
 
+# Who the opening message is from. Named rather than inlined because
+# `tools.ask_watch` reads it back: "the newest message is not from me" is how
+# it tells an answered thread from one still waiting, and a second copy of
+# this string would make every thread read as answered the day one of them
+# changed.
+SENDER = "Nova"
+
 
 def _one_line(text):
     return " ".join(text.split())
@@ -162,7 +169,7 @@ def ask(question, context, cycle=None):
     # `push` is left at its default: the buzz on his phone is the entire
     # reason this exists rather than a line in the digest.
     status, posted = agora_internal("POST", f"/conversations/{cid}/notify", {
-        "text": text, "sender": "Nova", "system": False})
+        "text": text, "sender": SENDER, "system": False})
     message_id = (posted.get("message") or {}).get("id")
     if status not in (200, 201) or not message_id:
         log(f"needs_input: notify failed HTTP {status}")
