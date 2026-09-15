@@ -35,6 +35,20 @@ guessing the deadline too low.
 Each argument is `name:shell command`. A condition is resolved when its
 command exits 0. `poll` is pure and takes an injected clock and runner so
 the arithmetic is testable without waiting on a real minute.
+
+**A command the shell cannot run is not "not yet".** Exit 127 (command
+not found) and 126 (not executable) are reported as BROKEN, run once
+rather than retried, never handed to the detached watcher, and they make
+the process exit 1 rather than 2. Cycle 1663 hand-rolled `until ! pgrep
+-f tools.preflight` on the bridge pod, where `pgrep` is not installed:
+the negation made 127 read as "the process is gone", so the loop declared
+the wait over after ten seconds and the cycle read a nought-byte report as
+a finished one. Waiting on it through this tool had the mirror of that
+bug -- 127 read as "not yet", so the whole deadline burned and then an
+`until pgrep ...; do sleep 10; done` loop was detached that can never
+exit, with the report telling the reader to come back for its output. The
+exit codes say which of the two answers you got: **2 means the thing has
+not happened yet, 1 means this wait never measured anything.**
 """
 
 import argparse
@@ -48,10 +62,19 @@ import time
 class Condition:
     """One thing being waited on, and what it printed when it resolved."""
 
+    # An exit status that means bash could not run the command word at all
+    # -- 127 is "command not found", 126 is "found but not executable". A
+    # condition that exits either of these is not "not yet"; it is a
+    # condition that can never resolve, and treating it as transient is
+    # what this class of bug looks like from the inside.
+    CANNOT_RUN = (126, 127)
+
     def __init__(self, name, command):
         self.name = name
         self.command = command
         self.resolved = False
+        self.broken = False
+        self.exit_code = None
         self.elapsed = None
         self.output = ""
 
@@ -107,12 +130,18 @@ def poll(conditions, deadline, interval, runner=None, clock=time.monotonic,
         still = []
         for cond in pending:
             code, out = runner(cond.command)
+            cond.exit_code = code
+            cond.output = out
             if code == 0:
                 cond.resolved = True
                 cond.elapsed = round(clock() - start, 1)
-                cond.output = out
+            elif code in Condition.CANNOT_RUN:
+                # Drop it rather than retry it. Re-running a command the
+                # shell cannot find burns the whole deadline and then
+                # detaches an `until` loop that never exits, so the cycle
+                # is told to read a handoff file nothing will ever write.
+                cond.broken = True
             else:
-                cond.output = out
                 still.append(cond)
         pending = still
         if not pending:
@@ -154,18 +183,31 @@ def report(conditions, pending, path=None):
     for cond in conditions:
         if cond.resolved:
             lines.append("=== %s: RESOLVED after %ss" % (cond.name, cond.elapsed))
+        elif cond.broken:
+            lines.append(
+                "=== %s: BROKEN -- exit %s, the shell could not run this command. "
+                "Not 'not yet': it can never resolve, so it was not retried and "
+                "not detached." % (cond.name, cond.exit_code)
+            )
         else:
             lines.append("=== %s: STILL PENDING" % cond.name)
         body = cond.output.rstrip("\n")
         if body:
             lines.extend(body.split("\n"))
+    broken = [c for c in conditions if c.broken]
     if pending:
         lines.append("")
         lines.append(
             "%d still pending; a detached watcher is writing to %s -- read it in a later turn."
             % (len(pending), path)
         )
-    else:
+    if broken:
+        lines.append("")
+        lines.append(
+            "%d condition(s) could not be run at all: %s. Fix the command; waiting longer will not help."
+            % (len(broken), ", ".join(c.name for c in broken))
+        )
+    if not pending and not broken:
         lines.append("")
         lines.append("All %d conditions resolved." % len(conditions))
     return "\n".join(lines)
@@ -195,6 +237,12 @@ def main(argv=None):
     if pending:
         detach(pending, args.handoff, args.interval)
     print(report(conditions, pending, args.handoff))
+    # A broken condition outranks a pending one: 2 says "the thing you are
+    # waiting for has not happened yet", which is a fact about the world,
+    # and 1 says "this wait never measured anything", which is a fact about
+    # the instrument. They call for opposite next moves.
+    if any(c.broken for c in conditions):
+        return 1
     return 0 if not pending else 2
 
 
