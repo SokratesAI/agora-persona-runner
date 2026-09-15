@@ -1066,7 +1066,34 @@ def test_silence_on_a_status_reads_as_still_being_argued():
     from agora_runner.project_goals import undecided_goals
     doc = _doc("## Nova\n\n```objective\nstatement: s\n```\n")
     assert undecided_goals(doc and parse_project_goals(doc)) == [
+        "Nova: still discussing the objective, which names no conversation "
+        "-- nothing is arguing it"]
+
+
+def test_a_discussing_objective_says_when_no_conversation_names_it():
+    """`discussing` claims a conversation is happening. Eleven of the twelve
+    objectives in the live document carried the word and linked nothing, so
+    the claim was mine alone -- the same failure `problems` already refuses
+    one status later, where `agreed` must name where it was reached. The
+    separating pair is one document with the link and one without: both are
+    undecided, and only one of them has somebody on the other end."""
+    from agora_runner.project_goals import undecided_goals
+    without = _doc("## Nova\n\n```objective\nstatement: s\n"
+                   "status: discussing\n```\n")
+    assert undecided_goals(parse_project_goals(without)) == [
+        "Nova: still discussing the objective, which names no conversation "
+        "-- nothing is arguing it"]
+
+    with_thread = _doc("## Nova\n\n```objective\nstatement: s\n"
+                       "status: discussing\nconversation: c-1\n```\n")
+    assert undecided_goals(parse_project_goals(with_thread)) == [
         "Nova: still discussing the objective"]
+
+    blank = _doc("## Nova\n\n```objective\nstatement: s\n"
+                 "status: discussing\nconversation:   \n```\n")
+    assert undecided_goals(parse_project_goals(blank)) == [
+        "Nova: still discussing the objective, which names no conversation "
+        "-- nothing is arguing it"]
 
 
 def test_a_struck_goal_is_decided_and_never_asked_about_again():

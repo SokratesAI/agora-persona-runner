@@ -845,7 +845,20 @@ def undecided_goals(sections):
             continue
         parts = []
         if undecided_objective:
-            parts.append("the objective")
+            # `discussing` is a claim that a conversation is happening, and
+            # for eleven of the twelve objectives there was none: the word
+            # was set by me, in the document, with nothing on the other end
+            # of it. `problems` already refuses the mirror of this --
+            # `agreed` with no conversation, because an agreement names
+            # where it was reached -- and the same sentence is true one
+            # status earlier. Reported here rather than raised: opening the
+            # thread is a thing to do, not a defect in the document.
+            if (objective.get("conversation") or "").strip():
+                parts.append("the objective")
+            else:
+                parts.append(
+                    "the objective, which names no conversation -- nothing "
+                    "is arguing it")
         if pending:
             parts.append(
                 f"{len(pending)} key result(s): " + ", ".join(pending))
