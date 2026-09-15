@@ -99,6 +99,7 @@ from agora_runner.project_goals import (
     unpointed_goals,
     task_seat_problems,
     objective_periods,
+    undecided_goals,
     projects_without_goals,
 )
 
@@ -146,6 +147,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     unplaced = [] if rows is None else task_seat_orphans(rows)
     past, undated = objective_periods(
         sections, today or datetime.date.today())
+    undecided = undecided_goals(sections)
     breaches = kpi_breaches(sections)
     missing_goals, projects_on_boards = (
         ([], 0) if rows is None else projects_without_goals(rows, sections))
@@ -206,6 +208,15 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "ever report as stale:")
         for line in undated:
             lines.append(f"  {line}")
+    if undecided:
+        lines.append(
+            f"STILL BEING ARGUED ({len(undecided)} of {len(sections)}) -- "
+            "issue #227's sixth rule, an inventory rather than a defect, so "
+            "it does not raise. These goals are written and nobody has "
+            "settled them with him yet, which is not the same state as a "
+            "project having a goal:")
+        for line in undecided:
+            lines.append(f"  {line}")
     if missing_goals:
         lines.append(
             f"PROJECTS WITH NO GOAL ({len(missing_goals)} of "
@@ -240,6 +251,8 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                  f"{len(breaches)} KPI(s) out of bounds, "
                  f"{len(past)} objective(s) past their month, "
                  f"{len(undated)} undated, "
+                 f"{len(undecided)} of {len(sections)} project(s) still "
+                 "being argued, "
                  + ("tasks not read"
                     if rows is None
                     else f"{len(unplaced)} unplaced task(s)") + ", "
