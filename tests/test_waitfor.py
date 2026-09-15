@@ -150,3 +150,66 @@ def test_main_exits_zero_when_everything_resolves(monkeypatch, capsys):
     code = waitfor.main(["a:cmd", "b:cmd2", "--deadline", "0"])
     assert code == 0
     assert "All 2 conditions resolved." in capsys.readouterr().out
+
+
+def test_a_condition_the_shell_cannot_run_is_broken_not_pending():
+    """Exit 127 means the command word does not exist -- that is never "not yet".
+
+    This is the bug the change was made for: `pgrep` is not installed on
+    the bridge pod, so a wait on it burned the whole deadline and then
+    detached an `until pgrep ...; do sleep 10; done` loop that can never
+    exit, while the report told the reader to come back for its output.
+    """
+    clock = FakeClock()
+    calls = []
+
+    def runner(command):
+        calls.append(command)
+        if "missing" in command:
+            return 127, "bash: line 1: pgrep: command not found\n"
+        return 0, "ok\n"
+
+    conditions = make(["gone:pgrep missing", "fine:echo ok"])
+    pending = waitfor.poll(conditions, deadline=300, interval=10,
+                           runner=runner, clock=clock, sleeper=clock.advance)
+
+    assert pending == []
+    broken, good = conditions
+    assert broken.broken is True and broken.resolved is False
+    assert broken.exit_code == 127
+    assert good.resolved is True
+    # Run once and never retried -- two commands, not two rounds of two.
+    assert len(calls) == 2
+
+
+def test_a_broken_condition_is_never_handed_to_the_detached_watcher(monkeypatch, capsys):
+    launched = []
+    monkeypatch.setattr(waitfor, "detach",
+                        lambda pending, path, interval: launched.append(list(pending)))
+    monkeypatch.setattr(waitfor, "run_shell",
+                        lambda command: (126, "bash: permission denied\n"))
+
+    code = waitfor.main(["--deadline", "0", "nope:/etc/hosts"])
+
+    assert code == 1
+    assert launched == []
+    out = capsys.readouterr().out
+    assert "BROKEN -- exit 126" in out
+    assert "waiting longer will not help" in out
+    assert "All 1 conditions resolved." not in out
+
+
+def test_broken_outranks_pending_in_the_exit_code(monkeypatch, capsys):
+    monkeypatch.setattr(waitfor, "detach", lambda pending, path, interval: None)
+
+    def runner(command):
+        return (127, "not found\n") if "nosuchbinary" in command else (1, "not yet\n")
+
+    monkeypatch.setattr(waitfor, "run_shell", runner)
+
+    code = waitfor.main(["--deadline", "0", "gone:nosuchbinary", "slow:false"])
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "gone: BROKEN" in out
+    assert "slow: STILL PENDING" in out
