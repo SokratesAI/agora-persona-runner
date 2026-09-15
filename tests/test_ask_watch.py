@@ -288,3 +288,95 @@ def test_a_failed_nudge_call_says_so(monkeypatch):
         "c1": (200, {"messages": [_msg("Nova", ts=QUIET_TS)]})}, NOW)
     assert "COULD NOT re-announce" in text
     assert "HTTP 502" in text
+
+
+def _chat(cid, name="Manual feedback & improvements", last="2026-09-15T06:00:00.000Z"):
+    """An ordinary conversation row — not an ask, so it is only ever opened
+    when something is waiting."""
+    return {"id": cid, "name": name, "tags": [], "archived": False,
+            "lastMessageAt": last}
+
+
+def test_his_answer_in_another_thread_is_named_rather_than_read_as_silence(monkeypatch):
+    calls = []
+    code, text = _run(monkeypatch, [_row("c1"), _chat("c2")], {
+        "c1": (200, {"messages": [_msg("Nova")]}),
+        "c2": (200, {"messages": [
+            _msg("Nova", "what about the objectives?", ts="2026-09-15T05:50:00.000Z"),
+            _msg("Edvard", "Option 1. Own project, Vault store.",
+                 ts="2026-09-15T06:00:00.000Z"),
+        ]}),
+    }, calls)
+    assert code == 2, text
+    assert "HE HAS BEEN TALKING ELSEWHERE — Manual feedback & improvements" in text
+    assert "Option 1. Own project, Vault store." in text
+    # and it did have to open the ordinary thread to know that
+    assert any("/conversations/c2/messages" in c for c in calls), calls
+
+
+def test_another_persona_writing_elsewhere_is_not_him(monkeypatch):
+    code, text = _run(monkeypatch, [_row("c1"), _chat("c2", name="K3s Sentinel")], {
+        "c1": (200, {"messages": [_msg("Nova")]}),
+        "c2": (200, {"messages": [
+            _msg("K3s Sentinel", "kubectl_read: get nodes",
+                 ts="2026-09-15T06:00:00.000Z")]}),
+    })
+    assert code == 0, text
+    assert "TALKING ELSEWHERE" not in text
+
+
+def test_he_spoke_elsewhere_before_the_ask_was_posted_is_not_a_finding(monkeypatch):
+    code, text = _run(monkeypatch, [_row("c1"), _chat("c2")], {
+        "c1": (200, {"messages": [_msg("Nova")]}),
+        "c2": (200, {"messages": [
+            _msg("Edvard", "older", ts="2026-09-15T04:00:00.000Z"),
+            _msg("Nova", "still thinking", ts="2026-09-15T06:00:00.000Z"),
+        ]}),
+    })
+    assert code == 0, text
+    assert "TALKING ELSEWHERE" not in text
+
+
+def test_a_thread_that_has_not_moved_since_the_ask_is_never_opened(monkeypatch):
+    calls = []
+    _run(monkeypatch, [_row("c1"), _chat("c2", last="2026-09-15T04:00:00.000Z")], {
+        "c1": (200, {"messages": [_msg("Nova")]}),
+        "c2": (200, {"messages": [_msg("Edvard", "older", ts="2026-09-15T04:00:00.000Z")]}),
+    }, calls)
+    assert not any("/conversations/c2/messages" in c for c in calls), calls
+
+
+def test_nothing_waiting_means_no_other_thread_is_opened(monkeypatch):
+    calls = []
+    code, _ = _run(monkeypatch, [_row("c1"), _chat("c2")], {
+        "c1": (200, {"messages": [
+            _msg("Edvard", "yes", ts="2026-09-15T02:00:00.000Z"),
+            _msg("Nova", "thanks", ts="2026-09-15T03:00:00.000Z"),
+        ]}),
+    }, calls)
+    assert code == 0
+    assert not any("/conversations/c2/messages" in c for c in calls), calls
+
+
+def test_an_unreadable_other_thread_is_not_read_as_him_being_silent(monkeypatch):
+    code, text = _run(monkeypatch, [_row("c1"), _chat("c2")], {
+        "c1": (200, {"messages": [_msg("Nova")]}),
+        "c2": (503, {}),
+    })
+    assert code == 1, text
+    assert "COULD NOT READ — Manual feedback & improvements" in text
+
+
+def test_the_age_reported_is_his_newest_word_not_his_oldest(monkeypatch):
+    code, text = _run(monkeypatch, [_row("c1"), _chat("c2")], {
+        "c1": (200, {"messages": [_msg("Nova")]}),
+        "c2": (200, {"messages": [
+            _msg("Edvard", "first thought", ts="2026-09-15T05:30:00.000Z"),
+            _msg("Edvard", "Perfect. Cycles.", ts="2026-09-15T06:30:00.000Z"),
+        ]}),
+    })
+    assert code == 2, text
+    assert "wrote there 2 time(s)" in text
+    assert "last 30 min ago" in text, text
+    # newest first, so the freshest thing he said is the first one I read
+    assert text.index("Perfect. Cycles.") < text.index("first thought"), text

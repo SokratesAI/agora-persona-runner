@@ -43,11 +43,22 @@ messages: a thread longer than that is read from its tail, which can only ever
 show a settled thread as waiting (the newest message is always in the tail),
 never the reverse.
 
-Two threads it deliberately cannot see. One he archived: that is his "I am done
-with this", and second-guessing it would make the check argue with him. And one
-whose answer he typed somewhere else entirely — a board comment, a note — which
-is the same known hole `top_board_rows` has, not something to fix by loosening
-the match.
+One thread it deliberately cannot see: the one he archived. That is his "I am
+done with this", and second-guessing it would make the check argue with him.
+
+**An answer that landed in a different conversation is no longer invisible.**
+That paragraph used to call it the same known hole `top_board_rows` has, and it
+was not the same hole — a board comment is in another store, another Agora
+thread is three messages away in this one. On 2026-09-15 he answered two open
+asks in `Manual feedback & improvements` rather than in their own threads and
+told me why: *"it feels like you are still split into multiple personas where
+your cycles are one and your chats are another."* This check printed `he has
+not written in it` for both. So when an ask is waiting, every active thread
+that is not an ask and has moved since is read, and anything HE wrote there is
+printed as `HE HAS BEEN TALKING ELSEWHERE` and raises. It costs nothing at all
+when nothing is waiting, and 5.9s over 39 threads when something is (measured
+against the live store, same morning). A board comment and a note are still
+holes and are still not this.
 
 **And a waiting thread is not always a thread he has seen.** Agora appends
 the message and withholds the phone buzz during quiet hours -- 22:00 to 07:00
@@ -69,13 +80,13 @@ silenced ask and cannot loop.
 
 Exit codes: 0 nothing of mine is unanswered, 1 a thread could not be read (no
 instrument is not no answer), 2 something needs a cycle to act -- he has
-answered and nobody picked it up, or an ask is waiting that never reached his
-phone.
+answered and nobody picked it up, an ask is waiting that never reached his
+phone, or he has been writing in another thread while an ask of mine waits.
 """
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 # Repo root on sys.path so `python3 tools/x.py` works and not only `-m`.
@@ -184,6 +195,18 @@ def nudge(conversation_id, text=NUDGE_TEXT):
     return True, "his phone buzzed"
 
 
+# His own name as Agora records it, the same literal `agora_runner/nova_ask.py`
+# and `agora_runner/conversations.py` already match on. Deliberately not
+# "anybody who is not Nova": `K3s Sentinel` writes in its own thread every
+# morning and it is not him.
+OWNER = "Edvard"
+
+# The tail read from a conversation that is not an ask, when looking for him.
+# Shorter than WINDOW on purpose: this only ever asks "did he write here since
+# a moment I already know", and the answer lives at the end of the thread.
+ELSEWHERE_WINDOW = 30
+
+
 def messages(conversation_id):
     """The thread's last `WINDOW` messages, oldest first, or None with a reason.
 
@@ -202,8 +225,59 @@ def messages(conversation_id):
     return rows, None
 
 
+def spoken_elsewhere(others, since, now=None):
+    """Threads that are not asks where HE has written since `since`.
+
+    An ask of mine is answered when he writes in its own thread, and that is
+    the only place this check used to look. On 2026-09-15 he answered two of
+    them somewhere else -- he had the same discussion running in `Manual
+    feedback & improvements` and said so in the ask itself: *"I am actually
+    already discussing this with you in the conversation with title ... it
+    feels like you are still split into multiple personas where your cycles
+    are one and your chats are another."* At 09:10 this check printed `he has
+    not written in it` for both, which is true and reads as silence. It was
+    not silence; the answer was three messages away in the same store.
+
+    `others` is the listing rows for every active conversation that is not an
+    ask, so nothing here costs a call until an ask is actually waiting -- and
+    only threads whose `lastMessageAt` is past `since` are opened at all.
+    Measured against the live store 2026-09-15: 39 threads had moved, and
+    reading all of them took 5.9s.
+
+    Returns (hits, unreadable), newest first. A hit is
+    (name, cid, ts, text).
+    """
+    hits, unreadable = [], []
+    for row in others:
+        cid = row.get("id")
+        if not cid:
+            continue
+        moved = _parse_ts(row.get("lastMessageAt"))
+        if moved is None or since is None or moved <= since:
+            continue
+        status, body = agora_get(
+            f"/conversations/{cid}/messages?limit={ELSEWHERE_WINDOW}")
+        name = row.get("name") or "(unnamed)"
+        if status != 200:
+            unreadable.append((name, cid, f"messages returned HTTP {status}"))
+            continue
+        for m in (body or {}).get("messages") or []:
+            if str(m.get("sender") or "").strip() != OWNER:
+                continue
+            when = _parse_ts(m.get("ts"))
+            if when is None or when <= since:
+                continue
+            hits.append((name, cid, when, str(m.get("text") or "")))
+    hits.sort(key=lambda h: h[2], reverse=True)
+    return hits, unreadable
+
+
 def check(now=None):
-    """Returns (answered, waiting, silenced, settled, unreadable).
+    """Returns (answered, waiting, silenced, settled, unreadable, elsewhere).
+
+    `elsewhere` is where HE has been talking while an ask of mine waits -- see
+    `spoken_elsewhere`. It is empty, and costs no call at all, unless something
+    is actually waiting.
 
     `silenced` is the subset of waiting threads whose newest message -- mine,
     by definition of waiting -- landed inside quiet hours, so his phone was
@@ -214,12 +288,16 @@ def check(now=None):
     status, body = agora_get("/conversations?active=true")
     if status != 200:
         return None, None, None, None, [
-            ("(the listing)", "", f"conversation listing returned HTTP {status}")]
+            ("(the listing)", "", f"conversation listing returned HTTP {status}")], []
 
     answered, waiting, silenced, settled, unreadable = [], [], [], [], []
+    others = []
     for row in (body or {}).get("conversations") or []:
         cid = row.get("id")
-        if not cid or row.get("archived") or not _is_ask(row):
+        if not cid or row.get("archived"):
+            continue
+        if not _is_ask(row):
+            others.append(row)
             continue
         name = row.get("name") or "(unnamed)"
         rows, problem = messages(cid)
@@ -242,7 +320,17 @@ def check(now=None):
             silenced.append((name, cid, age))
         else:
             waiting.append((name, cid, age))
-    return answered, waiting, silenced, settled, unreadable
+
+    # Only once something is genuinely waiting, and only back to the oldest
+    # thing that is waiting: a closed-out ask is not evidence he owes me a word.
+    elsewhere = []
+    open_ages = [age for _n, _c, age in waiting + silenced if age is not None]
+    if open_ages:
+        since = now - timedelta(hours=max(open_ages))
+        hits, could_not_read = spoken_elsewhere(others, since, now)
+        elsewhere = hits
+        unreadable.extend(could_not_read)
+    return answered, waiting, silenced, settled, unreadable, elsewhere
 
 
 def _age(hours):
@@ -253,7 +341,7 @@ def _age(hours):
     return f"{hours:.1f}h ago"
 
 
-def report(answered, waiting, silenced, settled, unreadable,
+def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
            out=sys.stdout, do_nudge=False, now=None):
     if answered is None:
         for name, _cid, problem in unreadable:
@@ -289,16 +377,34 @@ def report(answered, waiting, silenced, settled, unreadable,
     for name, cid, age in waiting:
         print(f"waiting on him — {name}", file=out)
         print(f"  {cid}  asked {_age(age)}, he has not written in it", file=out)
+    for name, cid in dict.fromkeys((n, c) for n, c, _w, _t in elsewhere):
+        said = [(w, t) for n2, c2, w, t in elsewhere if c2 == cid]
+        print(f"HE HAS BEEN TALKING ELSEWHERE — {name}", file=out)
+        print(f"  {cid}  {OWNER} wrote there {len(said)} time(s) since the "
+              f"oldest ask above was posted, last {_age(_age_hours(said[0][0], now))}",
+              file=out)
+        for when, text in said:
+            print(f"    {' '.join(text.split())[:300]}", file=out)
+        print("  Read that thread before writing that he is silent — the "
+              "answer to an ask of mine has landed there before.", file=out)
 
     if unreadable:
         print(f"Could not read {len(unreadable)} open ask(s) — that is no "
               "instrument, not no answer.", file=out)
         return 1
+    if elsewhere and not answered and not silenced:
+        print(f"Nothing he answered is sitting unread in an ask thread, but he "
+              f"has written {len(elsewhere)} time(s) elsewhere since the oldest "
+              f"of {len(waiting)} open ask(s) — go and read those threads.",
+              file=out)
+        return 2
     if answered or silenced:
         print(f"{len(answered)} of my open ask(s) have an answer nobody has "
               f"picked up; {len(silenced)} never reached his phone; "
               f"{len(waiting)} still waiting on him and "
-              f"{len(settled)} answered and closed out.", file=out)
+              f"{len(settled)} answered and closed out. He has written "
+              f"{len(elsewhere)} time(s) in another thread since the oldest "
+              "open ask.", file=out)
         return 2
     print(f"Nothing he answered is sitting unread; {len(waiting)} open ask(s) "
           f"still waiting on him and {len(settled)} answered and closed out.",
