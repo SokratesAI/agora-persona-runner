@@ -91,11 +91,12 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
 from agora_runner import board_document, board_store
 from agora_runner.nova_boards import (
-    MILESTONE_SEATS_PATH, parse_milestone_keeps, parse_milestone_serves,
+    MILESTONE_SEATS_PATH, parse_milestone_keeps, parse_milestone_not_bet,
+    parse_milestone_serves,
 )
 from agora_runner.project_goals import (
     PROJECT_GOALS_PATH, PROJECT_GOALS_TEMPLATE, kpi_breaches, parse_project_goals, problems,
-    keeps_problems, serves_problems, split_orphans,
+    keeps_problems, not_bet_problems, serves_problems, split_orphans,
     task_seat_orphans,
     unpointed_goals,
     task_seat_problems,
@@ -148,9 +149,13 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     found = problems(sections)
     serves = parse_milestone_serves(seats_markdown)
     keeps = parse_milestone_keeps(seats_markdown)
-    broken = serves_problems(serves, sections) + keeps_problems(keeps, sections)
-    prunable, finished, awaiting = split_orphans(serves, sections, keeps, rows)
-    orphans = prunable + finished + awaiting
+    not_bet = parse_milestone_not_bet(seats_markdown)
+    broken = (serves_problems(serves, sections) + keeps_problems(keeps, sections)
+              + not_bet_problems(not_bet, serves, keeps))
+    prunable, finished, awaiting, declared = split_orphans(
+        serves, sections, keeps, rows, not_bet,
+        today or datetime.date.today())
+    orphans = prunable + finished + awaiting + declared
     unpointed = unpointed_goals(serves, keeps, sections)
     unseated = [] if rows is None else task_seat_problems(rows, serves)
     unplaced = [] if rows is None else task_seat_orphans(rows)
@@ -184,6 +189,15 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
             "either: every row under these is closed, so retiring the "
             "milestone drops no open work:")
         for line in finished:
+            lines.append(f"  {line}")
+    if declared:
+        lines.append(
+            f"NOT BET THIS PERIOD ({len(declared)}) -- also orphans under "
+            "rule 4, and the one group of them that is not a question: the "
+            "Not bet column records that you already decided against "
+            "betting on these, and the decision comes back here when its "
+            "period passes:")
+        for line in declared:
             lines.append(f"  {line}")
     if awaiting:
         lines.append(
@@ -306,7 +320,8 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
                  f"{len(orphans)} orphan(s)"
                  + (f" ({len(prunable)} pruning signal, "
                     f"{len(finished)} with nothing left to keep, "
-                    f"{len(awaiting)} awaiting project goals)"
+                    f"{len(awaiting)} awaiting project goals, "
+                    f"{len(declared)} not bet this period)"
                     if orphans else "") + ", "
                  f"{len(unpointed)} unpointed goal(s), "
                  f"{len(breaches)} KPI(s) out of bounds, "
@@ -481,14 +496,17 @@ def main(argv=None):
         # when the orphan list is the thing you came for, and four
         # pruning signals interleaved with thirty-two seats that have
         # nothing to serve yet is the state the split fixed in `report`.
-        prunable, finished, awaiting = split_orphans(
+        prunable, finished, awaiting, declared = split_orphans(
             parse_milestone_serves(seats), parse_project_goals(goals),
-            parse_milestone_keeps(seats))
+            parse_milestone_keeps(seats), None,
+            parse_milestone_not_bet(seats), datetime.date.today())
         for line in prunable:
             print(line)
         for line in finished:
             print(line)
         for line in awaiting:
+            print(line)
+        for line in declared:
             print(line)
         return 0
     # Fetched here rather than beside the two documents so `--orphans`, which
