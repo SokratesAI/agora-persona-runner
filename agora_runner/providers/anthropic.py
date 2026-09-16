@@ -3,7 +3,8 @@
 import base64
 import json
 
-from agora_runner.config import ANTHROPIC_API_KEY, ANTHROPIC_MAX_OUTPUT_TOKENS, ANTHROPIC_NO_THINKING_TOGGLE, TOOL_ROUNDS_MAX
+from agora_runner.config import (ANTHROPIC_API_KEY, ANTHROPIC_MAX_OUTPUT_TOKENS, ANTHROPIC_NO_THINKING_TOGGLE,
+                                 ANTHROPIC_TURN_TOKEN_CEILING, TOOL_ROUNDS_MAX)
 from agora_runner.log import log, debug_log
 from agora_runner.http_util import http_json, fetch_attachment_bytes
 from agora_runner.tools_schemas import client_tool_schemas
@@ -35,6 +36,12 @@ def _anthropic_content(message):
     if not blocks:
         blocks.append({"type": "text", "text": ""})
     return blocks
+
+
+def _billed_tokens(resp):
+    usage = resp.get("usage") or {}
+    return sum(int(usage.get(key) or 0) for key in (
+        "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
 
 
 def anthropic_generate(model_id, thinking, system, history, caps, persona, conversation_id, on_text=None,
@@ -84,6 +91,7 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
         headers["anthropic-beta"] = ",".join(betas)
 
     messages = [{"role": m["role"], "content": _anthropic_content(m)} for m in history]
+    billed = 0
     for _round in range(TOOL_ROUNDS_MAX + 1):
         final_round = _round == TOOL_ROUNDS_MAX
         body = {
@@ -149,6 +157,21 @@ def anthropic_generate(model_id, thinking, system, history, caps, persona, conve
             # Content passed back verbatim — required for thinking blocks.
             messages.append({"role": "assistant", "content": resp["content"]})
             messages.append({"role": "user", "content": results})
+            billed += _billed_tokens(resp)
+            if billed >= ANTHROPIC_TURN_TOKEN_CEILING:
+                # Ends the turn with a reply rather than raising: a raised turn
+                # is retried by conversations.py (3 at once, then ~15 a day),
+                # and every retry would bill up to the ceiling again.
+                notice = (
+                    f"Stopped before round {_round + 1}: this turn on the metered API has billed "
+                    f"{billed:,} tokens, past its ceiling of {ANTHROPIC_TURN_TOKEN_CEILING:,} "
+                    f"(ANTHROPIC_TURN_TOKEN_CEILING). Move this persona to 'claude-cli:{model_id}' "
+                    f"to run long tool loops without spending the prepaid balance."
+                )
+                log(f"anthropic turn ceiling: model={model_id} billed={billed} rounds={_round + 1}")
+                if on_text:
+                    on_text(notice, True)
+                return notice
             continue
 
         # Join every text block, not just the first — a server-side tool
