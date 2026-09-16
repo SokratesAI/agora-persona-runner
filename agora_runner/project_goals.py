@@ -1226,15 +1226,73 @@ def _thread_silence(objectives, thread_silence):
     return " in " + "; ".join(said)
 
 
+def match_thread_id(cid, ids):
+    """The one id this document's `conversation:` resolves to, or None.
+
+    The document writes an id in full or as its leading 8 characters --
+    `0af15d7d` and `0256140f-1b68-437b-b1c7-6a4267c43e05` both appear today
+    -- so neither an equality test nor a prefix test alone finds every one.
+    An ambiguous prefix names no single thread and resolves to nothing rather
+    than to whichever one sorted first.
+    """
+    cid = (cid or "").strip()
+    if not cid:
+        return None
+    if cid in ids:
+        return cid
+    matches = [key for key in ids if key.startswith(cid) or cid.startswith(key)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _silence_for(cid, thread_silence):
     """The document writes an id in full or as its leading 8 characters."""
-    if cid in thread_silence:
-        return thread_silence[cid]
-    matches = [hours for key, hours in thread_silence.items()
-               if key.startswith(cid) or cid.startswith(key)]
-    # An ambiguous prefix names no single thread, so it resolves to nothing
-    # rather than to whichever one sorted first.
-    return matches[0] if len(matches) == 1 else None
+    key = match_thread_id(cid, thread_silence)
+    return thread_silence[key] if key is not None else None
+
+
+def discussion_threads(sections):
+    """Which conversation each project is still arguing its goals in.
+
+    `undecided_goals` above turns the same state into prose for a human.
+    This returns it as data, because a second instrument needs to reconcile
+    against it: `tools.ask_watch` reported **0 questions waiting on him**
+    on 2026-09-16 while every one of the eleven objectives here read
+    `discussing` and twenty-five key results sat unanswered in the threads
+    they name. Both sentences were true of what each tool measured, and
+    together they are a loop that cannot see the one thing gating it -- an
+    ask thread is tagged `nova:needs-input` and a goal discussion is not, so
+    the tool built to find open questions was looking at the wrong ten
+    threads.
+
+    Returns a list of `(project, conversation, pending)`, sorted by project.
+    `conversation` is the id exactly as the document writes it, which may be
+    a prefix -- resolve it with `match_thread_id`. `conversation` is `""`
+    when the objective names none, which is a project being argued nowhere;
+    that is `undecided_goals`'s finding and is returned here rather than
+    dropped so a caller counting projects cannot silently miss one.
+    `pending` is how many key results in that project are still undecided.
+    """
+    out = []
+    for key in sorted(sections):
+        section = sections[key]
+        name = section.get("project", key)
+        objectives = _objectives(section)
+        if not objectives:
+            continue
+        undecided = [o for o in objectives if _is_undecided(o)]
+        pending = [row for row in section.get("keyResults", ())
+                   if _is_undecided(row)]
+        if not undecided and not pending:
+            continue
+        # The objective carries the conversation; a key result does not have
+        # its own. When the objective is settled and only key results are
+        # still open, the thread it was settled in is still where they are
+        # being argued, so fall back to any objective in the section.
+        named = [o for o in (undecided or objectives)
+                 if (o.get("conversation") or "").strip()]
+        cid = (named[0].get("conversation") or "").strip() if named else ""
+        out.append((name, cid, len(pending)))
+    return out
 
 
 def _is_undecided(block):

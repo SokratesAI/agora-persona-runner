@@ -78,6 +78,29 @@ posted only while it is audible, so the thread's newest message is then
 outside quiet hours and the predicate is false for good. It fires once per
 silenced ask and cannot loop.
 
+**A goal discussion is a question waiting on him, and this could not see
+one.** On 2026-09-16 this printed `0 open ask(s) still waiting on him` while
+`project_goals_check` printed eleven of eleven projects still discussing
+their objective and twenty-five key results unanswered. Neither tool was
+lying: `needs_input` tags a thread `nova:needs-input`, a goal conversation is
+opened by `project_goal_thread` and is not tagged, so `_is_ask` was false for
+every one of them. A dead instrument and an honest all-clear print the same
+0, and this loop read that 0 for days.
+
+So the threads named by `project-goals.md` are swept too, and **the two
+counts have to reconcile**: every project still `discussing` is either a
+thread judged here, a project arguing in no thread at all, or a pointer this
+cannot resolve -- and the summary line says which, so the number of open
+questions can never be smaller than the number of undecided projects without
+saying why.
+
+**A goal thread is never `settled`, and that is the difference from an ask.**
+An ask is finished when he answers and a cycle replies; a goal is finished
+when the document says `agreed` or `struck`. A thread where he wrote and I
+wrote back still has an undecided objective hanging off it, so it counts as
+waiting on him until the document moves. Reading it as settled is exactly the
+mistake that produced the 0.
+
 Exit codes: 0 nothing of mine is unanswered, 1 a thread could not be read (no
 instrument is not no answer), 2 something needs a cycle to act -- he has
 answered and nobody picked it up, an ask is waiting that never reached his
@@ -85,6 +108,8 @@ phone, or he has been writing in another thread while an ask of mine waits.
 """
 
 import argparse
+import pathlib
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -97,6 +122,12 @@ _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 from agora_runner.http_util import agora_get, agora_internal
 from agora_runner.needs_input import (
     NAME_PREFIX, NEEDS_INPUT_TAG, SENDER, push_held)
+from agora_runner.project_goals import (
+    discussion_threads, match_thread_id, parse_project_goals)
+
+# Where the goals this loop is still arguing with him are written down.
+GOALS_PATH = "projects/sokrates/projects/nova/project-goals.md"
+VAULT_CLIENT = "/app/bridge/vault_tool.py"
 
 
 def _is_ask(row):
@@ -324,7 +355,45 @@ def spoken_elsewhere(others, since, now=None):
     return hits, unreadable
 
 
-def check(now=None):
+def read_goals(path=None):
+    """The `project-goals.md` markdown, or (None, reason, from_this_pod).
+
+    `from_this_pod` is False when the vault client is simply not on this
+    filesystem -- `ask_watch` runs inside `preflight` on the bridge pod,
+    where it is, and a cycle running this by hand from the runner pod has no
+    vault at all. That is `nas_health`'s `CANNOT SEE FROM THIS POD` and it
+    deliberately does not raise: no pull request fixes running on the wrong
+    pod. A client that *is* there and failed is a real unreadable.
+    """
+    if path:
+        try:
+            return pathlib.Path(path).read_text(), None, True
+        except OSError as exc:
+            return None, f"{path}: {exc}", True
+    if not pathlib.Path(VAULT_CLIENT).exists():
+        return None, "no vault client on this pod", False
+    try:
+        done = subprocess.run(
+            [sys.executable, VAULT_CLIENT, "get", GOALS_PATH],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"vault_tool.py get failed: {exc}", True
+    if done.returncode != 0:
+        return None, f"vault_tool.py exited {done.returncode}", True
+    text = done.stdout
+    # The vault client answers a missing document with a marker and exit 0.
+    if not text.strip() or "[not found]" in text[:200]:
+        return None, f"{GOALS_PATH} came back empty or missing", True
+    return text, None, True
+
+
+def goal_discussions(markdown):
+    """`(project, cid_as_written, pending_key_results)` per undecided project."""
+    return discussion_threads(parse_project_goals(markdown))
+
+
+def check(now=None, goals_markdown=None, goals_problem=None,
+          goals_unreadable=None):
     """Returns (answered, waiting, silenced, settled, unreadable, elsewhere).
 
     `elsewhere` is where HE has been talking while an ask of mine waits -- see
@@ -340,14 +409,39 @@ def check(now=None):
     status, body = agora_get("/conversations?active=true")
     if status != 200:
         return None, None, None, None, [
-            ("(the listing)", "", f"conversation listing returned HTTP {status}")], []
+            ("(the listing)", "", f"conversation listing returned HTTP {status}")], [], None
 
     answered, waiting, silenced, settled, unreadable = [], [], [], [], []
     others = []
+    rows_by_id = {}
     for row in (body or {}).get("conversations") or []:
         cid = row.get("id")
-        if not cid or row.get("archived"):
+        if cid and not row.get("archived"):
+            rows_by_id[str(cid)] = row
+
+    # Resolve each undecided project onto a live thread first, so the sweep
+    # below knows which conversations carry a goal argument rather than
+    # discovering it per row.
+    goal_rows = goal_discussions(goals_markdown) if goals_markdown else []
+    goals = None
+    if goals_markdown or goals_problem or goals_unreadable:
+        goals = {"problem": goals_problem, "unreadable": goals_unreadable,
+                 "rows": goal_rows, "unargued": [], "unresolved": [],
+                 "by_thread": {}}
+    for project, written, pending in goal_rows if goals else ():
+        if not written:
+            goals["unargued"].append((project, pending))
             continue
+        resolved = match_thread_id(written, rows_by_id)
+        if resolved is None:
+            goals["unresolved"].append((project, written, pending))
+            continue
+        goals["by_thread"].setdefault(resolved, []).append((project, pending))
+
+    by_thread = goals["by_thread"] if goals else {}
+    for cid, row in rows_by_id.items():
+        if cid in by_thread:
+            continue  # judged below, on the stricter goal predicate
         if not _is_ask(row):
             others.append(row)
             continue
@@ -373,6 +467,29 @@ def check(now=None):
         else:
             waiting.append((name, cid, age))
 
+    # A goal thread is judged on the document's status, not on who spoke
+    # last: `agreed`/`struck` is the only thing that closes it, so there is
+    # no `settled` bucket here. See the module docstring.
+    for cid, projects in sorted(by_thread.items()):
+        row = rows_by_id[cid]
+        name = row.get("name") or "(unnamed)"
+        label = f"{name} — goals: " + ", ".join(p for p, _n in projects)
+        rows, problem = messages(cid)
+        if problem:
+            unreadable.append((label, cid, problem))
+            continue
+        newest = rows[-1]
+        sender = str(newest.get("sender") or "").strip()
+        age = _age_hours(newest.get("ts"), now)
+        if not sender:
+            unreadable.append((label, cid, "the newest message names no sender"))
+        elif sender != SENDER:
+            answered.append((label, cid, sender, age, str(newest.get("text") or "")))
+        elif in_quiet_hours(_parse_ts(newest.get("ts"))):
+            silenced.append((label, cid, age))
+        else:
+            waiting.append((label, cid, age))
+
     # Only once something is genuinely waiting, and only back to the oldest
     # thing that is waiting: a closed-out ask is not evidence he owes me a word.
     elsewhere = []
@@ -382,7 +499,7 @@ def check(now=None):
         hits, could_not_read = spoken_elsewhere(others, since, now)
         elsewhere = hits
         unreadable.extend(could_not_read)
-    return answered, waiting, silenced, settled, unreadable, elsewhere
+    return answered, waiting, silenced, settled, unreadable, elsewhere, goals
 
 
 def _age(hours):
@@ -393,8 +510,53 @@ def _age(hours):
     return f"{hours:.1f}h ago"
 
 
+def _reconcile(goals, out):
+    """Print what the goals document says, and return (clause, blind).
+
+    The clause goes on every summary line, including the clean one, because
+    the failure this exists to end is a summary that reads `0 waiting on him`
+    while eleven projects are undecided. A count that is only printed when it
+    is interesting is a count nobody can trust when it says nothing.
+
+    `blind` is True when the document was there and could not be read, or
+    when a project points at a thread this cannot resolve. Both are no
+    instrument rather than no answer.
+    """
+    if goals is None:
+        return "", False
+    if goals.get("problem"):
+        # The vault client is simply absent on the runner pod; say so and do
+        # not raise, the same call `nas_health` makes.
+        print(f"CANNOT SEE THE GOALS — {goals['problem']}", file=out)
+        return " Goals not read, so nothing here reconciles against them.", False
+    if goals.get("unreadable"):
+        print(f"COULD NOT READ THE GOALS — {goals['unreadable']}", file=out)
+        return " Goals unreadable.", True
+
+    for project, written, pending in goals.get("unresolved", ()):
+        print(f"CANNOT SEE THE THREAD — {project}", file=out)
+        print(f"  its objective names {written}, which the active "
+              f"conversation listing does not carry; {pending} key result(s) "
+              "are still undecided and nothing here can say whether he has "
+              "answered", file=out)
+    for project, pending in goals.get("unargued", ()):
+        print(f"ARGUED NOWHERE — {project}", file=out)
+        print(f"  still discussing ({pending} key result(s)) and its "
+              "objective names no conversation, so there is no thread for "
+              "him to answer in. project_goals_check owns this one; opening "
+              "the thread is the fix.", file=out)
+
+    undecided = len(goals.get("rows", ()))
+    judged = len(goals.get("by_thread", {}))
+    clause = (f" Of {undecided} project(s) still discussing their goals, "
+              f"{judged} thread(s) were judged above, "
+              f"{len(goals.get('unargued', ()))} are argued nowhere and "
+              f"{len(goals.get('unresolved', ()))} name a thread I cannot see.")
+    return clause, bool(goals.get("unresolved"))
+
+
 def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
-           out=sys.stdout, do_nudge=False, now=None):
+           goals=None, out=sys.stdout, do_nudge=False, now=None):
     if answered is None:
         for name, _cid, problem in unreadable:
             print(f"COULD NOT READ {name}: {problem}", file=out)
@@ -440,15 +602,19 @@ def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
         print("  Read that thread before writing that he is silent — the "
               "answer to an ask of mine has landed there before.", file=out)
 
+    reconcile, blind = _reconcile(goals, out)
+
     if unreadable:
         print(f"Could not read {len(unreadable)} open ask(s) — that is no "
               "instrument, not no answer.", file=out)
         return 1
+    if blind:
+        return 1
     if elsewhere and not answered and not silenced:
         print(f"Nothing he answered is sitting unread in an ask thread, but he "
               f"has written {len(elsewhere)} time(s) elsewhere since the oldest "
-              f"of {len(waiting)} open ask(s) — go and read those threads.",
-              file=out)
+              f"of {len(waiting)} open ask(s) — go and read those "
+              f"threads.{reconcile}", file=out)
         return 2
     if answered or silenced:
         print(f"{len(answered)} of my open ask(s) have an answer nobody has "
@@ -456,11 +622,11 @@ def report(answered, waiting, silenced, settled, unreadable, elsewhere=(),
               f"{len(waiting)} still waiting on him and "
               f"{len(settled)} answered and closed out. He has written "
               f"{len(elsewhere)} time(s) in another thread since the oldest "
-              "open ask.", file=out)
+              f"open ask.{reconcile}", file=out)
         return 2
     print(f"Nothing he answered is sitting unread; {len(waiting)} open ask(s) "
-          f"still waiting on him and {len(settled)} answered and closed out.",
-          file=out)
+          f"still waiting on him and {len(settled)} answered and closed "
+          f"out.{reconcile}", file=out)
     return 0
 
 
@@ -475,6 +641,10 @@ def main(argv=None):
         help="close an ask he answered in some other thread: post why, then "
              "archive it so it stops reading as waiting. Needs --because.")
     parser.add_argument(
+        "--goals", metavar="PATH", default=None,
+        help="read project-goals.md from a local path instead of the vault, "
+             "so this can be run from a pod with no vault client")
+    parser.add_argument(
         "--because", metavar="TEXT", default="",
         help="one line for --resolve: where he answered and what it changed")
     args = parser.parse_args(argv)
@@ -486,7 +656,12 @@ def main(argv=None):
         ok, detail = resolve(args.resolve, args.because, rows)
         print(f"{'resolved' if ok else 'NOT resolved'} — {detail}")
         return 0 if ok else 1
-    return report(*check(), do_nudge=args.nudge)
+    markdown, problem, from_this_pod = read_goals(args.goals)
+    return report(
+        *check(goals_markdown=markdown,
+               goals_problem=None if from_this_pod else problem,
+               goals_unreadable=problem if from_this_pod else None),
+        do_nudge=args.nudge)
 
 
 if __name__ == "__main__":
