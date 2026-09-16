@@ -393,6 +393,62 @@ def _print_orphans(registry):
         print(f"  {name}")
 
 
+# A directory younger than one turn may be a demo a cycle is still writing
+# before it calls `start`, so it has no row yet. A turn is killed at 45
+# minutes, so a directory untouched for longer belongs to no turn in flight.
+ORPHAN_SETTLE_SECONDS = 45 * 60
+
+
+def restore_root():
+    """Where a swept orphan goes: `restore/demos` beside `DURABLE_ROOT`.
+
+    `restore/` is the one directory `tools.tidy_workspace` never touches, so
+    a moved demo stays put until somebody decides otherwise.
+    """
+    return os.path.join(os.path.dirname(os.path.realpath(DURABLE_ROOT)),
+                        "restore", "demos")
+
+
+def _newest_mtime(path):
+    newest = os.path.getmtime(path)
+    for folder, _dirs, files in os.walk(path):
+        for name in [folder] + [os.path.join(folder, f) for f in files]:
+            try:
+                newest = max(newest, os.path.getmtime(name))
+            except OSError:
+                continue
+    return newest
+
+
+def archive_orphans(registry, now=None):
+    """Move every settled orphan directory into `restore_root()`.
+
+    Key result `demos-kr-no-litter`: a stopped demo leaves its files, and
+    `discard` was the only way to remove them, which nothing ran. `reap`
+    runs every cycle, so the sweep lives here. It moves rather than deletes,
+    so any of them is one `mv` back. Returns `(moved, kept)` name lists.
+    """
+    now = time.time() if now is None else now
+    moved, kept = [], []
+    if not entries(registry):
+        # An empty registry and a registry read that came back as nothing
+        # look the same here, and the second would make every running
+        # demo's directory an orphan and move files out from under it.
+        return moved, orphan_dirs(registry, durable_dirs())
+    for name in orphan_dirs(registry, durable_dirs()):
+        path = os.path.join(DURABLE_ROOT, name)
+        if discard_reason(path) or now - _newest_mtime(path) < ORPHAN_SETTLE_SECONDS:
+            kept.append(name)
+            continue
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+        target = os.path.join(restore_root(), f"{name}-{stamp}")
+        os.makedirs(restore_root(), exist_ok=True)
+        shutil.move(path, target)
+        moved.append(name)
+        print(f"{name}: belonged to no running demo; moved to {target}")
+    return moved, kept
+
+
 def cmd_discard(args):
     """Throw a demo away: stop it, drop its row, and delete its files.
 
@@ -558,6 +614,12 @@ def cmd_reap(args):
     """
     registry, rev = _read_registry()
     here = pod_ip()
+    try:
+        archive_orphans(registry)
+    except OSError as e:
+        # Litter is the smaller problem; a port held by a dead demo is the
+        # one this command exists for, so a failed move must not stop it.
+        print(f"could not move orphan demo directories: {e}", file=sys.stderr)
     # Revive before judging. A `POD_GONE` row is the one case where the demo
     # is not actually gone -- only the process is -- so it gets a restart
     # here before anything collects it, and only the ones that cannot be

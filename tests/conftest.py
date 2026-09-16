@@ -153,6 +153,20 @@ def _clear_nova_site_cache():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_demo_root(monkeypatch, tmp_path):
+    """No test may sweep the real `/data/workspace/demos`.
+
+    `tools.demo reap` moves orphan demo directories into `restore/`, and
+    the reap tests hand it registries of made-up rows, so against the real
+    root every live demo reads as an orphan. Measured on the first run of
+    the change that added the sweep: it moved all eight directories there,
+    three of them serving. Tests that need a root patch their own over this.
+    """
+    from tools import demo as demo_tool
+    monkeypatch.setattr(demo_tool, "DURABLE_ROOT", str(tmp_path / "no-real-demos"))
+
+
+@pytest.fixture(autouse=True)
 def _no_ask_push_log_writes(monkeypatch):
     """No test's ask or nudge may write its push outcome to the vault.
 
