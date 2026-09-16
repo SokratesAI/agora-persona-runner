@@ -18,6 +18,7 @@ REAL = [FOLDER + n for n in (
     "platform-scan-2026-09-05.md",
     "platform-scan-2026-09-08.md",
     "concurrent-cycles-duplicate-work-2026-09-14.md",
+    "config-repo-anti-pattern-audit-2026-09-03.md",
 )]
 
 NAS_CAPTURE = ("Go through the linuxserver repositories and see what else is "
@@ -92,3 +93,18 @@ def test_index_lists_every_slug():
     assert len(out.splitlines()) == len(REAL)
     assert "nas-k3s-2026-08-29" in out
     assert ".md" not in out
+
+
+def test_two_shared_words_are_not_enough_on_their_own():
+    """The threshold is half the document's subject, and it has to bite.
+
+    `config-repo-anti-pattern-audit` carries five subject words, so a topic
+    sharing two of them covers 40% of it -- related, not the same question.
+    Without a real threshold every two-word brush-past reads as
+    ALREADY RESEARCHED, and a cycle stops researching something nobody has.
+    """
+    rows = related("config audit", REAL)
+    hit = next(r for r in rows if "config-repo" in r[2])
+    assert hit[0] == pytest.approx(0.4)
+    assert len(hit[1]) == 2
+    assert not is_strong(hit)
