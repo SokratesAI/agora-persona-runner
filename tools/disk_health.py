@@ -37,8 +37,12 @@ A volume that reports its own capacity is judged against its own capacity,
 so a quota-backed claim added tomorrow is covered with no edit here.
 
 **The threshold is the kubelet's, plus a margin.** The kubelet begins
-evicting pods at `nodefs.available<10%` and garbage-collecting images at
-`imagefs.available<15%` (k3s ships both defaults). Picking a number of my
+evicting pods at its `evictionHard` `nodefs.available` and garbage-collecting
+images at `100 - imageGCHighThresholdPercent` free, and both are read per node
+off `/api/v1/nodes/<node>/proxy/configz`. Until 2026-09-16 this said "k3s
+ships 10% and 15%" and hardcoded them; this cluster runs 5% eviction, so every
+projection named an eviction date five points early. The upstream defaults
+remain only as a fallback that prints itself. Picking a number of my
 own would be a number I invented; this raises `MARGIN_PCT` above the point
 at which the cluster itself starts taking action, so the check fires while
 there is still room to act rather than during the eviction.
@@ -139,10 +143,13 @@ import urllib.request
 
 from tools import oneoff_job, oom_history
 
-#: The kubelet's own default eviction thresholds, as fractions of capacity
-#: that must remain *available*. These are k3s/kubelet defaults, not a
-#: judgement of mine: `nodefs.available<10%` evicts pods, and
-#: `imagefs.available<15%` garbage-collects images.
+#: The kubelet's upstream defaults, as percentages of capacity that must remain
+#: *available*: `nodefs.available<10%` evicts pods, and images are
+#: garbage-collected once 85% is used (15% free). These are only the FALLBACK.
+#: Each node's own values are read off its kubelet (`read_thresholds`), because
+#: this cluster does not run the defaults: measured 2026-09-16 on both server1
+#: and server2, `evictionHard` is `nodefs.available: 5%`, so a projection to
+#: "10% free, pods are evicted" was quoting a date five points too early.
 EVICTION_PCT = {"nodefs": 10.0, "imagefs": 15.0}
 
 #: How far above the cluster's own action point to raise, so a cycle sees
@@ -280,7 +287,33 @@ def read_trends(base=PROMETHEUS, opener=urllib.request.urlopen, hours=TREND_HOUR
     return trends
 
 
-def days_to_eviction(filesystem, kind, slope_per_day):
+def read_thresholds(node, runner=subprocess.run):
+    """This node's own action points, off the kubelet's live configuration.
+
+    Returns `{"nodefs": <pct free that evicts pods>, "imagefs": <pct free that
+    garbage-collects images>}`. Raises OSError when configz is unreadable or
+    does not carry a percentage for either one, so the caller falls back to
+    `EVICTION_PCT` out loud rather than half-reading a config.
+    """
+    done = runner(
+        ["kubectl", "get", "--raw", "/api/v1/nodes/%s/proxy/configz" % node],
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode != 0:
+        raise OSError((done.stderr or "").strip() or "kubectl get --raw failed")
+    try:
+        config = json.loads(done.stdout)["kubeletconfig"]
+        hard = config["evictionHard"]["nodefs.available"]
+        gc_high = float(config["imageGCHighThresholdPercent"])
+        if not hard.endswith("%"):
+            raise ValueError("nodefs.available is %r, not a percentage" % hard)
+        return {"nodefs": float(hard[:-1]), "imagefs": 100.0 - gc_high}
+    except (ValueError, KeyError, TypeError) as exc:
+        raise OSError("the kubelet's configz carried no usable threshold: %s" % exc)
+
+
+def days_to_eviction(filesystem, kind, slope_per_day, thresholds=None):
     """How long until this filesystem reaches the kubelet's own action point.
 
     None when it is not heading there — a flat or shrinking disk has no date,
@@ -292,14 +325,14 @@ def days_to_eviction(filesystem, kind, slope_per_day):
     capacity = filesystem.get("capacityBytes")
     if not available or not capacity:
         return None
-    floor = capacity * EVICTION_PCT[kind] / 100.0
+    floor = capacity * (thresholds or EVICTION_PCT)[kind] / 100.0
     headroom = available - floor
     if headroom <= 0:
         return 0.0
     return headroom / slope_per_day
 
 
-def report_trend(node, kind, filesystem, trend, out=print, also=()):
+def report_trend(node, kind, filesystem, trend, out=print, also=(), thresholds=None):
     """One TREND line, or one line saying why there is not one.
 
     `also` names the other action points on the *same* disk. On this estate
@@ -308,6 +341,7 @@ def report_trend(node, kind, filesystem, trend, out=print, also=()):
     only to the eviction point would quote the later of two dates as if it
     were the first thing that happens.
     """
+    thresholds = thresholds or EVICTION_PCT
     if trend is None:
         out(
             "  NO TREND   %s %s — prometheus has no stored series for this node, so this is current state only"
@@ -327,10 +361,10 @@ def report_trend(node, kind, filesystem, trend, out=print, also=()):
         "flat or shrinking (%+.2fGiB/day)" % per_day
     )
     tail = ""
-    days = days_to_eviction(filesystem, kind, trend["slope_per_day"])
+    days = days_to_eviction(filesystem, kind, trend["slope_per_day"], thresholds)
     if days is None:
         tail = " — not heading for the %.1f%%-free point the kubelet acts at" % (
-            EVICTION_PCT[kind],
+            thresholds[kind],
         )
     elif span < TREND_MIN_SPAN_HOURS:
         tail = (
@@ -338,11 +372,13 @@ def report_trend(node, kind, filesystem, trend, out=print, also=()):
             % TREND_MIN_SPAN_HOURS
         )
     else:
-        points = [(EVICTION_PCT[kind], days, "pods are evicted")]
+        points = [(thresholds[kind], days, "pods are evicted")]
         for other, label in also:
-            other_days = days_to_eviction(filesystem, other, trend["slope_per_day"])
+            other_days = days_to_eviction(
+                filesystem, other, trend["slope_per_day"], thresholds
+            )
             if other_days is not None:
-                points.append((EVICTION_PCT[other], other_days, label))
+                points.append((thresholds[other], other_days, label))
         points.sort(key=lambda point: point[1])
         tail = " — " + ", then ".join(
             "%.1f day(s) to the %.1f%%-free point %s" % (day, pct, label)
@@ -602,9 +638,9 @@ def available_pct(filesystem):
     return 100.0 * available / capacity
 
 
-def raises_at(kind):
+def raises_at(kind, thresholds=None):
     """The available-percent below which `kind` is a finding."""
-    return EVICTION_PCT[kind] + MARGIN_PCT
+    return (thresholds or EVICTION_PCT)[kind] + MARGIN_PCT
 
 
 def is_capped(volume, filesystems):
@@ -982,8 +1018,10 @@ def report_host_breakdown(node, sizes, out=print, remainder=None):
 
 
 def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=None,
-           trend=None, trend_read=True, images=None, images_error=None):
+           trend=None, trend_read=True, images=None, images_error=None,
+           thresholds=None):
     """Print one node's verdict. Returns the number of findings on it."""
+    thresholds = thresholds or EVICTION_PCT
     findings = 0
     filling = False
     shared = shares_one_filesystem(filesystems)
@@ -1013,12 +1051,12 @@ def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=No
             free,
             _gib(filesystem.get("usedBytes")),
         ) + same
-        if free < raises_at(kind):
+        if free < raises_at(kind, thresholds):
             findings += 1
             filling = True
             out(
                 "  FILLING    %s — under %.1f%% free, and the kubelet acts at %.1f%%"
-                % (line, raises_at(kind), EVICTION_PCT[kind])
+                % (line, raises_at(kind, thresholds), thresholds[kind])
             )
         else:
             out("  ok         %s" % line)
@@ -1029,7 +1067,8 @@ def report(node, filesystems, volumes, out=print, breakdown=None, host_reader=No
             also = ()
             if shared and filesystems.get("imagefs") is not None:
                 also = (("imagefs", "images are garbage-collected"),)
-            report_trend(node, "nodefs", nodefs, trend, out=out, also=also)
+            report_trend(node, "nodefs", nodefs, trend, out=out, also=also,
+                         thresholds=thresholds)
             if not shared and filesystems.get("imagefs") is not None:
                 out(
                     "  NO TREND   %s imagefs — a separate disk from nodefs, and the stored series only covers `/`"
@@ -1183,6 +1222,18 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None,
                 capped += 1
             elif state is False:
                 uncapped += 1
+        try:
+            thresholds = read_thresholds(node, runner=runner)
+            out(
+                "  THRESHOLDS %s — read off its kubelet: pods are evicted at %.1f%% free, images are garbage-collected at %.1f%% free"
+                % (node, thresholds["nodefs"], thresholds["imagefs"])
+            )
+        except OSError as exc:
+            thresholds = None
+            out(
+                "  THRESHOLDS %s — its kubelet config was unreadable (%s), so this node is judged against the upstream defaults, %.1f%% and %.1f%%, which this cluster is not known to run"
+                % (node, exc, EVICTION_PCT["nodefs"], EVICTION_PCT["imagefs"])
+            )
         images = None
         images_error = None
         try:
@@ -1204,6 +1255,7 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None,
             trend_read=trend_read,
             images=images,
             images_error=images_error,
+            thresholds=thresholds,
         )
 
     out("== claims no Pod mounts")
@@ -1230,8 +1282,8 @@ def main(argv=None, runner=subprocess.run, out=print, host_reader=None,
     # the other order: the trend disclaimer is the same sentence on every run,
     # so the roster row could never vary with the result.
     out(
-        "Raises when a filesystem has less than %.1f%% free — that is the kubelet's own eviction point plus %.1f%%."
-        % (raises_at("nodefs"), MARGIN_PCT)
+        "Raises when a filesystem is within %.1f%% of the free-space point its node's kubelet acts at (each node's THRESHOLDS line says where that is)."
+        % MARGIN_PCT
     )
     if uncapped:
         out(

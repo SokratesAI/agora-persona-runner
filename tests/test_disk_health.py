@@ -1320,3 +1320,52 @@ def test_the_image_line_ranks_by_bytes_and_stops_at_the_top_few():
     assert "9.0GiB x1 ghcr.io/x/big, 1.0GiB x1 ghcr.io/x/mid —" in line
     assert "ghcr.io/x/many" not in line
     assert "ghcr.io/x/small" not in line
+
+
+def _configz(evict="5%", gc_high=85):
+    return {"kubeletconfig": {"evictionHard": {"nodefs.available": evict, "imagefs.available": evict},
+                              "imageGCHighThresholdPercent": gc_high}}
+
+
+def test_read_thresholds_takes_the_nodes_own_kubelet_values():
+    def run(argv, capture_output=False, text=False):
+        assert argv == ["kubectl", "get", "--raw", "/api/v1/nodes/server2/proxy/configz"]
+        return subprocess.CompletedProcess(argv, 0, json.dumps(_configz()), "")
+
+    assert disk_health.read_thresholds("server2", runner=run) == {"nodefs": 5.0, "imagefs": 15.0}
+
+
+def test_read_thresholds_refuses_a_config_it_cannot_read_rather_than_half_reading_it():
+    for body in ({"kubeletconfig": {"imageGCHighThresholdPercent": 85}},
+                 _configz(evict="1Gi"), {"not": "configz"}):
+        def run(argv, capture_output=False, text=False, body=body):
+            return subprocess.CompletedProcess(argv, 0, json.dumps(body), "")
+        with pytest.raises(OSError):
+            disk_health.read_thresholds("server2", runner=run)
+
+
+def test_a_node_is_judged_against_its_own_eviction_point_not_the_default():
+    """12% free: a finding against the upstream 10%+5%, not against this cluster's 5%+5%."""
+    summary = {"node": {"fs": {"capacityBytes": 100 * GIB, "availableBytes": 12 * GIB, "usedBytes": 88 * GIB}},
+               "pods": []}
+    base = _runner(summaries={"server1": summary})
+
+    def run(argv, capture_output=False, text=False):
+        if argv[:3] == ["kubectl", "get", "--raw"] and argv[3].endswith("/configz"):
+            return subprocess.CompletedProcess(argv, 0, json.dumps(_configz()), "")
+        return base(argv, capture_output=capture_output, text=text)
+
+    printed = []
+    disk_health.main([], runner=run, out=printed.append, host_reader=_no_host_read,
+                     trend_reader=lambda: {})
+    text = "\n".join(printed)
+    assert "THRESHOLDS server1 — read off its kubelet: pods are evicted at 5.0% free" in text
+    nodefs = [line for line in printed if "server1 nodefs:" in line and "TREND" not in line]
+    assert nodefs and nodefs[0].lstrip().startswith("ok"), nodefs
+
+    fallback = []
+    disk_health.main([], runner=base, out=fallback.append, host_reader=_no_host_read,
+                     trend_reader=lambda: {})
+    assert any("upstream defaults" in line for line in fallback)
+    nodefs = [line for line in fallback if "server1 nodefs:" in line and "TREND" not in line]
+    assert nodefs and nodefs[0].lstrip().startswith("FILLING"), nodefs
