@@ -122,7 +122,8 @@ STORE_BOARDS = {"issues": "issue", "ideas": "idea"}
 SITE = "http://nova-site.agents.svc.cluster.local:8083"
 
 
-def report(goals_markdown, seats_markdown, rows=None, today=None):
+def report(goals_markdown, seats_markdown, rows=None, today=None,
+           thread_silence=None):
     """`(lines, exit code)` -- the whole judgement, no I/O.
 
     Split out from `main` so the tests drive the logic rather than a
@@ -161,7 +162,7 @@ def report(goals_markdown, seats_markdown, rows=None, today=None):
     unplaced = [] if rows is None else task_seat_orphans(rows)
     past, undated = objective_periods(
         sections, today or datetime.date.today())
-    undecided = undecided_goals(sections)
+    undecided = undecided_goals(sections, thread_silence)
     breaches = kpi_breaches(sections)
     unworked = unworked_breaches(sections, keeps, rows)
     stalled = unworked_shortfalls(sections, serves, rows)
@@ -460,6 +461,51 @@ def _rows_from_file(path):
     return payload, True
 
 
+def _fetch_thread_silence(now=None):
+    """Hours since anything was said in each Agora conversation, by id.
+
+    One listing call, not one per thread: `/conversations` already carries
+    when each was last spoken in, which is the whole question. Returns
+    `None` on any failure -- an unreachable Agora must read as no reading,
+    because the alternative is every abandoned thread quietly reporting
+    itself as freshly argued. Archived threads are included deliberately:
+    an objective pointing at an archived conversation is exactly the
+    pointer this is looking for.
+    """
+    try:
+        from agora_runner.http_util import agora_get
+    except Exception:
+        return None
+    try:
+        status, body = agora_get("/conversations")
+    except Exception:
+        return None
+    if status != 200 or not isinstance(body, dict):
+        return None
+    rows = body.get("conversations")
+    if not rows:
+        # No conversation at all is not "every thread is quiet"; it is a
+        # listing that answered without answering.
+        return None
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    silence = {}
+    for row in rows:
+        cid = str(row.get("id") or "").strip()
+        stamp = row.get("updatedAt") or row.get("lastMessageAt")
+        if not cid or not stamp:
+            continue
+        try:
+            when = datetime.datetime.fromisoformat(
+                str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=datetime.timezone.utc)
+        silence[cid] = (now - when).total_seconds() / 3600.0
+    return silence or None
+
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--goals", help="local project-goals.md instead of a fetch")
@@ -517,7 +563,8 @@ def main(argv=None):
     if not ok_rows:
         print("UNREADABLE: the boards")
         return 1
-    lines, code = report(goals, seats, rows)
+    lines, code = report(goals, seats, rows,
+                         thread_silence=_fetch_thread_silence())
     for line in lines:
         print(line)
     return code

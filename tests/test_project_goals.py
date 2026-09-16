@@ -1414,3 +1414,79 @@ def test_not_bet_on_a_seat_that_serves_something_is_a_defect():
         {("Nova", "Runner engineering"): "2026-09"}, {},
         {("Nova", "Runner engineering"): "nova-kpi-cost-per-cycle"})
     assert len(kept) == 1 and "serves or keeps something" in kept[0]
+
+
+ARGUED_IN_ONE_THREAD = """## Marcus
+
+```objective
+statement: Marcus is the app I actually train with
+status: discussing
+conversation: 0256140f-1b68-437b-b1c7-6a4267c43e05
+```
+"""
+
+
+def _argued(silence=None):
+    from agora_runner.project_goals import parse_project_goals, undecided_goals
+    return undecided_goals(parse_project_goals(ARGUED_IN_ONE_THREAD), silence)
+
+
+def test_a_thread_nobody_has_spoken_in_is_named():
+    """`discussing` plus an id is a claim that a conversation is happening.
+
+    Nine of eleven objectives named `0256140f`, a thread this loop opened by
+    mistake and left thirty hours earlier saying it was going back to the
+    other one. Nothing could see that: the check already refuses an objective
+    naming *no* conversation, and had nothing to say about one naming a dead
+    conversation.
+    """
+    assert _argued({"0256140f-1b68-437b-b1c7-6a4267c43e05": 74.0}) == [
+        "Marcus: still discussing the objective in "
+        "0256140f-1b68-437b-b1c7-6a4267c43e05, silent 3.1 day(s)"]
+
+
+def test_a_thread_spoken_in_today_is_not_named():
+    """A quiet night is not abandonment; the cutoff is a day for that reason."""
+    assert _argued({"0256140f-1b68-437b-b1c7-6a4267c43e05": 20.3}) == [
+        "Marcus: still discussing the objective"]
+
+
+def test_no_listing_makes_no_claim_about_any_thread():
+    """Agora unreachable must read as no reading.
+
+    The other direction -- silence defaulting to zero -- would report every
+    abandoned thread as freshly argued during an outage, which is the same
+    failure as a dead scanner publishing a clean 0.
+    """
+    assert _argued(None) == ["Marcus: still discussing the objective"]
+    assert _argued({}) == ["Marcus: still discussing the objective"]
+
+
+def test_an_id_the_listing_does_not_carry_is_reported_not_skipped():
+    """A pointer at a conversation that no longer exists is the louder half."""
+    assert _argued({"9999aaaa-0000-0000-0000-000000000000": 1.0}) == [
+        "Marcus: still discussing the objective in "
+        "0256140f-1b68-437b-b1c7-6a4267c43e05, which the conversation "
+        "listing does not carry"]
+
+
+def test_the_document_may_write_an_id_as_its_leading_characters():
+    """Three of the eleven objectives write an eight-character prefix."""
+    from agora_runner.project_goals import parse_project_goals, undecided_goals
+    doc = ARGUED_IN_ONE_THREAD.replace(
+        "0256140f-1b68-437b-b1c7-6a4267c43e05", "3f42afbc")
+    lines = undecided_goals(parse_project_goals(doc),
+                            {"3f42afbc-668a-45c8-8ed3-60313edd37e6": 99.0})
+    assert lines == ["Marcus: still discussing the objective in "
+                     "3f42afbc, silent 4.1 day(s)"]
+
+
+def test_an_ambiguous_prefix_resolves_to_nothing():
+    """Two threads sharing a prefix name no single thread between them."""
+    from agora_runner.project_goals import parse_project_goals, undecided_goals
+    doc = ARGUED_IN_ONE_THREAD.replace(
+        "0256140f-1b68-437b-b1c7-6a4267c43e05", "3f42afbc")
+    lines = undecided_goals(parse_project_goals(doc),
+                            {"3f42afbc-aaaa": 99.0, "3f42afbc-bbbb": 99.0})
+    assert lines == ["Marcus: still discussing the objective in "
+                     "3f42afbc, which the conversation listing does not carry"]

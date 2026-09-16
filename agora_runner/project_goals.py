@@ -114,6 +114,10 @@ KPI_FIELDS = ("id", "name", "measure", "now", "low", "high", "unit", "target")
 
 OBJECTIVE_FIELDS = ("statement", "status", "conversation", "period")
 
+#: Hours of silence after which a thread stops reading as an argument in
+#: progress. A day, because he sleeps and a quiet night is not abandonment.
+_THREAD_SILENT_HOURS = 24
+
 #: `struck` rather than `/plan`'s `declined`: he strikes an objective, and
 #: the word is his. A struck objective keeps its block, the same way a
 #: declined goal does -- a decision is worth being able to read back.
@@ -1114,7 +1118,7 @@ def objective_periods(sections, today):
     return past, undated
 
 
-def undecided_goals(sections):
+def undecided_goals(sections, thread_silence=None):
     """What is still being argued about -> a list of one line per project.
 
     Issue #227's sixth rule as he re-cut it himself, 2026-09-14 21:02:
@@ -1169,7 +1173,8 @@ def undecided_goals(sections):
             # status earlier. Reported here rather than raised: opening the
             # thread is a thing to do, not a defect in the document.
             if all((o.get("conversation") or "").strip() for o in undecided):
-                parts.append("the objective")
+                silence = _thread_silence(undecided, thread_silence)
+                parts.append("the objective" + silence)
             else:
                 parts.append(
                     "the objective, which names no conversation -- nothing "
@@ -1179,6 +1184,57 @@ def undecided_goals(sections):
                 f"{len(pending)} key result(s): " + ", ".join(pending))
         lines.append(f"{name}: still discussing " + "; ".join(parts))
     return lines
+
+
+
+def _thread_silence(objectives, thread_silence):
+    """How long the thread an objective names has gone without a message.
+
+    `discussing` plus a conversation id reads as "we are arguing this", and
+    for nine of eleven objectives that was false in a way nothing here could
+    see: they named `0256140f`, a thread Nova itself opened by mistake and
+    abandoned thirty hours earlier with the message *"I'll head back to
+    'Manual feedback & improvements' and pick up there instead"*. The
+    document said the argument was happening; the argument had moved. The
+    line above already refuses an objective that names *no* conversation --
+    this is the same sentence one level in, for one that names a dead one.
+
+    `thread_silence` maps a conversation id to the hours since anything was
+    said in it, and is `None` whenever Agora could not be asked. Then this
+    returns `""` and the line reads exactly as it did before: a listing this
+    cannot reach is no reading, never a thread that looks freshly spoken in.
+    A silence this cannot resolve -- an id the listing does not carry -- is
+    reported as unresolved rather than skipped, because a pointer at a
+    conversation that no longer exists is the louder half of this bug.
+    """
+    if not thread_silence:
+        return ""
+    ids = []
+    for objective in objectives:
+        cid = (objective.get("conversation") or "").strip()
+        if cid and cid not in ids:
+            ids.append(cid)
+    said = []
+    for cid in ids:
+        hours = _silence_for(cid, thread_silence)
+        if hours is None:
+            said.append(f"{cid}, which the conversation listing does not carry")
+        elif hours >= _THREAD_SILENT_HOURS:
+            said.append(f"{cid}, silent {hours / 24:.1f} day(s)")
+    if not said:
+        return ""
+    return " in " + "; ".join(said)
+
+
+def _silence_for(cid, thread_silence):
+    """The document writes an id in full or as its leading 8 characters."""
+    if cid in thread_silence:
+        return thread_silence[cid]
+    matches = [hours for key, hours in thread_silence.items()
+               if key.startswith(cid) or cid.startswith(key)]
+    # An ambiguous prefix names no single thread, so it resolves to nothing
+    # rather than to whichever one sorted first.
+    return matches[0] if len(matches) == 1 else None
 
 
 def _is_undecided(block):
