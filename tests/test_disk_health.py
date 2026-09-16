@@ -677,11 +677,13 @@ def _raise(exc):
 class _FakeKubectl:
     """Records every kubectl call and answers the log read with `logs`."""
 
-    def __init__(self, logs="", apply_returncode=0):
+    def __init__(self, logs="", apply_returncode=0, wait_returncode=0, events=None):
         self.calls = []
         self.applied = None
         self.logs = logs
         self.apply_returncode = apply_returncode
+        self.wait_returncode = wait_returncode
+        self.events = events or []
 
     def __call__(self, args, **kwargs):
         self.calls.append(args)
@@ -689,6 +691,10 @@ class _FakeKubectl:
         if args[:2] == ["kubectl", "apply"]:
             returncode = self.apply_returncode
             self.applied = kwargs.get("input")
+        if args[:2] == ["kubectl", "wait"]:
+            returncode = self.wait_returncode
+        if args[:3] == ["kubectl", "get", "events"]:
+            stdout = json.dumps({"items": [{"message": m} for m in self.events]})
         if args[:2] == ["kubectl", "logs"]:
             stdout = self.logs
         return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr="boom")
@@ -723,6 +729,38 @@ def test_a_refused_apply_is_an_error_rather_than_an_empty_disk():
         assert "boom" in str(exc)
     else:
         raise AssertionError("a refused apply must not read as a node with nothing on it")
+
+
+def test_a_pod_the_quota_refused_is_named_rather_than_timed_out():
+    # server2, 2026-09-16: the `test` namespace's limit quota was fully held,
+    # every pod create was refused, and the only line this printed was
+    # "timed out waiting for the condition" -- which reads as a slow `du`.
+    quota = "exceeded quota: test-ceiling, requested: limits.cpu=200m, used: limits.cpu=1, limited: limits.cpu=1"
+    kubectl = _FakeKubectl(logs="", wait_returncode=1, events=["older refusal", quota])
+    try:
+        disk_health.read_host_breakdown("server2", runner=kubectl, wait=5)
+    except OSError as exc:
+        assert "never created" in str(exc)
+        assert quota in str(exc)
+        assert "older refusal" not in str(exc)
+    else:
+        raise AssertionError("a refused pod must say why, not read as a timeout")
+    field = [a for a in kubectl.calls if a[:3] == ["kubectl", "get", "events"]][0]
+    assert "involvedObject.name=nova-oneoff-disk-host-dirs-server2" in field[6]
+    assert "reason=FailedCreate" in field[6]
+
+
+def test_a_slow_job_with_no_refusal_still_reads_its_logs():
+    # A timeout with no FailedCreate is a Job that ran and was slow; whatever
+    # it printed before the deadline is still worth reading.
+    kubectl = _FakeKubectl(logs="/root 1024\n", wait_returncode=1, events=[])
+    assert disk_health.read_host_breakdown("server1", runner=kubectl, wait=5) == {"/root": 1024 * 1024}
+
+
+def test_events_are_not_read_when_the_job_completed():
+    kubectl = _FakeKubectl(logs="/root 1024\n", events=["would be wrong to report"])
+    disk_health.read_host_breakdown("server1", runner=kubectl, wait=5)
+    assert not [a for a in kubectl.calls if a[:3] == ["kubectl", "get", "events"]]
 
 
 def test_a_job_that_printed_nothing_is_an_error():

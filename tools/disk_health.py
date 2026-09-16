@@ -815,6 +815,43 @@ def parse_host_breakdown(logs):
     return sizes
 
 
+def job_create_refusal(name, namespace, runner=subprocess.run):
+    """The newest `FailedCreate` message on Job `name`, or None.
+
+    A Job whose pod the API server refuses -- a full ResourceQuota, a
+    LimitRange, admission -- never starts, so `kubectl wait` runs out its
+    timeout and says only `timed out waiting for the condition`. That read
+    identically to a slow `du` for days on server2 (2026-09-16) while the
+    `test` namespace's 1-CPU limit quota sat fully held by two long-running
+    Deployments and every pod create was refused. The reason is on the Job's
+    events and nowhere else.
+    """
+    events = runner(
+        [
+            "kubectl",
+            "get",
+            "events",
+            "-n",
+            namespace,
+            "--field-selector",
+            "involvedObject.kind=Job,involvedObject.name=%s,reason=FailedCreate" % name,
+            "-o",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if events.returncode != 0:
+        return None
+    try:
+        items = json.loads(events.stdout or "{}").get("items") or []
+    except ValueError:
+        return None
+    messages = [item.get("message") for item in items if item.get("message")]
+    return messages[-1] if messages else None
+
+
 def read_host_breakdown(node, runner=subprocess.run, wait=HOST_READ_SECONDS):
     """Run the read-only Job on `node` and return `{path: bytes}`.
 
@@ -850,7 +887,7 @@ def read_host_breakdown(node, runner=subprocess.run, wait=HOST_READ_SECONDS):
     )
     if applied.returncode != 0:
         raise OSError((applied.stderr or "").strip() or "kubectl apply failed")
-    runner(
+    waited = runner(
         [
             "kubectl",
             "wait",
@@ -864,6 +901,10 @@ def read_host_breakdown(node, runner=subprocess.run, wait=HOST_READ_SECONDS):
         text=True,
         timeout=wait + 30,
     )
+    if waited.returncode != 0:
+        refusal = job_create_refusal(name, namespace, runner=runner)
+        if refusal:
+            raise OSError("the Job's pod was never created -- " + refusal)
     logs = runner(
         ["kubectl", "logs", "job/" + name, "-n", namespace, "--tail=100"],
         capture_output=True,
