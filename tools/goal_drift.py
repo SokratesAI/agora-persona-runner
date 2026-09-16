@@ -145,8 +145,12 @@ def fetch(path, rev_file=None):
     # every repair grew both goal documents by a blank line -- measured Cycle
     # 1693: 22 and 30 trailing newlines, and the line-count tripwire could not
     # see it because it compares against this same padded read.
+    # agora-claude-bridge#118 makes `get` write the document exactly, so this
+    # has to be right on both sides of that deploy: only a DOUBLE final
+    # newline is taken as print's pad. A stored document that really ends in
+    # one newline keeps it either way.
     text = done.stdout
-    if text.endswith("\n"):
+    if text.endswith("\n\n"):
         text = text[:-1]
     return text, True
 

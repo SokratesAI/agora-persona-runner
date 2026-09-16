@@ -142,6 +142,22 @@ def test_a_read_is_the_document_not_the_newline_print_adds(monkeypatch):
     assert goal_drift.fetch("projects/x.md") == (document, True)
 
 
+def test_a_read_from_a_get_that_no_longer_pads_keeps_the_final_newline(monkeypatch):
+    """After agora-claude-bridge#118 `get` emits the document exactly.
+
+    Stripping unconditionally would then eat the document's own final newline
+    on every repair.
+    """
+    document = "# goals\n\nnow: 1\n"
+
+    class Done:
+        returncode = 0
+        stdout = document
+
+    monkeypatch.setattr(goal_drift.subprocess, "run", lambda *a, **k: Done())
+    assert goal_drift.fetch("projects/x.md") == (document, True)
+
+
 def _repairing(monkeypatch, before, after, writer):
     """Drive `--repair` over one fake required document. Returns the exit code.
 
