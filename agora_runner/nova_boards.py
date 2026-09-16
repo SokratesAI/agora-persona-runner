@@ -3063,17 +3063,18 @@ _MILESTONE_SEATS_HEADER = """---
 type: board
 tags: [agora, milestones, board]
 status: built
-contract: Nova writes this. The order Nova keeps each project's milestones in, one row per milestone, position 1-based inside its project. Read by nova_next.milestone_ranks after the computed order and before the owner's pins in milestones.md, which always win. A milestone with no row here goes after every seated one in its project. Serves names the key result ids in project-goals.md this milestone serves, comma-separated. Keeps names the KPI ids it keeps in bounds, for keep-the-lights-on work that serves no goal. Both empty is the orphan: a milestone that serves no key result and keeps no guardrail, which is either a missing KPI or the pruning signal (issue #227).
+contract: Nova writes this. The order Nova keeps each project's milestones in, one row per milestone, position 1-based inside its project. Read by nova_next.milestone_ranks after the computed order and before the owner's pins in milestones.md, which always win. A milestone with no row here goes after every seated one in its project. Serves names the key result ids in project-goals.md this milestone serves, comma-separated. Keeps names the KPI ids it keeps in bounds, for keep-the-lights-on work that serves no goal. Both empty is the orphan: a milestone that serves no key result and keeps no guardrail, which is either a missing KPI or the pruning signal (issue #227). Not bet records a period (YYYY-MM) in which the owner has already decided this milestone is deliberately not bet on, so an empty Serves and Keeps under it is a recorded decision rather than one of rule 4's two questions; the decision expires when its period passes and the milestone becomes a question again.
 ---
 
 # Milestone seats
 
-| Project | Milestone | Position | Updated | Serves | Keeps |
-|---|---|---|---|---|---|
+| Project | Milestone | Position | Updated | Serves | Keeps | Not bet |
+|---|---|---|---|---|---|---|
 """
 
 
-def render_milestone_seats(order, updated="", serves=None, keeps=None):
+def render_milestone_seats(order, updated="", serves=None, keeps=None,
+                           not_bet=None):
     """`[(project, milestone), ...]` in rank order -> `milestone-seats.md`.
 
     Positions are counted per project in the order given, so the list
@@ -3104,7 +3105,7 @@ def render_milestone_seats(order, updated="", serves=None, keeps=None):
         return {(str(a).strip().lower(), str(b).strip().lower()): value
                 for (a, b), value in (mapping or {}).items()}
 
-    pointers, guardrails = _keyed(serves), _keyed(keeps)
+    pointers, guardrails, parked = _keyed(serves), _keyed(keeps), _keyed(not_bet)
     for project, milestone in order:
         name, group = (project or "").strip(), (milestone or "").strip()
         if not name or not group or "|" in name or "|" in group:
@@ -3112,11 +3113,13 @@ def render_milestone_seats(order, updated="", serves=None, keeps=None):
         key = (name.lower(), group.lower())
         served = str(pointers.get(key, "")).strip()
         kept = str(guardrails.get(key, "")).strip()
-        if "|" in served or "|" in kept:
+        unbet = str(parked.get(key, "")).strip()
+        if "|" in served or "|" in kept or "|" in unbet:
             return None
         seen[name.lower()] = seen.get(name.lower(), 0) + 1
         lines.append(f"| {name} | {group} | {seen[name.lower()]} | "
-                     f"{(updated or '').strip()} | {served} | {kept} |")
+                     f"{(updated or '').strip()} | {served} | {kept} | "
+                     f"{unbet} |")
     return "\n".join(lines) + "\n"
 
 
@@ -3197,6 +3200,49 @@ def parse_milestone_keeps(markdown):
             continue
         out[(project.lower(), milestone.lower())] = (
             cells[5] if len(cells) > 5 else "")
+    return out
+
+
+def parse_milestone_not_bet(markdown):
+    """`milestone-seats.md` -> `{(project, milestone) lowercased: Not bet cell}`.
+
+    The seventh cell, read the same way `parse_milestone_keeps` reads the
+    sixth, so a file written before this column existed answers `""` for
+    every seat rather than failing.
+
+    Unlike its two siblings this cell is not a pointer at anything in
+    `project-goals.md` -- it is a period, `YYYY-MM`, recording that the
+    owner has already decided this milestone is not bet on. That is why it
+    is a third column rather than a word in `Serves`: `Serves` is validated
+    against the key result ids, and a cell holding both a pointer and a
+    verdict would make that validation impossible, which is the same reason
+    `Keeps` was split out one column to the left.
+    """
+    out = {}
+    for key in parse_milestone_serves(markdown):
+        out[key] = ""
+    for line in (markdown or "").split("\n"):
+        text = line.strip()
+        if not text.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in text.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        if all(set(cell) <= set("-: ") and cell for cell in cells):
+            continue
+        project, milestone = cells[0], cells[1]
+        if not project or not milestone:
+            continue
+        if project.lower() == "project" and milestone.lower() == "milestone":
+            continue
+        try:
+            position = int(cells[2])
+        except (TypeError, ValueError):
+            continue
+        if position < 1:
+            continue
+        out[(project.lower(), milestone.lower())] = (
+            cells[6] if len(cells) > 6 else "")
     return out
 
 

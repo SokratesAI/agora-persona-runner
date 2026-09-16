@@ -327,7 +327,7 @@ def test_the_report_prints_the_two_kinds_of_orphan_under_their_own_headings():
            "KPI -- and there is none to serve, because no key result or " \
            "KPI is written for this project yet" in lines
     assert "2 orphan(s) (1 pruning signal, 0 with nothing left to keep, " \
-           "1 awaiting project goals)" in lines[-1]
+           "1 awaiting project goals, 0 not bet this period)" in lines[-1]
     # Each orphan is printed once, under exactly one of the two headings.
     # Reporting the whole list under `ORPHANS` as well is the failure this
     # split exists to end, and it leaves both assertions above true.
@@ -552,7 +552,7 @@ def test_an_orphan_with_no_open_row_gets_its_own_heading():
            "KPI -- and no row under it is still open, so there is nothing " \
            "here to keep: retire the milestone" in lines
     assert "1 orphan(s) (0 pruning signal, 1 with nothing left to keep, " \
-           "0 awaiting project goals)" in lines[-1]
+           "0 awaiting project goals, 0 not bet this period)" in lines[-1]
 
 
 def test_a_written_goal_nobody_settled_prints_and_still_exits_zero():
@@ -1032,3 +1032,27 @@ def test_one_server_with_open_work_answers_for_all_of_them():
     assert "nova / picking, nova / planning serves it" in listed[0]
     one_busy, _ = report(goals, seats, rows=[row(1, milestone="Planning")])
     assert not [t for t in one_busy if t.startswith("SHORT OF TARGET WITH NOBODY")]
+
+
+def test_a_not_bet_seat_prints_under_its_own_heading_and_still_exits_zero():
+    """The fourth heading. An orphan carrying a `Not bet` period covering
+    today is a decision already taken, so it leaves the question list without
+    leaving the orphan count -- and a defect in the cell is a defect, so a
+    period on a seat that also serves something raises."""
+    import datetime
+    seats = SEATS + "| Nova | Runner engineering | 2 | 09-16 |  |  | 2026-09 |\n"
+    lines, code = report(GOALS, seats, rows=[row(1), row(2, milestone="Runner engineering")],
+                         today=datetime.date(2026, 9, 16))
+    assert code == 0
+    body = "\n".join(lines)
+    assert "ORPHANS" not in body
+    assert "NOT BET THIS PERIOD (1)" in body
+    assert "1 orphan(s) (0 pruning signal, 0 with nothing left to keep, " \
+           "0 awaiting project goals, 1 not bet this period)" in lines[-1]
+
+    confused = SEATS + ("| Nova | Runner engineering | 2 | 09-16 | "
+                        "nova-kr-true-first-time |  | 2026-09 |\n")
+    lines, code = report(
+        GOALS, confused, rows=[row(1)], today=datetime.date(2026, 9, 16))
+    assert code == 2
+    assert any("serves or keeps something" in line for line in lines)

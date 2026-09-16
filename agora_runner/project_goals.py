@@ -75,6 +75,7 @@ than falling through the unknown-id branch, because that is exactly the
 mistake the issue says must be impossible: a guardrail used as a goal.
 """
 
+import datetime
 import re
 
 #: One document rather than a column, for the reason in the module docstring.
@@ -749,6 +750,12 @@ def _same_project(seat_project, goal_project):
         goal_project or "").strip().lower()
 
 
+#: A `Not bet` cell in `milestone-seats.md`: the month the owner decided not
+#: to bet on this milestone. A period rather than a flag so the decision
+#: expires -- see `split_orphans`.
+NOT_BET_PERIOD = re.compile(r"\d{4}-(?:0[1-9]|1[0-2])")
+
+
 def split_serves(cell):
     """A `Serves` cell -> `[id, ...]`, lowercased, comma-separated, empty dropped.
 
@@ -874,8 +881,9 @@ def serves_orphans(serves, sections, keeps=None):
     is here, by `split_orphans`, which never drops one. `keeps` defaults
     to empty so a caller holding only the old column gets the old answer.
     """
-    prunable, finished, awaiting = split_orphans(serves, sections, keeps)
-    return sorted(prunable + finished + awaiting)
+    prunable, finished, awaiting, declared = split_orphans(
+        serves, sections, keeps)
+    return sorted(prunable + finished + awaiting + declared)
 
 
 def project_has_goals_to_serve(project, sections):
@@ -891,10 +899,11 @@ def project_has_goals_to_serve(project, sections):
     return bool(section.get("keyResults") or section.get("kpis"))
 
 
-def split_orphans(serves, sections, keeps=None, rows=None):
+def split_orphans(serves, sections, keeps=None, rows=None,
+                  not_bet=None, today=None):
     """The orphan list, split by *why* the seat is empty.
 
-    Returns `(prunable, finished, awaiting)`.
+    Returns `(prunable, finished, awaiting, declared)`.
 
     **Same call `serves_orphans` already made once, one level up.** That
     docstring splits an orphan from a seat that names its guardrail,
@@ -929,6 +938,22 @@ def split_orphans(serves, sections, keeps=None, rows=None):
     which carries three open rows including two 🟠 High, they read as four
     equal decisions when two of them are free.
 
+    **`declared` is the state rule 4 does not have a verdict for.** Both of
+    its verdicts are questions, and some of these seats are not questions:
+    `project-goals.md` records in prose that `nova the app / voice` and
+    `look and feel` "serve nothing, not bet this period, so both are on the
+    orphan list on purpose". That decision was taken once and the check has
+    re-asked it every sweep since, which is the same defect as `finished` --
+    a line printed under a sentence offering two verdicts when its answer is
+    already in. The `Not bet` column is where it goes so the check can read
+    it, and it carries a period rather than a flag, so **an expired decision
+    comes back as a question**: a seat whose period is older than today's
+    month stays on `prunable`, with the period named in its line, rather
+    than sitting parked for good. A seat carrying a period is checked for a
+    verdict the work has already settled first -- `awaiting` and `finished`
+    both win over it, because "no goals exist to serve" and "every row under
+    it is closed" are facts, and this is only a decision.
+
     `rows` is the boards, and it is optional for the same reason `keeps`
     is: a caller holding only the seats file gets the old two-way answer
     with an empty `finished`. Membership still comes from the seat's own
@@ -936,8 +961,11 @@ def split_orphans(serves, sections, keeps=None, rows=None):
     been answered by the work itself.
     """
     guardrails = keeps or {}
+    parked = {(str(a).strip().lower(), str(b).strip().lower()): str(v or "").strip()
+              for (a, b), v in (not_bet or {}).items()}
+    month = (today or datetime.date.today()).strftime("%Y-%m")
     open_counts = _open_rows_by_milestone(rows)
-    prunable, finished, awaiting = [], [], []
+    prunable, finished, awaiting, declared = [], [], [], []
     for (project, milestone) in sorted(serves):
         if split_serves(serves[(project, milestone)]):
             continue
@@ -956,11 +984,68 @@ def split_orphans(serves, sections, keeps=None, rows=None):
                 "no KPI -- and no row under it is still open, so there is "
                 "nothing here to keep: retire the milestone")
         else:
+            period = parked.get(key, "")
+            if NOT_BET_PERIOD.fullmatch(period) and period >= month:
+                declared.append(
+                    f"{project} / {milestone}: serves no key result and "
+                    f"keeps no KPI, and that is the decision already taken "
+                    f"for {period} -- not bet this period, so nothing here "
+                    "needs answering again")
+                continue
+            if NOT_BET_PERIOD.fullmatch(period):
+                prunable.append(
+                    f"{project} / {milestone}: serves no key result and "
+                    f"keeps no KPI -- it was not bet in {period} and that "
+                    "period has passed, so the decision is due again: "
+                    "keep-the-lights-on work whose guardrail has not been "
+                    "written yet, or work nobody can justify")
+                continue
             prunable.append(
                 f"{project} / {milestone}: serves no key result and keeps "
                 "no KPI -- either keep-the-lights-on work whose guardrail "
                 "has not been written yet, or work nobody can justify")
-    return prunable, finished, awaiting
+    return prunable, finished, awaiting, declared
+
+
+def not_bet_problems(not_bet, serves=None, keeps=None):
+    """`{(project, milestone): Not bet cell}` -> defects a pull request can close.
+
+    Two findings, and both of them are the cell claiming something it
+    cannot mean.
+
+    A cell that is not a `YYYY-MM` period is refused, because
+    `split_orphans` compares it against today's month as a string and
+    anything else compares as garbage -- silently, and in the direction
+    that parks the milestone. `not bet`, `yes` and `2026-9` all read as a
+    decision that never expires if nothing refuses them here.
+
+    A period on a seat that *does* serve a key result or keep a KPI is
+    refused too: those are contradictory claims about the same milestone,
+    one saying it is bet on and the other saying it is not. `split_orphans`
+    resolves that in favour of the pointer -- a filled seat is not an
+    orphan at all, so the period is never read -- which means the wrong
+    half is the one that stays invisible, and the seat looks decided when
+    it is confused.
+    """
+    out = []
+    pointers, guardrails = serves or {}, keeps or {}
+    for (project, milestone) in sorted(not_bet):
+        period = str(not_bet[(project, milestone)] or "").strip()
+        if not period:
+            continue
+        if not NOT_BET_PERIOD.fullmatch(period):
+            out.append(
+                f"{project} / {milestone} has Not bet {period!r}, which is "
+                "not a YYYY-MM period, so the decision can never expire")
+            continue
+        key = (project, milestone)
+        if split_serves(pointers.get(key, "")) or split_serves(
+                guardrails.get(key, "")):
+            out.append(
+                f"{project} / {milestone} has Not bet {period} and also "
+                "serves or keeps something, which are opposite claims "
+                "about the same milestone")
+    return out
 
 
 def _open_rows_by_milestone(rows):

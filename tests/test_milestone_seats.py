@@ -179,3 +179,33 @@ def test_a_keeps_cell_carrying_a_pipe_is_refused():
     assert render_milestone_seats(
         [("Nova", "Cost and quota")],
         keeps={("nova", "cost and quota"): "a | b"}) is None
+
+
+def test_the_not_bet_column_round_trips_and_an_old_file_reads_empty():
+    """Seventh cell, written by `render_milestone_seats` and read back by
+    `parse_milestone_not_bet`. A file written before the column existed
+    answers `""` for every seat rather than failing, which is the same
+    promise `Keeps` made one column to the left."""
+    from agora_runner.nova_boards import (
+        parse_milestone_not_bet, render_milestone_seats)
+    text = render_milestone_seats(
+        [("Nova", "Voice"), ("Nova", "Board")], updated="09-16",
+        serves={("Nova", "Board"): "nova-kr-x"},
+        not_bet={("Nova", "Voice"): "2026-09"})
+    assert "| Not bet |" in text
+    assert parse_milestone_not_bet(text) == {
+        ("nova", "voice"): "2026-09", ("nova", "board"): ""}
+    older = "\n".join(
+        ["| Project | Milestone | Position | Updated | Serves | Keeps |",
+         "|---|---|---|---|---|---|",
+         "| Nova | Voice | 1 | 09-15 |  |  |"])
+    assert parse_milestone_not_bet(older) == {("nova", "voice"): ""}
+
+
+def test_a_pipe_in_a_not_bet_cell_is_refused_like_a_name():
+    """One cell carrying a `|` breaks every row below it into different
+    columns, so the whole render is refused rather than written broken --
+    the call `render_milestone_seats` already makes for `Serves`."""
+    from agora_runner.nova_boards import render_milestone_seats
+    assert render_milestone_seats(
+        [("Nova", "Voice")], not_bet={("Nova", "Voice"): "2026-09|x"}) is None
