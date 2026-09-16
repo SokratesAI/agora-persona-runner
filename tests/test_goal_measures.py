@@ -5031,3 +5031,101 @@ def test_drift_status_judges_goals_alone_when_there_are_no_project_goals():
     assert "? G1 in goals.md publishes a number" in lines
     assert "project-goals.md" not in lines
     assert drifted == []
+
+
+class TestNovaTrustDataFresh:
+    """`nova-kr-trust-data-fresh` — how many cycles behind the app's view is.
+
+    Both sides are injected: the vault listing through `recap_health._vault`,
+    which the measurer calls by name on the real module, and the site through
+    `gm.fetch_entries`. Every test below was checked by breaking the branch
+    under it.
+    """
+
+    def _vault(self, monkeypatch, names):
+        from tools import recap_health
+        monkeypatch.setattr(recap_health, "_vault",
+                            lambda *a: "\n".join(names) + "\n")
+
+    def _site(self, monkeypatch, entries, error=None):
+        monkeypatch.setattr(gm, "fetch_entries",
+                            lambda limit, **kw: (entries, error))
+
+    def test_a_view_level_with_the_vault_is_nought(self, monkeypatch):
+        self._vault(monkeypatch, ["1717-cycle-1663.md", "1718-cycle-1664.md"])
+        self._site(monkeypatch, [{"cycle": 1664}, {"cycle": 1663}])
+        value, detail = gm.measure_nova_trust_data_fresh(None, None)
+        assert value == 0
+        assert "cycle 1664" in detail
+        assert "2 file(s)" in detail
+
+    def test_a_stale_view_reads_its_real_age(self, monkeypatch):
+        # The positive result. Without one of these, every other test here
+        # is compatible with a measurer that can only ever return 0.
+        self._vault(monkeypatch, ["1718-cycle-1664.md", "1720-cycle-1666.md"])
+        self._site(monkeypatch, [{"cycle": 1663}, {"cycle": 1662}])
+        value, detail = gm.measure_nova_trust_data_fresh(None, None)
+        assert value == 3
+        assert "dated by cycle 1663" in detail
+        assert "vault is cycle 1666" in detail
+
+    def test_the_newest_entry_is_taken_by_sequence_not_by_text(self, monkeypatch):
+        # `999-` sorts after `1000-` as text, which would date the vault side
+        # by an older entry and make a stale view look current.
+        self._vault(monkeypatch, ["999-cycle-930.md", "1000-cycle-931.md"])
+        self._site(monkeypatch, [{"cycle": 930}])
+        value, _detail = gm.measure_nova_trust_data_fresh(None, None)
+        assert value == 1
+
+    def test_an_unlistable_journal_folder_is_no_reading(self, monkeypatch):
+        # 0 is this measure's best value, so a pod with no vault client must
+        # not publish a perfect score off a listing it never read.
+        from tools import recap_health
+
+        def boom(*a):
+            raise FileNotFoundError("no vault_tool.py here")
+
+        monkeypatch.setattr(recap_health, "_vault", boom)
+        self._site(monkeypatch, [{"cycle": 1664}])
+        value, detail = gm.measure_nova_trust_data_fresh(None, None)
+        assert value is None
+        assert "no vault_tool.py here" in detail
+
+    def test_a_silent_site_is_no_reading(self, monkeypatch):
+        self._vault(monkeypatch, ["1718-cycle-1664.md"])
+        self._site(monkeypatch, [], error="could not read http://site: timed out")
+        value, detail = gm.measure_nova_trust_data_fresh(None, None)
+        assert value is None
+        assert "rather than 0" in detail
+        assert "timed out" in detail
+
+    def test_a_view_with_no_cycle_number_is_no_reading(self, monkeypatch):
+        self._vault(monkeypatch, ["1718-cycle-1664.md"])
+        self._site(monkeypatch, [{"cycle": None}, {"title": "no number"}])
+        value, detail = gm.measure_nova_trust_data_fresh(None, None)
+        assert value is None
+        assert "no cycle number among them" in detail
+
+    def test_a_folder_holding_no_entry_is_no_reading(self, monkeypatch):
+        self._vault(monkeypatch, ["_context.md", "journal.md"])
+        self._site(monkeypatch, [{"cycle": 1664}])
+        value, detail = gm.measure_nova_trust_data_fresh(None, None)
+        assert value is None
+        assert "2 name(s)" in detail
+
+    def test_a_site_ahead_of_the_listing_is_no_reading(self, monkeypatch):
+        # Negative age clamped to 0 would hide the stale side of the read.
+        self._vault(monkeypatch, ["1717-cycle-1663.md"])
+        self._site(monkeypatch, [{"cycle": 1664}])
+        value, detail = gm.measure_nova_trust_data_fresh(None, None)
+        assert value is None
+        assert "the stale side" in detail
+
+    def test_it_is_registered_as_that_key_results_instrument(self):
+        assert (gm.KEY_RESULT_FETCH_MEASURERS["nova-kr-trust-data-fresh"]
+                is gm.measure_nova_trust_data_fresh)
+        assert "nova-kr-trust-data-fresh" not in gm.KEY_RESULT_NO_INSTRUMENT
+
+    def test_its_sibling_records_why_it_has_none(self):
+        why = gm.KEY_RESULT_NO_INSTRUMENT["nova-kr-trust-cycles-shown"]
+        assert "planned-vs-done view" in why
