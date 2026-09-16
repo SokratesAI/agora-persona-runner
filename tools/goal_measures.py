@@ -1492,8 +1492,18 @@ BLOCK_PHRASES = (
     "waits on his",
     "needs your",
     "needs edvard",
-    "needs input",
 )
+
+#: Deliberately **not** on the list above: `"needs input"`. It is the name of a
+#: section of the digest, not something a cycle says about itself, so it
+#: matched every entry that merely discussed that section -- and the section is
+#: one Edvard killed on 2026-09-13 (*"I still see the needs input boxes"*), so
+#: the entries discussing it are mostly about retiring it. Measured over
+#: 2026-09-10..2026-09-16: four entries matched it and nothing else, all four
+#: were talking about the section, and none of them named an ask. It added 4 to
+#: the denominator and 0 to the numerator, which is the one direction the
+#: comment above says cannot happen -- a floor that overstates its own
+#: denominator is not a floor. Dropping it moved the live reading 15.1 -> 16.3.
 
 #: How many journal entries `measure_nova_scale_blocks_recorded` asks for. The
 #: window is applied afterwards by `in_window`, so this only has to be deep
@@ -1573,8 +1583,17 @@ def measure_nova_scale_blocks_recorded(since, until):
         text = entry_text(entry)
         hit = next((cid for cid in sorted(ids)
                     if cid in text or cid[:8] in text), None)
-        title = str(entry.get("title") or entry.get("date") or "an entry")
-        (recorded if hit else unrecorded).append(title)
+        title = str(entry.get("title") or "an entry")
+        # Stamped with the cycle number, because journal titles repeat: the
+        # live list read "Goals still waiting on you, so nothing was built;
+        # Goals still waiting on you, so nothing was built" and there was no
+        # way to tell which two entries that was, or whether it was one entry
+        # counted twice. The date does not separate them either -- those two
+        # are cycles 1649 and 1650, both on 2026-09-15 -- and the cycle number
+        # is the handle you can actually open the entry with.
+        stamp = str(entry.get("cycle") or "").strip()
+        (recorded if hit else unrecorded).append(
+            f"{title} (cycle {stamp})" if stamp else title)
     share = round(100.0 * len(recorded) / len(blocked), 1)
     detail = (f"{len(recorded)} of {len(blocked)} entry/entries in "
               f"{since}..{until} that say they are blocked on you name a live "
