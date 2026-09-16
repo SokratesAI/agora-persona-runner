@@ -248,9 +248,20 @@ def test_the_ledger_default_is_the_one_the_writer_uses():
 
 
 def test_main_takes_the_flags(tmp_path, monkeypatch):
+    """`main` reads the real clock, so its fixture has to be on that clock.
+
+    This asked for `hot_series()`, which is stamped relative to the frozen
+    `NOW` every other test here uses -- and `main` takes no `--at`, so it
+    judged those rows against the day the suite was actually running. It
+    passed for the 72 hours of the default window and then went red on its
+    own, three days after it was written, with nothing changed: at 05:13
+    Oslo on 2026-09-16 it was green in CI and at 05:51 it was not. Anchor
+    the rows to the same clock the code under test reads.
+    """
     monkeypatch.setattr(hch, "read_cores", lambda runner=None: ({"server1": 4},
                                                                 None))
-    path = ledger(tmp_path, hot_series())
+    path = ledger(tmp_path, hot_series(start=datetime.now(timezone.utc)
+                                       - timedelta(hours=3)))
     assert hch.main(["--ledger", path, "--busy-fraction", "0.9"]) == 2
     assert hch.main(["--ledger", path, "--busy-fraction", "0.99"]) == 0
 
