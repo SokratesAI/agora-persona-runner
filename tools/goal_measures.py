@@ -2114,7 +2114,7 @@ def fetch_docs_sync_runs(repo=DOCS_REPO, workflow=DOCS_SYNC_WORKFLOW,
     """Every recorded run of the docs-sync workflow, newest first.
 
     Returns `(runs, None)` or `(None, why)`. Each run is the dict `gh` hands
-    back: `event`, `status`, `conclusion`, `createdAt`.
+    back: `databaseId`, `event`, `status`, `conclusion`, `createdAt`.
 
     An empty list is an error rather than a reading, for
     `measure_docs_covers_what_runs`' reason: this workflow demonstrably runs,
@@ -2124,7 +2124,8 @@ def fetch_docs_sync_runs(repo=DOCS_REPO, workflow=DOCS_SYNC_WORKFLOW,
     try:
         done = runner(
             ["gh", "run", "list", "--repo", repo, "--workflow", workflow,
-             "--limit", "100", "--json", "event,status,conclusion,createdAt"],
+             "--limit", "100", "--json",
+             "databaseId,event,status,conclusion,createdAt"],
             capture_output=True, text=True, timeout=60,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -2145,6 +2146,35 @@ def fetch_docs_sync_runs(repo=DOCS_REPO, workflow=DOCS_SYNC_WORKFLOW,
     return runs, None
 
 
+#: The line gh-aw's MCP gateway writes when it refuses the agent a read. Since
+#: sokrates-docs went public, every read of platform-config, operator and
+#: sokrates-cli is refused this way ("FORCED REPOS=PUBLIC ... to prevent private
+#: data reads"), and the run still ends green.
+DIFC_FILTERED_MARK = "[DIFC-FILTERED]"
+
+
+def fetch_run_filtered_reads(run_id, repo=DOCS_REPO, runner=subprocess.run):
+    """How many reads the gh-aw gateway refused inside one run.
+
+    Returns `(count, None)` or `(None, why)`. A run with no id, or a log `gh`
+    could not hand back, is an error rather than 0: 0 is the reading that
+    lets a green run count as alive.
+    """
+    if not run_id:
+        return None, "a run carried no databaseId, so its log cannot be read"
+    try:
+        done = runner(
+            ["gh", "run", "view", str(run_id), "--repo", repo, "--log"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"gh run view could not run on {repo} run {run_id}: {exc}"
+    if done.returncode != 0 or not (done.stdout or "").strip():
+        return None, (f"gh run view --log failed on {repo} run {run_id}: "
+                      f"{(done.stderr or '').strip()[:200]}")
+    return done.stdout.count(DIFC_FILTERED_MARK), None
+
+
 def measure_docs_sync_alive(since, until):
     """Share of scheduled docs-sync runs in the window that finished. A share.
 
@@ -2162,6 +2192,14 @@ def measure_docs_sync_alive(since, until):
     whether the docs keep themselves up to date, and a run that never started
     did not. The target is 90 rather than 100 for exactly that reason, and it
     is written down beside the key result.
+
+    **A green run that could not read its sources does not count either.**
+    sokrates-docs is public and the three repos it documents are private, so
+    gh-aw's gateway refuses the agent every read of them and the run still
+    ends `success` -- the 2026-09-11 scheduled run did exactly that and opened
+    no pull request. So every green run's log is read, and one carrying a
+    `[DIFC-FILTERED]` line sits in the denominator only. A log that cannot be
+    read is no reading, not a green run.
 
     **A run still in flight is in neither half.** It is dropped from the
     denominator rather than counted as a failure, because it has not failed
@@ -2199,8 +2237,14 @@ def measure_docs_sync_alive(since, until):
                       + (f" ({in_flight} still in flight)" if in_flight else "")
                       + (f"; {undated} run(s) carried an unreadable date"
                          if undated else ""))
-    green = [day for day, run in finished
-             if (run.get("conclusion") or "") == "success"]
+    green, blind = [], []
+    for day, run in finished:
+        if (run.get("conclusion") or "") != "success":
+            continue
+        refused, why = fetch_run_filtered_reads(run.get("databaseId"))
+        if why:
+            return None, why
+        (blind if refused else green).append(day)
     detail = (f"{len(green)} of {len(finished)} scheduled run(s) of "
               f"{DOCS_SYNC_WORKFLOW} finished in the "
               f"{_DOCS_SYNC_WINDOW_DAYS}d window {window_start.isoformat()}.."
@@ -2209,6 +2253,10 @@ def measure_docs_sync_alive(since, until):
               f"workflow_dispatch runs are excluded, because a docs job that "
               f"only works when somebody presses the button is what this "
               f"measures")
+    if blind:
+        detail += (f"; {len(blind)} green run(s) do not count because the "
+                   f"gh-aw gateway refused the agent a read of its sources "
+                   f"({', '.join(blind)})")
     if in_flight:
         detail += f"; {in_flight} run(s) still in flight are in neither half"
     if undated:

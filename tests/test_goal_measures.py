@@ -3259,13 +3259,61 @@ class TestDocsSyncAlive:
     about the three judgements inside that number, not the number.
     """
 
-    def _runs(self, monkeypatch, runs):
+    def _runs(self, monkeypatch, runs, refused=None):
         monkeypatch.setattr(gm, "fetch_docs_sync_runs", lambda: (runs, None))
+        refused = refused or {}
+        monkeypatch.setattr(gm, "fetch_run_filtered_reads",
+                            lambda run_id: refused.get(run_id, (0, None)))
 
     def _run(self, day, event="schedule", conclusion="success",
              status="completed"):
-        return {"event": event, "status": status, "conclusion": conclusion,
+        return {"databaseId": int(day.replace("-", "")), "event": event,
+                "status": status, "conclusion": conclusion,
                 "createdAt": f"{day}T12:00:00Z"}
+
+    def test_a_green_run_the_gateway_blinded_does_not_count(self, monkeypatch):
+        # The real 09-11 run: success, every platform-config read refused
+        # because the docs repo is public, no pull request opened.
+        self._runs(monkeypatch, [
+            self._run("2026-09-11"),
+            self._run("2026-09-04", conclusion="failure"),
+        ], refused={20260911: (2, None)})
+        value, detail = gm.measure_docs_sync_alive(None, "2026-09-14")
+        assert value == 0.0, detail
+        assert "0 of 2" in detail
+        assert "refused the agent a read" in detail
+        assert "2026-09-11" in detail
+
+    def test_a_green_run_whose_log_cannot_be_read_gets_no_reading(
+            self, monkeypatch):
+        # 0 refused reads is what lets a green run count, so an unread log
+        # must not quietly stand in for it.
+        self._runs(monkeypatch, [self._run("2026-09-11")],
+                   refused={20260911: (None, "gh run view --log failed")})
+        value, detail = gm.measure_docs_sync_alive(None, "2026-09-14")
+        assert value is None
+        assert "--log failed" in detail
+
+    def test_filtered_reads_are_counted_off_the_run_log(self):
+        log = ("agent\tStart MCP Gateway\t[INFO] [difc] [DIFC-FILTERED] {}\n"
+               "agent\tStart MCP Gateway\t[INFO] [difc] [DIFC-FILTERED] {}\n"
+               "agent\tExecute\tok\n")
+        seen = []
+
+        def runner(args, **_kwargs):
+            seen.append(args)
+            return types.SimpleNamespace(returncode=0, stdout=log, stderr="")
+
+        assert gm.fetch_run_filtered_reads(35070760140, runner=runner) == (2, None)
+        assert "35070760140" in seen[0] and "--log" in seen[0]
+
+    def test_a_run_without_an_id_or_log_is_an_error_not_zero(self):
+        count, why = gm.fetch_run_filtered_reads(None)
+        assert count is None and "databaseId" in why
+        runner = lambda *_a, **_k: types.SimpleNamespace(
+            returncode=0, stdout="", stderr="")
+        count, why = gm.fetch_run_filtered_reads(1, runner=runner)
+        assert count is None and "failed" in why
 
     def test_it_is_the_share_of_scheduled_runs_that_succeeded(self, monkeypatch):
         self._runs(monkeypatch, [
