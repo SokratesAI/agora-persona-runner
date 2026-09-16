@@ -98,3 +98,24 @@ def agora_public(method, path, payload=None):
     "that conversation is gone" and is the opposite of what happened.
     """
     return http_json(method, f"{AGORA_URL}{path}", payload)
+
+
+def unauthorized_hint(status):
+    """Name the cause when Agora's agent-facing app refuses a write for want of a token.
+
+    `agora_internal` sends `x-agora-token` only when the environment holds
+    one, and the bridge pod holds none -- so every write from the shell that
+    reads the vault comes back 401, and the caller prints "HTTP 401", which
+    reads like Agora rejected the message. It did not; the request never
+    carried a credential. Cycle 1677 lost two re-announcements to that
+    sentence before running the same call from the runner pod, where it
+    returned 200 for both.
+
+    Returns a clause to append to an error message, or "" when the status is
+    not an auth refusal or a token was in fact sent -- a 401 with a token
+    present is a real rejection and must not be explained away.
+    """
+    if status in (401, 403) and not AGORA_TOKEN:
+        return (" — this pod holds no AGORA_TOKEN, so the request carried no "
+                "credential at all; run it from the runner pod (terminal_exec)")
+    return ""

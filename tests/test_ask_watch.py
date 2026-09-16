@@ -3,6 +3,7 @@
 import io
 from datetime import datetime, timezone
 
+from agora_runner import http_util
 from tools import ask_watch
 
 
@@ -627,3 +628,31 @@ def test_read_goals_from_a_local_path(tmp_path):
 def test_read_goals_from_a_missing_local_path(tmp_path):
     markdown, problem, from_this_pod = ask_watch.read_goals(str(tmp_path / "nope.md"))
     assert markdown is None and from_this_pod and "nope.md" in problem
+
+
+def test_a_401_with_no_token_names_the_pod_rather_than_blaming_agora(monkeypatch):
+    """Cycle 1677 ran the nudge this tool prints as its own remedy from the
+    bridge pod and got a bare `notify returned HTTP 401`, which reads as Agora
+    refusing the message. `agora_internal` had sent no token, because the
+    bridge pod holds none -- the same two calls returned 200 from the runner
+    pod minutes later. The status alone cannot tell those apart, so the
+    message has to."""
+    monkeypatch.setattr(ask_watch, "agora_internal", lambda *a, **k: (401, {}))
+    monkeypatch.setattr(http_util, "AGORA_TOKEN", "")
+    ok, detail = ask_watch.nudge("c1")
+    assert ok is False
+    assert "HTTP 401" in detail
+    assert "no AGORA_TOKEN" in detail
+    assert "runner pod" in detail
+
+
+def test_a_401_with_a_token_present_is_a_real_refusal(monkeypatch):
+    """The mirror of the test above, and the reason the hint reads the token
+    rather than the status alone: a credential that was sent and rejected is
+    Agora's answer, and explaining it away as a missing token would point the
+    next cycle at the wrong pod."""
+    monkeypatch.setattr(ask_watch, "agora_internal", lambda *a, **k: (401, {}))
+    monkeypatch.setattr(http_util, "AGORA_TOKEN", "a-real-token")
+    ok, detail = ask_watch.nudge("c1")
+    assert ok is False
+    assert detail == "notify returned HTTP 401"

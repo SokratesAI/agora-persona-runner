@@ -2,7 +2,7 @@
 
 import pytest
 
-from agora_runner import needs_input
+from agora_runner import http_util, needs_input
 
 
 class FakeAgora:
@@ -322,3 +322,18 @@ def test_main_exits_zero_when_it_did(monkeypatch, capsys):
     code = needs_input.main(["--question", "Yes or no?", "--context", "why"])
     assert code == 0
     assert "HIS PHONE DID NOT BUZZ" not in capsys.readouterr().out
+
+
+def test_a_401_opening_the_thread_names_the_pod(monkeypatch):
+    """An ask that cannot be opened is the one failure a cycle must not
+    misread: `prompt.md` sends it to the runner pod, and a bare HTTP 401 from
+    the bridge pod reads as Agora refusing rather than as the wrong shell."""
+    monkeypatch.setattr(needs_input, "agora_internal", lambda *a, **k: (401, {}))
+    monkeypatch.setattr(http_util, "AGORA_TOKEN", "")
+    ok, detail = needs_input.ask(
+        "Should the goal threads stay batched?",
+        "Long enough context for the validator to accept this as a real ask, "
+        "written the way a cycle would write it when it genuinely cannot proceed.")
+    assert ok is False
+    assert "HTTP 401" in detail
+    assert "no AGORA_TOKEN" in detail
