@@ -35,7 +35,9 @@ from agora_runner.nova_handoff import (  # noqa: F401 -- re-exported for callers
     select_older_than,
     live_items,
     newest_cycle,
+    newest_digest_cycle,
     select_slugs,
+    stamp_unseen,
     split_items,
     stamp_retired,
 )
@@ -135,9 +137,28 @@ def main(argv=None):
                 file=sys.stderr,
             )
             return 1
+        # Date the undated before selecting, not after: an item nothing
+        # can date is invisible to the age rule, and on 2026-09-16 that
+        # was every item in the file. See `stamp_unseen`.
+        stamped = 0
+        stamp_at = newest_digest_cycle(live)
+        if stamp_at is not None:
+            live, stamped = stamp_unseen(live, stamp_at)
+            if stamped:
+                items = live_items(live)
+                print(
+                    f"stamped {stamped} undated item(s) as first seen at "
+                    f"cycle {stamp_at}; they age out a window from now"
+                )
+
         rolled = archive_older_than(live, archive, cutoff, today)
         if rolled is None:
             print(explain_none_older_than(items, cutoff))
+            if stamped and not args.dry_run:
+                open(args.live, "w").write(live)
+                print(f"wrote {args.live} with the stamps")
+            elif stamped:
+                print("--dry-run: nothing written")
             return 0
         new_live, new_archive, moved = rolled
         print(

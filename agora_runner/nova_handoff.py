@@ -351,6 +351,70 @@ def oldest_digest_cycle(live):
     return None
 
 
+SEEN_TEMPLATE = " <!-- first seen: cycle {cycle} -->"
+
+
+def newest_digest_cycle(live):
+    """The newest cycle the `## Digest` section of `live` shows.
+
+    `oldest_digest_cycle` above is the cut; this is the stamp. They read
+    the same lines with the same matcher and differ only in which end of
+    the window they take.
+    """
+    for level, heading, body in outline(live, max_level=2):
+        if level == 2 and heading == "Digest":
+            cycles = [
+                int(m.group("n"))
+                for m in (
+                    _DIGEST_LINE_CYCLE_RE.match(line)
+                    for line in split_digest_entries(body)
+                )
+                if m
+            ]
+            return max(cycles) if cycles else None
+    return None
+
+
+def stamp_unseen(live, cycle):
+    """Date every undated item in `live` as first seen at `cycle`.
+
+    `select_older_than` can only move an item it can date, and it dates
+    an item by whatever cycle number the prose happens to mention. That
+    is not a property a handoff item has -- it is a coincidence. On
+    2026-09-16 **not one** of the 98 items in the live section cited a
+    cycle number `_CYCLE_RE` could read, so the age roll had nothing to
+    select and the section had grown from 56KB to 166KB in the three days
+    since the previous roll trimmed it. The brake was not weak; with
+    nothing to date, it was disconnected.
+
+    So the date stops being a coincidence and becomes a fact the roll
+    writes down itself. An item carrying no cycle number gets an HTML
+    comment appended -- invisible in Obsidian and on the site, and read
+    by the same `_CYCLE_RE` that dates every other item, so this adds a
+    source of truth rather than a second rule.
+
+    The stamp is the *newest* cycle in the window, which is the
+    conservative direction twice over: it is the latest date the item
+    could honestly have, so a stamped item is kept for a full window
+    rather than retired on the run that dated it, and `newest_cycle`
+    takes the maximum, so a stamp can never make an item look older than
+    its own prose already says.
+
+    Idempotent: a stamped item is datable, so a second run skips it.
+    Returns `(new_live, stamped)`.
+    """
+    stamped = 0
+    for item in live_items(live):
+        if newest_cycle(item) is not None:
+            continue
+        marker = SEEN_TEMPLATE.format(cycle=cycle)
+        body = item.rstrip("\n")
+        tail = item[len(body):]
+        live = live.replace(item, body + marker + tail, 1)
+        stamped += 1
+    return live, stamped
+
+
 def select_older_than(items, cutoff):
     """Indices of the items that cite no cycle at or after `cutoff`.
 
