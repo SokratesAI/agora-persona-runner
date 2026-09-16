@@ -5357,11 +5357,28 @@ class TestNovaScaleBlocksRecorded:
         monkeypatch.setattr(gm, "fetch_entries",
                             lambda limit, **kw: (entries, None))
 
-    def _store(self, monkeypatch, conversations, status=200):
+    GOAL_THREAD = "0af15d7d-ae09-4d88-8c33-ef69fb8185ec"
+
+    GOALS = """# Project goals
+
+## Cycles
+
+```objective
+statement: A cycle lands a real change.
+status: discussing
+conversation: 0af15d7d
+```
+"""
+
+    def _store(self, monkeypatch, conversations, status=200,
+               goals=(None, "not read in this test", True)):
         import agora_runner.http_util as http_util
+        from tools import ask_watch
         monkeypatch.setattr(
             http_util, "agora_get",
             lambda path, **kw: (status, {"conversations": conversations}))
+        # The goal half reads the vault; a test never does.
+        monkeypatch.setattr(ask_watch, "read_goals", lambda path=None: goals)
 
     def _entry(self, date, title, blocks=""):
         return {"date": date, "title": title, "blocks": blocks, "kind": "cycle"}
@@ -5463,6 +5480,50 @@ class TestNovaScaleBlocksRecorded:
             "2026-09-10", "2026-09-16")
         assert value is None
         assert "no ask thread at all" in detail
+
+    def test_a_goal_thread_the_document_names_is_on_record(self, monkeypatch):
+        # Untagged and unnamed, like every thread project_goal_thread opens;
+        # it counts only because project-goals.md argues a goal in it.
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", "in 0af15d7d"),
+            self._entry("2026-09-12", "Waiting on you", f"in {self.ASK}"),
+        ])
+        self._store(monkeypatch,
+                    [{"id": self.GOAL_THREAD, "name": "Manual feedback"},
+                     *self._asks(self.ASK)],
+                    goals=(self.GOALS, None, True))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 100.0, detail
+        assert "were not read" not in detail
+
+    def test_a_goal_thread_is_not_counted_once_the_goal_is_decided(
+            self, monkeypatch):
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", "in 0af15d7d"),
+            self._entry("2026-09-12", "Waiting on you", f"in {self.ASK}"),
+        ])
+        self._store(monkeypatch,
+                    [{"id": self.GOAL_THREAD}, *self._asks(self.ASK)],
+                    goals=(self.GOALS.replace("discussing", "agreed"), None,
+                           True))
+        value, _detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 50.0
+
+    def test_an_unread_goal_document_is_named_not_hidden(self, monkeypatch):
+        self._journal(monkeypatch, [
+            self._entry("2026-09-11", "Waiting on you", "in 0af15d7d"),
+            self._entry("2026-09-12", "Waiting on you", f"in {self.ASK}"),
+        ])
+        self._store(monkeypatch,
+                    [{"id": self.GOAL_THREAD}, *self._asks(self.ASK)],
+                    goals=(None, "no vault client on this pod", False))
+        value, detail = gm.measure_nova_scale_blocks_recorded(
+            "2026-09-10", "2026-09-16")
+        assert value == 50.0
+        assert ("goal discussion threads were not read "
+                "(no vault client on this pod)") in detail
 
     def test_the_name_prefix_alone_makes_it_an_ask(self, monkeypatch):
         from agora_runner.needs_input import NAME_PREFIX
