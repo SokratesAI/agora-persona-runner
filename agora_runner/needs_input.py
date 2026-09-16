@@ -50,7 +50,7 @@ from `terminal_exec`:
 import argparse
 import sys
 
-from agora_runner.http_util import agora_internal
+from agora_runner.http_util import agora_internal, unauthorized_hint
 from agora_runner.log import log
 from agora_runner.nova_conversations import ANSWER_PERSONA_ID
 
@@ -147,7 +147,7 @@ def ask(question, context, cycle=None):
     })
     if status not in (200, 201):
         log(f"needs_input: create conversation failed HTTP {status}")
-        return False, f"could not open the conversation (HTTP {status})"
+        return False, f"could not open the conversation (HTTP {status}{unauthorized_hint(status)})"
     conversation = body.get("conversation") or {}
     cid = conversation.get("id")
     if not cid:
@@ -173,7 +173,8 @@ def ask(question, context, cycle=None):
     message_id = (posted.get("message") or {}).get("id")
     if status not in (200, 201) or not message_id:
         log(f"needs_input: notify failed HTTP {status}")
-        return False, f"opened {name} but could not post the question (HTTP {status})"
+        return False, (f"opened {name} but could not post the question "
+                       f"(HTTP {status}{unauthorized_hint(status)})")
     held = push_held(posted)
     if held:
         log(f"needs_input: {cid} posted but the push was withheld ({held})")

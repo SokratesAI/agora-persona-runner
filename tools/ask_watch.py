@@ -119,7 +119,7 @@ from zoneinfo import ZoneInfo
 import sys as _sys, pathlib as _pathlib  # noqa: E402
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parents[1]))
 
-from agora_runner.http_util import agora_get, agora_internal
+from agora_runner.http_util import agora_get, agora_internal, unauthorized_hint
 from agora_runner.needs_input import (
     NAME_PREFIX, NEEDS_INPUT_TAG, SENDER, push_held)
 from agora_runner.project_goals import (
@@ -249,13 +249,15 @@ def resolve(conversation_id, because, rows=None):
         "POST", f"/conversations/{conversation_id}/notify",
         {"text": text, "sender": SENDER, "system": False})
     if status not in (200, 201):
-        return False, f"nothing posted and nothing archived: notify returned HTTP {status}"
+        return False, (f"nothing posted and nothing archived: notify returned "
+                       f"HTTP {status}{unauthorized_hint(status)}")
 
     status, _ = agora_internal(
         "PATCH", f"/conversations/{conversation_id}", {"archived": True})
     if status not in (200, 201, 204):
         return False, (f"the closing message is posted but the archive returned "
-                       f"HTTP {status} — the ask still reads as waiting")
+                       f"HTTP {status}{unauthorized_hint(status)} — the ask still "
+                       f"reads as waiting")
     return True, "closed out and archived"
 
 
@@ -271,7 +273,7 @@ def nudge(conversation_id, text=NUDGE_TEXT):
         "POST", f"/conversations/{conversation_id}/notify",
         {"text": text, "sender": SENDER, "system": False})
     if status not in (200, 201):
-        return False, f"notify returned HTTP {status}"
+        return False, f"notify returned HTTP {status}{unauthorized_hint(status)}"
     held = push_held(body)
     if held:
         return False, f"posted but the push was withheld again ({held})"
