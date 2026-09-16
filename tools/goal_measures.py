@@ -1013,12 +1013,23 @@ KEY_RESULT_NO_INSTRUMENT = {
                           "app to do -- a judgement about his experience, not a "
                           "fact on this box; same reason as G2, which is the "
                           "same measure",
+    "nova-kr-trust-cycles-shown": "measures the planned vs. done view, and the "
+                                  "app has no planned-vs-done view yet -- the "
+                                  "journal view shows done only, so a share "
+                                  "taken off it would read a confident 100% "
+                                  "for a view he cannot open",
 }
 
 
 #: The window every KPI here is read over. A guardrail says what is happening
 #: now, so it is 24 hours regardless of `--days`, which sets the goals' window.
 _KPI_WINDOW_HOURS = 24.0
+
+#: How many entries `measure_nova_trust_data_fresh` asks the site for. More
+#: than one because `fetch_entries` drops the kinds that are not a cycle's own
+#: entry, so a limit of 1 can come back empty on a perfectly healthy site and
+#: read as "the view has no cycle in it".
+_FRESHNESS_ENTRIES = 20
 
 def measure_nova_dropped_ticks(since, until):
     """Share of scheduled heartbeat firings in the last 24h that produced no run.
@@ -1241,6 +1252,79 @@ def measure_nova_silent_cycles(since, until):
 #: the goals and key results share.
 _DEPRECATION_WINDOW_DAYS = 30
 
+
+
+def measure_nova_trust_data_fresh(since, until):
+    """How many cycles behind the journal view in the app is. Cycles.
+
+    The Trust objective says he should see something current any time he
+    opens the app, and until now that key result was blank with the note
+    "nothing here computes this measure". Two independent statements of the
+    same fact already exist, so this reads both and subtracts: the newest
+    `<seq>-cycle-<n>.md` in the vault's journal folder, and the newest cycle
+    number `nova-site` actually serves at `/api/journal`. The difference is
+    the age of the newest data in the view, in cycles, which is the unit the
+    key result asks for.
+
+    **This is the publish path, not the writing path.** A cycle that wrote no
+    entry at all is not staleness here and is deliberately somebody else's
+    measure -- `nova-kpi-silent-cycles` counts those. What this catches is an
+    entry that exists in the vault and is not on his phone: a cache that
+    stopped revalidating, a pod that did not roll, a listing the site cannot
+    read. Both readings move together on a healthy loop, so the normal answer
+    is 0.
+
+    **`None` rather than a number whenever either side is unreadable**, and
+    that guard is the point of the function rather than a nicety. The target
+    is 1 and the direction is down, so 0 is the *best* value this key result
+    can carry -- a vault client that is missing, or a site that answers
+    nothing, would otherwise publish a perfect score off an instrument that
+    read nothing, and that number would outlive the outage.
+
+    **A negative difference is also `None`.** The site serving a cycle the
+    journal listing does not have yet means the listing is the stale side of
+    the comparison, so there is no age to report off it; saying so is honest
+    and clamping it to 0 would hide a read I cannot trust.
+
+    What it cannot see: whether the page *renders* what the API returns, and
+    whether the plan half of "planned vs. done" is current -- the app has no
+    planned-vs-done view yet, and `nova-kr-trust-cycles-shown` stays
+    uninstrumented for that reason rather than reading a confident 100% off
+    the only view that does exist.
+    """
+    del since, until
+    from agora_runner.nova_journal import file_cycle
+    from agora_runner.recap_refresh import newest_entry
+    from tools import recap_health
+
+    try:
+        listing = recap_health._vault("ls", recap_health.JOURNAL_DIR)
+    except (subprocess.CalledProcessError, OSError, FileNotFoundError) as exc:
+        return None, (f"the journal folder could not be listed, so there is "
+                      f"nothing to compare the app against -- {str(exc)[:160]}")
+    names = [line.strip() for line in listing.splitlines() if line.strip()]
+    written = file_cycle(newest_entry(names) or "")
+    if written is None:
+        return None, (f"{recap_health.JOURNAL_DIR} listed {len(names)} name(s) "
+                      "and none of them is a <seq>-cycle-<n>.md entry, so there "
+                      "is no newest cycle to compare against")
+    entries, error = fetch_entries(_FRESHNESS_ENTRIES)
+    if error:
+        return None, (f"the app's journal view could not be read, so its age "
+                      f"is unknown rather than 0 -- {error}")
+    shown = max((e.get("cycle") for e in entries
+                 if isinstance(e.get("cycle"), int)), default=None)
+    if shown is None:
+        return None, (f"{SITE}/api/journal answered with {len(entries)} "
+                      "entry/entries and no cycle number among them, so there "
+                      "is no newest shown cycle to date the view by")
+    if written < shown:
+        return None, (f"the app is serving cycle {shown} and the journal "
+                      f"folder's newest entry is {written}, so the listing I "
+                      "compared against is the stale side -- no age to report")
+    return written - shown, (
+        f"the app's journal view is dated by cycle {shown}; the newest entry "
+        f"in the vault is cycle {written}, over {len(names)} file(s) listed")
 
 def measure_pm_deprecations(since, until):
     """Rows closed as `outdated` on either board in the last 30 days.
@@ -4232,6 +4316,7 @@ KEY_RESULT_FETCH_MEASURERS = {
     "maint-kr-supported": measure_maint_supported,
     "demos-kr-opened": measure_demos_opened,
     "demos-kr-no-litter": measure_demos_no_litter,
+    "nova-kr-trust-data-fresh": measure_nova_trust_data_fresh,
     "infra-kr-outlives-the-box": measure_infra_outlives_the_box,
     "docs-kr-covers-what-runs": measure_docs_covers_what_runs,
     "docs-kr-sync-alive": measure_docs_sync_alive,
